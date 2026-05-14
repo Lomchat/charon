@@ -7,12 +7,18 @@ export const config = {
 };
 
 const PUBLIC_PATHS = ['/login'];
+// Routes API qui s'authentifient elles-mêmes (Bearer token, etc.) — le
+// middleware les laisse passer sans cookie.
+const PUBLIC_API_PATHS = ['/api/sync'];
 const SESSION_COOKIE = 'heimdall_session';
 const SESSION_TTL_SECS = 24 * 60 * 60;
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (pathname.startsWith('/_next') || pathname === '/favicon.ico') {
+    return NextResponse.next();
+  }
+  if (PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
     return NextResponse.next();
   }
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));

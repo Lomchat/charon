@@ -7,6 +7,7 @@ import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
 import type { VpsProjectLink } from './page';
 import Sidebar, { type SessionListItem } from './Sidebar';
 import NewSessionDialog from './NewSessionDialog';
+import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel, { type ToolCallEntry, type Todo, type EditSnapshot } from './ToolPanel';
@@ -63,7 +64,11 @@ function emptyState(): SessionState {
   };
 }
 
-export default function ClaudePanel({ vpsList, projects, initialSessions, vpsLinks }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, projects: initialProjects, initialSessions, vpsLinks }: Props) {
+  // Copies mutables des données serveur — DataModal peut les modifier en
+  // direct (add/delete) sans nécessiter un reload de la page.
+  const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
+  const [projects, setProjects] = useState<Project[]>(initialProjects);
   const searchParams = useSearchParams();
   const queryParamSession = searchParams?.get('session') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
@@ -110,6 +115,7 @@ export default function ClaudePanel({ vpsList, projects, initialSessions, vpsLin
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dataOpen, setDataOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
 
@@ -745,6 +751,7 @@ export default function ClaudePanel({ vpsList, projects, initialSessions, vpsLin
           {selected && (
             <button className="head-btn" onClick={exportSession} title="exporter en markdown">⬇</button>
           )}
+          <button className="head-btn" onClick={() => setDataOpen(true)} title="données (VPS, projets, paths)">🗂</button>
           <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings">⚙</button>
         </div>
       </header>
@@ -1027,6 +1034,17 @@ export default function ClaudePanel({ vpsList, projects, initialSessions, vpsLin
       )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {dataOpen && (
+        <DataModal
+          onClose={() => setDataOpen(false)}
+          initialVps={vpsList}
+          initialProjects={projects}
+          onChange={({ vps, projects: nextProjects }) => {
+            setVpsList(vps);
+            setProjects(nextProjects);
+          }}
+        />
+      )}
 
       {ctxMenu && (
         <SessionContextMenu

@@ -910,6 +910,67 @@
   overflow-y: auto;
 }
 .claude-modal.resume { max-width: 720px; }
+.claude-modal.data-modal { max-width: 820px; max-height: 80vh; display: flex; flex-direction: column; }
+.data-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--gold-deep); }
+.data-tabs button {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--parchment-soft); font-family: var(--display);
+  font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 10px 16px; border-bottom: 2px solid transparent;
+  transition: color .15s ease, border-color .15s ease;
+}
+.data-tabs button:hover { color: var(--parchment); }
+.data-tabs button.on { color: var(--gold-bright); border-bottom-color: var(--gold); }
+.data-err {
+  background: rgba(216, 117, 127, 0.12);
+  border: 1px solid var(--crimson-deep);
+  color: var(--crimson);
+  padding: 8px 12px; margin-bottom: 12px;
+  font-family: var(--mono); font-size: 12px;
+}
+.data-tab { display: flex; flex-direction: column; gap: 14px; min-height: 0; flex: 1; overflow: hidden; }
+.data-add {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+  padding: 12px; background: var(--shadow); border: 1px solid var(--gold-deep);
+}
+.data-add input, .data-add select {
+  background: var(--stone-2); border: 1px solid var(--gold-deep);
+  color: var(--parchment); padding: 8px 10px;
+  font-family: var(--mono); font-size: 12px;
+  flex: 1; min-width: 80px; outline: none;
+}
+.data-add input:focus, .data-add select:focus { border-color: var(--gold); }
+.data-add button.primary {
+  background: linear-gradient(180deg, var(--stone-2), var(--stone));
+  border: 1px solid var(--gold); color: var(--gold-bright);
+  font-family: var(--display); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; padding: 8px 16px; cursor: pointer;
+}
+.data-add button.primary:hover { box-shadow: 0 0 14px rgba(138, 180, 228, 0.3); }
+.data-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; }
+.data-list li {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 12px; align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 12px;
+}
+.data-list li:hover { background: rgba(138, 180, 228, 0.04); }
+.data-list .row-glyph { font-family: var(--display); font-size: 16px; color: var(--gold); width: 18px; text-align: center; }
+.data-list .row-main { color: var(--parchment); font-size: 13px; }
+.data-list .row-sub { color: var(--parchment-soft); font-size: 11px; grid-column: 3; }
+.data-list .row-del {
+  background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); padding: 4px 8px; cursor: pointer;
+  font-family: var(--mono); font-size: 12px;
+}
+.data-list .row-del:hover { color: var(--crimson); border-color: var(--crimson-deep); }
+.data-list li.empty {
+  display: block; text-align: center; color: var(--parchment-soft);
+  font-style: italic; padding: 24px 12px; border: none;
+}
+
 .claude-modal h2 {
   font-family: var(--display); font-size: 22px;
   letter-spacing: 0.15em; text-transform: uppercase;

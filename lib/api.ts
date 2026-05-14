@@ -15,6 +15,18 @@ export const api = {
   updateVps: (id: string, data: any) => send('PATCH', `/api/vps/${id}`, data),
   deleteVps: (id: string) => send('DELETE', `/api/vps/${id}`),
   testVps: (id: string) => send('POST', `/api/vps/${id}/test`),
+
+  // Projects (locaux à heimdall — sync via /api/sync depuis le hub)
+  listProjects: () => send('GET', '/api/projects'),
+  createProject: (data: any) => send('POST', '/api/projects', data),
+  updateProject: (id: string, data: any) => send('PATCH', `/api/projects/${id}`, data),
+  deleteProject: (id: string) => send('DELETE', `/api/projects/${id}`),
+
+  // VPS ↔ project ↔ path
+  listVpsProjectPaths: () => send('GET', '/api/vps-project-paths'),
+  createVpsProjectPath: (data: { vpsId: string; projectId: string; path: string }) =>
+    send('POST', '/api/vps-project-paths', data),
+  deleteVpsProjectPath: (id: number) => send('DELETE', `/api/vps-project-paths/${id}`),
   checkVpsClaude: (id: string) => send('GET', `/api/vps/${id}/claude/check`),
   setupVpsClaude: (id: string) => send('POST', `/api/vps/${id}/claude/setup`),
   scanVpsClaude: (id: string) => send('GET', `/api/vps/${id}/claude/scan`),

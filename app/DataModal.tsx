@@ -1,0 +1,209 @@
+'use client';
+import { useEffect, useState } from 'react';
+import { api } from '@/lib/api';
+import type { Vps, Project, VpsProjectPath } from '@/lib/db/schema';
+
+type Props = {
+  onClose: () => void;
+  initialVps: Vps[];
+  initialProjects: Project[];
+  onChange?: (next: { vps: Vps[]; projects: Project[] }) => void;
+};
+
+const COLOR_TOKENS = ['gold', 'crimson', 'teal', 'lavender', 'parchment-soft'] as const;
+
+export default function DataModal({ onClose, initialVps, initialProjects, onChange }: Props) {
+  const [tab, setTab] = useState<'vps' | 'projects' | 'paths'>('vps');
+  const [vpsList, setVpsList] = useState<Vps[]>(initialVps);
+  const [projects, setProjects] = useState<Project[]>(initialProjects);
+  const [paths, setPaths] = useState<VpsProjectPath[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.listVpsProjectPaths().then((r: any) => setPaths(r ?? [])).catch(() => setPaths([]));
+  }, []);
+
+  function notify(nextVps?: Vps[], nextProjects?: Project[]) {
+    onChange?.({
+      vps: nextVps ?? vpsList,
+      projects: nextProjects ?? projects
+    });
+  }
+
+  // ─── VPS ─────────────────────────────────────────────
+  const [vpsForm, setVpsForm] = useState({ name: '', ip: '', sshUser: 'root', sshPort: '22', defaultPath: '' });
+  async function addVps() {
+    setErr(null);
+    if (!vpsForm.name.trim() || !vpsForm.ip.trim() || !vpsForm.sshUser.trim()) {
+      setErr('nom, ip et user requis');
+      return;
+    }
+    try {
+      const row: any = await api.createVps({
+        name: vpsForm.name.trim(),
+        ip: vpsForm.ip.trim(),
+        sshUser: vpsForm.sshUser.trim(),
+        sshPort: Number(vpsForm.sshPort) || 22,
+        defaultPath: vpsForm.defaultPath.trim() || null
+      });
+      const next = [...vpsList, row];
+      setVpsList(next);
+      notify(next);
+      setVpsForm({ name: '', ip: '', sshUser: 'root', sshPort: '22', defaultPath: '' });
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+  async function deleteVps(id: string) {
+    if (!confirm('supprimer ce VPS ?')) return;
+    try {
+      await api.deleteVps(id);
+      const next = vpsList.filter((v) => v.id !== id);
+      setVpsList(next);
+      notify(next);
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+
+  // ─── Projects ─────────────────────────────────────────
+  const [projForm, setProjForm] = useState({ name: '', glyph: '◆', colorToken: 'gold', url: '' });
+  async function addProject() {
+    setErr(null);
+    if (!projForm.name.trim()) { setErr('nom requis'); return; }
+    try {
+      const row: any = await api.createProject({
+        name: projForm.name.trim(),
+        glyph: projForm.glyph || '◆',
+        colorToken: projForm.colorToken || 'gold',
+        url: projForm.url.trim() || null
+      });
+      const next = [...projects, row];
+      setProjects(next);
+      notify(undefined, next);
+      setProjForm({ name: '', glyph: '◆', colorToken: 'gold', url: '' });
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+  async function deleteProject(id: string) {
+    if (!confirm('supprimer ce projet ?')) return;
+    try {
+      await api.deleteProject(id);
+      const next = projects.filter((p) => p.id !== id);
+      setProjects(next);
+      notify(undefined, next);
+      setPaths((prev) => prev.filter((r) => r.projectId !== id));
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+
+  // ─── Paths ────────────────────────────────────────────
+  const [pathForm, setPathForm] = useState({ vpsId: '', projectId: '', path: '' });
+  async function addPath() {
+    setErr(null);
+    if (!pathForm.vpsId || !pathForm.projectId || !pathForm.path.trim()) {
+      setErr('vps, projet et chemin requis');
+      return;
+    }
+    try {
+      const row: any = await api.createVpsProjectPath({
+        vpsId: pathForm.vpsId, projectId: pathForm.projectId, path: pathForm.path.trim()
+      });
+      setPaths((prev) => prev.some((p) => p.id === row.id) ? prev : [...prev, row]);
+      setPathForm({ vpsId: pathForm.vpsId, projectId: '', path: '' });
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+  async function deletePath(id: number) {
+    try {
+      await api.deleteVpsProjectPath(id);
+      setPaths((prev) => prev.filter((r) => r.id !== id));
+    } catch (e: any) { setErr(e?.message ?? String(e)); }
+  }
+
+  const projectById = new Map(projects.map((p) => [p.id, p] as const));
+  const vpsById = new Map(vpsList.map((v) => [v.id, v] as const));
+
+  return (
+    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="claude-modal data-modal">
+        <button className="modal-close" onClick={onClose}>✕</button>
+        <h2>données</h2>
+        <div className="data-tabs">
+          <button className={tab === 'vps' ? 'on' : ''} onClick={() => setTab('vps')}>VPS ({vpsList.length})</button>
+          <button className={tab === 'projects' ? 'on' : ''} onClick={() => setTab('projects')}>projets ({projects.length})</button>
+          <button className={tab === 'paths' ? 'on' : ''} onClick={() => setTab('paths')}>paths ({paths.length})</button>
+        </div>
+        {err && <div className="data-err">{err}</div>}
+
+        {tab === 'vps' && (
+          <div className="data-tab">
+            <div className="data-add">
+              <input placeholder="nom" value={vpsForm.name} onChange={(e) => setVpsForm({ ...vpsForm, name: e.target.value })} />
+              <input placeholder="ip" value={vpsForm.ip} onChange={(e) => setVpsForm({ ...vpsForm, ip: e.target.value })} />
+              <input placeholder="ssh user" value={vpsForm.sshUser} onChange={(e) => setVpsForm({ ...vpsForm, sshUser: e.target.value })} style={{ maxWidth: 90 }} />
+              <input placeholder="port" value={vpsForm.sshPort} onChange={(e) => setVpsForm({ ...vpsForm, sshPort: e.target.value })} style={{ maxWidth: 60 }} inputMode="numeric" />
+              <input placeholder="default path (opt.)" value={vpsForm.defaultPath} onChange={(e) => setVpsForm({ ...vpsForm, defaultPath: e.target.value })} />
+              <button className="primary" onClick={addVps}>ajouter</button>
+            </div>
+            <ul className="data-list">
+              {vpsList.map((v) => (
+                <li key={v.id}>
+                  <span className="row-main">{v.name}</span>
+                  <span className="row-sub">{v.sshUser}@{v.ip}:{v.sshPort}{v.defaultPath ? ` · ${v.defaultPath}` : ''}</span>
+                  <button className="row-del" onClick={() => deleteVps(v.id)}>✕</button>
+                </li>
+              ))}
+              {vpsList.length === 0 && <li className="empty">aucun VPS</li>}
+            </ul>
+          </div>
+        )}
+
+        {tab === 'projects' && (
+          <div className="data-tab">
+            <div className="data-add">
+              <input placeholder="nom" value={projForm.name} onChange={(e) => setProjForm({ ...projForm, name: e.target.value })} />
+              <input placeholder="glyph" value={projForm.glyph} onChange={(e) => setProjForm({ ...projForm, glyph: e.target.value })} style={{ maxWidth: 60 }} />
+              <select value={projForm.colorToken} onChange={(e) => setProjForm({ ...projForm, colorToken: e.target.value })}>
+                {COLOR_TOKENS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <input placeholder="url (opt.)" value={projForm.url} onChange={(e) => setProjForm({ ...projForm, url: e.target.value })} />
+              <button className="primary" onClick={addProject}>ajouter</button>
+            </div>
+            <ul className="data-list">
+              {projects.map((p) => (
+                <li key={p.id}>
+                  <span className="row-glyph">{p.glyph}</span>
+                  <span className="row-main">{p.name}</span>
+                  <span className="row-sub">{p.colorToken}{p.url ? ` · ${p.url}` : ''}</span>
+                  <button className="row-del" onClick={() => deleteProject(p.id)}>✕</button>
+                </li>
+              ))}
+              {projects.length === 0 && <li className="empty">aucun projet</li>}
+            </ul>
+          </div>
+        )}
+
+        {tab === 'paths' && (
+          <div className="data-tab">
+            <div className="data-add">
+              <select value={pathForm.vpsId} onChange={(e) => setPathForm({ ...pathForm, vpsId: e.target.value })}>
+                <option value="">— vps —</option>
+                {vpsList.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+              <select value={pathForm.projectId} onChange={(e) => setPathForm({ ...pathForm, projectId: e.target.value })}>
+                <option value="">— projet —</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.glyph} {p.name}</option>)}
+              </select>
+              <input placeholder="path (ex: /srv/foo)" value={pathForm.path} onChange={(e) => setPathForm({ ...pathForm, path: e.target.value })} />
+              <button className="primary" onClick={addPath}>ajouter</button>
+            </div>
+            <ul className="data-list">
+              {paths.map((r) => (
+                <li key={r.id}>
+                  <span className="row-main">{vpsById.get(r.vpsId)?.name ?? r.vpsId}</span>
+                  <span className="row-sub">{projectById.get(r.projectId)?.name ?? r.projectId} · {r.path}</span>
+                  <button className="row-del" onClick={() => deletePath(r.id)}>✕</button>
+                </li>
+              ))}
+              {paths.length === 0 && <li className="empty">aucun path</li>}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
