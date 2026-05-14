@@ -191,16 +191,57 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
               <input placeholder="path (ex: /srv/foo)" value={pathForm.path} onChange={(e) => setPathForm({ ...pathForm, path: e.target.value })} />
               <button className="primary" onClick={addPath}>ajouter</button>
             </div>
-            <ul className="data-list">
-              {paths.map((r) => (
-                <li key={r.id}>
-                  <span className="row-main">{vpsById.get(r.vpsId)?.name ?? r.vpsId}</span>
-                  <span className="row-sub">{projectById.get(r.projectId)?.name ?? r.projectId} · {r.path}</span>
-                  <button className="row-del" onClick={() => deletePath(r.id)}>✕</button>
-                </li>
-              ))}
-              {paths.length === 0 && <li className="empty">aucun path</li>}
-            </ul>
+            {paths.length === 0 ? (
+              <ul className="data-list"><li className="empty">aucun path</li></ul>
+            ) : (
+              <div className="path-groups">
+                {(() => {
+                  // Groupe par VPS, ordre alphabétique. Paths sans VPS connu
+                  // (id orphelin) atterrissent dans un groupe "(VPS introuvable)".
+                  const groups = new Map<string, VpsProjectPath[]>();
+                  for (const r of paths) {
+                    const arr = groups.get(r.vpsId) ?? [];
+                    arr.push(r);
+                    groups.set(r.vpsId, arr);
+                  }
+                  const ordered = [...groups.entries()].sort((a, b) => {
+                    const an = vpsById.get(a[0])?.name ?? 'zzz';
+                    const bn = vpsById.get(b[0])?.name ?? 'zzz';
+                    return an.localeCompare(bn);
+                  });
+                  return ordered.map(([vpsId, rows]) => {
+                    const v = vpsById.get(vpsId);
+                    rows.sort((a, b) => {
+                      const an = projectById.get(a.projectId)?.name ?? '';
+                      const bn = projectById.get(b.projectId)?.name ?? '';
+                      return an.localeCompare(bn);
+                    });
+                    return (
+                      <section key={vpsId} className="path-group">
+                        <header className="path-group-head">
+                          <span className="pg-name">{v?.name ?? '(VPS introuvable)'}</span>
+                          {v && <span className="pg-meta">{v.sshUser}@{v.ip}</span>}
+                          <span className="pg-count">{rows.length}</span>
+                        </header>
+                        <ul className="path-group-list">
+                          {rows.map((r) => {
+                            const p = projectById.get(r.projectId);
+                            return (
+                              <li key={r.id}>
+                                <span className="pg-glyph">{p?.glyph ?? '?'}</span>
+                                <span className="pg-proj">{p?.name ?? r.projectId}</span>
+                                <span className="pg-path">{r.path}</span>
+                                <button className="row-del" onClick={() => deletePath(r.id)} title="supprimer">✕</button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </section>
+                    );
+                  });
+                })()}
+              </div>
+            )}
           </div>
         )}
       </div>

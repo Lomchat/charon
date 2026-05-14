@@ -971,6 +971,48 @@
   font-style: italic; padding: 24px 12px; border: none;
 }
 
+/* Vue groupée des paths par VPS (onglet 'paths' du DataModal) */
+.path-groups { overflow-y: auto; flex: 1; }
+.path-group { margin-bottom: 14px; }
+.path-group:last-child { margin-bottom: 0; }
+.path-group-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(138, 180, 228, 0.08), transparent);
+  border: 1px solid var(--gold-deep);
+  border-bottom: 0;
+}
+.path-group-head .pg-name {
+  font-family: var(--display); font-size: 12px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--gold-bright); flex-shrink: 0;
+}
+.path-group-head .pg-meta {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--parchment-soft);
+}
+.path-group-head .pg-count {
+  margin-left: auto;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--parchment-soft);
+  background: var(--shadow); padding: 2px 8px;
+  border: 1px solid var(--gold-deep);
+}
+.path-group-list { list-style: none; padding: 0; margin: 0; border: 1px solid var(--gold-deep); border-top: 0; }
+.path-group-list li {
+  display: grid;
+  grid-template-columns: 24px minmax(120px, 1fr) 2fr auto;
+  gap: 12px; align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(54, 60, 77, 0.5);
+  font-family: var(--mono); font-size: 12px;
+}
+.path-group-list li:last-child { border-bottom: 0; }
+.path-group-list li:hover { background: rgba(138, 180, 228, 0.04); }
+.path-group-list .pg-glyph { color: var(--gold); text-align: center; font-family: var(--display); }
+.path-group-list .pg-proj { color: var(--parchment); }
+.path-group-list .pg-path { color: var(--parchment-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+
 .claude-modal h2 {
   font-family: var(--display); font-size: 22px;
   letter-spacing: 0.15em; text-transform: uppercase;
