@@ -1,0 +1,23 @@
+'use client';
+import { useActionState } from 'react';
+import { loginAction } from './actions';
+
+export default function LoginPage() {
+  const [state, formAction, pending] = useActionState(loginAction, null);
+
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <h1>Heimdall</h1>
+        <form action={formAction}>
+          <label>
+            <span>mot de passe</span>
+            <input type="password" name="password" autoComplete="current-password" required autoFocus />
+          </label>
+          {state?.error && <div className="err">{state.error}</div>}
+          <button type="submit" disabled={pending}>{pending ? '…' : 'entrer'}</button>
+        </form>
+      </div>
+    </div>
+  );
+}

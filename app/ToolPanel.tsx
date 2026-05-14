@@ -1,0 +1,212 @@
+'use client';
+import { useMemo, useState } from 'react';
+import { createPatch } from 'diff';
+import { api } from '@/lib/api';
+import SplitDiffModal from './SplitDiffModal';
+
+export type ToolCallEntry = {
+  id: string;
+  name: string;
+  input: any;
+  result?: { content: string; isError: boolean };
+  startedAt: number;
+};
+
+export type Todo = {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
+};
+
+export type EditSnapshot = {
+  toolUseId: string;
+  filePath: string;
+  before: string | null;
+  after: string | null;
+  truncated: boolean;
+};
+
+type Props = {
+  sessionId: string | null;
+  toolCalls: ToolCallEntry[];
+  todos: Todo[];
+  edits: Map<string, EditSnapshot>;
+  files: Set<string>;
+  onRevert: () => void; // signal de rafraîchir
+};
+
+type Tab = 'diffs' | 'todos' | 'calls' | 'files';
+
+export default function ToolPanel({ sessionId, toolCalls, todos, edits, files, onRevert }: Props) {
+  const [tab, setTab] = useState<Tab>('diffs');
+  const editArr = useMemo(() => Array.from(edits.values()), [edits]);
+
+  return (
+    <aside className="tool-panel">
+      <nav className="tp-tabs">
+        <button className={tab === 'diffs' ? 'on' : ''} onClick={() => setTab('diffs')}>
+          diffs {editArr.length > 0 && <span className="badge">{editArr.length}</span>}
+        </button>
+        <button className={tab === 'todos' ? 'on' : ''} onClick={() => setTab('todos')}>
+          todos {todos.length > 0 && <span className="badge">{todos.filter((t) => t.status !== 'completed').length}/{todos.length}</span>}
+        </button>
+        <button className={tab === 'calls' ? 'on' : ''} onClick={() => setTab('calls')}>
+          tools {toolCalls.length > 0 && <span className="badge">{toolCalls.length}</span>}
+        </button>
+        <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
+          files {files.size > 0 && <span className="badge">{files.size}</span>}
+        </button>
+      </nav>
+      <div className="tp-body">
+        {tab === 'diffs' && <DiffsTab sessionId={sessionId} edits={editArr} onRevert={onRevert} />}
+        {tab === 'todos' && <TodosTab todos={todos} />}
+        {tab === 'calls' && <CallsTab calls={toolCalls} />}
+        {tab === 'files' && <FilesTab files={files} />}
+      </div>
+    </aside>
+  );
+}
+
+function DiffsTab({ sessionId, edits, onRevert }: { sessionId: string | null; edits: EditSnapshot[]; onRevert: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [open, setOpen] = useState<EditSnapshot | null>(null);
+  if (edits.length === 0) return <div className="tp-empty">aucun fichier modifié dans cette session</div>;
+
+  async function revert(filePath: string, before: string | null) {
+    if (!sessionId) return;
+    if (!confirm(`Restaurer "${filePath}" à son état initial ?`)) return;
+    setBusy(filePath);
+    try {
+      await api.revertClaudeEdit(sessionId, filePath, before);
+      onRevert();
+    } catch (e: any) {
+      alert('revert: ' + (e?.message ?? e));
+    } finally { setBusy(null); }
+  }
+
+  return (
+    <>
+      <div className="tp-diffs">
+        {edits.map((e) => {
+          const patch = makeUnifiedDiff(e.filePath, e.before ?? '', e.after ?? '');
+          const stats = countDiff(patch);
+          return (
+            <div key={e.toolUseId + e.filePath} className="diff-card">
+              <div className="diff-head">
+                <span className="path">{e.filePath}</span>
+                <span className="stats">
+                  <span className="add">+{stats.add}</span>
+                  <span className="del">−{stats.del}</span>
+                </span>
+                <button className="compare" onClick={() => setOpen(e)} title="comparer côte à côte">⇄ split</button>
+                <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
+                  {busy === e.filePath ? '…' : 'revert'}
+                </button>
+              </div>
+              {e.truncated && <div className="warn">⚠ snapshot tronqué (fichier &gt; 256KB)</div>}
+              {e.before == null && <div className="note">nouveau fichier (Write)</div>}
+              <pre className="diff-body">{renderDiffHtml(patch)}</pre>
+            </div>
+          );
+        })}
+      </div>
+      {open && (
+        <SplitDiffModal
+          filePath={open.filePath}
+          before={open.before}
+          after={open.after}
+          onClose={() => setOpen(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function TodosTab({ todos }: { todos: Todo[] }) {
+  if (todos.length === 0) return <div className="tp-empty">aucune todo</div>;
+  return (
+    <ul className="todo-list">
+      {todos.map((t, i) => (
+        <li key={i} className={`todo-${t.status}`}>
+          <span className="chk">{t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '▸' : '○'}</span>
+          <span className="text">{t.content}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function CallsTab({ calls }: { calls: ToolCallEntry[] }) {
+  if (calls.length === 0) return <div className="tp-empty">aucun tool call</div>;
+  return (
+    <ul className="calls-list">
+      {calls.slice().reverse().map((c) => (
+        <li key={c.id} className={c.result?.isError ? 'err' : ''}>
+          <div className="head">
+            <span className="name">{c.name}</span>
+            <span className="time">{fmtTime(c.startedAt)}</span>
+          </div>
+          <div className="input">{summarizeInput(c.name, c.input)}</div>
+          {c.result && (
+            <div className="result">
+              {c.result.isError ? '✗ ' : '✓ '}
+              {c.result.content.slice(0, 80)}{c.result.content.length > 80 ? '…' : ''}
+            </div>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function FilesTab({ files }: { files: Set<string> }) {
+  if (files.size === 0) return <div className="tp-empty">aucun fichier touché</div>;
+  const sorted = Array.from(files).sort();
+  return (
+    <ul className="files-list">
+      {sorted.map((f) => <li key={f}><code>{f}</code></li>)}
+    </ul>
+  );
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function makeUnifiedDiff(filePath: string, before: string, after: string): string {
+  return createPatch(filePath, before, after, '', '', { context: 3 });
+}
+
+function countDiff(patch: string): { add: number; del: number } {
+  let add = 0, del = 0;
+  for (const l of patch.split('\n')) {
+    if (l.startsWith('+') && !l.startsWith('+++')) add++;
+    else if (l.startsWith('-') && !l.startsWith('---')) del++;
+  }
+  return { add, del };
+}
+
+function renderDiffHtml(patch: string): React.ReactNode {
+  const lines = patch.split('\n').slice(4); // strip header
+  return lines.map((l, i) => {
+    let cls = 'ctx';
+    if (l.startsWith('+')) cls = 'add';
+    else if (l.startsWith('-')) cls = 'del';
+    else if (l.startsWith('@@')) cls = 'hunk';
+    return <span key={i} className={`dline ${cls}`}>{l + '\n'}</span>;
+  });
+}
+
+function summarizeInput(name: string, input: any): string {
+  if (!input) return '';
+  switch (name) {
+    case 'Read': case 'Edit': case 'Write': case 'MultiEdit':
+      return String(input.file_path ?? '').slice(0, 60);
+    case 'Bash':
+      return String(input.command ?? '').slice(0, 60);
+    default:
+      return JSON.stringify(input).slice(0, 60);
+  }
+}
+
+function fmtTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
