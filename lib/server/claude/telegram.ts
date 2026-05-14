@@ -1,7 +1,7 @@
 import 'server-only';
 import { getSetting, getSettingBool } from './settings';
 import { getWorker } from './SessionWorkerPool';
-import { db, claudeSessions } from '@/lib/db';
+import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 
 // ── Types Telegram (subset) ─────────────────────────────────────────────────
@@ -83,8 +83,14 @@ function escapeMd(s: string): string {
 function sessionLabel(sessionId: string): string {
   try {
     const [s] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
-    if (s?.name) return s.name;
-    if (s?.cwd) return s.cwd.split('/').slice(-2).join('/');
+    if (!s) return sessionId.slice(0, 8);
+    let vpsName = '';
+    if (s.vpsId) {
+      const [v] = db.select({ name: vpsTable.name }).from(vpsTable).where(eq(vpsTable.id, s.vpsId)).all();
+      if (v?.name) vpsName = v.name;
+    }
+    const base = s.name || (s.cwd ? s.cwd.split('/').slice(-2).join('/') : sessionId.slice(0, 8));
+    return vpsName ? `${vpsName} · ${base}` : base;
   } catch {}
   return sessionId.slice(0, 8);
 }

@@ -328,7 +328,7 @@ export class SessionWorker {
         this.broadcast(ev);
         this.log('info', 'permission', { id: ev.id, tool: ev.tool });
         this.maybePush({
-          title: `🔒 ${this.name ?? this.id.slice(0, 6)} : permission`,
+          title: `🔒 ${this.vps.name} · ${this.name ?? this.id.slice(0, 6)} : permission`,
           body: `outil ${ev.tool} — clique pour valider`,
           tag: `perm-${this.id}`,
         });
@@ -348,7 +348,7 @@ export class SessionWorker {
         this.persist('user_question', ev);
         this.broadcast(ev);
         this.maybePush({
-          title: `❓ ${this.name ?? this.id.slice(0, 6)} : question`,
+          title: `❓ ${this.vps.name} · ${this.name ?? this.id.slice(0, 6)} : question`,
           body: `${ev.questions[0]?.question ?? 'question utilisateur'}`,
           tag: `q-${this.id}`,
         });
@@ -367,7 +367,7 @@ export class SessionWorker {
         this.persist('exit_plan_request', ev);
         this.broadcast(ev);
         this.maybePush({
-          title: `📋 ${this.name ?? this.id.slice(0, 6)} : plan prêt`,
+          title: `📋 ${this.vps.name} · ${this.name ?? this.id.slice(0, 6)} : plan prêt`,
           body: 'Claude a fini de planifier — clique pour valider',
           tag: `plan-${this.id}`,
         });
@@ -402,7 +402,7 @@ export class SessionWorker {
         this.broadcast(ev);
         // Notification push : Claude a fini sa réponse
         this.maybePush({
-          title: `✓ ${this.name ?? this.id.slice(0, 6)}`,
+          title: `✓ ${this.vps.name} · ${this.name ?? this.id.slice(0, 6)}`,
           body: 'Claude a fini sa réponse',
           tag: `stop-${this.id}`,
         });

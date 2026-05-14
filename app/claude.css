@@ -61,18 +61,7 @@
   letter-spacing: 0.22em;
   color: var(--gold);
   margin: 0;
-  display: flex; align-items: center; gap: 12px;
 }
-.claude-head .head-hub-link {
-  color: var(--parchment-soft);
-  font-size: 18px;
-  text-decoration: none;
-  padding: 2px 8px;
-  border: 1px solid var(--gold-deep);
-  letter-spacing: normal;
-  transition: color .15s ease, border-color .15s ease;
-}
-.claude-head .head-hub-link:hover { color: var(--gold-bright); border-color: var(--gold); }
 .claude-head .back {
   font-family: var(--display); font-size: 11px;
   letter-spacing: 0.2em; text-transform: uppercase;
@@ -910,7 +899,12 @@
   overflow-y: auto;
 }
 .claude-modal.resume { max-width: 720px; }
-.claude-modal.data-modal { max-width: 820px; max-height: 80vh; display: flex; flex-direction: column; }
+.claude-modal.data-modal {
+  /* Taille fixe pour que le modal ne saute pas quand on change d'onglet */
+  width: 820px; max-width: 90vw;
+  height: 640px; max-height: 85vh;
+  display: flex; flex-direction: column;
+}
 .data-tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--gold-deep); }
 .data-tabs button {
   background: transparent; border: none; cursor: pointer;
@@ -1333,6 +1327,11 @@
 .search-results .head {
   display: flex; gap: 8px; align-items: baseline;
   font-size: 11px; margin-bottom: 4px;
+}
+.search-results .vps {
+  color: var(--gold); font-family: var(--display); letter-spacing: 0.18em;
+  text-transform: uppercase; font-size: 10px;
+  padding: 2px 8px; border: 1px solid var(--gold-deep);
 }
 .search-results .sess { color: var(--gold-bright); font-family: var(--display); letter-spacing: 0.06em; }
 .search-results .role { color: var(--lavender); font-family: var(--mono); }

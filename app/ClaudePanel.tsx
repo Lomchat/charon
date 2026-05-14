@@ -391,11 +391,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
     } finally { setPushBusy(false); }
   }
 
-  function exportSession() {
-    if (!selectedId) return;
-    window.open(`/api/claude/sessions/${selectedId}/export`, '_blank');
-  }
-
   // ── Charger historique persiste + ouvrir SSE pour la session selectionnee ──
   useEffect(() => {
     if (!selectedId) {
@@ -711,10 +706,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
   return (
     <div className="claude-root has-tools">
       <header className="claude-head">
-        <h1>
-          <a href="https://hub.chalco.website" title="retour au hub" className="head-hub-link">←</a>
-          HEIMDALL
-        </h1>
+        <h1>HEIMDALL</h1>
         <div className="head-right">
           {selected && selectedVps && (
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
@@ -748,9 +740,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
           <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'son activé' : 'son coupé'}>
             {notifSoundEnabled ? '🔊' : '🔇'}
           </button>
-          {selected && (
-            <button className="head-btn" onClick={exportSession} title="exporter en markdown">⬇</button>
-          )}
           <button className="head-btn" onClick={() => setDataOpen(true)} title="données (VPS, projets, paths)">🗂</button>
           <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings">⚙</button>
         </div>

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { like, desc, eq } from 'drizzle-orm';
-import { db, claudeSessionMessages, claudeSessions } from '@/lib/db';
+import { db, claudeSessionMessages, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
 // GET /api/claude/search?q=...
@@ -25,9 +25,19 @@ export async function GET(req: Request) {
     .all();
   const sessionIds = Array.from(new Set(rows.map((r) => r.sessionId)));
   const sessionMap = new Map<string, any>();
+  const vpsCache = new Map<string, string>();
   for (const sid of sessionIds) {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sid)).all();
-    if (row) sessionMap.set(sid, row);
+    if (!row) continue;
+    let vpsName: string | null = null;
+    if (row.vpsId) {
+      vpsName = vpsCache.get(row.vpsId) ?? null;
+      if (!vpsName) {
+        const [v] = db.select({ name: vpsTable.name }).from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
+        if (v?.name) { vpsName = v.name; vpsCache.set(row.vpsId, v.name); }
+      }
+    }
+    sessionMap.set(sid, { ...row, vpsName });
   }
   // Snippet autour de q
   const lower = q.toLowerCase();

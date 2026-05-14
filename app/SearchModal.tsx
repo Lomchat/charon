@@ -9,7 +9,7 @@ type Result = {
   role: string;
   snippet: string;
   createdAt: number;
-  session: ClaudeSession | null;
+  session: (ClaudeSession & { vpsName?: string | null }) | null;
 };
 
 type Props = {
@@ -57,6 +57,7 @@ export default function SearchModal({ onClose, onPick }: Props) {
           {results.map((r) => (
             <li key={r.messageId} onClick={() => onPick(r.sessionId)}>
               <div className="head">
+                {r.session?.vpsName && <span className="vps">{r.session.vpsName}</span>}
                 <span className="sess">{r.session?.name ?? r.session?.cwd ?? r.sessionId.slice(0, 8)}</span>
                 <span className="role">{r.role}</span>
                 <span className="when">{new Date(r.createdAt * 1000).toLocaleString('fr-FR')}</span>
