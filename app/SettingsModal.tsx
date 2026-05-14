@@ -6,6 +6,21 @@ type Props = {
   onClose: () => void;
 };
 
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className={`toggle${checked ? ' on' : ''}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="knob" />
+    </button>
+  );
+}
+
 export default function SettingsModal({ onClose }: Props) {
   const [s, setS] = useState<Record<string, string> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,12 +78,14 @@ export default function SettingsModal({ onClose }: Props) {
             <label>rétention des sessions killed (jours, 0 = jamais purger)
               <input value={s['retention.killed_days'] ?? ''} onChange={(e) => set('retention.killed_days', e.target.value)} inputMode="numeric" />
             </label>
-            <label>notifications push globales
-              <select value={s['notif.global_enabled'] ?? 'true'} onChange={(e) => set('notif.global_enabled', e.target.value)}>
-                <option value="true">activées</option>
-                <option value="false">désactivées</option>
-              </select>
-            </label>
+            <div className="switch-row">
+              <span>notifications push globales</span>
+              <Toggle
+                checked={(s['notif.global_enabled'] ?? 'true') === 'true'}
+                onChange={(v) => set('notif.global_enabled', v ? 'true' : 'false')}
+                label="notifications push globales"
+              />
+            </div>
             <label>VAPID subject (mailto pour push)
               <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:tu@example.com" />
             </label>
@@ -79,12 +96,14 @@ export default function SettingsModal({ onClose }: Props) {
                 Permet de répondre aux permissions et questions depuis Telegram (boutons inline + texte libre).
                 Crée un bot via <code>@BotFather</code>, récupère le token, parle-lui une fois et trouve ton chat_id via <code>@userinfobot</code>.
               </p>
-              <label>activer
-                <select value={s['telegram.enabled'] ?? 'false'} onChange={(e) => set('telegram.enabled', e.target.value)}>
-                  <option value="false">désactivé</option>
-                  <option value="true">activé</option>
-                </select>
-              </label>
+              <div className="switch-row">
+                <span>activer</span>
+                <Toggle
+                  checked={s['telegram.enabled'] === 'true'}
+                  onChange={(v) => set('telegram.enabled', v ? 'true' : 'false')}
+                  label="activer Telegram"
+                />
+              </div>
               <label>bot token
                 <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="password" />
               </label>

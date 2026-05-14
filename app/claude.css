@@ -1038,6 +1038,48 @@
 }
 .claude-modal label input:focus,
 .claude-modal label select:focus { border-color: var(--gold); }
+
+/* Toggle switch (remplace les <select> on/off) */
+.claude-modal .switch-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+}
+.claude-modal .switch-row > span {
+  font-family: var(--display); font-weight: 600;
+  font-size: 10px; letter-spacing: 0.25em; text-transform: uppercase;
+  color: var(--parchment-soft);
+}
+.toggle {
+  position: relative; flex-shrink: 0;
+  width: 46px; height: 24px;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  border-radius: 12px;
+  cursor: pointer;
+  padding: 0;
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.toggle:hover { border-color: var(--gold); }
+.toggle .knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  background: var(--parchment-soft);
+  border-radius: 50%;
+  transition: transform .22s cubic-bezier(.4,.2,.2,1), background .22s ease, box-shadow .22s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.toggle.on {
+  background: linear-gradient(180deg, rgba(138,180,228,0.32), rgba(138,180,228,0.16));
+  border-color: var(--gold);
+  box-shadow: 0 0 12px rgba(138, 180, 228, 0.3);
+}
+.toggle.on .knob {
+  background: var(--gold-bright);
+  transform: translateX(22px);
+  box-shadow: 0 0 8px rgba(168, 196, 239, 0.6), 0 1px 4px rgba(0,0,0,0.3);
+}
+.toggle:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 3px; }
 .claude-modal .modal-close {
   position: absolute; top: 14px; right: 14px;
   width: 28px; height: 28px;
