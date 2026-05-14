@@ -2,13 +2,13 @@ import { NextResponse } from 'next/server';
 import { db, vps, projects, vpsProjectPaths } from '@/lib/db';
 import { eq, and } from 'drizzle-orm';
 
-// POST /api/sync — réception du sync hub → heimdall.
-// Auth : Authorization: Bearer <SYNC_TOKEN> (env partagé entre hub et heimdall).
+// POST /api/sync — réception du sync hub → charon.
+// Auth : Authorization: Bearer <SYNC_TOKEN> (env partagé entre hub et charon).
 // Payload : { vps?: VpsRow[], projects?: ProjectRow[], vpsProjectPaths?: PathRow[] }.
-// Stratégie : upsert par id pour vps/projects (les rows heimdall-only sont
+// Stratégie : upsert par id pour vps/projects (les rows charon-only sont
 // préservées) ; pour les paths, on insert si (vps_id, project_id, path)
 // n'existe pas déjà — pas de delete, donc les paths ajoutés à la main
-// côté heimdall sont eux aussi préservés.
+// côté charon sont eux aussi préservés.
 
 type VpsRow = {
   id: string;

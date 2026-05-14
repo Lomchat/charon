@@ -1006,6 +1006,19 @@
 .path-group-list .pg-glyph { color: var(--gold); text-align: center; font-family: var(--display); }
 .path-group-list .pg-proj { color: var(--parchment); }
 .path-group-list .pg-path { color: var(--parchment-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.path-group-head .pg-del {
+  background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); padding: 2px 8px; cursor: pointer;
+  font-family: var(--mono); font-size: 12px;
+}
+.path-group-head .pg-del:hover { color: var(--crimson); border-color: var(--crimson-deep); }
+.pg-empty {
+  font-style: italic; color: var(--parchment-soft);
+  padding: 10px 12px;
+  border: 1px solid var(--gold-deep); border-top: 0;
+  font-family: var(--body); font-size: 12px;
+  text-align: center;
+}
 
 .claude-modal h2 {
   font-family: var(--display); font-size: 22px;

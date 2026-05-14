@@ -139,16 +139,49 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
               <input placeholder="default path (opt.)" value={vpsForm.defaultPath} onChange={(e) => setVpsForm({ ...vpsForm, defaultPath: e.target.value })} />
               <button className="primary" onClick={addVps}>ajouter</button>
             </div>
-            <ul className="data-list">
-              {vpsList.map((v) => (
-                <li key={v.id}>
-                  <span className="row-main">{v.name}</span>
-                  <span className="row-sub">{v.sshUser}@{v.ip}:{v.sshPort}{v.defaultPath ? ` · ${v.defaultPath}` : ''}</span>
-                  <button className="row-del" onClick={() => deleteVps(v.id)}>✕</button>
-                </li>
-              ))}
-              {vpsList.length === 0 && <li className="empty">aucun VPS</li>}
-            </ul>
+            {vpsList.length === 0 ? (
+              <ul className="data-list"><li className="empty">aucun VPS</li></ul>
+            ) : (
+              <div className="path-groups">
+                {[...vpsList].sort((a, b) => a.name.localeCompare(b.name)).map((v) => {
+                  // Paths qui pointent vers ce VPS
+                  const vpsPaths = paths.filter((r) => r.vpsId === v.id);
+                  vpsPaths.sort((a, b) => {
+                    const an = projectById.get(a.projectId)?.name ?? '';
+                    const bn = projectById.get(b.projectId)?.name ?? '';
+                    return an.localeCompare(bn);
+                  });
+                  return (
+                    <section key={v.id} className="path-group">
+                      <header className="path-group-head">
+                        <span className="pg-name">{v.name}</span>
+                        <span className="pg-meta">{v.sshUser}@{v.ip}:{v.sshPort}{v.defaultPath ? ` · ${v.defaultPath}` : ''}</span>
+                        <span className="pg-count">{vpsPaths.length}</span>
+                        <button className="row-del pg-del" onClick={() => deleteVps(v.id)} title="supprimer ce VPS">✕</button>
+                      </header>
+                      {vpsPaths.length > 0 && (
+                        <ul className="path-group-list">
+                          {vpsPaths.map((r) => {
+                            const p = projectById.get(r.projectId);
+                            return (
+                              <li key={r.id}>
+                                <span className="pg-glyph">{p?.glyph ?? '?'}</span>
+                                <span className="pg-proj">{p?.name ?? r.projectId}</span>
+                                <span className="pg-path">{r.path}</span>
+                                <button className="row-del" onClick={() => deletePath(r.id)} title="supprimer ce path">✕</button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      {vpsPaths.length === 0 && (
+                        <div className="pg-empty">aucun projet rattaché</div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 

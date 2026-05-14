@@ -706,7 +706,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
   return (
     <div className="claude-root has-tools">
       <header className="claude-head">
-        <h1>HEIMDALL</h1>
+        <h1>CHARON</h1>
         <div className="head-right">
           {selected && selectedVps && (
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>

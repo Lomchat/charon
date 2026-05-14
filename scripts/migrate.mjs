@@ -5,7 +5,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-const dbPath = process.env.DATABASE_URL || './data/heimdall.db';
+const dbPath = process.env.DATABASE_URL || './data/charon.db';
 mkdirSync(dirname(dbPath), { recursive: true });
 
 const sqlite = new Database(dbPath);

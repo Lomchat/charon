@@ -8,7 +8,7 @@ export default function LoginPage() {
   return (
     <div className="auth-shell">
       <div className="auth-card">
-        <h1>Heimdall</h1>
+        <h1>Charon</h1>
         <form action={formAction}>
           <label>
             <span>mot de passe</span>

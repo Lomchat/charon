@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 
 export type VpsProjectLink = { projectId: string; path: string | null };
 
-export default async function HeimdallPage() {
+export default async function CharonPage() {
   await requireSession();
   seedInitialData();
 

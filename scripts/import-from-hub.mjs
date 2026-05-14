@@ -1,14 +1,14 @@
 // One-shot — import des données Claude depuis /srv/hub/data/hub.db.
-// Exécuter une seule fois après la mise en route de heimdall.db (migration 0000).
+// Exécuter une seule fois après la mise en route de charon.db (migration 0000).
 // Idempotent grâce à `INSERT OR IGNORE` (PK conflict → skip).
 //
-// Usage: node /srv/heimdall/scripts/import-from-hub.mjs
+// Usage: node /srv/charon/scripts/import-from-hub.mjs
 import Database from 'better-sqlite3';
 
 const HUB_DB = '/srv/hub/data/hub.db';
-const HEIMDALL_DB = '/srv/heimdall/data/heimdall.db';
+const CHARON_DB = '/srv/charon/data/charon.db';
 
-const dst = new Database(HEIMDALL_DB);
+const dst = new Database(CHARON_DB);
 dst.pragma('foreign_keys = ON');
 dst.exec(`ATTACH DATABASE '${HUB_DB}' AS src`);
 
@@ -39,7 +39,7 @@ const tx = dst.transaction(() => {
     SELECT id, name, ip, ssh_user, ssh_port, default_path, created_at FROM src.vps
   `);
 
-  // projects : projection sur le sous-ensemble des colonnes heimdall
+  // projects : projection sur le sous-ensemble des colonnes charon
   dst.exec(`
     INSERT OR IGNORE INTO projects (id, name, glyph, color_token, url, created_at)
     SELECT id, name, glyph, color_token, url, created_at FROM src.projects

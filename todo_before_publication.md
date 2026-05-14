@@ -37,9 +37,9 @@ le code porte encore plein d'empreintes de son environnement d'origine.
   `keywords`, `homepage`. Laisser `"private": true` si on ne publie pas sur npm.
 
 - [ ] **Renommer le projet (à arbitrer)**
-  `heimdall` est déjà pris par `linuxserver/Heimdall` (dashboard PHP très
-  populaire). Mauvais pour le SEO. Pistes : `claude-heimdall`,
-  `heimdall-claude`, autre.
+  `charon` est déjà pris par `linuxserver/Charon` (dashboard PHP très
+  populaire). Mauvais pour le SEO. Pistes : `claude-charon`,
+  `charon-claude`, autre.
 
 ---
 
@@ -49,9 +49,9 @@ le code porte encore plein d'empreintes de son environnement d'origine.
   Référence à un autre projet privé. Soit on supprime ce script (il est marqué
   « one-shot »), soit on le déplace dans `migrations/legacy/` avec une note.
 
-- [ ] **`/srv/heimdall`** en dur à plusieurs endroits
-  - `.env.example` : `DATABASE_URL=/srv/heimdall/data/heimdall.db` → mettre
-    `./data/heimdall.db`.
+- [ ] **`/srv/charon`** en dur à plusieurs endroits
+  - `.env.example` : `DATABASE_URL=/srv/charon/data/charon.db` → mettre
+    `./data/charon.db`.
   - `scripts/import-from-hub.mjs:9`.
   - **Placeholder UI** `app/NewSessionDialog.tsx:113` (`placeholder="/srv/hub"`).
 
@@ -120,7 +120,7 @@ ni de DB commités). En 1 à 2 journées de boulot on passe de « pas publiable 
 
 1. LICENSE
 2. README
-3. Suppression des `/srv/hub` / `/srv/heimdall` / email perso
+3. Suppression des `/srv/hub` / `/srv/charon` / email perso
 4. `requirements.txt` Python
 5. Un workflow CI minimal
 

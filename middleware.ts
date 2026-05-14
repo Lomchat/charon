@@ -10,7 +10,7 @@ const PUBLIC_PATHS = ['/login'];
 // Routes API qui s'authentifient elles-mêmes (Bearer token, etc.) — le
 // middleware les laisse passer sans cookie.
 const PUBLIC_API_PATHS = ['/api/sync'];
-const SESSION_COOKIE = 'heimdall_session';
+const SESSION_COOKIE = 'charon_session';
 const SESSION_TTL_SECS = 24 * 60 * 60;
 
 export async function middleware(req: NextRequest) {

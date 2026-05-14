@@ -16,7 +16,7 @@ export const api = {
   deleteVps: (id: string) => send('DELETE', `/api/vps/${id}`),
   testVps: (id: string) => send('POST', `/api/vps/${id}/test`),
 
-  // Projects (locaux à heimdall — sync via /api/sync depuis le hub)
+  // Projects (locaux à charon — sync via /api/sync depuis le hub)
   listProjects: () => send('GET', '/api/projects'),
   createProject: (data: any) => send('POST', '/api/projects', data),
   updateProject: (id: string, data: any) => send('PATCH', `/api/projects/${id}`, data),

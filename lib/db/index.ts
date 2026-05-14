@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 
-const dbPath = process.env.DATABASE_URL || './data/heimdall.db';
+const dbPath = process.env.DATABASE_URL || './data/charon.db';
 
 const globalForDb = globalThis as unknown as { _sqlite?: Database.Database };
 const sqlite = globalForDb._sqlite ?? new Database(dbPath);

@@ -20,7 +20,7 @@ function getEnvAesKey(): Buffer | null {
 }
 const SESSION_KEYS = new Map<string, Buffer>();
 
-export const SESSION_COOKIE = 'heimdall_session';
+export const SESSION_COOKIE = 'charon_session';
 export const SESSION_TTL_MS = SESSION_TTL_SECS * 1000;
 
 function masterPassword(): string {
