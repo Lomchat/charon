@@ -42,6 +42,12 @@ export default function SettingsModal({ onClose }: Props) {
   }
 
   useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
     api.getClaudeSettings().then((r: any) => setS(r)).catch(() => setS({}));
   }, []);
 

@@ -2,9 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
-import type { Vps, Project, ClaudeSession } from '@/lib/db/schema';
+import type { Vps, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
-import type { VpsProjectLink } from './page';
 import Sidebar, { type SessionListItem } from './Sidebar';
 import NewSessionDialog from './NewSessionDialog';
 import DataModal from './DataModal';
@@ -23,9 +22,8 @@ import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported } fr
 
 type Props = {
   vpsList: Vps[];
-  projects: Project[];
+  vpsPaths: VpsPath[];
   initialSessions: ClaudeSession[];
-  vpsLinks: Record<string, VpsProjectLink[]>;
 };
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
@@ -65,11 +63,10 @@ function emptyState(): SessionState {
   };
 }
 
-export default function ClaudePanel({ vpsList: initialVpsList, projects: initialProjects, initialSessions, vpsLinks }: Props) {
-  // Copies mutables des données serveur — DataModal peut les modifier en
-  // direct (add/delete) sans nécessiter un reload de la page.
+export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initialPaths, initialSessions }: Props) {
+  // Copies mutables — DataModal peut add/delete VPS et paths sans reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
-  const [projects, setProjects] = useState<Project[]>(initialProjects);
+  const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
   const searchParams = useSearchParams();
   const queryParamSession = searchParams?.get('session') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
@@ -114,7 +111,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
   const [bootstrapping, setBootstrapping] = useState<{ vps: Vps; resumeSessionId: string | null } | null>(null);
   // Console claude login interactive
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
-  const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string; projectId?: string | null }>(null);
+  const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -709,6 +706,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
   return (
     <div className="claude-root has-tools">
       <header className="claude-head">
+        <svg className="brand-logo" viewBox="12 32 236 196" aria-hidden>
+          <path d="M 18 120 Q 32 114 46 120 T 74 120 T 100 120" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 22 140 Q 36 134 50 140 T 78 140 T 100 140" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 26 160 Q 40 154 54 160 T 82 160 T 100 160" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 160 120 Q 174 114 188 120 T 216 120 T 242 120" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 160 140 Q 174 134 188 140 T 216 140 T 238 140" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 160 160 Q 174 154 188 160 T 216 160 T 234 160" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
+          <path d="M 130 40 Q 100 75 96 140 Q 94 188 130 220 Q 166 188 164 140 Q 160 75 130 40 Z" fill="none" stroke="currentColor" strokeWidth="10" strokeLinejoin="round"/>
+          <circle cx="130" cy="145" r="17" fill="none" stroke="currentColor" strokeWidth="7"/>
+          <circle cx="130" cy="145" r="11" fill="currentColor"/>
+          <line x1="108" y1="103" x2="152" y2="103" stroke="currentColor" strokeWidth="4.5" opacity="0.7"/>
+          <line x1="106" y1="187" x2="154" y2="187" stroke="currentColor" strokeWidth="4.5" opacity="0.7"/>
+        </svg>
         <h1>CHARON</h1>
         <div className="head-right">
           {selected && selectedVps && (
@@ -750,8 +760,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
 
       <Sidebar
         vpsList={vpsList}
-        projects={projects}
-        vpsLinks={vpsLinks}
+        vpsPaths={vpsPaths}
         sessions={sessions}
         selectedId={selectedId}
         onSelect={setSelectedId}
@@ -1013,8 +1022,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
       {newDialog && (
         <NewSessionDialog
           vpsList={vpsList}
-          projects={projects}
-          vpsLinks={vpsLinks}
+          vpsPaths={vpsPaths}
           initial={newDialog}
           onClose={() => setNewDialog(null)}
           onCreated={(id) => { setNewDialog(null); setSelectedId(id); refreshSessions(); }}
@@ -1044,10 +1052,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
         <DataModal
           onClose={() => setDataOpen(false)}
           initialVps={vpsList}
-          initialProjects={projects}
-          onChange={({ vps, projects: nextProjects }) => {
+          initialPaths={vpsPaths}
+          onChange={({ vps, paths }) => {
             setVpsList(vps);
-            setProjects(nextProjects);
+            setVpsPaths(paths);
           }}
         />
       )}

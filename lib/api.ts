@@ -16,27 +16,22 @@ export const api = {
   deleteVps: (id: string) => send('DELETE', `/api/vps/${id}`),
   testVps: (id: string) => send('POST', `/api/vps/${id}/test`),
 
-  // Projects (locaux à charon — sync via /api/sync depuis le hub)
-  listProjects: () => send('GET', '/api/projects'),
-  createProject: (data: any) => send('POST', '/api/projects', data),
-  updateProject: (id: string, data: any) => send('PATCH', `/api/projects/${id}`, data),
-  deleteProject: (id: string) => send('DELETE', `/api/projects/${id}`),
-
-  // VPS ↔ project ↔ path
-  listVpsProjectPaths: () => send('GET', '/api/vps-project-paths'),
-  createVpsProjectPath: (data: { vpsId: string; projectId: string; path: string }) =>
-    send('POST', '/api/vps-project-paths', data),
-  deleteVpsProjectPath: (id: number) => send('DELETE', `/api/vps-project-paths/${id}`),
+  // VPS paths (paths connus par VPS, avec label optionnel)
+  listVpsPaths: () => send('GET', '/api/vps-paths'),
+  createVpsPath: (data: { vpsId: string; path: string; label?: string | null }) =>
+    send('POST', '/api/vps-paths', data),
+  updateVpsPath: (id: number, data: { path?: string; label?: string | null }) =>
+    send('PATCH', `/api/vps-paths/${id}`, data),
+  deleteVpsPath: (id: number) => send('DELETE', `/api/vps-paths/${id}`),
   checkVpsClaude: (id: string) => send('GET', `/api/vps/${id}/claude/check`),
   setupVpsClaude: (id: string) => send('POST', `/api/vps/${id}/claude/setup`),
   scanVpsClaude: (id: string) => send('GET', `/api/vps/${id}/claude/scan`),
   bootstrapVpsUrl: (id: string) => `/api/vps/${id}/claude/bootstrap`,
 
   // Claude sessions
-  listClaudeSessions: (q?: { vpsId?: string; projectId?: string; status?: string }) => {
+  listClaudeSessions: (q?: { vpsId?: string; status?: string }) => {
     const p = new URLSearchParams();
     if (q?.vpsId) p.set('vpsId', q.vpsId);
-    if (q?.projectId) p.set('projectId', q.projectId);
     if (q?.status) p.set('status', q.status);
     const qs = p.toString();
     return send('GET', `/api/claude/sessions${qs ? '?' + qs : ''}`);

@@ -33,26 +33,16 @@ export const vps = sqliteTable('vps', {
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 
-// Sous-ensemble des champs `projects` du hub : seulement ce que le panel
-// Claude affiche (nom, glyph, couleur) + l'id pour rattacher les sessions.
-// La sync avec le hub est manuelle (Chalom met à jour ici quand il renomme).
-export const projects = sqliteTable('projects', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  glyph: text('glyph').notNull().default('◆'),
-  colorToken: text('color_token').notNull().default('gold'),
-  url: text('url'),
-  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
-});
-
-// Mapping VPS ↔ project ↔ chemin de travail. Remplace les block_items
-// de type='vps' du hub (la sidebar Claude listait les chemins par VPS).
-// Une ligne par couple (vps_id, project_id, path).
-export const vpsProjectPaths = sqliteTable('vps_project_paths', {
+// Paths connus sur chaque VPS — sert à grouper les sessions dans la sidebar.
+// Le `label` est optionnel (auto-dérivé du basename du path si absent).
+// Une ligne par couple (vps_id, path) — pas d'unique contrainte SQL pour
+// rester souple côté sync ; la dédup est faite à l'insert (sync) / l'UI.
+export const vpsPaths = sqliteTable('vps_paths', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
-  projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
-  path: text('path').notNull()
+  path: text('path').notNull(),
+  label: text('label'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 
 export const claudeSessions = sqliteTable('claude_sessions', {
@@ -60,7 +50,6 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   claudeSessionId: text('claude_session_id'),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
   cwd: text('cwd').notNull(),
-  projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
   name: text('name'),
   status: text('status').notNull(),
   permissionMode: text('permission_mode').notNull().default('normal'),
@@ -128,8 +117,7 @@ export const claudePushSubs = sqliteTable('claude_push_subscriptions', {
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Vps = typeof vps.$inferSelect;
-export type Project = typeof projects.$inferSelect;
-export type VpsProjectPath = typeof vpsProjectPaths.$inferSelect;
+export type VpsPath = typeof vpsPaths.$inferSelect;
 export type ClaudeSession = typeof claudeSessions.$inferSelect;
 export type ClaudeSessionMessage = typeof claudeSessionMessages.$inferSelect;
 export type ClaudePendingPermission = typeof claudePendingPermissions.$inferSelect;

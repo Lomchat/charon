@@ -5,17 +5,15 @@ import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 
 // GET /api/claude/sessions
-// Query : ?vpsId= ?projectId= ?status=
+// Query : ?vpsId= ?status=
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const url = new URL(req.url);
   const filters: any[] = [];
   const vpsId = url.searchParams.get('vpsId');
-  const projectId = url.searchParams.get('projectId');
   const status = url.searchParams.get('status');
   if (vpsId) filters.push(eq(claudeSessions.vpsId, vpsId));
-  if (projectId) filters.push(eq(claudeSessions.projectId, projectId));
   if (status) filters.push(eq(claudeSessions.status, status));
   const where = filters.length ? and(...filters) : undefined;
   const rows = db.select().from(claudeSessions)
@@ -72,7 +70,7 @@ export async function GET(req: Request) {
 }
 
 // POST /api/claude/sessions
-// Body : { vpsId, cwd, name?, projectId?, permissionMode? }
+// Body : { vpsId, cwd, name?, permissionMode? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -94,7 +92,6 @@ export async function POST(req: Request) {
     const stream = await startNewSession({
       vpsId, cwd,
       name: body.name ? String(body.name) : null,
-      projectId: body.projectId ? String(body.projectId) : null,
       permissionMode,
     });
     return NextResponse.json({

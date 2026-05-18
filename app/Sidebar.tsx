@@ -1,10 +1,9 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import type { Vps, Project, ClaudeSession } from '@/lib/db/schema';
-import type { VpsProjectLink } from './page';
+import type { Vps, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 
-const COLLAPSED_KEY = 'hub.claude.collapsedVps.v1';
+const COLLAPSED_KEY = 'hub.claude.collapsedVps.v2';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
 
 export type SessionListItem = ClaudeSession & {
@@ -25,26 +24,43 @@ function formatAge(unixSeconds: number | null | undefined): string {
   return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
 }
 
+// Heuristique de matching cwd → path : on choisit le path le plus long
+// qui est préfixe (ou égal) au cwd de la session.
+function bestPathFor(cwd: string, paths: VpsPath[]): VpsPath | null {
+  let best: VpsPath | null = null;
+  for (const p of paths) {
+    if (cwd === p.path || cwd.startsWith(p.path.endsWith('/') ? p.path : p.path + '/')) {
+      if (!best || p.path.length > best.path.length) best = p;
+    }
+  }
+  return best;
+}
+
+// Label affichable pour un path : son `label` custom, sinon le dernier
+// segment non vide du path (ex: /srv/charon → "charon"). "/" devient "(root)".
+function labelOf(p: VpsPath): string {
+  if (p.label) return p.label;
+  const segs = p.path.split('/').filter(Boolean);
+  return segs.length === 0 ? '(root)' : segs[segs.length - 1];
+}
+
 type Props = {
   vpsList: Vps[];
-  projects: Project[];
-  vpsLinks: Record<string, VpsProjectLink[]>;
+  vpsPaths: VpsPath[];
   sessions: SessionListItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onNew: (opts: { vpsId: string; cwd?: string; projectId?: string | null }) => void;
+  onNew: (opts: { vpsId: string; cwd?: string }) => void;
   onScan: (vpsId: string) => void;
   onOpenResumeModal: () => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
-  // Actions agent (déportées du DataModal pour être accessibles depuis la home).
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
 };
 
-// Libellé / icône pour le badge agent_status
 const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
   ok:       { glyph: '●', label: 'agent opérationnel' },
   missing:  { glyph: '○', label: 'agent non installé' },
@@ -52,26 +68,14 @@ const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
   unknown:  { glyph: '?', label: 'agent jamais testé' },
 };
 
-const DOT_CLASS: Record<string, string> = {
-  active: 'dot-green',
-  starting: 'dot-amber',
-  thinking: 'dot-amber-pulse',
-  sleeping: 'dot-gray',
-  killed: 'dot-gray',
-  error: 'dot-red',
-  waiting: 'dot-orange-pulse',  // attend une réponse user (perm/question)
-};
-
 export default function Sidebar({
-  vpsList, projects, vpsLinks, sessions, selectedId, onSelect, onNew, onScan, onOpenResumeModal,
+  vpsList, vpsPaths, sessions, selectedId, onSelect, onNew, onScan, onOpenResumeModal,
   onContext, editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent,
 }: Props) {
-  const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p] as const)), [projects]);
 
   // Sections de VPS collapsées (persistant en localStorage)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  // Init depuis localStorage (côté client uniquement)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSED_KEY);
@@ -88,6 +92,20 @@ export default function Sidebar({
     });
   }
 
+  // Précalcule : paths par VPS, triés par longueur décroissante (best-match)
+  const pathsByVps = useMemo(() => {
+    const m = new Map<string, VpsPath[]>();
+    for (const p of vpsPaths) {
+      const arr = m.get(p.vpsId) ?? [];
+      arr.push(p);
+      m.set(p.vpsId, arr);
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => labelOf(a).localeCompare(labelOf(b)));
+    }
+    return m;
+  }, [vpsPaths]);
+
   return (
     <aside className="claude-sidebar">
       <div className="sidebar-toolbar">
@@ -97,16 +115,17 @@ export default function Sidebar({
 
       {vpsList.map((v) => {
         const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
-        const linkedProjects = (vpsLinks[v.id] ?? []);
-        // Unique project ids attached to this VPS
-        const linkedProjectIds = Array.from(new Set(linkedProjects.map((l) => l.projectId)));
-        // Sessions par projectId
-        const sessionsByProject = new Map<string | null, SessionListItem[]>();
+        const paths = pathsByVps.get(v.id) ?? [];
+        // Groupe sessions par best-matching path (clé = path.id, ou null pour "autres")
+        const groups = new Map<number | null, { path: VpsPath | null; sessions: SessionListItem[] }>();
+        for (const p of paths) {
+          groups.set(p.id, { path: p, sessions: [] });
+        }
         for (const s of vpsSessions) {
-          const key = s.projectId ?? null;
-          const arr = sessionsByProject.get(key) ?? [];
-          arr.push(s);
-          sessionsByProject.set(key, arr);
+          const best = bestPathFor(s.cwd, paths);
+          const key = best ? best.id : null;
+          if (!groups.has(key)) groups.set(key, { path: best, sessions: [] });
+          groups.get(key)!.sessions.push(s);
         }
         const isCollapsed = collapsed.has(v.id);
         const activeCount = vpsSessions.filter((s) =>
@@ -169,96 +188,84 @@ export default function Sidebar({
                 >⟳</button>
               </div>
             )}
-            {!isCollapsed && (<>
-            {linkedProjectIds.map((pid) => {
-              const p = projectById.get(pid);
-              if (!p) return null;
-              const paths = linkedProjects.filter((l) => l.projectId === pid).map((l) => l.path).filter(Boolean) as string[];
-              const projectSessions = sessionsByProject.get(pid) ?? [];
-              sessionsByProject.delete(pid);
-              const firstPath = paths[0];
-              return (
-                <div key={pid} className="proj-block">
-                  <div className="proj-head">
-                    <span className="g">{p.glyph}</span>
-                    <span className="n">{p.name}</span>
-                    {firstPath && <span className="cwd">{firstPath}</span>}
-                    <button className="proj-action" onClick={() => onNew({ vpsId: v.id, cwd: firstPath, projectId: pid })} title="nouvelle session sur ce projet">+</button>
-                  </div>
-                  {projectSessions.map((s) => (
-                    <SessionRow
-                      key={s.id}
-                      s={s}
-                      selected={s.id === selectedId}
-                      onSelect={onSelect}
-                      onContext={onContext}
-                      editing={editingId === s.id}
-                      onRenameSubmit={onRenameSubmit}
-                      onRenameCancel={onRenameCancel}
-                    />
-                  ))}
-                </div>
-              );
-            })}
-            {/* Sessions sans projet attaché */}
-            {(sessionsByProject.get(null) ?? []).length > 0 && (
-              <div className="proj-block orphans">
-                <div className="proj-head">
-                  <span className="g">○</span>
-                  <span className="n">sans projet</span>
-                  <button className="proj-action" onClick={() => onNew({ vpsId: v.id })} title="nouvelle session libre">+</button>
-                </div>
-                {sessionsByProject.get(null)!.map((s) => (
-                  <SessionRow
-                    key={s.id}
-                    s={s}
-                    selected={s.id === selectedId}
-                    onSelect={onSelect}
-                    onContext={onContext}
-                    editing={editingId === s.id}
-                    onRenameSubmit={onRenameSubmit}
-                    onRenameCancel={onRenameCancel}
-                  />
-                ))}
-              </div>
+            {!isCollapsed && (
+              <>
+                {/* Paths déclarés, avec leurs sessions matchées */}
+                {paths.map((p) => {
+                  const g = groups.get(p.id);
+                  return (
+                    <div key={p.id} className="path-block">
+                      <div className="path-head">
+                        <span className="g">▤</span>
+                        <span className="n">{labelOf(p)}</span>
+                        <span className="cwd" title={p.path}>{p.path}</span>
+                        <button
+                          className="path-action"
+                          onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
+                          title="nouvelle session sur ce path"
+                        >+</button>
+                      </div>
+                      {g?.sessions.map((s) => (
+                        <SessionRow
+                          key={s.id} s={s}
+                          selected={s.id === selectedId}
+                          onSelect={onSelect}
+                          onContext={onContext}
+                          editing={editingId === s.id}
+                          onRenameSubmit={onRenameSubmit}
+                          onRenameCancel={onRenameCancel}
+                        />
+                      ))}
+                    </div>
+                  );
+                })}
+                {/* Sessions sans match (cwd inconnu pour ce VPS) */}
+                {(() => {
+                  const orphans = groups.get(null)?.sessions ?? [];
+                  if (orphans.length === 0 && paths.length > 0) return null;
+                  return (
+                    <div className="path-block orphans">
+                      <div className="path-head">
+                        <span className="g">○</span>
+                        <span className="n">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
+                        <button
+                          className="path-action"
+                          onClick={() => onNew({ vpsId: v.id })}
+                          title="nouvelle session libre (cwd à entrer)"
+                        >+</button>
+                      </div>
+                      {orphans.map((s) => (
+                        <SessionRow
+                          key={s.id} s={s}
+                          selected={s.id === selectedId}
+                          onSelect={onSelect}
+                          onContext={onContext}
+                          editing={editingId === s.id}
+                          onRenameSubmit={onRenameSubmit}
+                          onRenameCancel={onRenameCancel}
+                        />
+                      ))}
+                    </div>
+                  );
+                })()}
+              </>
             )}
-            {/* Aucun projet lié ET aucune session orpheline → bouton "nouvelle session" générique */}
-            {linkedProjectIds.length === 0 && (sessionsByProject.get(null) ?? []).length === 0 && (
-              <div className="proj-block empty">
-                <button className="proj-action proj-add" onClick={() => onNew({ vpsId: v.id })}>+ nouvelle session</button>
-              </div>
-            )}
-            {/* Sessions liées à un projet qui n'apparaît pas dans linkedProjectIds (projet supprimé / non-lié au VPS) */}
-            {Array.from(sessionsByProject.entries()).filter(([pid]) => pid !== null && !linkedProjectIds.includes(pid)).map(([pid, arr]) => {
-              const p = pid ? projectById.get(pid) : null;
-              return (
-                <div key={'extra-' + pid} className="proj-block">
-                  <div className="proj-head">
-                    <span className="g">{p?.glyph ?? '?'}</span>
-                    <span className="n">{p?.name ?? '(projet inconnu)'}</span>
-                  </div>
-                  {arr.map((s) => (
-                    <SessionRow
-                      key={s.id}
-                      s={s}
-                      selected={s.id === selectedId}
-                      onSelect={onSelect}
-                      onContext={onContext}
-                      editing={editingId === s.id}
-                      onRenameSubmit={onRenameSubmit}
-                      onRenameCancel={onRenameCancel}
-                    />
-                  ))}
-                </div>
-              );
-            })}
-            </>)}
           </section>
         );
       })}
     </aside>
   );
 }
+
+const DOT_CLASS: Record<string, string> = {
+  active: 'dot-green',
+  starting: 'dot-amber',
+  thinking: 'dot-amber-pulse',
+  sleeping: 'dot-gray',
+  killed: 'dot-gray',
+  error: 'dot-red',
+  waiting: 'dot-orange-pulse',
+};
 
 function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit, onRenameCancel }: {
   s: SessionListItem;
@@ -269,8 +276,6 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
 }) {
-  // Si une interaction est en attente (pending), on override le dot en
-  // "waiting" (orange pulse) — visible immédiatement dans la sidebar.
   const baseStatus = s.liveStatus ?? s.status;
   const effective = (s.pendingPermissions ?? 0) > 0 && baseStatus === 'active'
     ? 'waiting'
@@ -286,14 +291,9 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
     );
   }
   const preview = (s.firstUserMessage ?? '').replace(/\s+/g, ' ').trim();
-  // Si pas de nom user-défini : on prend le début du premier message comme
-  // titre (plus parlant que le cwd, qui s'affiche déjà en row-meta). Fallback
-  // ultime sur le cwd-tail quand la session n'a encore aucun message.
   const headline = s.name || (preview ? preview.slice(0, 60) : s.cwd.split('/').slice(-2).join('/'));
   const cwdTail = s.cwd.length > 38 ? '…' + s.cwd.slice(-37) : s.cwd;
   const age = formatAge(s.createdAt);
-  // Quand le headline reprend déjà le preview, on évite de répéter la même
-  // chose dans la ligne suivante.
   const showPreview = !!preview && preview !== headline && !headline.startsWith(preview.slice(0, 30));
   const needsAttention = (s.pendingPermissions ?? 0) > 0;
   return (

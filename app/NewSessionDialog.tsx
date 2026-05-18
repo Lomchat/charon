@@ -1,39 +1,41 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
-import type { Vps, Project } from '@/lib/db/schema';
-import type { VpsProjectLink } from './page';
+import type { Vps, VpsPath } from '@/lib/db/schema';
 
 type Props = {
   vpsList: Vps[];
-  projects: Project[];
-  vpsLinks: Record<string, VpsProjectLink[]>;
-  initial?: { vpsId?: string; cwd?: string; projectId?: string | null };
+  vpsPaths: VpsPath[];
+  initial?: { vpsId?: string; cwd?: string };
   onClose: () => void;
   onCreated: (id: string) => void;
 };
 
 export default function NewSessionDialog({
-  vpsList, projects, vpsLinks, initial, onClose, onCreated,
+  vpsList, vpsPaths, initial, onClose, onCreated,
 }: Props) {
   const [vpsId, setVpsId] = useState(initial?.vpsId ?? vpsList[0]?.id ?? '');
   const [cwd, setCwd] = useState(initial?.cwd ?? '');
   const [name, setName] = useState('');
-  const [projectId, setProjectId] = useState(initial?.projectId ?? '');
   // Toujours créé en "normal" — l'utilisateur change via le switch dans le chat
-  // si besoin.
   const permissionMode = 'normal' as const;
   const [check, setCheck] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Suggestions de chemins : tous les paths uniques pour ce VPS
+  // Suggestions de chemins : paths connus pour ce VPS
   const cwdSuggestions = useMemo(() => {
-    const links = vpsLinks[vpsId] ?? [];
-    const set = new Set<string>();
-    for (const l of links) if (l.path) set.add(l.path);
-    return Array.from(set).sort();
-  }, [vpsId, vpsLinks]);
+    return vpsPaths
+      .filter((p) => p.vpsId === vpsId)
+      .map((p) => p.path)
+      .sort();
+  }, [vpsId, vpsPaths]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     if (!vpsId) return;
@@ -61,7 +63,6 @@ export default function NewSessionDialog({
       const r: any = await api.createClaudeSession({
         vpsId, cwd: cwd.trim(),
         name: name.trim() || null,
-        projectId: projectId || null,
         permissionMode,
       });
       onCreated(r.id);
@@ -120,13 +121,6 @@ export default function NewSessionDialog({
 
         <label>nom (optionnel)
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ex : refacto auth" />
-        </label>
-
-        <label>projet du hub (optionnel)
-          <select value={projectId ?? ''} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">— aucun</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.glyph} {p.name}</option>)}
-          </select>
         </label>
 
         {err && <div className="modal-err">{err}</div>}

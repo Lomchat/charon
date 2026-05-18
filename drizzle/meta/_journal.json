@@ -15,6 +15,13 @@
       "when": 1779094646489,
       "tag": "0001_productive_roxanne_simpson",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1779102187364,
+      "tag": "0002_strong_shocker",
+      "breakpoints": true
     }
   ]
 }

@@ -431,7 +431,6 @@ export async function importExistingSession(opts: {
   cwd: string;
   claudeSessionId: string;
   name?: string | null;
-  projectId?: string | null;
   permissionMode?: PermissionMode;
 }): Promise<string> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
@@ -442,7 +441,6 @@ export async function importExistingSession(opts: {
     vpsId: opts.vpsId,
     claudeSessionId: opts.claudeSessionId,
     cwd: opts.cwd,
-    projectId: opts.projectId ?? null,
     name: opts.name ?? null,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? 'normal',
@@ -454,7 +452,6 @@ export async function startNewSession(opts: {
   vpsId: string;
   cwd: string;
   name?: string | null;
-  projectId?: string | null;
   permissionMode?: PermissionMode;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
@@ -466,7 +463,6 @@ export async function startNewSession(opts: {
     id: sessionId,
     vpsId: opts.vpsId,
     cwd: opts.cwd,
-    projectId: opts.projectId ?? null,
     name: opts.name ?? null,
     status: 'starting',
     permissionMode: opts.permissionMode ?? 'normal',

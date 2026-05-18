@@ -3,7 +3,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { importExistingSession } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/import
-// Body : { vpsId, claudeSessionId, cwd, name?, projectId?, permissionMode? }
+// Body : { vpsId, claudeSessionId, cwd, name?, permissionMode? }
 // Crée un row claude_sessions en status='sleeping' avec le claudeSessionId connu.
 // Au resume, l'agent fait start_session(claude_session_id=...) qui reprend
 // la conversation côté SDK.
@@ -21,7 +21,6 @@ export async function POST(req: Request) {
     const id = await importExistingSession({
       vpsId, cwd, claudeSessionId,
       name: body.name ? String(body.name) : null,
-      projectId: body.projectId ? String(body.projectId) : null,
       permissionMode: (['normal', 'acceptEdits', 'bypass', 'plan'] as const).includes(body.permissionMode)
         ? body.permissionMode
         : 'normal',

@@ -43,6 +43,12 @@ export default function ResumeModal({
     } finally { setScanLoading(false); }
   }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   useEffect(() => { if (vpsId) doScan(); }, [vpsId]); // eslint-disable-line
 
   async function importScanned(s: ScannedSession) {
