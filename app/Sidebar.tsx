@@ -194,13 +194,13 @@ export default function Sidebar({
                 {paths.map((p) => {
                   const g = groups.get(p.id);
                   return (
-                    <div key={p.id} className="path-block">
-                      <div className="path-head">
+                    <div key={p.id} className="proj-block">
+                      <div className="proj-head">
                         <span className="g">▤</span>
                         <span className="n">{labelOf(p)}</span>
                         <span className="cwd" title={p.path}>{p.path}</span>
                         <button
-                          className="path-action"
+                          className="proj-action"
                           onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
                           title="nouvelle session sur ce path"
                         >+</button>
@@ -224,12 +224,12 @@ export default function Sidebar({
                   const orphans = groups.get(null)?.sessions ?? [];
                   if (orphans.length === 0 && paths.length > 0) return null;
                   return (
-                    <div className="path-block orphans">
-                      <div className="path-head">
+                    <div className="proj-block orphans">
+                      <div className="proj-head">
                         <span className="g">○</span>
                         <span className="n">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
                         <button
-                          className="path-action"
+                          className="proj-action"
                           onClick={() => onNew({ vpsId: v.id })}
                           title="nouvelle session libre (cwd à entrer)"
                         >+</button>

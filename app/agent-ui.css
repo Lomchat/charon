@@ -240,6 +240,252 @@
   background: transparent !important;
 }
 
+/* ── DataModal v2 : single-view VPS + paths ─────────────────────────────── */
+.data-modal-v2 .data-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--gold-deep);
+}
+.data-modal-v2 .data-head h2 { margin: 0; }
+.data-modal-v2 .data-add-vps-btn {
+  background: transparent;
+  border: 1px solid var(--gold-deep);
+  color: var(--gold);
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.data-modal-v2 .data-add-vps-btn:hover {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+}
+.data-modal-v2 .data-add.data-add-vps {
+  margin-bottom: 16px;
+}
+
+.data-vps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+.data-empty {
+  text-align: center;
+  color: var(--parchment-soft, #888);
+  font-style: italic;
+  padding: 40px 12px;
+}
+
+/* Card par VPS — bord coloré selon l'état agent */
+.data-vps-card {
+  border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
+  background: var(--shadow, rgba(0,0,0,0.2));
+}
+.data-vps-card.agent-missing { border-color: rgba(216,168,90,0.5); }
+.data-vps-card.agent-error   { border-color: rgba(217,122,107,0.5); }
+
+.data-vps-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(180deg, rgba(138,180,228,0.05), transparent);
+  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
+  flex-wrap: wrap;
+}
+.dv-glyph {
+  color: var(--gold-bright, #e0c898);
+  font-family: var(--mono, monospace);
+}
+.dv-name {
+  font-family: var(--display, inherit);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-bright, #e0c898);
+  font-weight: 600;
+}
+.dv-host {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--parchment-soft, rgba(220,220,220,0.55));
+  flex: 1;
+  min-width: 0;
+}
+.dv-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono, monospace);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.dv-agent.agent-ok      { color: #6cbf6c; border-color: rgba(108,191,108,0.3); background: rgba(108,191,108,0.08); }
+.dv-agent.agent-missing { color: #d8a85a; border-color: rgba(216,168,90,0.35); background: rgba(216,168,90,0.08); }
+.dv-agent.agent-error   { color: #d97a6b; border-color: rgba(217,122,107,0.35); background: rgba(217,122,107,0.08); }
+.dv-agent.agent-unknown { color: #888; }
+.dv-agent-text { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.dv-actions {
+  display: flex;
+  gap: 5px;
+}
+.dv-btn {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(220,220,220,0.8);
+  font-family: var(--display, inherit);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.dv-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+.dv-btn.primary {
+  background: rgba(216,168,90,0.18);
+  border-color: rgba(216,168,90,0.55);
+  color: #f0d39e;
+}
+.dv-btn.primary:hover {
+  background: rgba(216,168,90,0.28);
+}
+.dv-btn.danger {
+  background: transparent;
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(220,220,220,0.5);
+  padding: 4px 8px;
+}
+.dv-btn.danger:hover {
+  color: #d97a6b;
+  border-color: rgba(217,122,107,0.5);
+  background: rgba(217,122,107,0.08);
+}
+
+/* Liste des paths d'un VPS */
+.data-vps-paths {
+  padding: 6px 14px 10px;
+}
+.dv-empty {
+  font-style: italic;
+  color: var(--parchment-soft, rgba(220,220,220,0.4));
+  font-size: 11px;
+  padding: 8px 0;
+}
+.dv-path-row {
+  display: grid;
+  grid-template-columns: 16px minmax(120px, 1fr) 2fr 24px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed rgba(255,255,255,0.05);
+}
+.dv-path-row:last-of-type { border-bottom: 0; }
+.dv-path-glyph {
+  color: var(--gold, #c8a262);
+  font-family: var(--mono, monospace);
+  text-align: center;
+  font-size: 11px;
+}
+.dv-path-label {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--parchment, #ddd);
+  font-family: var(--body, inherit);
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 2px;
+  outline: none;
+  min-width: 0;
+}
+.dv-path-label:hover { border-color: rgba(255,255,255,0.1); }
+.dv-path-label:focus { border-color: var(--gold, rgba(200,162,98,0.5)); background: rgba(0,0,0,0.2); }
+.dv-path-label::placeholder { color: rgba(220,220,220,0.35); font-style: italic; }
+.dv-path-path {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--parchment-soft, rgba(220,220,220,0.5));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dv-path-del {
+  background: transparent;
+  border: 0;
+  color: rgba(220,220,220,0.3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.dv-path-del:hover { color: #d97a6b; }
+
+/* Formulaire d'ajout de path inline en bas de chaque VPS */
+.dv-add-path {
+  display: grid;
+  grid-template-columns: 16px minmax(120px, 1fr) 2fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 4px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+.dv-add-glyph {
+  color: rgba(216,168,90,0.6);
+  font-family: var(--mono, monospace);
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+.dv-add-path input {
+  background: rgba(0,0,0,0.2);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--parchment, #ddd);
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 2px;
+  outline: none;
+  min-width: 0;
+}
+.dv-add-path input:focus { border-color: var(--gold, rgba(200,162,98,0.5)); }
+.dv-add-path input.dv-add-path-input { font-size: 11px; }
+.dv-add-btn {
+  background: rgba(216,168,90,0.15);
+  border: 1px solid rgba(216,168,90,0.4);
+  color: #f0d39e;
+  font-family: var(--display, inherit);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.dv-add-btn:hover:not(:disabled) {
+  background: rgba(216,168,90,0.25);
+}
+.dv-add-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 .closed-badge {
   background: rgba(108,191,108,0.2);
   border: 1px solid rgba(108,191,108,0.4);
