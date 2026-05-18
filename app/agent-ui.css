@@ -1,0 +1,137 @@
+/* Styles pour les composants liés au charon-agent
+ * (LoginConsole, badges agent dans DataModal, banner bootstrap étendu).
+ * Garde une apparence cohérente avec le reste de claude.css.
+ */
+
+/* ── Badges agent dans la liste VPS ─────────────────────────────────────── */
+.pg-agent {
+  font-size: 0.78em;
+  width: 16px;
+  display: inline-block;
+  text-align: center;
+  margin-right: 4px;
+  font-family: monospace;
+  cursor: help;
+}
+.pg-agent.agent-ok      { color: #6cbf6c; }     /* vert */
+.pg-agent.agent-missing { color: #999; }
+.pg-agent.agent-error   { color: #d97a6b; }     /* rouge doux */
+.pg-agent.agent-unknown { color: #777; opacity: 0.5; }
+
+.pg-action {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: inherit;
+  font-size: 0.78em;
+  padding: 2px 8px;
+  margin-left: 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pg-action:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+/* ── LoginConsole : modale plein écran ───────────────────────────────── */
+.login-console-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.login-console-card {
+  background: #1a1a1a;
+  color: #ddd;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  width: min(900px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+}
+.login-console-card header {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.login-console-card header .title {
+  font-weight: 600;
+}
+.login-console-card header .hint {
+  font-size: 0.85em;
+  color: #888;
+  flex: 1;
+}
+.login-console-card header .dismiss {
+  background: transparent;
+  border: 0;
+  color: #888;
+  font-size: 1.1em;
+  cursor: pointer;
+}
+.login-error {
+  background: #2a1414;
+  color: #f88;
+  padding: 8px 14px;
+  border-bottom: 1px solid #4a1f1f;
+  font-size: 0.9em;
+}
+.login-console {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0e0e0e;
+  min-height: 200px;
+}
+.login-line.kind-stdout { color: #ddd; }
+.login-line.kind-stderr { color: #f5a878; }
+.login-line.kind-meta   { color: #6a9bd8; font-style: italic; opacity: 0.85; }
+.login-line a {
+  color: #6cbfee;
+  text-decoration: underline;
+  word-break: break-all;
+}
+.login-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
+.login-input-row input {
+  flex: 1;
+  background: #0e0e0e;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #ddd;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+.login-input-row input:disabled {
+  opacity: 0.5;
+}
+.login-input-row button {
+  background: #2a4a6a;
+  color: #fff;
+  border: 0;
+  padding: 6px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.login-input-row button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

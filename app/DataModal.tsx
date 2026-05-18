@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, Project, VpsProjectPath } from '@/lib/db/schema';
+import BootstrapBanner from './BootstrapBanner';
+import LoginConsole from './LoginConsole';
 
 type Props = {
   onClose: () => void;
@@ -18,6 +20,8 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [paths, setPaths] = useState<VpsProjectPath[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [bootstrapVps, setBootstrapVps] = useState<Vps | null>(null);
+  const [loginVps, setLoginVps] = useState<Vps | null>(null);
 
   useEffect(() => {
     api.listVpsProjectPaths().then((r: any) => setPaths(r ?? [])).catch(() => setPaths([]));
@@ -156,7 +160,12 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
                       <header className="path-group-head">
                         <span className="pg-name">{v.name}</span>
                         <span className="pg-meta">{v.sshUser}@{v.ip}:{v.sshPort}{v.defaultPath ? ` · ${v.defaultPath}` : ''}</span>
+                        <span className={`pg-agent agent-${v.agentStatus ?? 'unknown'}`} title={`agent: ${v.agentStatus ?? 'unknown'}${v.agentVersion ? ` v${v.agentVersion}` : ''}`}>
+                          {v.agentStatus === 'ok' ? '●' : v.agentStatus === 'missing' ? '○' : v.agentStatus === 'error' ? '◐' : '?'}
+                        </span>
                         <span className="pg-count">{vpsPaths.length}</span>
+                        <button className="pg-action" onClick={() => setBootstrapVps(v)} title="installer/réparer l'agent">install</button>
+                        <button className="pg-action" onClick={() => setLoginVps(v)} title="claude login interactif">login</button>
                         <button className="row-del pg-del" onClick={() => deleteVps(v.id)} title="supprimer ce VPS">✕</button>
                       </header>
                       {vpsPaths.length > 0 && (
@@ -278,6 +287,16 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
           </div>
         )}
       </div>
+      {bootstrapVps && (
+        <BootstrapBanner
+          vps={bootstrapVps}
+          onDone={() => setBootstrapVps(null)}
+          onCancel={() => setBootstrapVps(null)}
+        />
+      )}
+      {loginVps && (
+        <LoginConsole vps={loginVps} onClose={() => setLoginVps(null)} />
+      )}
     </div>
   );
 }
