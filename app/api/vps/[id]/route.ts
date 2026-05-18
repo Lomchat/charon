@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
+import { dropAgentClient } from '@/lib/server/agent/AgentClientPool';
 
 const ALLOWED = ['name', 'ip', 'sshUser', 'sshPort', 'defaultPath'] as const;
 
@@ -28,6 +29,10 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const [row] = db.select().from(vps).where(eq(vps.id, id)).all();
     return NextResponse.json(row ?? null);
   }
+  // Si on touche aux credentials/host, drop le client (il sera recréé avec
+  // les nouvelles valeurs au prochain accès).
+  const credsChanged = ['ip', 'sshUser', 'sshPort'].some((k) => k in update);
+  if (credsChanged) await dropAgentClient(id).catch(() => {});
   db.update(vps).set(update).where(eq(vps.id, id)).run();
   const [row] = db.select().from(vps).where(eq(vps.id, id)).all();
   return NextResponse.json(row);
@@ -37,6 +42,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  // Ferme la SSH multiplexée avant de supprimer le row VPS
+  await dropAgentClient(id).catch(() => {});
   db.delete(vps).where(eq(vps.id, id)).run();
   return NextResponse.json({ ok: true });
 }

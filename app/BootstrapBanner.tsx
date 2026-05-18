@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 
 export type BootstrapEvent = {
-  phase: 'verify' | 'detect_os' | 'install_python' | 'install_sdk' | 'check_login' | 'done';
+  phase: 'verify' | 'detect_os' | 'install_python' | 'install_sdk'
+       | 'install_agent' | 'install_service' | 'ping_agent'
+       | 'check_login' | 'done';
   status: 'running' | 'ok' | 'error' | 'warn';
   detail?: string;
 };
@@ -15,12 +17,15 @@ type Props = {
 };
 
 const PHASE_LABEL: Record<BootstrapEvent['phase'], string> = {
-  verify:         'vérification python + SDK',
-  detect_os:      'détection de l\'OS',
-  install_python: 'installation de python',
-  install_sdk:    'installation de claude-agent-sdk',
-  check_login:    'vérification claude login',
-  done:           'terminé',
+  verify:           'vérification python + SDK',
+  detect_os:        'détection de l\'OS',
+  install_python:   'installation de python',
+  install_sdk:      'installation de claude-agent-sdk',
+  install_agent:    'dépôt du charon-agent',
+  install_service:  'service systemd-user',
+  ping_agent:       'ping du daemon',
+  check_login:      'vérification claude login',
+  done:             'terminé',
 };
 
 const STATUS_GLYPH: Record<BootstrapEvent['status'], string> = {

@@ -22,6 +22,14 @@ export const vps = sqliteTable('vps', {
   sshUser: text('ssh_user').notNull(),
   sshPort: integer('ssh_port').notNull().default(22),
   defaultPath: text('default_path'),
+  // Statut de l'agent installé sur ce VPS.
+  //   'unknown'  : jamais testé (par défaut)
+  //   'ok'       : ping récent réussi
+  //   'missing'  : pas d'agent (à installer)
+  //   'error'    : agent installé mais ne répond pas
+  agentStatus: text('agent_status').notNull().default('unknown'),
+  agentVersion: text('agent_version'),
+  agentLastSeenAt: integer('agent_last_seen_at'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 

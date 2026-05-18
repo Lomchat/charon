@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { requireApiSession } from '@/lib/server/session';
-import { getWorker } from '@/lib/server/claude/SessionWorkerPool';
+import { getStream } from '@/lib/server/agent/sessionOps';
 import type { WorkerEvent } from '@/lib/server/claude/types';
 
 export const runtime = 'nodejs';
@@ -13,15 +13,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  const w = getWorker(id);
-  if (!w) {
-    return new Response('session not active (resume first)', { status: 409 });
+  const stream = getStream(id);
+  if (!stream) {
+    return new Response('session not found', { status: 404 });
   }
   const encoder = new TextEncoder();
   const subId = crypto.randomBytes(6).toString('hex');
   let hbTimer: NodeJS.Timeout | null = null;
 
-  const stream = new ReadableStream<Uint8Array>({
+  const sseStream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
       const send = (ev: WorkerEvent) => {
@@ -37,9 +37,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         closed = true;
         if (hbTimer) clearInterval(hbTimer);
         try { controller.close(); } catch {}
-        w.unsubscribe(subId);
+        stream.unsubscribe(subId);
       };
-      w.subscribe({ id: subId, send, close });
+      stream.subscribe({ id: subId, send, close });
       hbTimer = setInterval(() => {
         if (closed) return;
         try { controller.enqueue(encoder.encode(`: hb\n\n`)); } catch { closed = true; }
@@ -49,11 +49,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     },
     cancel() {
       if (hbTimer) clearInterval(hbTimer);
-      w.unsubscribe(subId);
+      stream.unsubscribe(subId);
     },
   });
 
-  return new Response(stream, {
+  return new Response(sseStream, {
     headers: {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',

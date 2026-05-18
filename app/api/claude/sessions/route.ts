@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { desc, eq, and, sql } from 'drizzle-orm';
-import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions, claudeSessionMessages } from '@/lib/db';
+import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { startNew, listWorkers } from '@/lib/server/claude/SessionWorkerPool';
+import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 
 // GET /api/claude/sessions
 // Query : ?vpsId= ?projectId= ?status=
@@ -20,14 +20,11 @@ export async function GET(req: Request) {
   const where = filters.length ? and(...filters) : undefined;
   const rows = db.select().from(claudeSessions)
     .where(where as any)
-    // Ordre figé par date de création (la plus récente en haut). On NE TRIE
-    // PAS par lastUsedAt : les sessions ne doivent pas bouger quand on les
-    // utilise — un refresh/un autre device doivent toujours voir le même ordre.
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
 
   // Annoter avec statut live + subs count + pendingPermissions
-  const workers = new Map(listWorkers().map((w) => [w.id, w] as const));
+  const streams = new Map(listStreams().map((s) => [s.id, s] as const));
   const pendingRows = db.select({
     sessionId: claudePendingPermissions.sessionId,
     n: sql<number>`count(*)`.as('n'),
@@ -47,9 +44,6 @@ export async function GET(req: Request) {
     .all();
   const pendingQBySession = new Map(pendingQRows.map((r) => [r.sessionId, Number(r.n)] as const));
 
-  // Premier message user de chaque session (pour aperçu dans la sidebar).
-  // Le sous-select MIN(id) garantit qu'on prend bien le tout premier, pas
-  // un row arbitraire choisi par SQLite via le GROUP BY bare-column.
   const firstMsgRows = db.all(sql`
     SELECT session_id as sessionId, content
     FROM claude_session_messages
@@ -62,14 +56,14 @@ export async function GET(req: Request) {
   const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
   const annotated = rows.map((r) => {
-    const w = workers.get(r.id);
+    const stream = streams.get(r.id);
     const perms = pendingBySession.get(r.id) ?? 0;
     const qs = pendingQBySession.get(r.id) ?? 0;
     const firstMsg = firstMsgBySession.get(r.id) ?? null;
     return {
       ...r,
-      liveStatus: w ? w.status : r.status,
-      subscribers: w ? w.subscribersCount() : 0,
+      liveStatus: stream ? stream.status : r.status,
+      subscribers: stream ? stream.subscribersCount() : 0,
       pendingPermissions: perms + qs,
       firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
     };
@@ -97,15 +91,15 @@ export async function POST(req: Request) {
     ? body.permissionMode
     : 'normal';
   try {
-    const w = await startNew({
+    const stream = await startNewSession({
       vpsId, cwd,
       name: body.name ? String(body.name) : null,
       projectId: body.projectId ? String(body.projectId) : null,
       permissionMode,
     });
     return NextResponse.json({
-      id: w.id, status: w.status, claudeSessionId: w.claudeSessionId,
-      vpsId, cwd, name: w.name, permissionMode,
+      id: stream.id, status: stream.status, claudeSessionId: stream.claudeSessionId,
+      vpsId, cwd, name: stream.name, permissionMode,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });

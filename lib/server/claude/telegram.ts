@@ -1,6 +1,6 @@
 import 'server-only';
 import { getSetting, getSettingBool } from './settings';
-import { getWorker } from './SessionWorkerPool';
+import { getStream } from '@/lib/server/agent/sessionOps';
 import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 
@@ -256,7 +256,7 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Prom
     const ctxKey = `${cb.message.chat.id}:${cb.message.message_id}`;
     const ctx = state.sentByMessage.get(ctxKey);
     if (!ctx || ctx.kind !== 'perm') return;
-    const w = getWorker(ctx.sessionId);
+    const w = getStream(ctx.sessionId);
     if (!w) {
       await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, '⚠ session inactive');
       return;
@@ -299,7 +299,7 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Prom
     if (ctx.qIdx + 1 < ctx.questions.length) {
       await sendOneQuestionStep(ctx.sessionId, ctx.qid, ctx.questions, ctx.answers, ctx.qIdx + 1);
     } else {
-      const w = getWorker(ctx.sessionId);
+      const w = getStream(ctx.sessionId);
       if (w) {
         try { await w.respondQuestion(ctx.qid, ctx.answers); } catch {}
       }
@@ -330,7 +330,7 @@ async function handleText(msg: NonNullable<TgUpdate['message']>): Promise<void> 
   if (ctx.qIdx + 1 < ctx.questions.length) {
     await sendOneQuestionStep(ctx.sessionId, ctx.qid, ctx.questions, ctx.answers, ctx.qIdx + 1);
   } else {
-    const w = getWorker(ctx.sessionId);
+    const w = getStream(ctx.sessionId);
     if (w) {
       try { await w.respondQuestion(ctx.qid, ctx.answers); } catch {}
     }

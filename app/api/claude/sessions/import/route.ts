@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { importExisting } from '@/lib/server/claude/SessionWorkerPool';
+import { importExistingSession } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/import
 // Body : { vpsId, claudeSessionId, cwd, name?, projectId?, permissionMode? }
-// Crée un row claude_sessions en status='sleeping' avec le claudeSessionId
-// connu. Le user peut ensuite resume → bridge lancé avec --session-id pour
-// reprendre la conversation.
+// Crée un row claude_sessions en status='sleeping' avec le claudeSessionId connu.
+// Au resume, l'agent fait start_session(claude_session_id=...) qui reprend
+// la conversation côté SDK.
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'vpsId, claudeSessionId, cwd required' }, { status: 400 });
   }
   try {
-    const id = await importExisting({
+    const id = await importExistingSession({
       vpsId, cwd, claudeSessionId,
       name: body.name ? String(body.name) : null,
       projectId: body.projectId ? String(body.projectId) : null,

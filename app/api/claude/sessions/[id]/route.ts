@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { asc, eq } from 'drizzle-orm';
 import { db, claudeSessions, claudeSessionMessages, claudeSessionLogs } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { kill, getWorker } from '@/lib/server/claude/SessionWorkerPool';
+import { killSession, getStream } from '@/lib/server/agent/sessionOps';
 
 // GET /api/claude/sessions/[id]
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -18,17 +18,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .orderBy(asc(claudeSessionMessages.id))
     .all()
     .slice(-limit);
-  const w = getWorker(id);
+  const stream = getStream(id);
   return NextResponse.json({
     session: row,
-    liveStatus: w ? w.status : row.status,
-    subscribers: w ? w.subscribersCount() : 0,
+    liveStatus: stream ? stream.status : row.status,
+    subscribers: stream ? stream.subscribersCount() : 0,
     messages,
   });
 }
 
 // PATCH /api/claude/sessions/[id]
-// Body : { name?, projectId? } — édition de métadonnées
 const ALLOWED_PATCH = ['name', 'projectId'] as const;
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
@@ -60,10 +59,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
   const url = new URL(req.url);
   const hard = url.searchParams.get('hard') === '1';
   try {
-    await kill(id);
+    await killSession(id);
     if (hard) {
-      // Les FK cascade messages + permissions ; les logs n'ont pas de FK
-      // (sessionId nullable) → on les drop manuellement.
       db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, id)).run();
       db.delete(claudeSessions).where(eq(claudeSessions.id, id)).run();
     }
