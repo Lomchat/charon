@@ -41,7 +41,11 @@ def parse_one(path):
     cwd_fallback = path.parent.name.replace('-', '/')
     info = {
         'sessionId': path.stem,
-        'cwd': cwd_fallback,
+        'cwd': cwd_fallback,         # cwd INITIAL (au démarrage de la session)
+                                     # — c'est celui-là qui matche le slug du
+                                     # fichier .jsonl, donc utilisable pour
+                                     # resume sans relocate
+        'cwdLatest': cwd_fallback,   # cwd APRÈS d'éventuels cd
         'summary': '',
         'aiTitle': '',
         'lastPrompt': '',
@@ -50,6 +54,7 @@ def parse_one(path):
         'model': '',
         'gitBranch': '',
     }
+    cwd_locked = False  # une fois qu'on a un cwd réel, on ne touche plus à 'cwd'
     try:
         stat = path.stat()
         info['mtime'] = int(stat.st_mtime)
@@ -69,7 +74,10 @@ def parse_one(path):
                     continue
                 t = d.get('type')
                 if d.get('cwd'):
-                    info['cwd'] = d.get('cwd')
+                    if not cwd_locked:
+                        info['cwd'] = d.get('cwd')
+                        cwd_locked = True
+                    info['cwdLatest'] = d.get('cwd')
                 if d.get('gitBranch'):
                     info['gitBranch'] = d.get('gitBranch')
                 if d.get('summary'):

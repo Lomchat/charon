@@ -24,6 +24,7 @@ export function colorToCss(token: string | null | undefined): string {
 
 type Props = {
   title: string;                     // affiché en haut du menu (nom de l'item)
+  subtitle?: string;                 // info secondaire (ex: cwd)
   x: number;
   y: number;
   currentColor?: string | null;
@@ -33,15 +34,16 @@ type Props = {
   showDelete?: boolean;              // bouton "Supprimer définitivement"
   onRename: () => void;
   onColor: (color: RowColor) => void;
+  onEditCwd?: () => void;            // option "Modifier le dossier"
   onKill?: () => void;
   onDelete?: () => void;
   onClose: () => void;
 };
 
 export default function SessionContextMenu({
-  title, x, y, currentColor, canKill = true, killLabel = 'Kill',
+  title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Kill',
   killDisabledReason, showDelete = true,
-  onRename, onColor, onKill, onDelete, onClose,
+  onRename, onColor, onEditCwd, onKill, onDelete, onClose,
 }: Props) {
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -59,8 +61,14 @@ export default function SessionContextMenu({
 
   return (
     <div className="session-ctx-menu" style={{ left: x, top: y }} role="menu">
-      <div className="ctx-head">{title}</div>
+      <div className="ctx-head">
+        {title}
+        {subtitle && <div className="ctx-subtitle">{subtitle}</div>}
+      </div>
       <button type="button" onClick={() => { onRename(); onClose(); }}>Renommer</button>
+      {onEditCwd && (
+        <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Modifier le dossier (cwd)</button>
+      )}
 
       {/* Palette de couleurs — ligne horizontale de pastilles cliquables */}
       <div className="ctx-color-row" role="group" aria-label="couleur">

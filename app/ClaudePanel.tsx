@@ -20,6 +20,10 @@ import SessionContextMenu from './SessionContextMenu';
 import BootstrapBanner from './BootstrapBanner';
 import LoginConsole from './LoginConsole';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported } from './pushClient';
+import {
+  IconBellFill, IconBellSlash, IconGear, IconSearch,
+  IconServers, IconVolumeMute, IconVolumeUp,
+} from './icons';
 
 type Props = {
   vpsList: Vps[];
@@ -706,7 +710,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
     }
   }
 
-  async function patchSession(id: string, body: { name?: string | null; color?: string | null }) {
+  async function patchSession(id: string, body: { name?: string | null; color?: string | null; cwd?: string }) {
     try {
       const res = await fetch(`/api/claude/sessions/${id}`, {
         method: 'PATCH',
@@ -714,12 +718,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`PATCH session: HTTP ${res.status}`);
-      // Update locale dans la liste sessions
       const updated = await res.json();
       setSessions((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
     } catch (e: any) {
       setError({ msg: 'patch session: ' + (e?.message ?? e) });
     }
+  }
+
+  /** Édite le cwd d'une session via prompt(). Le PATCH côté serveur kill
+   *  automatiquement l'instance agent si elle existe, et reset le statut DB
+   *  à 'sleeping' pour que l'utilisateur puisse cliquer resume avec le
+   *  nouveau cwd. */
+  async function editSessionCwd(sess: SessionListItem) {
+    const newCwd = prompt('Nouveau dossier (cwd) pour cette session ?\n(la session sera recréée au prochain resume)', sess.cwd);
+    if (newCwd == null || newCwd.trim() === '' || newCwd.trim() === sess.cwd) return;
+    await patchSession(sess.id, { cwd: newCwd.trim() });
+    refreshSessions();
   }
 
   async function patchShell(id: string, body: { name?: string | null; color?: string | null }) {
@@ -829,15 +843,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
               <span className="dot" /> {STATUS_LABEL[cur.status]}
             </span>
           ) : null}
-          <button className="head-btn" onClick={() => setSearchOpen(true)} title="recherche dans tous les messages">🔍</button>
-          <button className="head-btn" onClick={togglePush} disabled={pushBusy} title={pushOn ? 'notifications activées' : 'activer notifications'}>
-            {pushOn ? '🔔' : '🔕'}
+          <button className="head-btn" onClick={() => setSearchOpen(true)} title="recherche dans tous les messages" aria-label="recherche">
+            <IconSearch />
           </button>
-          <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'son activé' : 'son coupé'}>
-            {notifSoundEnabled ? '🔊' : '🔇'}
+          <button className="head-btn" onClick={togglePush} disabled={pushBusy} title={pushOn ? 'notifications activées' : 'activer notifications'} aria-label="notifications">
+            {pushOn ? <IconBellFill /> : <IconBellSlash />}
           </button>
-          <button className="head-btn" onClick={() => setDataOpen(true)} title="données (VPS, projets, paths)">🗂</button>
-          <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings">⚙</button>
+          <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'son activé' : 'son coupé'} aria-label="son">
+            {notifSoundEnabled ? <IconVolumeUp /> : <IconVolumeMute />}
+          </button>
+          <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projets, paths" aria-label="données VPS">
+            <IconServers />
+          </button>
+          <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings" aria-label="settings">
+            <IconGear />
+          </button>
         </div>
       </header>
 
@@ -1174,12 +1194,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
       {ctxMenu && ctxMenu.kind === 'session' && (
         <SessionContextMenu
           title={ctxMenu.session.name || ctxMenu.session.cwd.split('/').slice(-2).join('/')}
+          subtitle={ctxMenu.session.cwd}
           x={ctxMenu.x}
           y={ctxMenu.y}
           currentColor={(ctxMenu.session as any).color}
           canKill={ctxMenu.session.status !== 'killed'}
           killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà tuée' : undefined}
           onRename={() => setEditingId(ctxMenu.session.id)}
+          onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
           onKill={() => killOne(ctxMenu.session.id)}
           onDelete={() => hardDeleteOne(ctxMenu.session.id)}

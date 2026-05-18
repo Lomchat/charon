@@ -599,6 +599,18 @@
   font-size: 11px;
   font-style: italic;
 }
+.session-ctx-menu .ctx-subtitle {
+  font-family: var(--mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  color: rgba(220,220,220,0.45);
+  margin-top: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: normal;
+}
 
 /* ── ShellTerminal : plein écran dans le main panel ──────────────────────── */
 .claude-main.shell-main {
