@@ -136,6 +136,28 @@
   font-size: 12px;
   letter-spacing: 0;
 }
+.vps-act-btn .btn-emoji {
+  display: inline-block;
+  font-size: 13px;
+  line-height: 1;
+  vertical-align: -2px;
+  margin-right: 2px;
+  /* Les emojis ignorent text-transform mais on enlève quand même l'effet
+     letter-spacing qui les sépare visuellement du texte */
+  letter-spacing: 0;
+  filter: saturate(0.85);
+}
+.vps-act-btn .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -2px;
+  margin-right: 4px;
+  letter-spacing: 0;
+}
+.vps-act-btn .btn-icon svg {
+  width: 12px; height: 12px;
+}
 
 /* Override le margin global de section pour le card */
 .claude-sidebar .vps-section.vps-card {
@@ -484,6 +506,88 @@
 .dv-add-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* ── Color stripe à gauche des rows (sessions et shells) ────────────────── */
+/* Variable --row-color est settée inline par le composant (transparent par défaut)
+ * Sans color → stripe invisible, pas de décalage. Avec color → barre 3px à gauche. */
+.session-row {
+  position: relative;
+  overflow: hidden; /* pour que la barre ne déborde pas du border-radius */
+}
+.session-row .row-color-stripe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--row-color, transparent);
+  pointer-events: none;
+}
+/* Quand la stripe a une couleur visible (.has-color), on tinte légèrement
+ * le fond pour renforcer le marquage. */
+.session-row.has-color::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--row-color);
+  opacity: 0.06;
+  pointer-events: none;
+}
+.session-row.has-color.selected::before {
+  opacity: 0.12;
+}
+/* Le row-head doit rester au-dessus du voile coloré */
+.session-row .row-head,
+.session-row .row-preview,
+.session-row .row-meta {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Palette de couleurs dans le context menu ───────────────────────────── */
+.session-ctx-menu .ctx-color-row {
+  display: flex;
+  gap: 5px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
+}
+.ctx-color-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.2);
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  transition: transform 0.08s ease;
+}
+.ctx-color-dot:hover {
+  transform: scale(1.18);
+  border-color: rgba(255,255,255,0.6);
+}
+.ctx-color-dot.on {
+  border-color: #fff;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 0 4px rgba(255,255,255,0.4);
+}
+.ctx-color-dot.none {
+  border: 1px dashed rgba(255,255,255,0.3);
+  background: transparent !important;
+}
+.ctx-color-dot .x {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  line-height: 1;
+}
+.session-ctx-menu .ctx-hint {
+  opacity: 0.5;
+  font-size: 11px;
+  font-style: italic;
 }
 
 /* ── ShellTerminal : plein écran dans le main panel ──────────────────────── */

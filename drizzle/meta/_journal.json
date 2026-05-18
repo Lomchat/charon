@@ -22,6 +22,13 @@
       "when": 1779102187364,
       "tag": "0002_strong_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1779105500000,
+      "tag": "0003_add_session_color",
+      "breakpoints": true
     }
   ]
 }

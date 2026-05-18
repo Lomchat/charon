@@ -28,7 +28,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 // PATCH /api/claude/sessions/[id]
-const ALLOWED_PATCH = ['name'] as const;
+const ALLOWED_PATCH = ['name', 'color'] as const;
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

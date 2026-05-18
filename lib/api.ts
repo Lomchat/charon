@@ -21,6 +21,8 @@ export const api = {
   listVpsShells: (vpsId: string) => send('GET', `/api/vps/${vpsId}/shells`),
   startShell: (vpsId: string, cwd?: string | null) =>
     send('POST', `/api/vps/${vpsId}/shells`, { cwd: cwd ?? null }),
+  updateShell: (shellId: string, data: { name?: string | null; color?: string | null }) =>
+    send('PATCH', `/api/shells/${shellId}`, data),
   killShell: (shellId: string) => send('DELETE', `/api/shells/${shellId}`),
 
   // VPS paths (paths connus par VPS, avec label optionnel)

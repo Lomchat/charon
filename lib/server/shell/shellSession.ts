@@ -30,6 +30,8 @@ export type ShellInfo = {
   vpsId: string;
   vpsName: string;
   cwd: string | null;
+  name: string | null;
+  color: string | null;
   startedAt: number;
   exited: boolean;
   exitCode: number | null;
@@ -40,6 +42,8 @@ class ShellSession {
   readonly vpsId: string;
   readonly vpsName: string;
   readonly cwd: string | null;
+  name: string | null = null;
+  color: string | null = null;
   child: ChildProcessWithoutNullStreams | null = null;
   ring: { kind: string; text: string; ts: number }[] = [];
   exitCode: number | null = null;
@@ -58,7 +62,8 @@ class ShellSession {
   info(): ShellInfo {
     return {
       id: this.id, vpsId: this.vpsId, vpsName: this.vpsName,
-      cwd: this.cwd, startedAt: this.startedAt,
+      cwd: this.cwd, name: this.name, color: this.color,
+      startedAt: this.startedAt,
       exited: this.exited, exitCode: this.exitCode,
     };
   }

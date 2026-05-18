@@ -106,7 +106,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
     } catch {}
   }
   const [input, setInput] = useState('');
-  const [ctxMenu, setCtxMenu] = useState<{ session: SessionListItem; x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<
+    | { kind: 'session'; session: SessionListItem; x: number; y: number }
+    | { kind: 'shell'; shell: ShellListItem; x: number; y: number }
+    | null
+  >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   // Bootstrap auto en cours pour un VPS donné (déclenché par un import error)
   const [bootstrapping, setBootstrapping] = useState<{ vps: Vps; resumeSessionId: string | null } | null>(null);
@@ -702,6 +706,40 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
     }
   }
 
+  async function patchSession(id: string, body: { name?: string | null; color?: string | null }) {
+    try {
+      const res = await fetch(`/api/claude/sessions/${id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`PATCH session: HTTP ${res.status}`);
+      // Update locale dans la liste sessions
+      const updated = await res.json();
+      setSessions((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
+    } catch (e: any) {
+      setError({ msg: 'patch session: ' + (e?.message ?? e) });
+    }
+  }
+
+  async function patchShell(id: string, body: { name?: string | null; color?: string | null }) {
+    try {
+      const updated: any = await api.updateShell(id, body);
+      setShells((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
+    } catch (e: any) {
+      setError({ msg: 'patch shell: ' + (e?.message ?? e) });
+    }
+  }
+
+  async function killShellOne(id: string) {
+    try {
+      await api.killShell(id);
+      shellKilled(id);
+    } catch (e: any) {
+      setError({ msg: 'kill shell: ' + (e?.message ?? e) });
+    }
+  }
+
   async function doSleep() {
     if (!selectedId) return;
     await api.sleepClaudeSession(selectedId);
@@ -809,7 +847,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
         onNewShell={startShell}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenResumeModal={() => setResumeOpen({ vpsId: selected?.vpsId })}
-        onContext={(s, x, y) => setCtxMenu({ session: s, x, y })}
+        onContext={(s, x, y) => setCtxMenu({ kind: 'session', session: s, x, y })}
+        onContextShell={(sh, x, y) => setCtxMenu({ kind: 'shell', shell: sh, x, y })}
         editingId={editingId}
         onRenameSubmit={renameSession}
         onRenameCancel={() => setEditingId(null)}
@@ -1121,14 +1160,37 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
         />
       )}
 
-      {ctxMenu && (
+      {ctxMenu && ctxMenu.kind === 'session' && (
         <SessionContextMenu
-          session={ctxMenu.session}
+          title={ctxMenu.session.name || ctxMenu.session.cwd.split('/').slice(-2).join('/')}
           x={ctxMenu.x}
           y={ctxMenu.y}
+          currentColor={(ctxMenu.session as any).color}
+          canKill={ctxMenu.session.status !== 'killed'}
+          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà tuée' : undefined}
           onRename={() => setEditingId(ctxMenu.session.id)}
+          onColor={(color) => patchSession(ctxMenu.session.id, { color })}
           onKill={() => killOne(ctxMenu.session.id)}
           onDelete={() => hardDeleteOne(ctxMenu.session.id)}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+      {ctxMenu && ctxMenu.kind === 'shell' && (
+        <SessionContextMenu
+          title={ctxMenu.shell.name || `⌨ ${ctxMenu.shell.cwd ?? '~'}`}
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          currentColor={ctxMenu.shell.color}
+          canKill={!ctxMenu.shell.exited}
+          killLabel="Fermer"
+          killDisabledReason={ctxMenu.shell.exited ? 'déjà terminé' : undefined}
+          showDelete={false}
+          onRename={() => {
+            const name = prompt('Nom du shell ?', ctxMenu.shell.name ?? '');
+            if (name != null) patchShell(ctxMenu.shell.id, { name: name.trim() || null });
+          }}
+          onColor={(color) => patchShell(ctxMenu.shell.id, { color })}
+          onKill={() => killShellOne(ctxMenu.shell.id)}
           onClose={() => setCtxMenu(null)}
         />
       )}

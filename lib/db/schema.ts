@@ -51,6 +51,9 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
   cwd: text('cwd').notNull(),
   name: text('name'),
+  // Marqueur visuel : couleur (hex ou nom) appliquée à la bordure gauche
+  // de la row dans la sidebar. NULL = pas de marqueur.
+  color: text('color'),
   status: text('status').notNull(),
   permissionMode: text('permission_mode').notNull().default('normal'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
