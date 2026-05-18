@@ -751,12 +751,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
     const target = id ?? selectedId;
     if (!target) return;
     setError(null);
+    // Optimiste : on passe en 'starting' tout de suite pour faire disparaître
+    // le banner "session inactive". Si l'API échoue, on remet 'sleeping' +
+    // l'erreur visible.
+    updateSession(target, (s) => ({ ...s, status: 'starting' }));
     try {
       await api.resumeClaudeSession(target);
+      // Force re-open SSE pour que le SessionStream rafraîchisse les events
       setSelectedId(null);
       setTimeout(() => setSelectedId(target), 30);
       refreshSessions();
     } catch (e: any) {
+      // Rollback du statut optimiste + montre l'erreur sous le banner
+      updateSession(target, (s) => ({ ...s, status: 'sleeping' }));
       setError({ msg: String(e?.message ?? e) });
     }
   }
@@ -899,7 +906,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
           </div>
         )}
 
-        {/* Bandeau "session déconnectée" piloté par le statut (sleeping/error) */}
+        {/* Bandeau "session déconnectée" piloté par le statut (sleeping/error).
+            Une erreur de doResume() reste visible ici aussi (avant elle était
+            masquée tant que status=sleeping → résume cliqué et "rien ne se
+            passe" en apparence). */}
         {!bootstrapping && (cur.status === 'sleeping' || cur.status === 'error') && selectedId && (
           <div className="claude-disconnect-banner-wrap">
             <div
@@ -909,13 +919,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
             >
               <span className="msg">
                 session inactive — cliquez pour reconnecter
-                {cur.status === 'error' && error?.msg ? (
+                {error?.msg ? (
                   <em className="why"> · {error.msg.split('\n')[0].slice(0, 160)}</em>
                 ) : null}
               </span>
               <span className="resume-chip">↺ resume</span>
             </div>
-            {cur.status === 'error' && error?.msg && (
+            {error?.msg && (
               <div className="claude-error-details">
                 <div className="err-tools">
                   <button type="button" onClick={(e) => { e.stopPropagation(); setErrorOpen((v) => !v); }}>
@@ -924,6 +934,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
                   <button type="button" className="copy-btn" onClick={(e) => { e.stopPropagation(); copyError(); }} title="copier l'erreur">
                     {errorCopied ? '✓ copié' : '📋 copier'}
                   </button>
+                  <button type="button" className="dismiss-btn" onClick={(e) => { e.stopPropagation(); setError(null); }} title="masquer l'erreur">✕</button>
                 </div>
                 {errorOpen && <pre className="err-pre">{error.msg}</pre>}
               </div>
