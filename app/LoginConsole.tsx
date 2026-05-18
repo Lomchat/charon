@@ -113,7 +113,7 @@ export default function LoginConsole({ vps, onClose }: Props) {
   };
 
   return (
-    <div className="login-console-modal">
+    <div className="login-console-modal" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="login-console-card">
         <header>
           <span className="title">claude login — {vps.name}</span>
