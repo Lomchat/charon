@@ -3,7 +3,7 @@
  * Garde une apparence cohérente avec le reste de claude.css.
  */
 
-/* ── Badges agent dans la liste VPS ─────────────────────────────────────── */
+/* ── Badges agent dans la liste VPS (DataModal) ─────────────────────────── */
 .pg-agent {
   font-size: 0.78em;
   width: 16px;
@@ -31,6 +31,38 @@
 }
 .pg-action:hover {
   background: rgba(255,255,255,0.08);
+}
+
+/* ── Badge + actions agent dans la SIDEBAR (vps-head) ───────────────────── */
+.vps-head .vps-agent {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  margin-left: 6px;
+  font-family: monospace;
+  font-size: 0.85em;
+  cursor: help;
+}
+.vps-head .vps-agent.agent-ok      { color: #6cbf6c; }
+.vps-head .vps-agent.agent-missing { color: #c8a262; cursor: pointer; }
+.vps-head .vps-agent.agent-error   { color: #d97a6b; cursor: pointer; }
+.vps-head .vps-agent.agent-unknown { color: #777; opacity: 0.7; }
+
+/* Bouton "install" mis en avant quand l'agent est manquant/en erreur */
+.vps-head .vps-action.vps-install {
+  background: rgba(200, 162, 98, 0.15);
+  border: 1px solid rgba(200, 162, 98, 0.4);
+  color: #e0c898;
+  font-size: 0.72em;
+  font-weight: 600;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vps-head .vps-action.vps-install:hover {
+  background: rgba(200, 162, 98, 0.25);
 }
 
 /* ── LoginConsole : modale plein écran ───────────────────────────────── */

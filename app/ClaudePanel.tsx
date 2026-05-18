@@ -18,6 +18,7 @@ import SearchModal from './SearchModal';
 import SettingsModal from './SettingsModal';
 import SessionContextMenu from './SessionContextMenu';
 import BootstrapBanner from './BootstrapBanner';
+import LoginConsole from './LoginConsole';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported } from './pushClient';
 
 type Props = {
@@ -111,6 +112,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
   const [editingId, setEditingId] = useState<string | null>(null);
   // Bootstrap auto en cours pour un VPS donné (déclenché par un import error)
   const [bootstrapping, setBootstrapping] = useState<{ vps: Vps; resumeSessionId: string | null } | null>(null);
+  // Console claude login interactive
+  const [loginVps, setLoginVps] = useState<Vps | null>(null);
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string; projectId?: string | null }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -759,6 +762,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
         editingId={editingId}
         onRenameSubmit={renameSession}
         onRenameCancel={() => setEditingId(null)}
+        onInstallAgent={(v) => setBootstrapping({ vps: v, resumeSessionId: null })}
+        onLoginAgent={(v) => setLoginVps(v)}
       />
 
       <main className="claude-main">
@@ -837,13 +842,25 @@ export default function ClaudePanel({ vpsList: initialVpsList, projects: initial
             onCancel={() => setBootstrapping(null)}
             onDone={(success) => {
               const sid = bootstrapping.resumeSessionId;
+              const installedVpsId = bootstrapping.vps.id;
               setBootstrapping(null);
+              // Refresh le agentStatus dans la state locale (le badge sidebar bascule)
+              if (success) {
+                setVpsList((prev) => prev.map((v) =>
+                  v.id === installedVpsId
+                    ? ({ ...v, agentStatus: 'ok' } as Vps)
+                    : v
+                ));
+              }
               if (success && sid) {
-                // Resume la session qui avait échoué
                 doResume(sid);
               }
             }}
           />
+        )}
+
+        {loginVps && (
+          <LoginConsole vps={loginVps} onClose={() => setLoginVps(null)} />
         )}
 
         <div className="claude-chat">

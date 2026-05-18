@@ -39,6 +39,17 @@ type Props = {
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
+  // Actions agent (déportées du DataModal pour être accessibles depuis la home).
+  onInstallAgent?: (vps: Vps) => void;
+  onLoginAgent?: (vps: Vps) => void;
+};
+
+// Libellé / icône pour le badge agent_status
+const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
+  ok:       { glyph: '●', label: 'agent opérationnel' },
+  missing:  { glyph: '○', label: 'agent non installé' },
+  error:    { glyph: '◐', label: 'agent en erreur' },
+  unknown:  { glyph: '?', label: 'agent jamais testé' },
 };
 
 const DOT_CLASS: Record<string, string> = {
@@ -54,6 +65,7 @@ const DOT_CLASS: Record<string, string> = {
 export default function Sidebar({
   vpsList, projects, vpsLinks, sessions, selectedId, onSelect, onNew, onScan, onOpenResumeModal,
   onContext, editingId, onRenameSubmit, onRenameCancel,
+  onInstallAgent, onLoginAgent,
 }: Props) {
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p] as const)), [projects]);
 
@@ -111,10 +123,40 @@ export default function Sidebar({
               <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
               <span className="g">▣</span>
               <span className="n">{v.name}</span>
+              {(() => {
+                const status = (v as any).agentStatus ?? 'unknown';
+                const version = (v as any).agentVersion as string | undefined;
+                const meta = AGENT_BADGE[status] ?? AGENT_BADGE.unknown;
+                const tip = `${meta.label}${version ? ` (v${version})` : ''}`;
+                return (
+                  <span
+                    className={`vps-agent agent-${status}`}
+                    title={tip}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (status !== 'ok' && onInstallAgent) onInstallAgent(v);
+                    }}
+                  >{meta.glyph}</span>
+                );
+              })()}
               {activeCount > 0 ? (
                 <span className="active-count" title={`${activeCount} session(s) active(s)`}>{activeCount}</span>
               ) : (
                 <span className="active-count zero" title="aucune session active">0</span>
+              )}
+              {(v as any).agentStatus !== 'ok' && onInstallAgent && (
+                <button
+                  className="vps-action vps-install"
+                  onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
+                  title="installer / réparer l'agent sur ce VPS"
+                >install</button>
+              )}
+              {onLoginAgent && (
+                <button
+                  className="vps-action"
+                  onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
+                  title="claude login interactif (OAuth) sur ce VPS"
+                >login</button>
               )}
               <button
                 className="vps-action"
