@@ -112,8 +112,12 @@ export default function Sidebar({
         const activeCount = vpsSessions.filter((s) =>
           ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
         ).length;
+        const agentStatus = (v as any).agentStatus ?? 'unknown';
+        const agentVersion = (v as any).agentVersion as string | undefined;
+        const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
+        const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}`;
         return (
-          <section key={v.id} className={`vps-section${isCollapsed ? ' collapsed' : ''}`}>
+          <section key={v.id} className={`vps-section vps-card${isCollapsed ? ' collapsed' : ''} agent-${agentStatus}`}>
             <div
               className="vps-head"
               onClick={() => toggleCollapsed(v.id)}
@@ -123,47 +127,48 @@ export default function Sidebar({
               <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
               <span className="g">▣</span>
               <span className="n">{v.name}</span>
-              {(() => {
-                const status = (v as any).agentStatus ?? 'unknown';
-                const version = (v as any).agentVersion as string | undefined;
-                const meta = AGENT_BADGE[status] ?? AGENT_BADGE.unknown;
-                const tip = `${meta.label}${version ? ` (v${version})` : ''}`;
-                return (
-                  <span
-                    className={`vps-agent agent-${status}`}
-                    title={tip}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (status !== 'ok' && onInstallAgent) onInstallAgent(v);
-                    }}
-                  >{meta.glyph}</span>
-                );
-              })()}
+              <span className={`vps-agent-dot agent-${agentStatus}`} title={agentTip}>{agentMeta.glyph}</span>
               {activeCount > 0 ? (
                 <span className="active-count" title={`${activeCount} session(s) active(s)`}>{activeCount}</span>
               ) : (
                 <span className="active-count zero" title="aucune session active">0</span>
               )}
-              {(v as any).agentStatus !== 'ok' && onInstallAgent && (
-                <button
-                  className="vps-action vps-install"
-                  onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
-                  title="installer / réparer l'agent sur ce VPS"
-                >install</button>
-              )}
-              {onLoginAgent && (
-                <button
-                  className="vps-action"
-                  onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
-                  title="claude login interactif (OAuth) sur ce VPS"
-                >login</button>
-              )}
-              <button
-                className="vps-action"
-                onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
-                title="scanner les sessions Claude existantes"
-              >⟳</button>
             </div>
+            {!isCollapsed && (
+              <div className="vps-meta">
+                <span className="vps-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
+                <span className="vps-sep">·</span>
+                <span className={`vps-agent-text agent-${agentStatus}`}>
+                  {agentStatus === 'ok'      ? `agent ${agentVersion ? `v${agentVersion}` : 'ok'}`
+                  : agentStatus === 'missing' ? 'agent non installé'
+                  : agentStatus === 'error'   ? 'agent en erreur'
+                  : 'agent non testé'}
+                </span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <div className="vps-actions">
+                {agentStatus !== 'ok' && onInstallAgent && (
+                  <button
+                    className="vps-act-btn primary"
+                    onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
+                    title="installer / réparer l'agent sur ce VPS"
+                  >▸ install agent</button>
+                )}
+                {onLoginAgent && (
+                  <button
+                    className="vps-act-btn"
+                    onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
+                    title="claude login interactif (OAuth) sur ce VPS"
+                  >claude login</button>
+                )}
+                <button
+                  className="vps-act-btn icon-only"
+                  onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
+                  title="scanner les sessions Claude existantes sur ce VPS"
+                >⟳</button>
+              </div>
+            )}
             {!isCollapsed && (<>
             {linkedProjectIds.map((pid) => {
               const p = projectById.get(pid);

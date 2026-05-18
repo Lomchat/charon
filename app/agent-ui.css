@@ -33,36 +33,144 @@
   background: rgba(255,255,255,0.08);
 }
 
-/* ── Badge + actions agent dans la SIDEBAR (vps-head) ───────────────────── */
-.vps-head .vps-agent {
+/* ── Sidebar v2 : card VPS avec hiérarchie nette ────────────────────────── */
+/* Each VPS is a "card" with header, meta, action bar, then projects inside. */
+
+.claude-sidebar .vps-card {
+  margin: 0 8px 14px;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 4px;
+  background: rgba(0,0,0,0.15);
+  overflow: hidden;
+}
+/* Quand l'agent n'est pas ok, on signale visuellement le card */
+.claude-sidebar .vps-card.agent-missing { border-color: rgba(200,162,98,0.35); }
+.claude-sidebar .vps-card.agent-error   { border-color: rgba(217,122,107,0.4); }
+
+/* Override : le head devient plus compact, pas de border-bottom dashed */
+.claude-sidebar .vps-card .vps-head {
+  padding: 7px 11px 5px;
+  border-bottom: 0;
+  gap: 7px;
+}
+.claude-sidebar .vps-card.collapsed .vps-head {
+  border-bottom: 0;
+  padding-bottom: 7px;
+}
+
+/* Pastille agent au bout du nom — taille modeste, couleur explicite */
+.vps-agent-dot {
   display: inline-block;
   width: 14px;
   text-align: center;
-  margin-left: 6px;
   font-family: monospace;
-  font-size: 0.85em;
+  font-size: 11px;
   cursor: help;
+  flex-shrink: 0;
 }
-.vps-head .vps-agent.agent-ok      { color: #6cbf6c; }
-.vps-head .vps-agent.agent-missing { color: #c8a262; cursor: pointer; }
-.vps-head .vps-agent.agent-error   { color: #d97a6b; cursor: pointer; }
-.vps-head .vps-agent.agent-unknown { color: #777; opacity: 0.7; }
+.vps-agent-dot.agent-ok      { color: #6cbf6c; }
+.vps-agent-dot.agent-missing { color: #d8a85a; }
+.vps-agent-dot.agent-error   { color: #d97a6b; }
+.vps-agent-dot.agent-unknown { color: #777; }
 
-/* Bouton "install" mis en avant quand l'agent est manquant/en erreur */
-.vps-head .vps-action.vps-install {
-  background: rgba(200, 162, 98, 0.15);
-  border: 1px solid rgba(200, 162, 98, 0.4);
-  color: #e0c898;
-  font-size: 0.72em;
-  font-weight: 600;
-  padding: 1px 6px;
-  margin-left: 4px;
-  border-radius: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+/* Ligne meta : user@ip · agent v0.1.0 — un cran plus petit, gris */
+.claude-sidebar .vps-meta {
+  padding: 0 11px 5px 30px;  /* indenté pour aligner avec le nom (après caret+glyph) */
+  font-family: var(--mono, 'JetBrains Mono', monospace);
+  font-size: 10px;
+  line-height: 1.4;
+  color: rgba(220,220,220,0.45);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  text-transform: none;
+  letter-spacing: 0;
 }
-.vps-head .vps-action.vps-install:hover {
-  background: rgba(200, 162, 98, 0.25);
+.vps-host { color: rgba(220,220,220,0.55); }
+.vps-sep  { opacity: 0.4; }
+.vps-agent-text.agent-ok      { color: #7ac478; }
+.vps-agent-text.agent-missing { color: #d8a85a; font-weight: 500; }
+.vps-agent-text.agent-error   { color: #d97a6b; font-weight: 500; }
+.vps-agent-text.agent-unknown { color: rgba(220,220,220,0.5); }
+
+/* Ligne d'actions : install / login / scan — boutons texte lisibles */
+.claude-sidebar .vps-actions {
+  padding: 4px 11px 9px 30px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  border-bottom: 1px dashed rgba(255,255,255,0.07);
+}
+.vps-act-btn {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(220,220,220,0.75);
+  font-family: var(--display, inherit);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+  white-space: nowrap;
+  height: auto; width: auto; /* override 22x20 du vieux .vps-action */
+}
+.vps-act-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  border-color: rgba(255,255,255,0.3);
+}
+.vps-act-btn.primary {
+  background: rgba(216, 168, 90, 0.18);
+  border-color: rgba(216, 168, 90, 0.55);
+  color: #f0d39e;
+}
+.vps-act-btn.primary:hover {
+  background: rgba(216, 168, 90, 0.28);
+  border-color: rgba(216, 168, 90, 0.8);
+}
+.vps-act-btn.icon-only {
+  padding: 3px 7px;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+/* Override le margin global de section pour le card */
+.claude-sidebar .vps-section.vps-card {
+  margin-bottom: 14px;
+}
+
+/* Indente les proj-block dans le card pour montrer la hiérarchie */
+.claude-sidebar .vps-card .proj-block {
+  margin: 4px 0;
+  padding-left: 0;
+  position: relative;
+}
+.claude-sidebar .vps-card .proj-head {
+  padding: 4px 11px 4px 20px;
+  font-size: 11.5px;
+}
+/* Indicateur vertical à gauche pour chaque projet (rappel d'arborescence) */
+.claude-sidebar .vps-card .proj-block::before {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255,255,255,0.08);
+}
+.claude-sidebar .vps-card .session-row {
+  margin-left: 28px;
+  width: calc(100% - 36px);
+}
+
+/* Le dernier proj-block (avant la fin du card) — pas de bord inférieur sur la
+ * dernière action-bar */
+.claude-sidebar .vps-card .proj-block.empty {
+  padding: 6px 11px 8px 20px;
 }
 
 /* ── LoginConsole : modale plein écran ───────────────────────────────── */
