@@ -541,6 +541,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     });
   }
   stream.attach();
+  // Si l'utilisateur avait déjà ouvert l'SSE avant le resume, attach() a déjà
+  // tenté un subscribe côté agent qui a failed (session pas encore existante).
+  // On force un nouveau subscribe maintenant qu'elle existe.
+  client.resubscribe(sessionId);
   db.update(claudeSessions).set({ status: 'active' })
     .where(eq(claudeSessions.id, sessionId)).run();
   return stream;

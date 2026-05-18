@@ -137,14 +137,33 @@ export class AgentClient {
     if (!this.subscribed.has(sessionId)) {
       this.subscribed.add(sessionId);
       if (this.status === 'connected') {
-        this.call('subscribe', { session_id: sessionId, replay: 300 })
-          .catch((e) => {
-            // Le caller verra de toute façon les events arriver une fois la
-            // reconnexion établie ; on log.
-            console.warn(`[agent ${this.vps.name}] subscribe failed: ${e?.message ?? e}`);
-          });
+        this._fireSubscribe(sessionId);
       }
     }
+  }
+
+  /** Re-tente le subscribe RPC côté agent. Utile quand un subscribe précédent
+   *  a failed (typiquement : SSE ouvert avant que la session n'existe sur
+   *  l'agent, puis resume qui crée la session — l'attach n'est pas refait
+   *  parce qu'idempotent, mais le subscribe agent reste manquant). */
+  resubscribe(sessionId: string): void {
+    if (!this.subscribers.has(sessionId)) return;  // pas de listener → rien à faire
+    this.subscribed.add(sessionId);
+    if (this.status === 'connected') {
+      this._fireSubscribe(sessionId);
+    }
+  }
+
+  private _fireSubscribe(sessionId: string): void {
+    this.call('subscribe', { session_id: sessionId, replay: 300 })
+      .catch((e) => {
+        // Si subscribe échoue (typiquement session_not_found), on retire de
+        // `subscribed` pour qu'un futur subscribe ré-essaye spontanément.
+        if (/not found/i.test(e?.message ?? '') || e?.code === -32000) {
+          this.subscribed.delete(sessionId);
+        }
+        console.warn(`[agent ${this.vps.name}] subscribe failed: ${e?.message ?? e}`);
+      });
   }
 
   unsubscribe(sessionId: string, listener: EventListener): void {
