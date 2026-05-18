@@ -103,6 +103,11 @@ export class AgentClient {
         ),
       ]);
     }
+    return this._writeRequest<T>(method, params);
+  }
+
+  /** Écriture sans gate de status — usage interne uniquement (start/hello). */
+  private _writeRequest<T = any>(method: string, params: Record<string, any> = {}): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const id = this.nextReqId++;
       const pending: Pending = { resolve, reject, method };
@@ -113,7 +118,8 @@ export class AgentClient {
       this.pending.set(id, pending);
       const line = JSON.stringify({ id, method, params }) + '\n';
       try {
-        this.child!.stdin.write(line);
+        if (!this.child) throw new Error('no child process');
+        this.child.stdin.write(line);
       } catch (e: any) {
         this.pending.delete(id);
         clearTimeout(pending.timer);
@@ -196,14 +202,15 @@ export class AgentClient {
 
     const keyPath = getSetting('ssh.private_key_path');
     const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
+    // Sélectionne explicitement le meilleur python ≥ 3.10 disponible.
+    // Le shebang du pyz est `python3` qui sur RHEL/CentOS reste à 3.9 — pas OK.
+    const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
     const args = [
       ...SSH_OPTS,
       ...keyArgs,
       '-p', String(this.vps.sshPort),
       `${this.vps.sshUser}@${this.vps.ip}`,
-      // Cmd distant : exec direct du pyz en mode --connect.
-      // Ne PAS quoter $HOME — laisser shell remote l'expand.
-      `exec ${REMOTE_AGENT_PATH} --connect`,
+      `exec ${PY} ${REMOTE_AGENT_PATH} --connect`,
     ];
 
     const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -223,8 +230,9 @@ export class AgentClient {
     });
     child.on('close', (code) => this._handleExit(code));
 
-    // Envoie le hello
-    this.call<AgentHelloResult>('hello', { client: 'charon' })
+    // Envoie le hello (passe par _writeRequest pour éviter le deadlock :
+    // call() awaiterait ready() qui n'est résolu QUE par cette réponse hello).
+    this._writeRequest<AgentHelloResult>('hello', { client: 'charon' })
       .then((hello) => {
         this.hello = hello;
         this.reconnectAttempts = 0;

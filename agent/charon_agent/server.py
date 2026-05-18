@@ -201,11 +201,16 @@ class Server:
             client.subscribed.add(sid)
             ring = self.rings.get(sid)
             sent = 0
+            # Marqueur "début du replay" pour que le client puisse skip la
+            # persistance DB sur des events qu'il a déjà vus avant son drop.
             if ring and replay > 0:
                 items = list(ring)[-replay:]
-                for item in items:
-                    client.send_json(item)
-                    sent += 1
+                if items:
+                    client.send_json({"event": "replay_begin", "session_id": sid, "count": len(items)})
+                    for item in items:
+                        client.send_json(item)
+                        sent += 1
+                    client.send_json({"event": "replay_end", "session_id": sid})
             # Émet un status pour que le client connaisse l'état courant
             client.send_json({"event": "status", "session_id": sid, "status": s.status})
             return {"ok": True, "replay_count": sent, "status": s.status}

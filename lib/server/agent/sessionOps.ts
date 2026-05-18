@@ -53,6 +53,10 @@ export class SessionStream {
   private agentListener: AgentEventListener | null = null;
   private attached = false;
   private alwaysAllow = new Set<string>();
+  // Si true, on broadcast aux SSE mais on SKIP la persistance DB. Sert pendant
+  // un replay agent (sub initial + replay du ring) : les events sont des
+  // doublons d'historique déjà en DB côté Charon.
+  private suppressPersist = false;
 
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
@@ -138,6 +142,14 @@ export class SessionStream {
    */
   private _onAgentEvent(ev: AgentEvent): void {
     switch (ev.event) {
+      case 'replay_begin':
+        this.suppressPersist = true;
+        // On ne broadcast pas non plus aux SSE — le UI les a déjà via son
+        // propre ring local OU via le history fetch initial.
+        return;
+      case 'replay_end':
+        this.suppressPersist = false;
+        return;
       case 'status':
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
@@ -336,6 +348,9 @@ export class SessionStream {
 
   // ── Privates ─────────────────────────────────────────────────────────────
   private _broadcast(ev: WorkerEvent): void {
+    // En mode replay : skip — les SSE clients chargent l'historique via la
+    // route GET /api/claude/sessions/[id] (DB) au lieu du ring.
+    if (this.suppressPersist) return;
     this.ring.push(ev);
     if (this.ring.length > RING_MAX) this.ring.splice(0, this.ring.length - RING_MAX);
     for (const sub of this.subs.values()) {
@@ -344,6 +359,7 @@ export class SessionStream {
   }
 
   private _persist(role: string, content: any): void {
+    if (this.suppressPersist) return;
     try {
       db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
@@ -457,7 +473,6 @@ export async function startNewSession(opts: {
     lastUsedAt: Math.floor(Date.now() / 1000),
   }).run();
 
-  // Crée le stream en mémoire AVANT de subscribe (sinon les premiers events sont perdus)
   const stream = new SessionStream({
     id: sessionId, vpsId: opts.vpsId, vpsName: vps.name,
     name: opts.name ?? null, status: 'starting',
@@ -465,9 +480,11 @@ export async function startNewSession(opts: {
     claudeSessionId: null,
   });
   streams.set(sessionId, stream);
-  stream.attach();
 
-  // Demande à l'agent de créer la session
+  // ORDRE IMPORTANT : start_session AVANT subscribe.
+  // Le subscribe agent-side throw si la session n'existe pas encore.
+  // Les events émis pendant start_session (`status=starting`) restent dans le
+  // ring buffer côté agent et sont rejoués au moment du subscribe (replay=300).
   try {
     const client = getAgentClientForVpsId(opts.vpsId);
     await client.call('start_session', {
@@ -477,13 +494,12 @@ export async function startNewSession(opts: {
       permission_mode: opts.permissionMode ?? 'normal',
     });
   } catch (e: any) {
-    // Cleanup
     streams.delete(sessionId);
-    stream.detach();
     db.update(claudeSessions).set({ status: 'error' })
       .where(eq(claudeSessions.id, sessionId)).run();
     throw e;
   }
+  stream.attach();
   return stream;
 }
 
@@ -510,10 +526,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     });
     streams.set(sessionId, stream);
   }
-  stream.attach();
 
   const client = getAgentClientForVpsId(row.vpsId);
-  // Essaie resume_session ; si ça retourne ERR_SESSION_NOT_FOUND, on fait start_session
+  // ORDRE : on s'assure que la session existe côté agent AVANT de subscribe
+  // (sinon le subscribe RPC throw session_not_found).
   try {
     await client.call('resume_session', { session_id: sessionId });
   } catch (e: any) {
@@ -528,6 +544,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
       claude_session_id: row.claudeSessionId,
     });
   }
+  stream.attach();
   db.update(claudeSessions).set({ status: 'active' })
     .where(eq(claudeSessions.id, sessionId)).run();
   return stream;

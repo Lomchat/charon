@@ -32,6 +32,8 @@ export type AgentHelloResult = {
 // Events poussés par l'agent. session_id obligatoire pour tous sauf erreurs
 // globales (rare). On garde une union large pour ne pas se mentir.
 export type AgentEvent =
+  | { event: 'replay_begin'; session_id: string; count: number }
+  | { event: 'replay_end'; session_id: string }
   | { event: 'status'; session_id: string; status: AgentSessionStatus }
   | { event: 'ready'; session_id: string }
   | { event: 'session_id'; session_id: string; claude_session_id: string }

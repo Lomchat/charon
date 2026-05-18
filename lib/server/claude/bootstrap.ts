@@ -112,12 +112,15 @@ async function installAgentPyz(vps: Vps): Promise<{ ok: boolean; detail: string 
 }
 
 // ── Service systemd-user (avec fallback nohup) ──────────────────────────────
+// Le pyz a un shebang `python3` mais le SDK exige python ≥ 3.10. Sur CentOS/RHEL
+// la commande `python3` reste à 3.9 — on prend explicitement le meilleur python
+// disponible (3.13 → 3.10) via un wrapper /bin/sh.
 const SYSTEMD_UNIT = `[Unit]
 Description=Charon Agent
 After=default.target
 
 [Service]
-ExecStart=%h/.charon/charon-agent.pyz
+ExecStart=/bin/sh -c 'PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
 Restart=on-failure
 RestartSec=2
 StandardOutput=append:%h/.charon/agent.log
@@ -152,14 +155,16 @@ async function installAgentService(vps: Vps): Promise<{ ok: boolean; mode: 'syst
   }
 
   // Fallback nohup : kill l'éventuel running, relance via crontab @reboot.
+  // Idem que le unit systemd : on choisit explicitement python3.10+.
+  const PY_LOOKUP = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
   const fallbackScript = [
     // Kill l'éventuelle instance qui tourne (si on remplace le binaire)
-    "pkill -f '~/.charon/charon-agent.pyz' || pkill -f charon-agent.pyz || true",
+    "pkill -f 'charon-agent.pyz' || true",
     // Lance le daemon en arrière-plan, détaché
-    "nohup setsid ~/.charon/charon-agent.pyz >> ~/.charon/agent.log 2>&1 < /dev/null &",
+    `nohup setsid sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 < /dev/null &`,
     "sleep 1",
     // S'assure qu'il y a une @reboot dans crontab
-    "(crontab -l 2>/dev/null | grep -v 'charon-agent.pyz'; echo '@reboot ~/.charon/charon-agent.pyz >> ~/.charon/agent.log 2>&1 &') | crontab -",
+    `(crontab -l 2>/dev/null | grep -v 'charon-agent.pyz'; echo '@reboot sh -c \\'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz\\' >> ~/.charon/agent.log 2>&1 &') | crontab -`,
     "echo OK_NOHUP",
   ].join('; ');
   const r2 = await sshExec(vps, fallbackScript, { timeoutMs: 15_000 });
@@ -173,9 +178,11 @@ async function installAgentService(vps: Vps): Promise<{ ok: boolean; mode: 'syst
 async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: string; detail: string }> {
   // Donne un peu de temps au daemon pour démarrer
   await new Promise((r) => setTimeout(r, 800));
+  // Idem : utilise un python ≥ 3.10 explicitement
+  const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
   const r = await sshExec(
     vps,
-    `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ~/.charon/charon-agent.pyz --connect`,
+    `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ${PY} ~/.charon/charon-agent.pyz --connect`,
     { timeoutMs: 8_000 },
   );
   if (!r.ok) {
