@@ -24,6 +24,15 @@ export default function DataModal({ onClose, initialVps, initialProjects, onChan
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
 
   useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Si un sous-modal est ouvert, lui laisser gérer Échap.
+      if (e.key === 'Escape' && !loginVps && !bootstrapVps) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, loginVps, bootstrapVps]);
+
+  useEffect(() => {
     api.listVpsProjectPaths().then((r: any) => setPaths(r ?? [])).catch(() => setPaths([]));
   }, []);
 

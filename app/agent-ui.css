@@ -244,6 +244,43 @@
   text-decoration: underline;
   word-break: break-all;
 }
+/* Barre de touches spéciales (↑↓ Enter Esc Ctrl+C) — indispensable pour les
+ * TUI comme `claude login` qui se naviguent au clavier. */
+.login-keys {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.2);
+}
+.login-keys button {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  color: rgba(220,220,220,0.85);
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.78em;
+  padding: 3px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  min-width: 32px;
+}
+.login-keys button:hover:not(:disabled) {
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+}
+.login-keys button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.login-keys button.danger {
+  margin-left: auto;
+  border-color: rgba(217,122,107,0.35);
+  color: #d97a6b;
+}
+.login-keys button.danger:hover:not(:disabled) {
+  background: rgba(217,122,107,0.15);
+}
+
 .login-input-row {
   display: flex;
   gap: 8px;
