@@ -486,6 +486,128 @@
   cursor: not-allowed;
 }
 
+/* ── ShellTerminal : plein écran dans le main panel ──────────────────────── */
+.claude-main.shell-main {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: #0a0a0a;
+}
+.shell-terminal-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.shell-term-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: linear-gradient(180deg, #1c1f29, #181b24);
+  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.3));
+  flex-shrink: 0;
+}
+.shell-term-head .title {
+  font-family: var(--display, inherit);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-bright, #e0c898);
+  font-weight: 600;
+}
+.shell-term-head .cwd {
+  font-family: var(--mono, monospace);
+  font-size: 11.5px;
+  color: var(--parchment-soft, rgba(220,220,220,0.6));
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell-term-head .exit-badge {
+  background: rgba(150,150,150,0.15);
+  border: 1px solid rgba(150,150,150,0.3);
+  color: #aaa;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.shell-term-head .kill-btn {
+  background: rgba(217,122,107,0.12);
+  border: 1px solid rgba(217,122,107,0.4);
+  color: #d97a6b;
+  padding: 4px 12px;
+  border-radius: 3px;
+  font-family: var(--display, inherit);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+}
+.shell-term-head .kill-btn:hover {
+  background: rgba(217,122,107,0.22);
+  color: #fff;
+}
+.shell-error {
+  background: rgba(217,122,107,0.12);
+  color: #d97a6b;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(217,122,107,0.3);
+  font-size: 12px;
+}
+.shell-xterm {
+  flex: 1;
+  padding: 8px 12px;
+  background: #0e0e0e;
+  overflow: hidden;
+  min-height: 0;
+}
+.shell-xterm .xterm { height: 100%; }
+.shell-xterm .xterm-viewport,
+.shell-xterm .xterm-screen { background: transparent !important; }
+
+/* Shell row dans la sidebar (couleur cyan pour distinguer des sessions claude) */
+.dot.dot-cyan {
+  background: #7ac4c4;
+  box-shadow: 0 0 6px rgba(122,196,196,0.5);
+}
+.session-row.shell-row {
+  /* Hérite des styles session-row, juste un petit accent */
+}
+.session-row.shell-row .label {
+  font-family: var(--mono, 'JetBrains Mono', monospace);
+  font-size: 11.5px;
+  color: var(--parchment, #ddd);
+}
+.session-row.shell-row.exited .label,
+.session-row.shell-row.exited .meta-cwd {
+  opacity: 0.5;
+}
+.shell-exit-tag {
+  background: rgba(150,150,150,0.15);
+  color: #888;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+
+/* Bouton ⌨ dans proj-head (plus discret que le +) */
+.proj-action.proj-shell {
+  color: var(--gold-deep, rgba(200,162,98,0.5));
+  font-size: 11px;
+}
+.proj-action.proj-shell:hover {
+  color: #7ac4c4;
+  border-color: #7ac4c4;
+}
+
 .closed-badge {
   background: rgba(108,191,108,0.2);
   border: 1px solid rgba(108,191,108,0.4);

@@ -50,7 +50,7 @@ class LoginSession {
       ...keyArgs,
       '-p', String(v.sshPort),
       `${v.sshUser}@${v.ip}`,
-      'claude login',
+      'claude /login',
     ];
     const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;

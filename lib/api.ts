@@ -16,6 +16,13 @@ export const api = {
   deleteVps: (id: string) => send('DELETE', `/api/vps/${id}`),
   testVps: (id: string) => send('POST', `/api/vps/${id}/test`),
 
+  // Shells SSH (ephémères, multi par VPS)
+  listShells: () => send('GET', '/api/shells'),
+  listVpsShells: (vpsId: string) => send('GET', `/api/vps/${vpsId}/shells`),
+  startShell: (vpsId: string, cwd?: string | null) =>
+    send('POST', `/api/vps/${vpsId}/shells`, { cwd: cwd ?? null }),
+  killShell: (shellId: string) => send('DELETE', `/api/shells/${shellId}`),
+
   // VPS paths (paths connus par VPS, avec label optionnel)
   listVpsPaths: () => send('GET', '/api/vps-paths'),
   createVpsPath: (data: { vpsId: string; path: string; label?: string | null }) =>

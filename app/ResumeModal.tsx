@@ -9,6 +9,12 @@ type ScannedSession = {
   mtime: number;
   size: number;
   summary?: string;
+  aiTitle?: string;
+  lastPrompt?: string;
+  firstUserText?: string;
+  messageCount?: number;
+  model?: string;
+  gitBranch?: string;
 };
 
 type Props = {
@@ -54,9 +60,10 @@ export default function ResumeModal({
   async function importScanned(s: ScannedSession) {
     setBusy(s.sessionId);
     try {
+      const title = s.aiTitle || s.summary || s.firstUserText;
       const r: any = await api.importClaudeSession({
         vpsId, claudeSessionId: s.sessionId, cwd: s.cwd,
-        name: s.summary ? s.summary.slice(0, 60) : null,
+        name: title ? title.slice(0, 60) : null,
       });
       onImported(r.id);
     } catch (e: any) {
@@ -80,6 +87,19 @@ export default function ResumeModal({
     if (d < 3600) return Math.floor(d / 60) + 'm';
     if (d < 86400) return Math.floor(d / 3600) + 'h';
     return Math.floor(d / 86400) + 'j';
+  }
+
+  function fmtSize(b: number) {
+    if (b < 1024) return b + ' B';
+    if (b < 1024 * 1024) return (b / 1024).toFixed(b < 10 * 1024 ? 1 : 0) + ' KB';
+    return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
+  }
+
+  function fmtModel(m?: string) {
+    if (!m) return '';
+    // claude-opus-4-7 → opus-4.7, claude-sonnet-4-6 → sonnet-4.6
+    const x = m.replace(/^claude-/, '');
+    return x.replace(/-(\d+)-(\d+)$/, '-$1.$2');
   }
 
   return (
@@ -115,15 +135,34 @@ export default function ResumeModal({
         {scanError && <p className="err">{scanError}</p>}
         {scanned && (
           <ul className="resume-list">
-            {scanned.filter((s) => !dbClaudeIds.has(s.sessionId)).map((s) => (
-              <li key={s.sessionId}>
-                <span className="tag tag-scan">scan</span>
-                <span className="name">{s.summary || s.sessionId.slice(0, 8)}</span>
-                <span className="cwd">{s.cwd}</span>
-                <span className="ago">{fmtAgo(s.mtime)}</span>
-                <button onClick={() => importScanned(s)} disabled={busy === s.sessionId}>importer</button>
-              </li>
-            ))}
+            {scanned.filter((s) => !dbClaudeIds.has(s.sessionId)).map((s) => {
+              const title = s.aiTitle || s.summary || s.firstUserText || s.sessionId.slice(0, 8);
+              const preview = s.lastPrompt || (s.firstUserText && s.firstUserText !== title ? s.firstUserText : '');
+              return (
+                <li key={s.sessionId} className="scan-row">
+                  <div className="scan-row-main">
+                    <div className="scan-line-1">
+                      <span className="tag tag-scan">scan</span>
+                      <span className="name" title={title}>{title}</span>
+                      <span className="ago">{fmtAgo(s.mtime)}</span>
+                    </div>
+                    <div className="scan-line-2">
+                      <span className="cwd" title={s.cwd}>{s.cwd}</span>
+                      {s.gitBranch && <span className="meta-pill branch" title="branche git">⎇ {s.gitBranch}</span>}
+                      {typeof s.messageCount === 'number' && s.messageCount > 0 && (
+                        <span className="meta-pill" title="messages">{s.messageCount} msg</span>
+                      )}
+                      {s.model && <span className="meta-pill" title="modèle">{fmtModel(s.model)}</span>}
+                      <span className="meta-pill" title="taille du fichier">{fmtSize(s.size)}</span>
+                    </div>
+                    {preview && (
+                      <div className="scan-preview" title={preview}>“{preview.length > 140 ? preview.slice(0, 140) + '…' : preview}”</div>
+                    )}
+                  </div>
+                  <button onClick={() => importScanned(s)} disabled={busy === s.sessionId}>importer</button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

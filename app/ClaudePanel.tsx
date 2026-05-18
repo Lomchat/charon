@@ -4,7 +4,8 @@ import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
-import Sidebar, { type SessionListItem } from './Sidebar';
+import Sidebar, { type SessionListItem, type ShellListItem } from './Sidebar';
+import ShellTerminal from './ShellTerminal';
 import NewSessionDialog from './NewSessionDialog';
 import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
@@ -111,6 +112,43 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
   const [bootstrapping, setBootstrapping] = useState<{ vps: Vps; resumeSessionId: string | null } | null>(null);
   // Console claude login interactive
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
+  // Shells SSH ephémères. Liste live (pollée au mount, mise à jour locale).
+  const [shells, setShells] = useState<ShellListItem[]>([]);
+  // Si non-null, c'est un shell qui est affiché dans le main panel (au lieu du chat)
+  const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
+
+  // Charge la liste des shells au mount + refresh quand un sélecteur change
+  useEffect(() => {
+    let cancelled = false;
+    api.listShells().then((r: any) => {
+      if (!cancelled) setShells(r?.shells ?? []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  async function startShell(opts: { vpsId: string; cwd?: string | null }) {
+    try {
+      const sh: any = await api.startShell(opts.vpsId, opts.cwd ?? null);
+      setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
+      setSelectedShellId(sh.id);
+      setSelectedId(null);  // mutuellement exclusif avec une session claude
+    } catch (e: any) {
+      setError({ msg: 'shell: ' + (e?.message ?? e) });
+    }
+  }
+  function selectShell(id: string) {
+    setSelectedShellId(id);
+    setSelectedId(null);
+  }
+  function shellKilled(id: string) {
+    setShells((prev) => prev.filter((s) => s.id !== id));
+    if (selectedShellId === id) setSelectedShellId(null);
+  }
+  // Quand on sélectionne une session Claude, on désélectionne le shell
+  function selectClaude(id: string) {
+    setSelectedId(id);
+    setSelectedShellId(null);
+  }
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -704,7 +742,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
   }
 
   return (
-    <div className="claude-root has-tools">
+    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}`}>
       <header className="claude-head">
         <svg className="brand-logo" viewBox="12 32 236 196" aria-hidden>
           <path d="M 18 120 Q 32 114 46 120 T 74 120 T 100 120" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
@@ -762,9 +800,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
         vpsList={vpsList}
         vpsPaths={vpsPaths}
         sessions={sessions}
+        shells={shells}
         selectedId={selectedId}
-        onSelect={setSelectedId}
+        selectedShellId={selectedShellId}
+        onSelect={selectClaude}
+        onSelectShell={selectShell}
         onNew={(opts) => setNewDialog(opts)}
+        onNewShell={startShell}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenResumeModal={() => setResumeOpen({ vpsId: selected?.vpsId })}
         onContext={(s, x, y) => setCtxMenu({ session: s, x, y })}
@@ -775,6 +817,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
         onLoginAgent={(v) => setLoginVps(v)}
       />
 
+      {/* Si un shell est sélectionné : main panel = terminal plein écran.
+          Sinon : le panneau Claude habituel (chat, tools, etc.). */}
+      {selectedShellId ? (() => {
+        const sh = shells.find((s) => s.id === selectedShellId);
+        if (!sh) return <main className="claude-main"><div className="bar-empty">shell introuvable</div></main>;
+        return (
+          <main className="claude-main shell-main">
+            <ShellTerminal
+              shellId={sh.id}
+              vpsName={sh.vpsName}
+              cwd={sh.cwd}
+              onKilled={() => shellKilled(sh.id)}
+            />
+          </main>
+        );
+      })() : (
       <main className="claude-main">
         <div className="claude-bar">
           {selected ? (
@@ -1002,15 +1060,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsPaths: initial
           </footer>
         )}
       </main>
+      )}
 
-      <ToolPanel
-        sessionId={selectedId}
-        toolCalls={cur.toolCalls}
-        todos={cur.todos}
-        edits={cur.edits}
-        files={cur.files}
-        onRevert={() => refreshSessions()}
-      />
+      {!selectedShellId && (
+        <ToolPanel
+          sessionId={selectedId}
+          toolCalls={cur.toolCalls}
+          todos={cur.todos}
+          edits={cur.edits}
+          files={cur.files}
+          onRevert={() => refreshSessions()}
+        />
+      )}
 
       <PermissionPopup
         queue={permQueue}

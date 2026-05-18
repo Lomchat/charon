@@ -44,13 +44,27 @@ function labelOf(p: VpsPath): string {
   return segs.length === 0 ? '(root)' : segs[segs.length - 1];
 }
 
+export type ShellListItem = {
+  id: string;
+  vpsId: string;
+  vpsName: string;
+  cwd: string | null;
+  startedAt: number;
+  exited: boolean;
+  exitCode: number | null;
+};
+
 type Props = {
   vpsList: Vps[];
   vpsPaths: VpsPath[];
   sessions: SessionListItem[];
+  shells: ShellListItem[];
   selectedId: string | null;
+  selectedShellId: string | null;
   onSelect: (id: string) => void;
+  onSelectShell: (id: string) => void;
   onNew: (opts: { vpsId: string; cwd?: string }) => void;
+  onNewShell: (opts: { vpsId: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
   onOpenResumeModal: () => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
@@ -69,7 +83,9 @@ const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 };
 
 export default function Sidebar({
-  vpsList, vpsPaths, sessions, selectedId, onSelect, onNew, onScan, onOpenResumeModal,
+  vpsList, vpsPaths, sessions, shells,
+  selectedId, selectedShellId,
+  onSelect, onSelectShell, onNew, onNewShell, onScan, onOpenResumeModal,
   onContext, editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent,
 }: Props) {
@@ -115,17 +131,26 @@ export default function Sidebar({
 
       {vpsList.map((v) => {
         const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
+        const vpsShells = shells.filter((sh) => sh.vpsId === v.id);
         const paths = pathsByVps.get(v.id) ?? [];
-        // Groupe sessions par best-matching path (clé = path.id, ou null pour "autres")
-        const groups = new Map<number | null, { path: VpsPath | null; sessions: SessionListItem[] }>();
+        // Groupe sessions + shells par best-matching path
+        const groups = new Map<number | null, {
+          path: VpsPath | null; sessions: SessionListItem[]; shells: ShellListItem[];
+        }>();
         for (const p of paths) {
-          groups.set(p.id, { path: p, sessions: [] });
+          groups.set(p.id, { path: p, sessions: [], shells: [] });
         }
         for (const s of vpsSessions) {
           const best = bestPathFor(s.cwd, paths);
           const key = best ? best.id : null;
-          if (!groups.has(key)) groups.set(key, { path: best, sessions: [] });
+          if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
           groups.get(key)!.sessions.push(s);
+        }
+        for (const sh of vpsShells) {
+          const best = sh.cwd ? bestPathFor(sh.cwd, paths) : null;
+          const key = best ? best.id : null;
+          if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
+          groups.get(key)!.shells.push(sh);
         }
         const isCollapsed = collapsed.has(v.id);
         const activeCount = vpsSessions.filter((s) =>
@@ -182,6 +207,11 @@ export default function Sidebar({
                   >claude login</button>
                 )}
                 <button
+                  className="vps-act-btn"
+                  onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
+                  title="ouvrir un shell SSH sur ce VPS (home du user)"
+                >⌨ shell</button>
+                <button
                   className="vps-act-btn icon-only"
                   onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
                   title="scanner les sessions Claude existantes sur ce VPS"
@@ -202,8 +232,13 @@ export default function Sidebar({
                         <button
                           className="proj-action"
                           onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
-                          title="nouvelle session sur ce path"
+                          title="nouvelle session Claude sur ce path"
                         >+</button>
+                        <button
+                          className="proj-action proj-shell"
+                          onClick={() => onNewShell({ vpsId: v.id, cwd: p.path })}
+                          title="ouvrir un shell SSH dans ce path"
+                        >⌨</button>
                       </div>
                       {g?.sessions.map((s) => (
                         <SessionRow
@@ -216,13 +251,21 @@ export default function Sidebar({
                           onRenameCancel={onRenameCancel}
                         />
                       ))}
+                      {g?.shells.map((sh) => (
+                        <ShellRow
+                          key={sh.id} sh={sh}
+                          selected={sh.id === selectedShellId}
+                          onSelect={onSelectShell}
+                        />
+                      ))}
                     </div>
                   );
                 })}
-                {/* Sessions sans match (cwd inconnu pour ce VPS) */}
+                {/* Sessions/shells sans match (cwd inconnu) */}
                 {(() => {
-                  const orphans = groups.get(null)?.sessions ?? [];
-                  if (orphans.length === 0 && paths.length > 0) return null;
+                  const orphSessions = groups.get(null)?.sessions ?? [];
+                  const orphShells = groups.get(null)?.shells ?? [];
+                  if (orphSessions.length === 0 && orphShells.length === 0 && paths.length > 0) return null;
                   return (
                     <div className="proj-block orphans">
                       <div className="proj-head">
@@ -231,10 +274,15 @@ export default function Sidebar({
                         <button
                           className="proj-action"
                           onClick={() => onNew({ vpsId: v.id })}
-                          title="nouvelle session libre (cwd à entrer)"
+                          title="nouvelle session Claude libre"
                         >+</button>
+                        <button
+                          className="proj-action proj-shell"
+                          onClick={() => onNewShell({ vpsId: v.id, cwd: null })}
+                          title="shell SSH au home du user"
+                        >⌨</button>
                       </div>
-                      {orphans.map((s) => (
+                      {orphSessions.map((s) => (
                         <SessionRow
                           key={s.id} s={s}
                           selected={s.id === selectedId}
@@ -243,6 +291,13 @@ export default function Sidebar({
                           editing={editingId === s.id}
                           onRenameSubmit={onRenameSubmit}
                           onRenameCancel={onRenameCancel}
+                        />
+                      ))}
+                      {orphShells.map((sh) => (
+                        <ShellRow
+                          key={sh.id} sh={sh}
+                          selected={sh.id === selectedShellId}
+                          onSelect={onSelectShell}
                         />
                       ))}
                     </div>
@@ -324,6 +379,34 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
       <div className="row-meta">
         <span className="meta-cwd">{cwdTail}</span>
         {age && <span className="meta-age">· {age}</span>}
+      </div>
+    </button>
+  );
+}
+
+function ShellRow({ sh, selected, onSelect }: {
+  sh: ShellListItem;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const age = formatAge(Math.floor(sh.startedAt / 1000));
+  const cwdTail = sh.cwd
+    ? (sh.cwd.length > 38 ? '…' + sh.cwd.slice(-37) : sh.cwd)
+    : '~';
+  return (
+    <button
+      type="button"
+      className={`session-row shell-row${selected ? ' selected' : ''}${sh.exited ? ' exited' : ''}`}
+      onClick={() => onSelect(sh.id)}
+      title={`shell SSH${sh.cwd ? ` · ${sh.cwd}` : ''}\nDémarré ${age}${sh.exited ? '\n(terminé)' : ''}`}
+    >
+      <div className="row-head">
+        <span className={`dot ${sh.exited ? 'dot-gray' : 'dot-cyan'}`} />
+        <span className="label">⌨ {cwdTail}</span>
+        {sh.exited && <span className="shell-exit-tag">terminé</span>}
+      </div>
+      <div className="row-meta">
+        <span className="meta-cwd">shell · {age}</span>
       </div>
     </button>
   );

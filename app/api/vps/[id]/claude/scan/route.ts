@@ -10,9 +10,95 @@ import { sshExec } from '@/lib/server/claude/sshExec';
 
 // Script Python — passé tel quel sur stdin de `python3 -` (PAS de -c, parce
 // que les blocs indentés ne survivent pas au join par `; `).
+//
+// On extrait ce que claude /resume affiche : titre IA, dernier prompt, premier
+// message user, nombre de messages, modèle, branche git, taille, mtime.
+// Compatible python 3.9 (pas de syntaxe 3.10+).
 const SCAN_PY = `
 import os, json, sys
 from pathlib import Path
+
+MAX_LINES = 10000  # garde-fou pour les sessions énormes
+
+def extract_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get('type') == 'text':
+                return b.get('text') or ''
+    return ''
+
+def is_system_injection(text):
+    # claude code injecte des blocs <ide_opened_file>, <command-name>, etc.
+    # qu'on veut filtrer pour montrer un VRAI message user
+    if not text:
+        return True
+    s = text.lstrip()
+    return s.startswith('<') or s.startswith('[Request interrupted')
+
+def parse_one(path):
+    cwd_fallback = path.parent.name.replace('-', '/')
+    info = {
+        'sessionId': path.stem,
+        'cwd': cwd_fallback,
+        'summary': '',
+        'aiTitle': '',
+        'lastPrompt': '',
+        'firstUserText': '',
+        'messageCount': 0,
+        'model': '',
+        'gitBranch': '',
+    }
+    try:
+        stat = path.stat()
+        info['mtime'] = int(stat.st_mtime)
+        info['size'] = stat.st_size
+    except Exception:
+        return None
+    try:
+        with open(path, 'r', errors='replace') as fh:
+            for i, line in enumerate(fh):
+                if i >= MAX_LINES:
+                    break
+                try:
+                    d = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                t = d.get('type')
+                if d.get('cwd'):
+                    info['cwd'] = d.get('cwd')
+                if d.get('gitBranch'):
+                    info['gitBranch'] = d.get('gitBranch')
+                if d.get('summary'):
+                    info['summary'] = d.get('summary')
+                if t == 'ai-title':
+                    at = d.get('aiTitle')
+                    if at:
+                        info['aiTitle'] = at
+                elif t == 'last-prompt':
+                    lp = d.get('lastPrompt')
+                    if lp:
+                        info['lastPrompt'] = lp[:400]
+                elif t == 'user':
+                    info['messageCount'] += 1
+                    if not info['firstUserText']:
+                        msg = d.get('message') or {}
+                        text = extract_text(msg.get('content'))
+                        if not is_system_injection(text):
+                            info['firstUserText'] = text[:300]
+                elif t == 'assistant':
+                    info['messageCount'] += 1
+                    msg = d.get('message') or {}
+                    m = msg.get('model')
+                    if m:
+                        info['model'] = m
+    except Exception:
+        pass
+    return info
+
 home = Path.home()
 base = home / '.claude' / 'projects'
 out = []
@@ -21,30 +107,10 @@ if base.exists():
         if not d.is_dir():
             continue
         for f in d.glob('*.jsonl'):
-            try:
-                stat = f.stat()
-                cwd = d.name.replace('-', '/')
-                summary = ''
-                with open(f, 'r', errors='replace') as fh:
-                    line = fh.readline()
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            if isinstance(data, dict):
-                                cwd = data.get('cwd') or cwd
-                                summary = data.get('summary') or ''
-                        except Exception:
-                            pass
-                out.append({
-                    'sessionId': f.stem,
-                    'cwd': cwd,
-                    'mtime': int(stat.st_mtime),
-                    'size': stat.st_size,
-                    'summary': summary,
-                })
-            except Exception:
-                pass
-out.sort(key=lambda x: -x['mtime'])
+            r = parse_one(f)
+            if r is not None:
+                out.append(r)
+out.sort(key=lambda x: -x.get('mtime', 0))
 print(json.dumps(out))
 `;
 
