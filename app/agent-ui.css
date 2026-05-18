@@ -531,11 +531,11 @@
   position: absolute;
   inset: 0;
   background: var(--row-color);
-  opacity: 0.06;
+  opacity: 0.12;
   pointer-events: none;
 }
 .session-row.has-color.selected::before {
-  opacity: 0.12;
+  opacity: 0.22;
 }
 /* Le row-head doit rester au-dessus du voile coloré */
 .session-row .row-head,
@@ -548,38 +548,48 @@
 /* ── Palette de couleurs dans le context menu ───────────────────────────── */
 .session-ctx-menu .ctx-color-row {
   display: flex;
-  gap: 5px;
-  padding: 6px 14px;
+  gap: 6px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
+  align-items: center;       /* évite que flex stretch les dots */
 }
-.ctx-color-dot {
-  width: 18px;
-  height: 18px;
+/* Les .ctx-color-dot sont des <button> dans .session-ctx-menu — claude.css
+ * y applique padding/text-align par défaut ; on override tout pour avoir des
+ * cercles parfaits. */
+.session-ctx-menu .ctx-color-dot {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;            /* protège contre les overrides flex */
+  min-height: 20px;
+  flex: 0 0 20px;             /* pas de stretch flexbox */
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.2);
   cursor: pointer;
   padding: 0;
+  margin: 0;
   position: relative;
   transition: transform 0.08s ease;
+  text-align: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.ctx-color-dot:hover {
+.session-ctx-menu .ctx-color-dot:hover {
   transform: scale(1.18);
   border-color: rgba(255,255,255,0.6);
+  background-color: var(--row-color, transparent); /* hover ne casse pas la couleur */
 }
-.ctx-color-dot.on {
+.session-ctx-menu .ctx-color-dot.on {
   border-color: #fff;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 0 4px rgba(255,255,255,0.4);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 0 5px rgba(255,255,255,0.45);
 }
-.ctx-color-dot.none {
+.session-ctx-menu .ctx-color-dot.none {
   border: 1px dashed rgba(255,255,255,0.3);
   background: transparent !important;
 }
-.ctx-color-dot .x {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.session-ctx-menu .ctx-color-dot .x {
   font-size: 11px;
   color: rgba(255,255,255,0.5);
   line-height: 1;
