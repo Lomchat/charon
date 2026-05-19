@@ -1,0 +1,140 @@
+'use client';
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '@/lib/api';
+import type { Vps, VpsPath } from '@/lib/db/schema';
+
+type Props = {
+  vpsList: Vps[];
+  vpsPaths: VpsPath[];
+  initial?: { vpsId?: string; cwd?: string };
+  onClose: () => void;
+  onCreated: (id: string) => void;
+};
+
+// Bottom-sheet mobile pour créer une nouvelle session Claude.
+// Reprend la logique de NewSessionDialog en plus simple/mobile-friendly.
+export default function NewSessionSheet({
+  vpsList, vpsPaths, initial, onClose, onCreated,
+}: Props) {
+  const [vpsId, setVpsId] = useState(initial?.vpsId ?? vpsList[0]?.id ?? '');
+  const [cwd, setCwd] = useState(initial?.cwd ?? '');
+  const [name, setName] = useState('');
+  const [check, setCheck] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const cwdSuggestions = useMemo(() => {
+    return vpsPaths
+      .filter((p) => p.vpsId === vpsId)
+      .map((p) => p.path)
+      .sort();
+  }, [vpsId, vpsPaths]);
+
+  // Vérif Claude SDK au montage / changement VPS
+  useEffect(() => {
+    if (!vpsId) return;
+    setCheck(null);
+    api.checkVpsClaude(vpsId)
+      .then((r) => setCheck(r))
+      .catch((e) => setCheck({ ok: false, error: String(e?.message ?? e) }));
+  }, [vpsId]);
+
+  async function create() {
+    if (!vpsId || !cwd.trim()) return;
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.createClaudeSession({
+        vpsId, cwd: cwd.trim(),
+        name: name.trim() || null,
+        permissionMode: 'auto',
+      });
+      onCreated(r.id);
+    } catch (e: any) {
+      setErr(String(e?.message ?? e));
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <>
+      <div className="m-sheet-bg" onClick={onClose} />
+      <div className="m-sheet" role="dialog" aria-modal="true">
+        <header className="m-sheet-head">
+          <h2>nouvelle session</h2>
+          <button className="m-sheet-close" onClick={onClose} aria-label="fermer">✕</button>
+        </header>
+        <div className="m-sheet-body">
+          <label>
+            <span>VPS</span>
+            <select value={vpsId} onChange={(e) => setVpsId(e.target.value)}>
+              {vpsList.map((v) => (
+                <option key={v.id} value={v.id}>{v.name} ({v.sshUser}@{v.ip})</option>
+              ))}
+            </select>
+          </label>
+
+          {check !== null && (
+            <div style={{ fontSize: 12, color: 'var(--parchment-soft)', fontFamily: 'var(--mono)', marginBottom: 14 }}>
+              {check.ok
+                ? (
+                    <span style={{ color: '#a0c87b' }}>
+                      ✓ sdk {check.sdk}, python {check.python}
+                      {(!check.cliInstalled || check.authOk === false) && (
+                        <span style={{ color: 'var(--parchment-soft)', opacity: 0.7 }}>
+                          {' — '}
+                          {!check.cliInstalled && 'cli non détecté'}
+                          {!check.cliInstalled && check.authOk === false && ', '}
+                          {check.authOk === false && 'login non détecté'}
+                          {' (ok si la session marche)'}
+                        </span>
+                      )}
+                    </span>
+                  )
+                : <span style={{ color: 'var(--crimson)' }}>⚠ sdk manquant</span>
+              }
+            </div>
+          )}
+
+          <label>
+            <span>cwd (chemin sur le VPS)</span>
+            <input
+              value={cwd}
+              onChange={(e) => setCwd(e.target.value)}
+              placeholder="/srv/mon-projet"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            {cwdSuggestions.length > 0 && (
+              <div className="m-sheet-suggestions">
+                {cwdSuggestions.slice(0, 6).map((p) => (
+                  <button key={p} type="button" onClick={() => setCwd(p)}>{p}</button>
+                ))}
+              </div>
+            )}
+          </label>
+
+          <label>
+            <span>nom (optionnel)</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="ex : refacto auth"
+            />
+          </label>
+
+          {err && <div className="m-sheet-err">{err}</div>}
+
+          <div className="m-sheet-actions">
+            <button type="button" onClick={onClose}>annuler</button>
+            <button
+              type="button"
+              className="primary"
+              onClick={create}
+              disabled={busy || !cwd.trim() || !vpsId}
+            >{busy ? '…' : 'démarrer'}</button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}

@@ -21,8 +21,11 @@ export async function loginAction(_prev: { error?: string } | null, formData: Fo
   setSessionKey(session.id, key);
   const c = await cookies();
   c.set(SESSION_COOKIE, session.id, {
-    path: '/', httpOnly: true, sameSite: 'lax', secure: false,
-    maxAge: Math.floor(SESSION_TTL_MS / 1000)
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
   redirect('/');
 }

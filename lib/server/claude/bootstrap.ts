@@ -28,6 +28,18 @@ export type BootstrapEvent = {
 const PY_CHAIN =
   'command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10';
 
+// L'agent et le SDK tournent toujours dans un venv dédié à ~/.charon/venv.
+// Avantages : pas de conflit avec les paquets système, contourne PEP 668
+// (Debian 12 / Ubuntu 23+ refusent `pip install --user` par défaut), et garde
+// le même chemin python entre install, verify, ping et systemd.
+const VENV_DIR = '$HOME/.charon/venv';
+const VENV_PY = `${VENV_DIR}/bin/python`;
+// Bash snippet qui résout le bon python : venv s'il existe, sinon le meilleur
+// python système. Utilisé partout où on doit invoquer python sur le VPS.
+const PY_LOOKUP_VENV_OR_SYSTEM =
+  `if [ -x ${VENV_PY} ]; then echo ${VENV_PY}; ` +
+  `else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3; fi`;
+
 type OsInfo = { id: string; versionId: string; pkgMgr: 'apt' | 'dnf' | 'yum' | 'apk' | 'pacman' | 'unknown' };
 
 function parseOsRelease(content: string): OsInfo {
@@ -64,8 +76,12 @@ function pythonInstallCmd(os: OsInfo): string | null {
 
 // ── Vérif Python+SDK ────────────────────────────────────────────────────────
 async function tryVerify(vps: Vps): Promise<{ ok: boolean; sdk?: string; py?: string; reason: 'no_py' | 'no_sdk' | 'ok' | 'other'; raw: string }> {
+  // On utilise le venv s'il existe, sinon le python système. Si on tombe sur
+  // un python système et qu'il n'a pas le SDK, on signale 'no_sdk' → bootstrap
+  // créera le venv + installera dedans. Ainsi le verify ne dépend plus du fait
+  // que pip --user soit allé au bon endroit.
   const cmd =
-    `PY=$(${PY_CHAIN}); ` +
+    `PY=$(${PY_LOOKUP_VENV_OR_SYSTEM}); ` +
     `if [ -z "$PY" ]; then echo "NO_PY"; exit 10; fi; ` +
     `echo "PY=$PY"; ` +
     `"$PY" -c 'import claude_agent_sdk; print("SDK=" + str(claude_agent_sdk.__version__))' 2>&1`;
@@ -89,7 +105,7 @@ function readAgentB64(): string {
   return buf.toString('base64');
 }
 
-async function installAgentPyz(vps: Vps): Promise<{ ok: boolean; detail: string }> {
+export async function installAgentPyz(vps: Vps): Promise<{ ok: boolean; detail: string }> {
   let b64: string;
   try {
     b64 = readAgentB64();
@@ -112,15 +128,15 @@ async function installAgentPyz(vps: Vps): Promise<{ ok: boolean; detail: string 
 }
 
 // ── Service systemd-user (avec fallback nohup) ──────────────────────────────
-// Le pyz a un shebang `python3` mais le SDK exige python ≥ 3.10. Sur CentOS/RHEL
-// la commande `python3` reste à 3.9 — on prend explicitement le meilleur python
-// disponible (3.13 → 3.10) via un wrapper /bin/sh.
+// L'agent tourne via le python du venv ~/.charon/venv où on a installé le SDK.
+// Fallback : si pour une raison X le venv n'existe pas (devrait pas arriver
+// après bootstrap), on retombe sur le meilleur python système.
 const SYSTEMD_UNIT = `[Unit]
 Description=Charon Agent
 After=default.target
 
 [Service]
-ExecStart=/bin/sh -c 'PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
+ExecStart=/bin/sh -c 'PY=%h/.charon/venv/bin/python; [ -x "$PY" ] || PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
 Restart=on-failure
 RestartSec=2
 StandardOutput=append:%h/.charon/agent.log
@@ -155,8 +171,9 @@ async function installAgentService(vps: Vps): Promise<{ ok: boolean; mode: 'syst
   }
 
   // Fallback nohup : kill l'éventuel running, relance via crontab @reboot.
-  // Idem que le unit systemd : on choisit explicitement python3.10+.
-  const PY_LOOKUP = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
+  // Idem que le unit systemd : on prend le venv s'il existe, sinon le python
+  // système 3.10+.
+  const PY_LOOKUP = '$(if [ -x $HOME/.charon/venv/bin/python ]; then echo $HOME/.charon/venv/bin/python; else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3; fi)';
   const fallbackScript = [
     // Kill l'éventuelle instance qui tourne (si on remplace le binaire)
     "pkill -f 'charon-agent.pyz' || true",
@@ -175,11 +192,11 @@ async function installAgentService(vps: Vps): Promise<{ ok: boolean; mode: 'syst
   return { ok: false, mode: 'nohup', detail: `systemd: ${r.stderr.slice(-200) || r.stdout.slice(-200)} | nohup: ${r2.stderr.slice(-200)}` };
 }
 
-async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: string; detail: string }> {
+export async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: string; pyzSha?: string; detail: string }> {
   // Donne un peu de temps au daemon pour démarrer
   await new Promise((r) => setTimeout(r, 800));
-  // Idem : utilise un python ≥ 3.10 explicitement
-  const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
+  // Idem : venv s'il existe, sinon python système ≥ 3.10
+  const PY = `$(${PY_LOOKUP_VENV_OR_SYSTEM})`;
   const r = await sshExec(
     vps,
     `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ${PY} ~/.charon/charon-agent.pyz --connect`,
@@ -190,16 +207,85 @@ async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: string; det
   }
   const lines = r.stdout.trim().split('\n').filter(Boolean);
   let version: string | undefined;
+  let pyzSha: string | undefined;
   let pingOk = false;
   for (const l of lines) {
     try {
       const msg = JSON.parse(l);
       if (msg?.result?.pong) pingOk = true;
       if (typeof msg?.result?.agent_version === 'string') version = msg.result.agent_version;
+      if (typeof msg?.result?.agent_pyz_sha === 'string') pyzSha = msg.result.agent_pyz_sha;
     } catch {}
   }
   if (!pingOk) return { ok: false, detail: 'pas de réponse pong : ' + r.stdout.slice(-300) };
-  return { ok: true, version, detail: `agent ${version ?? '?'}` };
+  return { ok: true, version, pyzSha, detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}` };
+}
+
+// ── Update agent : déploie le pyz + restart le service + verify ────────────
+// Distinct du bootstrap complet : on suppose que le venv + le SDK + l'unit
+// systemd existent déjà. On veut juste swap le .pyz et redémarrer. Si le
+// restart systemd échoue (fallback nohup avait été utilisé au bootstrap),
+// on retombe sur pkill+nohup.
+export type UpdateAgentResult = {
+  ok: boolean;
+  oldVersion?: string;
+  newVersion?: string;
+  newPyzSha?: string;
+  detail: string;
+};
+
+export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
+  // Step 1 : deploy
+  const dep = await installAgentPyz(vps);
+  if (!dep.ok) return { ok: false, detail: `deploy: ${dep.detail}` };
+
+  // Step 2 : restart. Tente systemd-user puis fallback nohup.
+  // IMPORTANT : on joint avec '\n' pour préserver la syntaxe shell (if/then/
+  // else/fi). Le bug précédent joignait avec un espace, produisant du bash
+  // illégal type "export FOO=bar || true if systemctl..." qui foirait silencieux.
+  const restartCmd = [
+    'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
+    'if systemctl --user restart charon-agent.service 2>/dev/null; then',
+    '  sleep 1',
+    '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then',
+    '    echo OK_SYSTEMD',
+    '    exit 0',
+    '  fi',
+    'fi',
+    '# Fallback nohup : kill l\'éventuel running et relance détaché',
+    'pkill -f charon-agent.pyz 2>/dev/null || true',
+    'sleep 0.5',
+    'if [ -x "$HOME/.charon/venv/bin/python" ]; then',
+    '  PY="$HOME/.charon/venv/bin/python"',
+    'else',
+    '  PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)',
+    'fi',
+    'if [ -z "$PY" ]; then',
+    '  echo "NO_PYTHON" >&2',
+    '  exit 11',
+    'fi',
+    'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
+    'sleep 1',
+    'echo OK_NOHUP',
+  ].join('\n');
+  const rr = await sshExec(vps, restartCmd, { timeoutMs: 20_000 });
+  if (!rr.ok || !(rr.stdout.includes('OK_SYSTEMD') || rr.stdout.includes('OK_NOHUP'))) {
+    const tail = (rr.stderr.slice(-300) || rr.stdout.slice(-300) || `exit ${rr.code}`).trim();
+    return { ok: false, detail: `restart failed: ${tail}` };
+  }
+
+  // Step 3 : ping pour récupérer la nouvelle version + sha (hello).
+  // Retry une fois après 2s si le premier ping échoue — le daemon peut mettre
+  // un peu de temps à ouvrir son socket selon la machine.
+  let ping = await pingAgent(vps);
+  if (!ping.ok) {
+    await new Promise((r) => setTimeout(r, 2000));
+    ping = await pingAgent(vps);
+  }
+  if (!ping.ok) {
+    return { ok: false, detail: `ping after restart: ${ping.detail}` };
+  }
+  return { ok: true, newVersion: ping.version, newPyzSha: ping.pyzSha, detail: ping.detail };
 }
 
 // ── Main flow ───────────────────────────────────────────────────────────────
@@ -239,19 +325,45 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
       }
     }
 
-    // Install SDK si manquant
+    // Install SDK si manquant — dans un venv dédié à ~/.charon/venv.
+    // Le venv contourne PEP 668 (Debian 12 / Ubuntu 23+ refusent `pip --user`)
+    // et garantit un python identique entre install / verify / ping / systemd.
     if (!v.ok) {
-      yield { phase: 'install_sdk', status: 'running', detail: 'pip install --user claude-agent-sdk' };
+      yield { phase: 'install_sdk', status: 'running', detail: `venv ${VENV_DIR} + pip install claude-agent-sdk` };
+      // pipefail : remonte l'exit code de pip même si on pipe vers tail (sans
+      // ça, le pipeline retourne 0 même quand pip explose → bootstrap croyait
+      // que ça avait marché et bouclait).
       const sdkCmd =
-        `PY=$(${PY_CHAIN}); ` +
-        `if [ -z "$PY" ]; then echo "NO_PY"; exit 10; fi; ` +
-        `"$PY" -m pip install --user --upgrade claude-agent-sdk 2>&1 | tail -40`;
+        `set -o pipefail; ` +
+        `BASE=$(${PY_CHAIN} || command -v python3); ` +
+        `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi; ` +
+        `echo "[install_sdk] base python = $BASE"; ` +
+        // Crée le venv si absent. --without-pip + ensurepip est un fallback
+        // quand python3-venv n'est pas dispo (rare sur Debian/Ubuntu où il
+        // doit être installé en même temps que python3, mais on couvre).
+        `if [ ! -x ${VENV_PY} ]; then ` +
+        `  echo "[install_sdk] creating venv ${VENV_DIR}"; ` +
+        `  "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || ` +
+        `  { "$BASE" -m venv --without-pip ${VENV_DIR} && ${VENV_PY} -m ensurepip --upgrade 2>&1 | tail -20; } || ` +
+        `  { echo "[install_sdk] venv creation failed — install python3-venv (apt) ou python3X-venv (dnf)"; exit 11; }; ` +
+        `fi; ` +
+        // Upgrade pip dans le venv pour éviter les warnings/edge-cases.
+        `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10; ` +
+        // Install du SDK. Sans `| tail` cette fois — on veut l'exit code ET
+        // pipefail s'occupe du reste de toute façon.
+        `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40; ` +
+        // Post-check d'import : la SEULE vraie preuve que c'est bon.
+        `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`;
       const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 240_000 });
-      if (!sdkR.ok) {
-        yield { phase: 'install_sdk', status: 'error', detail: (sdkR.stdout + sdkR.stderr).slice(-400) };
+      const out = (sdkR.stdout + sdkR.stderr);
+      const importedOk = /\[install_sdk\] OK version=/.test(out);
+      if (!sdkR.ok || !importedOk) {
+        yield { phase: 'install_sdk', status: 'error', detail: out.slice(-600) || `exit ${sdkR.code}` };
         return;
       }
-      yield { phase: 'install_sdk', status: 'ok' };
+      // Récupère la version qu'on vient d'installer pour l'afficher dans le UI
+      const vMatch = out.match(/\[install_sdk\] OK version=(\S+)/);
+      yield { phase: 'install_sdk', status: 'ok', detail: vMatch ? `claude-agent-sdk ${vMatch[1]} dans ${VENV_DIR}` : `installé dans ${VENV_DIR}` };
 
       v = await tryVerify(vps);
       if (!v.ok) {

@@ -156,7 +156,7 @@ class AgentSession:
         self.cwd = cwd
         self.name = name
         self.permission_mode = permission_mode if permission_mode in (
-            "normal", "acceptEdits", "bypass", "plan",
+            "normal", "acceptEdits", "auto", "plan",
         ) else "normal"
         self.claude_session_id = claude_session_id
         self._emit_to_server = emit
@@ -209,6 +209,33 @@ class AgentSession:
         self._stopped.set()
         await self._save_state()
 
+    async def force_stop(self) -> None:
+        """Annule brutalement la session sans attendre le SDK.
+
+        Cas d'usage : le SDK est bloqué (tool qui ne rend pas la main, le
+        `interrupt` soft n'a aucun effet visible). On cancel le main task
+        fire-and-forget : la session passe en 'sleeping' immédiatement et
+        l'utilisateur peut resume. La task cancelée peut continuer à vivre
+        quelques temps en arrière-plan jusqu'à ce que le SDK rende la main —
+        son `finally` est protégé pour ne pas écraser l'état d'une session
+        qu'on aurait re-démarrée entre-temps.
+        """
+        self.status = "sleeping"
+        self._emit("status", status="sleeping")
+        self._emit("interrupted", forced=True)
+        for fut in self._pending_perms.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending_perms.clear()
+        old_task = self._main_task
+        self._main_task = None
+        self._client = None
+        self._client_ctx = None
+        self._stopped.set()
+        if old_task is not None and not old_task.done():
+            old_task.cancel()  # fire-and-forget : on n'attend pas
+        await self._save_state()
+
     async def send_input(self, content: str) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
@@ -224,11 +251,13 @@ class AgentSession:
             self._emit("error", msg=f"interrupt: {e}")
 
     async def set_permission_mode(self, mode: str) -> None:
-        if mode not in ("normal", "acceptEdits", "bypass", "plan"):
+        if mode not in ("normal", "acceptEdits", "auto", "plan"):
             mode = "normal"
         self.permission_mode = mode
-        # Skip mode "auto" (bypass interne) : le CLI refuse --dangerously en root.
-        # On reste "default" côté SDK et nos hooks PreToolUse font l'auto-allow.
+        # Mapping SDK : seul "plan" est passé tel quel. Les autres modes
+        # ("normal", "acceptEdits", "auto") sont mappés à "default" et c'est
+        # nos hooks PreToolUse qui appliquent la logique (asking dashboard,
+        # auto-allow file edits, bypass total respectivement).
         sdk_mode = "plan" if mode == "plan" else "default"
         if self._client is not None:
             try:
@@ -379,9 +408,9 @@ class AgentSession:
                 "permissionDecisionReason": "dashboard handles AskUserQuestion",
             }}
 
-        # ExitPlanMode : auto-allow + switch implicite vers bypass
+        # ExitPlanMode : auto-allow + switch implicite vers auto
         if tool_name == "ExitPlanMode":
-            asyncio.create_task(self._switch_to_bypass_after_exit_plan())
+            asyncio.create_task(self._switch_to_auto_after_exit_plan())
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
@@ -424,46 +453,72 @@ class AgentSession:
                 "permissionDecision": "allow",
             }}
 
-        # Permission flow (skip si bypass)
-        if self.permission_mode != "bypass":
-            pid = "perm_" + str(tool_use_id or id(input_data))
-            loop = asyncio.get_event_loop()
-            fut = loop.create_future()
-            self._pending_perms[pid] = fut
-            self._emit("permission_request", id=pid, tool=tool_name, input=tool_input)
-            try:
-                allowed = await asyncio.wait_for(fut, timeout=600)
-            except asyncio.TimeoutError:
-                self._pending_perms.pop(pid, None)
-                return {"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "timeout (10min sans réponse du dashboard)",
-                }}
-            except asyncio.CancelledError:
-                self._pending_perms.pop(pid, None)
-                return {"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "session pausée",
-                }}
-            if not allowed:
-                return {"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": "refusé par le dashboard",
-                }}
-
-        # Snapshot AVANT edition (si permission accordée)
+        # Snapshot des outils d'édition AVANT de décider — peu importe le chemin
+        # de permission (PreToolUse direct ou can_use_tool via classifier auto),
+        # PostToolUse aura besoin du contenu d'origine pour générer le diff.
         if tool_name in SNAPSHOT_TOOLS:
             fp = tool_input.get("file_path")
             if fp:
                 self._snapshot_file(fp, "before", tool_use_id)
 
+        # Mode "auto" : bypass total — accepte tout sans demander. C'est ce que
+        # l'UI charon a toujours appelé "auto mode" (vs l'auto modèle-classifieur
+        # de Claude Code natif qui n'est pas accessible depuis le SDK Python).
+        # Le snapshot SNAPSHOT_TOOLS a déjà été pris plus haut pour le diff.
+        if self.permission_mode == "auto":
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+            }}
+
+        # Permission flow standard (normal, acceptEdits non-snapshot, plan
+        # non-safe) : on demande directement au dashboard depuis ce hook.
+        allowed = await self._ask_dashboard_permission(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            perm_id="perm_" + str(tool_use_id or id(input_data)),
+        )
+        if allowed is None:
+            # timeout ou cancellation : on a déjà nettoyé _pending_perms
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "timeout/cancellation",
+            }}
+        if not allowed:
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "refusé par le dashboard",
+            }}
         return {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
         }}
+
+    async def _ask_dashboard_permission(
+        self,
+        *,
+        tool_name: str,
+        tool_input: dict,
+        perm_id: str,
+    ) -> bool | None:
+        """Émet permission_request au dashboard et await la réponse.
+
+        Retourne True si autorisé, False si refusé, None si timeout/cancellation.
+        Le caller traduit en decision Allow/Deny dans le format approprié
+        (hookSpecificOutput pour PreToolUse, PermissionResult pour can_use_tool).
+        """
+        loop = asyncio.get_event_loop()
+        fut = loop.create_future()
+        self._pending_perms[perm_id] = fut
+        self._emit("permission_request", id=perm_id, tool=tool_name, input=tool_input)
+        try:
+            allowed = await asyncio.wait_for(fut, timeout=600)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            self._pending_perms.pop(perm_id, None)
+            return None
+        return bool(allowed)
 
     async def _can_use_tool(self, tool_name, tool_input, context):
         from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny  # type: ignore
@@ -488,24 +543,41 @@ class AgentSession:
             return PermissionResultAllow(
                 updated_input={"questions": questions, "answers": answers}
             )
+
+        # En mode "auto", notre PreToolUse renvoie "ask" → le classifier du CLI
+        # applique ses règles. S'il décide qu'il faut demander à l'utilisateur,
+        # le CLI nous rappelle ici via can_use_tool. On délègue au dashboard
+        # via le même mécanisme que le permission flow standard.
+        perm_id = "perm_" + str(getattr(context, "tool_use_id", None) or id(tool_input))
+        allowed = await self._ask_dashboard_permission(
+            tool_name=tool_name,
+            tool_input=tool_input or {},
+            perm_id=perm_id,
+        )
+        if allowed is None:
+            return PermissionResultDeny(message="timeout (10min sans réponse du dashboard)")
+        if not allowed:
+            return PermissionResultDeny(message="refusé par le dashboard")
         return PermissionResultAllow()
 
-    async def _switch_to_bypass_after_exit_plan(self) -> None:
+    async def _switch_to_auto_after_exit_plan(self) -> None:
         if self._plan_accepted:
             return
         self._plan_accepted = True
         try:
             await asyncio.sleep(0.05)
-            self.permission_mode = "bypass"
+            self.permission_mode = "auto"
             if self._client is not None:
                 try:
+                    # Côté SDK on reste sur "default" — c'est notre hook PreToolUse
+                    # qui voit `self.permission_mode == "auto"` et bypass tout.
                     await self._client.set_permission_mode("default")
                 except Exception as e:
                     print(f"set_permission_mode(default) post-exit-plan: {e}", file=sys.stderr)
             self._emit("mode_changed", mode=self.permission_mode)
             await self._save_state()
         except Exception as e:
-            print(f"_switch_to_bypass_after_exit_plan: {e}", file=sys.stderr)
+            print(f"_switch_to_auto_after_exit_plan: {e}", file=sys.stderr)
 
     async def _post_tool_use(self, input_data, tool_use_id, context):
         tool_name = (input_data or {}).get("tool_name", "?")
@@ -595,10 +667,14 @@ class AgentSession:
 
     # ── Main loop ────────────────────────────────────────────────────────────
     async def _run(self) -> None:
-        # Mode SDK : "plan" si on est en plan mode, sinon "default".
-        # Le "bypass" interne passe par nos hooks PreToolUse (jamais via le flag
-        # --dangerously-skip-permissions du SDK : il refuse en root).
+        # Mode SDK :
+        #   - "plan" : passé tel quel pour que le SDK applique sa logique de plan
+        #   - "auto" / "normal" / "acceptEdits" → "default" côté SDK. C'est nos
+        #     hooks PreToolUse qui décident (allow direct en mode auto = bypass
+        #     total, asking au dashboard en normal, auto-allow file edits en
+        #     acceptEdits).
         sdk_mode = "plan" if self.permission_mode == "plan" else "default"
+
         try:
             options_kwargs: dict[str, Any] = dict(
                 cwd=self.cwd,
@@ -656,9 +732,15 @@ class AgentSession:
             self._emit("error", msg=self._error_msg, fatal=True)
             self._emit("status", status="error")
         finally:
-            self._client = None
-            self._client_ctx = None
-            if self.status not in ("error", "killed", "sleeping"):
-                self.status = "sleeping"
-                self._emit("status", status="sleeping")
-            await self._save_state()
+            # Si force_stop nous a remplacés (self._main_task pointe ailleurs
+            # ou est déjà None et une nouvelle task a pris le relais), on ne
+            # touche à rien — sinon on viendrait écraser l'état de la session
+            # fraîchement re-démarrée.
+            me = asyncio.current_task()
+            if self._main_task is None or self._main_task is me:
+                self._client = None
+                self._client_ctx = None
+                if self.status not in ("error", "killed", "sleeping"):
+                    self.status = "sleeping"
+                    self._emit("status", status="sleeping")
+                await self._save_state()

@@ -31,9 +31,9 @@ export async function POST(req: Request) {
     const id = await importExistingSession({
       vpsId, cwd, claudeSessionId,
       name: body.name ? String(body.name) : null,
-      permissionMode: (['normal', 'acceptEdits', 'bypass', 'plan'] as const).includes(body.permissionMode)
+      permissionMode: (['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(body.permissionMode)
         ? body.permissionMode
-        : 'normal',
+        : 'auto',
     });
 
     // Fetch + insert messages (best-effort : si ça échoue, la session est

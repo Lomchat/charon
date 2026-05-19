@@ -4,27 +4,11 @@ import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import SplitDiffModal from './SplitDiffModal';
 
-export type ToolCallEntry = {
-  id: string;
-  name: string;
-  input: any;
-  result?: { content: string; isError: boolean };
-  startedAt: number;
-};
-
-export type Todo = {
-  content: string;
-  status: 'pending' | 'in_progress' | 'completed';
-  activeForm?: string;
-};
-
-export type EditSnapshot = {
-  toolUseId: string;
-  filePath: string;
-  before: string | null;
-  after: string | null;
-  truncated: boolean;
-};
+// Types partagés desktop/mobile définis dans `./sessionTypes`. Réexportés ici
+// pour préserver les imports historiques (`import { ToolCallEntry, Todo,
+// EditSnapshot } from './ToolPanel'`).
+export type { ToolCallEntry, Todo, EditSnapshot } from './sessionTypes';
+import type { ToolCallEntry, Todo, EditSnapshot } from './sessionTypes';
 
 type Props = {
   sessionId: string | null;

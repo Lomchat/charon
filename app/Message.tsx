@@ -4,12 +4,10 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 
-export type Msg = {
-  id: string;
-  role: string;
-  content: string;
-  createdAt: number;
-};
+// Type partagé desktop/mobile défini dans `./sessionTypes`. Réexporté ici
+// pour préserver les imports historiques (`import { Msg } from './Message'`).
+import type { Msg } from './sessionTypes';
+export type { Msg };
 
 type Props = {
   m: Msg;

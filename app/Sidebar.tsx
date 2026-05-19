@@ -1,19 +1,18 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import type { Vps, VpsPath, ClaudeSession } from '@/lib/db/schema';
-import type { WorkerStatus } from '@/lib/server/claude/types';
+import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
+import type { SessionListItem } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconTerminal, IconThreeDotsVertical } from './icons';
 import { colorToCss } from './SessionContextMenu';
 
+// SessionListItem est défini dans `lib/types/api.ts` (source de vérité,
+// alignée avec la réponse de GET /api/claude/sessions). On le réexporte
+// pour ne pas casser les imports historiques `import { SessionListItem }
+// from './Sidebar'`.
+export type { SessionListItem };
+
 const COLLAPSED_KEY = 'hub.claude.collapsedVps.v2';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
-
-export type SessionListItem = ClaudeSession & {
-  liveStatus?: WorkerStatus;
-  subscribers?: number;
-  pendingPermissions?: number;
-  firstUserMessage?: string | null;
-};
 
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
@@ -60,6 +59,7 @@ export type ShellListItem = {
 
 type Props = {
   vpsList: Vps[];
+  vpsFolders: VpsFolder[];
   vpsPaths: VpsPath[];
   sessions: SessionListItem[];
   shells: ShellListItem[];
@@ -78,6 +78,13 @@ type Props = {
   onRenameCancel?: () => void;
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
+  onUpdateAgent?: (vps: Vps) => void;
+  // Toggle collapsed d'un dossier (persisté en DB via PATCH /api/vps-folders/[id]).
+  onToggleFolderCollapsed?: (folderId: string, collapsed: boolean) => void;
+  // SHA du .pyz embarqué dans le dashboard (sert à détecter agent out-of-date)
+  builtPyzSha?: string | null;
+  // VPS pour lesquels une mise à jour est en cours (UI loading)
+  updatingAgentVpsIds?: Set<string>;
 };
 
 const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
@@ -89,14 +96,15 @@ const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 
 
 export default function Sidebar({
-  vpsList, vpsPaths, sessions, shells,
+  vpsList, vpsFolders, vpsPaths, sessions, shells,
   selectedId, selectedShellId,
   onSelect, onSelectShell, onNew, onNewShell, onScan, onOpenResumeModal,
   onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
-  onInstallAgent, onLoginAgent,
+  onInstallAgent, onLoginAgent, onUpdateAgent, onToggleFolderCollapsed,
+  builtPyzSha, updatingAgentVpsIds,
 }: Props) {
 
-  // Sections de VPS collapsées (persistant en localStorage)
+  // Sections de VPS collapsées (persistant en localStorage) — par-VPS, par-device.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     try {
@@ -128,6 +136,39 @@ export default function Sidebar({
     return m;
   }, [vpsPaths]);
 
+  // Groupe les VPS par folderId, en respectant l'ordre `position` intra-folder.
+  const vpsByFolder = useMemo(() => {
+    const m = new Map<string, Vps[]>();
+    for (const v of vpsList) {
+      const arr = m.get(v.folderId) ?? [];
+      arr.push(v);
+      m.set(v.folderId, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.position - b.position);
+    return m;
+  }, [vpsList]);
+
+  // Folders triés par position. On garde aussi un fallback : si un VPS pointe
+  // vers un folderId inconnu (théoriquement impossible, mais data drift), on
+  // crée un dossier virtuel "(orphelins)" en bas de la sidebar.
+  const sortedFolders = useMemo(() => {
+    const sorted = [...vpsFolders].sort((a, b) => a.position - b.position);
+    const known = new Set(sorted.map((f) => f.id));
+    const orphanedFolderIds = new Set<string>();
+    for (const v of vpsList) if (!known.has(v.folderId)) orphanedFolderIds.add(v.folderId);
+    if (orphanedFolderIds.size > 0) {
+      // Synthétique : ne sera pas persisté, juste pour qu'on n'oublie pas un VPS.
+      sorted.push({
+        id: '__orphans__',
+        name: '(orphelins)',
+        position: 999999,
+        collapsed: 0,
+        createdAt: 0,
+      } as VpsFolder);
+    }
+    return sorted;
+  }, [vpsFolders, vpsList]);
+
   return (
     <aside className="claude-sidebar">
       <div className="sidebar-toolbar">
@@ -140,192 +181,296 @@ export default function Sidebar({
         ><IconThreeDotsVertical /></button>
       </div>
 
-      {vpsList.map((v) => {
-        const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
-        const vpsShells = shells.filter((sh) => sh.vpsId === v.id);
-        const paths = pathsByVps.get(v.id) ?? [];
-        // Groupe sessions + shells par best-matching path
-        const groups = new Map<number | null, {
-          path: VpsPath | null; sessions: SessionListItem[]; shells: ShellListItem[];
-        }>();
-        for (const p of paths) {
-          groups.set(p.id, { path: p, sessions: [], shells: [] });
+      {sortedFolders.map((folder) => {
+        let folderVps: Vps[];
+        if (folder.id === '__orphans__') {
+          const known = new Set(vpsFolders.map((f) => f.id));
+          folderVps = vpsList.filter((v) => !known.has(v.folderId));
+        } else {
+          folderVps = vpsByFolder.get(folder.id) ?? [];
         }
-        for (const s of vpsSessions) {
-          const best = bestPathFor(s.cwd, paths);
-          const key = best ? best.id : null;
-          if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
-          groups.get(key)!.sessions.push(s);
-        }
-        for (const sh of vpsShells) {
-          const best = sh.cwd ? bestPathFor(sh.cwd, paths) : null;
-          const key = best ? best.id : null;
-          if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
-          groups.get(key)!.shells.push(sh);
-        }
-        const isCollapsed = collapsed.has(v.id);
-        const activeCount = vpsSessions.filter((s) =>
-          ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
+        // Compteur agrégé : sessions actives à travers tous les VPS du dossier
+        const folderActiveCount = sessions.filter(
+          (s) => folderVps.some((v) => v.id === s.vpsId) && ACTIVE_STATUSES.has(s.liveStatus ?? s.status),
         ).length;
-        const agentStatus = (v as any).agentStatus ?? 'unknown';
-        const agentVersion = (v as any).agentVersion as string | undefined;
-        const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
-        const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}`;
+        const folderCollapsed = folder.collapsed === 1;
+
+        // Le dossier "default" n'a typiquement pas besoin d'header visible si
+        // c'est le seul dossier — mais le user a explicitement demandé une
+        // organisation en dossiers, donc on l'affiche toujours. Si tu veux le
+        // masquer quand vide+seul, c'est ici qu'il faudrait court-circuiter.
         return (
-          <section key={v.id} className={`vps-section vps-card${isCollapsed ? ' collapsed' : ''} agent-${agentStatus}`}>
+          <section key={folder.id} className={`folder-section${folderCollapsed ? ' folder-collapsed' : ''}`}>
             <div
-              className="vps-head"
-              onClick={() => toggleCollapsed(v.id)}
+              className="folder-head"
+              onClick={() => {
+                if (folder.id === '__orphans__') return;
+                onToggleFolderCollapsed?.(folder.id, !folderCollapsed);
+              }}
               role="button"
-              title={isCollapsed ? 'cliquer pour déplier' : 'cliquer pour replier'}
+              title={folderCollapsed ? 'cliquer pour déplier le dossier' : 'cliquer pour replier le dossier'}
             >
-              <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
-              <span className="g">▣</span>
-              <span className="n">{v.name}</span>
-              <span className={`vps-agent-dot agent-${agentStatus}`} title={agentTip}>{agentMeta.glyph}</span>
-              {activeCount > 0 ? (
-                <span className="active-count" title={`${activeCount} session(s) active(s)`}>{activeCount}</span>
-              ) : (
-                <span className="active-count zero" title="aucune session active">0</span>
+              <span className="folder-caret">{folderCollapsed ? '▸' : '▾'}</span>
+              <span className="folder-glyph">▤</span>
+              <span className="folder-name">{folder.name}</span>
+              <span className="folder-count" title={`${folderVps.length} VPS dans ce dossier`}>{folderVps.length}</span>
+              {folderActiveCount > 0 && (
+                <span className="folder-active-count" title={`${folderActiveCount} session(s) active(s) dans ce dossier`}>
+                  {folderActiveCount}
+                </span>
               )}
             </div>
-            {!isCollapsed && (
-              <div className="vps-meta">
-                <span className="vps-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
-                <span className="vps-sep">·</span>
-                <span className={`vps-agent-text agent-${agentStatus}`}>
-                  {agentStatus === 'ok'      ? `agent ${agentVersion ? `v${agentVersion}` : 'ok'}`
-                  : agentStatus === 'missing' ? 'agent non installé'
-                  : agentStatus === 'error'   ? 'agent en erreur'
-                  : 'agent non testé'}
-                </span>
-              </div>
-            )}
-            {!isCollapsed && (
-              <div className="vps-actions">
-                {agentStatus !== 'ok' && onInstallAgent && (
-                  <button
-                    className="vps-act-btn primary"
-                    onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
-                    title="installer / réparer l'agent sur ce VPS"
-                  >▸ install agent</button>
-                )}
-                {onLoginAgent && (
-                  <button
-                    className="vps-act-btn"
-                    onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
-                    title="claude login interactif (OAuth) sur ce VPS"
-                  ><span className="btn-icon"><IconRobot /></span> claude login</button>
-                )}
-                <button
-                  className="vps-act-btn"
-                  onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
-                  title="ouvrir un shell SSH sur ce VPS (home du user)"
-                ><span className="btn-icon"><IconTerminal /></span> shell</button>
-                <button
-                  className="vps-act-btn"
-                  onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
-                  title="scanner les sessions Claude existantes sur ce VPS"
-                ><span className="btn-icon"><IconClockHistory /></span> historique</button>
-              </div>
-            )}
-            {!isCollapsed && (
-              <>
-                {/* Paths déclarés, avec leurs sessions matchées */}
-                {paths.map((p) => {
-                  const g = groups.get(p.id);
-                  return (
-                    <div key={p.id} className="proj-block">
-                      <div className="proj-head">
-                        <span className="g">▤</span>
-                        <span className="n">{labelOf(p)}</span>
-                        <span className="cwd" title={p.path}>{p.path}</span>
-                        <button
-                          className="proj-action"
-                          onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
-                          title="nouvelle session Claude sur ce path"
-                          aria-label="nouvelle session Claude"
-                        ><IconRobot /></button>
-                        <button
-                          className="proj-action proj-shell"
-                          onClick={() => onNewShell({ vpsId: v.id, cwd: p.path })}
-                          title="ouvrir un shell SSH dans ce path"
-                          aria-label="nouveau shell"
-                        ><IconTerminal /></button>
-                      </div>
-                      {g?.sessions.map((s) => (
-                        <SessionRow
-                          key={s.id} s={s}
-                          selected={s.id === selectedId}
-                          onSelect={onSelect}
-                          onContext={onContext}
-                          editing={editingId === s.id}
-                          onRenameSubmit={onRenameSubmit}
-                          onRenameCancel={onRenameCancel}
-                        />
-                      ))}
-                      {g?.shells.map((sh) => (
-                        <ShellRow
-                          key={sh.id} sh={sh}
-                          selected={sh.id === selectedShellId}
-                          onSelect={onSelectShell}
-                          onContext={onContextShell}
-                        />
-                      ))}
-                    </div>
-                  );
-                })}
-                {/* Sessions/shells sans match (cwd inconnu) */}
-                {(() => {
-                  const orphSessions = groups.get(null)?.sessions ?? [];
-                  const orphShells = groups.get(null)?.shells ?? [];
-                  if (orphSessions.length === 0 && orphShells.length === 0 && paths.length > 0) return null;
-                  return (
-                    <div className="proj-block orphans">
-                      <div className="proj-head">
-                        <span className="g">○</span>
-                        <span className="n">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
-                        <button
-                          className="proj-action"
-                          onClick={() => onNew({ vpsId: v.id })}
-                          title="nouvelle session Claude libre"
-                          aria-label="nouvelle session Claude"
-                        ><IconRobot /></button>
-                        <button
-                          className="proj-action proj-shell"
-                          onClick={() => onNewShell({ vpsId: v.id, cwd: null })}
-                          title="shell SSH au home du user"
-                          aria-label="nouveau shell"
-                        ><IconTerminal /></button>
-                      </div>
-                      {orphSessions.map((s) => (
-                        <SessionRow
-                          key={s.id} s={s}
-                          selected={s.id === selectedId}
-                          onSelect={onSelect}
-                          onContext={onContext}
-                          editing={editingId === s.id}
-                          onRenameSubmit={onRenameSubmit}
-                          onRenameCancel={onRenameCancel}
-                        />
-                      ))}
-                      {orphShells.map((sh) => (
-                        <ShellRow
-                          key={sh.id} sh={sh}
-                          selected={sh.id === selectedShellId}
-                          onSelect={onSelectShell}
-                          onContext={onContextShell}
-                        />
-                      ))}
-                    </div>
-                  );
-                })()}
-              </>
+            {!folderCollapsed && folderVps.map((v) => renderVpsCard(v, {
+              vpsSessions: sessions.filter((s) => s.vpsId === v.id),
+              vpsShells: shells.filter((sh) => sh.vpsId === v.id),
+              paths: pathsByVps.get(v.id) ?? [],
+              isCollapsed: collapsed.has(v.id),
+              onToggle: () => toggleCollapsed(v.id),
+              selectedId, selectedShellId,
+              onSelect, onSelectShell, onNew, onNewShell, onScan,
+              onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
+              onInstallAgent, onLoginAgent, onUpdateAgent,
+              builtPyzSha, updatingAgentVpsIds,
+            }))}
+            {!folderCollapsed && folderVps.length === 0 && folder.id !== '__orphans__' && (
+              <div className="folder-empty">aucun VPS dans ce dossier — glisse-en un ici depuis le modal de config</div>
             )}
           </section>
         );
       })}
     </aside>
+  );
+}
+
+// Rendu d'une carte VPS (extrait du body du composant principal pour garder la
+// lisibilité après l'introduction du wrapping par folder).
+type VpsRenderOpts = {
+  vpsSessions: SessionListItem[];
+  vpsShells: ShellListItem[];
+  paths: VpsPath[];
+  isCollapsed: boolean;
+  onToggle: () => void;
+  selectedId: string | null;
+  selectedShellId: string | null;
+  onSelect: (id: string) => void;
+  onSelectShell: (id: string) => void;
+  onNew: (opts: { vpsId: string; cwd?: string }) => void;
+  onNewShell: (opts: { vpsId: string; cwd?: string | null }) => void;
+  onScan: (vpsId: string) => void;
+  onContext?: (session: SessionListItem, x: number, y: number) => void;
+  onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
+  editingId?: string | null;
+  onRenameSubmit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
+  onInstallAgent?: (vps: Vps) => void;
+  onLoginAgent?: (vps: Vps) => void;
+  onUpdateAgent?: (vps: Vps) => void;
+  builtPyzSha?: string | null;
+  updatingAgentVpsIds?: Set<string>;
+};
+
+function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
+  const {
+    vpsSessions, vpsShells, paths, isCollapsed, onToggle,
+    selectedId, selectedShellId, onSelect, onSelectShell, onNew, onNewShell, onScan,
+    onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
+    onInstallAgent, onLoginAgent, onUpdateAgent, builtPyzSha, updatingAgentVpsIds,
+  } = opts;
+
+  // Groupe sessions + shells par best-matching path
+  const groups = new Map<number | null, {
+    path: VpsPath | null; sessions: SessionListItem[]; shells: ShellListItem[];
+  }>();
+  for (const p of paths) {
+    groups.set(p.id, { path: p, sessions: [], shells: [] });
+  }
+  for (const s of vpsSessions) {
+    const best = bestPathFor(s.cwd, paths);
+    const key = best ? best.id : null;
+    if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
+    groups.get(key)!.sessions.push(s);
+  }
+  for (const sh of vpsShells) {
+    const best = sh.cwd ? bestPathFor(sh.cwd, paths) : null;
+    const key = best ? best.id : null;
+    if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
+    groups.get(key)!.shells.push(sh);
+  }
+  const activeCount = vpsSessions.filter((s) =>
+    ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
+  ).length;
+  const agentStatus = (v as any).agentStatus ?? 'unknown';
+  const agentVersion = (v as any).agentVersion as string | undefined;
+  const agentPyzSha = (v as any).agentPyzSha as string | undefined;
+  const agentOutOfDate =
+    agentStatus === 'ok' &&
+    !!builtPyzSha &&
+    (agentPyzSha == null || agentPyzSha !== builtPyzSha);
+  const agentUpdating = !!updatingAgentVpsIds?.has(v.id);
+  const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
+  const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}${agentOutOfDate ? ' — mise à jour dispo' : ''}`;
+  return (
+    <section key={v.id} className={`vps-section vps-card${isCollapsed ? ' collapsed' : ''} agent-${agentStatus}`}>
+      <div
+        className="vps-head"
+        onClick={onToggle}
+        role="button"
+        title={isCollapsed ? 'cliquer pour déplier' : 'cliquer pour replier'}
+      >
+        <span className="caret">{isCollapsed ? '▸' : '▾'}</span>
+        <span className="g">▣</span>
+        <span className="n">{v.name}</span>
+        <span
+          className={`vps-agent-dot agent-${agentStatus}${agentOutOfDate ? ' outdated' : ''}`}
+          title={agentTip}
+        >{agentMeta.glyph}</span>
+        {activeCount > 0 ? (
+          <span className="active-count" title={`${activeCount} session(s) active(s)`}>{activeCount}</span>
+        ) : (
+          <span className="active-count zero" title="aucune session active">0</span>
+        )}
+      </div>
+      {!isCollapsed && (
+        <div className="vps-meta">
+          <span className="vps-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
+          <span className="vps-sep">·</span>
+          <span className={`vps-agent-text agent-${agentStatus}`}>
+            {agentStatus === 'ok'      ? `agent ${agentVersion ? `v${agentVersion}` : 'ok'}`
+            : agentStatus === 'missing' ? 'agent non installé'
+            : agentStatus === 'error'   ? 'agent en erreur'
+            : 'agent non testé'}
+          </span>
+        </div>
+      )}
+      {!isCollapsed && (
+        <div className="vps-actions">
+          {agentStatus !== 'ok' && onInstallAgent && (
+            <button
+              className="vps-act-btn primary"
+              onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
+              title="installer / réparer l'agent sur ce VPS"
+            >▸ install agent</button>
+          )}
+          {agentOutOfDate && onUpdateAgent && (
+            <button
+              className="vps-act-btn agent-update"
+              disabled={agentUpdating}
+              onClick={(e) => { e.stopPropagation(); onUpdateAgent(v); }}
+              title={`mettre à jour l'agent (déployé: ${agentPyzSha ?? 'inconnu'}, dispo: ${builtPyzSha})`}
+            >{agentUpdating ? '⟳ mise à jour…' : '⇪ update agent'}</button>
+          )}
+          {onLoginAgent && (
+            <button
+              className="vps-act-btn"
+              onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
+              title="claude login interactif (OAuth) sur ce VPS"
+            ><span className="btn-icon"><IconRobot /></span> claude login</button>
+          )}
+          <button
+            className="vps-act-btn"
+            onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
+            title="ouvrir un shell SSH sur ce VPS (home du user)"
+          ><span className="btn-icon"><IconTerminal /></span> shell</button>
+          <button
+            className="vps-act-btn"
+            onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
+            title="scanner les sessions Claude existantes sur ce VPS"
+          ><span className="btn-icon"><IconClockHistory /></span> historique</button>
+        </div>
+      )}
+      {!isCollapsed && (
+        <>
+          {/* Paths déclarés, avec leurs sessions matchées */}
+          {paths.map((p) => {
+            const g = groups.get(p.id);
+            return (
+              <div key={p.id} className="proj-block">
+                <div className="proj-head">
+                  <span className="g">▤</span>
+                  <span className="n">{labelOf(p)}</span>
+                  <span className="cwd" title={p.path}>{p.path}</span>
+                  <button
+                    className="proj-action"
+                    onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
+                    title="nouvelle session Claude sur ce path"
+                    aria-label="nouvelle session Claude"
+                  ><IconRobot /></button>
+                  <button
+                    className="proj-action proj-shell"
+                    onClick={() => onNewShell({ vpsId: v.id, cwd: p.path })}
+                    title="ouvrir un shell SSH dans ce path"
+                    aria-label="nouveau shell"
+                  ><IconTerminal /></button>
+                </div>
+                {g?.sessions.map((s) => (
+                  <SessionRow
+                    key={s.id} s={s}
+                    selected={s.id === selectedId}
+                    onSelect={onSelect}
+                    onContext={onContext}
+                    editing={editingId === s.id}
+                    onRenameSubmit={onRenameSubmit}
+                    onRenameCancel={onRenameCancel}
+                  />
+                ))}
+                {g?.shells.map((sh) => (
+                  <ShellRow
+                    key={sh.id} sh={sh}
+                    selected={sh.id === selectedShellId}
+                    onSelect={onSelectShell}
+                    onContext={onContextShell}
+                  />
+                ))}
+              </div>
+            );
+          })}
+          {(() => {
+            const orphSessions = groups.get(null)?.sessions ?? [];
+            const orphShells = groups.get(null)?.shells ?? [];
+            if (orphSessions.length === 0 && orphShells.length === 0 && paths.length > 0) return null;
+            return (
+              <div className="proj-block orphans">
+                <div className="proj-head">
+                  <span className="g">○</span>
+                  <span className="n">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
+                  <button
+                    className="proj-action"
+                    onClick={() => onNew({ vpsId: v.id })}
+                    title="nouvelle session Claude libre"
+                    aria-label="nouvelle session Claude"
+                  ><IconRobot /></button>
+                  <button
+                    className="proj-action proj-shell"
+                    onClick={() => onNewShell({ vpsId: v.id, cwd: null })}
+                    title="shell SSH au home du user"
+                    aria-label="nouveau shell"
+                  ><IconTerminal /></button>
+                </div>
+                {orphSessions.map((s) => (
+                  <SessionRow
+                    key={s.id} s={s}
+                    selected={s.id === selectedId}
+                    onSelect={onSelect}
+                    onContext={onContext}
+                    editing={editingId === s.id}
+                    onRenameSubmit={onRenameSubmit}
+                    onRenameCancel={onRenameCancel}
+                  />
+                ))}
+                {orphShells.map((sh) => (
+                  <ShellRow
+                    key={sh.id} sh={sh}
+                    selected={sh.id === selectedShellId}
+                    onSelect={onSelectShell}
+                    onContext={onContextShell}
+                  />
+                ))}
+              </div>
+            );
+          })()}
+        </>
+      )}
+    </section>
   );
 }
 

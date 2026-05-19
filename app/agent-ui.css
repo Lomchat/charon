@@ -72,6 +72,12 @@
 .vps-agent-dot.agent-missing { color: #d8a85a; }
 .vps-agent-dot.agent-error   { color: #d97a6b; }
 .vps-agent-dot.agent-unknown { color: #777; }
+/* Out of date : on supplante la couleur "ok" pour signaler qu'il faut update */
+.vps-agent-dot.outdated      { color: #d8a85a; animation: vps-agent-pulse 2s ease-in-out infinite; }
+@keyframes vps-agent-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 
 /* Ligne meta : user@ip · agent v0.1.0 — un cran plus petit, gris */
 .claude-sidebar .vps-meta {
@@ -130,6 +136,21 @@
 .vps-act-btn.primary:hover {
   background: rgba(216, 168, 90, 0.28);
   border-color: rgba(216, 168, 90, 0.8);
+}
+/* update agent : amber subtil, distinct du "install primary" en or */
+.vps-act-btn.agent-update {
+  background: rgba(216, 168, 90, 0.10);
+  border-color: rgba(216, 168, 90, 0.45);
+  color: #e0c084;
+}
+.vps-act-btn.agent-update:hover:not(:disabled) {
+  background: rgba(216, 168, 90, 0.20);
+  border-color: rgba(216, 168, 90, 0.7);
+  color: #f0d39e;
+}
+.vps-act-btn.agent-update:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 .vps-act-btn.icon-only {
   padding: 3px 7px;

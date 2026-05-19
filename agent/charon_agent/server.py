@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -14,6 +15,30 @@ from pathlib import Path
 from typing import Any, Awaitable
 
 from . import __version__
+
+
+def _compute_pyz_sha() -> str:
+    """SHA256 (12 premiers chars) du fichier .pyz qu'on exécute.
+
+    Sert au dashboard pour détecter qu'une mise à jour de l'agent est dispo
+    sans avoir à bumper __version__ à chaque change. sys.argv[0] pointe vers
+    le .pyz quand l'agent est lancé via `python charon-agent.pyz`. Si le
+    fichier est introuvable (cas dev sans pyz), retourne "dev".
+    """
+    try:
+        pyz = sys.argv[0]
+        if not pyz or not os.path.isfile(pyz):
+            return "dev"
+        h = hashlib.sha256()
+        with open(pyz, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()[:12]
+    except Exception:
+        return "unknown"
+
+
+_PYZ_SHA = _compute_pyz_sha()
 from . import protocol
 from .protocol import (
     ERR_INTERNAL,
@@ -161,6 +186,7 @@ class Server:
         if method == "hello":
             return {
                 "agent_version": __version__,
+                "agent_pyz_sha": _PYZ_SHA,
                 "sdk_available": SDK_AVAILABLE,
                 "sdk_error": SDK_IMPORT_ERROR,
                 "pid": os.getpid(),
@@ -294,6 +320,16 @@ class Server:
             sid = self._require_sid(params)
             s = self._require_session(sid)
             await s.stop(mark="sleeping")
+            self.schedule_save()
+            return {"ok": True}
+
+        if method == "force_stop":
+            # Annulation brutale (le SDK est bloqué et l'interrupt soft est
+            # inefficace). La session passe en 'sleeping' immédiatement ;
+            # l'utilisateur peut resume sans attendre la fin du tool en cours.
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            await s.force_stop()
             self.schedule_save()
             return {"ok": True}
 

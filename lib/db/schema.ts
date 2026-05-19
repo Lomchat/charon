@@ -15,6 +15,22 @@ export const sessions = sqliteTable('sessions', {
   expiresAt: integer('expires_at').notNull()
 });
 
+// Dossiers d'organisation des VPS dans la sidebar/UI.
+// Chaque VPS appartient obligatoirement à un dossier (cf. `vps.folderId`).
+// Un dossier par défaut (id='default') est créé par la migration 0006 ; il
+// est protégé contre la suppression (cf. /api/vps-folders/[id] DELETE).
+// `position` ordonne les dossiers entre eux (drag-and-drop dans DataModal).
+// `collapsed` est l'état replié/déplié dans la sidebar (persisté DB pour
+// être synchro cross-device, contrairement au flag par-VPS qui vit en
+// localStorage avec la clé `hub.claude.collapsedVps.v2`).
+export const vpsFolders = sqliteTable('vps_folders', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  position: integer('position').notNull().default(0),
+  collapsed: integer('collapsed').notNull().default(0),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
+});
+
 export const vps = sqliteTable('vps', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -22,6 +38,13 @@ export const vps = sqliteTable('vps', {
   sshUser: text('ssh_user').notNull(),
   sshPort: integer('ssh_port').notNull().default(22),
   defaultPath: text('default_path'),
+  // Dossier d'appartenance (cf. `vps_folders`). Toujours non-null ; les VPS
+  // créés sans folderId explicite tombent dans le dossier 'default' via
+  // DEFAULT SQL. La FK n'est pas enforced côté SQLite (ALTER ADD COLUMN
+  // limitation), seulement validée côté application.
+  folderId: text('folder_id').notNull().default('default').references(() => vpsFolders.id),
+  // Ordre dans le dossier (entier monotone, géré via batch reorder).
+  position: integer('position').notNull().default(0),
   // Statut de l'agent installé sur ce VPS.
   //   'unknown'  : jamais testé (par défaut)
   //   'ok'       : ping récent réussi
@@ -29,6 +52,10 @@ export const vps = sqliteTable('vps', {
   //   'error'    : agent installé mais ne répond pas
   agentStatus: text('agent_status').notNull().default('unknown'),
   agentVersion: text('agent_version'),
+  // Hash du .pyz qui tourne sur le VPS (12 premiers chars du sha256). Sert au
+  // dashboard pour détecter "agent out of date" sans dépendre du bump manuel
+  // de __version__. Comparé au sha du .pyz embarqué dans le dashboard.
+  agentPyzSha: text('agent_pyz_sha'),
   agentLastSeenAt: integer('agent_last_seen_at'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
@@ -120,6 +147,7 @@ export const claudePushSubs = sqliteTable('claude_push_subscriptions', {
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Vps = typeof vps.$inferSelect;
+export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
 export type ClaudeSession = typeof claudeSessions.$inferSelect;
 export type ClaudeSessionMessage = typeof claudeSessionMessages.$inferSelect;

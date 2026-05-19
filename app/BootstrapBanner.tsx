@@ -39,6 +39,15 @@ export default function BootstrapBanner({ vps, onDone, onCancel }: Props) {
   const [events, setEvents] = useState<BootstrapEvent[]>([]);
   const [finished, setFinished] = useState<null | 'ok' | 'error'>(null);
   const esRef = useRef<EventSource | null>(null);
+  // CRITIQUE : onDone est une arrow function inline dans ClaudePanel, donc
+  // recréée à CHAQUE render du parent (poll sessions 4s, status updates, etc.).
+  // Si on la met dans la dep array du useEffect, l'effet se relance à chaque
+  // render → ferme la SSE en cours → en ouvre une nouvelle → le serveur
+  // relance bootstrapVps depuis zéro → boucle infinie côté UI.
+  // On stocke onDone dans une ref pour avoir toujours la dernière version
+  // sans déclencher le useEffect.
+  const onDoneRef = useRef(onDone);
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
 
   useEffect(() => {
     const es = new EventSource(`/api/vps/${vps.id}/claude/bootstrap`);
@@ -59,7 +68,7 @@ export default function BootstrapBanner({ vps, onDone, onCancel }: Props) {
         setFinished(ev.status === 'ok' ? 'ok' : 'error');
         es.close();
         // Léger délai pour que l'utilisateur voie le ✓
-        setTimeout(() => onDone(ev.status === 'ok'), 600);
+        setTimeout(() => onDoneRef.current(ev.status === 'ok'), 600);
       }
       // Tout phase en 'error' sans 'done' → on s'arrête aussi
       if (ev.status === 'error' && ev.phase !== 'done') {
@@ -68,10 +77,15 @@ export default function BootstrapBanner({ vps, onDone, onCancel }: Props) {
       }
     };
     es.onerror = () => {
-      // Connexion perdue — on stoppe sans relancer
+      // EventSource reconnecte AUTO par défaut quand le serveur ferme le
+      // stream (ce qui arrive à la fin de bootstrapVps, qu'il y ait un 'done'
+      // ou pas). Sans close() explicite ici, le browser relance un GET
+      // /bootstrap → bootstrapVps re-tourne → boucle infinie côté UI.
+      es.close();
+      setFinished((prev) => prev ?? 'error');
     };
     return () => { es.close(); };
-  }, [vps.id, onDone]);
+  }, [vps.id]);
 
   return (
     <div className={`claude-banner bootstrap ${finished ?? ''}`}>

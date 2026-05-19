@@ -48,7 +48,7 @@ export default function SettingsModal({ onClose }: Props) {
   }, [onClose]);
 
   useEffect(() => {
-    api.getClaudeSettings().then((r: any) => setS(r)).catch(() => setS({}));
+    api.getClaudeSettings().then((r) => setS(r)).catch(() => setS({}));
   }, []);
 
   function set(k: string, v: string) {
@@ -59,7 +59,7 @@ export default function SettingsModal({ onClose }: Props) {
     if (!s) return;
     setBusy(true);
     try {
-      const r: any = await api.updateClaudeSettings(s);
+      const r = await api.updateClaudeSettings(s);
       setS(r);
       onClose();
     } catch (e: any) {

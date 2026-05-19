@@ -17,11 +17,14 @@ export default function NewSessionDialog({
   const [vpsId, setVpsId] = useState(initial?.vpsId ?? vpsList[0]?.id ?? '');
   const [cwd, setCwd] = useState(initial?.cwd ?? '');
   const [name, setName] = useState('');
-  // Toujours créé en "normal" — l'utilisateur change via le switch dans le chat
-  const permissionMode = 'normal' as const;
+  // Toujours créé en "auto" (classifier natif Claude) — l'utilisateur change via le switch dans le chat
+  const permissionMode = 'auto' as const;
   const [check, setCheck] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Feedback inline du clic "installer le SDK" (au lieu d'une alert intrusive)
+  const [setupLog, setSetupLog] = useState<null | { ok: boolean; tail: string; version: string | null }>(null);
+  const [setupLogOpen, setSetupLogOpen] = useState(false);
 
   // Suggestions de chemins : paths connus pour ce VPS
   const cwdSuggestions = useMemo(() => {
@@ -47,12 +50,27 @@ export default function NewSessionDialog({
 
   async function setup() {
     setBusy(true);
+    setSetupLog(null);
+    setSetupLogOpen(false);
     try {
-      const r: any = await api.setupVpsClaude(vpsId);
-      const tail = (r.stdout + '\n' + r.stderr).slice(-1500);
-      alert((r.ok ? 'OK installé' : 'échec') + '\n\n' + tail);
-      const c: any = await api.checkVpsClaude(vpsId);
+      const r = await api.setupVpsClaude(vpsId);
+      const out = (r.stdout || '') + '\n' + (r.stderr || '');
+      // pip dit "Requirement already satisfied" si le SDK est déjà là — on
+      // détecte ça comme un succès muet (l'idempotence est attendue).
+      const alreadyOk = /Requirement already satisfied/i.test(out);
+      const versionMatch = out.match(/version:\s*([\d.]+\S*)/i);
+      setSetupLog({
+        ok: r.ok,
+        tail: out.slice(-1500).trim(),
+        version: versionMatch ? versionMatch[1] : null,
+      });
+      // On ouvre le détail SEULEMENT si ça a foiré — sinon juste un toast OK
+      setSetupLogOpen(!r.ok && !alreadyOk);
+      const c = await api.checkVpsClaude(vpsId);
       setCheck(c);
+    } catch (e: any) {
+      setSetupLog({ ok: false, tail: String(e?.message ?? e), version: null });
+      setSetupLogOpen(true);
     } finally { setBusy(false); }
   }
 
@@ -60,7 +78,7 @@ export default function NewSessionDialog({
     if (!vpsId || !cwd.trim()) return;
     setBusy(true); setErr(null);
     try {
-      const r: any = await api.createClaudeSession({
+      const r = await api.createClaudeSession({
         vpsId, cwd: cwd.trim(),
         name: name.trim() || null,
         permissionMode,
@@ -90,20 +108,49 @@ export default function NewSessionDialog({
           {check && check.ok && (
             <span className="ok">
               ✓ sdk {check.sdk}, python {check.python}
-              {check.authOk === false && ' — (claude login manquant)'}
+              {/* cli/auth en hint discret seulement si non détectés — la
+                 session marche quand même (claude est probablement installé
+                 via nvm/bun/volta, invisible au PATH de SSH non-interactif). */}
+              {(!check.cliInstalled || check.authOk === false) && (
+                <span className="hint">
+                  {' — '}
+                  {!check.cliInstalled && 'cli non détecté'}
+                  {!check.cliInstalled && check.authOk === false && ', '}
+                  {check.authOk === false && 'login non détecté'}
+                  {' (ok si la session marche)'}
+                </span>
+              )}
             </span>
           )}
           {check && !check.ok && (
             <>
-              <span className="warn">
-                {check.sdkInstalled ? 'sdk ok' : '⚠ sdk manquant'} ·
-                {check.cliInstalled ? ' cli ok' : ' ⚠ cli manquant'}
-                {check.authOk === false && ' · ⚠ pas de claude login'}
-              </span>
-              {!check.sdkInstalled && (
-                <button onClick={setup} disabled={busy}>installer le SDK</button>
-              )}
+              <span className="warn">⚠ sdk manquant</span>
+              <button onClick={setup} disabled={busy}>
+                {busy ? 'installation…' : 'installer le SDK'}
+              </button>
             </>
+          )}
+          {setupLog && (
+            <div className={`setup-log ${setupLog.ok ? 'ok' : 'err'}`} style={{ marginTop: 6, fontSize: 12 }}>
+              <span>
+                {setupLog.ok
+                  ? `✓ install OK${setupLog.version ? ` · sdk ${setupLog.version}` : ''}`
+                  : '✗ install échoué'}
+              </span>
+              {' '}
+              <button
+                type="button"
+                onClick={() => setSetupLogOpen((v) => !v)}
+                style={{ background: 'transparent', border: 'none', color: 'inherit', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+              >
+                {setupLogOpen ? 'masquer détail' : 'voir détail'}
+              </button>
+              {setupLogOpen && (
+                <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 11, fontFamily: 'var(--mono)', whiteSpace: 'pre-wrap', background: 'rgba(0,0,0,0.25)', padding: 8, marginTop: 4, borderRadius: 4 }}>
+                  {setupLog.tail || '(sortie vide)'}
+                </pre>
+              )}
+            </div>
           )}
         </div>
 
@@ -111,7 +158,7 @@ export default function NewSessionDialog({
           <input
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
-            placeholder="/srv/hub"
+            placeholder="/srv/mon-projet"
             list={`cwd-suggest-${vpsId}`}
           />
           <datalist id={`cwd-suggest-${vpsId}`}>

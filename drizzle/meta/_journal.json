@@ -29,6 +29,27 @@
       "when": 1779105500000,
       "tag": "0003_add_session_color",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1779122104065,
+      "tag": "0004_magenta_captain_universe",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1779200000000,
+      "tag": "0005_add_agent_pyz_sha",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1779300000000,
+      "tag": "0006_add_vps_folders",
+      "breakpoints": true
     }
   ]
 }

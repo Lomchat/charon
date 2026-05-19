@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getStream } from '@/lib/server/agent/sessionOps';
 
-// POST /api/claude/sessions/[id]/mode { mode: 'normal' | 'acceptEdits' | 'bypass' | 'plan' }
+// POST /api/claude/sessions/[id]/mode { mode: 'normal' | 'acceptEdits' | 'auto' | 'plan' }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -10,7 +10,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const stream = getStream(id);
   if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json();
-  const ALLOWED = ['normal', 'acceptEdits', 'bypass', 'plan'] as const;
+  const ALLOWED = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
   type Mode = (typeof ALLOWED)[number];
   const mode: Mode = ALLOWED.includes(body.mode) ? body.mode : 'normal';
   try {

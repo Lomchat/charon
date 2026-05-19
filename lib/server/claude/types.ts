@@ -31,7 +31,7 @@ export type WorkerEvent = BridgeEvent | SyntheticEvent;
 
 export type WorkerStatus = 'starting' | 'active' | 'thinking' | 'sleeping' | 'killed' | 'error' | 'reconnecting';
 
-export type PermissionMode = 'normal' | 'acceptEdits' | 'bypass' | 'plan';
+export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
 export type UserQuestion = {
   question: string;

@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
-import { db, vps } from '@/lib/db';
+import { db, vps, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
+import { eq, max, asc } from 'drizzle-orm';
 
 const newId = () => crypto.randomBytes(8).toString('hex');
+const DEFAULT_FOLDER_ID = 'default';
 
 export async function POST(req: Request) {
   const s = await requireApiSession();
@@ -22,7 +24,23 @@ export async function POST(req: Request) {
     ? String(body.defaultPath).trim()
     : null;
 
-  const row = { id: newId(), name, ip, sshUser, sshPort, defaultPath };
+  // Résolution du dossier : si folderId fourni et existant on l'utilise,
+  // sinon on tombe sur le premier dossier (par position) — typiquement 'default'.
+  let folderId: string;
+  const requested = body.folderId != null ? String(body.folderId).trim() : null;
+  if (requested) {
+    const [f] = db.select().from(vpsFolders).where(eq(vpsFolders.id, requested)).all();
+    folderId = f ? f.id : DEFAULT_FOLDER_ID;
+  } else {
+    const [first] = db.select().from(vpsFolders).orderBy(asc(vpsFolders.position)).all();
+    folderId = first?.id ?? DEFAULT_FOLDER_ID;
+  }
+
+  // Position : append à la fin du dossier choisi.
+  const m = db.select({ p: max(vps.position) }).from(vps).where(eq(vps.folderId, folderId)).get();
+  const position = (m?.p ?? -1) + 1;
+
+  const row = { id: newId(), name, ip, sshUser, sshPort, defaultPath, folderId, position };
   db.insert(vps).values(row).run();
   return NextResponse.json({ ...row, createdAt: Math.floor(Date.now() / 1000) });
 }

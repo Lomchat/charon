@@ -1,0 +1,63 @@
+name: CI
+
+# Lance le check protocole, le build Next, le test des migrations Drizzle
+# sur une DB temporaire, et compile le module Python de l'agent.
+#
+# Pas de "tests unitaires" historiquement (rien de tel dans le repo).
+# Cette CI attrape les régressions structurelles : drift protocole, TS
+# cassé, migration cassée, agent .pyz qui ne build pas.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test migrations on temp DB
+        # Vérifie qu'une DB fraîche peut appliquer toutes les migrations
+        # sans erreur (catch les "duplicate column", FK cassées, etc.).
+        run: DATABASE_URL=/tmp/charon-ci.db npm run db:migrate
+
+      - name: Build Next.js
+        # `build` exécute aussi `check-protocol-sync.mjs` (prebuild via
+        # le script npm). Couvre TS + protocole Py↔TS aligné.
+        env:
+          NODE_ENV: production
+          # Secrets factices pour ne pas casser le seed (Charon les lit au
+          # boot via env, mais en build statique le code n'est pas
+          # exécuté — ils restent quand même nécessaires si une route
+          # nécessite leur présence lors d'un dry-run SSG).
+          SESSION_SECRET: ci-dummy-session-secret-not-used
+          MASTER_PASSWORD: ci-dummy
+          MASTER_SALT: ci-dummy-salt
+          SYNC_TOKEN: ci-dummy-sync-token
+        run: npm run build
+
+      - name: Build agent .pyz
+        # Vérifie que le packaging zipapp passe (script bash + python3 -m zipapp).
+        run: bash agent/build.sh
+
+      - name: Python compile check
+        # Catch les SyntaxError / imports cassés dans l'agent.
+        run: python3 -m compileall -q agent/charon_agent

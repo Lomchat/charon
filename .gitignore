@@ -6,3 +6,8 @@ data/
 .env
 .env.*
 !.env.example
+
+# Python artifacts (agent/charon_agent/)
+__pycache__/
+*.pyc
+*.pyo

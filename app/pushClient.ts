@@ -38,7 +38,7 @@ export async function pushSubscribe(): Promise<{ ok: boolean; reason?: string }>
   if (perm !== 'granted') return { ok: false, reason: 'permission denied' };
   const reg = await navigator.serviceWorker.register('/sw.js');
   await navigator.serviceWorker.ready;
-  const r: any = await api.pushVapidKey();
+  const r = await api.pushVapidKey();
   if (!r?.publicKey) return { ok: false, reason: 'no VAPID key' };
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,

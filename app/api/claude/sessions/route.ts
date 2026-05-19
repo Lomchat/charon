@@ -3,6 +3,7 @@ import { desc, eq, and, sql } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
+import { focusCountFor } from '@/lib/server/agent/eventConnections';
 
 // GET /api/claude/sessions
 // Query : ?vpsId= ?status=
@@ -61,7 +62,7 @@ export async function GET(req: Request) {
     return {
       ...r,
       liveStatus: stream ? stream.status : r.status,
-      subscribers: stream ? stream.subscribersCount() : 0,
+      subscribers: focusCountFor(r.id),
       pendingPermissions: perms + qs,
       firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
     };
@@ -83,11 +84,11 @@ export async function POST(req: Request) {
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  const ALLOWED_MODES = ['normal', 'acceptEdits', 'bypass', 'plan'] as const;
+  const ALLOWED_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
   type Mode = (typeof ALLOWED_MODES)[number];
   const permissionMode: Mode = ALLOWED_MODES.includes(body.permissionMode)
     ? body.permissionMode
-    : 'normal';
+    : 'auto';
   try {
     const stream = await startNewSession({
       vpsId, cwd,

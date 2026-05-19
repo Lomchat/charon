@@ -53,7 +53,7 @@ export default function DataModal({ onClose, initialVps, initialPaths, onChange 
       return;
     }
     try {
-      const row: any = await api.createVps({
+      const row = await api.createVps({
         name: vpsForm.name.trim(),
         ip: vpsForm.ip.trim(),
         sshUser: vpsForm.sshUser.trim(),
@@ -84,7 +84,7 @@ export default function DataModal({ onClose, initialVps, initialPaths, onChange 
     const form = pathInputs[vpsId] ?? { path: '', label: '' };
     if (!form.path.trim()) { setErr('path requis'); return; }
     try {
-      const row: any = await api.createVpsPath({
+      const row = await api.createVpsPath({
         vpsId, path: form.path.trim(), label: form.label.trim() || null,
       });
       const next = paths.some((p) => p.id === row.id)
@@ -104,7 +104,7 @@ export default function DataModal({ onClose, initialVps, initialPaths, onChange 
   }
   async function updatePathLabel(id: number, label: string) {
     try {
-      const updated: any = await api.updateVpsPath(id, { label: label.trim() || null });
+      const updated = await api.updateVpsPath(id, { label: label.trim() || null });
       const next = paths.map((p) => (p.id === id ? updated : p));
       setPaths(next); notify(undefined, next);
     } catch (e: any) { setErr(e?.message ?? String(e)); }

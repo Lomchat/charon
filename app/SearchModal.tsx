@@ -33,7 +33,7 @@ export default function SearchModal({ onClose, onPick }: Props) {
     const t = setTimeout(async () => {
       setLoading(true);
       try {
-        const r: any = await api.searchClaude(q);
+        const r = await api.searchClaude(q);
         setResults(r.results ?? []);
       } finally { setLoading(false); }
     }, 250);

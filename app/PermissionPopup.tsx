@@ -1,13 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
 
-export type PermissionRequest = {
-  id: string;
-  sessionId: string;
-  tool: string;
-  input: any;
-  createdAt: number;
-};
+// Type partagé desktop/mobile défini dans `./sessionTypes`. Réexporté ici
+// pour préserver les imports historiques.
+export type { PermissionRequest } from './sessionTypes';
+import type { PermissionRequest } from './sessionTypes';
 
 type Props = {
   queue: PermissionRequest[];

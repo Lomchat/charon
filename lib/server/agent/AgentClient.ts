@@ -262,6 +262,7 @@ export class AgentClient {
           db.update(vpsTable).set({
             agentStatus: 'ok',
             agentVersion: hello.agent_version,
+            agentPyzSha: hello.agent_pyz_sha ?? null,
             agentLastSeenAt: Math.floor(Date.now() / 1000),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}

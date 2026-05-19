@@ -1,6 +1,7 @@
 import './globals.css';
 import './agent-ui.css';
 import type { Metadata } from 'next';
+import MobileRedirectPrompt from './MobileRedirectPrompt';
 
 export const metadata: Metadata = {
   title: 'Charon',
@@ -18,7 +19,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <MobileRedirectPrompt />
+      </body>
     </html>
   );
 }

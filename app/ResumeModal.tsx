@@ -42,7 +42,7 @@ export default function ResumeModal({
   async function doScan() {
     setScanLoading(true); setScanError(null); setScanned(null);
     try {
-      const r: any = await api.scanVpsClaude(vpsId);
+      const r = await api.scanVpsClaude(vpsId);
       setScanned(r.sessions ?? []);
     } catch (e: any) {
       setScanError(String(e?.message ?? e));
@@ -61,7 +61,7 @@ export default function ResumeModal({
     setBusy(s.sessionId);
     try {
       const title = s.aiTitle || s.summary || s.firstUserText;
-      const r: any = await api.importClaudeSession({
+      const r = await api.importClaudeSession({
         vpsId, claudeSessionId: s.sessionId, cwd: s.cwd,
         name: title ? title.slice(0, 60) : null,
       });

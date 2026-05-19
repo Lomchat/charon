@@ -15,6 +15,14 @@ const DEFAULT_SSH_OPTS = [
 
 export type SshResult = { ok: boolean; stdout: string; stderr: string; code: number | null };
 
+// Quote une string pour qu'elle survive intacte à un shell POSIX, peu importe
+// les caractères qu'elle contient ($, `, \, ', ", \n, ;, etc.). Indispensable
+// dès qu'on interpole un input utilisateur ou une valeur DB dans une commande
+// SSH — sinon injection triviale (`cwd = "foo$(rm -rf /)"`).
+export function shQuote(s: string): string {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
 // Exécute une commande one-shot sur le VPS. Capture stdout/stderr/code.
 // timeoutMs : hard kill si pas terminé à temps.
 export function sshExec(

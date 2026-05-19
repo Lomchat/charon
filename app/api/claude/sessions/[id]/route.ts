@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
-import { asc, eq } from 'drizzle-orm';
-import { db, claudeSessions, claudeSessionMessages, claudeSessionLogs, vps as vpsTable } from '@/lib/db';
+import { and, asc, eq } from 'drizzle-orm';
+import {
+  db, claudeSessions, claudeSessionMessages, claudeSessionLogs, vps as vpsTable,
+  claudePendingPermissions, claudePendingQuestions,
+} from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { killSession, getStream } from '@/lib/server/agent/sessionOps';
+import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 
 /**
  * Le SDK Claude stocke chaque session dans
@@ -25,12 +29,18 @@ async function relocateJsonl(
   const oldSlug = slugify(oldCwd);
   const newSlug = slugify(newCwd);
   if (oldSlug === newSlug) return { ok: true, detail: 'same slug' };
+  // oldCwd vient de la DB mais la valeur d'origine est user-controlled (le
+  // user choisit son cwd au new-session). claudeSessionId vient du SDK (uuid)
+  // mais on quote par sécurité quand même. shQuote isole tout shell-meta.
+  const oldQ = shQuote(oldSlug);
+  const newQ = shQuote(newSlug);
+  const sidQ = shQuote(claudeSessionId);
   // On copie au lieu de mv pour ne pas casser l'historique d'origine.
   // Si le nouveau fichier existe déjà, skip (ne pas écraser).
   const cmd =
-    `OLD=~/.claude/projects/${oldSlug}/${claudeSessionId}.jsonl && ` +
-    `NEW_DIR=~/.claude/projects/${newSlug} && ` +
-    `NEW=$NEW_DIR/${claudeSessionId}.jsonl && ` +
+    `OLD=~/.claude/projects/${oldQ}/${sidQ}.jsonl && ` +
+    `NEW_DIR=~/.claude/projects/${newQ} && ` +
+    `NEW=$NEW_DIR/${sidQ}.jsonl && ` +
     `if [ ! -f "$OLD" ]; then echo "JSONL_NOT_FOUND_AT_OLD"; exit 1; fi && ` +
     `mkdir -p "$NEW_DIR" && ` +
     `if [ ! -f "$NEW" ]; then cp "$OLD" "$NEW"; fi && ` +
@@ -57,11 +67,43 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .all()
     .slice(-limit);
   const stream = getStream(id);
+
+  // Pendings (permission/question/exit_plan) — retournés pour que le client
+  // puisse les afficher immédiatement au refetch sans devoir attendre que la
+  // SSE les replay (qu'on va précisément skip pour éviter le défilage).
+  const pendingPerms = db.select().from(claudePendingPermissions).where(and(
+    eq(claudePendingPermissions.sessionId, id),
+    eq(claudePendingPermissions.status, 'pending'),
+  )).all();
+  const pendingQs = db.select().from(claudePendingQuestions).where(and(
+    eq(claudePendingQuestions.sessionId, id),
+    eq(claudePendingQuestions.status, 'pending'),
+  )).all();
+
   return NextResponse.json({
     session: row,
     liveStatus: stream ? stream.status : row.status,
-    subscribers: stream ? stream.subscribersCount() : 0,
+    subscribers: focusCountFor(id),
     messages,
+    // Texte assistant en cours d'accumulation (non encore persisté). Vide
+    // si pas de streaming actif. Le client l'injecte dans son assistantBuf
+    // pour montrer "où on en est" sans re-jouer les deltas.
+    streamingText: stream?.getStreamingText() ?? '',
+    pendingPermissions: pendingPerms.map((p) => {
+      let input: any = {};
+      try { input = JSON.parse(p.toolInput); } catch {}
+      return { id: p.id, tool: p.toolName, input, createdAt: p.createdAt };
+    }),
+    pendingQuestions: pendingQs.filter((q) => q.kind === 'question').map((q) => {
+      let payload: any = [];
+      try { payload = JSON.parse(q.payload); } catch {}
+      return { id: q.id, questions: payload, createdAt: q.createdAt };
+    }),
+    pendingExitPlans: pendingQs.filter((q) => q.kind === 'exit_plan').map((q) => {
+      let payload: any = {};
+      try { payload = JSON.parse(q.payload); } catch {}
+      return { id: q.id, plan: payload?.plan ?? '', createdAt: q.createdAt };
+    }),
   });
 }
 

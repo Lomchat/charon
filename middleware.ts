@@ -46,9 +46,15 @@ export async function middleware(req: NextRequest) {
       })();
 
   if (valid && sid) {
+    // `secure: true` en prod (cookie envoyé uniquement sur HTTPS — protège
+    // d'une fuite si l'utilisateur tape http://). En dev local le serveur
+    // tourne sur http://127.0.0.1, on garde false pour pas casser le login.
     res.cookies.set(SESSION_COOKIE, sid, {
-      path: '/', httpOnly: true, sameSite: 'lax', secure: false,
-      maxAge: SESSION_TTL_SECS
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: SESSION_TTL_SECS,
     });
   }
   return res;

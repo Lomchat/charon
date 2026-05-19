@@ -2,7 +2,7 @@
 // Les events sont alignés avec lib/server/claude/types.ts (BridgeEvent) — le
 // type wire diffère légèrement : on a un "event" string au lieu d'un "type".
 
-export type PermissionMode = 'normal' | 'acceptEdits' | 'bypass' | 'plan';
+export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
 export type AgentSessionStatus =
   | 'starting'
@@ -23,6 +23,10 @@ export type AgentSessionInfo = {
 
 export type AgentHelloResult = {
   agent_version: string;
+  // SHA256 (12 premiers chars) du .pyz qui tourne. Comparé au sha du pyz
+  // embarqué dans le dashboard pour détecter "agent out of date". Optionnel
+  // car les anciens agents (<0.2.0) ne le renvoient pas.
+  agent_pyz_sha?: string;
   sdk_available: boolean;
   sdk_error: string | null;
   pid: number;
@@ -47,9 +51,32 @@ export type AgentEvent =
   | { event: 'todo_update'; session_id: string; todos: any[] }
   | { event: 'edit_snapshot'; session_id: string; phase: 'before' | 'after'; tool_use_id: string; file_path: string; content: string | null; size: number; truncated: boolean }
   | { event: 'mode_changed'; session_id: string; mode: PermissionMode }
-  | { event: 'interrupted'; session_id: string }
+  | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean };
+
+// ── Nom des méthodes JSON-RPC supportées par l'agent ────────────────────────
+// Source de vérité Python : agent/charon_agent/protocol.py (set METHODS).
+// Le script scripts/check-protocol-sync.mjs (exécuté avant chaque build via
+// `npm run build`) compare les deux listes et fait échouer le build sur
+// drift. Toute modif du protocole doit toucher les 2 endroits.
+export type AgentMethodName =
+  | 'hello'
+  | 'ping'
+  | 'list_sessions'
+  | 'start_session'
+  | 'resume_session'
+  | 'subscribe'
+  | 'unsubscribe'
+  | 'send_input'
+  | 'interrupt'
+  | 'force_stop'
+  | 'set_permission_mode'
+  | 'respond_permission'
+  | 'respond_question'
+  | 'respond_exit_plan'
+  | 'sleep_session'
+  | 'kill_session';
 
 export type AgentClientStatus =
   | 'idle'           // jamais connecté

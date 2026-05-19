@@ -30,8 +30,6 @@ html, body {
 body {
   min-height: 100vh;
   background: var(--stone-2);
-  -webkit-user-select: none;
-  user-select: none;
   overflow: hidden;
 }
 
@@ -105,3 +103,96 @@ a { color: inherit; }
 }
 .auth-card button:hover:not(:disabled) { box-shadow: 0 0 18px rgba(138, 180, 228, 0.3); }
 .auth-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── MobileRedirectPrompt ── popup affiché au boot sur écran étroit ── */
+.m-prompt-bg {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: grid; place-items: center;
+  padding: 20px;
+  animation: m-prompt-fade 0.22s ease;
+}
+@keyframes m-prompt-fade { from { opacity: 0 } to { opacity: 1 } }
+.m-prompt-card {
+  width: 100%; max-width: 360px;
+  background: linear-gradient(180deg, #232733, #181b24);
+  border: 1px solid var(--gold);
+  box-shadow: 0 0 0 1px var(--gold-deep), 0 30px 80px rgba(0, 0, 0, 0.7);
+  padding: 28px 24px 22px;
+  position: relative;
+  animation: m-prompt-pop 0.28s ease;
+}
+@keyframes m-prompt-pop {
+  from { transform: translateY(20px) scale(0.96); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+.m-prompt-card::before, .m-prompt-card::after {
+  content: ''; position: absolute;
+  width: 22px; height: 22px;
+  border: 2px solid var(--gold);
+}
+.m-prompt-card::before { top: 6px; left: 6px; border-right: 0; border-bottom: 0; }
+.m-prompt-card::after  { bottom: 6px; right: 6px; border-left: 0; border-top: 0; }
+.m-prompt-card .m-prompt-icon {
+  display: flex; justify-content: center;
+  color: var(--gold);
+  margin-bottom: 10px;
+}
+.m-prompt-card h2 {
+  font-family: var(--display);
+  font-weight: 700; font-size: 16px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--gold-bright);
+  text-align: center;
+  margin-bottom: 12px;
+}
+.m-prompt-card p {
+  font-family: var(--body); font-size: 14px; line-height: 1.5;
+  color: var(--parchment);
+  text-align: center;
+  margin-bottom: 20px;
+}
+.m-prompt-card .m-prompt-actions {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.m-prompt-card .m-prompt-actions button {
+  width: 100%;
+  padding: 13px;
+  font-family: var(--display); font-weight: 600;
+  font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+  border: 1px solid var(--gold-deep);
+  background: linear-gradient(180deg, var(--stone-2), var(--stone));
+  color: var(--parchment);
+  cursor: pointer;
+  transition: box-shadow .2s ease, border-color .2s ease;
+}
+.m-prompt-card .m-prompt-actions button.accept {
+  border-color: var(--gold);
+  color: var(--gold-bright);
+}
+.m-prompt-card .m-prompt-actions button.accept:hover {
+  box-shadow: 0 0 18px rgba(138, 180, 228, 0.3);
+}
+.m-prompt-card .m-prompt-actions button.decline {
+  color: var(--parchment-soft);
+}
+.m-prompt-card .m-prompt-actions button.decline:hover {
+  color: var(--parchment);
+  border-color: var(--parchment-soft);
+}
+.m-prompt-card .m-prompt-note {
+  margin: 14px 0 0;
+  font-size: 11px;
+  color: var(--parchment-soft);
+  text-align: center;
+  font-style: italic;
+}
+.m-prompt-card .m-prompt-note code {
+  font-family: var(--mono);
+  background: var(--shadow);
+  padding: 1px 5px;
+  border: 1px solid var(--gold-deep);
+  color: var(--gold);
+}

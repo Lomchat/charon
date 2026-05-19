@@ -14,11 +14,30 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // Choisit le meilleur python (3.10+) puis pip --user. Timeout 2min.
+  // Install dans un venv dédié à ~/.charon/venv. Contourne PEP 668
+  // (Debian 12 / Ubuntu 23+ refusent `pip --user`) et garde un python stable
+  // entre install, verify, ping et le service systemd. `set -o pipefail`
+  // remonte le code de sortie réel de pip — sans ça, le pipeline `| tail`
+  // gobait l'erreur et le bouton "Setup" répondait "ok" alors que pip avait
+  // échoué (et le verify suivant cassait → boucle visuelle dans bootstrap).
+  const VENV = '$HOME/.charon/venv';
+  const VENV_PY = `${VENV}/bin/python`;
   const cmd =
-    'PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ' +
-    'echo "[setup] using $PY"; "$PY" -m pip install --user --upgrade claude-agent-sdk 2>&1 | tail -40; ' +
-    'echo "[setup] checking import..."; "$PY" -c "import claude_agent_sdk; print(\'version:\', claude_agent_sdk.__version__)" 2>&1';
+    'set -o pipefail; ' +
+    'BASE=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ' +
+    'if [ -z "$BASE" ]; then echo "[setup] no python ≥ 3.10 found"; exit 10; fi; ' +
+    `echo "[setup] base python = $BASE"; ` +
+    `if [ ! -x ${VENV_PY} ]; then ` +
+    `  echo "[setup] creating venv ${VENV}"; ` +
+    `  "$BASE" -m venv ${VENV} 2>&1 | tail -20 || ` +
+    `  { "$BASE" -m venv --without-pip ${VENV} && ${VENV_PY} -m ensurepip --upgrade 2>&1 | tail -20; } || ` +
+    `  { echo "[setup] venv creation failed — installe python3-venv (apt) ou python3X-venv (dnf)"; exit 11; }; ` +
+    `fi; ` +
+    `echo "[setup] using ${VENV_PY}"; ` +
+    `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10; ` +
+    `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40; ` +
+    `echo "[setup] checking import..."; ` +
+    `${VENV_PY} -c "import claude_agent_sdk; print('version:', claude_agent_sdk.__version__)" 2>&1`;
   const r = await sshExec(v, cmd, { timeoutMs: 180_000 });
   return NextResponse.json({
     ok: r.ok,

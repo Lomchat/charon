@@ -64,6 +64,7 @@ METHODS = {
     "unsubscribe",
     "send_input",
     "interrupt",
+    "force_stop",
     "set_permission_mode",
     "respond_permission",
     "respond_question",

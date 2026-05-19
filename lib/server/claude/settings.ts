@@ -2,12 +2,16 @@ import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
 
+// `vapid.subject` : identité de l'expéditeur côté serveurs push (web-push).
+// On lit `VAPID_SUBJECT` côté env si présent ; sinon fallback générique
+// (l'utilisateur peut overrider depuis le SettingsModal de l'UI). Évite
+// d'avoir un email personnel hardcodé en clair dans le repo.
 const DEFAULTS = {
   'ssh.private_key_path': '/root/.ssh/id_rsa',
   'session.max_active': '10',
   'retention.killed_days': '30',
   'notif.global_enabled': 'true',
-  'vapid.subject': 'mailto:c2@c2m2.ai',
+  'vapid.subject': process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
   'telegram.enabled': 'false',
   'telegram.bot_token': '',
   'telegram.chat_id': '',
