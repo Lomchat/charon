@@ -6,7 +6,7 @@ import {
   type ClaudeSessionMessage,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { killSession, getStream } from '@/lib/server/agent/sessionOps';
+import { deleteSession, getStream } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
@@ -248,21 +248,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 // DELETE /api/claude/sessions/[id]
-//   par défaut : kill (status='killed') — le row reste en DB pour l'historique
-//   ?hard=1   : suppression complète (cascade messages/permissions/logs)
-export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+//   suppression définitive : kill côté agent + cascade DB (messages /
+//   permissions / questions / logs / row session). Plus de soft-delete
+//   `?hard=1` : la fusion kill→delete a éliminé l'état intermédiaire
+//   `'killed'` (cf. CLAUDE.md §10 et migration 0008). Le seul moyen de
+//   "mettre en pause" une session est désormais `POST .../sleep`.
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  const url = new URL(req.url);
-  const hard = url.searchParams.get('hard') === '1';
   try {
-    await killSession(id);
-    if (hard) {
-      db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, id)).run();
-      db.delete(claudeSessions).where(eq(claudeSessions.id, id)).run();
-    }
-    return NextResponse.json({ ok: true, hard });
+    await deleteSession(id);
+    return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });
   }

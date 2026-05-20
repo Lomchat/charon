@@ -57,6 +57,13 @@
       "when": 1779400000000,
       "tag": "0007_handy_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1779500000000,
+      "tag": "0008_purge_killed_sessions",
+      "breakpoints": true
     }
   ]
 }

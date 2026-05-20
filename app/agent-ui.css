@@ -659,6 +659,21 @@
 .session-row.has-color.selected::before {
   opacity: 0.22;
 }
+/* Session en pause (sleeping) avec une couleur custom : override --row-color
+ * pour griser la stripe et le tint sans toucher au token color en DB. Au
+ * resume, la classe `is-sleeping` disparaît et la couleur custom est
+ * automatiquement restaurée. Signal visuel cohérent avec le dot gris déjà
+ * appliqué par DOT_CLASS.
+ *
+ * Pourquoi `is-sleeping.has-color` et pas juste `is-sleeping` : sans
+ * `has-color`, le row n'a pas de couleur custom → la stripe est
+ * `transparent` par défaut. Si on overridait `--row-color` pour TOUTES
+ * les sessions sleeping, on rajouterait une stripe grise sur des rows qui
+ * n'en avaient pas avant — bruit visuel inutile. La classe combinée garde
+ * la modification ciblée. */
+.session-row.is-sleeping.has-color {
+  --row-color: rgba(140, 140, 140, 0.55);
+}
 /* Le row-head doit rester au-dessus du voile coloré */
 .session-row .row-head,
 .session-row .row-preview,

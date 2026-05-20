@@ -18,7 +18,7 @@ import type {
   CreateClaudeSessionBody, CreateClaudeSessionResponse,
   ImportClaudeSessionBody, ImportClaudeSessionResponse,
   RenameClaudeSessionBody,
-  KillClaudeSessionResponse, ResumeClaudeSessionResponse,
+  DeleteClaudeSessionResponse, ResumeClaudeSessionResponse,
   RespondPermissionBody, RespondQuestionBody, RespondExitPlanBody,
   SetClaudeModeResponse,
   RevertClaudeEditResponse, SearchClaudeResponse,
@@ -161,10 +161,11 @@ export const api = {
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>
     send<ImportClaudeSessionResponse>('POST', '/api/claude/sessions/import', data),
-  killClaudeSession: (id: string) =>
-    send<KillClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}`),
-  hardDeleteClaudeSession: (id: string) =>
-    send<KillClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}?hard=1`),
+  // Suppression définitive : kill agent + cascade DB. Plus de soft-kill.
+  // Le caller doit avoir confirmé côté UI (`confirm()`) — pas de bouton
+  // raccourci sans warning.
+  deleteClaudeSession: (id: string) =>
+    send<DeleteClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}`),
   renameClaudeSession: (id: string, name: string | null) =>
     send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
   // Sleep / resume / input / interrupt / force-stop : tous renvoient { ok: true }

@@ -20,7 +20,10 @@ import { useInputDraft } from './inputDraftStore';
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
 // Composant qui rend toute la zone "session active" du dashboard desktop :
-//   - Barre des actions (sleep / resume / kill / interrupt / force-stop)
+//   - Barre des actions (sleep / resume / interrupt / force-stop) — la
+//     suppression définitive passe par le menu contextuel (clic-droit
+//     sur la sidebar), pas par un bouton dans la bar (cf. refonte
+//     kill→delete : seul `sleep` est réversible, tout le reste détruit)
 //   - Bannière reconnexion / déconnexion / erreur
 //   - Slot pour overlay (LoginConsole pour `claude login`)
 //   - Chat scroll-reverse + scroll pill
@@ -79,7 +82,7 @@ export default function ClaudeSessionView({
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send: streamSend, interrupt, forceStop, setMode,
-    doSleep, doResume, doKill: streamDoKill,
+    doSleep, doResume,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
@@ -326,10 +329,11 @@ export default function ClaudeSessionView({
     await streamSend(content);
   }, [input, streamSend]);
 
-  const doKill = useCallback(async () => {
-    if (!confirm('Tuer cette session ? Les messages restent en historique.')) return;
-    await streamDoKill();
-  }, [streamDoKill]);
+  // Le bouton "pause" du header était un faux ami : il appelait `kill` qui
+  // mettait la session en état `'killed'` non reprenable. La refonte a
+  // supprimé ce middle state. La suppression définitive se fait désormais
+  // via le menu contextuel sidebar (clic-droit → "Supprimer définitivement"),
+  // pas depuis cette zone. Voir CLAUDE.md §11 et §14.
 
   const copyError = useCallback(async () => {
     if (!error?.msg) return;
@@ -346,12 +350,11 @@ export default function ClaudeSessionView({
       <main className="claude-main">
         <div className="claude-bar">
           <span className="bar-name">{selected.name || '(sans nom)'}</span>
-          {status === 'sleeping' || status === 'killed' || status === 'error' ? (
-            <button onClick={() => doResume()} disabled={selected.status === 'killed'}>resume</button>
+          {status === 'sleeping' || status === 'error' ? (
+            <button onClick={() => doResume()}>resume</button>
           ) : (
             <button onClick={doSleep}>sleep</button>
           )}
-          <button className="kill" onClick={doKill}>pause</button>
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
           <button
             className="kill"
@@ -478,10 +481,6 @@ export default function ClaudeSessionView({
         {(status === 'sleeping' || status === 'error') ? (
           <div className="claude-disconnect-cta">
             <button onClick={() => doResume()}>↺ RESUME CETTE SESSION</button>
-          </div>
-        ) : status === 'killed' ? (
-          <div className="claude-killed-cta">
-            session tuée — historique consultable, mais pas reprenable
           </div>
         ) : oldestPending ? (
           <div className="claude-pending-zone">

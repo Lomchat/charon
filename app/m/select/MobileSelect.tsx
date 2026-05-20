@@ -238,13 +238,20 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     await patchSession(s.id, { cwd: newCwd.trim() });
     refresh();
   }
-  async function killSession(id: string) {
-    try { await api.killClaudeSession(id); refresh(); }
-    catch (e: any) { alert('kill : ' + (e?.message ?? e)); }
+  // Sleep cross-session (depuis le menu contextuel mobile). Réversible — la
+  // session sera reprenable via le bouton resume de l'écran chat. Pas de
+  // confirm, opération non destructive.
+  async function sleepSessionOne(id: string) {
+    try { await api.sleepClaudeSession(id); refresh(); }
+    catch (e: any) { alert('sleep : ' + (e?.message ?? e)); }
   }
-  async function hardDeleteSession(id: string) {
+
+  // Suppression définitive (cascade DB côté serveur). Plus de soft-kill — la
+  // session disparaît avec son historique. Pour mettre en pause sans perdre,
+  // c'est `doSleep` depuis l'écran chat. Cf. CLAUDE.md §10.
+  async function deleteSessionOne(id: string) {
     if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
-    try { await api.hardDeleteClaudeSession(id); refresh(); }
+    try { await api.deleteClaudeSession(id); refresh(); }
     catch (e: any) { alert('supprimer : ' + (e?.message ?? e)); }
   }
 
@@ -508,13 +515,19 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
           subtitle={ctxMenu.session.cwd}
           initialName={ctxMenu.session.name ?? ''}
           currentColor={(ctxMenu.session as any).color}
-          canKill={ctxMenu.session.status !== 'killed'}
-          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà en pause' : undefined}
+          // Pas de `onKill` ici : la fusion kill→delete a supprimé ce middle
+          // state. Seule la suppression définitive reste pour les sessions.
+          // `onSleep` n'est passé que si la session est active (sinon le
+          // bouton n'apparaît pas — l'user fait resume depuis l'écran chat).
           onRename={(name) => renameSession(ctxMenu.session.id, name)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color: RowColor) => patchSession(ctxMenu.session.id, { color })}
-          onKill={() => killSession(ctxMenu.session.id)}
-          onDelete={() => hardDeleteSession(ctxMenu.session.id)}
+          onSleep={
+            ['active', 'thinking', 'starting'].includes(ctxMenu.session.status)
+              ? () => sleepSessionOne(ctxMenu.session.id)
+              : undefined
+          }
+          onDelete={() => deleteSessionOne(ctxMenu.session.id)}
           onClose={() => setCtxMenu(null)}
         />
       )}

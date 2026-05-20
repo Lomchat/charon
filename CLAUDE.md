@@ -314,6 +314,7 @@ layout` rejette les `folderId` inconnus).
 | 0005 | `vps` += `agent_pyz_sha` |
 | 0006 | crée `vps_folders` + insère dossier `'default'` + `vps` += `folder_id`/`position`. Initialise les positions par tri alphabétique de `name`. La FK n'est pas enforced (cf. limitation SQLite ci-dessus). |
 | 0007 | `vps` += `claude_logged_in` + `claude_logged_in_checked_at`. Tracking de l'état `claude login` pour masquer le bouton sidebar quand inutile. **Note importante** : drizzle-kit a généré un .sql qui répétait 0005/0006 (snapshots manquants dans `meta/`) — le contenu a été remplacé à la main pour ne garder que les vrais ADD COLUMN, et le `when` du journal a été remonté > 0006 pour que drizzle l'applique. Si tu refais une migration plus tard, vérifie le .sql avant `db:migrate`. |
+| 0008 | purge des sessions `status='killed'` (cascade vers logs explicite + FK cascade pour messages/permissions/questions). Accompagne la refonte kill→delete (cf. §10) : le middle state `'killed'` n'existe plus comme état persistant. Pas de modif de schéma — juste un `DELETE` data. Écrite à la main (drizzle-kit ne sait pas générer de migration data-only sans modif schéma). |
 
 Workflow type pour modifier le schéma :
 1. Édite `lib/db/schema.ts`
@@ -467,7 +468,7 @@ Tous portent `session_id`. Le ring buffer en stocke jusqu'à 300 par session.
 
 | Event | Payload (extrait) |
 |---|---|
-| `status` | `{status: 'starting'|'active'|'thinking'|'sleeping'|'error'|'killed'}` |
+| `status` | `{status: 'starting'|'active'|'thinking'|'sleeping'|'error'|'killed'}` — `'killed'` n'est plus persisté en DB depuis la refonte kill→delete (cf. §10). C'est un **signal transient** émis par `deleteSession()` au moment de la suppression pour notifier les SSE actives qu'il faut déguerpir (le hook `useClaudeSessionStream` déclenche `onKilled` quand il reçoit cet event). |
 | `session_id` | `{claude_session_id}` (UUID SDK, persisté en DB) |
 | `ready` | (signal SDK ouvert) |
 | `assistant_text` | `{delta}` |
@@ -532,7 +533,8 @@ Le pont entre les events agent, la DB, et les SSE clients du navigateur.
   `stop`, push Web + Telegram si configuré.
 - **alwaysAllow** : set par-session (en mémoire) ; permet l'auto-respond sans UI.
 - **Fonctions clés** : `startNewSession`, `resumeSession`, `sleepSession`,
-  `killSession`, `importExistingSession`.
+  `deleteSession`, `importExistingSession`. (Anciennement `killSession` →
+  renommée `deleteSession` lors de la refonte kill→delete : cf. §10.)
 
 ### `lib/server/agent/autoConnect.ts`
 
@@ -663,7 +665,7 @@ liste sidebar.
 - `GET /api/claude/sessions` (filtres `vpsId`, `status`)
 - `POST /api/claude/sessions` — créer
 - `POST /api/claude/sessions/import` — depuis scan
-- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supporte `?limit=N` (default 200, cap 1000) et `?before=K` (cursor pagination scroll-up). La limite ne compte QUE les rôles "chat" (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking) ; `edit_snapshot` et `event` sont chargés en pièces jointes par range d'IDs (cf. §14 piège 25). Réponse : `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` sert de cursor pour le prochain loadMore.
+- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supporte `?limit=N` (default 200, cap 1000) et `?before=K` (cursor pagination scroll-up). La limite ne compte QUE les rôles "chat" (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking) ; `edit_snapshot` et `event` sont chargés en pièces jointes par range d'IDs (cf. §14 piège 25). Réponse : `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` sert de cursor pour le prochain loadMore. **DELETE** = suppression définitive (cascade DB + kill agent best-effort) — plus de `?hard=1`, plus de soft-kill (cf. §10).
 - `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — **SSE multiplexée unique** : ouverte UNE FOIS par tab browser, persistante. Émet `status` initial pour toutes les sessions + tous les pendings + flux live filtré par focus. Les changements de session focus sont gérés via POST `/focus` sans reconnect SSE.
 - `POST /api/claude/focus` — Body `{ conn, sessionId }`. Change le focus d'une connexion SSE. Le serveur commence/arrête de streamer les events high-volume (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) de la session ciblée. Les events low-volume (status, perms, questions, exit_plans, interaction_resolved, mode_changed, error, ready, session_id) sont toujours envoyés à toutes les connexions.
 - `POST /api/claude/sessions/[id]/input` — `{content}` ou `{type:'interrupt'}`
@@ -695,7 +697,7 @@ quelques events synthétiques. Côté client (`ClaudePanel.tsx`), la routing :
 
 | Event SSE | Action UI |
 |---|---|
-| `status` | met à jour `cur.status` (pill header) |
+| `status` | met à jour `cur.status` (pill header). **Cas spécial `'killed'`** : depuis la refonte kill→delete (cf. §10), `'killed'` est un signal transient émis par `deleteSession()` côté serveur — le hook `useClaudeSessionStream` ne met PAS à jour le local state mais déclenche `onKilled?.()` (= redirection hors session). |
 | `user_echo` | append message user |
 | `assistant_text` | accumule dans `assistantBufRef`, streaming display |
 | `thinking` | ajoute un thinking message (collapsible) |
@@ -771,12 +773,37 @@ le client le route différemment selon le contexte.
   voient leur `SessionStream` ré-attaché automatiquement, sans avoir besoin
   de faire force_stop + resume à la main (cf. §14 piège 23).
 
-### Sleep / kill
+### Sleep / delete (refonte kill→delete, novembre 2025)
 
-- `sleep` : agent.stop(mark='sleeping'), state.json à jour, DB → `sleeping`.
-  Le `claude_session_id` est conservé → resume possible.
-- `kill` : agent.stop(mark='killed'), retire de state.json, DB → `killed`,
-  closes SSE, vire de `AgentClient.subscribers`.
+Avant la refonte, il existait **3 états** : `sleep` (pause réversible),
+`kill` (statut `'killed'` non reprenable mais historique lisible), et
+`hardDelete` (cascade DB). Le bouton "pause" du header appelait en fait
+`kill` — faux ami UX. Le middle state `'killed'` ne servait à rien : côté
+agent il libérait exactement les mêmes ressources que `sleep` (la seule
+différence était `self.sessions.pop()` côté agent + un flag "ne pas
+resume" côté Charon). On a fusionné `kill` et `hardDelete` en une seule
+action **suppression définitive**.
+
+Le modèle actuel : **2 boutons**.
+
+- **`sleep`** : `agent.stop(mark='sleeping')`, state.json à jour, DB →
+  `sleeping`. Le `claude_session_id` est conservé → resume possible.
+- **`delete`** (`POST /api/claude/sessions/[id]` DELETE → `deleteSession()`
+  dans `lib/server/agent/sessionOps.ts`) : émet `status='killed'` sur le
+  bus comme signal transient, detach + retire le SessionStream, cascade
+  DB (logs + row session → cascade FK pour messages/permissions/questions),
+  puis best-effort `kill_session` RPC pour que l'agent oublie la session.
+
+Le status DB `'killed'` n'existe plus comme état persistant — la
+migration 0008 a purgé les vestiges. L'event `status='killed'` survit
+uniquement comme **signal transient** : le hook `useClaudeSessionStream`
+déclenche `onKilled` (= navigation hors de la session) quand il le
+reçoit. La row DB est supprimée immédiatement, donc le client ne peut
+jamais observer une session "killed mais consultable".
+
+L'enum TS `WorkerStatus` (`lib/server/claude/types.ts`) garde encore le
+membre `'killed'` pour le typage du signal transient — pas la peine de
+le retirer.
 
 ### Import d'une session existante
 
@@ -835,7 +862,7 @@ Quand l'user fait Resume, on lance `start_session` avec `claude_session_id`
 | `ExitPlanCard.tsx` | markdown du plan + Approve / Ask for changes (feedback) |
 | `NewSessionDialog.tsx` | VPS dropdown + cwd + autosuggest paths + bouton setup si SDK absent |
 | `ResumeModal.tsx` | onglets « resumable DB » et « scanned » |
-| `SessionContextMenu.tsx` | clic-droit : rename, cwd, color (8), kill, delete (cf `ROW_COLORS`). Pour `kind='install'` : seulement "Fermer" (pas de rename/color/delete). |
+| `SessionContextMenu.tsx` | clic-droit : rename, cwd, color (8), delete (cf `ROW_COLORS`). Pour les sessions Claude : seulement "Supprimer définitivement" (pas de "kill" intermédiaire depuis la refonte kill→delete, cf. §10). Pour les shells / installs : "Fermer" (le `onKill` du composant sert ici comme close, pas comme kill de session Claude). |
 | `InstallSessionView.tsx` | vue plein-écran (occupe `.claude-main`) qui rend le log d'une session d'installation. SSE sur `/api/installs/[id]/stream` (replay ring buffer + live). Header avec status pill + boutons Retry / Setup login / Fermer selon état. Remplace l'ancien `BootstrapBanner` (qui était un bandeau supérieur). |
 | `LoginConsole.tsx` | xterm.js, OAuth Claude Code via SSH `-tt`. Branche le flux SSE sur `useTerminalUrlOverlay` pour détecter et proposer copier/ouvrir l'URL OAuth (souvent wrappé sur plusieurs lignes). |
 | `ShellTerminal.tsx` | xterm.js, shells SSH éphémères. Idem URL overlay : si l'user voit un URL long dans la sortie d'une commande, overlay copier/ouvrir. |
@@ -932,7 +959,9 @@ code commun extrait après l'audit maintenabilité :
   les POST (envoi de message, création) restaient en queue. La route
   serveur `app/api/claude/interactions/stream/route.ts` agrège.
 - **`app/ClaudeSessionView.tsx`** : composant qui rend la zone chat de la
-  session active (header bar avec sleep/resume/kill/interrupt/force-stop,
+  session active (header bar avec sleep/resume/interrupt/force-stop — pas
+  de bouton "delete" ici, la suppression passe par le menu contextuel
+  sidebar pour exiger un right-click délibéré ; cf. §10),
   bannières reconnect/disconnect/error, chat scroll-reverse + **scroll
   pills ↓/↑** (↓ = aller en bas, masquée si déjà en bas ; ↑ = remonter au
   dernier user message au-dessus de la vue, position fixe au-dessus de ↓,
@@ -1198,6 +1227,52 @@ code commun extrait après l'audit maintenabilité :
     dans `ClaudePanel` patche aussi `agentPyzSha: builtPyzSha` localement
     (par construction le pyz qu'on vient de déployer est la version
     embarquée).
+28. **`python -m venv` peut foirer sur "ensurepip is not available"** —
+    typique Debian/Ubuntu où le module venv vit dans un paquet OS séparé
+    (`python3.12-venv` sur Ubuntu 24.04, `python3.11-venv` sur Debian 12,
+    etc.). Quand le VPS a déjà un python installé mais sans son paquet
+    venv, `verify` retourne `no_sdk` (python trouvé, SDK absent) donc la
+    phase `install_python` est SKIP — son `apt-get install python3-venv`
+    n'est jamais exécuté. On arrive direct dans `install_sdk` et le venv
+    pète avec un message du type *"The virtual environment was not created
+    successfully because ensurepip is not available"*. L'ancien fallback
+    `--without-pip` + `ensurepip --upgrade` ne marche PAS dans ce cas
+    (`ensurepip --upgrade` dépend exactement du module qui manque). **Fix**
+    dans `bootstrap.ts § install_sdk` : on tente le venv, on capture le
+    log, et si grep matche `ensurepip is not available` ou `No module
+    named ensurepip`, on `apt-get install -y python$PY_VER-venv`
+    (puis fallback `python3-venv`) avec/sans `sudo -n`, puis on retry le
+    `python -m venv`. Pour dnf : `dnf install python$PY_VER`. Best-effort,
+    si l'install échoue on yield `error` avec un message explicite. Si tu
+    découvres un autre distro/paquet à couvrir (Alpine : `py3-virtualenv`
+    p.ex.), ajoute une branche dans la condition `if command -v ...`.
+29. **Refonte kill→delete : il n'y a plus de "soft-kill"**. Historique :
+    il existait `sleep` (pause réversible), `kill` (statut `'killed'` non
+    reprenable mais historique gardé), et `hardDelete` (cascade DB). Le
+    bouton "pause" du header appelait en fait `kill` → faux ami UX. La
+    fusion `kill` ⊕ `hardDelete` → suppression définitive (1 seule action
+    destructive, avec `confirm()`) ne laisse plus que `sleep` comme état
+    réversible. **Le status DB `'killed'` n'existe plus** ; la migration
+    0008 a purgé les vestiges. **L'event `status='killed'`** survit
+    uniquement comme signal transient émis au moment de la suppression
+    pour notifier les SSE actives — le hook `useClaudeSessionStream` le
+    capture et déclenche `onKilled` (= navigation hors session). Pièges
+    associés :
+    - Si tu réintroduis un statut intermédiaire ("archived", "frozen",
+      etc.), **n'utilise pas `'killed'`** comme nom — il a un sens
+      transient et ça casserait le hook.
+    - L'enum TS `WorkerStatus` garde encore `'killed'` pour typer le
+      signal transient. Ne le retire pas.
+    - Côté agent Python (`charon_agent/server.py § kill_session`),
+      l'RPC retire la session du dict ET du state.json. Côté Charon ça
+      tombe juste au bon moment puisque on cascade DB en parallèle —
+      mais c'est best-effort : si l'agent est down, on a un orphan côté
+      agent (session SDK encore vivante, nettoyée au prochain restart
+      de l'agent puisque pas de row Charon → ignorée par
+      `reconcileVpsAgentState`).
+    - Si tu ajoutes une nouvelle action "kill agent-side mais garde l'UI",
+      ne marche pas en rond — c'est exactement ce qu'on a supprimé. Pose-toi
+      la question : "est-ce que `sleep` suffit ?" Spoiler : oui.
 
 | Question | Fichier(s) |
 |---|---|

@@ -653,7 +653,8 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
-    if (row.status === 'killed') throw new Error('session killed (cannot resume)');
+    // Note : la garde `status === 'killed'` a sauté avec la fusion kill→delete.
+    // Une session killed n'existe plus en DB ; ce path est mort.
 
     const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
     if (!vps) throw new Error('vps no longer exists');
@@ -744,25 +745,52 @@ export async function forceStopSession(sessionId: string): Promise<void> {
   }
 }
 
-export async function killSession(sessionId: string): Promise<void> {
+/**
+ * Suppression définitive d'une session : tue côté agent, libère le stream,
+ * notifie les SSE, et cascade la suppression DB (messages/permissions/
+ * questions/logs/row session).
+ *
+ * Note historique : il existait avant un état intermédiaire `'killed'` (DB
+ * row gardé pour consultation post-mortem mais resume bloqué). C'était un
+ * faux ami UX — le bouton "pause" du header appelait en fait `kill`. La
+ * refonte a fusionné ce middle state avec la suppression dure : seule
+ * `sleep` est désormais réversible, tout le reste détruit la session.
+ *
+ * L'event `status='killed'` est encore émis sur le bus comme **signal
+ * transient** vers les SSE actives (= "déguerpis, la session n'existe
+ * plus"). Aucune row DB ne porte ce status — la migration 0008 a purgé
+ * les vestiges.
+ *
+ * Ordre des opérations :
+ *   1. Émet `status=killed` immédiatement (notifier les SSE encore branchées
+ *      avant que le stream soit detaché → ne ratent pas le signal).
+ *   2. Detach + supprime le SessionStream local.
+ *   3. Cascade DB. La FK ON DELETE CASCADE couvre messages/permissions/
+ *      questions/logs depuis `claudeSessions`, mais on supprime explicitement
+ *      les logs aussi par défense en profondeur (ils existaient hors cascade
+ *      dans l'historique du code).
+ *   4. Best-effort : appelle `kill_session` côté agent pour qu'il oublie
+ *      la session. Si l'agent est down, tant pis — la prochaine reconcile
+ *      ignore les sessions orphelines (cf. `reconcileVpsAgentState`).
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) return;
-  db.update(claudeSessions).set({ status: 'killed' })
-    .where(eq(claudeSessions.id, sessionId)).run();
+  emitGlobalSession({ type: 'status', sessionId, status: 'killed' } as GlobalSessionEvent);
   const stream = streams.get(sessionId);
   if (stream) {
     stream.detach();
     streams.delete(sessionId);
   }
-  // Émet manuellement un status=killed sur le bus pour notifier les SSE
-  // actives (puisque le stream a été retiré, son _broadcast ne tournera plus).
-  // Le client traitera ça comme un kill normal et fera son cleanup local.
-  emitGlobalSession({ type: 'status', sessionId, status: 'killed' } as GlobalSessionEvent);
+  db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
+  db.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
   try {
     const client = getAgentClientForVpsId(row.vpsId);
     await client.call('kill_session', { session_id: sessionId });
   } catch (e) {
-    // Agent down : ce n'est pas grave, on a déjà cleanup local
+    // Agent down : la session est déjà supprimée côté Charon, l'agent a
+    // peut-être encore un orphan dans son state.json — sera ignoré par
+    // reconcileVpsAgentState (no DB row), puis nettoyé à son prochain restart.
   }
 }
 
@@ -804,7 +832,9 @@ export async function reconcileVpsAgentState(
         .where(eq(claudeSessions.id, sid)).all();
     } catch { continue; }
     if (!row) continue;            // session inconnue de Charon, on n'invente pas
-    if (row.status === 'killed') continue;
+    // (l'ancienne garde `row.status === 'killed'` est obsolète : la fusion
+    // kill→delete a supprimé ce status persistant ; une session DB existante
+    // est par construction non-killed.)
 
     const stream = getStream(sid);  // crée le stream depuis la DB si nécessaire
     if (!stream) continue;

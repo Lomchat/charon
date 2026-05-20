@@ -68,10 +68,15 @@ export async function GET(req: Request) {
         try { controller.close(); } catch {}
       };
 
-      // Snapshot initial : status de toutes les sessions non-killed + pendings.
-      // Le client peut ainsi peupler sa sidebar immédiatement sans dépendre du
+      // Snapshot initial : status de toutes les sessions + pendings. Le client
+      // peut ainsi peupler sa sidebar immédiatement sans dépendre du
       // GET /api/claude/sessions (qui sera aussi appelé en parallèle mais ces
       // events status le couvrent partiellement).
+      //
+      // Note historique : on filtrait ici les sessions `status='killed'`. Depuis
+      // la refonte kill→delete (cf. CLAUDE.md §10), ce status n'est plus
+      // persisté. Le filtre est gardé en garde-fou idempotent au cas où des
+      // données pré-migration referaient surface, mais ne devrait jamais matcher.
       try {
         const rows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
           .from(claudeSessions).all();

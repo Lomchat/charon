@@ -483,11 +483,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   //   et le tracker de nouveau messages. Le tout vit maintenant dans le hook
   //   ou directement dans la vue.]
 
-  // [send/interrupt/forceStop/setMode/doSleep/doResume/doKill/respondPermission
+  // [send/interrupt/forceStop/setMode/doSleep/doResume/doDelete/respondPermission
   //  pour la SESSION ACTIVE sont dans `<ClaudeSessionView>` via le hook
   //  `useClaudeSessionStream`. ClaudePanel garde uniquement les actions
-  //  cross-session : kill d'une autre session via le menu (`killOne`), edit
-  //  cwd (`editSessionCwd`), patch shell, etc.]
+  //  cross-session : suppression d'une autre session via le menu
+  //  (`deleteSessionOne`), edit cwd (`editSessionCwd`), patch shell, etc.]
 
   async function renameSession(id: string, name: string) {
     setEditingId(null);
@@ -499,19 +499,28 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  async function killOne(id: string) {
+  // Sleep cross-session (depuis le menu contextuel sidebar). Pas de confirm —
+  // c'est réversible (resume rouvre la session). Le bouton du header de la
+  // session active reste l'entry-point principal, mais clic-droit dans la
+  // sidebar permet de mettre en pause une session sans devoir la focus.
+  async function sleepOne(id: string) {
     try {
-      await api.killClaudeSession(id);
+      await api.sleepClaudeSession(id);
       refreshSessions();
     } catch (e: any) {
-      setError({ msg: 'kill: ' + (e?.message ?? e) });
+      setError({ msg: 'sleep: ' + (e?.message ?? e) });
     }
   }
 
-  async function hardDeleteOne(id: string) {
+  // Suppression définitive (cascade DB côté serveur). Le caller doit avoir
+  // confirmé. Plus de soft-kill (`status='killed'` qui gardait le row en DB
+  // pour consultation post-mortem) — la refonte a fusionné kill→delete (cf.
+  // CLAUDE.md §10). Pour mettre la session en pause sans la perdre, c'est
+  // `doSleep` (réversible) dans `<ClaudeSessionView>`.
+  async function deleteSessionOne(id: string) {
     if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
     try {
-      await api.hardDeleteClaudeSession(id);
+      await api.deleteClaudeSession(id);
       if (id === selectedId) setSelectedId(null);
       refreshSessions();
     } catch (e: any) {
@@ -844,13 +853,23 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           x={ctxMenu.x}
           y={ctxMenu.y}
           currentColor={(ctxMenu.session as any).color}
-          canKill={ctxMenu.session.status !== 'killed'}
-          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà en pause' : undefined}
+          // Pas de `onKill` ici : la refonte kill→delete a fusionné les deux
+          // actions. Seule `onDelete` reste pour les sessions Claude. Les
+          // shells/installs ci-dessous gardent leur `onKill` (= close).
+          //
+          // `onSleep` n'est passé que si la session est dans un état où sleep
+          // a du sens (active/thinking/starting). Pour sleeping/error/killed,
+          // l'item disparaît du menu (le bouton "resume" du header chat
+          // s'occupe de réveiller la session ; on ne dédouble pas ici).
           onRename={() => setEditingId(ctxMenu.session.id)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
-          onKill={() => killOne(ctxMenu.session.id)}
-          onDelete={() => hardDeleteOne(ctxMenu.session.id)}
+          onSleep={
+            ['active', 'thinking', 'starting'].includes(ctxMenu.session.status)
+              ? () => sleepOne(ctxMenu.session.id)
+              : undefined
+          }
+          onDelete={() => deleteSessionOne(ctxMenu.session.id)}
           onClose={() => setCtxMenu(null)}
         />
       )}

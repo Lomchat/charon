@@ -32,7 +32,7 @@ import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStr
 //   - Batch les deltas `assistant_text` via requestAnimationFrame (60Hz max)
 //     pour ne pas re-render le sous-arbre à chaque token
 //   - Expose les actions (send/interrupt/forceStop/setMode/doSleep/doResume/
-//     doKill/respondPermission/respondQuestion/respondExitPlan) avec
+//     doDelete/respondPermission/respondQuestion/respondExitPlan) avec
 //     confirmation pessimiste (la queue se vide après ack serveur, pas avant)
 //
 // Ce que ce hook NE fait PAS :
@@ -108,7 +108,8 @@ export type ClaudeSessionStreamActions = {
   setMode(mode: PermissionMode): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
-  doKill(): Promise<void>;
+  /** Suppression définitive. Le caller DOIT avoir confirmé côté UI. */
+  doDelete(): Promise<void>;
   respondPermission(permId: string, allow: boolean, always?: boolean): Promise<void>;
   respondQuestion(qid: string, answers: Record<string, string> | null): Promise<void>;
   respondExitPlan(qid: string, decision: 'approve' | 'reject', feedback?: string): Promise<void>;
@@ -132,6 +133,13 @@ export function useClaudeSessionStream(
   options: UseClaudeSessionStreamOptions = {},
 ): ClaudeSessionStreamState & ClaudeSessionStreamActions {
   const { cache, onKilled } = options;
+  // Ref pour onKilled : les callers passent typiquement un inline arrow (cf.
+  // ClaudePanel + MobileChat), donc la ref `options.onKilled` change à chaque
+  // render. Le handler SSE est créé dans un useEffect avec eslint-disable
+  // exhaustive-deps — sans cette pinning, le callback embarqué dans le
+  // switch `status==='killed'` deviendrait stale dès le 1er render après mount.
+  const onKilledRef = useRef(onKilled);
+  useEffect(() => { onKilledRef.current = onKilled; }, [onKilled]);
 
   // ── State ──────────────────────────────────────────────────────────────
   const [sessionMeta, setSessionMeta] = useState<ClaudeSessionDetailResponse['session'] | null>(null);
@@ -334,6 +342,16 @@ export function useClaudeSessionStream(
     const handleEvent = (ev: WorkerEvent & { sessionId: string }) => {
       switch (ev.type) {
         case 'status':
+          // `'killed'` n'est plus un état DB persistant (cf. CLAUDE.md §10) :
+          // c'est un **signal transient** émis par le serveur quand la session
+          // vient d'être supprimée (cascade DB faite). Le caller veut un
+          // redirect (navigation hors de la session). On déclenche `onKilled`
+          // et on ne touche pas le local status pour éviter un re-render
+          // d'une UI qui sera unmount juste après.
+          if (ev.status === 'killed') {
+            onKilledRef.current?.();
+            break;
+          }
           setStatus(ev.status);
           break;
         case 'user_echo':
@@ -534,14 +552,18 @@ export function useClaudeSessionStream(
     }
   }, [sessionId]);
 
-  const doKill = useCallback(async () => {
+  // Suppression définitive (cascade DB côté serveur). Le callback `onKilled`
+  // est gardé tel quel pour la navigation post-suppression (mobile : retour
+  // vers /m/select). Pas de confirm() ici — c'est au caller de demander
+  // confirmation avant d'appeler l'action.
+  const doDelete = useCallback(async () => {
     try {
-      await api.killClaudeSession(sessionId);
-      onKilled?.();
+      await api.deleteClaudeSession(sessionId);
+      onKilledRef.current?.();
     } catch (e) {
       setError({ msg: String((e as Error)?.message ?? e) });
     }
-  }, [sessionId, onKilled]);
+  }, [sessionId]);
 
   // Acks pessimistes : on attend l'OK du POST avant de retirer la card de la
   // queue. Avant, c'était optimiste — si le POST échouait, la card disparaissait
@@ -583,7 +605,7 @@ export function useClaudeSessionStream(
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode,
-    doSleep, doResume, doKill,
+    doSleep, doResume, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   }), [
@@ -593,7 +615,7 @@ export function useClaudeSessionStream(
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode,
-    doSleep, doResume, doKill,
+    doSleep, doResume, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   ]);

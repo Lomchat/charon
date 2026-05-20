@@ -18,6 +18,10 @@ type Props = {
   onRename: (newName: string) => void;
   onColor: (color: RowColor) => void;
   onEditCwd?: () => void;
+  // Sleep pour les sessions Claude actives. Le caller ne passe `onSleep`
+  // que quand la session est active/thinking/starting — sinon l'item
+  // n'apparaît pas. Placé au-dessus de Supprimer définitivement.
+  onSleep?: () => void;
   onKill?: () => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -27,7 +31,7 @@ export default function MobileContextSheet({
   title, subtitle, initialName = '', currentColor,
   canKill = true, killLabel = 'Pause', killDisabledReason,
   showDelete = true,
-  onRename, onColor, onEditCwd, onKill, onDelete, onClose,
+  onRename, onColor, onEditCwd, onSleep, onKill, onDelete, onClose,
 }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(initialName);
@@ -103,6 +107,17 @@ export default function MobileContextSheet({
               })}
             </div>
 
+            {/* Sleep — pour les sessions Claude actives. Placé juste avant
+                Supprimer pour que l'action réversible soit en haut. */}
+            {onSleep && (
+              <button
+                type="button"
+                className="m-ctx-item"
+                onClick={() => { onSleep(); onClose(); }}
+              >
+                <span className="g">💤</span> Mettre en pause (sleep)
+              </button>
+            )}
             {onKill && (
               <button
                 type="button"

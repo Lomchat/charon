@@ -67,8 +67,9 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 export default function MobileChat({ sessionId, vpsList }: Props) {
   const router = useRouter();
   // Cache stable (cf. ../chatCache.ts) — passé au hook via le contrat StreamCache.
-  // L'invalidation après-kill nettoie l'entrée pour ne pas afficher une session
-  // "killed" comme encore active en cas de retour-arrière dans /m/select.
+  // L'invalidation après suppression nettoie l'entrée pour ne pas afficher une
+  // session déjà supprimée comme encore active en cas de retour-arrière vers
+  // /m/select pendant que le poll n'a pas encore tourné.
   const cacheRef = useRef<StreamCache>({
     get: (id) => getCached(id),
     fetch: (id, force) => fetchAndCache(id, force),
@@ -361,10 +362,10 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     setShowMenu(false);
     await stream.doResume();
   }
-  async function doKill() {
-    if (!confirm('Tuer cette session ? Les messages restent en historique.')) return;
+  async function doDelete() {
+    if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
     setShowMenu(false);
-    await stream.doKill();
+    await stream.doDelete();
     // navigation vers /m/select gérée par le callback onKilled du hook
   }
   // setMode est utilisé directement comme `stream.setMode` dans le JSX.
@@ -401,7 +402,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
             onClose={() => setShowMenu(false)}
             onSleep={doSleep}
             onResume={doResume}
-            onKill={doKill}
+            onDelete={doDelete}
             onInterrupt={interrupt}
             onForceStop={forceStop}
           />
@@ -525,18 +526,17 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
         <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} />
       )}
 
-      {/* Bottom zone : 4 cas
+      {/* Bottom zone : 3 cas (l'ancien middle state `'killed'` n'existe plus,
+          cf. CLAUDE.md §10 — la suppression définitive vide la session
+          immédiatement, et l'event `status='killed'` du serveur déclenche
+          `onKilled` du hook qui nous redirige vers /m/select avant qu'on
+          ait l'occasion d'afficher ce branch) :
           1. session sleeping/error → resume CTA
-          2. session killed → message
-          3. interaction pending → carte
-          4. normal → mode switch + input bar */}
+          2. interaction pending → carte
+          3. normal → mode switch + input bar */}
       {status === 'sleeping' || status === 'error' ? (
         <div className="m-resume-cta">
           <button onClick={doResume}>↺ RESUME CETTE SESSION</button>
-        </div>
-      ) : status === 'killed' ? (
-        <div className="m-killed-banner">
-          session tuée — historique consultable, pas reprenable
         </div>
       ) : oldestPending ? (
         <div className="m-pending-zone">
@@ -628,16 +628,21 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Menu popover (sleep/resume/pause/interrupt)
+// Menu popover (sleep/resume/delete/interrupt/force-stop)
+//
+// L'ancien bouton "pause session" (qui appelait `kill`) a été supprimé : le
+// soft-kill `status='killed'` n'existe plus. La suppression définitive est
+// derrière `onDelete` (avec confirm côté caller). Pour mettre en pause sans
+// perdre l'historique, c'est `onSleep` (réversible).
 // ──────────────────────────────────────────────────────────────────────────
 function MenuPopover({
-  status, onClose, onSleep, onResume, onKill, onInterrupt, onForceStop,
+  status, onClose, onSleep, onResume, onDelete, onInterrupt, onForceStop,
 }: {
   status: WorkerStatus | null;
   onClose: () => void;
   onSleep: () => void;
   onResume: () => void;
-  onKill: () => void;
+  onDelete: () => void;
   onInterrupt: () => void;
   onForceStop: () => void;
 }) {
@@ -665,12 +670,10 @@ function MenuPopover({
         )}
         {(status === 'sleeping' || status === 'error') ? (
           <MenuItem onClick={onResume} label="↺ resume" />
-        ) : status !== 'killed' && (
+        ) : (
           <MenuItem onClick={onSleep} label="💤 sleep" />
         )}
-        {status !== 'killed' && (
-          <MenuItem onClick={onKill} label="⏏ pause session" danger />
-        )}
+        <MenuItem onClick={onDelete} label="🗑 supprimer" danger />
       </div>
     </>
   );

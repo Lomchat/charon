@@ -606,7 +606,7 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
   return (
     <button
       type="button"
-      className={`session-row${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${colorToken ? ' has-color' : ''}`}
+      className={`session-row${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${colorToken ? ' has-color' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}`}
       onClick={() => onSelect(s.id)}
       onContextMenu={(e) => {
         if (!onContext) return;

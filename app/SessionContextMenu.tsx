@@ -29,7 +29,9 @@ type Props = {
   y: number;
   currentColor?: string | null;
   canKill?: boolean;
-  killLabel?: string;                // 'Pause' (session) ou 'Fermer' (shell/install)
+  killLabel?: string;                // 'Fermer' (shell/install). Pas utilisé
+                                     // pour les sessions Claude depuis la
+                                     // refonte kill→delete (cf. CLAUDE.md §10).
   killDisabledReason?: string;
   showDelete?: boolean;              // bouton "Supprimer définitivement"
   showRename?: boolean;              // par défaut true ; false pour install
@@ -37,7 +39,13 @@ type Props = {
   onRename?: () => void;
   onColor?: (color: RowColor) => void;
   onEditCwd?: () => void;            // option "Modifier le dossier"
-  onKill?: () => void;
+  onSleep?: () => void;              // "💤 Mettre en pause (sleep)" — pour
+                                     // les sessions Claude actives. Le caller
+                                     // ne le passe que si la session est dans
+                                     // un état où "sleep" a du sens (= pas
+                                     // déjà sleeping/error). Placé au-dessus
+                                     // de Supprimer.
+  onKill?: () => void;               // "Fermer" — shell/install seulement
   onDelete?: () => void;
   onClose: () => void;
 };
@@ -46,7 +54,7 @@ export default function SessionContextMenu({
   title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Pause',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
-  onRename, onColor, onEditCwd, onKill, onDelete, onClose,
+  onRename, onColor, onEditCwd, onSleep, onKill, onDelete, onClose,
 }: Props) {
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -98,6 +106,15 @@ export default function SessionContextMenu({
         </div>
       )}
 
+      {/* Sleep — pour les sessions Claude actives. Placé juste au-dessus du
+          bouton destructif Supprimer pour que l'user qui descend dans le
+          menu trouve d'abord l'action réversible. */}
+      {onSleep && (
+        <button
+          type="button"
+          onClick={() => { onSleep(); onClose(); }}
+        >💤 Mettre en pause (sleep)</button>
+      )}
       {onKill && (
         <button
           type="button"

@@ -439,28 +439,82 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
       // pipefail : remonte l'exit code de pip même si on pipe vers tail (sans
       // ça, le pipeline retourne 0 même quand pip explose → bootstrap croyait
       // que ça avait marché et bouclait).
-      const sdkCmd =
-        `set -o pipefail; ` +
-        `BASE=$(${PY_CHAIN} || command -v python3); ` +
-        `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi; ` +
-        `echo "[install_sdk] base python = $BASE"; ` +
-        // Crée le venv si absent. --without-pip + ensurepip est un fallback
-        // quand python3-venv n'est pas dispo (rare sur Debian/Ubuntu où il
-        // doit être installé en même temps que python3, mais on couvre).
-        `if [ ! -x ${VENV_PY} ]; then ` +
-        `  echo "[install_sdk] creating venv ${VENV_DIR}"; ` +
-        `  "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || ` +
-        `  { "$BASE" -m venv --without-pip ${VENV_DIR} && ${VENV_PY} -m ensurepip --upgrade 2>&1 | tail -20; } || ` +
-        `  { echo "[install_sdk] venv creation failed — install python3-venv (apt) ou python3X-venv (dnf)"; exit 11; }; ` +
-        `fi; ` +
+      //
+      // Multi-line via '\n' (pas '; ') pour éviter le piège `&;` (cf. §14
+      // piège 19) ET pour pouvoir utiliser `if/then/elif/else/fi` lisible.
+      //
+      // ── Auto-recovery venv (Debian/Ubuntu) ────────────────────────────
+      // `python -m venv` peut échouer avec "ensurepip is not available" /
+      // "No module named ensurepip" : ça arrive quand python est installé
+      // mais que le paquet OS qui fournit le module venv (typiquement
+      // python3.12-venv sur Ubuntu 24.04, python3.11-venv sur Debian 12,
+      // etc.) manque. La phase `install_python` plus haut couvre déjà ça
+      // via `apt-get install python3-venv`, MAIS elle ne tourne que quand
+      // `verify` retourne `no_py`. Si python est déjà là mais que le venv
+      // module manque, on arrive ici avec `no_sdk` et le venv pète.
+      //
+      // Donc : on tente le venv, on regarde le message d'erreur, et si
+      // c'est l'ensurepip qui manque on installe `python$VER-venv` (puis
+      // `python3-venv` en fallback) en best-effort, puis on retry.
+      // L'ancien fallback `--without-pip` + `ensurepip --upgrade` ne marche
+      // PAS dans ce cas : `ensurepip --upgrade` dépend exactement du
+      // module qui manque.
+      const sdkCmd = [
+        `set -o pipefail`,
+        `BASE=$(${PY_CHAIN} || command -v python3)`,
+        `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi`,
+        `echo "[install_sdk] base python = $BASE"`,
+        // Major.minor du python utilisé (ex: "3.12"). Sert à demander le
+        // bon paquet versionné à apt/dnf.
+        `PY_VER=$("$BASE" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' 2>/dev/null || echo "")`,
+        `echo "[install_sdk] python version = $PY_VER"`,
+        `if [ ! -x ${VENV_PY} ]; then`,
+        `  echo "[install_sdk] creating venv ${VENV_DIR}"`,
+        // Capture le log du venv pour pouvoir grep dessus si ça foire.
+        // `|| true` pour ne pas tuer le script via pipefail/set-e.
+        `  VENV_LOG=$("$BASE" -m venv ${VENV_DIR} 2>&1 || true)`,
+        `  echo "$VENV_LOG" | tail -20`,
+        // Si le venv n'existe pas ET que le log mentionne ensurepip :
+        // c'est le paquet OS qui manque. Tente apt puis dnf en best-effort.
+        `  if [ ! -x ${VENV_PY} ] && echo "$VENV_LOG" | grep -qE 'ensurepip is not available|No module named ensurepip'; then`,
+        `    echo "[install_sdk] module venv manquant — auto-install du paquet OS (python$PY_VER-venv ou python3-venv)"`,
+        `    if command -v apt-get >/dev/null 2>&1; then`,
+        `      export DEBIAN_FRONTEND=noninteractive`,
+        `      (apt-get update -y >/dev/null 2>&1 || sudo -n apt-get update -y >/dev/null 2>&1 || true)`,
+        // Tente d'abord python$VER-venv (versionné, plus précis sur
+        // Ubuntu 24.04 qui ship python3.12 séparé du méta python3), puis
+        // python3-venv (meta). Sans/avec sudo -n. tail -15 par tentative.
+        `      (apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
+        `        || sudo -n apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
+        `        || apt-get install -y python3-venv 2>&1 \\`,
+        `        || sudo -n apt-get install -y python3-venv 2>&1) | tail -15`,
+        `    elif command -v dnf >/dev/null 2>&1; then`,
+        // Sur Fedora/RHEL le module venv est dans le paquet python3 lui-même.
+        // Mais on couvre le cas où une version side-by-side (python3.11)
+        // a été installée sans son sous-paquet. Best-effort.
+        `      (dnf install -y "python$PY_VER" 2>&1 || sudo -n dnf install -y "python$PY_VER" 2>&1) | tail -15`,
+        `    else`,
+        `      echo "[install_sdk] pas de package manager apt/dnf détecté — install manuelle requise"`,
+        `    fi`,
+        `    echo "[install_sdk] retry venv creation"`,
+        `    "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || true`,
+        `  fi`,
+        `  if [ ! -x ${VENV_PY} ]; then`,
+        `    echo "[install_sdk] venv creation failed — install python$PY_VER-venv (apt) ou python3-venv manuellement"`,
+        `    exit 11`,
+        `  fi`,
+        `fi`,
         // Upgrade pip dans le venv pour éviter les warnings/edge-cases.
-        `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10; ` +
+        `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10`,
         // Install du SDK. Sans `| tail` cette fois — on veut l'exit code ET
         // pipefail s'occupe du reste de toute façon.
-        `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40; ` +
+        `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40`,
         // Post-check d'import : la SEULE vraie preuve que c'est bon.
-        `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`;
-      const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 240_000 });
+        `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
+      ].join('\n');
+      // 300s : on peut maintenant déclencher un apt-get update + apt-get install
+      // python$VER-venv en plus du pip install si le module venv manquait.
+      const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 300_000 });
       const sdkSsh = detectSshFailure(sdkR);
       if (sdkSsh) {
         yield { phase: 'install_sdk', status: 'error', detail: sdkSsh };

@@ -279,7 +279,11 @@ export type SearchClaudeResult = {
 };
 export type SearchClaudeResponse = { results: SearchClaudeResult[] };
 
-export type KillClaudeSessionResponse = { ok: true; hard: boolean };
+// Réponse de DELETE /api/claude/sessions/[id] : suppression définitive
+// (cascade DB). Avant la refonte kill→delete, le flag `hard` distinguait
+// le soft-kill (status='killed') du hard-delete (cascade). Le soft-kill
+// n'existe plus — DELETE est toujours destructif.
+export type DeleteClaudeSessionResponse = { ok: true };
 
 export type ResumeClaudeSessionResponse = {
   ok: true;
