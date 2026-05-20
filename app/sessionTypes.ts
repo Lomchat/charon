@@ -1,12 +1,12 @@
-// Types partagés entre la vue desktop (ClaudePanel + composants) et la vue
-// mobile (MobileChat). Avant ce fichier, chaque vue redéclarait les mêmes
-// types localement (Msg, ToolCallEntry, Todo, EditSnapshot, PermissionRequest,
-// PendingQuestion, PendingExitPlan) avec un commentaire "copié de…".
+// Types shared between the desktop view (ClaudePanel + components) and the
+// mobile view (MobileChat). Before this file, each view redeclared the same
+// types locally (Msg, ToolCallEntry, Todo, EditSnapshot, PermissionRequest,
+// PendingQuestion, PendingExitPlan) with a "copied from..." comment.
 //
-// Choix : `sessionId: string` requis partout. Côté mobile (single-session)
-// on remplit avec le sessionId courant — coût mémoire négligeable, et ça
-// simplifie le hook `useClaudeSessionStream` qui n'a pas à brancher sur
-// deux shapes différentes.
+// Choice: `sessionId: string` required everywhere. On mobile (single-session)
+// we fill with the current sessionId — negligible memory cost, and it
+// simplifies the `useClaudeSessionStream` hook which doesn't have to branch
+// on two different shapes.
 
 export type Msg = {
   id: string;
@@ -18,9 +18,9 @@ export type Msg = {
 export type ToolCallEntry = {
   id: string;
   name: string;
-  // `any` plutôt qu'`unknown` parce que les call sites accèdent à des
-  // sous-champs polymorphes (file_path, content, command, todos…) sans
-  // narrow systématique. Tightening implique un gros nettoyage hors scope.
+  // `any` rather than `unknown` because the call sites access polymorphic
+  // sub-fields (file_path, content, command, todos...) without systematic
+  // narrowing. Tightening implies a big cleanup out of scope.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: any;
   result?: { content: string; isError: boolean };
@@ -45,7 +45,7 @@ export type PermissionRequest = {
   id: string;
   sessionId: string;
   tool: string;
-  // Idem ToolCallEntry — `any` pour rester compat avec les call sites.
+  // Same as ToolCallEntry — `any` to remain compatible with the call sites.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: any;
   createdAt: number;

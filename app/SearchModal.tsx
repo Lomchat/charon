@@ -44,15 +44,15 @@ export default function SearchModal({ onClose, onPick }: Props) {
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="claude-modal search">
         <button className="modal-close" onClick={onClose}>✕</button>
-        <h2>recherche</h2>
+        <h2>search</h2>
         <input
           autoFocus
-          placeholder="texte à chercher dans les messages…"
+          placeholder="text to search in messages…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="search-input"
         />
-        {loading && <div className="search-loading">recherche…</div>}
+        {loading && <div className="search-loading">searching…</div>}
         <ul className="search-results">
           {results.map((r) => (
             <li key={r.messageId} onClick={() => onPick(r.sessionId)}>
@@ -60,13 +60,13 @@ export default function SearchModal({ onClose, onPick }: Props) {
                 {r.session?.vpsName && <span className="vps">{r.session.vpsName}</span>}
                 <span className="sess">{r.session?.name ?? r.session?.cwd ?? r.sessionId.slice(0, 8)}</span>
                 <span className="role">{r.role}</span>
-                <span className="when">{new Date(r.createdAt * 1000).toLocaleString('fr-FR')}</span>
+                <span className="when">{new Date(r.createdAt * 1000).toLocaleString('en-US')}</span>
               </div>
               <div className="snippet">{r.snippet}</div>
             </li>
           ))}
           {q.length >= 2 && !loading && results.length === 0 && (
-            <li className="empty">aucun résultat</li>
+            <li className="empty">no results</li>
           )}
         </ul>
       </div>

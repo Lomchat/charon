@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem in Charon.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill out the sections below — minimal
+        repro steps are the single most useful thing you can give us.
+
+        **Security issue?** Please follow the disclosure policy in
+        [SECURITY.md](../SECURITY.md) instead of opening a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: |
+        I clicked "Resume" on a sleeping session and the spinner never stops.
+        I expected the session to come back online within a few seconds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a VPS with `claude login` not yet completed.
+        2. Click "New session".
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Charon version (commit SHA)
+      placeholder: "e.g. df57eb4"
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "node --version"
+    validations:
+      required: true
+
+  - type: input
+    id: distro-hub
+    attributes:
+      label: Host OS (where Charon runs)
+      placeholder: "e.g. Debian 12 / Ubuntu 24.04 / Docker"
+    validations:
+      required: true
+
+  - type: input
+    id: distro-vps
+    attributes:
+      label: VPS OS (where the agent runs), if relevant
+      placeholder: "e.g. Ubuntu 22.04, Python 3.12"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        `journalctl -u charon -n 200` on the hub, or `~/.charon/agent.log`
+        on the VPS. Redact secrets before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm on `main` (or a recent tagged release) and not on a long-running fork.
+          required: true

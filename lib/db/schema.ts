@@ -15,14 +15,14 @@ export const sessions = sqliteTable('sessions', {
   expiresAt: integer('expires_at').notNull()
 });
 
-// Dossiers d'organisation des VPS dans la sidebar/UI.
-// Chaque VPS appartient obligatoirement à un dossier (cf. `vps.folderId`).
-// Un dossier par défaut (id='default') est créé par la migration 0006 ; il
-// est protégé contre la suppression (cf. /api/vps-folders/[id] DELETE).
-// `position` ordonne les dossiers entre eux (drag-and-drop dans DataModal).
-// `collapsed` est l'état replié/déplié dans la sidebar (persisté DB pour
-// être synchro cross-device, contrairement au flag par-VPS qui vit en
-// localStorage avec la clé `hub.claude.collapsedVps.v2`).
+// Folders for organizing VPSes in the sidebar/UI.
+// Every VPS necessarily belongs to a folder (cf. `vps.folderId`).
+// A default folder (id='default') is created by migration 0006; it is
+// protected from deletion (cf. /api/vps-folders/[id] DELETE).
+// `position` orders the folders among themselves (drag-and-drop in DataModal).
+// `collapsed` is the collapsed/expanded state in the sidebar (persisted in DB
+// to be synced cross-device, unlike the per-VPS flag that lives in
+// localStorage with the key `hub.claude.collapsedVps.v2`).
 export const vpsFolders = sqliteTable('vps_folders', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -38,40 +38,41 @@ export const vps = sqliteTable('vps', {
   sshUser: text('ssh_user').notNull(),
   sshPort: integer('ssh_port').notNull().default(22),
   defaultPath: text('default_path'),
-  // Dossier d'appartenance (cf. `vps_folders`). Toujours non-null ; les VPS
-  // créés sans folderId explicite tombent dans le dossier 'default' via
-  // DEFAULT SQL. La FK n'est pas enforced côté SQLite (ALTER ADD COLUMN
-  // limitation), seulement validée côté application.
+  // Parent folder (cf. `vps_folders`). Always non-null; VPSes
+  // created without an explicit folderId fall into the 'default' folder via
+  // DEFAULT SQL. The FK is not enforced on the SQLite side (ALTER ADD COLUMN
+  // limitation), only validated on the application side.
   folderId: text('folder_id').notNull().default('default').references(() => vpsFolders.id),
-  // Ordre dans le dossier (entier monotone, géré via batch reorder).
+  // Order within the folder (monotone integer, managed via batch reorder).
   position: integer('position').notNull().default(0),
-  // Statut de l'agent installé sur ce VPS.
-  //   'unknown'  : jamais testé (par défaut)
-  //   'ok'       : ping récent réussi
-  //   'missing'  : pas d'agent (à installer)
-  //   'error'    : agent installé mais ne répond pas
+  // Status of the agent installed on this VPS.
+  //   'unknown'  : never tested (default)
+  //   'ok'       : recent ping succeeded
+  //   'missing'  : no agent (to install)
+  //   'error'    : agent installed but unresponsive
   agentStatus: text('agent_status').notNull().default('unknown'),
   agentVersion: text('agent_version'),
-  // Hash du .pyz qui tourne sur le VPS (12 premiers chars du sha256). Sert au
-  // dashboard pour détecter "agent out of date" sans dépendre du bump manuel
-  // de __version__. Comparé au sha du .pyz embarqué dans le dashboard.
+  // Hash of the .pyz running on the VPS (first 12 chars of the sha256). Used
+  // by the dashboard to detect "agent out of date" without depending on the
+  // manual bump of __version__. Compared to the sha of the .pyz embedded in
+  // the dashboard.
   agentPyzSha: text('agent_pyz_sha'),
   agentLastSeenAt: integer('agent_last_seen_at'),
-  // État du `claude login` sur ce VPS. 1 = connecté (oauth.refresh_token
-  // présent), 0 = non connecté, NULL = jamais vérifié. Sert à masquer le
-  // bouton "claude login" dans la sidebar quand inutile. Mis à jour par
-  // - phase `check_login` du bootstrap (cf. bootstrap.ts)
-  // - POST /api/vps/[id]/claude/check-login (déclenché à la fermeture de
-  //   LoginConsole, ou à la demande)
+  // State of `claude login` on this VPS. 1 = logged in (oauth.refresh_token
+  // present), 0 = not logged in, NULL = never checked. Used to hide the
+  // "claude login" button in the sidebar when not needed. Updated by:
+  // - `check_login` phase of the bootstrap (cf. bootstrap.ts)
+  // - POST /api/vps/[id]/claude/check-login (triggered when the
+  //   LoginConsole closes, or on demand)
   claudeLoggedIn: integer('claude_logged_in'),
   claudeLoggedInCheckedAt: integer('claude_logged_in_checked_at'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 
-// Paths connus sur chaque VPS — sert à grouper les sessions dans la sidebar.
-// Le `label` est optionnel (auto-dérivé du basename du path si absent).
-// Une ligne par couple (vps_id, path) — pas d'unique contrainte SQL pour
-// rester souple côté sync ; la dédup est faite à l'insert (sync) / l'UI.
+// Known paths on each VPS — used to group sessions in the sidebar.
+// The `label` is optional (auto-derived from the path's basename if absent).
+// One row per (vps_id, path) pair — no UNIQUE SQL constraint to stay
+// flexible on the sync side; dedup is done at insert (sync) / UI time.
 export const vpsPaths = sqliteTable('vps_paths', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
@@ -86,8 +87,8 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
   cwd: text('cwd').notNull(),
   name: text('name'),
-  // Marqueur visuel : couleur (hex ou nom) appliquée à la bordure gauche
-  // de la row dans la sidebar. NULL = pas de marqueur.
+  // Visual marker: color (hex or name) applied to the left border of
+  // the row in the sidebar. NULL = no marker.
   color: text('color'),
   status: text('status').notNull(),
   permissionMode: text('permission_mode').notNull().default('normal'),
@@ -113,8 +114,8 @@ export const claudePendingPermissions = sqliteTable('claude_pending_permissions'
   respondedAt: integer('responded_at')
 });
 
-// Questions interactives (AskUserQuestion) en attente. On les persiste pour
-// pouvoir les re-émettre aux clients qui se reconnectent ou changent d'onglet.
+// Pending interactive questions (AskUserQuestion). We persist them so we can
+// re-emit them to clients that reconnect or switch tabs.
 // kind='question' = AskUserQuestion, kind='exit_plan' = ExitPlanMode review.
 export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
   id: text('id').primaryKey(),

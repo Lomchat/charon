@@ -12,12 +12,12 @@ export default async function CharonPage() {
   await requireSession();
   seedInitialData();
 
-  // Folders triés par position (drag-and-drop persistant).
+  // Folders sorted by position (persistent drag-and-drop).
   const folderRows = db.select().from(vpsFoldersTable)
     .orderBy(asc(vpsFoldersTable.position), asc(vpsFoldersTable.createdAt))
     .all();
-  // VPS triés par position dans leur folder ; le rendu sidebar groupe par folderId
-  // et l'ordre intra-folder est conservé.
+  // VPSes sorted by position within their folder; the sidebar render groups
+  // by folderId and the intra-folder order is preserved.
   const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
   const pathRows = db.select().from(vpsPathsTable).all();
   const sessionRows = db.select().from(claudeSessions)

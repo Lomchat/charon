@@ -5,14 +5,14 @@ import { db, claudeSessions, claudeSessionLogs, claudeSettings } from '@/lib/db'
 const MARKER_KEY = 'migration.v2_agent_done';
 
 /**
- * Migration "v2 agent" :  une fois, au premier boot après le refactor charon-agent.
- * Toutes les sessions qui étaient `status='active'` du temps de l'ancien
- * SessionWorker pointent vers des bridges morts (ils étaient enfants de la SSH
- * de Charon, donc tués quand on a redémarré). On les bascule en 'sleeping' pour
- * que l'utilisateur les voie et puisse les relancer via le nouveau pool, qui
- * recréera la session côté agent en passant le claude_session_id.
+ * "v2 agent" migration: once, on the first boot after the charon-agent refactor.
+ * All sessions that were `status='active'` from the days of the old
+ * SessionWorker point to dead bridges (they were children of Charon's SSH,
+ * so killed when we restarted). We switch them to 'sleeping' so the user
+ * sees them and can relaunch them via the new pool, which will recreate the
+ * session on the agent side by passing the claude_session_id.
  *
- * Idempotent : un setting marker sert de drapeau "déjà fait".
+ * Idempotent: a setting marker acts as the "already done" flag.
  */
 export function migrationV2IfNeeded(): void {
   const [marker] = db.select().from(claudeSettings)

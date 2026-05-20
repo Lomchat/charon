@@ -3,7 +3,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { getStream } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/[id]/permission
-// Body : { id: permId, allow: bool, always?: bool }
+// Body: { id: permId, allow: bool, always?: bool }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

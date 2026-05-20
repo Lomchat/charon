@@ -1,4 +1,4 @@
-"""Daemon principal : Unix socket server + JSON-RPC dispatch + session mgmt."""
+"""Main daemon: Unix socket server + JSON-RPC dispatch + session mgmt."""
 from __future__ import annotations
 
 import asyncio
@@ -18,12 +18,12 @@ from . import __version__
 
 
 def _compute_pyz_sha() -> str:
-    """SHA256 (12 premiers chars) du fichier .pyz qu'on exécute.
+    """SHA256 (first 12 chars) of the .pyz file we're running.
 
-    Sert au dashboard pour détecter qu'une mise à jour de l'agent est dispo
-    sans avoir à bumper __version__ à chaque change. sys.argv[0] pointe vers
-    le .pyz quand l'agent est lancé via `python charon-agent.pyz`. Si le
-    fichier est introuvable (cas dev sans pyz), retourne "dev".
+    Used by the dashboard to detect that an agent update is available
+    without having to bump __version__ on every change. sys.argv[0] points to
+    the .pyz when the agent is launched via `python charon-agent.pyz`. If the
+    file is not found (dev case without pyz), returns "dev".
     """
     try:
         pyz = sys.argv[0]
@@ -54,7 +54,7 @@ from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR
 from .state import load_state, save_state
 
 
-RING_SIZE = 300  # events bufferisés par session pour les late subscribers
+RING_SIZE = 300  # events buffered per session for late subscribers
 
 
 class Server:
@@ -63,24 +63,24 @@ class Server:
         self.state_path = state_path
         self.sessions: dict[str, AgentSession] = {}
         self.rings: dict[str, deque[dict[str, Any]]] = {}
-        # subscribers : session_id → set[Client]
+        # subscribers: session_id → set[Client]
         self.subscribers: dict[str, set[Client]] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
 
-    # ── Persistance ──────────────────────────────────────────────────────────
+    # ── Persistence ──────────────────────────────────────────────────────────
     async def _save_state_now(self) -> None:
         async with self._state_lock:
             try:
                 sessions = [s.to_persist() for s in self.sessions.values()]
-                # save_state est sync (fichier court). Pas besoin de threadpool.
+                # save_state is sync (short file). No need for a threadpool.
                 save_state(self.state_path, sessions)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
 
     def schedule_save(self) -> None:
-        """Sauve async, débounced (pour pas écrire plusieurs fois en rafale)."""
+        """Save async, debounced (to avoid writing several times in a burst)."""
         if self._save_pending:
             return
         self._save_pending = True
@@ -95,7 +95,7 @@ class Server:
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     def _emit(self, payload: dict[str, Any]) -> None:
-        """Callback que les sessions appellent pour broadcast un event."""
+        """Callback that sessions call to broadcast an event."""
         sid = payload.get("session_id")
         if isinstance(sid, str):
             ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
@@ -128,15 +128,15 @@ class Server:
         return s
 
     async def _restore_existing(self) -> None:
-        """Au boot : recharge state.json et tente un resume pour chaque session.
+        """At boot: reload state.json and attempt a resume for each session.
 
-        Sessions ignorées au restore :
-          - status='killed'    → dead pour de bon
-          - status='sleeping'  → pause explicite par l'utilisateur, reste pause
-        Pour les sessions reprises mais sans claude_session_id (jamais sorties
-        de 'starting' avant un crash), on les ajoute en mémoire en statut
-        'sleeping' pour qu'elles soient visibles mais pas relancées toutes
-        seules (la 1re query d'un user les avait jamais initialisées).
+        Sessions ignored at restore:
+          - status='killed'    → dead for good
+          - status='sleeping'  → explicit pause by the user, stays paused
+        For sessions being resumed but without a claude_session_id (never out
+        of 'starting' before a crash), we add them in memory with status
+        'sleeping' so they are visible but not relaunched on their own
+        (a user's first query never actually initialized them).
         """
         state = load_state(self.state_path)
         sessions = state.get("sessions", []) or []
@@ -150,7 +150,7 @@ class Server:
                 if status in ("killed",):
                     continue
                 if status == "sleeping":
-                    # Charge en mémoire sans démarrer le SDK
+                    # Load in memory without starting the SDK
                     self._register_sleeping(row)
                     continue
                 print(f"[boot] restoring session {sid} (cwd={cwd})", file=sys.stderr, flush=True)
@@ -165,9 +165,9 @@ class Server:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
 
     def _register_sleeping(self, row: dict[str, Any]) -> None:
-        """Enregistre une session en mémoire en statut 'sleeping' sans la lancer.
-        Utilisé au boot pour les sessions paused par l'utilisateur — list_sessions
-        les voit, et un resume explicite démarrera le SDK."""
+        """Registers a session in memory with status 'sleeping' without starting it.
+        Used at boot for sessions paused by the user — list_sessions
+        sees them, and an explicit resume will start the SDK."""
         s = AgentSession(
             row["session_id"],
             cwd=row["cwd"],
@@ -207,7 +207,7 @@ class Server:
             if session_id in self.sessions:
                 raise RpcError(ERR_INVALID_PARAMS, f"session {session_id} already exists")
             if not SDK_AVAILABLE:
-                raise RpcError(ERR_SDK_UNAVAILABLE, f"SDK indisponible: {SDK_IMPORT_ERROR}")
+                raise RpcError(ERR_SDK_UNAVAILABLE, f"SDK unavailable: {SDK_IMPORT_ERROR}")
             await self._create_session(
                 session_id=session_id,
                 cwd=cwd,
@@ -227,8 +227,8 @@ class Server:
             client.subscribed.add(sid)
             ring = self.rings.get(sid)
             sent = 0
-            # Marqueur "début du replay" pour que le client puisse skip la
-            # persistance DB sur des events qu'il a déjà vus avant son drop.
+            # "Replay start" marker so that the client can skip DB
+            # persistence for events it already saw before its drop.
             if ring and replay > 0:
                 items = list(ring)[-replay:]
                 if items:
@@ -237,7 +237,7 @@ class Server:
                         client.send_json(item)
                         sent += 1
                     client.send_json({"event": "replay_end", "session_id": sid})
-            # Émet un status pour que le client connaisse l'état courant
+            # Emit a status so that the client knows the current state
             client.send_json({"event": "status", "session_id": sid, "status": s.status})
             return {"ok": True, "replay_count": sent, "status": s.status}
 
@@ -300,13 +300,13 @@ class Server:
             return {"ok": True}
 
         if method == "resume_session":
-            # Pour une session déjà en mémoire (typiquement après un reboot
-            # agent où elle a été enregistrée 'sleeping'), redémarre le SDK.
+            # For a session already in memory (typically after an agent
+            # reboot where it was registered 'sleeping'), restart the SDK.
             sid = self._require_sid(params)
             s = self._require_session(sid)
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
-            # Reset l'état interne pour pouvoir restart proprement
+            # Reset internal state so we can restart cleanly
             s.status = "starting"
             s._stopped.clear()
             s._ready_evt.clear()
@@ -324,9 +324,9 @@ class Server:
             return {"ok": True}
 
         if method == "force_stop":
-            # Annulation brutale (le SDK est bloqué et l'interrupt soft est
-            # inefficace). La session passe en 'sleeping' immédiatement ;
-            # l'utilisateur peut resume sans attendre la fin du tool en cours.
+            # Brutal cancellation (the SDK is blocked and the soft interrupt
+            # is ineffective). The session goes to 'sleeping' immediately;
+            # the user can resume without waiting for the current tool to finish.
             sid = self._require_sid(params)
             s = self._require_session(sid)
             await s.force_stop()
@@ -444,7 +444,7 @@ class Server:
 
 
 class Client:
-    """Une connexion JSON-RPC ouverte (lecture/écriture multiplexée)."""
+    """An open JSON-RPC connection (multiplexed read/write)."""
 
     def __init__(
         self,
@@ -460,7 +460,7 @@ class Client:
         self._closed = False
 
     def send_json(self, obj: dict[str, Any]) -> None:
-        """Schedule un envoi (non-bloquant, fire-and-forget)."""
+        """Schedule a send (non-blocking, fire-and-forget)."""
         if self._closed:
             return
         asyncio.create_task(self._send_locked(obj))

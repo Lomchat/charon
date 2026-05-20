@@ -7,13 +7,15 @@ let initialized = false;
 export function seedInitialData() {
   if (initialized) return;
   initialized = true;
-  // Migration data one-shot : sessions 'active' héritées de l'ancienne archi
-  // (SessionWorker / bridge.py spawn par session) → 'sleeping'. Le user les
-  // reverra dans la sidebar avec un bouton resume → recrée côté agent.
+  // One-shot data migration : legacy sessions left in 'active' state from the
+  // pre-v2 architecture (one SSH-spawned bridge process per session, before
+  // the charon-agent daemon) → 'sleeping'. The user re-sees them in the
+  // sidebar with a resume button → recreated on the agent on demand. No-op
+  // on fresh databases.
   migrationV2IfNeeded();
-  // Pour chaque VPS : connecte l'AgentClient (background, non bloquant).
-  // Puis tente un resume pour les sessions encore 'active' (= active sur agent).
+  // For each VPS: connect the AgentClient (background, non-blocking).
+  // Then attempt a resume for sessions still 'active' (= active on the agent).
   autoConnectAgentsIfNeeded();
-  // Poll Telegram (no-op si non configuré, idempotent).
+  // Poll Telegram (no-op if not configured, idempotent).
   startTelegramBot();
 }

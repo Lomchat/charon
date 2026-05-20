@@ -1,17 +1,17 @@
 'use client';
 import { useEffect } from 'react';
 
-// Palette de couleurs pour marquer une row dans la sidebar.
-// "transparent" = pas de marker (option par défaut, neutralise un marker existant).
+// Color palette to mark a row in the sidebar.
+// "transparent" = no marker (default option, neutralizes an existing marker).
 export const ROW_COLORS = [
-  { token: null,        css: 'transparent', label: 'aucune' },
-  { token: 'gold',      css: '#d8a85a',     label: 'doré' },
-  { token: 'green',     css: '#6cbf6c',     label: 'vert' },
+  { token: null,        css: 'transparent', label: 'none' },
+  { token: 'gold',      css: '#d8a85a',     label: 'gold' },
+  { token: 'green',     css: '#6cbf6c',     label: 'green' },
   { token: 'cyan',      css: '#7ac4c4',     label: 'cyan' },
-  { token: 'blue',      css: '#6a9bd8',     label: 'bleu' },
-  { token: 'purple',    css: '#c8a2c8',     label: 'mauve' },
-  { token: 'red',       css: '#d97a6b',     label: 'rouge' },
-  { token: 'pink',      css: '#e6a4c8',     label: 'rose' },
+  { token: 'blue',      css: '#6a9bd8',     label: 'blue' },
+  { token: 'purple',    css: '#c8a2c8',     label: 'purple' },
+  { token: 'red',       css: '#d97a6b',     label: 'red' },
+  { token: 'pink',      css: '#e6a4c8',     label: 'pink' },
 ] as const;
 
 export type RowColor = (typeof ROW_COLORS)[number]['token'];
@@ -19,39 +19,39 @@ export type RowColor = (typeof ROW_COLORS)[number]['token'];
 export function colorToCss(token: string | null | undefined): string {
   if (!token) return 'transparent';
   const entry = ROW_COLORS.find((c) => c.token === token);
-  return entry?.css ?? token; // tolère un hex passé directement
+  return entry?.css ?? token; // tolerates a hex passed directly
 }
 
 type Props = {
-  title: string;                     // affiché en haut du menu (nom de l'item)
-  subtitle?: string;                 // info secondaire (ex: cwd)
+  title: string;                     // shown at the top of the menu (item name)
+  subtitle?: string;                 // secondary info (e.g. cwd)
   x: number;
   y: number;
   currentColor?: string | null;
   canKill?: boolean;
-  killLabel?: string;                // 'Fermer' (shell/install). Pas utilisé
-                                     // pour les sessions Claude depuis la
-                                     // refonte kill→delete (cf. CLAUDE.md §10).
+  killLabel?: string;                // 'Close' (shell/install). Not used
+                                     // for Claude sessions since the
+                                     // kill→delete rework (cf. CLAUDE.md §10).
   killDisabledReason?: string;
-  showDelete?: boolean;              // bouton "Supprimer définitivement"
-  showRename?: boolean;              // par défaut true ; false pour install
-  showColor?: boolean;               // par défaut true ; false pour install
+  showDelete?: boolean;              // "Delete permanently" button
+  showRename?: boolean;              // default true; false for install
+  showColor?: boolean;               // default true; false for install
   onRename?: () => void;
   onColor?: (color: RowColor) => void;
-  onEditCwd?: () => void;            // option "Modifier le dossier"
-  onSleep?: () => void;              // "💤 Mettre en pause (sleep)" — pour
-                                     // les sessions Claude actives. Le caller
-                                     // ne le passe que si la session est dans
-                                     // un état où "sleep" a du sens (= pas
-                                     // déjà sleeping/error). Placé au-dessus
-                                     // de Supprimer.
-  onKill?: () => void;               // "Fermer" — shell/install seulement
+  onEditCwd?: () => void;            // "Change folder" option
+  onSleep?: () => void;              // "💤 Sleep" — for active Claude
+                                     // sessions. The caller only passes it
+                                     // if the session is in a state where
+                                     // "sleep" makes sense (= not already
+                                     // sleeping/error). Placed above
+                                     // Delete.
+  onKill?: () => void;               // "Close" — shell/install only
   onDelete?: () => void;
   onClose: () => void;
 };
 
 export default function SessionContextMenu({
-  title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Pause',
+  title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Close',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
   onRename, onColor, onEditCwd, onSleep, onKill, onDelete, onClose,
@@ -77,16 +77,16 @@ export default function SessionContextMenu({
         {subtitle && <div className="ctx-subtitle">{subtitle}</div>}
       </div>
       {showRename && onRename && (
-        <button type="button" onClick={() => { onRename(); onClose(); }}>Renommer</button>
+        <button type="button" onClick={() => { onRename(); onClose(); }}>Rename</button>
       )}
       {onEditCwd && (
-        <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Modifier le dossier (cwd)</button>
+        <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Change folder (cwd)</button>
       )}
 
-      {/* Palette de couleurs — ligne horizontale de pastilles cliquables.
-          Masquée pour les installs (pas de personnalisation utile). */}
+      {/* Color palette — horizontal row of clickable swatches.
+          Hidden for installs (no useful customization). */}
       {showColor && onColor && (
-        <div className="ctx-color-row" role="group" aria-label="couleur">
+        <div className="ctx-color-row" role="group" aria-label="color">
           {ROW_COLORS.map((c) => {
             const selected = (currentColor ?? null) === c.token;
             const isNone = c.token === null;
@@ -106,14 +106,14 @@ export default function SessionContextMenu({
         </div>
       )}
 
-      {/* Sleep — pour les sessions Claude actives. Placé juste au-dessus du
-          bouton destructif Supprimer pour que l'user qui descend dans le
-          menu trouve d'abord l'action réversible. */}
+      {/* Sleep — for active Claude sessions. Placed just above the
+          destructive Delete button so the user going down the menu
+          finds the reversible action first. */}
       {onSleep && (
         <button
           type="button"
           onClick={() => { onSleep(); onClose(); }}
-        >💤 Mettre en pause (sleep)</button>
+        >💤 Sleep</button>
       )}
       {onKill && (
         <button
@@ -130,7 +130,7 @@ export default function SessionContextMenu({
           type="button"
           className="danger"
           onClick={() => { onDelete(); onClose(); }}
-        >Supprimer définitivement</button>
+        >Delete permanently</button>
       )}
     </div>
   );

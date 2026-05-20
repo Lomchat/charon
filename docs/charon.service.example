@@ -1,0 +1,46 @@
+# Example systemd unit for running Charon directly (not in Docker).
+# Save as /etc/systemd/system/charon.service after editing the paths and User=.
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now charon
+#   journalctl -u charon -f
+
+[Unit]
+Description=Charon — Claude Code session hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Adjust to wherever you cloned Charon.
+WorkingDirectory=/opt/charon
+
+# Path to .env (MASTER_PASSWORD, MASTER_SALT, SESSION_SECRET, SYNC_TOKEN, ...).
+EnvironmentFile=/opt/charon/.env
+
+# Use the node binary that built the .next directory. nvm users often want
+# the full path to a specific Node ; system installs can usually use
+# /usr/bin/node. The `next start` script picks up HOST and PORT from .env.
+ExecStart=/usr/bin/node /opt/charon/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 10556
+
+# Single-user admin tool. Adjust if you've created a service user.
+User=root
+Group=root
+
+Restart=on-failure
+RestartSec=3
+
+# Hardening (optional but recommended). Comment out anything that breaks
+# your setup ; the strict sandbox here assumes a clone in /opt/charon.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/charon/data /opt/charon/.next
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

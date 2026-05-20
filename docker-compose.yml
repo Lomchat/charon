@@ -1,0 +1,42 @@
+# Self-hosted Charon, single-instance.
+#
+# Quickstart:
+#   1) cp .env.example .env  (fill in MASTER_PASSWORD, MASTER_SALT,
+#      SESSION_SECRET, SYNC_TOKEN with `openssl rand -hex 32`)
+#   2) Make sure ./data exists and is writable. (compose creates it.)
+#   3) docker compose up -d --build
+#   4) Put a reverse proxy with TLS in front (nginx/caddy/traefik).
+#      The container exposes 10556 ; bind it to 127.0.0.1 in production.
+#
+# SSH keys: mount your private key into ~/.ssh/id_rsa for the `charon` user
+# (uid 1001). Adjust the path and key name as needed.
+
+services:
+  charon:
+    build: .
+    image: charon:local
+    container_name: charon
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=/app/data/charon.db
+    ports:
+      # In production: bind to 127.0.0.1 and put TLS proxy in front.
+      - "127.0.0.1:10556:10556"
+    volumes:
+      - ./data:/app/data
+      # Read-only mount of an SSH key so Charon can reach your VPS fleet.
+      # Set CHARON_SSH_KEY in the host shell, or hardcode a path here.
+      - ${CHARON_SSH_KEY:-./docker/dummy-key}:/home/charon/.ssh/id_rsa:ro
+      # Persist known_hosts across container restarts. Otherwise every
+      # first connection re-asks the host key fingerprint.
+      - ./docker/known_hosts:/home/charon/.ssh/known_hosts
+    healthcheck:
+      # The image already declares a HEALTHCHECK ; this is just here so
+      # `docker compose ps` shows the health state.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:10556/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -12,7 +12,7 @@ import {
   AgentSessionInfo,
 } from './types';
 
-// Chemin du pyz côté VPS (cf. installer)
+// Path of the pyz on the VPS side (cf. installer)
 const REMOTE_AGENT_PATH = '~/.charon/charon-agent.pyz';
 
 const SSH_OPTS = [
@@ -26,7 +26,7 @@ const SSH_OPTS = [
   '-T',
 ];
 
-// Backoff progressif sur reconnexion. Cap à 5min.
+// Progressive backoff on reconnection. Capped at 5min.
 const RECONNECT_BACKOFFS_MS = [1_000, 3_000, 8_000, 20_000, 60_000, 120_000, 300_000];
 
 type Pending = {
@@ -39,12 +39,12 @@ type Pending = {
 export type EventListener = (ev: AgentEvent) => void;
 
 /**
- * Maintient une connexion SSH long-running à un VPS, multiplexée en
- * JSON-RPC line-delimited avec le charon-agent qui tourne là-bas.
+ * Maintains a long-running SSH connection to a VPS, multiplexed as
+ * line-delimited JSON-RPC with the charon-agent running there.
  *
- * - Auto-reconnect avec backoff.
- * - Subscriptions persistantes (re-subscribe automatique après reconnect).
- * - Pending requests rejetées à la déconnexion (le caller doit retry).
+ * - Auto-reconnect with backoff.
+ * - Persistent subscriptions (auto re-subscribe after reconnect).
+ * - Pending requests rejected on disconnect (the caller must retry).
  */
 export class AgentClient {
   readonly vps: Vps;
@@ -58,8 +58,8 @@ export class AgentClient {
   private readBuf = '';
   private stderrBuf = '';
   private subscribers = new Map<string, Set<EventListener>>();
-  // Les session_id auxquels on a explicitement "subscribe" pour pouvoir
-  // re-subscribe après un reconnect.
+  // The session_ids we've explicitly "subscribed" to, so we can
+  // re-subscribe after a reconnect.
   private subscribed = new Set<string>();
   private statusListeners = new Set<(s: AgentClientStatus) => void>();
   private reconnectAttempts = 0;
@@ -84,7 +84,7 @@ export class AgentClient {
       });
     }
     if (this.status === 'idle') {
-      // Lance la connexion en arrière-plan
+      // Start the connection in the background
       this.start().catch(() => {});
     }
     return this.readyPromise;
@@ -93,9 +93,9 @@ export class AgentClient {
   async call<T = any>(method: string, params: Record<string, any> = {}): Promise<T> {
     if (this.aborted) throw new Error('client closed');
     if (this.status !== 'connected') {
-      // Tente d'établir la connexion si on n'a jamais essayé
+      // Try to establish the connection if we never tried
       if (this.status === 'idle') this.start().catch(() => {});
-      // Attend qu'on soit connecté (avec timeout 30s)
+      // Wait until connected (with 30s timeout)
       await Promise.race([
         this.ready(),
         new Promise<never>((_, reject) =>
@@ -106,7 +106,7 @@ export class AgentClient {
     return this._writeRequest<T>(method, params);
   }
 
-  /** Écriture sans gate de status — usage interne uniquement (start/hello). */
+  /** Write without status gate — internal use only (start/hello). */
   private _writeRequest<T = any>(method: string, params: Record<string, any> = {}): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const id = this.nextReqId++;
@@ -133,7 +133,7 @@ export class AgentClient {
       this.subscribers.set(sessionId, new Set());
     }
     this.subscribers.get(sessionId)!.add(listener);
-    // Si pas encore subscribed côté agent, le faire
+    // If not yet subscribed on the agent side, do it
     if (!this.subscribed.has(sessionId)) {
       this.subscribed.add(sessionId);
       if (this.status === 'connected') {
@@ -142,12 +142,13 @@ export class AgentClient {
     }
   }
 
-  /** Re-tente le subscribe RPC côté agent. Utile quand un subscribe précédent
-   *  a failed (typiquement : SSE ouvert avant que la session n'existe sur
-   *  l'agent, puis resume qui crée la session — l'attach n'est pas refait
-   *  parce qu'idempotent, mais le subscribe agent reste manquant). */
+  /** Retry the subscribe RPC on the agent side. Useful when a previous
+   *  subscribe failed (typically: SSE opened before the session existed
+   *  on the agent, then resume creates the session — the attach is not
+   *  redone because it's idempotent, but the agent subscribe remains
+   *  missing). */
   resubscribe(sessionId: string): void {
-    if (!this.subscribers.has(sessionId)) return;  // pas de listener → rien à faire
+    if (!this.subscribers.has(sessionId)) return;  // no listener → nothing to do
     this.subscribed.add(sessionId);
     if (this.status === 'connected') {
       this._fireSubscribe(sessionId);
@@ -157,8 +158,8 @@ export class AgentClient {
   private _fireSubscribe(sessionId: string): void {
     this.call('subscribe', { session_id: sessionId, replay: 300 })
       .catch((e) => {
-        // Si subscribe échoue (typiquement session_not_found), on retire de
-        // `subscribed` pour qu'un futur subscribe ré-essaye spontanément.
+        // If subscribe fails (typically session_not_found), remove from
+        // `subscribed` so a future subscribe will retry spontaneously.
         if (/not found/i.test(e?.message ?? '') || e?.code === -32000) {
           this.subscribed.delete(sessionId);
         }
@@ -221,8 +222,8 @@ export class AgentClient {
 
     const keyPath = getSetting('ssh.private_key_path');
     const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
-    // Sélectionne explicitement le meilleur python ≥ 3.10 disponible.
-    // Le shebang du pyz est `python3` qui sur RHEL/CentOS reste à 3.9 — pas OK.
+    // Explicitly select the best python ≥ 3.10 available.
+    // The pyz shebang is `python3` which on RHEL/CentOS is still 3.9 — not OK.
     const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
     const args = [
       ...SSH_OPTS,
@@ -249,15 +250,15 @@ export class AgentClient {
     });
     child.on('close', (code) => this._handleExit(code));
 
-    // Envoie le hello (passe par _writeRequest pour éviter le deadlock :
-    // call() awaiterait ready() qui n'est résolu QUE par cette réponse hello).
+    // Send the hello (goes through _writeRequest to avoid a deadlock:
+    // call() would await ready() which is ONLY resolved by this hello reply).
     this._writeRequest<AgentHelloResult>('hello', { client: 'charon' })
       .then((hello) => {
         this.hello = hello;
         this.reconnectAttempts = 0;
         this.lastConnectError = null;
         this._setStatus('connected');
-        // Persist le ping side-effect : timestamp + version
+        // Persist the ping side-effect: timestamp + version
         try {
           db.update(vpsTable).set({
             agentStatus: 'ok',
@@ -266,11 +267,11 @@ export class AgentClient {
             agentLastSeenAt: Math.floor(Date.now() / 1000),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
-        // Re-subscribe à tout
+        // Re-subscribe to everything
         for (const sid of this.subscribed) {
           this.call('subscribe', { session_id: sid, replay: 300 }).catch(() => {});
         }
-        // Résout les ready
+        // Resolve readys
         if (this.readyResolve) {
           this.readyResolve();
           this.readyResolve = null;
@@ -280,7 +281,7 @@ export class AgentClient {
       })
       .catch((e) => {
         this.lastConnectError = `hello failed: ${e?.message ?? e}`;
-        // _handleExit prendra le relais (child va close)
+        // _handleExit will take over (child will close)
       });
   }
 
@@ -306,7 +307,7 @@ export class AgentClient {
     // Response (id + result/error)
     if (typeof msg.id === 'number') {
       const pending = this.pending.get(msg.id);
-      if (!pending) return; // tardive
+      if (!pending) return; // late
       this.pending.delete(msg.id);
       if (pending.timer) clearTimeout(pending.timer);
       if (msg.error) {
@@ -316,7 +317,7 @@ export class AgentClient {
       }
       return;
     }
-    // Event (no id) — dispatcher aux subscribers de la session
+    // Event (no id) — dispatch to the session's subscribers
     if (typeof msg.event === 'string') {
       const sid = msg.session_id;
       if (typeof sid !== 'string') return;
@@ -334,14 +335,14 @@ export class AgentClient {
     const reason = `ssh exit code=${code ?? '?'}${this.lastConnectError ? ` | ${this.lastConnectError}` : ''}${tail ? ` | stderr: ${tail}` : ''}`;
     this.child = null;
 
-    // Reject toutes les pending
+    // Reject all pending
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(new Error(`agent ${this.vps.name}: connection lost (${reason.slice(0, 300)})`));
     }
     this.pending.clear();
 
-    // Tag DB : missing / error selon le stderr (heuristique)
+    // Tag DB: missing / error based on stderr (heuristic)
     try {
       const isMissing = /No such file|introuvable|not found/i.test(tail) || code === 127;
       db.update(vpsTable).set({
@@ -349,7 +350,7 @@ export class AgentClient {
       }).where(eq(vpsTable.id, this.vps.id)).run();
     } catch {}
 
-    // Si on n'avait pas encore résolu ready (premier connect), reject.
+    // If we hadn't resolved ready yet (first connect), reject.
     if (this.readyReject) {
       this.readyReject(new Error(reason));
       this.readyResolve = null;

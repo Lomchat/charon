@@ -5,7 +5,7 @@ import { db, claudePushSubs } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
 // POST /api/claude/push/subscribe
-// Body : { endpoint, keys: { p256dh, auth }, userAgent? }
+// Body: { endpoint, keys: { p256dh, auth }, userAgent? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'endpoint+keys required' }, { status: 400 });
   }
   const ua = body.userAgent ? String(body.userAgent) : null;
-  // Upsert sur endpoint
+  // Upsert on endpoint
   const [existing] = db.select().from(claudePushSubs).where(eq(claudePushSubs.endpoint, endpoint)).all();
   if (existing) {
     db.update(claudePushSubs)

@@ -4,14 +4,14 @@ import { db, vpsPaths } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
 // PATCH /api/vps-paths/[id]
-// Body : { path?, label? }
+// Body: { path?, label? }
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
   const pathId = Number(id);
   if (!Number.isFinite(pathId)) {
-    return NextResponse.json({ error: 'id invalide' }, { status: 400 });
+    return NextResponse.json({ error: 'invalid id' }, { status: 400 });
   }
   const body = await req.json();
   const update: Record<string, unknown> = {};
@@ -36,7 +36,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const pathId = Number(id);
   if (!Number.isFinite(pathId)) {
-    return NextResponse.json({ error: 'id invalide' }, { status: 400 });
+    return NextResponse.json({ error: 'invalid id' }, { status: 400 });
   }
   db.delete(vpsPaths).where(eq(vpsPaths.id, pathId)).run();
   return NextResponse.json({ ok: true });

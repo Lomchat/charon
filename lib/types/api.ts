@@ -1,7 +1,7 @@
-// Types request/response pour `lib/api.ts`.
-// Toute méthode `api.*` doit avoir son couple `XxxBody` / `XxxResponse` ici.
-// Réutilise les types DB (Vps, ClaudeSession, …) et protocole (PermissionMode,
-// WorkerStatus) plutôt que de les redéclarer.
+// Request/response types for `lib/api.ts`.
+// Every `api.*` method must have its `XxxBody` / `XxxResponse` pair here.
+// Reuse DB types (Vps, ClaudeSession, ...) and protocol types (PermissionMode,
+// WorkerStatus) rather than redeclaring them.
 
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
@@ -12,7 +12,7 @@ import type { PermissionMode, WorkerStatus } from '@/lib/server/claude/types';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
 
-// Ré-export pour que les consommateurs n'aient pas à connaître la source
+// Re-export so consumers don't have to know the source
 export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
   ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
   ClaudePushSub, PermissionMode, WorkerStatus, ShellInfo,
@@ -26,8 +26,8 @@ export type CreateVpsBody = {
   sshUser: string;
   sshPort?: number;
   defaultPath?: string | null;
-  // Dossier dans lequel placer le nouveau VPS. Si omis, le serveur l'assigne
-  // au premier dossier (par position) — typiquement le dossier 'default'.
+  // Folder in which to place the new VPS. If omitted, the server assigns it
+  // to the first folder (by position) — typically the 'default' folder.
   folderId?: string | null;
 };
 export type UpdateVpsBody = Partial<CreateVpsBody>;
@@ -36,16 +36,16 @@ export type UpdateVpsBody = Partial<CreateVpsBody>;
 
 export type CreateVpsFolderBody = {
   name: string;
-  // Position absolue dans la liste. Si omise, append à la fin.
+  // Absolute position in the list. If omitted, appends at the end.
   position?: number;
 };
 export type UpdateVpsFolderBody = {
   name?: string;
   collapsed?: boolean;
 };
-// Re-layout atomique : positions de tous les folders + assignment+position de
-// tous les VPS. Le serveur l'applique en transaction. Le client envoie tout
-// l'état désiré après un drag-end.
+// Atomic re-layout: positions of all folders + assignment+position of all
+// VPSes. The server applies it in a transaction. The client sends the
+// entire desired state after a drag-end.
 export type VpsLayoutBody = {
   folders: { id: string; position: number }[];
   vps: { id: string; folderId: string; position: number }[];
@@ -81,8 +81,8 @@ export type ShellsListResponse = { shells: ShellInfo[] };
 export type StartShellBody = { cwd?: string | null };
 export type UpdateShellBody = { name?: string | null; color?: string | null };
 
-// ── Installs (sessions d'installation d'agent) ───────────────────────────────
-// Mémoire seulement, pattern shell. Pas de body POST (l'id du VPS suffit).
+// ── Installs (agent install sessions) ────────────────────────────────────────
+// In-memory only, shell pattern. No POST body (the VPS id is enough).
 
 export type InstallsListResponse = { installs: InstallInfo[] };
 export type VpsInstallResponse = { install: InstallInfo | null };
@@ -116,7 +116,7 @@ export type SetupVpsClaudeResponse = {
   stderr: string;
 };
 
-// État du `claude login` sur un VPS. Retourné par POST /api/vps/[id]/claude/check-login.
+// State of `claude login` on a VPS. Returned by POST /api/vps/[id]/claude/check-login.
 export type CheckClaudeLoginResponse = {
   ok: boolean;
   error?: string;
@@ -173,17 +173,17 @@ export type ClaudeSessionDetailResponse = {
   session: ClaudeSession;
   liveStatus: WorkerStatus | string;
   subscribers: number;
-  // Fenêtre des `limit` derniers messages "chat" (user/assistant/tool_use/
-  // tool_result/user_question/exit_plan_request/thinking) + tous les
-  // edit_snapshot et event dans la même plage d'IDs (cf. backend
-  // loadMessageWindow). Triés asc par id.
+  // Window of the last `limit` "chat" messages (user/assistant/tool_use/
+  // tool_result/user_question/exit_plan_request/thinking) + all the
+  // edit_snapshot and event entries in the same ID range (cf. backend
+  // loadMessageWindow). Sorted asc by id.
   messages: ClaudeSessionMessage[];
-  // True s'il existe des messages chat encore plus anciens que `oldestChatId`.
-  // Utilisé par le client pour décider d'activer le scroll-up loadMore.
+  // True if there are CHAT messages even older than `oldestChatId`.
+  // Used by the client to decide whether to enable scroll-up loadMore.
   hasMore: boolean;
-  // id du plus ancien message CHAT dans cette fenêtre. Sert de cursor à
-  // passer en `?before=<oldestChatId>` au prochain loadMore. null si la
-  // fenêtre est vide.
+  // id of the oldest CHAT message in this window. Used as a cursor to
+  // pass as `?before=<oldestChatId>` to the next loadMore. null if the
+  // window is empty.
   oldestChatId: number | null;
   streamingText: string;
   pendingPermissions: PendingPermissionPayload[];
@@ -191,10 +191,10 @@ export type ClaudeSessionDetailResponse = {
   pendingExitPlans: PendingExitPlanPayload[];
 };
 
-// Response du loadMore (GET ...?before=<id>) — même shape côté serveur que
-// ClaudeSessionDetailResponse mais on n'utilise que la fenêtre de messages
-// pour étendre l'historique côté client. (Les autres champs sont quand même
-// renseignés par la route pour rester typés ; le client les ignore.)
+// loadMore response (GET ...?before=<id>) — same shape on the server side as
+// ClaudeSessionDetailResponse but we only use the messages window to extend
+// history on the client side. (The other fields are still populated by the
+// route to stay typed; the client ignores them.)
 export type ClaudeSessionMessageWindow = {
   messages: ClaudeSessionMessage[];
   hasMore: boolean;
@@ -237,8 +237,8 @@ export type RenameClaudeSessionBody = {
 };
 
 export type SendClaudeInputBody = { content: string };
-// L'endpoint /input accepte aussi `{ type: 'interrupt' }` — modélisé comme
-// union pour rester typé. `interruptClaude` envoie la 2e branche.
+// The /input endpoint also accepts `{ type: 'interrupt' }` — modelled as a
+// union to stay typed. `interruptClaude` sends the 2nd branch.
 export type ClaudeInputBody = SendClaudeInputBody | { type: 'interrupt' };
 
 export type RespondPermissionBody = {
@@ -279,10 +279,10 @@ export type SearchClaudeResult = {
 };
 export type SearchClaudeResponse = { results: SearchClaudeResult[] };
 
-// Réponse de DELETE /api/claude/sessions/[id] : suppression définitive
-// (cascade DB). Avant la refonte kill→delete, le flag `hard` distinguait
-// le soft-kill (status='killed') du hard-delete (cascade). Le soft-kill
-// n'existe plus — DELETE est toujours destructif.
+// Response of DELETE /api/claude/sessions/[id]: permanent deletion
+// (DB cascade). Before the kill→delete rework, the `hard` flag distinguished
+// soft-kill (status='killed') from hard-delete (cascade). Soft-kill no
+// longer exists — DELETE is always destructive.
 export type DeleteClaudeSessionResponse = { ok: true };
 
 export type ResumeClaudeSessionResponse = {
@@ -292,8 +292,8 @@ export type ResumeClaudeSessionResponse = {
 
 // ── Settings & push ──────────────────────────────────────────────────────────
 
-// Settings : clé/valeur libre. ALLOWED_KEYS côté serveur restreint à un set
-// fixe — on type au minimum comme Record<string, string>.
+// Settings: free-form key/value. ALLOWED_KEYS on the server side restricts to
+// a fixed set — we type minimally as Record<string, string>.
 export type ClaudeSettingsMap = Record<string, string>;
 
 export type PushVapidKeyResponse = { publicKey: string };
@@ -311,7 +311,7 @@ export type PushSubscribeResponse = {
 
 export type PushUnsubscribeBody = { endpoint: string };
 
-// ── Helpers de réponse génériques ────────────────────────────────────────────
+// ── Generic response helpers ─────────────────────────────────────────────────
 
 export type OkResponse = { ok: true };
 export type OkOrErrorResponse = { ok: boolean; error?: string };

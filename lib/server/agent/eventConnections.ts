@@ -3,26 +3,26 @@ import { subscribeGlobalSessionEvents, type GlobalSessionEvent } from './session
 
 // eventConnections
 // ─────────────────────────────────────────────────────────────────────────────
-// Registry des connexions SSE multiplexées (/api/claude/events). Chaque client
-// browser ouvre UNE seule SSE persistante au mount, identifiée par un connId
-// (UUID généré côté client). Le focus (sessionId actuellement regardé) est
-// mutable via POST /api/claude/focus — pas de close/reopen sur switch.
+// Registry of multiplexed SSE connections (/api/claude/events). Each browser
+// client opens ONE persistent SSE on mount, identified by a connId (UUID
+// generated on the client side). The focus (sessionId currently being
+// watched) is mutable via POST /api/claude/focus — no close/reopen on switch.
 //
-// Règles de fan-out :
-//   - Events "low-volume" (status, mode_changed, ready, session_id,
+// Fan-out rules:
+//   - "Low-volume" events (status, mode_changed, ready, session_id,
 //     permission_request, user_question, exit_plan_request,
-//     interaction_resolved, error) → forwardés à TOUTES les connexions
-//     (pour les badges sidebar + popup permissions cross-session).
-//   - Events "high-volume" (assistant_text, thinking, tool_use, tool_result,
+//     interaction_resolved, error) → forwarded to ALL connections
+//     (for sidebar badges + cross-session permissions popup).
+//   - "High-volume" events (assistant_text, thinking, tool_use, tool_result,
 //     edit_snapshot, todo_update, user_echo, stop, prefill_input,
-//     reconnecting) → forwardés UNIQUEMENT à la connexion qui a la session
-//     en focus. Le client charge l'historique par GET en parallèle.
+//     reconnecting) → forwarded ONLY to the connection that has the session
+//     in focus. The client loads the history via GET in parallel.
 //
-// Quand un client switch de focus :
-//   1. Client POST /focus { conn, sessionId } → maj du focus
-//   2. Client GET /api/claude/sessions/[id] → recharge l'historique persisté
-//   3. SSE continue de couler — désormais les high-volume de la nouvelle
-//      session arrivent
+// When a client switches focus:
+//   1. Client POST /focus { conn, sessionId } → updates the focus
+//   2. Client GET /api/claude/sessions/[id] → reloads the persisted history
+//   3. SSE continues flowing — from now on the high-volume events of the
+//      new session arrive
 
 const LOW_VOLUME_EVENTS = new Set<string>([
   'status', 'mode_changed', 'ready', 'session_id',
@@ -45,17 +45,17 @@ if (!gReg._eventConnections) gReg._eventConnections = new Map();
 const connections: Map<string, ConnState> = gReg._eventConnections;
 
 /**
- * Enregistre une connexion SSE. Branche la connexion au bus global et
- * applique le filtre par focus. Retourne une fonction unregister à appeler
- * à la fermeture de la SSE (req abort).
+ * Register an SSE connection. Wires the connection to the global bus and
+ * applies the focus filter. Returns an unregister function to call when
+ * the SSE closes (req abort).
  */
 export function registerConnection(opts: {
   connId: string;
   send: (ev: GlobalSessionEvent) => void;
   initialFocus?: string | null;
 }): () => void {
-  // Si un connId existe déjà (ex: client a reconnecté avant qu'on détecte le
-  // close), on remplace proprement.
+  // If a connId already exists (e.g. client reconnected before we detected
+  // the close), replace it cleanly.
   const existing = connections.get(opts.connId);
   if (existing?.unsubBus) existing.unsubBus();
 
@@ -80,9 +80,9 @@ export function registerConnection(opts: {
 }
 
 /**
- * Change le focus d'une connexion. Retourne true si trouvée, false sinon.
- * Le SSE continue de couler ; à partir du prochain event, le filtre
- * utilise le nouveau focus.
+ * Change the focus of a connection. Returns true if found, false otherwise.
+ * The SSE keeps flowing; starting with the next event, the filter uses
+ * the new focus.
  */
 export function setConnectionFocus(connId: string, sessionId: string | null): boolean {
   const conn = connections.get(connId);
@@ -92,8 +92,8 @@ export function setConnectionFocus(connId: string, sessionId: string | null): bo
 }
 
 /**
- * Compte les connexions qui ont cette session en focus. Sert au badge
- * "×N clients connectés" affiché dans la sidebar/header.
+ * Count the connections that have this session in focus. Used by the
+ * "×N clients connected" badge shown in the sidebar/header.
  */
 export function focusCountFor(sessionId: string): number {
   let n = 0;

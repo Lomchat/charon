@@ -4,7 +4,7 @@ import { db, claudeSessionMessages, claudeSessions, vps as vpsTable } from '@/li
 import { requireApiSession } from '@/lib/server/session';
 
 // GET /api/claude/search?q=...
-// LIKE %q% sur claude_session_messages.content + agrège par session.
+// LIKE %q% on claude_session_messages.content + aggregates by session.
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -39,7 +39,7 @@ export async function GET(req: Request) {
     }
     sessionMap.set(sid, { ...row, vpsName });
   }
-  // Snippet autour de q
+  // Snippet around q
   const lower = q.toLowerCase();
   const results = rows.map((r) => {
     const idx = r.content.toLowerCase().indexOf(lower);

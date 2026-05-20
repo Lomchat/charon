@@ -16,13 +16,13 @@ export const dynamic = 'force-dynamic';
 
 // GET /api/claude/events?conn=<uuid>&focus=<sid>
 //
-// SSE multiplexée : remplace les anciens endpoints
-// `/api/claude/sessions/[id]/stream` et `/api/claude/interactions/stream`.
-// Le client browser ouvre UNE seule SSE persistante au mount ; les changements
-// de session sont gérés via POST /api/claude/focus sans close/reopen.
+// Multiplexed SSE: replaces the old endpoints
+// `/api/claude/sessions/[id]/stream` and `/api/claude/interactions/stream`.
+// The browser client opens ONE persistent SSE at mount; session changes
+// are handled via POST /api/claude/focus without close/reopen.
 //
-// Snapshot initial : statuts de toutes les sessions vivantes + pendings en DB.
-// Suite : flux live filtré par focus (cf. eventConnections.ts § registerConnection).
+// Initial snapshot: statuses of all live sessions + pendings in DB.
+// Then: live stream filtered by focus (cf. eventConnections.ts § registerConnection).
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -53,9 +53,9 @@ export async function GET(req: Request) {
       const send = (ev: GlobalSessionEvent) => {
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
       };
-      // Les install events n'ont pas de sessionId Claude et ne passent pas par
-      // le filtre par focus — ils sont broadcast à tout le monde, comme une
-      // notif de niveau "hub" (cf. installSession.ts § subscribeInstallBus).
+      // Install events have no Claude sessionId and don't go through the
+      // focus filter — they are broadcast to everyone, like a "hub"-level
+      // notification (cf. installSession.ts § subscribeInstallBus).
       const sendInstall = (ev: InstallBusEvent) => {
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
       };
@@ -68,27 +68,27 @@ export async function GET(req: Request) {
         try { controller.close(); } catch {}
       };
 
-      // Snapshot initial : status de toutes les sessions + pendings. Le client
-      // peut ainsi peupler sa sidebar immédiatement sans dépendre du
-      // GET /api/claude/sessions (qui sera aussi appelé en parallèle mais ces
-      // events status le couvrent partiellement).
+      // Initial snapshot: status of all sessions + pendings. This lets the
+      // client populate its sidebar immediately without depending on
+      // GET /api/claude/sessions (which will also be called in parallel but
+      // these status events cover it partially).
       //
-      // Note historique : on filtrait ici les sessions `status='killed'`. Depuis
-      // la refonte kill→delete (cf. CLAUDE.md §10), ce status n'est plus
-      // persisté. Le filtre est gardé en garde-fou idempotent au cas où des
-      // données pré-migration referaient surface, mais ne devrait jamais matcher.
+      // Historical note: we used to filter `status='killed'` sessions here.
+      // Since the kill->delete refactor (cf. CLAUDE.md §10), this status is
+      // no longer persisted. The filter is kept as an idempotent safeguard
+      // in case pre-migration data resurfaces, but should never match.
       try {
         const rows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
           .from(claudeSessions).all();
         for (const row of rows) {
           if (row.status === 'killed') continue;
-          // Préfère le status live (en mémoire) à celui DB si disponible.
+          // Prefer the live (in-memory) status over the DB one if available.
           const live = getStream(row.id);
           const effective = live ? live.status : row.status;
           send({ type: 'status', sessionId: row.id, status: effective as any });
         }
-        // Pendings : on les replay une fois pour repeupler les queues client
-        // (la cross-session popup + la session focus en a besoin).
+        // Pendings: we replay them once to repopulate the client queues
+        // (the cross-session popup + the focused session need them).
         const perms = db.select().from(claudePendingPermissions).where(
           eq(claudePendingPermissions.status, 'pending'),
         ).all();
@@ -111,9 +111,9 @@ export async function GET(req: Request) {
         }
       } catch {}
 
-      // Snapshot initial des installs : envoie un install_started pour chaque
-      // install encore active. Permet au client (Sidebar / popup) de se mettre
-      // à jour au mount sans dépendre d'un GET séparé.
+      // Initial snapshot of installs: sends an install_started for each
+      // install still active. Lets the client (Sidebar / popup) update
+      // at mount without depending on a separate GET.
       try {
         for (const inst of listInstalls()) {
           if (inst.status === 'running') {
@@ -126,9 +126,9 @@ export async function GET(req: Request) {
         }
       } catch {}
 
-      // Branche au bus global session avec filtrage par focus.
+      // Connect to the global session bus with focus filtering.
       unregister = registerConnection({ connId, send, initialFocus });
-      // Branche au bus install (broadcast à tout le monde, pas de filtre focus).
+      // Connect to the install bus (broadcast to everyone, no focus filter).
       unsubInstall = subscribeInstallBus(sendInstall);
 
       hbTimer = setInterval(() => sendRaw(`: hb\n\n`), 15_000);

@@ -5,20 +5,20 @@ import { requireApiSession } from '@/lib/server/session';
 import { sshExec } from '@/lib/server/claude/sshExec';
 
 // GET /api/vps/[id]/claude/scan
-// Liste les sessions Claude existantes sur le VPS (fichiers .jsonl dans
+// Lists existing Claude sessions on the VPS (.jsonl files in
 // ~/.claude/projects/<slug>/<uuid>.jsonl).
 
-// Script Python — passé tel quel sur stdin de `python3 -` (PAS de -c, parce
-// que les blocs indentés ne survivent pas au join par `; `).
+// Python script — passed as-is on stdin of `python3 -` (NOT -c, because
+// indented blocks don't survive a `; ` join).
 //
-// On extrait ce que claude /resume affiche : titre IA, dernier prompt, premier
-// message user, nombre de messages, modèle, branche git, taille, mtime.
-// Compatible python 3.9 (pas de syntaxe 3.10+).
+// We extract what claude /resume shows: AI title, last prompt, first
+// user message, message count, model, git branch, size, mtime.
+// Compatible with python 3.9 (no 3.10+ syntax used).
 const SCAN_PY = `
 import os, json, sys
 from pathlib import Path
 
-MAX_LINES = 10000  # garde-fou pour les sessions énormes
+MAX_LINES = 10000  # safeguard for huge sessions
 
 def extract_text(content):
     if isinstance(content, str):
@@ -30,8 +30,8 @@ def extract_text(content):
     return ''
 
 def is_system_injection(text):
-    # claude code injecte des blocs <ide_opened_file>, <command-name>, etc.
-    # qu'on veut filtrer pour montrer un VRAI message user
+    # claude code injects blocks <ide_opened_file>, <command-name>, etc.
+    # that we want to filter out to show a REAL user message
     if not text:
         return True
     s = text.lstrip()
@@ -41,11 +41,11 @@ def parse_one(path):
     cwd_fallback = path.parent.name.replace('-', '/')
     info = {
         'sessionId': path.stem,
-        'cwd': cwd_fallback,         # cwd INITIAL (au démarrage de la session)
-                                     # — c'est celui-là qui matche le slug du
-                                     # fichier .jsonl, donc utilisable pour
-                                     # resume sans relocate
-        'cwdLatest': cwd_fallback,   # cwd APRÈS d'éventuels cd
+        'cwd': cwd_fallback,         # INITIAL cwd (at session start)
+                                     # — this is the one that matches the
+                                     # .jsonl file slug, so usable for
+                                     # resume without relocate
+        'cwdLatest': cwd_fallback,   # cwd AFTER any cd's
         'summary': '',
         'aiTitle': '',
         'lastPrompt': '',
@@ -54,7 +54,7 @@ def parse_one(path):
         'model': '',
         'gitBranch': '',
     }
-    cwd_locked = False  # une fois qu'on a un cwd réel, on ne touche plus à 'cwd'
+    cwd_locked = False  # once we have a real cwd, we no longer touch 'cwd'
     try:
         stat = path.stat()
         info['mtime'] = int(stat.st_mtime)
@@ -129,7 +129,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // Le scan marche en python3.9 aussi (pas d'usage de syntaxe 3.10+).
+  // The scan also works on python3.9 (no 3.10+ syntax used).
   const cmd =
     `PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ` +
     `"$PY" -`;

@@ -2,10 +2,10 @@ import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
 
-// `vapid.subject` : identité de l'expéditeur côté serveurs push (web-push).
-// On lit `VAPID_SUBJECT` côté env si présent ; sinon fallback générique
-// (l'utilisateur peut overrider depuis le SettingsModal de l'UI). Évite
-// d'avoir un email personnel hardcodé en clair dans le repo.
+// `vapid.subject`: sender identity on the push servers side (web-push).
+// We read `VAPID_SUBJECT` from env if present; otherwise generic fallback
+// (the user can override from the SettingsModal in the UI). Avoids having
+// a personal email hardcoded in plaintext in the repo.
 const DEFAULTS = {
   'ssh.private_key_path': '/root/.ssh/id_rsa',
   'session.max_active': '10',

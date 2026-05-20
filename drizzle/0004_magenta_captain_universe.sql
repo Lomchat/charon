@@ -1,9 +1,9 @@
--- No-op : cette migration a été générée par accident en doublon de
--- 0003_add_session_color.sql (même ADD COLUMN color sur claude_sessions).
--- Sur une DB fraîche, exécuter le ADD une seconde fois renvoie "duplicate
--- column name: color". SQLite ne supporte pas IF NOT EXISTS sur ADD COLUMN.
--- On garde le fichier (et son entrée dans meta/_journal.json) pour ne pas
--- réindexer les migrations suivantes ; mais on remplace le SQL par un
--- statement neutre qui ne fait rien. La prochaine fois qu'on a besoin de
--- réellement modifier la table, on créera une nouvelle migration numérotée.
+-- No-op: this migration was accidentally generated as a duplicate of
+-- 0003_add_session_color.sql (same ADD COLUMN color on claude_sessions).
+-- On a fresh DB, running the ADD a second time returns "duplicate column
+-- name: color". SQLite does not support IF NOT EXISTS on ADD COLUMN.
+-- We keep the file (and its entry in meta/_journal.json) so we don't
+-- reindex subsequent migrations; but we replace the SQL with a neutral
+-- statement that does nothing. Next time we actually need to modify the
+-- table, we'll create a new numbered migration.
 SELECT 1;

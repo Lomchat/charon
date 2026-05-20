@@ -4,7 +4,7 @@ import { db, vpsPaths, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
 // GET /api/vps-paths
-// Liste tous les paths de tous les VPS, triés par vps_id puis path.
+// Lists all paths of all VPS, sorted by vps_id then path.
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -15,8 +15,8 @@ export async function GET() {
 }
 
 // POST /api/vps-paths
-// Body : { vpsId, path, label? }
-// Idempotent : si (vpsId, path) existe déjà on retourne la row existante.
+// Body: { vpsId, path, label? }
+// Idempotent: if (vpsId, path) already exists, we return the existing row.
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -26,16 +26,16 @@ export async function POST(req: Request) {
   const label = body.label != null && String(body.label).trim() !== ''
     ? String(body.label).trim() : null;
   if (!vpsId || !path) {
-    return NextResponse.json({ error: 'vpsId et path requis' }, { status: 400 });
+    return NextResponse.json({ error: 'vpsId and path required' }, { status: 400 });
   }
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'vps inconnu' }, { status: 404 });
+  if (!v) return NextResponse.json({ error: 'unknown vps' }, { status: 404 });
 
   const [existing] = db.select().from(vpsPaths)
     .where(and(eq(vpsPaths.vpsId, vpsId), eq(vpsPaths.path, path)))
     .all();
   if (existing) {
-    // Update du label si fourni et différent
+    // Update the label if provided and different
     if (label != null && existing.label !== label) {
       db.update(vpsPaths).set({ label }).where(eq(vpsPaths.id, existing.id)).run();
       const [row] = db.select().from(vpsPaths).where(eq(vpsPaths.id, existing.id)).all();

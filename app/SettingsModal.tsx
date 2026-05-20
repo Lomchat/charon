@@ -29,13 +29,13 @@ export default function SettingsModal({ onClose }: Props) {
 
   async function testTelegram() {
     if (!s) return;
-    // On enregistre d'abord les settings, puis on teste
+    // We save the settings first, then test
     setTesting(true);
     setTestResult(null);
     try {
       await api.updateClaudeSettings(s);
       await api.testTelegram();
-      setTestResult({ ok: true, msg: 'message de test envoyé ✓ — regarde Telegram' });
+      setTestResult({ ok: true, msg: 'test message sent ✓ — check Telegram' });
     } catch (e: any) {
       setTestResult({ ok: false, msg: e?.message ?? String(e) });
     } finally { setTesting(false); }
@@ -72,42 +72,42 @@ export default function SettingsModal({ onClose }: Props) {
       <div className="claude-modal">
         <button className="modal-close" onClick={onClose}>✕</button>
         <h2>settings</h2>
-        {s == null && <div className="empty">chargement…</div>}
+        {s == null && <div className="empty">loading…</div>}
         {s && (
           <>
-            <label>clé SSH (chemin sur le serveur du hub)
+            <label>SSH key (path on the hub server)
               <input value={s['ssh.private_key_path'] ?? ''} onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
             </label>
-            <label>max sessions actives en parallèle (warning soft)
+            <label>max concurrent active sessions (soft warning)
               <input value={s['session.max_active'] ?? ''} onChange={(e) => set('session.max_active', e.target.value)} inputMode="numeric" />
             </label>
-            <label>rétention des sessions killed (jours, 0 = jamais purger)
+            <label>killed session retention (days, 0 = never purge)
               <input value={s['retention.killed_days'] ?? ''} onChange={(e) => set('retention.killed_days', e.target.value)} inputMode="numeric" />
             </label>
             <div className="switch-row">
-              <span>notifications push globales</span>
+              <span>global push notifications</span>
               <Toggle
                 checked={(s['notif.global_enabled'] ?? 'true') === 'true'}
                 onChange={(v) => set('notif.global_enabled', v ? 'true' : 'false')}
-                label="notifications push globales"
+                label="global push notifications"
               />
             </div>
-            <label>VAPID subject (mailto pour push)
-              <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:tu@example.com" />
+            <label>VAPID subject (mailto for push)
+              <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:you@example.com" />
             </label>
 
             <fieldset className="tg-block">
-              <legend>Telegram (notifications interactives)</legend>
+              <legend>Telegram (interactive notifications)</legend>
               <p className="tg-help">
-                Permet de répondre aux permissions et questions depuis Telegram (boutons inline + texte libre).
-                Crée un bot via <code>@BotFather</code>, récupère le token, parle-lui une fois et trouve ton chat_id via <code>@userinfobot</code>.
+                Lets you respond to permissions and questions from Telegram (inline buttons + free text).
+                Create a bot via <code>@BotFather</code>, get the token, message it once, and find your chat_id via <code>@userinfobot</code>.
               </p>
               <div className="switch-row">
-                <span>activer</span>
+                <span>enable</span>
                 <Toggle
                   checked={s['telegram.enabled'] === 'true'}
                   onChange={(v) => set('telegram.enabled', v ? 'true' : 'false')}
-                  label="activer Telegram"
+                  label="enable Telegram"
                 />
               </div>
               <label>bot token
@@ -118,7 +118,7 @@ export default function SettingsModal({ onClose }: Props) {
               </label>
               <div className="tg-test-row">
                 <button type="button" onClick={testTelegram} disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>
-                  {testing ? 'envoi…' : 'tester la connexion'}
+                  {testing ? 'sending…' : 'test connection'}
                 </button>
                 {testResult && (
                   <span className={`tg-result ${testResult.ok ? 'ok' : 'err'}`}>{testResult.msg}</span>
@@ -127,8 +127,8 @@ export default function SettingsModal({ onClose }: Props) {
             </fieldset>
 
             <div className="modal-actions">
-              <button className="primary" onClick={save} disabled={busy}>enregistrer</button>
-              <button onClick={onClose}>annuler</button>
+              <button className="primary" onClick={save} disabled={busy}>save</button>
+              <button onClick={onClose}>cancel</button>
             </div>
           </>
         )}

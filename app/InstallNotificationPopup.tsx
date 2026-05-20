@@ -8,19 +8,19 @@ type Props = {
 };
 
 /**
- * Popup top-right qui annonce qu'une install s'est terminée (ou a échoué).
- * Pattern copié sur `<PermissionPopup>` — top-1 affiché en gros, les autres
- * en sous-liste (rare : on ne devrait quasi-jamais en avoir +1 en parallèle).
+ * Top-right popup that announces an install has finished (or failed).
+ * Pattern copied from `<PermissionPopup>` — top-1 displayed large, the rest
+ * in a sub-list (rare: we should almost never have +1 in parallel).
  *
- * Render conditionnel : `if (queue.length === 0) return null`.
+ * Conditional render: `if (queue.length === 0) return null`.
  */
 export default function InstallNotificationPopup({
   notifications, onOpen, onDismiss,
 }: Props) {
   if (notifications.length === 0) return null;
-  // Pop la dernière (la plus fraîche) ; les autres restent invisibles tant
-  // qu'on n'a pas dismiss la première. Plus simple que de gérer une stack
-  // visuelle compliquée pour un event aussi rare.
+  // Pop the latest (the freshest); the rest stay invisible as long as the
+  // first one is not dismissed. Simpler than managing a complicated visual
+  // stack for such a rare event.
   const top = notifications[notifications.length - 1];
   const cssClass = top.status === 'success' ? 'success' : 'error';
 
@@ -29,23 +29,23 @@ export default function InstallNotificationPopup({
       <div className="install-notif-head">
         <span className="glyph">{top.status === 'success' ? '✓' : '✗'}</span>
         <span className="install-notif-title">
-          {top.status === 'success' ? 'installation terminée' : 'installation échouée'}
+          {top.status === 'success' ? 'installation completed' : 'installation failed'}
         </span>
         <button
           type="button"
           className="install-notif-dismiss"
           onClick={() => onDismiss(top.installId)}
-          title="masquer cette notification"
+          title="hide this notification"
           aria-label="dismiss"
         >✕</button>
       </div>
       <div className="install-notif-body">
         VPS <strong>{top.vpsName}</strong>{' — '}
         {top.status === 'success'
-          ? 'l\'agent est installé et opérationnel.'
-          : 'le bootstrap a échoué. Consulte le log pour comprendre.'}
+          ? 'the agent is installed and operational.'
+          : 'bootstrap failed. Check the log to understand.'}
         {notifications.length > 1 && (
-          <span className="install-notif-more">{' '}(+{notifications.length - 1} autres)</span>
+          <span className="install-notif-more">{' '}(+{notifications.length - 1} others)</span>
         )}
       </div>
       <div className="install-notif-actions">
@@ -54,7 +54,7 @@ export default function InstallNotificationPopup({
           className="primary"
           onClick={() => { onOpen(top.installId); onDismiss(top.installId); }}
         >
-          voir le log
+          view log
         </button>
       </div>
     </div>

@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-// Calcule le SHA256 (12 premiers chars) du .pyz embarqué dans le dashboard.
-// Aligné avec le format renvoyé par l'agent côté Python (server.py /
-// _compute_pyz_sha) pour permettre la comparaison directe.
+// Compute the SHA256 (first 12 chars) of the .pyz embedded in the dashboard.
+// Aligned with the format returned by the agent on the Python side
+// (server.py / _compute_pyz_sha) to allow direct comparison.
 //
-// Cache en mémoire : le fichier ne change qu'au redéploiement du dashboard,
-// donc inutile de re-hasher à chaque request. Si jamais le fichier n'existe
-// pas (dev sans build), retourne null — l'UI traitera ça comme "pas
-// d'update connu, on ne propose rien".
+// In-memory cache: the file only changes on dashboard redeployment, so
+// no need to re-hash on every request. If the file does not exist (dev
+// without build), returns null — the UI treats this as "no known update,
+// we propose nothing".
 
 const PYZ_PATH = path.join(process.cwd(), 'agent/dist/charon-agent.pyz');
 

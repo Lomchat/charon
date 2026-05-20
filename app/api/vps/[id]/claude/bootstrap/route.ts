@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // GET /api/vps/[id]/claude/bootstrap
-// SSE qui stream la progression : verify → detect_os → install_python → install_sdk → verify → done.
+// SSE that streams progress: verify -> detect_os -> install_python -> install_sdk -> verify -> done.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

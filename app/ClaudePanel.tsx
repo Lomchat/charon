@@ -37,13 +37,13 @@ type Props = {
 };
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
-  starting: 'démarrage',
-  active: 'actif',
-  thinking: 'réfléchit',
-  sleeping: 'endormi',
-  killed: 'tué',
-  error: 'erreur',
-  reconnecting: 'reconnexion…',
+  starting: 'starting',
+  active: 'active',
+  thinking: 'thinking',
+  sleeping: 'sleeping',
+  killed: 'killed',
+  error: 'error',
+  reconnecting: 'reconnecting…',
 };
 const STATUS_DOT: Record<WorkerStatus, string> = {
   starting: 'amber',
@@ -55,11 +55,11 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
   reconnecting: 'amber-pulse',
 };
 
-// SessionState/emptyState supprimés au refactor : l'état per-session vit
-// désormais dans `useClaudeSessionStream` (consommé par `<ClaudeSessionView>`).
+// SessionState/emptyState removed in the refactor: per-session state now
+// lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
 
 export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha }: Props) {
-  // Copies mutables — DataModal peut add/delete VPS, folders et paths sans reload.
+  // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
@@ -68,14 +68,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
   const [selectedId, setSelectedId] = useState<string | null>(queryParamSession ?? initialSessions[0]?.id ?? null);
 
-  // Si le param ?session= change (clic notif ou navigation), on switch
+  // If the ?session= param changes (notification click or navigation), switch
   useEffect(() => {
     if (queryParamSession && queryParamSession !== selectedId) {
       setSelectedId(queryParamSession);
     }
   }, [queryParamSession]); // eslint-disable-line
 
-  // Sync selectedId → URL (?session=...) sans spammer l'historique
+  // Sync selectedId → URL (?session=...) without spamming history
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
@@ -89,9 +89,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       window.history.replaceState(null, '', url);
     }
   }, [selectedId]);
-  // `error` reste au parent : il porte les erreurs de rename/kill/patch etc.
-  // qui sont des actions cross-session (pas dans la vue active). Les erreurs
-  // de la SESSION ACTIVE vivent dans `<ClaudeSessionView>` via le hook.
+  // `error` stays on the parent: it carries errors from rename/kill/patch etc.
+  // which are cross-session actions (not in the active view). Errors for the
+  // ACTIVE SESSION live in `<ClaudeSessionView>` via the hook.
   const [error, setError] = useState<{ msg: string; canResume?: boolean } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<
     | { kind: 'session'; session: SessionListItem; x: number; y: number }
@@ -100,18 +100,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     | null
   >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Console claude login interactive
+  // Interactive claude login console
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
 
-  // Quand l'user ferme la LoginConsole, on re-check l'état `claude login` du
-  // VPS — il vient peut-être de se connecter (ou de déconnecter). Le résultat
-  // est persisté côté serveur et patché localement pour que la sidebar masque
-  // immédiatement le bouton "claude login" si plus nécessaire.
+  // When the user closes the LoginConsole, we re-check the VPS's `claude
+  // login` state — they may have just logged in (or out). The result is
+  // persisted on the server side and patched locally so the sidebar
+  // immediately hides the "claude login" button if no longer needed.
   const closeLoginConsole = useCallback(() => {
     const v = loginVps;
     setLoginVps(null);
     if (!v) return;
-    // Best-effort, async. Si SSH plante, on garde l'ancienne valeur.
+    // Best-effort, async. If SSH crashes, we keep the old value.
     api.checkVpsClaudeLogin(v.id)
       .then((r) => {
         if (!r.ok) return;
@@ -127,17 +127,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       })
       .catch(() => {});
   }, [loginVps]);
-  // Shells SSH ephémères. Liste live (pollée au mount, mise à jour locale).
+  // Ephemeral SSH shells. Live list (polled on mount, updated locally).
   const [shells, setShells] = useState<ShellListItem[]>([]);
-  // Si non-null, c'est un shell qui est affiché dans le main panel (au lieu du chat)
+  // If non-null, a shell is displayed in the main panel (instead of the chat)
   const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
-  // Sessions d'installation d'agent. Mémoire seulement (pattern shell). Une
-  // install par VPS au max (cf. installSession.ts § startInstall).
+  // Agent install sessions. In-memory only (shell pattern). One install
+  // per VPS max (cf. installSession.ts § startInstall).
   const [installs, setInstalls] = useState<InstallInfo[]>([]);
-  // Si non-null, c'est une session install qui occupe le main panel.
+  // If non-null, an install session occupies the main panel.
   const [selectedInstallId, setSelectedInstallId] = useState<string | null>(null);
 
-  // Charge la liste des shells au mount + refresh quand un sélecteur change
+  // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
     let cancelled = false;
     api.listShells().then((r) => {
@@ -146,8 +146,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => { cancelled = true; };
   }, []);
 
-  // Charge la liste des installs au mount (pour récupérer les installs encore
-  // en cours après un refresh d'onglet — le pool est mémoire serveur, survit).
+  // Load the installs list at mount (to recover installs still in progress
+  // after a tab refresh — the pool is server-memory, survives).
   useEffect(() => {
     let cancelled = false;
     api.listInstalls().then((r) => {
@@ -156,10 +156,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => { cancelled = true; };
   }, []);
 
-  // Refresh live de la liste des installs sur events bus :
-  //   - install_started → ajoute / met à jour la row sidebar
-  //   - install_finished → mise à jour du status, on garde la row pour que
-  //     l'user puisse rouvrir le log (close manuel via clic-droit)
+  // Live refresh of the installs list on bus events:
+  //   - install_started → add / update the sidebar row
+  //   - install_finished → status update; we keep the row so the user
+  //     can reopen the log (manual close via right-click)
   useEffect(() => {
     const refreshOne = async (installId: string) => {
       try {
@@ -174,21 +174,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (!('installId' in ev)) return;
       if (ev.type === 'install_started' || ev.type === 'install_finished') {
         refreshOne(ev.installId);
-        // Met à jour vps.agentStatus + agentPyzSha localement quand l'install
-        // réussit. Sans ça : le badge "outdated" reste affiché parce que le
-        // local `agentPyzSha` (récupéré au SSR initial) est encore l'ancien,
-        // alors que côté serveur le bootstrap a déjà persisté le nouveau sha
-        // (cf. bootstrap.ts § ping_agent). Par construction, après un
-        // bootstrap success, le sha déployé EST `builtPyzSha` — on peut donc
-        // patcher localement sans refetch.
+        // Update vps.agentStatus + agentPyzSha locally when the install
+        // succeeds. Without this: the "outdated" badge stays displayed
+        // because the local `agentPyzSha` (fetched at initial SSR) is still
+        // the old one, while on the server side the bootstrap has already
+        // persisted the new sha (cf. bootstrap.ts § ping_agent). By
+        // construction, after a successful bootstrap, the deployed sha IS
+        // `builtPyzSha` — so we can patch locally without refetching.
         if (ev.type === 'install_finished' && ev.status === 'success') {
           setVpsList((prev) => prev.map((v) =>
             v.id === ev.vpsId
               ? ({
                   ...v,
                   agentStatus: 'ok',
-                  // builtPyzSha vient du prop ; null tolérable (fallback au
-                  // prochain hello de l'AgentClient).
+                  // builtPyzSha comes from the prop; null tolerable (fallback
+                  // at the next AgentClient hello).
                   agentPyzSha: builtPyzSha ?? v.agentPyzSha,
                 } as Vps)
               : v,
@@ -199,7 +199,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, [builtPyzSha]);
 
-  // Notifs install (queue locale au tab, populée par le bus global)
+  // Install notifications (tab-local queue, populated by the global bus)
   const {
     notifications: installNotifications,
     dismiss: dismissInstallNotif,
@@ -210,7 +210,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       const sh = await api.startShell(opts.vpsId, opts.cwd ?? null);
       setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
       setSelectedShellId(sh.id);
-      setSelectedId(null);  // mutuellement exclusif avec une session claude
+      setSelectedId(null);  // mutually exclusive with a Claude session
       setSelectedInstallId(null);
     } catch (e: any) {
       setError({ msg: 'shell: ' + (e?.message ?? e) });
@@ -225,7 +225,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setShells((prev) => prev.filter((s) => s.id !== id));
     if (selectedShellId === id) setSelectedShellId(null);
   }
-  // Quand on sélectionne une session Claude, on désélectionne shell + install
+  // When we select a Claude session, we deselect shell + install
   function selectClaude(id: string) {
     setSelectedId(id);
     setSelectedShellId(null);
@@ -242,18 +242,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }
 
   /**
-   * Ouvre (ou crée si pas existante) une session install pour ce VPS.
-   * Sert à 3 cas :
-   *   1. Bouton "install agent" dans la Sidebar (VPS sans agent)
-   *   2. Erreur "import claude_agent_sdk" en pleine session (re-déclenche
-   *      l'install automatiquement)
-   *   3. Update agent out-of-date — déjà géré par `runUpdateAgent`, pas via
-   *      session install (cf. choix design : update reste un appel direct).
+   * Opens (or creates if it doesn't exist) an install session for this VPS.
+   * Used in 3 cases:
+   *   1. "install agent" button in the Sidebar (VPS without an agent)
+   *   2. "import claude_agent_sdk" error mid-session (re-triggers
+   *      the install automatically)
+   *   3. Out-of-date agent update — already handled by `runUpdateAgent`, not
+   *      via the install session (cf. design choice: update remains a direct call).
    */
   async function openInstallSession(vps: Vps) {
     try {
       const info = await api.startInstall(vps.id);
-      // Mise à jour optimiste — l'event install_started arrivera aussi via SSE.
+      // Optimistic update — the install_started event will also arrive via SSE.
       setInstalls((prev) => {
         const others = prev.filter((i) => i.id !== info.id);
         return [...others, info];
@@ -279,7 +279,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [dataOpen, setDataOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
-  // Set des VPS dont l'agent est en cours d'update (UI loading)
+  // Set of VPSes whose agent is being updated (UI loading)
   const [updatingAgentVpsIds, setUpdatingAgentVpsIds] = useState<Set<string>>(new Set());
 
   async function runUpdateAgent(vps: Vps) {
@@ -287,8 +287,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setUpdatingAgentVpsIds((prev) => new Set(prev).add(vps.id));
     try {
       const r = await api.updateVpsAgent(vps.id);
-      // Patch la row locale pour refléter la nouvelle version/sha — évite que
-      // le badge "outdated" reste affiché en attendant le prochain hello.
+      // Patch the local row to reflect the new version/sha — prevents the
+      // "outdated" badge from staying displayed until the next hello.
       setVpsList((prev) => prev.map((v) =>
         v.id === vps.id
           ? ({
@@ -310,17 +310,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  // Queues d'interactions cross-session : alimentées par
-  // useCrossSessionInteractionFeed (UNE seule SSE agrégée vers
-  // /api/claude/interactions/stream qui multiplexe les events de toutes les
-  // sessions). Avant : N SSE (une par session), ce qui saturait la limite
-  // HTTP/1.1 (6 connexions/origine) dès 6+ sessions et bloquait tous les POST.
+  // Cross-session interaction queues: fed by
+  // useCrossSessionInteractionFeed (ONE single aggregated SSE to
+  // /api/claude/interactions/stream which multiplexes events from all
+  // sessions). Before: N SSEs (one per session), which saturated the
+  // HTTP/1.1 limit (6 connections/origin) as soon as we had 6+ sessions and
+  // blocked all POSTs.
   const { perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue } =
     useCrossSessionInteractionFeed();
 
   // [esRef, chatBodyRef, assistantBufRef, scroll mechanics (isAtBottomRef,
-  //  newCount, lastMessageCountRef, handleChatScroll, onPillClick) — tout
-  //  ça vit dans `<ClaudeSessionView>` après le refactor.]
+  //  newCount, lastMessageCountRef, handleChatScroll, onPillClick) — all of
+  //  this lives in `<ClaudeSessionView>` after the refactor.]
 
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
   const selectedVps = useMemo<Vps | null>(
@@ -328,9 +329,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     [selected, vpsList],
   );
 
-  // Indicateur "la session active a une interaction en attente" — utilisé
-  // par le status pill dans le header. Vient du feed cross-session, pas du
-  // state per-session (qui n'existe plus dans ClaudePanel après le refactor).
+  // "Active session has a pending interaction" indicator — used by the
+  // status pill in the header. Comes from the cross-session feed, not from
+  // the per-session state (which no longer exists in ClaudePanel after the refactor).
   const selectedHasPending = useMemo(() => {
     if (!selectedId) return false;
     return (
@@ -340,12 +341,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     );
   }, [permQueue, questionQueue, exitPlanQueue, selectedId]);
 
-  // ── Liste des sessions (poll 15s) ──
-  // Avant : 4s. Mais chaque tick faisait `setSessions(...)` (même contenu)
-  // qui re-render Sidebar + main panel → CPU + flicker. Les changements de
-  // statut intra-session arrivent déjà via la SSE par-session ; le poll ne
-  // sert qu'à rafraîchir les badges count + détecter les sessions créées
-  // sur un autre client. 15s est largement suffisant.
+  // ── Sessions list (poll 15s) ──
+  // Before: 4s. But each tick did `setSessions(...)` (same content) which
+  // re-rendered the Sidebar + main panel → CPU + flicker. Intra-session
+  // status changes already arrive via the per-session SSE; the poll only
+  // serves to refresh the count badges + detect sessions created on
+  // another client. 15s is amply sufficient.
   const refreshSessions = useCallback(async () => {
     try {
       const r = (await api.listClaudeSessions()) as { sessions: SessionListItem[] };
@@ -358,9 +359,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => clearInterval(t);
   }, [refreshSessions]);
 
-  // ── Notification quand une session prend du pending alors qu'on est ailleurs
-  // (autre session, autre onglet, autre fenêtre). Détecte les transitions
-  // 0 → N entre 2 polls et fire une Notification native + un petit son.
+  // ── Notification when a session takes a pending while we're elsewhere
+  // (another session, another tab, another window). Detects 0 → N
+  // transitions between 2 polls and fires a native Notification + a small sound.
   const prevPendingRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     const prev = prevPendingRef.current;
@@ -374,9 +375,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       prev.set(s.id, now);
     }
     if (newAttentions.length === 0) return;
-    // Title flash + native Notification si tab masqué OU autre session
+    // Title flash + native Notification if tab is hidden OR another session
     for (const s of newAttentions) {
-      const title = `❓ ${s.name ?? s.id.slice(0, 6)} attend une réponse`;
+      const title = `❓ ${s.name ?? s.id.slice(0, 6)} is awaiting a response`;
       const body = s.cwd ?? '';
       try {
         if (typeof window !== 'undefined' && 'Notification' in window
@@ -393,12 +394,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     if (notifSoundEnabled) playBeep();
   }, [sessions, selectedId]);
 
-  // Demande de permission Notification au mount (silencieux si déjà accordé/refusé)
+  // Notification permission request at mount (silent if already granted/denied)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!('Notification' in window)) return;
     if (Notification.permission === 'default') {
-      // Demande non-bloquante au prochain clic user (sinon Chrome bloque)
+      // Non-blocking ask at the next user click (otherwise Chrome blocks)
       const ask = () => {
         Notification.requestPermission().catch(() => {});
         document.removeEventListener('click', ask);
@@ -407,7 +408,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }, []);
 
-  // Toggle son local (localStorage)
+  // Local sound toggle (localStorage)
   const [notifSoundEnabled, setNotifSoundEnabled] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
     return localStorage.getItem('hub.claude.notif.sound') !== '0';
@@ -420,14 +421,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     });
   }
 
-  // Titre d'onglet : (N) hub claude quand N sessions attendent
+  // Tab title: (N) hub claude when N sessions are waiting
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const total = sessions.reduce((acc, s) => acc + (s.pendingPermissions ?? 0), 0);
     document.title = total > 0 ? `(${total}) hub claude` : 'hub claude';
   }, [sessions]);
 
-  // Détection initiale de l'état push
+  // Initial detection of the push state
   useEffect(() => {
     (async () => {
       if (!(await pushSupported())) return;
@@ -436,7 +437,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     })();
   }, []);
 
-  // Écoute les messages du service worker (clic sur notif)
+  // Listens for service worker messages (notification click)
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     const onMsg = (e: MessageEvent) => {
@@ -456,37 +457,36 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         setPushOn(false);
       } else {
         const r = await pushSubscribe();
-        if (!r.ok) alert('Push non activé: ' + (r.reason ?? '?'));
+        if (!r.ok) alert('Push not enabled: ' + (r.reason ?? '?'));
         setPushOn(r.ok);
       }
     } finally { setPushBusy(false); }
   }
 
-  // Note : avant le refactor, applyApiPendings synchronisait permQueue/
-  // questionQueue/exitPlanQueue depuis l'API à chaque refetch. Aujourd'hui
-  // c'est useCrossSessionInteractionFeed qui maintient ces queues à jour
-  // via une SSE par session (les pendings sont replay-és au subscribe).
-  // Plus rien à faire ici.
+  // Note: before the refactor, applyApiPendings synced permQueue/
+  // questionQueue/exitPlanQueue from the API on every refetch. Today
+  // useCrossSessionInteractionFeed keeps these queues up to date via an
+  // SSE per session (pendings are replayed on subscribe). Nothing to do here.
 
-  // Prefetch toutes les sessions au mount (et quand la liste change) → le
-  // cache module-level `sessionCache.ts` est rempli ; quand l'user clique
-  // une session, `<ClaudeSessionView>` re-monte avec son hook qui lit le
-  // cache d'abord (render instant) puis fetch fresh en arrière-plan.
+  // Prefetch all sessions at mount (and when the list changes) → the
+  // module-level `sessionCache.ts` cache is populated; when the user clicks
+  // a session, `<ClaudeSessionView>` remounts with its hook reading from the
+  // cache first (instant render) then fetching fresh in the background.
   useEffect(() => {
     sessionCachePrefetchAll(sessions.map((s) => s.id));
   }, [sessions.length, sessions]);
 
-  // [SSE + state per-session + refetch + scroll = délégué à
-  //   `<ClaudeSessionView>` qui utilise `useClaudeSessionStream`.
-  //   Avant le refactor, ClaudePanel contenait ~250 lignes de SSE handler,
+  // [SSE + per-session state + refetch + scroll = delegated to
+  //   `<ClaudeSessionView>` which uses `useClaudeSessionStream`.
+  //   Before the refactor, ClaudePanel contained ~250 lines of SSE handler,
   //   `applyApiPendings`, `refetchHistory`, `prefetchSession`, visibilityChange,
-  //   et le tracker de nouveau messages. Le tout vit maintenant dans le hook
-  //   ou directement dans la vue.]
+  //   and the new-messages tracker. All of this now lives in the hook or
+  //   directly in the view.]
 
   // [send/interrupt/forceStop/setMode/doSleep/doResume/doDelete/respondPermission
-  //  pour la SESSION ACTIVE sont dans `<ClaudeSessionView>` via le hook
-  //  `useClaudeSessionStream`. ClaudePanel garde uniquement les actions
-  //  cross-session : suppression d'une autre session via le menu
+  //  for the ACTIVE SESSION are in `<ClaudeSessionView>` via the
+  //  `useClaudeSessionStream` hook. ClaudePanel only keeps cross-session
+  //  actions: deletion of another session via the menu
   //  (`deleteSessionOne`), edit cwd (`editSessionCwd`), patch shell, etc.]
 
   async function renameSession(id: string, name: string) {
@@ -499,10 +499,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  // Sleep cross-session (depuis le menu contextuel sidebar). Pas de confirm —
-  // c'est réversible (resume rouvre la session). Le bouton du header de la
-  // session active reste l'entry-point principal, mais clic-droit dans la
-  // sidebar permet de mettre en pause une session sans devoir la focus.
+  // Cross-session sleep (from the sidebar context menu). No confirm —
+  // it's reversible (resume reopens the session). The active session's
+  // header button remains the main entry point, but right-clicking in the
+  // sidebar lets us pause a session without having to focus it.
   async function sleepOne(id: string) {
     try {
       await api.sleepClaudeSession(id);
@@ -512,19 +512,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  // Suppression définitive (cascade DB côté serveur). Le caller doit avoir
-  // confirmé. Plus de soft-kill (`status='killed'` qui gardait le row en DB
-  // pour consultation post-mortem) — la refonte a fusionné kill→delete (cf.
-  // CLAUDE.md §10). Pour mettre la session en pause sans la perdre, c'est
-  // `doSleep` (réversible) dans `<ClaudeSessionView>`.
+  // Permanent deletion (DB cascade on the server side). The caller must
+  // have confirmed. No more soft-kill (`status='killed'` which kept the row
+  // in DB for post-mortem inspection) — the rework merged kill→delete (cf.
+  // CLAUDE.md §10). To pause the session without losing it, use
+  // `doSleep` (reversible) in `<ClaudeSessionView>`.
   async function deleteSessionOne(id: string) {
-    if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
+    if (!confirm('Permanently delete this session and all its history?')) return;
     try {
       await api.deleteClaudeSession(id);
       if (id === selectedId) setSelectedId(null);
       refreshSessions();
     } catch (e: any) {
-      setError({ msg: 'supprimer: ' + (e?.message ?? e) });
+      setError({ msg: 'delete: ' + (e?.message ?? e) });
     }
   }
 
@@ -543,12 +543,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  /** Édite le cwd d'une session via prompt(). Le PATCH côté serveur kill
-   *  automatiquement l'instance agent si elle existe, et reset le statut DB
-   *  à 'sleeping' pour que l'utilisateur puisse cliquer resume avec le
-   *  nouveau cwd. */
+  /** Edits a session's cwd via prompt(). The PATCH on the server side
+   *  automatically kills the agent instance if it exists, and resets the
+   *  DB status to 'sleeping' so the user can click resume with the new
+   *  cwd. */
   async function editSessionCwd(sess: SessionListItem) {
-    const newCwd = prompt('Nouveau dossier (cwd) pour cette session ?\n(la session sera recréée au prochain resume)', sess.cwd);
+    const newCwd = prompt('New folder (cwd) for this session?\n(the session will be recreated at the next resume)', sess.cwd);
     if (newCwd == null || newCwd.trim() === '' || newCwd.trim() === sess.cwd) return;
     await patchSession(sess.id, { cwd: newCwd.trim() });
     refreshSessions();
@@ -572,9 +572,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  // Cross-session permission popup → quand l'user clique allow/deny sur
-  // une perm d'une AUTRE session que la sélectionnée. La session active a
-  // sa propre popup gérée par le hook.
+  // Cross-session permission popup → when the user clicks allow/deny on
+  // a perm from ANOTHER session than the selected one. The active session
+  // has its own popup managed by the hook.
   async function respondPermissionCrossSession(sessionId: string, permId: string, allow: boolean, always: boolean) {
     try {
       await api.respondClaudePermission(sessionId, permId, allow, always);
@@ -606,40 +606,40 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
           )}
           {!!selected?.subscribers && selected.subscribers > 1 && (
-            <span className="multi-pill" title={`${selected.subscribers} clients connectés à cette session`}>
+            <span className="multi-pill" title={`${selected.subscribers} clients connected to this session`}>
               ×{selected.subscribers}
             </span>
           )}
-          {/* 3 états visuels :
-              1) Claude travaille  → "réfléchit" amber-pulse
-              2) Attend une réponse de toi → "attend votre réponse" orange-pulse
-              3) Idle/done → "actif" green
-              Source : `selected.liveStatus` (refresh poll 4s) + le feed
-              cross-session pour le "pending". Lag max 4s vs SSE temps réel
-              de la vue active, acceptable pour un indicateur de header. */}
+          {/* 3 visual states:
+              1) Claude is working → "thinking" amber-pulse
+              2) Awaiting a response from you → "awaiting your response" orange-pulse
+              3) Idle/done → "active" green
+              Source: `selected.liveStatus` (poll refresh 4s) + the
+              cross-session feed for the "pending". Max lag 4s vs real-time SSE
+              of the active view, acceptable for a header indicator. */}
           {selected?.liveStatus === 'thinking' ? (
             <span className="status-pill status-amber-pulse">
-              <span className="dot" /> claude réfléchit
+              <span className="dot" /> claude is thinking
             </span>
           ) : selectedHasPending ? (
             <span className="status-pill status-orange-pulse">
-              <span className="dot" /> attend votre réponse
+              <span className="dot" /> awaiting your response
             </span>
           ) : selected?.liveStatus ? (
             <span className={`status-pill status-${STATUS_DOT[selected.liveStatus as WorkerStatus]}`}>
               <span className="dot" /> {STATUS_LABEL[selected.liveStatus as WorkerStatus]}
             </span>
           ) : null}
-          <button className="head-btn" onClick={() => setSearchOpen(true)} title="recherche dans tous les messages" aria-label="recherche">
+          <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search">
             <IconSearch />
           </button>
-          <button className="head-btn" onClick={togglePush} disabled={pushBusy} title={pushOn ? 'notifications activées' : 'activer notifications'} aria-label="notifications">
+          <button className="head-btn" onClick={togglePush} disabled={pushBusy} title={pushOn ? 'notifications enabled' : 'enable notifications'} aria-label="notifications">
             {pushOn ? <IconBellFill /> : <IconBellSlash />}
           </button>
-          <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'son activé' : 'son coupé'} aria-label="son">
+          <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'sound on' : 'sound muted'} aria-label="sound">
             {notifSoundEnabled ? <IconVolumeUp /> : <IconVolumeMute />}
           </button>
-          <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projets, paths" aria-label="données VPS">
+          <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data">
             <IconServers />
           </button>
           <LocalAgentButton />
@@ -676,7 +676,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onLoginAgent={(v) => setLoginVps(v)}
         onUpdateAgent={(v) => { runUpdateAgent(v); }}
         onToggleFolderCollapsed={async (folderId, collapsed) => {
-          // Optimiste : on update tout de suite, puis on POST. Rollback si échec.
+          // Optimistic: update immediately, then POST. Roll back if it fails.
           setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 1 : 0 } : f));
           try {
             await api.updateVpsFolder(folderId, { collapsed });
@@ -689,14 +689,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         updatingAgentVpsIds={updatingAgentVpsIds}
       />
 
-      {/* Routing main panel : 3 vues mutuellement exclusives.
-          - selectedInstallId → <InstallSessionView> (full-screen log d'install)
-          - selectedShellId   → <ShellTerminal> (xterm SSH éphémère)
+      {/* Main panel routing: 3 mutually exclusive views.
+          - selectedInstallId → <InstallSessionView> (full-screen install log)
+          - selectedShellId   → <ShellTerminal> (ephemeral SSH xterm)
           - selectedId        → <ClaudeSessionView> (chat + tool panel)
-          - sinon : placeholder. */}
+          - otherwise: placeholder. */}
       {selectedInstallId ? (() => {
         const inst = installs.find((i) => i.id === selectedInstallId);
-        if (!inst) return <main className="claude-main"><div className="bar-empty">install introuvable</div></main>;
+        if (!inst) return <main className="claude-main"><div className="bar-empty">install not found</div></main>;
         const vps = vpsList.find((v) => v.id === inst.vpsId);
         return (
           <InstallSessionView
@@ -707,10 +707,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             onClosed={() => installClosed(inst.id)}
             onSetupLogin={vps ? () => setLoginVps(vps) : undefined}
             onInstallSuccess={() => {
-              // Patch local : l'agent est désormais OK ET à la version embarquée.
-              // Sans le agentPyzSha, le badge "outdated" resterait affiché.
-              // Le handler subscribeAll au-dessus fait la même chose en cas
-              // de finished cross-session — c'est idempotent.
+              // Local patch: the agent is now OK AND at the embedded version.
+              // Without the agentPyzSha, the "outdated" badge would stay
+              // displayed. The subscribeAll handler above does the same on a
+              // cross-session finished event — this is idempotent.
               setVpsList((prev) => prev.map((v) =>
                 v.id === inst.vpsId
                   ? ({
@@ -725,7 +725,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         );
       })() : selectedShellId ? (() => {
         const sh = shells.find((s) => s.id === selectedShellId);
-        if (!sh) return <main className="claude-main"><div className="bar-empty">shell introuvable</div></main>;
+        if (!sh) return <main className="claude-main"><div className="bar-empty">shell not found</div></main>;
         return (
           <main className="claude-main shell-main">
             <ShellTerminal
@@ -748,10 +748,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             </>
           }
           onImportError={(vps) => {
-            // L'agent VPS a planté un import claude_agent_sdk → on déclenche
-            // l'install dans une nouvelle session install (au lieu de
-            // l'overlay BootstrapBanner qui existait avant). L'user revient à
-            // sa session Claude une fois l'install OK (via notif + clic).
+            // The VPS agent crashed an "import claude_agent_sdk" → we trigger
+            // the install in a new install session (instead of the
+            // BootstrapBanner overlay that existed before). The user returns
+            // to their Claude session once the install is OK (via notif + click).
             const existing = installs.find((i) => i.vpsId === vps.id && i.status === 'running');
             if (existing) {
               selectInstall(existing.id);
@@ -766,19 +766,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onAfterRevert={() => refreshSessions()}
         />
       ) : (
-      // Pas de session sélectionnée : placeholder. ToolPanel n'est pas rendu
-      // dans ce cas (avant le refactor il l'était avec sessionId=null mais
-      // affichait rien d'utile).
+      // No session selected: placeholder. ToolPanel is not rendered in this
+      // case (before the refactor it was, with sessionId=null, but displayed
+      // nothing useful).
       <main className="claude-main">
         <div className="claude-bar">
-          <span className="bar-empty">— choisis ou crée une session dans la sidebar —</span>
+          <span className="bar-empty">— select or create a session in the sidebar —</span>
         </div>
       </main>
       )}
 
-      {/* Aussi rendre la LoginConsole quand sélectionné AVEC un install/shell —
-          loginVps est cross-panneau (déclenché depuis Sidebar ou
-          InstallSessionView). On garde un montage global. */}
+      {/* Also render the LoginConsole when selected ALONG with an install/shell —
+          loginVps is cross-panel (triggered from Sidebar or
+          InstallSessionView). We keep a global mount. */}
       {loginVps && (selectedShellId || selectedInstallId) && (
         <LoginConsole vps={loginVps} onClose={closeLoginConsole} />
       )}
@@ -853,14 +853,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           x={ctxMenu.x}
           y={ctxMenu.y}
           currentColor={(ctxMenu.session as any).color}
-          // Pas de `onKill` ici : la refonte kill→delete a fusionné les deux
-          // actions. Seule `onDelete` reste pour les sessions Claude. Les
-          // shells/installs ci-dessous gardent leur `onKill` (= close).
+          // No `onKill` here: the kill→delete rework merged the two
+          // actions. Only `onDelete` remains for Claude sessions. The
+          // shells/installs below keep their `onKill` (= close).
           //
-          // `onSleep` n'est passé que si la session est dans un état où sleep
-          // a du sens (active/thinking/starting). Pour sleeping/error/killed,
-          // l'item disparaît du menu (le bouton "resume" du header chat
-          // s'occupe de réveiller la session ; on ne dédouble pas ici).
+          // `onSleep` is only passed if the session is in a state where sleep
+          // makes sense (active/thinking/starting). For sleeping/error/killed,
+          // the item disappears from the menu (the "resume" button in the
+          // chat header takes care of waking up the session; we don't duplicate here).
           onRename={() => setEditingId(ctxMenu.session.id)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
@@ -880,11 +880,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           y={ctxMenu.y}
           currentColor={ctxMenu.shell.color}
           canKill={!ctxMenu.shell.exited}
-          killLabel="Fermer"
-          killDisabledReason={ctxMenu.shell.exited ? 'déjà terminé' : undefined}
+          killLabel="Close"
+          killDisabledReason={ctxMenu.shell.exited ? 'already ended' : undefined}
           showDelete={false}
           onRename={() => {
-            const name = prompt('Nom du shell ?', ctxMenu.shell.name ?? '');
+            const name = prompt('Shell name?', ctxMenu.shell.name ?? '');
             if (name != null) patchShell(ctxMenu.shell.id, { name: name.trim() || null });
           }}
           onColor={(color) => patchShell(ctxMenu.shell.id, { color })}
@@ -897,20 +897,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           title={`⚙ installation · ${ctxMenu.install.vpsName}`}
           subtitle={
             ctxMenu.install.status === 'running'
-              ? `en cours — phase: ${ctxMenu.install.currentPhase ?? 'init'}`
+              ? `running — phase: ${ctxMenu.install.currentPhase ?? 'init'}`
               : ctxMenu.install.status === 'success'
-                ? 'terminée avec succès'
-                : 'échec'
+                ? 'completed successfully'
+                : 'failed'
           }
           x={ctxMenu.x}
           y={ctxMenu.y}
           showRename={false}
           showColor={false}
           showDelete={false}
-          killLabel="Fermer"
+          killLabel="Close"
           killDisabledReason={
             ctxMenu.install.status === 'running'
-              ? "l'install est encore en cours — elle continue côté serveur"
+              ? "the install is still running — it continues on the server"
               : undefined
           }
           onKill={() => killInstallOne(ctxMenu.install.id)}
@@ -921,15 +921,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   );
 }
 
-// Carte permission affichée dans la zone d'input (remplace l'écriture
-// InlinePermissionCard, ThinkingBar, fmtElapsed : déplacés dans
-// `./ClaudeSessionView.tsx` (utilisés uniquement par la vue session).
-// rebuildStateFromMessages : dans `./sessionRebuild.ts`.
+// InlinePermissionCard, ThinkingBar, fmtElapsed: moved into
+// `./ClaudeSessionView.tsx` (used only by the session view).
+// rebuildStateFromMessages: in `./sessionRebuild.ts`.
 
-// Petit bip de notification — Web Audio (pas de fichier à charger).
-// Singleton AudioContext pour éviter le warning Chrome (max 6 contextes).
-// Reste ici parce que joué par ClaudePanel quand une autre session passe
-// en pending (notification cross-session, pas dans la vue active).
+// Small notification beep — Web Audio (no file to load).
+// Singleton AudioContext to avoid the Chrome warning (max 6 contexts).
+// Stays here because played by ClaudePanel when another session goes
+// pending (cross-session notification, not in the active view).
 let _audioCtx: AudioContext | null = null;
 function playBeep() {
   if (typeof window === 'undefined') return;

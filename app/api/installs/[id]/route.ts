@@ -12,9 +12,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   return NextResponse.json(inst.info());
 }
 
-// DELETE /api/installs/[id] → ferme la session install (retire du pool).
-// Le run en cours côté SSH n'est pas vraiment annulé (cf. note dans stop()) ;
-// on coupe juste le suivi côté UI.
+// DELETE /api/installs/[id] → closes the install session (removes from pool).
+// The ongoing SSH run is not really cancelled (cf. note in stop());
+// we just stop tracking it on the UI side.
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

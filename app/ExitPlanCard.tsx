@@ -9,8 +9,8 @@ type Props = {
   onReject: (feedback: string) => void;
 };
 
-// Affichée quand Claude appelle ExitPlanMode : montre le plan en markdown,
-// + bouton Approuver / Demander modifs (avec textarea).
+// Displayed when Claude calls ExitPlanMode: shows the plan in markdown,
+// + Approve / Request changes button (with textarea).
 export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
   const [askingFeedback, setAskingFeedback] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -18,31 +18,31 @@ export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
   return (
     <div className="exit-plan-card">
       <header className="ep-head">
-        <span className="ep-tag">📋 plan prêt</span>
-        <span className="ep-sub">Claude a fini de planifier — relis et choisis</span>
+        <span className="ep-tag">📋 plan ready</span>
+        <span className="ep-sub">Claude is done planning — review and choose</span>
       </header>
       <div className="ep-content md">
         {plan ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         ) : (
           <div className="ep-empty">
-            <em>Le plan a été écrit dans un fichier (voir messages au-dessus pour le contenu).</em>
+            <em>The plan was written to a file (see messages above for content).</em>
           </div>
         )}
       </div>
       {!askingFeedback ? (
         <footer className="ep-actions">
           <button type="button" className="ep-reject" onClick={() => setAskingFeedback(true)}>
-            demander des changements
+            request changes
           </button>
           <button type="button" className="ep-approve" onClick={onApprove}>
-            approuver et exécuter
+            approve and execute
           </button>
         </footer>
       ) : (
         <div className="ep-feedback">
           <textarea
-            placeholder="que veux-tu modifier dans le plan ?"
+            placeholder="what would you like to change in the plan?"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={4}
@@ -50,7 +50,7 @@ export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
           />
           <div className="ep-feedback-actions">
             <button type="button" className="ep-cancel" onClick={() => { setAskingFeedback(false); setFeedback(''); }}>
-              annuler
+              cancel
             </button>
             <button
               type="button"
@@ -58,7 +58,7 @@ export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
               onClick={() => onReject(feedback.trim() || 'Please revise the plan.')}
               disabled={!feedback.trim()}
             >
-              envoyer le feedback
+              send feedback
             </button>
           </div>
         </div>

@@ -12,13 +12,13 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 
 /**
- * Le SDK Claude stocke chaque session dans
+ * The Claude SDK stores each session in
  *   ~/.claude/projects/<slug>/<uuid>.jsonl
- * où <slug> est dérivé du cwd en remplaçant '/' par '-'. Pour résumer une
- * session après un changement de cwd, on doit déplacer le .jsonl vers le
- * nouveau slug. Best-effort : si ça échoue, le SDK ne trouvera pas la
- * conversation et la session sera "fresh" (perd la mémoire Claude mais
- * notre historique en DB reste affichable).
+ * where <slug> is derived from the cwd by replacing '/' with '-'. To resume
+ * a session after a cwd change, we must move the .jsonl to the new slug.
+ * Best-effort: if it fails, the SDK won't find the conversation and the
+ * session will be "fresh" (loses Claude's memory but our DB history
+ * remains displayable).
  */
 async function relocateJsonl(
   vpsRow: typeof vpsTable.$inferSelect,
@@ -30,14 +30,15 @@ async function relocateJsonl(
   const oldSlug = slugify(oldCwd);
   const newSlug = slugify(newCwd);
   if (oldSlug === newSlug) return { ok: true, detail: 'same slug' };
-  // oldCwd vient de la DB mais la valeur d'origine est user-controlled (le
-  // user choisit son cwd au new-session). claudeSessionId vient du SDK (uuid)
-  // mais on quote par sécurité quand même. shQuote isole tout shell-meta.
+  // oldCwd comes from the DB but the original value is user-controlled (the
+  // user chooses their cwd at new-session). claudeSessionId comes from the
+  // SDK (uuid) but we quote it for safety anyway. shQuote isolates all
+  // shell-meta.
   const oldQ = shQuote(oldSlug);
   const newQ = shQuote(newSlug);
   const sidQ = shQuote(claudeSessionId);
-  // On copie au lieu de mv pour ne pas casser l'historique d'origine.
-  // Si le nouveau fichier existe déjà, skip (ne pas écraser).
+  // We copy instead of mv so we don't break the original history.
+  // If the new file already exists, skip (don't overwrite).
   const cmd =
     `OLD=~/.claude/projects/${oldQ}/${sidQ}.jsonl && ` +
     `NEW_DIR=~/.claude/projects/${newQ} && ` +
@@ -48,41 +49,41 @@ async function relocateJsonl(
     `echo OK`;
   const r = await sshExec(vpsRow, cmd, { timeoutMs: 10_000 });
   if (r.ok && r.stdout.includes('OK')) {
-    return { ok: true, detail: `copied ${oldSlug} → ${newSlug}` };
+    return { ok: true, detail: `copied ${oldSlug} -> ${newSlug}` };
   }
   return { ok: false, detail: r.stderr.slice(-200) || r.stdout.slice(-200) || `exit ${r.code}` };
 }
 
-// Rôles considérés comme "chat" pour la pagination. edit_snapshot et event
-// ne comptent PAS dans la fenêtre — ils sont chargés en pièces jointes par
-// range d'IDs (ils sont temporellement proches de leur tool_use). Sinon une
-// session avec beaucoup d'Edit/Write inonde les 200 messages de snapshots
-// (cf. piège §14 dans CLAUDE.md).
+// Roles considered as "chat" for pagination. edit_snapshot and event do
+// NOT count in the window — they are loaded as attachments by ID range
+// (they are temporally close to their tool_use). Otherwise a session with
+// many Edit/Write floods the 200 messages with snapshots
+// (cf. gotcha §14 in CLAUDE.md).
 //
-// 'event' contient soit `todo_update` (pas d'affichage chat — seul le
-// dernier compte), soit `thinking` (affichable mais sparse). Les deux cas
-// sont gérés correctement en chargement par range.
+// 'event' contains either `todo_update` (no chat display — only the last
+// one counts), or `thinking` (displayable but sparse). Both cases are
+// handled correctly with range loading.
 const NON_PAGINATED_ROLES: string[] = ['edit_snapshot', 'event'];
 
 /**
- * Charge une fenêtre de messages chat (rôle ≠ edit_snapshot/event) en
- * pagination cursor-based, puis ajoute les edit_snapshot/event qui tombent
- * dans la même plage d'IDs (ils sont émis temporellement proches de leur
- * tool_use parent).
+ * Loads a window of chat messages (role != edit_snapshot/event) with
+ * cursor-based pagination, then adds the edit_snapshot/event that fall in
+ * the same ID range (they are emitted temporally close to their parent
+ * tool_use).
  *
- * @param before  Si fourni, fenêtre des `limit` messages dont l'id < before.
- *                Sinon (initial load), fenêtre des `limit` derniers messages.
- * @returns       messages (asc par id, chat + snapshots/events mergés),
- *                hasMore (true s'il y a des messages chat encore plus anciens),
- *                oldestChatId (id du plus ancien message CHAT renvoyé — sert
- *                de cursor pour le prochain loadMore).
+ * @param before  If provided, window of the `limit` messages with id < before.
+ *                Otherwise (initial load), window of the `limit` latest messages.
+ * @returns       messages (asc by id, chat + snapshots/events merged),
+ *                hasMore (true if there are even older chat messages),
+ *                oldestChatId (id of the oldest CHAT message returned — used
+ *                as cursor for the next loadMore).
  */
 function loadMessageWindow(
   sessionId: string,
   limit: number,
   before: number | null,
 ): { messages: ClaudeSessionMessage[]; hasMore: boolean; oldestChatId: number | null } {
-  // Fetch chat messages DESC, limit+1 pour détecter hasMore
+  // Fetch chat messages DESC, limit+1 to detect hasMore
   const chatRows = db.select().from(claudeSessionMessages)
     .where(and(
       eq(claudeSessionMessages.sessionId, sessionId),
@@ -93,43 +94,43 @@ function loadMessageWindow(
     .limit(limit + 1)
     .all();
   const hasMore = chatRows.length > limit;
-  const window = chatRows.slice(0, limit).reverse(); // asc par id
+  const window = chatRows.slice(0, limit).reverse(); // asc by id
   if (window.length === 0) {
     return { messages: [], hasMore: false, oldestChatId: null };
   }
   const minId = window[0].id;
   const maxId = window[window.length - 1].id;
-  // Fetch edit_snapshot + event dans la plage du chat window. Ils sont émis
-  // temporellement proches de leur tool_use (l'agent envoie tool_use →
-  // edit_snapshot before/after → tool_result), donc leurs ids tombent
-  // ENTRE les chat messages de la même conversation.
+  // Fetch edit_snapshot + event within the chat window range. They are
+  // emitted temporally close to their tool_use (the agent sends tool_use ->
+  // edit_snapshot before/after -> tool_result), so their ids fall BETWEEN
+  // the chat messages of the same conversation.
   const attachments = db.select().from(claudeSessionMessages)
     .where(and(
       eq(claudeSessionMessages.sessionId, sessionId),
       gte(claudeSessionMessages.id, minId),
       lte(claudeSessionMessages.id, maxId),
-      // Filter dans le code (drizzle inArray sur tuple → ok mais on a déjà le range)
+      // Filter in code (drizzle inArray on tuple -> ok but we already have the range)
     ))
     .all()
     .filter((m) => NON_PAGINATED_ROLES.includes(m.role));
-  // Merge + tri par id asc
+  // Merge + sort by id asc
   const merged = [...window, ...attachments].sort((a, b) => a.id - b.id);
   return { messages: merged, hasMore, oldestChatId: minId };
 }
 
 // GET /api/claude/sessions/[id]
 //
-// Query params :
-//   ?limit=N   (default 200, max 1000) — taille de la fenêtre chat
-//   ?before=K  — pagination cursor : ne retourne que les messages chat dont
-//                id < K. Permet le scroll-up "charger l'historique plus ancien".
-//                Quand ce param est passé, la response contient la fenêtre
-//                paginée mais les champs lourds (pendings, liveStatus,
-//                streamingText) restent quand même renseignés pour rester
-//                compatible avec le shape du type.
+// Query params:
+//   ?limit=N   (default 200, max 1000) — chat window size
+//   ?before=K  — pagination cursor: only returns chat messages whose
+//                id < K. Allows the "load older history" scroll-up.
+//                When this param is passed, the response contains the
+//                paginated window but the heavy fields (pendings, liveStatus,
+//                streamingText) remain populated to stay compatible with
+//                the type shape.
 //
-// Note : edit_snapshot et event NE COMPTENT PAS dans la limite. Ils sont
-// chargés en pièces jointes par range d'IDs (cf. loadMessageWindow).
+// Note: edit_snapshot and event DO NOT COUNT toward the limit. They are
+// loaded as attachments by ID range (cf. loadMessageWindow).
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -143,9 +144,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { messages, hasMore, oldestChatId } = loadMessageWindow(id, limit, before);
   const stream = getStream(id);
 
-  // Pendings (permission/question/exit_plan) — retournés pour que le client
-  // puisse les afficher immédiatement au refetch sans devoir attendre que la
-  // SSE les replay (qu'on va précisément skip pour éviter le défilage).
+  // Pendings (permission/question/exit_plan) — returned so the client can
+  // display them immediately on refetch without having to wait for the SSE
+  // to replay them (which we will specifically skip to avoid the scroll).
   const pendingPerms = db.select().from(claudePendingPermissions).where(and(
     eq(claudePendingPermissions.sessionId, id),
     eq(claudePendingPermissions.status, 'pending'),
@@ -162,9 +163,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     messages,
     hasMore,
     oldestChatId,
-    // Texte assistant en cours d'accumulation (non encore persisté). Vide
-    // si pas de streaming actif. Le client l'injecte dans son assistantBuf
-    // pour montrer "où on en est" sans re-jouer les deltas.
+    // Assistant text currently being accumulated (not yet persisted). Empty
+    // if no active streaming. The client injects it into its assistantBuf
+    // to show "where we are" without replaying the deltas.
     streamingText: stream?.getStreamingText() ?? '',
     pendingPermissions: pendingPerms.map((p) => {
       let input: any = {};
@@ -186,15 +187,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 // PATCH /api/claude/sessions/[id]
 //
-// Champs autorisés : name, color, cwd.
+// Allowed fields: name, color, cwd.
 //
-// Cas spécial cwd : le cwd est utilisé à l'instant du start_session côté
-// agent — modifier la valeur en DB ne suffit pas si l'agent a déjà une
-// instance en mémoire (qui garde son ancien cwd). Donc :
-//   - on update la DB
-//   - on kill l'instance agent (silencieux si elle n'existe pas)
-//   - on reset le status DB à 'sleeping' pour que l'UI propose un resume
-//     (qui recréera proprement la session avec le nouveau cwd)
+// Special case cwd: the cwd is used at the moment of start_session on the
+// agent side — updating the value in DB is not enough if the agent already
+// has an in-memory instance (which keeps its old cwd). So:
+//   - we update the DB
+//   - we kill the agent instance (silent if it doesn't exist)
+//   - we reset DB status to 'sleeping' so the UI offers a resume
+//     (which will cleanly recreate the session with the new cwd)
 const ALLOWED_PATCH = ['name', 'color', 'cwd'] as const;
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
@@ -217,15 +218,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const cwdChanged = 'cwd' in update && update.cwd !== before.cwd;
 
   let relocateNote: string | undefined;
-  // Si cwd change : kill côté agent + reset status DB à 'sleeping' +
-  // relocate le JSONL côté VPS pour que le SDK retrouve la conversation
+  // If cwd changes: kill on the agent side + reset DB status to 'sleeping' +
+  // relocate the JSONL on the VPS side so the SDK finds the conversation
   if (cwdChanged) {
     update.status = 'sleeping';
     try {
       const client = getAgentClientForVpsId(before.vpsId);
       await client.call('kill_session', { session_id: id }).catch(() => {});
     } catch {
-      // Pas d'agent client — on continue, ça repartira au resume
+      // No agent client — we continue, it will restart on resume
     }
     // Relocate JSONL (best-effort)
     if (before.claudeSessionId) {
@@ -248,11 +249,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 // DELETE /api/claude/sessions/[id]
-//   suppression définitive : kill côté agent + cascade DB (messages /
-//   permissions / questions / logs / row session). Plus de soft-delete
-//   `?hard=1` : la fusion kill→delete a éliminé l'état intermédiaire
-//   `'killed'` (cf. CLAUDE.md §10 et migration 0008). Le seul moyen de
-//   "mettre en pause" une session est désormais `POST .../sleep`.
+//   permanent deletion: kill on the agent side + DB cascade (messages /
+//   permissions / questions / logs / session row). No more soft-delete
+//   `?hard=1`: the kill->delete merge eliminated the intermediate state
+//   `'killed'` (cf. CLAUDE.md §10 and migration 0008). The only way to
+//   "pause" a session is now `POST .../sleep`.
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

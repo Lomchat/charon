@@ -1,7 +1,7 @@
-// Client HTTP typé pour les routes API du dashboard.
-// Pour les shapes : cf. lib/types/api.ts. Toute nouvelle méthode doit avoir
-// son couple `XxxBody` / `XxxResponse` déclaré là-bas, puis typer le retour
-// ici via `send<TRes>()`.
+// Typed HTTP client for the dashboard's API routes.
+// For shapes: cf. lib/types/api.ts. Every new method must have its
+// `XxxBody` / `XxxResponse` pair declared there, then type the return
+// here via `send<TRes>()`.
 
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
@@ -38,8 +38,8 @@ async function send<TRes = unknown>(
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    // Essaie de récupérer le body pour afficher le vrai détail dans le toast,
-    // pas juste "→ 500". Fallback gracieux si le body n'est pas du JSON.
+    // Try to recover the body to display the real detail in the toast,
+    // not just "→ 500". Graceful fallback if the body isn't JSON.
     let detail = '';
     try {
       const txt = await res.text();
@@ -74,7 +74,7 @@ export const api = {
   updateLocalAgent: () =>
     send<UpdateVpsAgentResponse>('POST', '/api/local-agent/update'),
 
-  // ── Installs d'agent (éphémères, mémoire, 1 par VPS max) ───────────────────
+  // ── Agent installs (ephemeral, in-memory, 1 per VPS max) ───────────────────
   listInstalls: () =>
     send<InstallsListResponse>('GET', '/api/installs'),
   getInstall: (id: string) =>
@@ -88,7 +88,7 @@ export const api = {
   closeInstall: (id: string) =>
     send<OkResponse>('DELETE', `/api/installs/${id}`),
 
-  // ── Shells SSH (éphémères, multi par VPS) ──────────────────────────────────
+  // ── SSH shells (ephemeral, multiple per VPS) ───────────────────────────────
   listShells: () =>
     send<ShellsListResponse>('GET', '/api/shells'),
   listVpsShells: (vpsId: string) =>
@@ -100,7 +100,7 @@ export const api = {
   killShell: (shellId: string) =>
     send<OkResponse>('DELETE', `/api/shells/${shellId}`),
 
-  // ── VPS folders (organisation sidebar) ─────────────────────────────────────
+  // ── VPS folders (sidebar organization) ─────────────────────────────────────
   listVpsFolders: () =>
     send<{ folders: VpsFolder[] }>('GET', '/api/vps-folders'),
   createVpsFolder: (data: CreateVpsFolderBody) =>
@@ -109,12 +109,12 @@ export const api = {
     send<VpsFolder>('PATCH', `/api/vps-folders/${id}`, data),
   deleteVpsFolder: (id: string) =>
     send<OkResponse>('DELETE', `/api/vps-folders/${id}`),
-  // Re-layout atomique : positions des dossiers + (folderId, position) des VPS.
-  // L'UI envoie l'état complet désiré après un drag-end.
+  // Atomic re-layout: folder positions + (folderId, position) of VPSes.
+  // The UI sends the complete desired state after a drag-end.
   applyVpsLayout: (data: VpsLayoutBody) =>
     send<VpsLayoutResponse>('POST', '/api/vps-folders/layout', data),
 
-  // ── VPS paths (cwd connus par VPS) ─────────────────────────────────────────
+  // ── VPS paths (known cwd per VPS) ──────────────────────────────────────────
   listVpsPaths: () =>
     send<VpsPath[]>('GET', '/api/vps-paths'),
   createVpsPath: (data: CreateVpsPathBody) =>
@@ -129,9 +129,9 @@ export const api = {
     send<SetupVpsClaudeResponse>('POST', `/api/vps/${id}/claude/setup`),
   scanVpsClaude: (id: string) =>
     send<ScanVpsClaudeResponse>('GET', `/api/vps/${id}/claude/scan`),
-  // Re-vérifie l'état `claude login` du VPS. Persiste en DB + retourne.
-  // Déclenché à la fermeture de LoginConsole (l'user vient peut-être de se
-  // connecter ou de logout), ou à la demande manuelle.
+  // Re-checks the VPS's `claude login` state. Persists in DB + returns.
+  // Triggered when the LoginConsole closes (the user may have just logged
+  // in or out), or on manual demand.
   checkVpsClaudeLogin: (id: string) =>
     send<CheckClaudeLoginResponse>('POST', `/api/vps/${id}/claude/check-login`),
   bootstrapVpsUrl: (id: string) => `/api/vps/${id}/claude/bootstrap`,
@@ -146,11 +146,11 @@ export const api = {
   },
   getClaudeSession: (id: string) =>
     send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}`),
-  // Charge une fenêtre de messages chat plus anciens (scroll-up pagination).
-  // Le cursor est l'`oldestChatId` retourné par la réponse précédente.
-  // Réutilise le même endpoint que getClaudeSession avec `?before=<id>` — la
-  // réponse contient les mêmes champs mais le client n'utilise que
-  // messages/hasMore/oldestChatId pour étendre l'historique. Cap serveur 1000.
+  // Loads a window of older chat messages (scroll-up pagination).
+  // The cursor is the `oldestChatId` returned by the previous response.
+  // Reuses the same endpoint as getClaudeSession with `?before=<id>` — the
+  // response contains the same fields but the client only uses
+  // messages/hasMore/oldestChatId to extend history. Server cap 1000.
   loadOlderClaudeMessages: (id: string, before: number, limit = 200) => {
     const p = new URLSearchParams();
     p.set('before', String(before));
@@ -161,14 +161,14 @@ export const api = {
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>
     send<ImportClaudeSessionResponse>('POST', '/api/claude/sessions/import', data),
-  // Suppression définitive : kill agent + cascade DB. Plus de soft-kill.
-  // Le caller doit avoir confirmé côté UI (`confirm()`) — pas de bouton
-  // raccourci sans warning.
+  // Permanent deletion: kill agent + DB cascade. No more soft-kill.
+  // The caller must have confirmed on the UI side (`confirm()`) — no
+  // shortcut button without a warning.
   deleteClaudeSession: (id: string) =>
     send<DeleteClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}`),
   renameClaudeSession: (id: string, name: string | null) =>
     send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
-  // Sleep / resume / input / interrupt / force-stop : tous renvoient { ok: true }
+  // Sleep / resume / input / interrupt / force-stop: all return { ok: true }
   sleepClaudeSession: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/sleep`),
   resumeClaudeSession: (id: string) =>
@@ -179,7 +179,7 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { type: 'interrupt' }),
   forceStopClaude: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/force-stop`),
-  // Réponses aux interactions
+  // Responses to interactions
   respondClaudePermission: (id: string, permId: string, allow: boolean, always = false) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/permission`, { id: permId, allow, always } as RespondPermissionBody),
   respondClaudeQuestion: (id: string, qid: string, answers: Record<string, string> | null) =>
@@ -196,8 +196,8 @@ export const api = {
   // ── Settings & push ───────────────────────────────────────────────────────
   getClaudeSettings: () =>
     send<ClaudeSettingsMap>('GET', '/api/claude/settings'),
-  // updateClaudeSettings accepte des paires clé/valeur arbitraires (filtrées
-  // côté serveur par ALLOWED_KEYS). On reste libre côté client.
+  // updateClaudeSettings accepts arbitrary key/value pairs (filtered on the
+  // server side by ALLOWED_KEYS). We stay free on the client side.
   updateClaudeSettings: (data: Record<string, string>) =>
     send<ClaudeSettingsMap>('POST', '/api/claude/settings', data),
   testTelegram: () =>

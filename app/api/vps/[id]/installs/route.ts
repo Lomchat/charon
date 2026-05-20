@@ -4,7 +4,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { startInstall, getInstallByVps } from '@/lib/server/install/installSession';
 
-// GET /api/vps/[id]/installs → install courante pour ce VPS (ou null)
+// GET /api/vps/[id]/installs → current install for this VPS (or null)
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -13,8 +13,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   return NextResponse.json({ install: inst?.info() ?? null });
 }
 
-// POST /api/vps/[id]/installs → démarre (ou récupère) une install pour ce VPS.
-// Si une install est déjà en cours, retourne l'existante (focus, pas double-run).
+// POST /api/vps/[id]/installs → starts (or retrieves) an install for this VPS.
+// If an install is already in progress, returns the existing one (focus, no
+// double-run).
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

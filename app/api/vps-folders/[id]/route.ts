@@ -5,7 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 
 const DEFAULT_FOLDER_ID = 'default';
 
-// PATCH /api/vps-folders/[id] — rename ou toggle collapsed.
+// PATCH /api/vps-folders/[id] — rename or toggle collapsed.
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -31,9 +31,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   return NextResponse.json(row);
 }
 
-// DELETE /api/vps-folders/[id] — supprime un dossier. Refuse de supprimer le
-// dossier "default" (sécurité : toujours au moins un dossier de fallback).
-// Les VPS contenus sont déplacés vers le dossier "default".
+// DELETE /api/vps-folders/[id] — deletes a folder. Refuses to delete the
+// "default" folder (safety: always at least one fallback folder).
+// Contained VPS are moved to the "default" folder.
 export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -45,7 +45,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   if (!folder) return NextResponse.json({ error: 'folder not found' }, { status: 404 });
 
   db.transaction((tx) => {
-    // Déplace les VPS du dossier vers 'default', en append (positions à la fin).
+    // Move the folder's VPS to 'default', appending (positions at the end).
     const movedVps = tx.select().from(vps).where(eq(vps.folderId, id)).all();
     if (movedVps.length > 0) {
       const existing = tx.select().from(vps).where(eq(vps.folderId, DEFAULT_FOLDER_ID))

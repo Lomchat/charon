@@ -2,20 +2,20 @@ import 'server-only';
 import type { Vps } from '@/lib/db/schema';
 import { sshExec } from './sshExec';
 
-// Parser Python passé via stdin à `python3 -`. Extrait les messages d'un
-// fichier ~/.claude/projects/<slug>/<uuid>.jsonl et émet un JSON array
-// de { role, content, ts } prêt à être inséré tel quel dans
+// Python parser passed via stdin to `python3 -`. Extracts messages from a
+// ~/.claude/projects/<slug>/<uuid>.jsonl file and emits a JSON array
+// of { role, content, ts } ready to be inserted as-is into
 // claude_session_messages.
 //
-// Mappping :
+// Mapping:
 //   - user (content string)                → role='user'   content=text
-//   - user (content list de tool_result)   → role='tool_result' (1 row par bloc)
-//   - assistant (content list de blocks)   → mêmes rows que les events SDK :
-//       text   → role='assistant'  content=concat des textes du turn
-//       tool_use → role='tool_use' (1 row par bloc)
-//       thinking → skip (pas critique pour l'historique relu)
+//   - user (content list of tool_result)   → role='tool_result' (1 row per block)
+//   - assistant (content list of blocks)   → same rows as the SDK events:
+//       text   → role='assistant'  content=concat of the turn's texts
+//       tool_use → role='tool_use' (1 row per block)
+//       thinking → skip (not critical for replayed history)
 //
-// On préserve l'ordre via le timestamp ISO du jsonl (converti en unix).
+// We preserve order via the ISO timestamp from the jsonl (converted to unix).
 const PARSE_PY = `
 import json, sys, os
 from pathlib import Path
@@ -25,7 +25,7 @@ if not session_id:
     print('NO_SESSION_ID', file=sys.stderr)
     sys.exit(1)
 
-# Trouve le .jsonl : il est dans n'importe quel sous-dir de ~/.claude/projects
+# Find the .jsonl: it's in some sub-dir of ~/.claude/projects
 home = Path.home()
 base = home / '.claude' / 'projects'
 candidates = []
@@ -52,7 +52,7 @@ def iso_to_unix(iso):
         return None
 
 def extract_text(content):
-    """Extrait le texte d'un content (string ou list de blocks 'text')."""
+    """Extract the text from a content (string or list of 'text' blocks)."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -64,8 +64,8 @@ def extract_text(content):
         return ''.join(parts)
     return ''
 
-# Filtre : les blocs d'injection 'system' (<command-name>, etc.) sont visibles
-# dans le chat user — on les SKIP pour avoir un historique propre.
+# Filter: 'system' injection blocks (<command-name>, etc.) are visible
+# in the user chat — we SKIP them for a clean history.
 def is_system_injection(text):
     if not text: return True
     s = text.lstrip()
@@ -90,7 +90,7 @@ with open(target, 'r', errors='replace') as f:
                     continue
                 out.append({'role': 'user', 'content': content, 'ts': ts})
             elif isinstance(content, list):
-                # Liste de blocks — typiquement des tool_result
+                # List of blocks — typically tool_results
                 for b in content:
                     if not isinstance(b, dict):
                         continue
@@ -118,7 +118,7 @@ with open(target, 'r', errors='replace') as f:
                             'ts': ts,
                         })
                     elif b.get('type') == 'text':
-                        # Rare : un user message en mode "structuré" avec texte
+                        # Rare: a user message in "structured" mode with text
                         txt = b.get('text', '')
                         if txt and not is_system_injection(txt):
                             out.append({'role': 'user', 'content': txt, 'ts': ts})
@@ -126,13 +126,13 @@ with open(target, 'r', errors='replace') as f:
             msg = d.get('message') or {}
             content = msg.get('content', []) or []
             if not isinstance(content, list):
-                # Fallback (rare) : content scalar
+                # Fallback (rare): scalar content
                 txt = str(content)
                 if txt:
                     out.append({'role': 'assistant', 'content': txt, 'ts': ts})
                 continue
-            # Concat tous les blocs 'text' en un seul assistant message,
-            # émets les tool_use séparément (comme à runtime).
+            # Concat all 'text' blocks into a single assistant message,
+            # emit tool_use separately (as at runtime).
             text_parts = []
             tools = []
             for b in content:
@@ -148,7 +148,7 @@ with open(target, 'r', errors='replace') as f:
                         'name': b.get('name', ''),
                         'input': b.get('input') or {},
                     })
-                # thinking : skip pour l'historique relu
+                # thinking: skip for replayed history
             assistant_text = ''.join(text_parts)
             if assistant_text:
                 out.append({'role': 'assistant', 'content': assistant_text, 'ts': ts})
@@ -164,18 +164,18 @@ export type ImportedMessage = {
   ts: number | null;
 };
 
-/** SSH-fetch un JSONL session et renvoie les messages parsés. */
+/** SSH-fetch a session JSONL and return the parsed messages. */
 export async function importJsonlMessages(
   vps: Vps,
   claudeSessionId: string,
 ): Promise<{ ok: boolean; messages: ImportedMessage[]; error?: string }> {
-  // Sélectionne python3.10+ explicitement (cohérent avec le reste de Charon)
+  // Explicitly pick python3.10+ (consistent with the rest of Charon)
   const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)';
   const cmd = `CLAUDE_SESSION_ID='${claudeSessionId.replace(/'/g, "'\\''")}' ${PY} -`;
   const r = await sshExec(vps, cmd, { stdin: PARSE_PY, timeoutMs: 60_000 });
   if (!r.ok) {
     if (r.stderr.includes('JSONL_NOT_FOUND')) {
-      return { ok: false, messages: [], error: 'fichier JSONL introuvable sur le VPS' };
+      return { ok: false, messages: [], error: 'JSONL file not found on the VPS' };
     }
     return { ok: false, messages: [], error: r.stderr.slice(-300) || `exit ${r.code}` };
   }

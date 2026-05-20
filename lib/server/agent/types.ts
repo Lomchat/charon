@@ -1,6 +1,6 @@
-// Mirroir TypeScript du protocole JSON-RPC de l'agent (agent/charon_agent/protocol.py).
-// Les events sont alignés avec lib/server/claude/types.ts (BridgeEvent) — le
-// type wire diffère légèrement : on a un "event" string au lieu d'un "type".
+// TypeScript mirror of the agent's JSON-RPC protocol (agent/charon_agent/protocol.py).
+// Events are aligned with lib/server/claude/types.ts (BridgeEvent) — the wire
+// type differs slightly: we have an "event" string instead of a "type".
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
@@ -23,9 +23,9 @@ export type AgentSessionInfo = {
 
 export type AgentHelloResult = {
   agent_version: string;
-  // SHA256 (12 premiers chars) du .pyz qui tourne. Comparé au sha du pyz
-  // embarqué dans le dashboard pour détecter "agent out of date". Optionnel
-  // car les anciens agents (<0.2.0) ne le renvoient pas.
+  // SHA256 (first 12 chars) of the .pyz that is running. Compared to the sha
+  // of the pyz embedded in the dashboard to detect "agent out of date".
+  // Optional because older agents (<0.2.0) don't return it.
   agent_pyz_sha?: string;
   sdk_available: boolean;
   sdk_error: string | null;
@@ -33,8 +33,8 @@ export type AgentHelloResult = {
   sessions: AgentSessionInfo[];
 };
 
-// Events poussés par l'agent. session_id obligatoire pour tous sauf erreurs
-// globales (rare). On garde une union large pour ne pas se mentir.
+// Events pushed by the agent. session_id required for all except global
+// errors (rare). We keep a wide union to not lie to ourselves.
 export type AgentEvent =
   | { event: 'replay_begin'; session_id: string; count: number }
   | { event: 'replay_end'; session_id: string }
@@ -55,11 +55,11 @@ export type AgentEvent =
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean };
 
-// ── Nom des méthodes JSON-RPC supportées par l'agent ────────────────────────
-// Source de vérité Python : agent/charon_agent/protocol.py (set METHODS).
-// Le script scripts/check-protocol-sync.mjs (exécuté avant chaque build via
-// `npm run build`) compare les deux listes et fait échouer le build sur
-// drift. Toute modif du protocole doit toucher les 2 endroits.
+// ── Names of JSON-RPC methods supported by the agent ───────────────────────
+// Python source of truth: agent/charon_agent/protocol.py (METHODS set).
+// The script scripts/check-protocol-sync.mjs (run before each build via
+// `npm run build`) compares both lists and fails the build on drift.
+// Any protocol change must touch both places.
 export type AgentMethodName =
   | 'hello'
   | 'ping'
@@ -79,13 +79,13 @@ export type AgentMethodName =
   | 'kill_session';
 
 export type AgentClientStatus =
-  | 'idle'           // jamais connecté
-  | 'connecting'     // SSH en cours
-  | 'connected'      // hello reçu, opérationnel
-  | 'reconnecting'   // drop détecté, en backoff
-  | 'closed';        // fermé explicitement
+  | 'idle'           // never connected
+  | 'connecting'     // SSH in progress
+  | 'connected'      // hello received, operational
+  | 'reconnecting'   // drop detected, in backoff
+  | 'closed';        // explicitly closed
 
-// Erreur côté agent : { code, message }
+// Error on the agent side: { code, message }
 export class AgentRpcError extends Error {
   constructor(public readonly code: number, message: string) {
     super(message);
@@ -93,6 +93,6 @@ export class AgentRpcError extends Error {
   }
 }
 
-// Codes alignés avec protocol.py
+// Codes aligned with protocol.py
 export const ERR_SESSION_NOT_FOUND = -32000;
 export const ERR_SDK_UNAVAILABLE = -32010;

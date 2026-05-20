@@ -1,28 +1,28 @@
-/* ── /claude : Nordic Tokyo theme override (scopé à .claude-root) ──
-   On remappe les tokens globaux (--stone/gold/parchment/etc.) sur la
-   palette Nordic Tokyo (mid Tokyo↔Nord). Le reste de l'app garde
-   l'Atrium gold parce que les tokens globaux ne sont pas touchés. */
+/* ── /claude: Nordic Tokyo theme override (scoped to .claude-root) ──
+   Remaps the global tokens (--stone/gold/parchment/etc.) onto the
+   Nordic Tokyo palette (mid Tokyo<->Nord). The rest of the app keeps
+   the Atrium gold because the global tokens aren't touched. */
 .claude-root {
   --stone:           #181b24;
   --stone-2:         #232733;
   --stone-3:         #2a2f3c;
   --parchment:       #d2d9ec;
   --parchment-soft:  #6a7388;
-  --gold:            #8ab4e4;  /* accent primaire (était gold)  */
-  --gold-bright:     #a8c4ef;  /* hover / sélection             */
-  --gold-deep:       #363c4d;  /* bordures discrètes            */
+  --gold:            #8ab4e4;  /* primary accent (was gold)     */
+  --gold-bright:     #a8c4ef;  /* hover / selection             */
+  --gold-deep:       #363c4d;  /* discreet borders              */
   --teal:            #86c5d8;  /* user bubble / multi pill      */
   --teal-deep:       #5a8a9a;
-  --crimson:         #d8757f;  /* danger / kill / erreur        */
+  --crimson:         #d8757f;  /* danger / kill / error         */
   --crimson-deep:    #944f57;
   --lavender:        #a8b8e0;  /* thinking / plan / tool glyph  */
-  --shadow:          #181b24;  /* fond très sombre pour inputs  */
+  --shadow:          #181b24;  /* very dark background for inputs */
   --display:         'Inter', system-ui, -apple-system, sans-serif;
   --body:            'Inter', system-ui, -apple-system, sans-serif;
   --mono:            'JetBrains Mono', monospace;
 }
 
-/* ── /claude : layout 3-col (sidebar | main | tools) + header ── */
+/* ── /claude: 3-col layout (sidebar | main | tools) + header ── */
 .claude-root {
   position: fixed; inset: 0;
   display: grid;
@@ -43,8 +43,8 @@
 }
 .claude-head    { grid-area: head; }
 .claude-sidebar { grid-area: side; overflow-y: auto; min-height: 0; }
-/* min-height: 0 sur le flex parent : sans ça les enfants en flex: 1 + overflow: auto
-   refusent de rétrécir en dessous de leur contenu et le scroll ne fonctionne pas. */
+/* min-height: 0 on the flex parent: without it, children with flex: 1 + overflow: auto
+   refuse to shrink below their content and the scroll doesn't work. */
 .claude-main    { grid-area: main; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .tool-panel     { grid-area: tools; overflow: hidden; min-height: 0; }
 
@@ -93,9 +93,9 @@
   color: var(--gold-bright); border-color: var(--gold);
 }
 .claude-head .head-btn:disabled { opacity: 0.4; cursor: wait; }
-/* Bouton "update local agent" : visible UNIQUEMENT quand l'agent local
-   est out-of-date. Plus large que les autres (texte + glyph), ambré
-   pulse pour attirer l'œil sans crier. */
+/* "update local agent" button: visible ONLY when the local agent
+   is out-of-date. Wider than the others (text + glyph), amber
+   pulse to catch the eye without shouting. */
 .claude-head .head-btn.local-agent-update {
   width: auto;
   padding: 0 10px;
@@ -153,12 +153,12 @@
   padding: 8px 14px 12px;
   border-bottom: 1px solid var(--gold-deep);
   margin-bottom: 10px;
-  /* Sticky : reste visible quand on défile la liste des VPS. Le parent
-     `.claude-sidebar` est le container scrollable (overflow-y: auto), donc
-     `top: 0` colle le toolbar au top du viewport sidebar. Le background
-     est opacifié pour que les rows ne se voient pas en-dessous au scroll ;
-     la couleur compose le tint de la sidebar (rgba(28,31,41,.5)) sur le
-     fond `--stone` pour rester visuellement cohérent. */
+  /* Sticky: stays visible while scrolling the VPS list. The parent
+     `.claude-sidebar` is the scrollable container (overflow-y: auto), so
+     `top: 0` glues the toolbar to the top of the sidebar viewport. The
+     background is opacified so the rows don't show through on scroll;
+     the color composes the sidebar tint (rgba(28,31,41,.5)) over the
+     `--stone` background to stay visually consistent. */
   position: sticky;
   top: 0;
   z-index: 5;
@@ -372,8 +372,8 @@
 .dot-amber-pulse { color: var(--gold-bright); animation: cpulse 1.2s infinite ease-in-out; }
 .dot-orange-pulse { color: #f0a060; animation: cpulse 0.9s infinite ease-in-out; }
 
-/* Session row en attente d'une réponse user : pulse marqué pour attirer l'œil
-   à travers la sidebar même si elle est longue / qu'on est sur un autre chat. */
+/* Session row waiting for a user response: marked pulse to catch the eye
+   across the sidebar even if it's long / you're on another chat. */
 .session-row.attention {
   background: rgba(240,160,96,0.10);
   border-left: 3px solid #f0a060;
@@ -421,7 +421,7 @@
 .claude-bar button.kill { color: var(--crimson); border-color: var(--crimson-deep); }
 .claude-bar button.kill:hover { color: var(--crimson); border-color: var(--crimson); }
 
-/* Erreur transitoire (rename, action serveur etc.) — dismissable */
+/* Transient error (rename, server action, etc.) — dismissable */
 .claude-error {
   padding: 10px 26px;
   background: rgba(216,117,127,0.15);
@@ -439,7 +439,7 @@
 }
 .claude-error button:hover { color: var(--gold-bright); border-color: var(--gold); }
 
-/* Bandeau "session déconnectée" — rouge, cliquable, resume top-right */
+/* "Session disconnected" banner — red, clickable, resume top-right */
 .claude-disconnect-banner {
   padding: 10px 26px;
   background: rgba(216,117,127,0.18);
@@ -472,7 +472,7 @@
   color: var(--gold-bright);
 }
 
-/* Détails d'erreur attachés au banner — bouton copier + pre collapsible */
+/* Error details attached to the banner — copy button + collapsible pre */
 .claude-disconnect-banner-wrap { display: flex; flex-direction: column; }
 .claude-error-details {
   padding: 6px 26px 10px;
@@ -504,7 +504,7 @@
   font-size: 11px; line-height: 1.45;
   user-select: text;
 }
-.claude-error .copy-btn { /* aligné dans la barre rouge transitoire */
+.claude-error .copy-btn { /* aligned in the transient red bar */
   font-size: 11px !important; padding: 4px 8px !important;
 }
 
@@ -572,8 +572,8 @@
 .claude-banner.bootstrap .step.status-error .glyph { color: var(--crimson); }
 
 /* ── Install session full-screen view ───────────────────────────────────── */
-/* Remplace l'ancien BootstrapBanner (bandeau supérieur) par une vraie vue
-   plein écran, cohérente avec ShellTerminal qui occupe `.claude-main`. */
+/* Replaces the old BootstrapBanner (top banner) with a real fullscreen
+   view, consistent with ShellTerminal which occupies `.claude-main`. */
 .claude-main.install-main {
   display: flex; flex-direction: column;
   background: rgba(20, 20, 22, 0.55);
@@ -668,7 +668,7 @@
 .install-footer-msg strong { color: var(--gold-bright); }
 .install-footer-msg em { color: var(--gold-bright); font-style: normal; }
 
-/* ── Install session row dans la sidebar (style cohérent shell/session) ─── */
+/* ── Install session row in the sidebar (consistent shell/session style) ─── */
 .session-row.install-row .dot { background: var(--gold-bright); }
 .session-row.install-row.running .dot { animation: cpulse 1s infinite ease-in-out; }
 .session-row.install-row.success .dot { background: #a0c87b; }
@@ -738,7 +738,7 @@
 .install-notif-actions button.primary { color: var(--gold-bright); border-color: var(--gold); }
 .install-notif-actions button:hover { background: rgba(212, 168, 90, 0.10); }
 
-/* ── Disabled state pour les boutons VPS sans agent ───────────────────── */
+/* ── Disabled state for VPS buttons without an agent ──────────────────── */
 .vps-act-btn:disabled,
 .proj-action:disabled {
   opacity: 0.35;
@@ -750,7 +750,7 @@
   padding: 4px 10px; margin-top: 4px;
 }
 
-/* Wrap qui contient le chat scrollable + la pill flottante "↓ N" */
+/* Wrap that contains the scrollable chat + the floating "↓ N" pill */
 .claude-chat-wrap {
   flex: 1 1 0;
   min-height: 0;
@@ -763,17 +763,17 @@
   min-height: 0;
   overflow-y: auto; overflow-x: hidden;
   padding: 18px 26px;
-  /* column-reverse : DOM[0] = bas visuel, scrollTop=0 = vraiment en bas.
-     Le navigateur fait nativement "stick to bottom" + scroll anchoring. */
+  /* column-reverse: DOM[0] = visual bottom, scrollTop=0 = truly at the bottom.
+     The browser natively handles "stick to bottom" + scroll anchoring. */
   display: flex; flex-direction: column-reverse; gap: 10px;
   overscroll-behavior: contain;
-  /* Override le user-select: none global du body pour que tu puisses
-     copier du texte / des blocs de code dans le chat. */
+  /* Override the body's global user-select: none so you can
+     copy text / code blocks from the chat. */
   user-select: text;
   -webkit-user-select: text;
 }
 
-/* Pill flottante "↓ N" en bas-droite du chat (style WhatsApp) */
+/* Floating "↓ N" pill at the bottom-right of the chat (WhatsApp style) */
 .claude-scroll-pill {
   position: absolute;
   right: 20px;
@@ -800,13 +800,13 @@
 .claude-scroll-pill:active { background: var(--stone-3); }
 .claude-scroll-pill .claude-scroll-arrow { display: inline-block; transform: translateY(-1px); }
 
-/* Pill "↑" — placée juste au-dessus de la pill ↓, à la même abscisse. Sa
-   position reste FIXE indépendamment du fait que la pill ↓ soit visible ou
-   non. Calcul : bottom = bottom(↓) + height(↓) + 10px d'écart visuel. */
+/* "↑" pill — placed just above the ↓ pill, at the same x-coordinate. Its
+   position stays FIXED regardless of whether the ↓ pill is visible or
+   not. Math: bottom = bottom(↓) + height(↓) + 10px visual gap. */
 .claude-scroll-up-pill {
   position: absolute;
   right: 20px;
-  bottom: 70px; /* 16 (pill ↓ bottom) + 44 (pill ↓ height) + 10 (gap) */
+  bottom: 70px; /* 16 (↓ pill bottom) + 44 (↓ pill height) + 10 (gap) */
   width: 44px; height: 44px;
   border-radius: 50%;
   background: linear-gradient(180deg, var(--stone-2), var(--stone));
@@ -848,10 +848,10 @@
 }
 .claude-chat *::selection { background: rgba(138,180,228,0.35); color: var(--parchment); }
 
-/* Placeholder de chargement de l'historique — affiché quand on n'a pas encore
-   appliqué de données (ni cache ni fetch). Distingue « session vide » de
-   « session pas encore chargée ». column-reverse oblige à positionner au
-   centre via le flex parent (margin auto fonctionne pas pareil en reverse). */
+/* History loading placeholder — shown when we haven't yet
+   applied any data (neither cache nor fetch). Distinguishes "empty session" from
+   "session not yet loaded". column-reverse forces centering
+   via the flex parent (margin auto doesn't work the same way in reverse). */
 .claude-history-loading {
   display: flex;
   align-items: center;
@@ -874,8 +874,8 @@
 @keyframes claude-history-spin {
   to { transform: rotate(360deg); }
 }
-/* Indicateur "charger plus ancien" / "chargement en cours" — en column-reverse,
-   c'est le dernier enfant DOM, donc visuellement en haut du chat. */
+/* "Load older" / "loading in progress" indicator — in column-reverse,
+   it's the last DOM child, so visually at the top of the chat. */
 .claude-loadmore-indicator {
   display: flex;
   align-items: center;
@@ -938,7 +938,7 @@
 .bubble.role-assistant.streaming::after {
   content: '▍'; color: var(--gold-bright); animation: cpulse 1s infinite ease-in-out;
 }
-/* tool_use card — style terminal */
+/* tool_use card — terminal style */
 .bubble.tool-use {
   background: rgba(28,31,41,0.45);
   border-color: rgba(106,115,136,0.45);
@@ -1005,7 +1005,7 @@
   border-left: 2px solid var(--gold-deep);
 }
 
-/* tool_result orphelin (rare — pas trouvé son tool_use) */
+/* Orphan tool_result (rare — couldn't find its tool_use) */
 .bubble.tool-result.orphan {
   background: rgba(160,200,123,0.05); border-color: rgba(160,200,123,0.4);
 }
@@ -1107,7 +1107,7 @@
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: bold; }
 
-/* ── Thinking bar (inline, juste au-dessus de l'input) ── */
+/* ── Thinking bar (inline, just above the input) ── */
 .thinking-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 26px;
@@ -1225,7 +1225,7 @@
 .claude-input-bar .send:hover:not(:disabled) { background: rgba(138,180,228,0.1); }
 .claude-input-bar .send:disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* Gros bouton resume à la place de l'input bar quand session déconnectée */
+/* Big resume button in place of the input bar when the session is disconnected */
 .claude-disconnect-cta {
   padding: 20px 26px;
   border-top: 1px solid var(--crimson-deep);
@@ -1258,7 +1258,7 @@
   text-align: center;
 }
 
-/* ── Modale (création + resume) ── */
+/* ── Modal (creation + resume) ── */
 .claude-modal-bg {
   position: fixed; inset: 0; z-index: 300;
   background: rgba(15,18,28,0.75);
@@ -1276,7 +1276,7 @@
 }
 .claude-modal.resume { max-width: 720px; }
 .claude-modal.data-modal {
-  /* Taille fixe pour que le modal ne saute pas quand on change d'onglet */
+  /* Fixed size so the modal doesn't jump when switching tabs */
   width: 820px; max-width: 90vw;
   height: 640px; max-height: 85vh;
   display: flex; flex-direction: column;
@@ -1341,7 +1341,7 @@
   font-style: italic; padding: 24px 12px; border: none;
 }
 
-/* Vue groupée des paths par VPS (onglet 'paths' du DataModal) */
+/* Grouped paths view per VPS ('paths' tab of DataModal) */
 .path-groups { overflow-y: auto; flex: 1; }
 .path-group { margin-bottom: 14px; }
 .path-group:last-child { margin-bottom: 0; }
@@ -1428,7 +1428,7 @@
 .claude-modal label input:focus,
 .claude-modal label select:focus { border-color: var(--gold); }
 
-/* Toggle switch (remplace les <select> on/off) */
+/* Toggle switch (replaces the on/off <select>s) */
 .claude-modal .switch-row {
   display: flex; align-items: center; justify-content: space-between;
   gap: 14px;
@@ -1538,7 +1538,7 @@
 .resume-list button:hover { color: var(--gold-bright); border-color: var(--gold); }
 .resume-list button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Ligne de scan détaillée — 2-3 étages : titre / meta / preview */
+/* Detailed scan row — 2-3 tiers: title / meta / preview */
 .resume-list li.scan-row { align-items: flex-start; gap: 12px; padding: 8px 10px; }
 .scan-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .scan-line-1 {
@@ -1581,7 +1581,7 @@
 .claude-modal .empty { font-style: italic; color: var(--parchment-soft); padding: 6px 0; font-size: 12px; }
 .claude-modal .err   { color: var(--crimson); font-size: 12px; padding: 6px 0; }
 
-/* ── Tool panel (3e colonne) ── */
+/* ── Tool panel (3rd column) ── */
 .tool-panel {
   border-left: 1px solid var(--gold-deep);
   background: rgba(28,31,41,0.5);
@@ -1924,9 +1924,9 @@
 .uq-actions .uq-submit:disabled { opacity: 0.4; cursor: not-allowed; }
 .uq-actions .uq-cancel { color: var(--parchment-soft); }
 
-/* ── Zone d'interaction en attente (remplace l'input bar) ──
-   Apparaît quand permQueue / questionQueue / exitPlanQueue a un élément pour
-   la session active. FIFO : le plus ancien d'abord. */
+/* ── Pending interaction zone (replaces the input bar) ──
+   Appears when permQueue / questionQueue / exitPlanQueue has an item for
+   the active session. FIFO: oldest first. */
 .claude-pending-zone {
   padding: 14px 26px 18px;
   border-top: 1px solid var(--gold-deep);
@@ -1977,7 +1977,7 @@
   background: transparent; border: 1px solid var(--gold-deep);
   color: var(--parchment);
 }
-/* Mêmes couleurs que la popup top-right .perm-card .actions */
+/* Same colors as the top-right popup .perm-card .actions */
 .inline-perm-card .ip-actions .allow  { color: #a0c87b; border-color: #a0c87b; }
 .inline-perm-card .ip-actions .always { color: var(--gold-bright); border-color: var(--gold); }
 .inline-perm-card .ip-actions .deny   { color: var(--crimson); border-color: var(--crimson); }
@@ -2086,7 +2086,7 @@
 }
 .exit-plan-card .ep-send-feedback:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ── Bouton split dans diff card ── */
+/* ── Split button in diff card ── */
 .diff-card .diff-head .compare {
   background: transparent; border: 1px solid var(--gold-deep);
   color: var(--lavender); padding: 2px 8px; margin-right: 4px;
@@ -2099,7 +2099,7 @@
   background: rgba(168,184,224,0.10);
 }
 
-/* ── Modal split diff (vue VSCode-like) ── */
+/* ── Split diff modal (VSCode-like view) ── */
 .split-diff-modal-backdrop {
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.7);
@@ -2182,7 +2182,7 @@
 }
 .sdm-table td.code {
   color: var(--parchment);
-  /* moitié de la table, modulo les colonnes ln */
+  /* half of the table, modulo the ln columns */
   width: calc((100% - 96px) / 2);
 }
 .sdm-table td.code.left { border-right: 2px solid var(--gold-deep); }
@@ -2193,7 +2193,7 @@
 }
 .sdm-table td.code .text { white-space: pre-wrap; }
 
-/* Couleurs lignes — VSCode-like sur fond Nordic Tokyo */
+/* Row colors — VSCode-like on Nordic Tokyo background */
 .sdm-table .row-eq td.code        { background: transparent; }
 .sdm-table .row-add td.code.right { background: rgba(160,200,123,0.18); }
 .sdm-table .row-add td.code.right .marker { color: #a0c87b; }
@@ -2209,7 +2209,7 @@
 .sdm-table tr.row-add:hover td.code.right { background-color: rgba(160,200,123,0.26); }
 .sdm-table tr.row-del:hover td.code.left  { background-color: rgba(216,117,127,0.26); }
 
-/* ── Bannière "reconnexion auto en cours" (sous la barre du chat) ── */
+/* ── "Auto-reconnecting" banner (below the chat bar) ── */
 .claude-reconnect-banner {
   padding: 8px 26px;
   background: rgba(240,160,96,0.10);
@@ -2225,7 +2225,7 @@
 }
 @keyframes rspin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-/* ── Settings : bloc Telegram ── */
+/* ── Settings: Telegram block ── */
 .claude-modal fieldset.tg-block {
   margin: 14px 0 4px;
   padding: 12px 14px;

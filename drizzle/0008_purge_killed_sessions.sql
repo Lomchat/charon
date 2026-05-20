@@ -1,17 +1,17 @@
--- Purge des sessions en status='killed'.
+-- Purge sessions with status='killed'.
 --
--- Contexte : le status `'killed'` était un état intermédiaire entre `sleeping`
--- (pause réversible) et la suppression dure. UX confuse — le bouton "pause"
--- du header appelait en fait `kill` (cf. ancien comportement) et les
--- sessions concernées restaient en DB pour "consultation post-mortem" mais
--- ne pouvaient pas être reprises. La refonte kill→delete a fusionné ce
--- middle state avec la suppression définitive : seul `sleep` est désormais
--- réversible, tout le reste détruit. Cf. CLAUDE.md §10 et §14.
+-- Context: the `'killed'` status was an intermediate state between `sleeping`
+-- (reversible pause) and hard deletion. Confusing UX — the "pause" button
+-- in the header actually called `kill` (cf. old behavior) and the affected
+-- sessions stayed in DB for "post-mortem inspection" but could not be
+-- resumed. The kill→delete refactor merged this middle state with permanent
+-- deletion: only `sleep` is now reversible, everything else destroyed.
+-- Cf. CLAUDE.md §10 and §14.
 --
--- Effet : DELETE depuis claude_sessions cascade vers messages, permissions,
--- questions et logs grâce aux FK ON DELETE CASCADE déclarées en 0000. On
--- supprime les logs explicitement par défense en profondeur (l'ancien code
--- de killSession ne cascadait pas toujours via les FK selon l'historique).
+-- Effect: DELETE from claude_sessions cascades to messages, permissions,
+-- questions and logs thanks to the FK ON DELETE CASCADE declared in 0000.
+-- We delete logs explicitly as defense in depth (the old killSession code
+-- didn't always cascade via FKs depending on history).
 DELETE FROM `claude_session_logs`
   WHERE `session_id` IN (SELECT `id` FROM `claude_sessions` WHERE `status` = 'killed');
 --> statement-breakpoint

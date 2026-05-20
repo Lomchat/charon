@@ -4,19 +4,19 @@ import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { sshExec, type SshResult } from './sshExec';
+import { sshExec, openSshSession, closeSshSession, type SshResult, type SshSession } from './sshExec';
 
-// ── Types d'événements (consommés par InstallSessionView via le ring
-// buffer de installSession.ts) ──────────────────────────────────────────────
+// ── Event types (consumed by InstallSessionView via the ring buffer of
+// installSession.ts) ────────────────────────────────────────────────────────
 export type BootstrapPhase =
-  | 'verify'             // python + import SDK
+  | 'verify'             // python + SDK import
   | 'detect_os'
   | 'install_python'
-  | 'install_sdk'        // claude-agent-sdk (Python lib pour l'agent)
-  | 'install_claude_cli' // CLI `claude` (curl install.sh — pour `claude login`)
-  | 'install_agent'      // dépose le .pyz
-  | 'install_service'    // unit systemd-user (ou fallback)
-  | 'ping_agent'         // teste que le daemon répond
+  | 'install_sdk'        // claude-agent-sdk (Python lib for the agent)
+  | 'install_claude_cli' // `claude` CLI (curl install.sh — for `claude login`)
+  | 'install_agent'      // drops the .pyz
+  | 'install_service'    // systemd-user unit (or fallback)
+  | 'ping_agent'         // tests that the daemon responds
   | 'check_login'        // claude login (warn-only)
   | 'done';
 
@@ -32,14 +32,14 @@ export type BootstrapEvent = {
 const PY_CHAIN =
   'command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10';
 
-// L'agent et le SDK tournent toujours dans un venv dédié à ~/.charon/venv.
-// Avantages : pas de conflit avec les paquets système, contourne PEP 668
-// (Debian 12 / Ubuntu 23+ refusent `pip install --user` par défaut), et garde
-// le même chemin python entre install, verify, ping et systemd.
+// The agent and the SDK always run in a dedicated venv at ~/.charon/venv.
+// Benefits: no conflict with system packages, works around PEP 668
+// (Debian 12 / Ubuntu 23+ refuse `pip install --user` by default), and
+// keeps the same python path across install, verify, ping and systemd.
 const VENV_DIR = '$HOME/.charon/venv';
 const VENV_PY = `${VENV_DIR}/bin/python`;
-// Bash snippet qui résout le bon python : venv s'il existe, sinon le meilleur
-// python système. Utilisé partout où on doit invoquer python sur le VPS.
+// Bash snippet that resolves the right python: venv if it exists, otherwise
+// the best system python. Used everywhere we have to invoke python on the VPS.
 const PY_LOOKUP_VENV_OR_SYSTEM =
   `if [ -x ${VENV_PY} ]; then echo ${VENV_PY}; ` +
   `else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3; fi`;
@@ -65,7 +65,7 @@ function parseOsRelease(content: string): OsInfo {
 function pythonInstallCmd(os: OsInfo): string | null {
   switch (os.pkgMgr) {
     case 'apt':
-      // Ubuntu 22.04+ / Debian 12+ ont python3 ≥ 3.10
+      // Ubuntu 22.04+ / Debian 12+ have python3 ≥ 3.10
       return 'export DEBIAN_FRONTEND=noninteractive; apt-get update -y && apt-get install -y python3 python3-pip python3-venv';
     case 'dnf':
     case 'yum': {
@@ -78,13 +78,13 @@ function pythonInstallCmd(os: OsInfo): string | null {
   }
 }
 
-// ── Helpers de détection d'erreur SSH ───────────────────────────────────────
-// Une erreur SSH (connexion refusée, timeout, auth, hôte inconnu) est fatale
-// pour le bootstrap : ça ne sert à rien de continuer sur les phases suivantes,
-// elles vont toutes échouer pareil mais en mangeant plusieurs minutes de
-// timeout. On détecte tôt et on abort proprement avec un message utile.
+// ── SSH error detection helpers ─────────────────────────────────────────────
+// An SSH error (connection refused, timeout, auth, unknown host) is fatal
+// for the bootstrap: no point continuing to the next phases, they'll all
+// fail the same way while eating several minutes of timeout. We detect
+// early and abort cleanly with a useful message.
 //
-// Patterns observés en pratique (capturés depuis stderr de `ssh`) :
+// Patterns observed in practice (captured from `ssh` stderr):
 //   - "ssh: connect to host X port Y: Connection timed out"
 //   - "ssh: connect to host X port Y: Connection refused"
 //   - "ssh: connect to host X port Y: No route to host"
@@ -92,47 +92,47 @@ function pythonInstallCmd(os: OsInfo): string | null {
 //   - "Host key verification failed."
 //   - "Permission denied (publickey)" / "Permission denied (publickey,password)"
 //   - "kex_exchange_identification: read: Connection reset by peer"
-//   - "[timeout]" — injecté par sshExec quand le hard timeout frappe
+//   - "[timeout]" — injected by sshExec when the hard timeout fires
 //
-// SSH exit code 255 = erreur de connexion (différent de l'exit code du
-// programme distant). On l'utilise comme signal supplémentaire.
+// SSH exit code 255 = connection error (different from the exit code of
+// the remote program). We use it as an additional signal.
 function detectSshFailure(r: SshResult): string | null {
   const blob = (r.stderr + '\n' + r.stdout);
-  // Hard timeout du sshExec lui-même
-  if (blob.includes('[timeout]')) return 'timeout SSH (commande pas finie à temps)';
-  // Erreurs SSH classiques (préfixe `ssh:` ou patterns connus)
+  // Hard timeout of sshExec itself
+  if (blob.includes('[timeout]')) return 'SSH timeout (command did not finish in time)';
+  // Classic SSH errors (prefix `ssh:` or known patterns)
   const patterns: [RegExp, (m: RegExpMatchArray) => string][] = [
     [/ssh: connect to host \S+ port \d+: (.+)/i, (m) => `SSH: ${m[1]}`],
-    [/Host key verification failed/i, () => 'SSH : host key verification failed (clé hôte changée ou inconnue ?)'],
-    [/Permission denied \(([^)]+)\)/i, (m) => `SSH : permission denied (${m[1]}) — clé ou user invalide`],
-    [/kex_exchange_identification:.*Connection reset by peer/i, () => 'SSH : connexion fermée par le pair pendant le handshake (rate-limit ? firewall ?)'],
-    [/Could not resolve hostname/i, () => 'SSH : nom d\'hôte introuvable (DNS ?)'],
+    [/Host key verification failed/i, () => 'SSH: host key verification failed (host key changed or unknown?)'],
+    [/Permission denied \(([^)]+)\)/i, (m) => `SSH: permission denied (${m[1]}) — invalid key or user`],
+    [/kex_exchange_identification:.*Connection reset by peer/i, () => 'SSH: connection closed by peer during handshake (rate-limit? firewall?)'],
+    [/Could not resolve hostname/i, () => 'SSH: hostname not found (DNS?)'],
   ];
   for (const [re, fmt] of patterns) {
     const m = blob.match(re);
     if (m) return fmt(m);
   }
-  // Fallback : exit code 255 sans output identifié = SSH a planté quelque part
+  // Fallback: exit code 255 with no identified output = SSH crashed somewhere
   if (r.code === 255 && !r.stdout.trim()) {
-    return `SSH a échoué (exit 255)${r.stderr.trim() ? `: ${r.stderr.trim().slice(-160)}` : ''}`;
+    return `SSH failed (exit 255)${r.stderr.trim() ? `: ${r.stderr.trim().slice(-160)}` : ''}`;
   }
   return null;
 }
 
-// ── Vérif Python+SDK ────────────────────────────────────────────────────────
-async function tryVerify(vps: Vps): Promise<{ ok: boolean; sdk?: string; py?: string; reason: 'no_py' | 'no_sdk' | 'ok' | 'other' | 'ssh'; raw: string; sshError?: string }> {
-  // On utilise le venv s'il existe, sinon le python système. Si on tombe sur
-  // un python système et qu'il n'a pas le SDK, on signale 'no_sdk' → bootstrap
-  // créera le venv + installera dedans. Ainsi le verify ne dépend plus du fait
-  // que pip --user soit allé au bon endroit.
+// ── Python+SDK verification ─────────────────────────────────────────────────
+async function tryVerify(vps: Vps, session?: SshSession): Promise<{ ok: boolean; sdk?: string; py?: string; reason: 'no_py' | 'no_sdk' | 'ok' | 'other' | 'ssh'; raw: string; sshError?: string }> {
+  // Use the venv if it exists, otherwise the system python. If we fall on
+  // a system python without the SDK, we signal 'no_sdk' → bootstrap will
+  // create the venv + install in it. This way the verify no longer depends
+  // on whether pip --user landed in the right spot.
   const cmd =
     `PY=$(${PY_LOOKUP_VENV_OR_SYSTEM}); ` +
     `if [ -z "$PY" ]; then echo "NO_PY"; exit 10; fi; ` +
     `echo "PY=$PY"; ` +
     `"$PY" -c 'import claude_agent_sdk; print("SDK=" + str(claude_agent_sdk.__version__))' 2>&1`;
-  const r = await sshExec(vps, cmd, { timeoutMs: 12_000 });
-  // Détection SSH AVANT toute autre analyse : si la connexion a foiré, on n'a
-  // rien d'utile dans stdout/stderr, faut abort.
+  const r = await sshExec(vps, cmd, { timeoutMs: 12_000, session });
+  // SSH detection BEFORE any other analysis: if the connection failed, we
+  // have nothing useful in stdout/stderr, must abort.
   const sshErr = detectSshFailure(r);
   if (sshErr) return { ok: false, reason: 'ssh', raw: (r.stdout + r.stderr).trim(), sshError: sshErr };
   const out = (r.stdout + r.stderr).trim();
@@ -146,7 +146,7 @@ async function tryVerify(vps: Vps): Promise<{ ok: boolean; sdk?: string; py?: st
   return { ok: false, reason: 'other', py: pyMatch?.[1], raw: out };
 }
 
-// ── Agent : déploiement ─────────────────────────────────────────────────────
+// ── Agent: deployment ───────────────────────────────────────────────────────
 const AGENT_PYZ_PATH = path.join(process.cwd(), 'agent/dist/charon-agent.pyz');
 
 function readAgentB64(): string {
@@ -154,32 +154,32 @@ function readAgentB64(): string {
   return buf.toString('base64');
 }
 
-export async function installAgentPyz(vps: Vps): Promise<{ ok: boolean; detail: string }> {
+export async function installAgentPyz(vps: Vps, session?: SshSession): Promise<{ ok: boolean; detail: string }> {
   let b64: string;
   try {
     b64 = readAgentB64();
   } catch (e: any) {
-    return { ok: false, detail: `lecture du pyz local impossible : ${e?.message ?? e}` };
+    return { ok: false, detail: `cannot read local pyz: ${e?.message ?? e}` };
   }
-  // Pipe le base64 via stdin pour éviter de gonfler la ligne de commande
-  // (échec si la commande > ARG_MAX, ce qui arrive pour un blob de plusieurs Mo).
+  // Pipe the base64 via stdin to avoid bloating the command line (fails
+  // if the command > ARG_MAX, which happens for a multi-MB blob).
   const remoteCmd =
     'mkdir -p ~/.charon && ' +
     'base64 -d > ~/.charon/charon-agent.pyz.new && ' +
     'mv ~/.charon/charon-agent.pyz.new ~/.charon/charon-agent.pyz && ' +
     'chmod +x ~/.charon/charon-agent.pyz && ' +
     'echo OK';
-  const r = await sshExec(vps, remoteCmd, { stdin: b64, timeoutMs: 60_000 });
+  const r = await sshExec(vps, remoteCmd, { stdin: b64, timeoutMs: 60_000, session });
   if (!r.ok || !r.stdout.includes('OK')) {
     return { ok: false, detail: (r.stderr.slice(-300) || r.stdout.slice(-300) || `exit ${r.code}`) };
   }
   return { ok: true, detail: '~/.charon/charon-agent.pyz' };
 }
 
-// ── Service systemd-user (avec fallback nohup) ──────────────────────────────
-// L'agent tourne via le python du venv ~/.charon/venv où on a installé le SDK.
-// Fallback : si pour une raison X le venv n'existe pas (devrait pas arriver
-// après bootstrap), on retombe sur le meilleur python système.
+// ── systemd-user service (with nohup fallback) ──────────────────────────────
+// The agent runs via the python from the venv ~/.charon/venv where we
+// installed the SDK. Fallback: if for some reason the venv doesn't exist
+// (shouldn't happen after bootstrap), we fall back to the best system python.
 const SYSTEMD_UNIT = `[Unit]
 Description=Charon Agent
 After=default.target
@@ -195,88 +195,89 @@ StandardError=append:%h/.charon/agent.log
 WantedBy=default.target
 `;
 
-async function installAgentService(vps: Vps): Promise<{ ok: boolean; mode: 'systemd' | 'nohup'; detail: string }> {
-  // Tentative systemd-user : drop l'unit, enable-linger, daemon-reload, restart.
-  // IMPORTANT : sur un VPS frais où l'utilisateur (souvent root) n'a JAMAIS eu
-  // de session interactive, le user manager systemd n'est pas démarré et le
-  // bus dbus utilisateur (/run/user/$UID/bus) n'existe pas. `systemctl --user`
-  // échoue alors avec "Failed to connect to bus: No such file or directory".
-  // enable-linger seul ne suffit pas : il prend effet au prochain login OU
-  // démarre le manager si on l'invoque APRÈS coup. On force le démarrage
-  // explicite via `systemctl start user@$UID` (en root via sudo si besoin).
+async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok: boolean; mode: 'systemd' | 'nohup'; detail: string }> {
+  // Try systemd-user: drop the unit, enable-linger, daemon-reload, restart.
+  // IMPORTANT: on a fresh VPS where the user (often root) has NEVER had
+  // an interactive session, the systemd user manager is not started and
+  // the user dbus bus (/run/user/$UID/bus) doesn't exist. `systemctl --user`
+  // then fails with "Failed to connect to bus: No such file or directory".
+  // enable-linger alone is not enough: it takes effect at the next login OR
+  // starts the manager if invoked AFTER. We force explicit startup via
+  // `systemctl start user@$UID` (as root via sudo if needed).
   const unitB64 = Buffer.from(SYSTEMD_UNIT, 'utf8').toString('base64');
   const systemdScript = [
-    // Crée le dir
+    // Create the dir
     'mkdir -p ~/.config/systemd/user',
-    // Dépose l'unit (base64 décode depuis stdin pour les heredoc à éviter)
+    // Drop the unit (base64 decode from stdin to avoid heredocs)
     `echo '${unitB64}' | base64 -d > ~/.config/systemd/user/charon-agent.service`,
-    // Active le linger (survit après logout). Tente sans sudo d'abord, puis avec sudo silencieux.
+    // Enable linger (survives after logout). Try without sudo first, then with silent sudo.
     'loginctl enable-linger "$(whoami)" 2>/dev/null || sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || true',
-    // Démarre EXPLICITEMENT le user manager si pas déjà actif. C'est ce qui
-    // crée /run/user/$UID/bus que `systemctl --user` va contacter. Sans ça,
-    // "Failed to connect to bus" sur tout VPS frais.
+    // EXPLICITLY start the user manager if not already active. This is what
+    // creates /run/user/$UID/bus that `systemctl --user` will contact.
+    // Without this, "Failed to connect to bus" on any fresh VPS.
     'systemctl start user@$(id -u).service 2>/dev/null || sudo -n systemctl start user@$(id -u).service 2>/dev/null || true',
-    // Petit délai pour laisser le bus s'ouvrir
+    // Small delay to let the bus open
     'sleep 0.5',
-    // S'assure que XDG_RUNTIME_DIR est dispo (généralement créé automatiquement)
+    // Make sure XDG_RUNTIME_DIR is available (usually created automatically)
     'export XDG_RUNTIME_DIR=/run/user/$(id -u)',
-    // Demande systemctl --user
+    // Ask systemctl --user
     'systemctl --user daemon-reload',
     'systemctl --user enable charon-agent.service',
     'systemctl --user restart charon-agent.service',
     'sleep 1',
     'systemctl --user is-active charon-agent.service',
   ].join(' && ');
-  const r = await sshExec(vps, systemdScript, { timeoutMs: 30_000 });
+  const r = await sshExec(vps, systemdScript, { timeoutMs: 30_000, session });
   if (r.ok && r.stdout.trim().endsWith('active')) {
-    return { ok: true, mode: 'systemd', detail: 'systemd-user actif' };
+    return { ok: true, mode: 'systemd', detail: 'systemd-user active' };
   }
 
-  // Fallback nohup : kill l'éventuel running, relance via crontab @reboot.
-  // Idem que le unit systemd : on prend le venv s'il existe, sinon le python
-  // système 3.10+.
+  // Nohup fallback: kill any running instance, relaunch via crontab @reboot.
+  // Same as the systemd unit: use the venv if it exists, otherwise the
+  // system python 3.10+.
   //
-  // CHANGEMENTS vs la version précédente (qui était cassée) :
-  //  1. Join avec '\n' au lieu de '; ' — sinon le `&` final du nohup suivi
-  //     du `;` du join donne `&;` qui est une syntax error en bash.
-  //  2. La ligne crontab est base64-encodée puis décodée côté VPS, plutôt
-  //     que tentée avec \'...\' embeddé — bash ne supporte PAS l'escape de
-  //     single-quote dans une single-quoted string ; il faut soit fermer/
-  //     réouvrir ('\''), soit (plus simple) éviter la question.
+  // CHANGES vs the previous (broken) version:
+  //  1. Join with '\n' instead of '; ' — otherwise the final `&` of nohup
+  //     followed by the `;` of the join produces `&;` which is a bash
+  //     syntax error.
+  //  2. The crontab line is base64-encoded then decoded on the VPS side,
+  //     rather than attempted with embedded \'...\' — bash does NOT support
+  //     escaping a single quote inside a single-quoted string; you have to
+  //     either close/reopen ('\''), or (simpler) avoid the question.
   const PY_LOOKUP = '$(if [ -x $HOME/.charon/venv/bin/python ]; then echo $HOME/.charon/venv/bin/python; else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3; fi)';
   const cronLine = `@reboot sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 &`;
   const cronLineB64 = Buffer.from(cronLine, 'utf8').toString('base64');
   const fallbackScript = [
-    // Kill l'éventuelle instance qui tourne (si on remplace le binaire)
+    // Kill any running instance (if we're replacing the binary)
     "pkill -f 'charon-agent.pyz' || true",
-    // Lance le daemon en arrière-plan, détaché. Le `&` final est suivi d'un
-    // newline (join('\n')), donc pas de `&;` foireux.
+    // Launch the daemon in the background, detached. The final `&` is
+    // followed by a newline (join('\n')), so no broken `&;`.
     `nohup setsid sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 < /dev/null &`,
     "sleep 1",
-    // S'assure qu'il y a une @reboot dans crontab. La ligne cron est envoyée
-    // en base64 pour éviter tout enfer de quoting (les single-quotes du
-    // `sh -c '...'` interne ne survivraient pas à un echo dans une autre
-    // single-quoted string).
+    // Make sure there's a @reboot in crontab. The cron line is sent as
+    // base64 to avoid any quoting hell (the single-quotes of the inner
+    // `sh -c '...'` wouldn't survive an echo inside another single-quoted
+    // string).
     `(crontab -l 2>/dev/null | grep -v 'charon-agent.pyz'; echo '${cronLineB64}' | base64 -d) | crontab -`,
     "echo OK_NOHUP",
   ].join('\n');
-  const r2 = await sshExec(vps, fallbackScript, { timeoutMs: 15_000 });
+  const r2 = await sshExec(vps, fallbackScript, { timeoutMs: 15_000, session });
   if (r2.ok && r2.stdout.includes('OK_NOHUP')) {
-    const why = (r.stderr.slice(-200) || r.stdout.slice(-200) || 'systemd-user indispo').trim();
-    return { ok: true, mode: 'nohup', detail: `fallback nohup+crontab (systemd : ${why})` };
+    const why = (r.stderr.slice(-200) || r.stdout.slice(-200) || 'systemd-user unavailable').trim();
+    return { ok: true, mode: 'nohup', detail: `nohup+crontab fallback (systemd: ${why})` };
   }
   return { ok: false, mode: 'nohup', detail: `systemd: ${r.stderr.slice(-200) || r.stdout.slice(-200)} | nohup: ${r2.stderr.slice(-200)}` };
 }
 
-export async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: string; pyzSha?: string; detail: string }> {
-  // Donne un peu de temps au daemon pour démarrer
+export async function pingAgent(vps: Vps, session?: SshSession): Promise<{ ok: boolean; version?: string; pyzSha?: string; detail: string }> {
+  // Give the daemon a bit of time to start
   await new Promise((r) => setTimeout(r, 800));
-  // Idem : venv s'il existe, sinon python système ≥ 3.10
+  // Same: venv if it exists, otherwise system python ≥ 3.10
   const PY = `$(${PY_LOOKUP_VENV_OR_SYSTEM})`;
   const r = await sshExec(
     vps,
     `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ${PY} ~/.charon/charon-agent.pyz --connect`,
-    { timeoutMs: 8_000 },
+    { timeoutMs: 8_000, session },
   );
   if (!r.ok) {
     return { ok: false, detail: r.stderr.slice(-300) || `exit ${r.code}` };
@@ -293,15 +294,15 @@ export async function pingAgent(vps: Vps): Promise<{ ok: boolean; version?: stri
       if (typeof msg?.result?.agent_pyz_sha === 'string') pyzSha = msg.result.agent_pyz_sha;
     } catch {}
   }
-  if (!pingOk) return { ok: false, detail: 'pas de réponse pong : ' + r.stdout.slice(-300) };
+  if (!pingOk) return { ok: false, detail: 'no pong response: ' + r.stdout.slice(-300) };
   return { ok: true, version, pyzSha, detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}` };
 }
 
-// ── Update agent : déploie le pyz + restart le service + verify ────────────
-// Distinct du bootstrap complet : on suppose que le venv + le SDK + l'unit
-// systemd existent déjà. On veut juste swap le .pyz et redémarrer. Si le
-// restart systemd échoue (fallback nohup avait été utilisé au bootstrap),
-// on retombe sur pkill+nohup.
+// ── Update agent: deploy the pyz + restart the service + verify ────────────
+// Distinct from the full bootstrap: we assume the venv + SDK + systemd unit
+// already exist. We just want to swap the .pyz and restart. If the systemd
+// restart fails (nohup fallback was used at bootstrap), we fall back on
+// pkill+nohup.
 export type UpdateAgentResult = {
   ok: boolean;
   oldVersion?: string;
@@ -311,87 +312,112 @@ export type UpdateAgentResult = {
 };
 
 export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
-  // Step 1 : deploy
-  const dep = await installAgentPyz(vps);
-  if (!dep.ok) return { ok: false, detail: `deploy: ${dep.detail}` };
+  // Multiplex all 3 phases (deploy + restart + ping) over a single SSH
+  // master. Saves ~3 handshakes and avoids the post-burst "Connection
+  // timed out" trap (cf. bootstrapVps below).
+  const session = openSshSession(vps);
+  try {
+    // Step 1: deploy
+    const dep = await installAgentPyz(vps, session);
+    if (!dep.ok) return { ok: false, detail: `deploy: ${dep.detail}` };
 
-  // Step 2 : restart. Tente systemd-user puis fallback nohup.
-  // IMPORTANT : on joint avec '\n' pour préserver la syntaxe shell (if/then/
-  // else/fi). Le bug précédent joignait avec un espace, produisant du bash
-  // illégal type "export FOO=bar || true if systemctl..." qui foirait silencieux.
-  const restartCmd = [
-    'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
-    'if systemctl --user restart charon-agent.service 2>/dev/null; then',
-    '  sleep 1',
-    '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then',
-    '    echo OK_SYSTEMD',
-    '    exit 0',
-    '  fi',
-    'fi',
-    '# Fallback nohup : kill l\'éventuel running et relance détaché',
-    'pkill -f charon-agent.pyz 2>/dev/null || true',
-    'sleep 0.5',
-    'if [ -x "$HOME/.charon/venv/bin/python" ]; then',
-    '  PY="$HOME/.charon/venv/bin/python"',
-    'else',
-    '  PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)',
-    'fi',
-    'if [ -z "$PY" ]; then',
-    '  echo "NO_PYTHON" >&2',
-    '  exit 11',
-    'fi',
-    'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
-    'sleep 1',
-    'echo OK_NOHUP',
-  ].join('\n');
-  const rr = await sshExec(vps, restartCmd, { timeoutMs: 20_000 });
-  if (!rr.ok || !(rr.stdout.includes('OK_SYSTEMD') || rr.stdout.includes('OK_NOHUP'))) {
-    const tail = (rr.stderr.slice(-300) || rr.stdout.slice(-300) || `exit ${rr.code}`).trim();
-    return { ok: false, detail: `restart failed: ${tail}` };
-  }
+    // Step 2: restart. Try systemd-user then nohup fallback.
+    // IMPORTANT: join with '\n' to preserve shell syntax (if/then/else/fi).
+    // The previous bug joined with a space, producing illegal bash like
+    // "export FOO=bar || true if systemctl..." that silently failed.
+    const restartCmd = [
+      'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
+      'if systemctl --user restart charon-agent.service 2>/dev/null; then',
+      '  sleep 1',
+      '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then',
+      '    echo OK_SYSTEMD',
+      '    exit 0',
+      '  fi',
+      'fi',
+      '# Nohup fallback: kill any running instance and relaunch detached',
+      'pkill -f charon-agent.pyz 2>/dev/null || true',
+      'sleep 0.5',
+      'if [ -x "$HOME/.charon/venv/bin/python" ]; then',
+      '  PY="$HOME/.charon/venv/bin/python"',
+      'else',
+      '  PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)',
+      'fi',
+      'if [ -z "$PY" ]; then',
+      '  echo "NO_PYTHON" >&2',
+      '  exit 11',
+      'fi',
+      'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
+      'sleep 1',
+      'echo OK_NOHUP',
+    ].join('\n');
+    const rr = await sshExec(vps, restartCmd, { timeoutMs: 20_000, session });
+    if (!rr.ok || !(rr.stdout.includes('OK_SYSTEMD') || rr.stdout.includes('OK_NOHUP'))) {
+      const tail = (rr.stderr.slice(-300) || rr.stdout.slice(-300) || `exit ${rr.code}`).trim();
+      return { ok: false, detail: `restart failed: ${tail}` };
+    }
 
-  // Step 3 : ping pour récupérer la nouvelle version + sha (hello).
-  // Retry une fois après 2s si le premier ping échoue — le daemon peut mettre
-  // un peu de temps à ouvrir son socket selon la machine.
-  let ping = await pingAgent(vps);
-  if (!ping.ok) {
-    await new Promise((r) => setTimeout(r, 2000));
-    ping = await pingAgent(vps);
+    // Step 3: ping to get the new version + sha (hello).
+    // Retry once after 2s if the first ping fails — the daemon can take a
+    // little time to open its socket depending on the machine.
+    let ping = await pingAgent(vps, session);
+    if (!ping.ok) {
+      await new Promise((r) => setTimeout(r, 2000));
+      ping = await pingAgent(vps, session);
+    }
+    if (!ping.ok) {
+      return { ok: false, detail: `ping after restart: ${ping.detail}` };
+    }
+    return { ok: true, newVersion: ping.version, newPyzSha: ping.pyzSha, detail: ping.detail };
+  } finally {
+    await closeSshSession(session);
   }
-  if (!ping.ok) {
-    return { ok: false, detail: `ping after restart: ${ping.detail}` };
-  }
-  return { ok: true, newVersion: ping.version, newPyzSha: ping.pyzSha, detail: ping.detail };
 }
 
 // ── Main flow ───────────────────────────────────────────────────────────────
 export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
-  // Phase 1 : verify direct (chemin rapide)
-  yield { phase: 'verify', status: 'running', detail: 'test : python + import claude_agent_sdk' };
-  let v = await tryVerify(vps);
+  // Multiplex ALL phases over a single SSH master (cf. sshExec.ts §
+  // SshSession). Why: every `sshExec` spawns a fresh `ssh` process, so
+  // without multiplexing each phase pays a full TCP+SSH handshake. After
+  // a long phase like `install_sdk` (apt-get + pip, 60-180s), the next
+  // handshake can hit transient `Connection timed out` (sshd MaxStartups,
+  // conntrack saturation, fail2ban, swap, etc.). With ControlMaster=auto,
+  // the first call opens the master; the rest piggyback on the same TCP.
+  // Closed in `finally` so the socket file doesn't leak.
+  const session = openSshSession(vps);
+  try {
+    yield* bootstrapVpsInner(vps, session);
+  } finally {
+    await closeSshSession(session);
+  }
+}
+
+async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<BootstrapEvent> {
+  // Phase 1: direct verify (fast path)
+  yield { phase: 'verify', status: 'running', detail: 'test: python + import claude_agent_sdk' };
+  let v = await tryVerify(vps, session);
   if (v.ok) {
     yield { phase: 'verify', status: 'ok', detail: `${v.py} · sdk ${v.sdk}` };
   } else {
-    // SSH cassé = fatal. Pas la peine de tenter les phases suivantes, elles
-    // vont toutes échouer pareil en mangeant le timeout. On yield un done
-    // error explicite avec le message diagnostique.
+    // Broken SSH = fatal. No point trying the next phases, they'll all
+    // fail the same way and eat the timeout. Yield an explicit done
+    // error with the diagnostic message.
     if (v.reason === 'ssh') {
-      yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH inaccessible' };
-      yield { phase: 'done', status: 'error', detail: `connexion SSH à ${vps.sshUser}@${vps.ip}:${vps.sshPort} impossible — vérifie le VPS, la clé, le firewall` };
+      yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH unreachable' };
+      yield { phase: 'done', status: 'error', detail: `cannot SSH to ${vps.sshUser}@${vps.ip}:${vps.sshPort} — check the VPS, the key, the firewall` };
       return;
     }
-    yield { phase: 'verify', status: 'warn', detail: v.reason === 'no_py' ? 'python3.10+ absent' : v.reason === 'no_sdk' ? 'sdk absent' : v.raw.slice(-160) };
+    yield { phase: 'verify', status: 'warn', detail: v.reason === 'no_py' ? 'python3.10+ missing' : v.reason === 'no_sdk' ? 'sdk missing' : v.raw.slice(-160) };
 
-    // Install Python si manquant
+    // Install Python if missing
     if (v.reason === 'no_py') {
       yield { phase: 'detect_os', status: 'running' };
-      const osR = await sshExec(vps, 'cat /etc/os-release 2>/dev/null', { timeoutMs: 6_000 });
-      // Détection SSH au cas où la connexion s'est cassée entre verify et là
-      // (transient, firewall qui drop, etc.) — pareil, on abort proprement.
+      const osR = await sshExec(vps, 'cat /etc/os-release 2>/dev/null', { timeoutMs: 6_000, session });
+      // SSH detection in case the connection broke between verify and here
+      // (transient, firewall dropping, etc.) — same, abort cleanly.
       const osSsh = detectSshFailure(osR);
       if (osSsh) {
         yield { phase: 'detect_os', status: 'error', detail: osSsh };
-        yield { phase: 'done', status: 'error', detail: `SSH a lâché pendant detect_os : ${osSsh}` };
+        yield { phase: 'done', status: 'error', detail: `SSH dropped during detect_os: ${osSsh}` };
         return;
       }
       const os = parseOsRelease(osR.stdout);
@@ -399,211 +425,247 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
 
       const cmd = pythonInstallCmd(os);
       if (!cmd) {
-        yield { phase: 'install_python', status: 'error', detail: `OS "${os.id}" non supporté pour install auto — installe python3.10+ manuellement` };
-        yield { phase: 'done', status: 'error', detail: 'OS non supporté' };
+        yield { phase: 'install_python', status: 'error', detail: `OS "${os.id}" not supported for auto install — install python3.10+ manually` };
+        yield { phase: 'done', status: 'error', detail: 'unsupported OS' };
         return;
       }
-      yield { phase: 'install_python', status: 'running', detail: `${os.pkgMgr} install python3.10+ — ça peut prendre 1 à 3 min` };
-      const piR = await sshExec(vps, cmd, { timeoutMs: 300_000 });
+      yield { phase: 'install_python', status: 'running', detail: `${os.pkgMgr} install python3.10+ — may take 1 to 3 min` };
+      const piR = await sshExec(vps, cmd, { timeoutMs: 300_000, session });
       const piSsh = detectSshFailure(piR);
       if (piSsh) {
         yield { phase: 'install_python', status: 'error', detail: piSsh };
-        yield { phase: 'done', status: 'error', detail: `SSH a lâché pendant install_python : ${piSsh}` };
+        yield { phase: 'done', status: 'error', detail: `SSH dropped during install_python: ${piSsh}` };
         return;
       }
       if (!piR.ok) {
         yield { phase: 'install_python', status: 'error', detail: piR.stderr.slice(-300) || piR.stdout.slice(-300) || `exit ${piR.code}` };
-        yield { phase: 'done', status: 'error', detail: 'install python a échoué' };
+        yield { phase: 'done', status: 'error', detail: 'python install failed' };
         return;
       }
       yield { phase: 'install_python', status: 'ok' };
 
-      v = await tryVerify(vps);
+      v = await tryVerify(vps, session);
       if (v.reason === 'ssh') {
-        yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH inaccessible' };
-        yield { phase: 'done', status: 'error', detail: `SSH inaccessible après install_python : ${v.sshError ?? ''}` };
+        yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH unreachable' };
+        yield { phase: 'done', status: 'error', detail: `SSH unreachable after install_python: ${v.sshError ?? ''}` };
         return;
       }
       if (!v.ok && v.reason === 'no_py') {
-        yield { phase: 'install_python', status: 'error', detail: 'python introuvable même après install — chemin manquant dans PATH ?' };
-        yield { phase: 'done', status: 'error', detail: 'python toujours introuvable' };
+        yield { phase: 'install_python', status: 'error', detail: 'python not found even after install — path missing in PATH?' };
+        yield { phase: 'done', status: 'error', detail: 'python still not found' };
         return;
       }
     }
 
-    // Install SDK si manquant — dans un venv dédié à ~/.charon/venv.
-    // Le venv contourne PEP 668 (Debian 12 / Ubuntu 23+ refusent `pip --user`)
-    // et garantit un python identique entre install / verify / ping / systemd.
+    // Install SDK if missing — in a dedicated venv at ~/.charon/venv.
+    // The venv works around PEP 668 (Debian 12 / Ubuntu 23+ refuse `pip --user`)
+    // and guarantees a consistent python across install / verify / ping / systemd.
     if (!v.ok) {
       yield { phase: 'install_sdk', status: 'running', detail: `venv ${VENV_DIR} + pip install claude-agent-sdk` };
-      // pipefail : remonte l'exit code de pip même si on pipe vers tail (sans
-      // ça, le pipeline retourne 0 même quand pip explose → bootstrap croyait
-      // que ça avait marché et bouclait).
+      // pipefail: bubble up pip's exit code even when we pipe to tail
+      // (without it, the pipeline returns 0 even when pip explodes →
+      // bootstrap thought it worked and looped).
       //
-      // Multi-line via '\n' (pas '; ') pour éviter le piège `&;` (cf. §14
-      // piège 19) ET pour pouvoir utiliser `if/then/elif/else/fi` lisible.
+      // Multi-line via '\n' (not '; ') to avoid the `&;` gotcha (cf. §14
+      // gotcha 19) AND to be able to use readable `if/then/elif/else/fi`.
       //
-      // ── Auto-recovery venv (Debian/Ubuntu) ────────────────────────────
-      // `python -m venv` peut échouer avec "ensurepip is not available" /
-      // "No module named ensurepip" : ça arrive quand python est installé
-      // mais que le paquet OS qui fournit le module venv (typiquement
-      // python3.12-venv sur Ubuntu 24.04, python3.11-venv sur Debian 12,
-      // etc.) manque. La phase `install_python` plus haut couvre déjà ça
-      // via `apt-get install python3-venv`, MAIS elle ne tourne que quand
-      // `verify` retourne `no_py`. Si python est déjà là mais que le venv
-      // module manque, on arrive ici avec `no_sdk` et le venv pète.
+      // ── venv auto-recovery (Debian/Ubuntu) ────────────────────────────
+      // `python -m venv` can fail with "ensurepip is not available" /
+      // "No module named ensurepip": that happens when python is installed
+      // but the OS package providing the venv module (typically
+      // python3.12-venv on Ubuntu 24.04, python3.11-venv on Debian 12,
+      // etc.) is missing. The `install_python` phase above already covers
+      // this via `apt-get install python3-venv`, BUT it only runs when
+      // `verify` returns `no_py`. If python is already there but the venv
+      // module is missing, we arrive here with `no_sdk` and the venv breaks.
       //
-      // Donc : on tente le venv, on regarde le message d'erreur, et si
-      // c'est l'ensurepip qui manque on installe `python$VER-venv` (puis
-      // `python3-venv` en fallback) en best-effort, puis on retry.
-      // L'ancien fallback `--without-pip` + `ensurepip --upgrade` ne marche
-      // PAS dans ce cas : `ensurepip --upgrade` dépend exactement du
-      // module qui manque.
+      // So: try the venv, look at the error message, and if it's the
+      // ensurepip missing one, install `python$VER-venv` (then
+      // `python3-venv` as fallback) best-effort, then retry. The old
+      // fallback `--without-pip` + `ensurepip --upgrade` does NOT work
+      // in this case: `ensurepip --upgrade` depends exactly on the module
+      // that's missing.
       const sdkCmd = [
         `set -o pipefail`,
         `BASE=$(${PY_CHAIN} || command -v python3)`,
         `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi`,
         `echo "[install_sdk] base python = $BASE"`,
-        // Major.minor du python utilisé (ex: "3.12"). Sert à demander le
-        // bon paquet versionné à apt/dnf.
+        // Major.minor of the python in use (e.g. "3.12"). Used to request
+        // the right versioned package from apt/dnf.
         `PY_VER=$("$BASE" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' 2>/dev/null || echo "")`,
         `echo "[install_sdk] python version = $PY_VER"`,
-        `if [ ! -x ${VENV_PY} ]; then`,
+        // ── venv health check ──────────────────────────────────────────
+        // The naive check `[ ! -x ${VENV_PY} ]` is NOT enough: on
+        // Debian/Ubuntu when the `python$VER-venv` OS package is missing,
+        // `python -m venv` partially creates the directory (the bin/python
+        // symlink IS dropped) but `ensurepip` fails, leaving pip
+        // uninstalled. So bin/python exists & is executable, but
+        // `python -m pip` crashes with "No module named pip". Subsequent
+        // runs would skip the auto-install entirely (binary exists → block
+        // skipped) and fail straight away on `pip install`.
+        //
+        // Real test: does `python -m pip --version` work in the venv? If
+        // not, the venv is broken — we wipe it, install the OS package,
+        // and recreate from scratch.
+        `VENV_OK=0`,
+        `if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+        `  VENV_OK=1`,
+        `  echo "[install_sdk] venv healthy (pip available)"`,
+        `fi`,
+        `if [ "$VENV_OK" != "1" ]; then`,
+        `  if [ -d ${VENV_DIR} ]; then`,
+        `    echo "[install_sdk] venv broken or missing pip — wipe and recreate"`,
+        `    rm -rf ${VENV_DIR}`,
+        `  fi`,
         `  echo "[install_sdk] creating venv ${VENV_DIR}"`,
-        // Capture le log du venv pour pouvoir grep dessus si ça foire.
-        // `|| true` pour ne pas tuer le script via pipefail/set-e.
+        // Capture the venv log so we can grep on it if it fails.
+        // `|| true` to not kill the script via pipefail/set-e.
         `  VENV_LOG=$("$BASE" -m venv ${VENV_DIR} 2>&1 || true)`,
         `  echo "$VENV_LOG" | tail -20`,
-        // Si le venv n'existe pas ET que le log mentionne ensurepip :
-        // c'est le paquet OS qui manque. Tente apt puis dnf en best-effort.
-        `  if [ ! -x ${VENV_PY} ] && echo "$VENV_LOG" | grep -qE 'ensurepip is not available|No module named ensurepip'; then`,
-        `    echo "[install_sdk] module venv manquant — auto-install du paquet OS (python$PY_VER-venv ou python3-venv)"`,
+        // Re-check health: pip must work, not just bin/python exist.
+        `  VENV_HEALTHY=0`,
+        `  if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then VENV_HEALTHY=1; fi`,
+        // Auto-install the OS venv package if it's still broken AND the
+        // symptom matches ("ensurepip is not available" OR pip missing
+        // after bin/python exists — both point to the same root cause).
+        `  if [ "$VENV_HEALTHY" != "1" ] && \\`,
+        `     ( echo "$VENV_LOG" | grep -qE 'ensurepip is not available|No module named ensurepip' \\`,
+        `       || ( [ -x ${VENV_PY} ] && ! ${VENV_PY} -m pip --version >/dev/null 2>&1 ) ); then`,
+        `    echo "[install_sdk] venv module missing — auto-install OS package (python$PY_VER-venv or python3-venv)"`,
         `    if command -v apt-get >/dev/null 2>&1; then`,
         `      export DEBIAN_FRONTEND=noninteractive`,
         `      (apt-get update -y >/dev/null 2>&1 || sudo -n apt-get update -y >/dev/null 2>&1 || true)`,
-        // Tente d'abord python$VER-venv (versionné, plus précis sur
-        // Ubuntu 24.04 qui ship python3.12 séparé du méta python3), puis
-        // python3-venv (meta). Sans/avec sudo -n. tail -15 par tentative.
+        // Try python$VER-venv first (versioned, more accurate on
+        // Ubuntu 24.04 which ships python3.12 separate from the python3
+        // meta), then python3-venv (meta). Without/with sudo -n. tail -15
+        // per attempt.
         `      (apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
         `        || sudo -n apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
         `        || apt-get install -y python3-venv 2>&1 \\`,
         `        || sudo -n apt-get install -y python3-venv 2>&1) | tail -15`,
         `    elif command -v dnf >/dev/null 2>&1; then`,
-        // Sur Fedora/RHEL le module venv est dans le paquet python3 lui-même.
-        // Mais on couvre le cas où une version side-by-side (python3.11)
-        // a été installée sans son sous-paquet. Best-effort.
+        // On Fedora/RHEL the venv module is in the python3 package itself.
+        // But we cover the case where a side-by-side version (python3.11)
+        // was installed without its sub-package. Best-effort.
         `      (dnf install -y "python$PY_VER" 2>&1 || sudo -n dnf install -y "python$PY_VER" 2>&1) | tail -15`,
         `    else`,
-        `      echo "[install_sdk] pas de package manager apt/dnf détecté — install manuelle requise"`,
+        `      echo "[install_sdk] no apt/dnf package manager detected — manual install required"`,
         `    fi`,
-        `    echo "[install_sdk] retry venv creation"`,
+        // After installing the OS package, wipe any broken half-venv and
+        // recreate from scratch. A partial venv left over from the
+        // ensurepip failure won't self-heal — we need a fresh one.
+        `    echo "[install_sdk] wipe partial venv and retry creation"`,
+        `    rm -rf ${VENV_DIR}`,
         `    "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || true`,
         `  fi`,
-        `  if [ ! -x ${VENV_PY} ]; then`,
-        `    echo "[install_sdk] venv creation failed — install python$PY_VER-venv (apt) ou python3-venv manuellement"`,
+        // Final health gate: bin/python AND pip must both work.
+        `  if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+        `    echo "[install_sdk] venv creation failed — install python$PY_VER-venv (apt) or python3-venv manually"`,
         `    exit 11`,
         `  fi`,
         `fi`,
-        // Upgrade pip dans le venv pour éviter les warnings/edge-cases.
+        // Upgrade pip inside the venv to avoid warnings/edge-cases.
         `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10`,
-        // Install du SDK. Sans `| tail` cette fois — on veut l'exit code ET
-        // pipefail s'occupe du reste de toute façon.
+        // Install the SDK. No `| tail` this time — we want the exit code
+        // AND pipefail takes care of the rest anyway.
         `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40`,
-        // Post-check d'import : la SEULE vraie preuve que c'est bon.
+        // Post-import check: the ONLY real proof that it works.
         `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
       ].join('\n');
-      // 300s : on peut maintenant déclencher un apt-get update + apt-get install
-      // python$VER-venv en plus du pip install si le module venv manquait.
-      const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 300_000 });
+      // 300s: we can now trigger an apt-get update + apt-get install
+      // python$VER-venv on top of the pip install if the venv module was
+      // missing.
+      const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 300_000, session });
       const sdkSsh = detectSshFailure(sdkR);
       if (sdkSsh) {
         yield { phase: 'install_sdk', status: 'error', detail: sdkSsh };
-        yield { phase: 'done', status: 'error', detail: `SSH a lâché pendant install_sdk : ${sdkSsh}` };
+        yield { phase: 'done', status: 'error', detail: `SSH dropped during install_sdk: ${sdkSsh}` };
         return;
       }
       const out = (sdkR.stdout + sdkR.stderr);
       const importedOk = /\[install_sdk\] OK version=/.test(out);
       if (!sdkR.ok || !importedOk) {
         yield { phase: 'install_sdk', status: 'error', detail: out.slice(-600) || `exit ${sdkR.code}` };
-        yield { phase: 'done', status: 'error', detail: 'install claude-agent-sdk a échoué' };
+        yield { phase: 'done', status: 'error', detail: 'claude-agent-sdk install failed' };
         return;
       }
-      // Récupère la version qu'on vient d'installer pour l'afficher dans le UI
+      // Get the version we just installed to show in the UI
       const vMatch = out.match(/\[install_sdk\] OK version=(\S+)/);
-      yield { phase: 'install_sdk', status: 'ok', detail: vMatch ? `claude-agent-sdk ${vMatch[1]} dans ${VENV_DIR}` : `installé dans ${VENV_DIR}` };
+      yield { phase: 'install_sdk', status: 'ok', detail: vMatch ? `claude-agent-sdk ${vMatch[1]} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
 
-      v = await tryVerify(vps);
+      v = await tryVerify(vps, session);
       if (v.reason === 'ssh') {
-        yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH inaccessible' };
-        yield { phase: 'done', status: 'error', detail: `SSH inaccessible après install_sdk : ${v.sshError ?? ''}` };
+        yield { phase: 'verify', status: 'error', detail: v.sshError ?? 'SSH unreachable' };
+        yield { phase: 'done', status: 'error', detail: `SSH unreachable after install_sdk: ${v.sshError ?? ''}` };
         return;
       }
       if (!v.ok) {
         yield { phase: 'verify', status: 'error', detail: v.raw.slice(-200) };
-        yield { phase: 'done', status: 'error', detail: 'verify post-install échoue' };
+        yield { phase: 'done', status: 'error', detail: 'post-install verify fails' };
         return;
       }
       yield { phase: 'verify', status: 'ok', detail: `${v.py} · sdk ${v.sdk}` };
     }
   }
 
-  // Phase 1.5 : install Claude CLI (`claude`) si absent.
-  // C'est la CLI shell distincte du SDK Python : nécessaire pour `claude login`
-  // (OAuth). L'agent peut tourner sans (il utilise le SDK Python), mais l'user
-  // ne pourra pas faire `claude login` plus tard si la CLI manque. Donc on
-  // l'installe systématiquement quand bootstrap, échec = warn pas fatal.
-  yield { phase: 'install_claude_cli', status: 'running', detail: 'vérifie présence de la CLI claude' };
+  // Phase 1.5: install Claude CLI (`claude`) if missing.
+  // This is the shell CLI distinct from the Python SDK: required for
+  // `claude login` (OAuth). The agent can run without it (it uses the
+  // Python SDK), but the user won't be able to run `claude login` later
+  // if the CLI is missing. So we install it systematically at bootstrap,
+  // failure = warn not fatal.
+  yield { phase: 'install_claude_cli', status: 'running', detail: 'checking for the claude CLI' };
   const ccCheck = await sshExec(
     vps,
-    // PATH étoffé : le shell SSH non-interactif n'a pas .bashrc, donc on
-    // étend manuellement avec les paths standards où install.sh peut déposer
-    // le binaire (~/.local/bin, ~/.claude/bin, /usr/local/bin).
+    // Extended PATH: the non-interactive SSH shell has no .bashrc, so we
+    // manually extend with the standard paths where install.sh might drop
+    // the binary (~/.local/bin, ~/.claude/bin, /usr/local/bin).
     'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; ' +
     'if command -v claude >/dev/null 2>&1; then ' +
     '  echo "FOUND=$(command -v claude)"; ' +
     '  claude --version 2>&1 | head -1; ' +
     'else echo NOT_FOUND; fi',
-    { timeoutMs: 8_000 },
+    { timeoutMs: 8_000, session },
   );
   const ccSsh = detectSshFailure(ccCheck);
   if (ccSsh) {
     yield { phase: 'install_claude_cli', status: 'error', detail: ccSsh };
-    yield { phase: 'done', status: 'error', detail: `SSH a lâché pendant install_claude_cli : ${ccSsh}` };
+    yield { phase: 'done', status: 'error', detail: `SSH dropped during install_claude_cli: ${ccSsh}` };
     return;
   }
   const ccOut = (ccCheck.stdout + ccCheck.stderr).trim();
   if (!ccOut.includes('NOT_FOUND')) {
-    // Déjà installé : on extrait le path + version pour le détail
+    // Already installed: extract the path + version for the detail
     const found = ccOut.match(/FOUND=(\S+)/);
     const version = ccOut.split('\n').find((l) => /\d+\.\d+/.test(l));
     yield {
       phase: 'install_claude_cli',
       status: 'ok',
-      detail: `${version ?? 'claude'} (${found?.[1] ?? 'déjà installé'})`,
+      detail: `${version ?? 'claude'} (${found?.[1] ?? 'already installed'})`,
     };
   } else {
     yield {
       phase: 'install_claude_cli',
       status: 'running',
-      detail: 'curl install.sh | bash — peut prendre 30s',
+      detail: 'curl install.sh | bash — may take 30s',
     };
-    // L'installer officiel d'Anthropic. -fsSL = silent + fail-on-http-error +
-    // follow-redirects. On capture les 40 dernières lignes pour debug si ça
-    // foire. timeout 180s pour les VPS avec une connexion lente.
+    // Anthropic's official installer. -fsSL = silent + fail-on-http-error +
+    // follow-redirects. We capture the last 40 lines for debug if it fails.
+    // 180s timeout for VPS with a slow connection.
     const installCcR = await sshExec(
       vps,
       'curl -fsSL https://claude.ai/install.sh | bash 2>&1 | tail -40',
-      { timeoutMs: 180_000 },
+      { timeoutMs: 180_000, session },
     );
     const installCcSsh = detectSshFailure(installCcR);
     if (installCcSsh) {
       yield { phase: 'install_claude_cli', status: 'error', detail: installCcSsh };
-      yield { phase: 'done', status: 'error', detail: `SSH a lâché pendant install_claude_cli : ${installCcSsh}` };
+      yield { phase: 'done', status: 'error', detail: `SSH dropped during install_claude_cli: ${installCcSsh}` };
       return;
     }
-    // Re-check avec le même PATH étendu : si le binaire est dans
-    // ~/.local/bin (typique de install.sh), le shell SSH non-interactif sans
-    // l'extension de PATH ne le verrait pas et on warn pour rien.
+    // Re-check with the same extended PATH: if the binary is in
+    // ~/.local/bin (typical for install.sh), the non-interactive SSH shell
+    // without the PATH extension wouldn't see it and we'd warn for nothing.
     const recheck = await sshExec(
       vps,
       'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; ' +
@@ -611,18 +673,18 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
       '  echo "FOUND=$(command -v claude)"; ' +
       '  claude --version 2>&1 | head -1; ' +
       'else echo NOT_FOUND; fi',
-      { timeoutMs: 8_000 },
+      { timeoutMs: 8_000, session },
     );
     const recheckOut = (recheck.stdout + recheck.stderr).trim();
     if (recheckOut.includes('NOT_FOUND')) {
-      // Pas fatal : l'agent peut tourner sans la CLI claude. On warn et on
-      // continue le reste du bootstrap. L'user pourra installer à la main
-      // si `claude login` est nécessaire plus tard.
+      // Not fatal: the agent can run without the claude CLI. We warn and
+      // continue the rest of the bootstrap. The user can install manually
+      // if `claude login` is needed later.
       const tail = (installCcR.stderr.slice(-300) || installCcR.stdout.slice(-300) || `exit ${installCcR.code}`).trim();
       yield {
         phase: 'install_claude_cli',
         status: 'warn',
-        detail: `installation a échoué, mais on continue (l'agent fonctionne sans). Détail: ${tail.slice(0, 200)}`,
+        detail: `install failed, continuing anyway (the agent works without it). Detail: ${tail.slice(0, 200)}`,
       };
     } else {
       const found = recheckOut.match(/FOUND=(\S+)/);
@@ -630,47 +692,47 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
       yield {
         phase: 'install_claude_cli',
         status: 'ok',
-        detail: `${version ?? 'claude'} (${found?.[1] ?? 'installé'})`,
+        detail: `${version ?? 'claude'} (${found?.[1] ?? 'installed'})`,
       };
     }
   }
 
-  // Phase 2 : install agent (drop .pyz)
-  yield { phase: 'install_agent', status: 'running', detail: 'dépose ~/.charon/charon-agent.pyz' };
-  const installR = await installAgentPyz(vps);
+  // Phase 2: install agent (drop .pyz)
+  yield { phase: 'install_agent', status: 'running', detail: 'dropping ~/.charon/charon-agent.pyz' };
+  const installR = await installAgentPyz(vps, session);
   if (!installR.ok) {
     yield { phase: 'install_agent', status: 'error', detail: installR.detail };
-    yield { phase: 'done', status: 'error', detail: 'dépôt du .pyz a échoué' };
+    yield { phase: 'done', status: 'error', detail: '.pyz drop failed' };
     return;
   }
   yield { phase: 'install_agent', status: 'ok', detail: installR.detail };
 
-  // Phase 3 : install service (systemd-user puis fallback nohup)
-  yield { phase: 'install_service', status: 'running', detail: 'unit systemd-user + start' };
-  const svcR = await installAgentService(vps);
+  // Phase 3: install service (systemd-user then nohup fallback)
+  yield { phase: 'install_service', status: 'running', detail: 'systemd-user unit + start' };
+  const svcR = await installAgentService(vps, session);
   if (!svcR.ok) {
     yield { phase: 'install_service', status: 'error', detail: svcR.detail };
-    yield { phase: 'done', status: 'error', detail: 'install service systemd/nohup a échoué' };
+    yield { phase: 'done', status: 'error', detail: 'systemd/nohup service install failed' };
     return;
   }
   yield { phase: 'install_service', status: svcR.mode === 'systemd' ? 'ok' : 'warn', detail: svcR.detail };
 
-  // Phase 4 : ping_agent
+  // Phase 4: ping_agent
   yield { phase: 'ping_agent', status: 'running' };
-  const pingR = await pingAgent(vps);
+  const pingR = await pingAgent(vps, session);
   if (!pingR.ok) {
     yield { phase: 'ping_agent', status: 'error', detail: pingR.detail };
-    yield { phase: 'done', status: 'error', detail: 'le daemon ne répond pas au ping' };
+    yield { phase: 'done', status: 'error', detail: 'the daemon is not responding to ping' };
     return;
   }
   yield { phase: 'ping_agent', status: 'ok', detail: pingR.detail };
 
-  // Persiste tout de suite la version + sha en DB. Sinon l'UI continue
-  // d'afficher "agent outdated" jusqu'à ce que `AgentClient` se connecte
-  // (lazy, au 1er accès — typiquement à la 1re création de session Claude),
-  // et l'user clique "update agent" pour rien. Cf. AgentClient.ts § hello
-  // qui fait la même update : on duplique volontairement ici pour avoir un
-  // état DB cohérent dès la fin du bootstrap.
+  // Persist the version + sha to DB immediately. Otherwise the UI keeps
+  // showing "agent outdated" until `AgentClient` connects (lazy, on 1st
+  // access — typically at the 1st Claude session creation), and the user
+  // clicks "update agent" for nothing. Cf. AgentClient.ts § hello which
+  // does the same update: we deliberately duplicate here to have a
+  // consistent DB state from the end of the bootstrap.
   try {
     db.update(vpsTable).set({
       agentStatus: 'ok',
@@ -680,19 +742,19 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
     }).where(eq(vpsTable.id, vps.id)).run();
   } catch {}
 
-  // Phase 5 : check claude login (warn-only).
-  // PATH étendu pour trouver `claude` même si install.sh l'a mis dans
-  // ~/.local/bin ou ~/.claude/bin (cf. install_claude_cli ci-dessus).
+  // Phase 5: check claude login (warn-only).
+  // Extended PATH to find `claude` even if install.sh put it in
+  // ~/.local/bin or ~/.claude/bin (cf. install_claude_cli above).
   yield { phase: 'check_login', status: 'running' };
   const lr = await sshExec(
     vps,
     'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; ' +
     'claude config get oauth.refresh_token 2>/dev/null > /dev/null && echo OK || echo MISSING',
-    { timeoutMs: 8_000 },
+    { timeoutMs: 8_000, session },
   );
   const isLoggedIn = lr.stdout.includes('OK');
-  // Persiste l'état en DB pour que la sidebar puisse masquer le bouton
-  // "claude login" quand inutile (cf. Sidebar.tsx § agentReady).
+  // Persist the state to DB so the sidebar can hide the "claude login"
+  // button when not needed (cf. Sidebar.tsx § agentReady).
   try {
     db.update(vpsTable).set({
       claudeLoggedIn: isLoggedIn ? 1 : 0,
@@ -702,7 +764,7 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
   if (isLoggedIn) {
     yield { phase: 'check_login', status: 'ok' };
   } else {
-    yield { phase: 'check_login', status: 'warn', detail: 'pas de claude login — fais-le via le bouton "Setup login"' };
+    yield { phase: 'check_login', status: 'warn', detail: 'no claude login — do it via the "Setup login" button' };
   }
 
   yield { phase: 'done', status: 'ok' };

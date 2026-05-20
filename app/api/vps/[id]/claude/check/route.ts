@@ -5,8 +5,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { sshExec } from '@/lib/server/claude/sshExec';
 
 // GET /api/vps/[id]/claude/check
-// Vérifie que le VPS a tout ce qu'il faut pour faire tourner une session
-// Claude : python3 ≥ 3.10 (ou note le warning), claude CLI, claude-agent-sdk, login fait.
+// Checks that the VPS has everything needed to run a Claude session:
+// python3 >= 3.10 (or note the warning), claude CLI, claude-agent-sdk, login done.
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -14,38 +14,38 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // Bash one-liner: emit lines "KEY=value" et on parse.
+  // Bash one-liner: emit lines "KEY=value" then we parse.
   //
-  // Priorité au python du venv (~/.charon/venv) où bootstrap installe le SDK.
-  // Si le venv n'existe pas encore, on tombe sur le meilleur python système —
-  // le check signalera "sdk missing" et l'UI proposera de lancer bootstrap.
+  // Priority to the venv python (~/.charon/venv) where bootstrap installs the SDK.
+  // If the venv doesn't exist yet, we fall back to the best system python —
+  // the check will report "sdk missing" and the UI will offer to run bootstrap.
   //
-  // Pour le CLI `claude` et l'auth : SSH non-interactif a un PATH minimal
-  // (`/usr/local/bin:/usr/bin:/bin`). Si claude est installé via nvm,
-  // npm-global ou bun, il n'est PAS dans ce PATH → "MISSING" (faux négatif).
-  // On charge donc explicitement les chemins habituels + on tente un `bash -lc`
-  // qui source `~/.profile` et `~/.bashrc` (et donc init nvm/volta/bun).
+  // For the `claude` CLI and auth: non-interactive SSH has a minimal PATH
+  // (`/usr/local/bin:/usr/bin:/bin`). If claude is installed via nvm,
+  // npm-global or bun, it is NOT in this PATH -> "MISSING" (false negative).
+  // So we explicitly load the usual paths + we try a `bash -lc`
+  // that sources `~/.profile` and `~/.bashrc` (and thus inits nvm/volta/bun).
   const claudeLookup = [
-    // Sources potentielles de PATH côté user
+    // Potential PATH sources on the user side
     '. ~/.profile 2>/dev/null',
     '. ~/.bashrc 2>/dev/null',
-    // Ajoute les emplacements connus en fallback
+    // Add known locations as fallback
     'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.volta/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
-    // Last resort : on tente un glob sur ~/.nvm/versions/node/*/bin/claude
+    // Last resort: try a glob on ~/.nvm/versions/node/*/bin/claude
     'for cand in $HOME/.nvm/versions/node/*/bin/claude; do [ -x "$cand" ] && export PATH="$(dirname "$cand"):$PATH"; done',
     'command -v claude 2>/dev/null || echo MISSING',
   ].join('; ');
   const authLookup = [
-    // Même PATH-loading que ci-dessus
+    // Same PATH-loading as above
     '. ~/.profile 2>/dev/null',
     '. ~/.bashrc 2>/dev/null',
     'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.volta/bin:/usr/local/bin:/usr/bin:/bin:$PATH"',
     'for cand in $HOME/.nvm/versions/node/*/bin/claude; do [ -x "$cand" ] && export PATH="$(dirname "$cand"):$PATH"; done',
-    // Si claude CLI dispo → on tente claude config get
+    // If claude CLI is available -> try claude config get
     'if command -v claude >/dev/null 2>&1; then',
     '  claude config get oauth.refresh_token >/dev/null 2>&1 && echo OK && exit 0',
     'fi',
-    // Fallback : fichier de credentials directement (selon où le CLI stocke)
+    // Fallback: credentials file directly (depending on where the CLI stores)
     '{ [ -s "$HOME/.claude/.credentials.json" ] || [ -s "$HOME/.claude.json" ] || [ -s "$HOME/.config/claude/credentials.json" ]; } && echo OK || echo MISSING',
   ].join('; ');
 
@@ -71,14 +71,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const sdkOk = !!out.sdk && !/Traceback|ModuleNotFoundError|No module/.test(out.sdk);
   const cliOk = !!out.claude_cli && out.claude_cli !== 'MISSING';
   const authOk = out.auth === 'OK';
-  // `ok` = bloquant pour le UI : on n'exige QUE le SDK + python ≥ 3.10.
-  // Le CLI `claude` peut être installé via nvm/bun/volta et donc invisible
-  // au PATH minimal de SSH non-interactif (faux négatif) — mais la session
-  // tourne quand même via le PATH élargi du systemd-user. Idem pour l'auth :
-  // si le CLI n'est pas vu, on ne peut pas exécuter `claude config get`,
-  // mais la session marche si les credentials existent dans ~/.claude/.
-  // Ces deux infos restent exposées (cliInstalled, authOk) pour affichage
-  // informatif dans le UI.
+  // `ok` = blocking for the UI: we ONLY require the SDK + python >= 3.10.
+  // The `claude` CLI may be installed via nvm/bun/volta and thus invisible
+  // to the minimal PATH of non-interactive SSH (false negative) — but the
+  // session still runs via the broader PATH of systemd-user. Same for auth:
+  // if the CLI is not visible, we cannot run `claude config get`,
+  // but the session works if credentials exist in ~/.claude/.
+  // These two pieces of info remain exposed (cliInstalled, authOk) for
+  // informational display in the UI.
   return NextResponse.json({
     ok: sdkOk,
     python: out.python ?? null,

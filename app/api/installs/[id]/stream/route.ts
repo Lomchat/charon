@@ -5,9 +5,9 @@ import { getInstall, type InstallStreamMessage } from '@/lib/server/install/inst
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// GET /api/installs/[id]/stream  → SSE des events bootstrap + status updates.
-// Au subscribe, envoie replay_begin → events du ring buffer → replay_end →
-// status courant. Puis live.
+// GET /api/installs/[id]/stream  → SSE of bootstrap events + status updates.
+// On subscribe, sends replay_begin -> ring buffer events -> replay_end ->
+// current status. Then live.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

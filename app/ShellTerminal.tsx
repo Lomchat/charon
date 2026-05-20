@@ -11,9 +11,9 @@ type Props = {
 };
 
 /**
- * Terminal xterm.js plein-écran qui s'attache à un shell SSH créé par
- * /api/vps/[id]/shells. Pas de resume : si on perd la connexion, on perd
- * le shell. Pas de DB. Fermer l'onglet = killer le shell.
+ * Full-screen xterm.js terminal that attaches to an SSH shell created by
+ * /api/vps/[id]/shells. No resume: if we lose the connection, we lose
+ * the shell. No DB. Closing the tab = killing the shell.
  */
 export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -22,8 +22,8 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
   const esRef = useRef<EventSource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
-  // Détection d'URL long (typiquement OAuth) wrappé sur plusieurs lignes —
-  // overlay copier/ouvrir. Pareil que LoginConsole, factorisable un jour.
+  // Long URL detection (typically OAuth) wrapped across multiple lines —
+  // copy/open overlay. Same as LoginConsole, factorable someday.
   const { ingest: urlIngest, dismiss: urlDismiss, visibleUrl } = useTerminalUrlOverlay();
 
   useEffect(() => {
@@ -69,7 +69,7 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
       fitRef.current = fit;
       term.focus();
 
-      // Input user → POST
+      // User input → POST
       term.onData((data: string) => {
         fetch(`/api/shells/${shellId}/input`, {
           method: 'POST',
@@ -93,7 +93,7 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
           }
         } catch {}
       };
-      es.onerror = () => { /* le shell est peut-être fini, OK */ };
+      es.onerror = () => { /* the shell may be finished, OK */ };
 
       const onResize = () => { try { fit.fit(); } catch {} };
       window.addEventListener('resize', onResize);
@@ -123,9 +123,9 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
       <header className="shell-term-head">
         <span className="title">⌨ shell · {vpsName}</span>
         {cwd && <span className="cwd">{cwd}</span>}
-        {exited && <span className="exit-badge">terminé</span>}
-        <button className="kill-btn" onClick={killShell} title="fermer le shell">
-          {exited ? 'fermer' : 'kill'}
+        {exited && <span className="exit-badge">ended</span>}
+        <button className="kill-btn" onClick={killShell} title="close the shell">
+          {exited ? 'close' : 'kill'}
         </button>
       </header>
       {error && <div className="shell-error">{error}</div>}

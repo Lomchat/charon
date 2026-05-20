@@ -14,65 +14,65 @@ import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStr
 
 // useClaudeSessionStream
 // ─────────────────────────────────────────────────────────────────────────────
-// Hook qui encapsule toute la logique SSE + state + actions d'une session
-// Claude vue depuis le navigateur. Utilisé par MobileChat (single-session)
-// et ClaudePanel/ClaudeSessionView (multi-session, le composant parent crée
-// une instance par sessionId via `key={selectedId}`).
+// Hook that encapsulates all the SSE + state + actions logic for a Claude
+// session viewed from the browser. Used by MobileChat (single-session)
+// and ClaudePanel/ClaudeSessionView (multi-session, the parent component
+// creates one instance per sessionId via `key={selectedId}`).
 //
-// Ce que ce hook fait :
-//   - S'abonne aux events de cette session via `globalEventStream` (SSE
-//     multiplexée unique — pas de close/reopen sur switch de session)
-//   - POST /api/claude/focus au mount/changement de session pour que le
-//     serveur stream les events high-volume (assistant_text, tool_*) de
-//     CETTE session
-//   - Maintient messages/currentAssistant/status/permissionMode/toolCalls/
+// What this hook does:
+//   - Subscribes to events for this session via `globalEventStream` (single
+//     multiplexed SSE — no close/reopen on session switch)
+//   - POST /api/claude/focus at mount/session change so that the
+//     server streams high-volume events (assistant_text, tool_*) for
+//     THIS session
+//   - Maintains messages/currentAssistant/status/permissionMode/toolCalls/
 //     todos/edits/files/permQueue/questionQueue/exitPlanQueue
-//   - GET /api/claude/sessions/[id] au mount et au retour de l'onglet en
-//     foreground — la DB est la source de vérité pour l'historique
-//   - Batch les deltas `assistant_text` via requestAnimationFrame (60Hz max)
-//     pour ne pas re-render le sous-arbre à chaque token
-//   - Expose les actions (send/interrupt/forceStop/setMode/doSleep/doResume/
-//     doDelete/respondPermission/respondQuestion/respondExitPlan) avec
-//     confirmation pessimiste (la queue se vide après ack serveur, pas avant)
+//   - GET /api/claude/sessions/[id] at mount and when the tab returns to
+//     foreground — the DB is the source of truth for history
+//   - Batches `assistant_text` deltas via requestAnimationFrame (60Hz max)
+//     to avoid re-rendering the subtree on every token
+//   - Exposes actions (send/interrupt/forceStop/setMode/doSleep/doResume/
+//     doDelete/respondPermission/respondQuestion/respondExitPlan) with
+//     pessimistic confirmation (queue empties after server ack, not before)
 //
-// Ce que ce hook NE fait PAS :
-//   - Layout / rendu (les composants l'utilisent et stylent)
-//   - Navigation post-kill (le caller fait `router.push('...')` dans onKilled)
-//   - Multi-session state (le caller compose plusieurs instances si besoin)
-//   - Scroll mechanics (chatBodyRef/isAtBottom restent côté caller)
+// What this hook does NOT do:
+//   - Layout / rendering (consumed by components which style)
+//   - Post-kill navigation (the caller does `router.push('...')` in onKilled)
+//   - Multi-session state (the caller composes several instances if needed)
+//   - Scroll mechanics (chatBodyRef/isAtBottom remain on the caller side)
 
 export type StreamCache = {
   get(id: string): ClaudeSessionDetailResponse | undefined;
   fetch(id: string, force?: boolean): Promise<ClaudeSessionDetailResponse>;
   invalidate?(id: string): void;
   /**
-   * Étend l'entrée cache avec une fenêtre de messages plus anciens (loadMore).
-   * Permet de préserver les pages chargées au switch de session/remount.
-   * No-op si l'implémentation ne le supporte pas.
+   * Extends the cache entry with a window of older messages (loadMore).
+   * Allows loaded pages to be preserved across session switch/remount.
+   * No-op if the implementation does not support it.
    */
   extendWithOlder?(id: string, older: ClaudeSessionMessageWindow): void;
 };
 
 export type UseClaudeSessionStreamOptions = {
   /**
-   * Cache module-level (instant load au mount). Mobile passe le chatCache
-   * existant, desktop passera le sessionCache partagé une fois extrait.
-   * Si absent : refetch direct à chaque mount.
+   * Module-level cache (instant load on mount). Mobile passes the existing
+   * chatCache, desktop will pass the shared sessionCache once extracted.
+   * If absent: direct refetch on each mount.
    */
   cache?: StreamCache;
 
   /**
-   * Callback appelé quand l'utilisateur kill la session. Le hook ne navigue
-   * pas tout seul ; le caller décide (mobile → router.push, desktop →
+   * Callback called when the user kills the session. The hook doesn't
+   * navigate by itself; the caller decides (mobile → router.push, desktop →
    * deselect + refresh).
    */
   onKilled?: () => void;
 };
 
 export type ClaudeSessionStreamState = {
-  // Métadonnées session
+  // Session metadata
   sessionMeta: ClaudeSessionDetailResponse['session'] | null;
-  // État conversation
+  // Conversation state
   messages: Msg[];
   currentAssistant: string;
   status: WorkerStatus | null;
@@ -81,23 +81,23 @@ export type ClaudeSessionStreamState = {
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
   files: Set<string>;
-  // Queues d'interaction en attente
+  // Pending interaction queues
   permQueue: PermissionRequest[];
   questionQueue: PendingQuestion[];
   exitPlanQueue: PendingExitPlan[];
-  // Texte que l'agent veut pré-remplir dans la textarea (event prefill_input)
+  // Text the agent wants to prefill in the textarea (prefill_input event)
   prefillInput: string | null;
-  // Dernière erreur affichable à l'utilisateur
+  // Last error displayable to the user
   error: { msg: string } | null;
-  // true tant qu'on n'a JAMAIS appliqué de données pour cette session
-  // (ni depuis le cache, ni depuis le fetch). Permet à l'UI de différencier
-  // « session vide » de « historique en cours de chargement ».
+  // true as long as we've NEVER applied data for this session
+  // (neither from the cache, nor from the fetch). Lets the UI differentiate
+  // "empty session" from "history loading".
   isLoadingHistory: boolean;
-  // Pagination scroll-up : true s'il existe des messages chat plus anciens
-  // que `oldestChatId` côté serveur. False quand on a atteint le début.
+  // Scroll-up pagination: true if there are chat messages older than
+  // `oldestChatId` on the server side. False when we've reached the start.
   hasMore: boolean;
-  // true pendant qu'un loadMoreHistory est en vol. Le caller peut afficher
-  // un spinner en haut du chat (visuel : column-reverse → "en haut").
+  // true while a loadMoreHistory is in flight. The caller can display
+  // a spinner at the top of the chat (visual: column-reverse → "at the top").
   isLoadingMore: boolean;
 };
 
@@ -108,23 +108,23 @@ export type ClaudeSessionStreamActions = {
   setMode(mode: PermissionMode): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
-  /** Suppression définitive. Le caller DOIT avoir confirmé côté UI. */
+  /** Permanent deletion. The caller MUST have confirmed on the UI side. */
   doDelete(): Promise<void>;
   respondPermission(permId: string, allow: boolean, always?: boolean): Promise<void>;
   respondQuestion(qid: string, answers: Record<string, string> | null): Promise<void>;
   respondExitPlan(qid: string, decision: 'approve' | 'reject', feedback?: string): Promise<void>;
-  /** Reset le prefillInput après que le caller l'a consommé. */
+  /** Resets prefillInput after the caller has consumed it. */
   clearPrefillInput(): void;
-  /** Force un refetch depuis la DB (cache bypass). */
+  /** Forces a refetch from the DB (cache bypass). */
   refetchHistory(): Promise<void>;
   /**
-   * Charge une fenêtre de messages chat plus anciens et les préprend à
-   * l'historique. No-op si `hasMore=false`, si `oldestChatId=null`, ou si
-   * un loadMore est déjà en cours. Le caller le déclenche quand l'user
-   * scrolle vers le haut du chat (proche de la limite visuelle).
+   * Loads a window of older chat messages and prepends them to history.
+   * No-op if `hasMore=false`, if `oldestChatId=null`, or if a loadMore
+   * is already in progress. The caller triggers it when the user scrolls
+   * toward the top of the chat (near the visual limit).
    */
   loadMoreHistory(): Promise<void>;
-  /** Reset l'erreur affichée. */
+  /** Resets the displayed error. */
   clearError(): void;
 };
 
@@ -133,11 +133,11 @@ export function useClaudeSessionStream(
   options: UseClaudeSessionStreamOptions = {},
 ): ClaudeSessionStreamState & ClaudeSessionStreamActions {
   const { cache, onKilled } = options;
-  // Ref pour onKilled : les callers passent typiquement un inline arrow (cf.
-  // ClaudePanel + MobileChat), donc la ref `options.onKilled` change à chaque
-  // render. Le handler SSE est créé dans un useEffect avec eslint-disable
-  // exhaustive-deps — sans cette pinning, le callback embarqué dans le
-  // switch `status==='killed'` deviendrait stale dès le 1er render après mount.
+  // Ref for onKilled: callers typically pass an inline arrow (cf.
+  // ClaudePanel + MobileChat), so the `options.onKilled` ref changes on each
+  // render. The SSE handler is created in a useEffect with eslint-disable
+  // exhaustive-deps — without this pinning, the callback embedded in the
+  // `status==='killed'` switch would become stale right after the 1st render.
   const onKilledRef = useRef(onKilled);
   useEffect(() => { onKilledRef.current = onKilled; }, [onKilled]);
 
@@ -157,25 +157,25 @@ export function useClaudeSessionStream(
   const [prefillInput, setPrefillInput] = useState<string | null>(null);
   const [error, setError] = useState<{ msg: string } | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  // Pagination state. `oldestChatIdRef` est aussi tenu en ref pour pouvoir
-  // être lu sans re-render dans le handler scroll (qui peut spam) et dans
-  // loadMoreHistory (qui doit lire la dernière valeur avant d'envoyer le POST).
+  // Pagination state. `oldestChatIdRef` is also kept as a ref so it can
+  // be read without re-render in the scroll handler (which may spam) and in
+  // loadMoreHistory (which must read the latest value before sending the POST).
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const oldestChatIdRef = useRef<number | null>(null);
   const loadMoreInflightRef = useRef(false);
 
-  // streamKey : bump pour forcer la re-création de la SSE (utilisé après
-  // doResume — la session est repartie et on veut une SSE fraîche).
+  // streamKey: bump to force re-creation of the SSE (used after
+  // doResume — the session restarted and we want a fresh SSE).
   const [streamKey, setStreamKey] = useState(0);
 
   const assistantBufRef = useRef('');
-  // RAF batch pour les deltas assistant_text. Sans ça, chaque token =
-  // setCurrentAssistant = re-render du sous-arbre. À 100 tokens/sec, ça lag.
-  // Avec RAF, on plafonne à 60Hz, le browser fait le rate-limiting tout seul.
+  // RAF batch for assistant_text deltas. Without it, each token =
+  // setCurrentAssistant = subtree re-render. At 100 tokens/sec, it lags.
+  // With RAF, we cap at 60Hz, the browser rate-limits on its own.
   const assistantFlushRafRef = useRef<number | null>(null);
 
-  // ── Application d'un payload API au state local ─────────────────────────
+  // ── Apply an API payload to local state ────────────────────────────────
   const applyApiData = useCallback((r: ClaudeSessionDetailResponse) => {
     if (!r?.session) return;
     const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus);
@@ -194,8 +194,8 @@ export function useClaudeSessionStream(
       ) ? (r.session.permissionMode as PermissionMode) : 'normal',
     );
     setSessionMeta(r.session);
-    // Queues d'interactions — on injecte le sessionId requis par le type
-    // partagé (l'API ne le renvoie pas par défaut).
+    // Interaction queues — we inject the sessionId required by the shared
+    // type (the API doesn't return it by default).
     const sid = r.session.id;
     setPermQueue(((r.pendingPermissions ?? []) as Omit<PermissionRequest, 'sessionId'>[])
       .map((p) => ({ ...p, sessionId: sid })));
@@ -203,23 +203,23 @@ export function useClaudeSessionStream(
       .map((q) => ({ ...q, sessionId: sid })));
     setExitPlanQueue(((r.pendingExitPlans ?? []) as Omit<PendingExitPlan, 'sessionId'>[])
       .map((e) => ({ ...e, sessionId: sid })));
-    // On a des données, qu'elles viennent du cache ou du fetch fresh → on
-    // peut masquer le loader. Vrai-zéro-message = on saura par messages.length.
+    // We have data, whether from cache or fresh fetch → we can hide the
+    // loader. True-zero-messages = we'll know via messages.length.
     setIsLoadingHistory(false);
-    // Reset pagination cursor depuis la fenêtre fraîche. `r.hasMore` et
-    // `r.oldestChatId` viennent du backend (cf. loadMessageWindow). Si la
-    // réponse ne les a pas (response cachée d'une version antérieure), on
-    // tombe sur false/null → pagination simplement désactivée pour cette
-    // session jusqu'au prochain fetch fresh.
+    // Reset pagination cursor from the fresh window. `r.hasMore` and
+    // `r.oldestChatId` come from the backend (cf. loadMessageWindow). If the
+    // response doesn't have them (response cached from an earlier version),
+    // we fall back to false/null → pagination simply disabled for this
+    // session until the next fresh fetch.
     setHasMore(!!r.hasMore);
     oldestChatIdRef.current = r.oldestChatId ?? null;
   }, []);
 
-  // refetchHistory : utilisé au mount, à chaque reconnexion SSE et au retour
-  // foreground. Stratégie cache :
-  //   1. Si entrée cache existe → applique immédiatement (instant)
-  //   2. Lance un fetch fresh en arrière-plan, re-applique
-  // Sans cache : un seul fetch direct.
+  // refetchHistory: used at mount, on every SSE reconnect and on tab
+  // foreground return. Cache strategy:
+  //   1. If a cache entry exists → apply immediately (instant)
+  //   2. Launch a fresh fetch in the background, re-apply
+  // Without cache: a single direct fetch.
   const refetchHistory = useCallback(async () => {
     if (cache) {
       const cached = cache.get(sessionId);
@@ -230,7 +230,7 @@ export function useClaudeSessionStream(
       } catch (e) {
         if (!cached) {
           setError({ msg: String((e as Error)?.message ?? e) });
-          setIsLoadingHistory(false); // on abandonne le loader, l'erreur s'affiche
+          setIsLoadingHistory(false); // we drop the loader, the error is displayed
         }
       }
     } else {
@@ -244,9 +244,9 @@ export function useClaudeSessionStream(
     }
   }, [sessionId, cache, applyApiData]);
 
-  // loadMoreHistory : charge une page d'historique plus ancien, prépend à
-  // l'état local. Déclenché par le caller au scroll-up. Idempotent et
-  // protégé contre les appels concurrents par loadMoreInflightRef.
+  // loadMoreHistory: loads a page of older history, prepends to local
+  // state. Triggered by the caller on scroll-up. Idempotent and
+  // protected against concurrent calls by loadMoreInflightRef.
   const loadMoreHistory = useCallback(async () => {
     if (loadMoreInflightRef.current) return;
     const cursor = oldestChatIdRef.current;
@@ -256,8 +256,8 @@ export function useClaudeSessionStream(
     setIsLoadingMore(true);
     try {
       const older = await api.loadOlderClaudeMessages(sessionId, cursor, 200);
-      // Server peut renvoyer hasMore=false même si la page est non vide :
-      // l'ancien curseur était déjà la limite. On met à jour quand même.
+      // Server may return hasMore=false even if the page is non-empty:
+      // the old cursor was already the limit. We update anyway.
       const olderRebuilt = rebuildStateFromMessages(
         older.messages,
         (status ?? 'sleeping') as WorkerStatus,
@@ -271,23 +271,23 @@ export function useClaudeSessionStream(
           return next;
         });
         setEdits((cur) => {
-          // Pour edits : les snapshots récents (live ou déjà chargés) ont
-          // priorité — on n'écrase pas une entrée existante avec une plus
-          // ancienne du même file_path. Sinon on perdrait le diff récent.
+          // For edits: recent snapshots (live or already loaded) take
+          // priority — we don't overwrite an existing entry with an older
+          // one for the same file_path. Otherwise we'd lose the recent diff.
           const next = new Map(cur);
           for (const [k, v] of olderRebuilt.edits) {
             if (!next.has(k)) next.set(k, v);
           }
           return next;
         });
-        // Todos : on n'écrase JAMAIS la liste actuelle avec d'anciens snapshots —
-        // les todos sont par-définition state-driven, la dernière version
-        // est la vraie (cf. rebuild qui fait latest-wins de toute façon).
+        // Todos: NEVER overwrite the current list with old snapshots —
+        // todos are by definition state-driven, the latest version is the
+        // real one (cf. rebuild which does latest-wins anyway).
       }
-      // Avance le cursor + statut hasMore selon la nouvelle limite.
+      // Advance the cursor + hasMore status based on the new limit.
       oldestChatIdRef.current = older.oldestChatId ?? cursor;
       setHasMore(!!older.hasMore);
-      // Persist dans le cache pour préserver les pages au switch/remount.
+      // Persist into the cache to preserve pages across switch/remount.
       if (cache?.extendWithOlder && older.messages.length > 0) {
         try { cache.extendWithOlder(sessionId, older); } catch {}
       }
@@ -300,21 +300,21 @@ export function useClaudeSessionStream(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, hasMore, cache, status]);
 
-  // ── Subscription au global event stream ───────────────────────────────
+  // ── Subscription to the global event stream ────────────────────────────
   useEffect(() => {
-    // Charge l'historique depuis la DB. Indépendant de la SSE.
+    // Load history from the DB. Independent of the SSE.
     refetchHistory();
-    // Signale au serveur de streamer les events high-volume de CETTE session
-    // sur la SSE multiplexée. La SSE ne se ferme pas / ne se réouvre pas —
-    // c'est juste un POST qui change le filtre côté serveur. Le streamKey
-    // (bumpé après doResume) déclenche le refetch + re-focus.
+    // Signal to the server to stream high-volume events for THIS session
+    // on the multiplexed SSE. The SSE doesn't close / doesn't reopen —
+    // it's just a POST that changes the filter on the server side. The
+    // streamKey (bumped after doResume) triggers refetch + re-focus.
     setFocus(sessionId);
 
-    // Flush du buffer assistant : crée un message 'assistant' complet et reset.
-    // Appelé avant tout event qui interrompt le texte (tool_use, thinking,
+    // Flush assistant buffer: creates a full 'assistant' message and resets.
+    // Called before any event that interrupts the text (tool_use, thinking,
     // permission_request, user_question, exit_plan_request, stop).
     const flushAssistantBuf = () => {
-      // Annule un RAF en attente — on flush immédiatement.
+      // Cancel a pending RAF — we flush immediately.
       if (assistantFlushRafRef.current != null) {
         cancelAnimationFrame(assistantFlushRafRef.current);
         assistantFlushRafRef.current = null;
@@ -329,8 +329,8 @@ export function useClaudeSessionStream(
       setCurrentAssistant('');
     };
 
-    // Schedule un flush de l'aperçu streaming via RAF. Coalesce les deltas
-    // arrivés dans la même frame en un seul setState.
+    // Schedule a flush of the streaming preview via RAF. Coalesces deltas
+    // arrived in the same frame into a single setState.
     const scheduleAssistantFlush = () => {
       if (assistantFlushRafRef.current != null) return;
       assistantFlushRafRef.current = requestAnimationFrame(() => {
@@ -342,12 +342,12 @@ export function useClaudeSessionStream(
     const handleEvent = (ev: WorkerEvent & { sessionId: string }) => {
       switch (ev.type) {
         case 'status':
-          // `'killed'` n'est plus un état DB persistant (cf. CLAUDE.md §10) :
-          // c'est un **signal transient** émis par le serveur quand la session
-          // vient d'être supprimée (cascade DB faite). Le caller veut un
-          // redirect (navigation hors de la session). On déclenche `onKilled`
-          // et on ne touche pas le local status pour éviter un re-render
-          // d'une UI qui sera unmount juste après.
+          // `'killed'` is no longer a persistent DB state (cf. CLAUDE.md §10):
+          // it's a **transient signal** emitted by the server when the session
+          // has just been deleted (DB cascade done). The caller wants a
+          // redirect (navigation out of the session). We trigger `onKilled`
+          // and don't touch the local status to avoid re-rendering a UI
+          // that will be unmounted right after.
           if (ev.status === 'killed') {
             onKilledRef.current?.();
             break;
@@ -465,8 +465,8 @@ export function useClaudeSessionStream(
       }
     };
 
-    // Branche le handler au flux global pour cette sessionId. Le module
-    // singleton garantit qu'on ne paie qu'UNE EventSource pour tout le browser.
+    // Wire the handler to the global stream for this sessionId. The singleton
+    // module guarantees we only pay for ONE EventSource for the whole browser.
     const unsubscribe = subscribeSession(sessionId, handleEvent);
 
     return () => {
@@ -479,8 +479,8 @@ export function useClaudeSessionStream(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, streamKey, refetchHistory]);
 
-  // Refetch quand l'onglet revient au premier plan (cas restart backend
-  // pendant qu'on était en background → ring SSE vide, DB = source).
+  // Refetch when the tab comes back to the foreground (case: backend restart
+  // while we were in the background → empty SSE ring, DB = source).
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') {
@@ -491,12 +491,12 @@ export function useClaudeSessionStream(
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [refetchHistory]);
 
-  // Refetch sur reconnect SSE (= la connexion EventSource a été
-  // ré-établie après un drop, typiquement après un `systemctl restart
-  // charon`). La SSE elle-même est live-only côté Charon — les messages
-  // persistés en DB pendant le gap ne sont jamais relayés. Sans ce
-  // refetch, l'UI reste figée sur le dernier état pré-drop, l'user
-  // devait refresh à la main (cf. CLAUDE.md §14 piège 24).
+  // Refetch on SSE reconnect (= the EventSource connection was
+  // re-established after a drop, typically after a `systemctl restart
+  // charon`). The SSE itself is live-only on the Charon side — messages
+  // persisted in the DB during the gap are never relayed. Without this
+  // refetch, the UI stays frozen on the last pre-drop state, the user
+  // had to refresh by hand (cf. CLAUDE.md §14 gotcha 24).
   useEffect(() => {
     const unsub = subscribeReconnect(() => {
       refetchHistory();
@@ -542,9 +542,9 @@ export function useClaudeSessionStream(
     setStatus('starting');
     try {
       await api.resumeClaudeSession(sessionId);
-      // Bump streamKey → useEffect ferme l'ancienne SSE, recharge l'historique,
-      // ré-attache les handlers. Évite que l'UI reste collée sur l'état post-
-      // sleep alors que la session a redémarré côté agent.
+      // Bump streamKey → useEffect closes the old SSE, reloads history,
+      // re-attaches handlers. Avoids the UI being stuck on the post-sleep
+      // state while the session has restarted on the agent side.
       setStreamKey((k) => k + 1);
     } catch (e) {
       setStatus('sleeping');
@@ -552,10 +552,10 @@ export function useClaudeSessionStream(
     }
   }, [sessionId]);
 
-  // Suppression définitive (cascade DB côté serveur). Le callback `onKilled`
-  // est gardé tel quel pour la navigation post-suppression (mobile : retour
-  // vers /m/select). Pas de confirm() ici — c'est au caller de demander
-  // confirmation avant d'appeler l'action.
+  // Permanent deletion (DB cascade on the server side). The `onKilled` callback
+  // is kept as-is for post-deletion navigation (mobile: back to /m/select).
+  // No confirm() here — it's up to the caller to ask for confirmation before
+  // calling the action.
   const doDelete = useCallback(async () => {
     try {
       await api.deleteClaudeSession(sessionId);
@@ -565,18 +565,19 @@ export function useClaudeSessionStream(
     }
   }, [sessionId]);
 
-  // Acks pessimistes : on attend l'OK du POST avant de retirer la card de la
-  // queue. Avant, c'était optimiste — si le POST échouait, la card disparaissait
-  // mais le backend n'avait rien enregistré ; au reload, elle réapparaissait et
-  // l'user pensait que l'historique était cassé. Maintenant : POST OK → la
-  // queue se vide via l'event `interaction_resolved` qui revient en SSE (ou
-  // au pire au prochain refetch). POST KO → la card reste, error affiché.
+  // Pessimistic acks: we wait for the POST OK before removing the card from
+  // the queue. Before, it was optimistic — if the POST failed, the card
+  // disappeared but the backend had recorded nothing; on reload it would
+  // reappear and the user thought history was broken. Now: POST OK → the
+  // queue empties via the `interaction_resolved` event that comes back in
+  // SSE (or at worst at the next refetch). POST KO → the card stays, error
+  // shown.
   const respondPermission = useCallback(async (permId: string, allow: boolean, always = false) => {
     try {
       await api.respondClaudePermission(sessionId, permId, allow, always);
-      // Removal arrive via `interaction_resolved` SSE. Fallback en cas de
-      // SSE down : on retire localement (et le serveur ne renverra rien
-      // qu'on traite déjà comme no-op via le filter par id).
+      // Removal arrives via `interaction_resolved` SSE. Fallback in case the
+      // SSE is down: we remove locally (and the server won't send back anything
+      // we don't already treat as a no-op via the filter by id).
       setPermQueue((q) => q.filter((p) => p.id !== permId));
     } catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);

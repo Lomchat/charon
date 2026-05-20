@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an enhancement or new capability.
+title: "[feat] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest a feature. Please check the
+        [non-goals section of the README](../README.md#non-goals) first —
+        some directions (multi-tenant, VPS provisioning, Windows VPS support)
+        are explicit won't-fix.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the user-facing problem, not the proposed implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        A rough sketch of what you'd like. UI mockup, API shape, or just
+        prose are all fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is consistent with Charon's [non-goals](../README.md#non-goals).
+          required: true

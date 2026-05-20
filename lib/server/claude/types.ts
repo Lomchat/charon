@@ -1,5 +1,5 @@
-// Événements échangés entre le bridge Python et le SessionWorker (et vers les
-// clients SSE). On garde une union TS large + des helpers de garde.
+// Events exchanged between the Python bridge and the SessionWorker (and to the
+// SSE clients). We keep a wide TS union + guard helpers.
 
 export type BridgeEvent =
   | { type: 'ready' }
@@ -20,7 +20,7 @@ export type BridgeEvent =
   | { type: 'stop'; subtype?: string }
   | { type: 'error'; msg: string; fatal?: boolean };
 
-// Événements synthétiques que le worker fabrique lui-même (pas reçus du bridge).
+// Synthetic events that the worker fabricates itself (not received from the bridge).
 export type SyntheticEvent =
   | { type: 'status'; status: WorkerStatus }
   | { type: 'user_echo'; content: string; createdAt: number }

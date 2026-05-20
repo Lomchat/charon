@@ -5,8 +5,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { sshExec } from '@/lib/server/claude/sshExec';
 
 // POST /api/vps/[id]/claude/setup
-// Installe claude-agent-sdk via pip --user. Renvoie stdout/stderr/code.
-// (claude CLI + `claude login` restent manuels — c'est documenté.)
+// Installs claude-agent-sdk via pip --user. Returns stdout/stderr/code.
+// (claude CLI + `claude login` remain manual — this is documented.)
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -14,12 +14,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // Install dans un venv dédié à ~/.charon/venv. Contourne PEP 668
-  // (Debian 12 / Ubuntu 23+ refusent `pip --user`) et garde un python stable
-  // entre install, verify, ping et le service systemd. `set -o pipefail`
-  // remonte le code de sortie réel de pip — sans ça, le pipeline `| tail`
-  // gobait l'erreur et le bouton "Setup" répondait "ok" alors que pip avait
-  // échoué (et le verify suivant cassait → boucle visuelle dans bootstrap).
+  // Install into a dedicated venv at ~/.charon/venv. Works around PEP 668
+  // (Debian 12 / Ubuntu 23+ refuse `pip --user`) and keeps a stable python
+  // between install, verify, ping and the systemd service. `set -o pipefail`
+  // surfaces pip's real exit code — without it, the `| tail` pipeline
+  // swallowed the error and the "Setup" button reported "ok" even though pip
+  // had failed (and the subsequent verify broke -> visual loop in bootstrap).
   const VENV = '$HOME/.charon/venv';
   const VENV_PY = `${VENV}/bin/python`;
   const cmd =
@@ -31,7 +31,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     `  echo "[setup] creating venv ${VENV}"; ` +
     `  "$BASE" -m venv ${VENV} 2>&1 | tail -20 || ` +
     `  { "$BASE" -m venv --without-pip ${VENV} && ${VENV_PY} -m ensurepip --upgrade 2>&1 | tail -20; } || ` +
-    `  { echo "[setup] venv creation failed — installe python3-venv (apt) ou python3X-venv (dnf)"; exit 11; }; ` +
+    `  { echo "[setup] venv creation failed — install python3-venv (apt) or python3X-venv (dnf)"; exit 11; }; ` +
     `fi; ` +
     `echo "[setup] using ${VENV_PY}"; ` +
     `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10; ` +

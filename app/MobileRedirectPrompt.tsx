@@ -2,9 +2,9 @@
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 
-// Détecte un écran mobile (largeur < 768px OU pointer coarse) au mount et
-// propose la version /m. Skip auto sur /m, /login, /logout.
-// Le refus est mémorisé dans localStorage — pas de spam à chaque visite.
+// Detects a mobile screen (width < 768px OR coarse pointer) at mount and
+// offers the /m version. Auto-skipped on /m, /login, /logout.
+// Refusal is remembered in localStorage — no spam on every visit.
 
 const DISMISS_KEY = 'charon.mobileRedirect.dismissed';
 
@@ -14,18 +14,18 @@ export default function MobileRedirectPrompt() {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    // Skip sur routes mobile + auth
+    // Skip on mobile routes + auth
     if (pathname.startsWith('/m') || pathname.startsWith('/login') || pathname.startsWith('/logout')) return;
-    // Skip si l'utilisateur a déjà dit non
+    // Skip if the user has already said no
     try {
       if (localStorage.getItem(DISMISS_KEY) === '1') return;
     } catch {}
-    // Détection : largeur < 768px OU pointer grossier (touch-only) sur petit écran
+    // Detection: width < 768px OR coarse pointer (touch-only) on a small screen
     if (typeof window === 'undefined') return;
     const isNarrow = window.matchMedia('(max-width: 768px)').matches;
     const isTouch  = window.matchMedia('(pointer: coarse)').matches;
     if (isNarrow || (isTouch && window.innerWidth < 1024)) {
-      // Petit délai pour éviter de bloquer le first paint
+      // Small delay to avoid blocking the first paint
       const t = setTimeout(() => setShow(true), 250);
       return () => clearTimeout(t);
     }
@@ -51,20 +51,20 @@ export default function MobileRedirectPrompt() {
             <line x1="11" y1="18" x2="13" y2="18" strokeLinecap="round" />
           </svg>
         </div>
-        <h2>Version mobile disponible</h2>
+        <h2>Mobile version available</h2>
         <p>
-          Cette interface est optimisée pour mobile.<br />
-          Veux-tu y aller ?
+          This interface is optimized for mobile.<br />
+          Would you like to go there?
         </p>
         <div className="m-prompt-actions">
           <button type="button" className="decline" onClick={decline}>
-            Non, garder desktop
+            No, keep desktop
           </button>
           <button type="button" className="accept" onClick={accept} autoFocus>
-            Oui, version mobile
+            Yes, mobile version
           </button>
         </div>
-        <p className="m-prompt-note">Tu peux toujours y aller depuis l'URL <code>/m</code></p>
+        <p className="m-prompt-note">You can always go there from the URL <code>/m</code></p>
       </div>
     </div>
   );

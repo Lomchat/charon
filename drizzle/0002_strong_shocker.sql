@@ -7,8 +7,8 @@ CREATE TABLE `vps_paths` (
 	FOREIGN KEY (`vps_id`) REFERENCES `vps`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
--- Data migration : recopie vps_project_paths → vps_paths en utilisant
--- projects.name comme label. Dédup sur (vps_id, path).
+-- Data migration: copy vps_project_paths → vps_paths using projects.name
+-- as the label. Dedup on (vps_id, path).
 INSERT INTO `vps_paths` (`vps_id`, `path`, `label`)
 SELECT vpp.vps_id, vpp.path, MIN(p.name)
 FROM `vps_project_paths` vpp

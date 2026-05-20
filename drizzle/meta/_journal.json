@@ -64,6 +64,13 @@
       "when": 1779500000000,
       "tag": "0008_purge_killed_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1779600000000,
+      "tag": "0009_rename_default_folder",
+      "breakpoints": true
     }
   ]
 }

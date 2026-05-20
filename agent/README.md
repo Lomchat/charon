@@ -1,10 +1,10 @@
 # charon-agent
 
-Daemon Python qui tourne sur chaque VPS et gère les sessions Claude.
-Charon (le hub Next.js) y parle via une connexion SSH multiplexée en JSON-RPC.
+Python daemon that runs on each VPS and manages Claude sessions.
+Charon (the Next.js hub) talks to it via a multiplexed SSH connection in JSON-RPC.
 
-Voir [`docs/adr-001-charon-agent.md`](../docs/adr-001-charon-agent.md) pour
-la motivation et le protocole complet.
+See [`docs/adr-001-charon-agent.md`](../docs/adr-001-charon-agent.md) for
+the motivation and the full protocol.
 
 ## Build
 
@@ -13,41 +13,41 @@ bash agent/build.sh
 # → agent/dist/charon-agent.pyz
 ```
 
-Le script utilise `python3 -m zipapp` (stdlib, zéro dépendance externe).
-Le pyz attendu fait quelques dizaines de KB.
+The script uses `python3 -m zipapp` (stdlib, zero external dependency).
+The resulting pyz is a few tens of KB in size.
 
-## Run (en local pour test)
+## Run (locally for testing)
 
 ```bash
 # Daemon
 python3 -m charon_agent
-# OU
+# OR
 ./agent/dist/charon-agent.pyz
 
-# Client (proxy stdio ↔ socket)
+# Client (stdio ↔ socket proxy)
 ./agent/dist/charon-agent.pyz --connect
 
 # Ping
 echo '{"id":1,"method":"ping"}' | ./agent/dist/charon-agent.pyz --connect
 ```
 
-## Lay-out
+## Layout
 
-- `charon_agent/__main__.py` : CLI (mode daemon | mode --connect)
-- `charon_agent/server.py`   : asyncio Unix socket server + dispatch JSON-RPC
+- `charon_agent/__main__.py` : CLI (daemon mode | --connect mode)
+- `charon_agent/server.py`   : asyncio Unix socket server + JSON-RPC dispatch
 - `charon_agent/session.py`  : 1 instance = 1 ClaudeSDKClient + hooks
-- `charon_agent/state.py`    : persistance ~/.charon/state.json
-- `charon_agent/protocol.py` : codes d'erreur + helpers de sérialisation
-- `charon_agent/client.py`   : mode `--connect` (proxy bidirectionnel)
-- `build.sh`                 : produit `dist/charon-agent.pyz`
+- `charon_agent/state.py`    : persistence ~/.charon/state.json
+- `charon_agent/protocol.py` : error codes + serialization helpers
+- `charon_agent/client.py`   : `--connect` mode (bidirectional proxy)
+- `build.sh`                 : produces `dist/charon-agent.pyz`
 
-## Variables d'environnement
+## Environment variables
 
-- `CHARON_AGENT_HOME` : remplace `~/.charon` (utile pour les tests)
+- `CHARON_AGENT_HOME` : overrides `~/.charon` (useful for tests)
 
-## Prérequis sur le VPS
+## Prerequisites on the VPS
 
 - Python ≥ 3.10
-- `claude-agent-sdk` installé (`pip install --user claude-agent-sdk`)
-- `claude login` fait (OAuth Claude Code)
-- systemd ≥ 230 pour le mode `--user` (sinon fallback `nohup setsid`)
+- `claude-agent-sdk` installed (`pip install --user claude-agent-sdk`)
+- `claude login` done (OAuth Claude Code)
+- systemd ≥ 230 for `--user` mode (otherwise fallback to `nohup setsid`)

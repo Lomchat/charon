@@ -5,23 +5,24 @@ import type { InstallStatus } from '@/lib/types/api';
 
 // useInstallNotifications
 // ─────────────────────────────────────────────────────────────────────────────
-// Maintient une queue d'installs terminées qu'on n'a pas encore acquittées,
-// alimentée par les events `install_finished` du bus global.
+// Maintains a queue of finished installs that have not yet been acknowledged,
+// fed by the `install_finished` events from the global bus.
 //
-// Pourquoi : quand une install se termine (success ou error), l'user n'est
-// peut-être pas devant la session install — il peut être sur une autre
-// session Claude, ou avoir l'onglet en background. On stocke donc la notif
-// dans une queue locale au tab et on l'affiche en top-right via
-// `<InstallNotificationPopup>` (pattern PermissionPopup).
+// Why: when an install finishes (success or error), the user is maybe not
+// in front of the install session — they may be on another Claude session,
+// or have the tab in the background. So we store the notification in a
+// tab-local queue and display it top-right via
+// `<InstallNotificationPopup>` (PermissionPopup pattern).
 //
-// L'utilisateur dismiss explicitement la notif (clic ✕) ou clique "voir le
-// log" qui focus la session install et la dismiss en même temps.
+// The user explicitly dismisses the notification (click ✕) or clicks "see
+// the log" which focuses the install session and dismisses it at the
+// same time.
 
 export type InstallNotification = {
   installId: string;
   vpsId: string;
   vpsName: string;
-  status: InstallStatus;          // 'success' | 'error' (jamais 'running' ici)
+  status: InstallStatus;          // 'success' | 'error' (never 'running' here)
   finishedAt: number;
 };
 
@@ -34,14 +35,14 @@ export function useInstallNotifications(): {
 
   useEffect(() => {
     const unsubscribe = subscribeAll((ev) => {
-      // On ne traite que les install events ; les events session sont filtrés
-      // par hasSessionId côté globalEventStream mais on garde une safety net ici.
+      // Only handle install events; session events are filtered
+      // by hasSessionId on the globalEventStream side but we keep a safety net here.
       if (!('installId' in ev)) return;
       if (ev.type === 'install_finished' && (ev.status === 'success' || ev.status === 'error')) {
         setNotifications((prev) => {
-          // Dédup par installId — si on reçoit plusieurs install_finished
-          // pour le même id (rare, mais possible si le user retry), on garde
-          // uniquement le dernier.
+          // Dedup by installId — if we receive multiple install_finished
+          // for the same id (rare, but possible if the user retries), we keep
+          // only the last one.
           const filtered = prev.filter((n) => n.installId !== ev.installId);
           return [...filtered, {
             installId: ev.installId,

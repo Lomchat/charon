@@ -3,7 +3,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { getStream } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/[id]/input
-// Body : { content } -> user_message ; ou { type: 'interrupt' }
+// Body: { content } -> user_message; or { type: 'interrupt' }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

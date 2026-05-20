@@ -1,12 +1,12 @@
 /* ──────────────────────────────────────────────────────────────────────────
-   Mobile UI — scoped to .m-root. Réutilise les tokens de globals.css (--stone,
-   --gold, etc.) avec un override Nordic Tokyo similaire à .claude-root.
+   Mobile UI — scoped to .m-root. Reuses the globals.css tokens (--stone,
+   --gold, etc.) with a Nordic Tokyo override similar to .claude-root.
 
-   Principe :
-   - position: fixed + safe-area-inset sur header/footer
+   Principles:
+   - position: fixed + safe-area-inset on header/footer
    - single column, full-width
-   - touch targets ≥ 44px
-   - scrolling intérieur seulement (pas de scroll body)
+   - touch targets >= 44px
+   - inner scrolling only (no body scroll)
    ────────────────────────────────────────────────────────────────────────── */
 
 .m-root {
@@ -38,7 +38,7 @@
 .m-root * { -webkit-touch-callout: none; }
 .m-root input, .m-root textarea, .m-root pre, .m-root code { -webkit-touch-callout: default; -webkit-user-select: text; user-select: text; }
 
-/* ── Topbar commune ─────────────────────────────────────────────────────── */
+/* ── Shared topbar ──────────────────────────────────────────────────────── */
 .m-topbar {
   flex-shrink: 0;
   display: flex; align-items: center; gap: 10px;
@@ -109,10 +109,11 @@
   font-style: italic;
 }
 
-/* ── Folders mobile (miroir desktop) ───────────────────────────────────────
-   Un folder regroupe N VPS cards. Le toggle collapse est persisté en DB via
-   PATCH /api/vps-folders/[id], donc un dossier fermé desktop l'est aussi
-   mobile. Le collapse par-VPS reste local (localStorage) comme desktop. */
+/* ── Mobile folders (desktop mirror) ───────────────────────────────────────
+   A folder groups N VPS cards. The collapse toggle is persisted in DB via
+   PATCH /api/vps-folders/[id], so a folder collapsed on desktop is also
+   collapsed on mobile. The per-VPS collapse stays local (localStorage) like
+   desktop. */
 .m-folder-section {
   display: flex; flex-direction: column; gap: 10px;
   border: 1px solid var(--gold-deep);
@@ -309,7 +310,7 @@
 
 .m-session-row.shell .m-row-label::before { content: '⌨ '; }
 .m-session-row.shell.exited { opacity: 0.5; }
-.m-session-row.shell.exited .m-row-label::after { content: ' (terminé)'; color: var(--parchment-soft); font-weight: normal; }
+.m-session-row.shell.exited .m-row-label::after { content: ' (exited)'; color: var(--parchment-soft); font-weight: normal; }
 
 /* ── /m/chat ───────────────────────────────────────────────────────────── */
 .m-chat-shell {
@@ -326,8 +327,8 @@
   color: var(--parchment-soft);
   min-height: 30px;
 }
-/* Bandeau cross-session : N interactions en attente sur d'autres sessions.
- * Cliquable → /m/select. Pulse léger pour attirer l'œil sans agressivité. */
+/* Cross-session banner: N pending interactions on other sessions.
+ * Clickable → /m/select. Light pulse to catch the eye without being aggressive. */
 .m-cross-banner {
   flex-shrink: 0;
   display: block;
@@ -366,7 +367,7 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Wrap qui contient le scroll + la pill flottante "↓ N" */
+/* Wrap that contains the scroll + the floating "↓ N" pill */
 .m-chat-wrap {
   flex: 1; min-height: 0;
   position: relative;
@@ -376,9 +377,9 @@
   flex: 1; min-height: 0;
   overflow-y: auto;
   padding: 12px 12px 24px;
-  /* column-reverse : DOM[0] = bas visuel, scrollTop=0 = vraiment en bas.
-     Le navigateur gère nativement "stick to bottom" + scroll anchoring
-     quand on prepend des anciens au-dessus → 0 JS de scroll nécessaire. */
+  /* column-reverse: DOM[0] = visual bottom, scrollTop=0 = truly at the bottom.
+     The browser natively handles "stick to bottom" + scroll anchoring
+     when older items are prepended above → 0 scroll JS required. */
   display: flex; flex-direction: column-reverse; gap: 10px;
   background: var(--stone);
   -webkit-overflow-scrolling: touch;
@@ -402,7 +403,7 @@
 }
 @keyframes m-history-spin { to { transform: rotate(360deg); } }
 
-/* Indicateur loadMore mobile (en haut visuel = fin DOM en column-reverse) */
+/* Mobile loadMore indicator (visual top = DOM end in column-reverse) */
 .m-loadmore-indicator {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 10px 14px;
@@ -429,7 +430,7 @@
   user-select: none;
 }
 
-/* Pill flottante "↓ N" en bas-droite du chat (style WhatsApp) */
+/* Floating "↓ N" pill at the bottom-right of the chat (WhatsApp style) */
 .m-scroll-pill {
   position: absolute;
   right: 14px;
@@ -450,9 +451,9 @@
 .m-scroll-pill:active { background: var(--stone-3); }
 .m-scroll-pill .m-scroll-arrow { display: inline-block; transform: translateY(-1px); }
 
-/* Pill "↑" — placée juste au-dessus de la pill ↓, à la même abscisse. Sa
-   position reste FIXE indépendamment du fait que la pill ↓ soit visible ou
-   non. Calcul : bottom = 14 (pill ↓ bottom) + 44 (height) + 10 (gap) = 68. */
+/* "↑" pill — placed just above the ↓ pill, at the same x-coordinate. Its
+   position stays FIXED regardless of whether the ↓ pill is visible or
+   not. Math: bottom = 14 (↓ pill bottom) + 44 (height) + 10 (gap) = 68. */
 .m-scroll-up-pill {
   position: absolute;
   right: 14px;
@@ -1189,7 +1190,7 @@
   margin-top: 4px;
 }
 
-/* ── Context menu (bottom sheet) — équivalent du clic droit desktop ── */
+/* ── Context menu (bottom sheet) — equivalent of desktop right-click ── */
 .m-ctx-bg {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.55);
@@ -1272,7 +1273,7 @@
   margin-left: 4px;
 }
 
-/* Palette de couleurs */
+/* Color palette */
 .m-ctx-color-row {
   display: flex; gap: 10px;
   padding: 14px 18px;
@@ -1303,7 +1304,7 @@
   display: inline-flex; align-items: center; justify-content: center;
 }
 
-/* Mode rename inline dans le sheet */
+/* Inline rename mode inside the sheet */
 .m-ctx-rename {
   padding: 16px 18px;
   border-bottom: 1px solid var(--gold-deep);

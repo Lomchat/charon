@@ -4,23 +4,23 @@ import type { InstallStatus } from '@/lib/types/api';
 
 // globalEventStream
 // ─────────────────────────────────────────────────────────────────────────────
-// Singleton client : UNE seule EventSource sur /api/claude/events pour tout
-// le browser. Les hooks (`useClaudeSessionStream`, `useCrossSessionInteractionFeed`,
-// `useInstallNotifications`) s'abonnent à ce module au lieu d'ouvrir leur
-// propre SSE.
+// Singleton client: ONE single EventSource on /api/claude/events for the
+// entire browser. The hooks (`useClaudeSessionStream`, `useCrossSessionInteractionFeed`,
+// `useInstallNotifications`) subscribe to this module instead of opening
+// their own SSE.
 //
-// Pourquoi un singleton :
-//   - Évite la saturation HTTP/1.1 (6 connexions max par origine côté
-//     Apache front, cf. CLAUDE.md §14 piège 15).
-//   - Zero latence de switch de session : un POST /focus suffit, la SSE
-//     reste ouverte.
-//   - Une seule connexion à gérer pour le reconnect/health.
+// Why a singleton:
+//   - Avoids HTTP/1.1 saturation (6 connections max per origin on the
+//     Apache front, cf. CLAUDE.md §14 gotcha 15).
+//   - Zero session-switch latency: a POST /focus is enough, the SSE
+//     stays open.
+//   - A single connection to manage for reconnect/health.
 //
-// Le SSE serveur multiplexe 2 sources :
-//   - Bus session (`sessionOps.ts § subscribeGlobalSessionEvents`)
-//   - Bus install (`installSession.ts § subscribeInstallBus`) — pour les
-//     notifs install_started / install_finished
-// Les install events n'ont PAS de `sessionId` ; ils sont distingués par leur
+// The server SSE multiplexes 2 sources:
+//   - Session bus (`sessionOps.ts § subscribeGlobalSessionEvents`)
+//   - Install bus (`installSession.ts § subscribeInstallBus`) — for the
+//     install_started / install_finished notifications
+// Install events do NOT have a `sessionId`; they are distinguished by their
 // `type` (`install_started` / `install_finished`).
 
 export type InstallBusClientEvent =
@@ -35,18 +35,18 @@ function hasSessionId(ev: GlobalEvent): ev is SessionBusClientEvent {
   return 'sessionId' in ev && typeof (ev as any).sessionId === 'string';
 }
 
-// Deux saveurs de listener : `SessionListener` pour les abonnements par
-// sessionId (qui ne reçoivent que des events tagués sessionId), et
-// `GlobalListener` pour les catch-all qui reçoivent aussi les install
-// events. On les sépare pour que les callers par-session (typiquement
-// `useClaudeSessionStream`) puissent s'écrire avec un callback typé
-// `(ev: WorkerEvent & {sessionId: string}) => void` sans cast.
+// Two flavors of listener: `SessionListener` for per-sessionId subscriptions
+// (which only receive sessionId-tagged events), and `GlobalListener` for
+// catch-all listeners that also receive install events. We split them so
+// that per-session callers (typically `useClaudeSessionStream`) can be
+// written with a callback typed `(ev: WorkerEvent & {sessionId: string}) => void`
+// without casts.
 type SessionListener = (ev: SessionBusClientEvent) => void;
 type GlobalListener = (ev: GlobalEvent) => void;
 
-// connId stable sur la durée du tab. Si on perd la connexion et qu'on
-// reconnecte avec le même connId, le serveur remplace proprement la conn
-// existante (cf. eventConnections.ts § registerConnection).
+// Stable connId for the duration of the tab. If we lose the connection and
+// reconnect with the same connId, the server cleanly replaces the existing
+// conn (cf. eventConnections.ts § registerConnection).
 function genConnId(): string {
   if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
     return (crypto as any).randomUUID();
@@ -57,19 +57,19 @@ function genConnId(): string {
 let connId: string | null = null;
 let es: EventSource | null = null;
 let currentFocus: string | null = null;
-// `null` key = catch-all listeners (qui veulent tous les events de toutes
-// les sessions, ex: useCrossSessionInteractionFeed). On stocke en Set d'une
-// fonction au type le plus large possible (GlobalListener) ; pour les
-// abonnements par-sessionId, les callbacks sont contravariament compatibles
-// car ils ne recevront jamais que des SessionBusClientEvent.
+// `null` key = catch-all listeners (which want all events from all
+// sessions, e.g. useCrossSessionInteractionFeed). Stored as a Set of
+// the widest possible function type (GlobalListener); for per-sessionId
+// subscriptions, the callbacks are contravariantly compatible because
+// they will only ever receive SessionBusClientEvent values.
 const listeners = new Map<string | null, Set<GlobalListener>>();
 let pendingFocusPost: Promise<void> | null = null;
 
-// Détection de reconnect EventSource : `openCount` part à 0, devient 1 sur
-// la 1re connexion (boot), puis ≥2 à chaque auto-reconnect du browser après
-// un drop (ex: backend redémarré). On notifie les consumers pour qu'ils
-// refetch l'historique manqué pendant le gap — la SSE elle-même ne replay
-// que les events live + un snapshot status, pas les messages persistés.
+// EventSource reconnect detection: `openCount` starts at 0, becomes 1 on
+// the 1st connection (boot), then ≥2 on each browser auto-reconnect after
+// a drop (e.g. backend restarted). We notify consumers so they refetch
+// history missed during the gap — the SSE itself only replays live events
+// + a status snapshot, not persisted messages.
 let openCount = 0;
 const reconnectListeners = new Set<() => void>();
 
@@ -88,8 +88,8 @@ function ensureStream(): void {
   es.onmessage = (e) => {
     let ev: GlobalEvent;
     try { ev = JSON.parse(e.data); } catch { return; }
-    // Fan-out aux listeners de cette session (sauf install events qui n'en ont
-    // pas) + aux catch-all (qui reçoivent tout, y compris les installs).
+    // Fan out to this session's listeners (except install events, which have none)
+    // + to the catch-alls (which receive everything, including installs).
     if (hasSessionId(ev)) {
       const perSession = listeners.get(ev.sessionId);
       if (perSession) for (const cb of perSession) {
@@ -103,21 +103,21 @@ function ensureStream(): void {
   };
   es.onopen = () => {
     openCount++;
-    if (openCount <= 1) return;  // 1re ouverture (boot) : pas un reconnect
-    // À chaque reconnect (≥ 2e open), deux choses à faire :
+    if (openCount <= 1) return;  // 1st open (boot): not a reconnect
+    // On each reconnect (≥ 2nd open), two things to do:
     //
-    // 1) Re-POST le focus côté serveur. La reconnexion auto-browser réouvre
-    //    l'URL d'ORIGINE — donc le ?focus= dans l'URL est celui au moment
-    //    de la création de l'EventSource. Si l'user a changé de session
-    //    entretemps (via setFocus), le serveur recale sur le mauvais focus
-    //    sans ce re-POST, et les events high-volume de la session courante
-    //    ne sont pas streamés.
+    // 1) Re-POST focus to the server. The browser's auto-reconnect reopens
+    //    the ORIGINAL URL — so the ?focus= in the URL is the one at the
+    //    time the EventSource was created. If the user switched sessions
+    //    in the meantime (via setFocus), the server falls back to the
+    //    wrong focus without this re-POST, and high-volume events for the
+    //    current session are not streamed.
     //
-    // 2) Notifier les consumers (ex: useClaudeSessionStream) pour qu'ils
-    //    refetch l'historique : pendant le gap SSE, Charon a pu persister
-    //    des messages que la SSE n'a pas relayés (elle est live-only côté
-    //    Charon — pas de ring buffer, cf. CLAUDE.md §14 piège 14). Sans
-    //    ce refetch, l'UI reste figée sur le dernier état pré-drop.
+    // 2) Notify consumers (e.g. useClaudeSessionStream) so they refetch
+    //    history: during the SSE gap, Charon may have persisted messages
+    //    that the SSE didn't relay (it is live-only on the Charon side —
+    //    no ring buffer, cf. CLAUDE.md §14 gotcha 14). Without this
+    //    refetch, the UI stays frozen on the last pre-drop state.
     const id = getConnId();
     if (currentFocus) {
       fetch('/api/claude/focus', {
@@ -131,14 +131,14 @@ function ensureStream(): void {
     }
   };
 
-  // onerror : EventSource gère lui-même la reconnexion. On ne log pas pour
-  // éviter le bruit en console à chaque heartbeat manqué.
+  // onerror: EventSource handles reconnection itself. We don't log to
+  // avoid console noise on every missed heartbeat.
 }
 
 /**
- * Abonne un listener qui fire à chaque reconnect SSE (PAS au 1er open).
- * Utile pour refetcher l'historique manqué pendant le drop. Retourne un
- * unsubscribe.
+ * Subscribe a listener that fires on each SSE reconnect (NOT on the 1st open).
+ * Useful for refetching history missed during the drop. Returns an
+ * unsubscribe function.
  */
 export function subscribeReconnect(cb: () => void): () => void {
   reconnectListeners.add(cb);
@@ -146,16 +146,16 @@ export function subscribeReconnect(cb: () => void): () => void {
 }
 
 /**
- * Abonne un listener à TOUS les events d'une session donnée. Retourne un
- * unsubscribe. Ouvre la SSE lazy si pas encore faite.
+ * Subscribe a listener to ALL events for a given session. Returns an
+ * unsubscribe function. Lazily opens the SSE if not already done.
  */
 export function subscribeSession(sessionId: string, cb: SessionListener): () => void {
   ensureStream();
   let set = listeners.get(sessionId);
   if (!set) { set = new Set(); listeners.set(sessionId, set); }
-  // Le store est typé `GlobalListener` mais on ne dispatch que des
-  // SessionBusClientEvent dans ce bucket (cf. `hasSessionId(ev)` plus haut),
-  // donc le cast est safe.
+  // The store is typed `GlobalListener` but we only dispatch
+  // SessionBusClientEvent into this bucket (cf. `hasSessionId(ev)` above),
+  // so the cast is safe.
   set.add(cb as GlobalListener);
   return () => {
     const s = listeners.get(sessionId);
@@ -166,8 +166,8 @@ export function subscribeSession(sessionId: string, cb: SessionListener): () => 
 }
 
 /**
- * Abonne un listener à TOUS les events de TOUTES les sessions. Utilisé par
- * useCrossSessionInteractionFeed pour les popups cross-session.
+ * Subscribe a listener to ALL events from ALL sessions. Used by
+ * useCrossSessionInteractionFeed for the cross-session popups.
  */
 export function subscribeAll(cb: GlobalListener): () => void {
   ensureStream();
@@ -183,20 +183,20 @@ export function subscribeAll(cb: GlobalListener): () => void {
 }
 
 /**
- * Change la session focus côté serveur. Le serveur commencera à streamer les
- * events high-volume (assistant_text, tool_use, etc.) de cette session sans
- * close/reopen de la SSE.
+ * Change the focus session on the server. The server will start streaming
+ * high-volume events (assistant_text, tool_use, etc.) for this session
+ * without closing/reopening the SSE.
  *
- * Si `sessionId` est identique au focus courant, no-op.
+ * If `sessionId` matches the current focus, no-op.
  *
- * Idempotent : si plusieurs setFocus partent en même temps (rapide navigation),
- * la dernière gagne ; on coalesce via `pendingFocusPost`.
+ * Idempotent: if several setFocus calls fire at the same time (rapid
+ * navigation), the last one wins; we coalesce via `pendingFocusPost`.
  */
 export async function setFocus(sessionId: string | null): Promise<void> {
   ensureStream();
   if (currentFocus === sessionId) return;
   currentFocus = sessionId;
-  // POST /focus — on coalesce mais on tente quand même en cas de retry.
+  // POST /focus — we coalesce but still attempt in case of retry.
   const id = getConnId();
   const post = fetch('/api/claude/focus', {
     method: 'POST',
@@ -209,7 +209,7 @@ export async function setFocus(sessionId: string | null): Promise<void> {
 }
 
 /**
- * Pour debug / introspection.
+ * For debug / introspection.
  */
 export function getCurrentFocus(): string | null {
   return currentFocus;

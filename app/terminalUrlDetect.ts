@@ -1,44 +1,43 @@
 // terminalUrlDetect
 // ─────────────────────────────────────────────────────────────────────────────
-// Extrait les URLs "longues" d'un buffer de texte terminal (typiquement de
-// xterm.js), en joignant les morceaux séparés par des newlines/CR.
+// Extracts "long" URLs from a terminal text buffer (typically from
+// xterm.js), joining pieces separated by newlines/CR.
 //
-// Pourquoi : `claude login` affiche un URL OAuth de ~250 chars qui dans un
-// terminal 80-col est hard-wrappé par le programme remote ou soft-wrappé par
-// xterm. Dans les deux cas, l'user ne peut pas double-cliquer / sélectionner
-// proprement pour copier — d'où un overlay qui reconstruit l'URL complet.
+// Why: `claude login` displays an OAuth URL of ~250 chars which in an
+// 80-col terminal is hard-wrapped by the remote program or soft-wrapped by
+// xterm. In either case, the user cannot double-click / select cleanly to
+// copy — hence an overlay that reconstructs the full URL.
 //
-// L'algo gère les 2 cas :
-//   - HARD wrap : le programme a inséré `\n` au milieu de l'URL. On joint
-//     en sautant les `\r\n` quand la ligne suivante commence par un caractère
-//     URL-safe.
-//   - SOFT wrap : pas de `\n` dans le stream, juste un wrap visuel xterm. La
-//     regex naturelle marche, on extrait l'URL d'un coup.
+// The algorithm handles both cases:
+//   - HARD wrap: the program inserted `\n` in the middle of the URL. We
+//     join by skipping `\r\n` when the next line starts with a URL-safe
+//     character.
+//   - SOFT wrap: no `\n` in the stream, just an xterm visual wrap. The
+//     natural regex works, we extract the URL in one go.
 
-// CSI (ESC [ ...), OSC (ESC ] ... BEL), et autres séquences ANSI courantes.
-// Suffisant pour `claude login` qui n'utilise que des CSI/OSC/SGR standards.
+// CSI (ESC [ ...), OSC (ESC ] ... BEL), and other common ANSI sequences.
+// Sufficient for `claude login` which only uses standard CSI/OSC/SGR.
 const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[PXY^_].*?\x1b\\/g;
 
-// Caractères acceptés dans un URL : unreserved + reserved + % (percent-encoded).
-// On exclut volontairement l'espace, le " et le < pour s'arrêter à la fin du
-// token, même si techniquement certains chars (espace) pourraient apparaître
-// en encodé — mais en pratique, dans une URL OAuth, on ne les rencontre pas
-// décodés.
+// Characters accepted in a URL: unreserved + reserved + % (percent-encoded).
+// We deliberately exclude space, " and < to stop at the end of the token,
+// even though technically some chars (space) could appear percent-encoded —
+// but in practice, in an OAuth URL, we never encounter them decoded.
 const URL_CHAR = /[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]/;
 
 /**
- * Extrait les URLs "intéressantes" (longueur >= minLen) d'un buffer texte.
+ * Extracts "interesting" URLs (length >= minLen) from a text buffer.
  *
- * @param raw    Texte brut tel que reçu du flux SSE (peut contenir codes ANSI)
- * @param minLen Seuil de longueur — en-dessous, l'user peut copier à la main
- * @param maxLen Cap de sécurité — au-delà, on stoppe pour éviter de coller
- *               un URL avec un mot qui suivrait au newline (faux positif rare
- *               mais possible). 2000 couvre largement les URLs OAuth réels
- *               (~300-800 chars typiquement).
- * @returns      URLs uniques, dans l'ordre d'apparition (les + récents en queue)
+ * @param raw    Raw text as received from the SSE stream (may contain ANSI codes)
+ * @param minLen Length threshold — below this, the user can copy by hand
+ * @param maxLen Safety cap — beyond this, we stop to avoid pasting a URL
+ *               together with a word that would follow at the newline (rare
+ *               false positive but possible). 2000 amply covers real OAuth
+ *               URLs (~300-800 chars typically).
+ * @returns      Unique URLs in order of appearance (most recent at the tail)
  */
 export function extractWrappedUrls(raw: string, minLen = 60, maxLen = 2000): string[] {
-  // Strip ANSI d'abord pour éviter que les codes brouillent le regex URL.
+  // Strip ANSI first to avoid codes confusing the URL regex.
   const clean = raw.replace(ANSI_RE, '');
   const out: string[] = [];
   const seen = new Set<string>();
@@ -55,17 +54,17 @@ export function extractWrappedUrls(raw: string, minLen = 60, maxLen = 2000): str
         continue;
       }
       if (c === '\n' || c === '\r') {
-        // Compte les newlines consécutifs. Plus d'1 = paragraph break, on
-        // arrête (ne pas avaler le texte qui suit le paragraphe).
-        // ZÉRO espace toléré entre lignes : un vrai URL OAuth n'a pas
-        // d'indentation à la reprise.
+        // Count consecutive newlines. More than 1 = paragraph break, stop
+        // (don't swallow the text after the paragraph).
+        // ZERO spaces tolerated between lines: a real OAuth URL has no
+        // indentation on resume.
         let next = pos;
         let nlCount = 0;
         while (next < clean.length && (clean[next] === '\n' || clean[next] === '\r')) {
           if (clean[next] === '\n') nlCount++;
           next++;
         }
-        if (nlCount > 1) break;       // paragraph break : on arrête
+        if (nlCount > 1) break;       // paragraph break: stop
         if (next >= clean.length) break;
         if (URL_CHAR.test(clean[next])) {
           pos = next;

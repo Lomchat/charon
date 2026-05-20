@@ -12,15 +12,15 @@ const DEFAULT_FOLDER_ID = 'default';
 //   vps: [{ id, folderId, position }, ...]
 // }
 //
-// Sémantique : on remplace les positions des folders ET les
-// (folderId, position) des VPS listés. Les rows non-mentionnées dans le body
-// ne sont pas touchées (donc on peut envoyer un re-layout partiel, mais
-// l'UI envoie typiquement l'état complet après un drag-end).
+// Semantics: we replace the positions of folders AND the
+// (folderId, position) of the listed VPS. Rows not mentioned in the body
+// are not touched (so we can send a partial re-layout, but the UI
+// typically sends the full state after a drag-end).
 //
-// Validation : tous les folderId référencés dans `vps` doivent exister.
+// Validation: all folderId referenced in `vps` must exist.
 //
-// Retourne l'état complet folders+vps mis à jour (pour que le client
-// resynchronise sans refetch).
+// Returns the full updated folders+vps state (so the client resyncs
+// without refetch).
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -34,8 +34,8 @@ export async function POST(req: Request) {
   const inFolders = Array.isArray(body.folders) ? body.folders : [];
   const inVps = Array.isArray(body.vps) ? body.vps : [];
 
-  // Pre-validation : tous les folder IDs référencés par les vps doivent exister
-  // (incluant ceux qu'on est en train de réordonner).
+  // Pre-validation: all folder IDs referenced by vps must exist
+  // (including those we are reordering).
   const knownFolderIds = new Set(
     db.select({ id: vpsFolders.id }).from(vpsFolders).all().map((r) => r.id)
   );
@@ -48,9 +48,9 @@ export async function POST(req: Request) {
   db.transaction((tx) => {
     for (const f of inFolders) {
       if (!f?.id || typeof f.position !== 'number') continue;
-      // Le dossier 'default' n'est jamais réordonnable côté UI — on ignore
-      // toute tentative de changer sa position via ce endpoint. Sa position
-      // finale est forcée plus bas après tous les autres updates.
+      // The 'default' folder is never reorderable on the UI side — we
+      // ignore any attempt to change its position via this endpoint. Its
+      // final position is forced below after all other updates.
       if (f.id === DEFAULT_FOLDER_ID) continue;
       tx.update(vpsFolders).set({ position: Math.floor(f.position) }).where(eq(vpsFolders.id, f.id)).run();
     }
@@ -61,8 +61,8 @@ export async function POST(req: Request) {
         position: Math.floor(v.position),
       }).where(eq(vps.id, v.id)).run();
     }
-    // Force 'default' à position = (max des autres) + 1 pour qu'il reste
-    // toujours en dernier dans un `ORDER BY position`.
+    // Force 'default' to position = (max of others) + 1 so it always
+    // stays last in `ORDER BY position`.
     const m = tx.select({ p: max(vpsFolders.position) }).from(vpsFolders)
       .where(ne(vpsFolders.id, DEFAULT_FOLDER_ID)).get();
     const targetDefaultPos = (m?.p ?? -1) + 1;

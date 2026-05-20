@@ -19,47 +19,49 @@ import { useInputDraft } from './inputDraftStore';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
-// Composant qui rend toute la zone "session active" du dashboard desktop :
-//   - Barre des actions (sleep / resume / interrupt / force-stop) — la
-//     suppression définitive passe par le menu contextuel (clic-droit
-//     sur la sidebar), pas par un bouton dans la bar (cf. refonte
-//     kill→delete : seul `sleep` est réversible, tout le reste détruit)
-//   - Bannière reconnexion / déconnexion / erreur
-//   - Slot pour overlay (LoginConsole pour `claude login`)
-//   - Chat scroll-reverse + scroll pill
-//   - ThinkingBar pendant 'thinking'
-//   - Input bar (mode switch + textarea + send) — remplacée par
-//     QuestionCard / ExitPlanCard / InlinePermissionCard si pending
+// Component that renders the entire "active session" area of the desktop
+// dashboard:
+//   - Actions bar (sleep / resume / interrupt / force-stop) — permanent
+//     deletion goes through the context menu (right-click on the sidebar),
+//     not through a button in the bar (cf. kill→delete rework: only
+//     `sleep` is reversible, everything else destroys)
+//   - Reconnect / disconnect / error banner
+//   - Slot for overlay (LoginConsole for `claude login`)
+//   - Scroll-reverse chat + scroll pill
+//   - ThinkingBar during 'thinking'
+//   - Input bar (mode switch + textarea + send) — replaced by
+//     QuestionCard / ExitPlanCard / InlinePermissionCard when pending
 //   - ToolPanel (diffs / todos / calls)
 //
-// Toute la logique SSE + state per-session est dans useClaudeSessionStream,
-// donc ce composant est essentiellement du rendu + computeds.
+// All SSE + per-session state logic lives in useClaudeSessionStream,
+// so this component is essentially rendering + computeds.
 //
-// Le parent (ClaudePanel) garde : sidebar, modals globaux, push, service
-// worker, popup permission cross-session, polling sessions list, etc.
+// The parent (ClaudePanel) keeps: sidebar, global modals, push, service
+// worker, cross-session permission popup, sessions list polling, etc.
 
 type Props = {
   sessionId: string;
   selected: SessionListItem;
   selectedVps: Vps | null;
-  // Slot pour overlay parent (LoginConsole pour `claude login`). Rendu entre
-  // la bar et le chat. Le bootstrap d'agent ne passe plus par ici — il ouvre
-  // une session install dédiée (cf. ClaudePanel.openInstallSession).
+  // Slot for parent overlay (LoginConsole for `claude login`). Rendered
+  // between the bar and the chat. Agent bootstrap no longer goes through
+  // here — it opens a dedicated install session
+  // (cf. ClaudePanel.openInstallSession).
   overlay?: React.ReactNode;
-  // Sound + native Notification gérés côté parent (cross-session), mais on
-  // peut quand même jouer un beep sur stop si configuré.
+  // Sound + native Notification handled by the parent (cross-session), but
+  // we can still play a beep on stop if configured.
   notifSoundEnabled?: boolean;
-  // Détection d'erreur "claude-agent-sdk pas installé" sur le VPS → parent
-  // ouvre une session install pour ce VPS (cf. ClaudePanel.openInstallSession).
+  // Detection of "claude-agent-sdk not installed" error on the VPS → parent
+  // opens an install session for this VPS (cf. ClaudePanel.openInstallSession).
   onImportError?: (vps: Vps) => void;
-  // Navigation post-kill (parent setSelectedId(null) + refresh).
+  // Post-kill navigation (parent setSelectedId(null) + refresh).
   onKilled: () => void;
-  // Après revert d'une édition fichier → refresh sessions list parent.
+  // After reverting a file edit → refresh parent's sessions list.
   onAfterRevert?: () => void;
 };
 
-// Cache de la session côté module — sessionCache.ts partagé desktop/mobile.
-// L'instance StreamCache est créée une fois, pas par-render.
+// Module-side session cache — sessionCache.ts shared desktop/mobile.
+// The StreamCache instance is created once, not per-render.
 const sharedCacheRef: StreamCache = {
   get: (id) => getCached(id),
   fetch: (id, force) => fetchAndCache(id, force),
@@ -87,10 +89,10 @@ export default function ClaudeSessionView({
     clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
 
-  // ── State UI local (textarea, scroll, error détails) ──────────────────────
-  // `input` est branché sur `inputDraftStore` pour que le brouillon survive au
-  // switch de session (re-mount du composant via `key={selectedId}`) — cf.
-  // app/inputDraftStore.ts. F5 vide tout (Map in-memory).
+  // ── Local UI state (textarea, scroll, error details) ──────────────────────
+  // `input` is wired to `inputDraftStore` so the draft survives session
+  // switches (component remount via `key={selectedId}`) — cf.
+  // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
@@ -101,7 +103,7 @@ export default function ClaudeSessionView({
   const [newCount, setNewCount] = useState(0);
   const lastMessageCountRef = useRef(0);
 
-  // Drain de prefill_input : copie dans la textarea puis clear.
+  // Drain prefill_input: copy into the textarea then clear.
   useEffect(() => {
     if (prefillInput !== null) {
       setInput(prefillInput);
@@ -109,10 +111,10 @@ export default function ClaudeSessionView({
     }
   }, [prefillInput, clearPrefillInput]);
 
-  // Détection import-error → callback parent pour ouvrir une session install.
-  // Le message d'erreur "No module named claude_agent_sdk" remonte du SDK
-  // Python qui ne peut pas charger le module — l'agent est probablement
-  // installé mais pas la dépendance pip.
+  // Import-error detection → parent callback to open an install session.
+  // The "No module named claude_agent_sdk" error message comes from the
+  // Python SDK that cannot load the module — the agent is probably
+  // installed but the pip dependency is missing.
   useEffect(() => {
     if (!error?.msg) return;
     const needsBootstrap =
@@ -126,7 +128,7 @@ export default function ClaudeSessionView({
   }, [error, selectedVps, onImportError, clearError]);
 
   // ── Computeds ─────────────────────────────────────────────────────────────
-  // Pair tool_use ↔ tool_result pour rendu inline.
+  // Pair tool_use ↔ tool_result for inline rendering.
   const renderable = useMemo(() => {
     const resultByToolUseId = new Map<string, Msg>();
     for (const m of messages) {
@@ -226,15 +228,15 @@ export default function ClaudeSessionView({
     return null;
   }, [messages]);
 
-  // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = bas visuel) ───────
-  // En column-reverse :
-  //   scrollTop ≈ 0           → visuellement en bas (newest message)
-  //   |scrollTop| ≈ scrollHeight - clientHeight → visuellement en haut (oldest)
-  // Donc distance du HAUT visuel = scrollHeight - clientHeight - |scrollTop|.
-  // Threshold loadMore : 400px ≈ 2-3 messages avant la fin → laisse le
-  // temps au backend de répondre avant que l'user soit visuellement bloqué.
-  // `isAtTop` = au sommet ABSOLU (utilisé pour décider si le bouton ↑ doit
-  // disparaître ; il reste tant qu'il y a quelque chose à remonter).
+  // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = visual bottom) ───
+  // In column-reverse:
+  //   scrollTop ≈ 0           → visually at the bottom (newest message)
+  //   |scrollTop| ≈ scrollHeight - clientHeight → visually at the top (oldest)
+  // So distance from VISUAL TOP = scrollHeight - clientHeight - |scrollTop|.
+  // loadMore threshold: 400px ≈ 2-3 messages before the end → gives the
+  // backend time to respond before the user is visually stuck.
+  // `isAtTop` = at the ABSOLUTE top (used to decide whether the ↑ button
+  // should disappear; it stays as long as there's something to scroll back up to).
   const [isAtTop, setIsAtTop] = useState(false);
   const handleChatScroll = useCallback(() => {
     const el = chatBodyRef.current;
@@ -245,10 +247,10 @@ export default function ClaudeSessionView({
       setIsAtBottom(atBottom);
     }
     if (atBottom) setNewCount(0);
-    // Near-top detect → loadMore. Le hook guard contre les appels concurrents
-    // et le hasMore=false. Le browser fait du scroll anchoring nativement
-    // quand on append à la fin du DOM (= haut visuel en column-reverse),
-    // donc la position est préservée sans manip manuelle de scrollTop.
+    // Near-top detect → loadMore. The hook guards against concurrent calls
+    // and hasMore=false. The browser does scroll anchoring natively when
+    // we append to the end of the DOM (= visual top in column-reverse),
+    // so the position is preserved without manually fiddling with scrollTop.
     const max = el.scrollHeight - el.clientHeight;
     const distFromTop = max - Math.abs(el.scrollTop);
     if (distFromTop < 400 && hasMore && !isLoadingMore) {
@@ -256,7 +258,7 @@ export default function ClaudeSessionView({
     }
     setIsAtTop(max <= 0 || distFromTop < 4);
   }, [hasMore, isLoadingMore, loadMoreHistory]);
-  // Recompute isAtTop quand le contenu change (nouveaux messages → max bouge).
+  // Recompute isAtTop when the content changes (new messages → max moves).
   useEffect(() => { handleChatScroll(); }, [messages.length, handleChatScroll]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
@@ -264,16 +266,16 @@ export default function ClaudeSessionView({
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  // ── Scroll-up vers le précédent message utilisateur ────────────────────
-  // Le bouton "↑" (au-dessus de la pill ↓) remonte au dernier message user
-  // au-dessus de la zone visible. Clic répété → on continue de message en
-  // message. Si plus aucun user message au-dessus mais qu'il reste de
-  // l'historique à paginer, on déclenche loadMoreHistory. Sinon (tout en
-  // haut, plus rien à charger), on saute au sommet visuel.
+  // ── Scroll-up to the previous user message ────────────────────────────
+  // The "↑" button (above the ↓ pill) jumps to the last user message above
+  // the visible area. Repeated click → we keep going message by message.
+  // If there's no more user message above but there's still history to
+  // paginate, we trigger loadMoreHistory. Otherwise (at the very top, nothing
+  // more to load), we jump to the visual top.
   //
-  // On utilise scrollIntoView({block:'start'}) qui aligne le top de
-  // l'élément avec le top du container EN SCREEN COORDS, indépendamment
-  // du signe scrollTop (Chrome négatif, Firefox positif en column-reverse).
+  // We use scrollIntoView({block:'start'}) which aligns the top of the
+  // element with the top of the container IN SCREEN COORDS, independently
+  // of the sign of scrollTop (Chrome negative, Firefox positive in column-reverse).
   const onScrollUpClick = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -284,8 +286,8 @@ export default function ClaudeSessionView({
     for (const bubble of userBubbles) {
       const r = bubble.getBoundingClientRect();
       const gap = containerRect.top - r.top;
-      // gap > 4 : bubble est au moins 4px au-dessus du top visible
-      // (filtre les hits sur le bubble qui est exactement à la limite).
+      // gap > 4: bubble is at least 4px above the visible top
+      // (filters out hits on the bubble that's exactly at the limit).
       if (gap > 4 && gap < bestGap) {
         bestGap = gap;
         target = bubble;
@@ -294,24 +296,24 @@ export default function ClaudeSessionView({
     if (target) {
       target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     } else if (hasMore && !isLoadingMore) {
-      // Plus aucun user message au-dessus, mais il reste de l'historique :
-      // pagine. Une fois les anciens chargés, l'user pourra recliquer pour
-      // continuer à remonter.
+      // No more user message above, but there's still history left:
+      // paginate. Once the older messages are loaded, the user can click
+      // again to keep scrolling up.
       loadMoreHistory();
     } else {
-      // Sommet visuel atteint : aligne le dernier enfant DOM (= visuellement
-      // tout en haut en column-reverse) sur le top du container.
+      // Visual top reached: align the last DOM child (= visually at the
+      // very top in column-reverse) with the top of the container.
       const last = el.lastElementChild as HTMLElement | null;
       if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
   }, [hasMore, isLoadingMore, loadMoreHistory]);
 
-  // Le bouton ↑ reste visible tant qu'on a quelque chose à remonter :
-  //   - pas au sommet visuel ABSOLU, OU
-  //   - il reste de l'historique à paginer (hasMore || isLoadingMore).
+  // The ↑ button stays visible as long as there's something to scroll up to:
+  //   - not at the ABSOLUTE visual top, OR
+  //   - there's still history left to paginate (hasMore || isLoadingMore).
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
 
-  // Compte les nouveaux messages quand l'user n'est PAS en bas, pour la pill ↓ N.
+  // Count new messages when the user is NOT at the bottom, for the ↓ N pill.
   useEffect(() => {
     const prev = lastMessageCountRef.current;
     const cur = messages.length;
@@ -321,7 +323,7 @@ export default function ClaudeSessionView({
     lastMessageCountRef.current = cur;
   }, [messages.length]);
 
-  // ── Actions wrappers (gèrent juste l'UI locale autour du hook) ────────────
+  // ── Action wrappers (just handle local UI around the hook) ────────────────
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content) return;
@@ -329,11 +331,11 @@ export default function ClaudeSessionView({
     await streamSend(content);
   }, [input, streamSend]);
 
-  // Le bouton "pause" du header était un faux ami : il appelait `kill` qui
-  // mettait la session en état `'killed'` non reprenable. La refonte a
-  // supprimé ce middle state. La suppression définitive se fait désormais
-  // via le menu contextuel sidebar (clic-droit → "Supprimer définitivement"),
-  // pas depuis cette zone. Voir CLAUDE.md §11 et §14.
+  // The "pause" button in the header used to be a false friend: it called
+  // `kill` which put the session in a non-resumable `'killed'` state. The
+  // rework removed this middle state. Permanent deletion now happens via
+  // the sidebar context menu (right-click → "Delete permanently"),
+  // not from this area. See CLAUDE.md §11 and §14.
 
   const copyError = useCallback(async () => {
     if (!error?.msg) return;
@@ -349,7 +351,7 @@ export default function ClaudeSessionView({
     <>
       <main className="claude-main">
         <div className="claude-bar">
-          <span className="bar-name">{selected.name || '(sans nom)'}</span>
+          <span className="bar-name">{selected.name || '(unnamed)'}</span>
           {status === 'sleeping' || status === 'error' ? (
             <button onClick={() => doResume()}>resume</button>
           ) : (
@@ -360,13 +362,13 @@ export default function ClaudeSessionView({
             className="kill"
             onClick={forceStop}
             disabled={!['thinking', 'active', 'starting'].includes(status ?? '')}
-            title="Cancel forcé (SDK bloqué) — la session passe sleeping, resume possible"
+            title="Force cancel (SDK stuck) — session goes to sleeping, resume possible"
           >force stop</button>
         </div>
 
         {status === 'reconnecting' && (
           <div className="claude-reconnect-banner">
-            <span className="msg"><span className="spin">↻</span> reconnexion auto en cours…</span>
+            <span className="msg"><span className="spin">↻</span> auto-reconnecting…</span>
           </div>
         )}
 
@@ -374,7 +376,7 @@ export default function ClaudeSessionView({
           <div className="claude-disconnect-banner-wrap">
             <div className="claude-disconnect-banner" onClick={() => doResume()} role="button">
               <span className="msg">
-                session inactive — cliquez pour reconnecter
+                inactive session — click to reconnect
                 {error?.msg ? <em className="why"> · {error.msg.split('\n')[0].slice(0, 160)}</em> : null}
               </span>
               <span className="resume-chip">↺ resume</span>
@@ -383,12 +385,12 @@ export default function ClaudeSessionView({
               <div className="claude-error-details">
                 <div className="err-tools">
                   <button type="button" onClick={(e) => { e.stopPropagation(); setErrorOpen((v) => !v); }}>
-                    {errorOpen ? '▾ masquer détails' : '▸ voir détails'}
+                    {errorOpen ? '▾ hide details' : '▸ show details'}
                   </button>
-                  <button type="button" className="copy-btn" onClick={(e) => { e.stopPropagation(); copyError(); }} title="copier l'erreur">
-                    {errorCopied ? '✓ copié' : '📋 copier'}
+                  <button type="button" className="copy-btn" onClick={(e) => { e.stopPropagation(); copyError(); }} title="copy the error">
+                    {errorCopied ? '✓ copied' : '📋 copy'}
                   </button>
-                  <button type="button" className="dismiss-btn" onClick={(e) => { e.stopPropagation(); clearError(); }} title="masquer l'erreur">✕</button>
+                  <button type="button" className="dismiss-btn" onClick={(e) => { e.stopPropagation(); clearError(); }} title="hide the error">✕</button>
                 </div>
                 {errorOpen && <pre className="err-pre">{error.msg}</pre>}
               </div>
@@ -399,7 +401,7 @@ export default function ClaudeSessionView({
         {status !== 'sleeping' && status !== 'error' && error && (
           <div className="claude-error">
             <span className="msg">{error.msg.split('\n')[0].slice(0, 200)}</span>
-            <button type="button" className="copy-btn" onClick={copyError} title="copier l'erreur">
+            <button type="button" className="copy-btn" onClick={copyError} title="copy the error">
               {errorCopied ? '✓' : '📋'}
             </button>
             <button onClick={clearError}>✕</button>
@@ -411,12 +413,12 @@ export default function ClaudeSessionView({
         <div className="claude-chat-wrap">
           <div className="claude-chat" ref={chatBodyRef} onScroll={handleChatScroll}>
             {isLoadingHistory && messages.length === 0 ? (
-              // Placeholder pendant le 1er refetch — différencie « session vide »
-              // de « historique pas encore chargé ». Disparaît dès que
-              // applyApiData est passé (cache ou fetch).
+              // Placeholder during the 1st refetch — differentiates "empty
+              // session" from "history not yet loaded". Disappears as soon
+              // as applyApiData has run (cache or fetch).
               <div className="claude-history-loading" role="status" aria-live="polite">
                 <span className="claude-history-loading-spinner" aria-hidden />
-                <span>chargement de l'historique…</span>
+                <span>loading history…</span>
               </div>
             ) : (
               <>
@@ -426,34 +428,34 @@ export default function ClaudeSessionView({
                 {[...renderable].reverse().map(({ msg, attached }) => (
                   <Message key={msg.id} m={msg} attachedResult={attached} />
                 ))}
-                {/* Indicateur "chargement plus ancien" / "début de l'historique".
-                    En column-reverse, le dernier enfant DOM rend visuellement
-                    en HAUT du chat — c'est exactement où l'user le veut. */}
+                {/* "Loading older" / "start of history" indicator.
+                    In column-reverse, the last DOM child renders visually at
+                    the TOP of the chat — exactly where the user wants it. */}
                 {(hasMore || isLoadingMore) && (
                   <div className="claude-loadmore-indicator" role="status" aria-live="polite">
                     {isLoadingMore ? (
-                      <><span className="claude-history-loading-spinner" aria-hidden /> chargement de l'historique…</>
+                      <><span className="claude-history-loading-spinner" aria-hidden /> loading history…</>
                     ) : (
-                      <button type="button" onClick={() => loadMoreHistory()}>↑ charger plus ancien</button>
+                      <button type="button" onClick={() => loadMoreHistory()}>↑ load older</button>
                     )}
                   </div>
                 )}
                 {!hasMore && !isLoadingMore && messages.length > 0 && (
-                  <div className="claude-history-start">— début de l'historique —</div>
+                  <div className="claude-history-start">— start of history —</div>
                 )}
               </>
             )}
           </div>
-          {/* Zone fixe pour les boutons de scroll. La pill ↓ peut disparaître
-              (quand on est en bas), mais le bouton ↑ garde sa position fixe
-              au-dessus, indépendamment. */}
+          {/* Fixed area for the scroll buttons. The ↓ pill may disappear
+              (when at the bottom), but the ↑ button keeps its fixed position
+              above, independently. */}
           {showScrollUpButton && (
             <button
               type="button"
               className="claude-scroll-up-pill"
               onClick={onScrollUpClick}
-              aria-label="remonter au dernier message utilisateur"
-              title="remonter au dernier message utilisateur"
+              aria-label="scroll up to last user message"
+              title="scroll up to last user message"
             >
               <span className="claude-scroll-arrow">▴</span>
             </button>
@@ -463,8 +465,8 @@ export default function ClaudeSessionView({
               type="button"
               className={`claude-scroll-pill${newCount > 0 ? ' has-new' : ''}`}
               onClick={onPillClick}
-              aria-label={newCount > 0 ? `${newCount} nouveau message — aller en bas` : 'aller en bas'}
-              title={newCount > 0 ? `${newCount} nouveau message` : 'aller en bas'}
+              aria-label={newCount > 0 ? `${newCount} new message — go to bottom` : 'go to bottom'}
+              title={newCount > 0 ? `${newCount} new message` : 'go to bottom'}
             >
               <span className="claude-scroll-arrow">▾</span>
               {newCount > 0 && <span className="claude-scroll-count">{newCount}</span>}
@@ -476,11 +478,11 @@ export default function ClaudeSessionView({
           <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} />
         )}
 
-        {/* Zone d'input — remplacée par CTA resume si déconnectée, ou
-            QuestionCard/ExitPlanCard/PermissionCard si pending. */}
+        {/* Input area — replaced by resume CTA if disconnected, or
+            QuestionCard/ExitPlanCard/PermissionCard if pending. */}
         {(status === 'sleeping' || status === 'error') ? (
           <div className="claude-disconnect-cta">
-            <button onClick={() => doResume()}>↺ RESUME CETTE SESSION</button>
+            <button onClick={() => doResume()}>↺ RESUME THIS SESSION</button>
           </div>
         ) : oldestPending ? (
           <div className="claude-pending-zone">
@@ -507,13 +509,13 @@ export default function ClaudeSessionView({
           </div>
         ) : (
           <footer className="claude-input-bar">
-            <div className="mode-switch" role="radiogroup" aria-label="mode permissions">
+            <div className="mode-switch" role="radiogroup" aria-label="permission mode">
               <button
                 type="button" role="radio"
                 aria-checked={permissionMode === 'normal'}
                 className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
                 onClick={() => setMode('normal')}
-                title="normal — demande la permission à chaque outil"
+                title="normal — asks permission for every tool"
               >
                 <span className="m-glyph">▷</span><span className="m-label">normal</span>
               </button>
@@ -522,7 +524,7 @@ export default function ClaudeSessionView({
                 aria-checked={permissionMode === 'acceptEdits'}
                 className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
                 onClick={() => setMode('acceptEdits')}
-                title="accept edits — auto-accepte les éditions de fichier, demande pour le reste"
+                title="accept edits — auto-accepts file edits, asks for the rest"
               >
                 <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
               </button>
@@ -531,7 +533,7 @@ export default function ClaudeSessionView({
                 aria-checked={permissionMode === 'auto'}
                 className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
                 onClick={() => setMode('auto')}
-                title="accept all — accepte tout sans demander (DANGER)"
+                title="accept all — accepts everything without asking (DANGER)"
               >
                 <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
               </button>
@@ -540,7 +542,7 @@ export default function ClaudeSessionView({
                 aria-checked={permissionMode === 'plan'}
                 className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
                 onClick={() => setMode('plan')}
-                title="plan mode — propose un plan sans exécuter d'outils"
+                title="plan mode — proposes a plan without running tools"
               >
                 <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
               </button>
@@ -548,7 +550,7 @@ export default function ClaudeSessionView({
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="message à Claude (Entrée envoie, Shift/Ctrl+Entrée saut de ligne)"
+              placeholder="message to Claude (Enter sends, Shift/Ctrl+Enter for newline)"
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return;
                 if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -557,7 +559,7 @@ export default function ClaudeSessionView({
               }}
               rows={3}
             />
-            <button className="send" onClick={send} disabled={!input.trim()}>envoyer</button>
+            <button className="send" onClick={send} disabled={!input.trim()}>send</button>
           </footer>
         )}
       </main>
@@ -573,7 +575,7 @@ export default function ClaudeSessionView({
   );
 }
 
-// ── Sous-composants spécifiques à la vue ────────────────────────────────────
+// ── View-specific sub-components ────────────────────────────────────────────
 
 function InlinePermissionCard({ perm, onRespond }: {
   perm: PermissionRequest;
@@ -614,7 +616,7 @@ function ThinkingBar({
   return (
     <div className="thinking-bar">
       <span className="t-dot" />
-      <span className="t-label">Claude réfléchit</span>
+      <span className="t-label">Claude is thinking</span>
       {currentTool && (
         <span className="t-tool">
           <span className="sep">·</span>
@@ -624,7 +626,7 @@ function ThinkingBar({
         </span>
       )}
       <span className="t-meta">
-        {stepCount > 0 && <><span className="sep">·</span> étape {stepCount}</>}
+        {stepCount > 0 && <><span className="sep">·</span> step {stepCount}</>}
         {elapsed != null && <><span className="sep">·</span> {fmtElapsed(elapsed)}</>}
       </span>
     </div>

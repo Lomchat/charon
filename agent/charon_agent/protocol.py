@@ -1,20 +1,20 @@
-"""Format des messages JSON-RPC line-delimited entre Charon et l'agent.
+"""Format of line-delimited JSON-RPC messages between Charon and the agent.
 
-Trois types de messages :
+Three message types:
 
 - Request  (Charon → Agent)  : {"id": <int>, "method": str, "params": {...}}
 - Response (Agent → Charon)  : {"id": <int>, "result": {...}}
-                            ou {"id": <int>, "error": {"code": int, "message": str}}
+                            or {"id": <int>, "error": {"code": int, "message": str}}
 - Event    (Agent → Charon)  : {"event": str, "session_id": str, ...}
 
-Un Event n'a pas d'"id" — c'est ce qui le distingue d'une Response.
+An Event has no "id" — that's what distinguishes it from a Response.
 """
 from __future__ import annotations
 
 from typing import Any
 
 
-# ── Erreurs JSON-RPC ─────────────────────────────────────────────────────────
+# ── JSON-RPC errors ──────────────────────────────────────────────────────────
 class RpcError(Exception):
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -22,7 +22,7 @@ class RpcError(Exception):
         self.message = message
 
 
-# Codes (calqués sur JSON-RPC 2.0 mais étendus pour notre cas)
+# Codes (modeled on JSON-RPC 2.0 but extended for our case)
 ERR_PARSE = -32700
 ERR_INVALID_REQUEST = -32600
 ERR_METHOD_NOT_FOUND = -32601
@@ -53,7 +53,7 @@ def make_event(event: str, session_id: str | None, **fields: Any) -> dict[str, A
     return msg
 
 
-# ── Liste des méthodes (référence) ───────────────────────────────────────────
+# ── List of methods (reference) ──────────────────────────────────────────────
 METHODS = {
     "hello",
     "ping",

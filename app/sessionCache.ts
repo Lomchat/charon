@@ -2,17 +2,17 @@
 import { api } from '@/lib/api';
 import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
 
-// Cache module-level partagé desktop + mobile.
-// - Mobile : `/m/select` prefetch toutes les sessions au mount → `/m/chat`
-//   lit le cache et render instant.
-// - Desktop : ClaudePanel prefetch les sessions de la sidebar → switch
-//   entre sessions est instantané via `<ClaudeSessionView key={id}>`
-//   (re-mount mais le hook lit le cache au mount).
+// Module-level cache shared between desktop + mobile.
+// - Mobile: `/m/select` prefetches all sessions on mount → `/m/chat`
+//   reads from the cache and renders instantly.
+// - Desktop: ClaudePanel prefetches the sidebar sessions → switching
+//   between sessions is instant via `<ClaudeSessionView key={id}>`
+//   (re-mount but the hook reads the cache on mount).
 //
-// Avant ce module, `app/m/chatCache.ts` ne servait qu'au mobile. Promu en
-// `app/sessionCache.ts` pour être réutilisable côté desktop sans cross-import
-// entre app/m/ et app/. L'ancien fichier mobile ré-exporte depuis ici pour
-// préserver les imports existants (rétrocompat).
+// Before this module, `app/m/chatCache.ts` only served mobile. Promoted to
+// `app/sessionCache.ts` to be reusable on the desktop side without cross-import
+// between app/m/ and app/. The old mobile file re-exports from here to
+// preserve existing imports (backward compatibility).
 
 type CacheEntry = {
   data: ClaudeSessionDetailResponse;
@@ -22,9 +22,9 @@ type CacheEntry = {
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<ClaudeSessionDetailResponse>>();
 
-// Une entrée est "fraîche" pendant STALE_MS. Au-delà, on refetch (mais on
-// retourne le cache d'abord pour render instant ; l'appelant ré-applique
-// quand le fresh arrive).
+// An entry is "fresh" for STALE_MS. Beyond that, we refetch (but we
+// return the cache first to render instantly; the caller re-applies
+// when the fresh data arrives).
 const STALE_MS = 15_000;
 
 export function getCached(id: string): ClaudeSessionDetailResponse | undefined {
@@ -37,8 +37,8 @@ export function isCacheFresh(id: string): boolean {
 }
 
 /**
- * Fetch + cache d'une session. Dedup les calls concurrents.
- * Si une entrée fresh existe et `force=false` → return cached sans fetch.
+ * Fetch + cache a session. Dedups concurrent calls.
+ * If a fresh entry exists and `force=false` → return cached without fetch.
  */
 export async function fetchAndCache(id: string, force = false): Promise<ClaudeSessionDetailResponse> {
   if (!force) {
@@ -60,7 +60,7 @@ export async function fetchAndCache(id: string, force = false): Promise<ClaudeSe
   return p;
 }
 
-/** Lance des prefetches en background pour la liste des sessions. */
+/** Launch background prefetches for the list of sessions. */
 export function prefetchAll(ids: string[]): void {
   for (const id of ids) {
     fetchAndCache(id).catch(() => {});
@@ -72,22 +72,22 @@ export function invalidate(id: string): void {
 }
 
 /**
- * Étend l'entrée cache d'une session avec une fenêtre de messages plus
- * anciens (résultat d'un loadOlderClaudeMessages). Préserve la position
- * dans l'historique au switch de session / remount du composant.
+ * Extend a session's cache entry with a window of older messages
+ * (the result of a loadOlderClaudeMessages). Preserves the position
+ * in history across session switches / component remounts.
  *
- * Pas d'erreur si l'entrée n'existe pas (no-op) — l'appelant peut tout
- * de même avoir des données fraîches en local. Note : on ne préserve PAS
- * les pages étendues à travers un `fetchAndCache(force=true)` — un refresh
- * full reload (visibilitychange, manuel) reset à la dernière fenêtre. Le
- * trade-off : simplicité > fidélité absolue du scroll après long absence.
+ * No error if the entry doesn't exist (no-op) — the caller may still
+ * have fresh data locally. Note: extended pages are NOT preserved
+ * across a `fetchAndCache(force=true)` — a full reload (visibilitychange,
+ * manual) resets to the latest window. The trade-off: simplicity > absolute
+ * scroll fidelity after long absence.
  */
 export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow): void {
   const e = cache.get(id);
   if (!e) return;
-  // Le merge garde l'ordre asc par id. Les anciens viennent par définition
-  // avant les actuels (id plus petits). On garde le hasMore/oldestChatId
-  // de la dernière page chargée (la plus ancienne).
+  // The merge keeps asc order by id. The older messages come, by definition,
+  // before the current ones (smaller ids). We keep hasMore/oldestChatId
+  // from the last loaded page (the oldest).
   cache.set(id, {
     ...e,
     data: {
@@ -96,6 +96,6 @@ export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow): 
       hasMore: older.hasMore,
       oldestChatId: older.oldestChatId,
     },
-    // fetchedAt inchangé : on n'a pas refresh la session, juste rallongé.
+    // fetchedAt unchanged: we didn't refresh the session, just extended it.
   });
 }

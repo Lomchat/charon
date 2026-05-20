@@ -67,22 +67,22 @@ function labelOf(p: VpsPath): string {
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
   const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
-  if (diff < 60) return 'à l’instant';
+  if (diff < 60) return 'just now';
   if (diff < 3600) return Math.floor(diff / 60) + 'min';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h';
-  if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'j';
+  if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'd';
   const d = new Date(unixSeconds * 1000);
-  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+  return d.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
 }
 
 export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsPaths, initialSessions }: Props) {
   const router = useRouter();
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
   const [shells, setShells] = useState<ShellListItem[]>([]);
-  // Collapse par-VPS : conservé en localStorage (par-device, comme desktop).
+  // Per-VPS collapse: kept in localStorage (per-device, like desktop).
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  // Liste des dossiers — synchronisée à intervalle régulier avec le serveur
-  // pour qu'un toggle desktop se reflète mobile (collapsed est persisté en DB
+  // Folders list — synchronized periodically with the server so that a
+  // desktop toggle reflects on mobile (collapsed is persisted in DB
   // via PATCH /api/vps-folders/[id], cf. CLAUDE.md §4 vps_folders).
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [newSheet, setNewSheet] = useState<null | { vpsId?: string; cwd?: string }>(null);
@@ -92,7 +92,7 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     | null
   >(null);
 
-  // Persiste l'état collapse par-VPS (localStorage seulement, par-device)
+  // Persists the per-VPS collapse state (localStorage only, per-device)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSED_KEY);
@@ -109,22 +109,22 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     });
   }
 
-  // Toggle collapsed d'un dossier — optimiste, persisté en DB (PATCH).
-  // Le rollback en cas d'échec revert l'état local. Sur desktop on a la même
-  // approche dans ClaudePanel.onToggleFolderCollapsed.
+  // Toggle a folder's collapsed state — optimistic, persisted in DB (PATCH).
+  // The rollback on failure reverts the local state. On desktop we have the
+  // same approach in ClaudePanel.onToggleFolderCollapsed.
   async function toggleFolderCollapsed(folderId: string, collapsedNext: boolean) {
     setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsedNext ? 1 : 0 } : f));
     try {
       await api.updateVpsFolder(folderId, { collapsed: collapsedNext });
     } catch (e: any) {
-      // Rollback : reapply l'inverse pour rester cohérent
+      // Rollback: re-apply the inverse to stay consistent
       setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsedNext ? 0 : 1 } : f));
-      alert('toggle folder : ' + (e?.message ?? e));
+      alert('toggle folder: ' + (e?.message ?? e));
     }
   }
 
-  // Poll sessions + folders toutes les 5s. Les folders sont sync pour qu'un
-  // toggle desktop (changement DB) se propage côté mobile sans refresh.
+  // Poll sessions + folders every 5s. Folders are synced so a desktop toggle
+  // (DB change) propagates to the mobile side without a refresh.
   const refresh = useCallback(async () => {
     try {
       const r = (await api.listClaudeSessions()) as { sessions: SessionListItem[] };
@@ -145,10 +145,10 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     return () => clearInterval(t);
   }, [refresh]);
 
-  // Prefetch les historiques de tous les chats en background. Quand l'user
-  // tap un chat, /m/chat lit le cache et render instant, sans round-trip.
-  // Re-prefetch quand la liste des sessions change (un nouveau chat
-  // apparaît) ou périodiquement (cache marqué stale après 15s, refetch).
+  // Prefetch the history of all chats in the background. When the user
+  // taps a chat, /m/chat reads from the cache and renders instantly, no
+  // round-trip. Re-prefetch when the sessions list changes (a new chat
+  // appears) or periodically (cache marked stale after 15s, refetch).
   useEffect(() => {
     prefetchAll(sessions.map((s) => s.id));
     const t = setInterval(() => prefetchAll(sessions.map((s) => s.id)), 10_000);
@@ -168,8 +168,8 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     return m;
   }, [vpsPaths]);
 
-  // Groupe les VPS par folderId, en respectant l'ordre `position` intra-folder.
-  // Mêmes règles que Sidebar.tsx desktop.
+  // Group VPSes by folderId, respecting intra-folder `position` order.
+  // Same rules as Sidebar.tsx desktop.
   const vpsByFolder = useMemo(() => {
     const m = new Map<string, Vps[]>();
     for (const v of vpsList) {
@@ -181,8 +181,8 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     return m;
   }, [vpsList]);
 
-  // Folders triés par position, avec règle "default last". Si un VPS pointe
-  // vers un folderId inconnu, on crée un dossier virtuel "(orphelins)" en bas.
+  // Folders sorted by position, with the "default last" rule. If a VPS
+  // points to an unknown folderId, we create a virtual "(orphans)" folder at the bottom.
   const sortedFolders = useMemo(() => {
     const sorted = [...vpsFolders].sort((a, b) => {
       if (a.id === 'default') return 1;
@@ -195,7 +195,7 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     if (orphanedFolderIds.size > 0) {
       sorted.push({
         id: '__orphans__',
-        name: '(orphelins)',
+        name: '(orphans)',
         position: 999999,
         collapsed: 0,
         createdAt: 0,
@@ -223,36 +223,36 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
       const updated = await res.json();
       setSessions((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
     } catch (e: any) {
-      alert('erreur : ' + (e?.message ?? e));
+      alert('error: ' + (e?.message ?? e));
     }
   }
   async function renameSession(id: string, name: string) {
     try {
       await api.renameClaudeSession(id, name || null);
       refresh();
-    } catch (e: any) { alert('rename : ' + (e?.message ?? e)); }
+    } catch (e: any) { alert('rename: ' + (e?.message ?? e)); }
   }
   async function editSessionCwd(s: SessionListItem) {
-    const newCwd = prompt('Nouveau dossier (cwd) pour cette session ?\n(la session sera recréée au prochain resume)', s.cwd);
+    const newCwd = prompt('New folder (cwd) for this session?\n(the session will be recreated on next resume)', s.cwd);
     if (newCwd == null || newCwd.trim() === '' || newCwd.trim() === s.cwd) return;
     await patchSession(s.id, { cwd: newCwd.trim() });
     refresh();
   }
-  // Sleep cross-session (depuis le menu contextuel mobile). Réversible — la
-  // session sera reprenable via le bouton resume de l'écran chat. Pas de
-  // confirm, opération non destructive.
+  // Cross-session sleep (from the mobile context menu). Reversible — the
+  // session is resumable via the chat screen's resume button. No confirm,
+  // non-destructive operation.
   async function sleepSessionOne(id: string) {
     try { await api.sleepClaudeSession(id); refresh(); }
-    catch (e: any) { alert('sleep : ' + (e?.message ?? e)); }
+    catch (e: any) { alert('sleep: ' + (e?.message ?? e)); }
   }
 
-  // Suppression définitive (cascade DB côté serveur). Plus de soft-kill — la
-  // session disparaît avec son historique. Pour mettre en pause sans perdre,
-  // c'est `doSleep` depuis l'écran chat. Cf. CLAUDE.md §10.
+  // Permanent deletion (DB cascade on the server side). No more soft-kill —
+  // the session disappears with its history. To pause without losing it,
+  // use `doSleep` from the chat screen. Cf. CLAUDE.md §10.
   async function deleteSessionOne(id: string) {
-    if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
+    if (!confirm('Permanently delete this session and all its history?')) return;
     try { await api.deleteClaudeSession(id); refresh(); }
-    catch (e: any) { alert('supprimer : ' + (e?.message ?? e)); }
+    catch (e: any) { alert('delete: ' + (e?.message ?? e)); }
   }
 
   // ── Actions context menu (shells) ───────────────────────────────────────
@@ -260,13 +260,13 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     try {
       const updated = await api.updateShell(id, body);
       setShells((prev) => prev.map((s) => s.id === id ? { ...s, ...updated } : s));
-    } catch (e: any) { alert('shell : ' + (e?.message ?? e)); }
+    } catch (e: any) { alert('shell: ' + (e?.message ?? e)); }
   }
   async function killShell(id: string) {
     try {
       await api.killShell(id);
       setShells((prev) => prev.filter((s) => s.id !== id));
-    } catch (e: any) { alert('kill shell : ' + (e?.message ?? e)); }
+    } catch (e: any) { alert('kill shell: ' + (e?.message ?? e)); }
   }
 
   async function startNewShell(vpsId: string, cwd: string | null) {
@@ -278,9 +278,9 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     }
   }
 
-  // Rendu d'une carte VPS — extrait pour pouvoir la rendre depuis le loop
-  // folder. Toute la logique groups/paths/sessions est ici (identique au
-  // pré-folders, simplement déplacée dans une fonction).
+  // Render a VPS card — extracted so it can be rendered from the folder
+  // loop. All the groups/paths/sessions logic is here (identical to the
+  // pre-folders code, just moved into a function).
   function renderVpsCard(v: Vps) {
     const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
     const vpsShells = shells.filter((sh) => sh.vpsId === v.id);
@@ -339,14 +339,14 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
                     <button
                       className="m-path-action"
                       onClick={() => setNewSheet({ vpsId: v.id, cwd: p.path })}
-                      title="nouvelle session"
-                      aria-label="nouvelle session"
+                      title="new session"
+                      aria-label="new session"
                     >+</button>
                     <button
                       className="m-path-action"
                       onClick={() => startNewShell(v.id, p.path)}
-                      title="nouveau shell"
-                      aria-label="nouveau shell"
+                      title="new shell"
+                      aria-label="new shell"
                       style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
                     >⌨</button>
                   </div>
@@ -367,7 +367,7 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
                     ))}
                     {(g?.sessions.length ?? 0) === 0 && (g?.shells.length ?? 0) === 0 && (
                       <div style={{ fontSize: 12, color: 'var(--parchment-soft)', fontStyle: 'italic', padding: '6px 0' }}>
-                        aucune session
+                        no session
                       </div>
                     )}
                   </div>
@@ -382,17 +382,17 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
               return (
                 <div className="m-path-block">
                   <div className="m-path-head">
-                    <span className="m-path-label">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
+                    <span className="m-path-label">{paths.length === 0 ? 'no saved path' : 'other'}</span>
                     <button
                       className="m-path-action"
                       onClick={() => setNewSheet({ vpsId: v.id })}
-                      title="nouvelle session"
-                      aria-label="nouvelle session"
+                      title="new session"
+                      aria-label="new session"
                     >+</button>
                     <button
                       className="m-path-action"
                       onClick={() => startNewShell(v.id, null)}
-                      title="nouveau shell"
+                      title="new shell"
                       style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
                     >⌨</button>
                   </div>
@@ -445,8 +445,8 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
       <div className="m-select-body">
         {vpsList.length === 0 && (
           <div className="m-empty-vps">
-            <p>Aucun VPS configuré.</p>
-            <a href="/">Configurer (desktop)</a>
+            <p>No VPS configured.</p>
+            <a href="/">Configure (desktop)</a>
           </div>
         )}
 
@@ -458,7 +458,7 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
           } else {
             folderVps = vpsByFolder.get(folder.id) ?? [];
           }
-          // Compteur agrégé : sessions actives à travers tous les VPS du dossier
+          // Aggregate counter: active sessions across all VPSes of the folder
           const folderActiveCount = sessions.filter(
             (s) => folderVps.some((v) => v.id === s.vpsId) && ACTIVE_STATUSES.has(s.liveStatus ?? s.status),
           ).length;
@@ -474,14 +474,14 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
                 }}
                 role="button"
                 aria-expanded={!folderCollapsed}
-                title={folderCollapsed ? 'cliquer pour déplier le dossier' : 'cliquer pour replier le dossier'}
+                title={folderCollapsed ? 'click to expand folder' : 'click to collapse folder'}
               >
                 <span className="m-folder-caret">{folderCollapsed ? '▸' : '▾'}</span>
                 <span className="m-folder-glyph">▤</span>
                 <span className="m-folder-name">{folder.name}</span>
-                <span className="m-folder-count" title={`${folderVps.length} VPS dans ce dossier`}>{folderVps.length}</span>
+                <span className="m-folder-count" title={`${folderVps.length} VPS in this folder`}>{folderVps.length}</span>
                 {folderActiveCount > 0 && (
-                  <span className="m-folder-active-count" title={`${folderActiveCount} session(s) active(s) dans ce dossier`}>
+                  <span className="m-folder-active-count" title={`${folderActiveCount} active session(s) in this folder`}>
                     {folderActiveCount}
                   </span>
                 )}
@@ -490,7 +490,7 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
                 <div className="m-folder-body">
                   {folderVps.map((v) => renderVpsCard(v))}
                   {folderVps.length === 0 && folder.id !== '__orphans__' && (
-                    <div className="m-folder-empty">aucun VPS dans ce dossier</div>
+                    <div className="m-folder-empty">no VPS in this folder</div>
                   )}
                 </div>
               )}
@@ -515,10 +515,10 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
           subtitle={ctxMenu.session.cwd}
           initialName={ctxMenu.session.name ?? ''}
           currentColor={(ctxMenu.session as any).color}
-          // Pas de `onKill` ici : la fusion kill→delete a supprimé ce middle
-          // state. Seule la suppression définitive reste pour les sessions.
-          // `onSleep` n'est passé que si la session est active (sinon le
-          // bouton n'apparaît pas — l'user fait resume depuis l'écran chat).
+          // No `onKill` here: the kill→delete merge removed this middle
+          // state. Only permanent deletion remains for sessions.
+          // `onSleep` is only passed if the session is active (otherwise
+          // the button doesn't appear — the user resumes from the chat screen).
           onRename={(name) => renameSession(ctxMenu.session.id, name)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color: RowColor) => patchSession(ctxMenu.session.id, { color })}
@@ -538,8 +538,8 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
           initialName={ctxMenu.shell.name ?? ''}
           currentColor={ctxMenu.shell.color}
           canKill={!ctxMenu.shell.exited}
-          killLabel="Fermer"
-          killDisabledReason={ctxMenu.shell.exited ? 'déjà terminé' : undefined}
+          killLabel="Close"
+          killDisabledReason={ctxMenu.shell.exited ? 'already exited' : undefined}
           showDelete={false}
           onRename={(name) => patchShell(ctxMenu.shell.id, { name: name || null })}
           onColor={(color: RowColor) => patchShell(ctxMenu.shell.id, { color })}

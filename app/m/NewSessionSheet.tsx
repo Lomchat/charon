@@ -11,8 +11,8 @@ type Props = {
   onCreated: (id: string) => void;
 };
 
-// Bottom-sheet mobile pour créer une nouvelle session Claude.
-// Reprend la logique de NewSessionDialog en plus simple/mobile-friendly.
+// Mobile bottom-sheet to create a new Claude session.
+// Mirrors the logic of NewSessionDialog in a simpler/mobile-friendly form.
 export default function NewSessionSheet({
   vpsList, vpsPaths, initial, onClose, onCreated,
 }: Props) {
@@ -30,7 +30,7 @@ export default function NewSessionSheet({
       .sort();
   }, [vpsId, vpsPaths]);
 
-  // Vérif Claude SDK au montage / changement VPS
+  // Claude SDK check on mount / VPS change
   useEffect(() => {
     if (!vpsId) return;
     setCheck(null);
@@ -59,8 +59,8 @@ export default function NewSessionSheet({
       <div className="m-sheet-bg" onClick={onClose} />
       <div className="m-sheet" role="dialog" aria-modal="true">
         <header className="m-sheet-head">
-          <h2>nouvelle session</h2>
-          <button className="m-sheet-close" onClick={onClose} aria-label="fermer">✕</button>
+          <h2>new session</h2>
+          <button className="m-sheet-close" onClick={onClose} aria-label="close">✕</button>
         </header>
         <div className="m-sheet-body">
           <label>
@@ -81,25 +81,25 @@ export default function NewSessionSheet({
                       {(!check.cliInstalled || check.authOk === false) && (
                         <span style={{ color: 'var(--parchment-soft)', opacity: 0.7 }}>
                           {' — '}
-                          {!check.cliInstalled && 'cli non détecté'}
+                          {!check.cliInstalled && 'cli not detected'}
                           {!check.cliInstalled && check.authOk === false && ', '}
-                          {check.authOk === false && 'login non détecté'}
-                          {' (ok si la session marche)'}
+                          {check.authOk === false && 'login not detected'}
+                          {' (ok if the session works)'}
                         </span>
                       )}
                     </span>
                   )
-                : <span style={{ color: 'var(--crimson)' }}>⚠ sdk manquant</span>
+                : <span style={{ color: 'var(--crimson)' }}>⚠ sdk missing</span>
               }
             </div>
           )}
 
           <label>
-            <span>cwd (chemin sur le VPS)</span>
+            <span>cwd (path on the VPS)</span>
             <input
               value={cwd}
               onChange={(e) => setCwd(e.target.value)}
-              placeholder="/srv/mon-projet"
+              placeholder="/srv/my-project"
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
@@ -114,24 +114,24 @@ export default function NewSessionSheet({
           </label>
 
           <label>
-            <span>nom (optionnel)</span>
+            <span>name (optional)</span>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="ex : refacto auth"
+              placeholder="e.g. auth refactor"
             />
           </label>
 
           {err && <div className="m-sheet-err">{err}</div>}
 
           <div className="m-sheet-actions">
-            <button type="button" onClick={onClose}>annuler</button>
+            <button type="button" onClick={onClose}>cancel</button>
             <button
               type="button"
               className="primary"
               onClick={create}
               disabled={busy || !cwd.trim() || !vpsId}
-            >{busy ? '…' : 'démarrer'}</button>
+            >{busy ? '…' : 'start'}</button>
           </div>
         </div>
       </div>

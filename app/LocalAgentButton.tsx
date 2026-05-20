@@ -4,13 +4,13 @@ import { api } from '@/lib/api';
 
 import type { LocalAgentStatus } from '@/lib/types/api';
 
-// Petit bouton dans le header : invisible si l'agent local est à jour, et
-// devient un bouton ambré "update local agent" sinon. Sert à mettre à jour
-// l'agent qui tourne sur la machine du dashboard lui-même (pas un VPS).
+// Small button in the header: invisible if the local agent is up to date,
+// and becomes an amber "update local agent" button otherwise. Used to update
+// the agent that runs on the dashboard machine itself (not a VPS).
 //
-// Fetch le status au mount + après update. Pas de polling : si une nouvelle
-// version est déployée pendant qu'une session est ouverte, le user verra le
-// changement au prochain refresh — c'est OK.
+// Fetches status at mount + after update. No polling: if a new version is
+// deployed while a session is open, the user will see the change at the
+// next refresh — that's OK.
 export default function LocalAgentButton() {
   const [status, setStatus] = useState<LocalAgentStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -27,10 +27,10 @@ export default function LocalAgentButton() {
   useEffect(() => { refresh(); }, [refresh]);
 
   if (!status) return null;
-  // Pas installé : on ne propose pas d'update local — le user doit déployer
-  // manuellement la première fois (rare cas dev).
+  // Not installed: we don't offer a local update — the user has to deploy
+  // manually the first time (rare dev case).
   if (!status.installed) return null;
-  // À jour : on ne montre rien (économise la place dans le header).
+  // Up to date: we show nothing (saves space in the header).
   if (!status.outOfDate && !busy) return null;
 
   async function doUpdate() {
@@ -40,14 +40,14 @@ export default function LocalAgentButton() {
       await api.updateLocalAgent();
       await refresh();
     } catch (e: any) {
-      // Affiche dans le tooltip ; pas de toast pour l'instant
+      // Displayed in the tooltip; no toast for now
       console.error('update local agent:', e);
     } finally {
       setBusy(false);
     }
   }
 
-  const tip = `agent local désynchronisé — ${status.deployedPyzSha ?? '??'} → ${status.builtPyzSha ?? '??'}\nclic pour mettre à jour (restart systemd-user)`;
+  const tip = `local agent out of sync — ${status.deployedPyzSha ?? '??'} → ${status.builtPyzSha ?? '??'}\nclick to update (restart systemd-user)`;
 
   return (
     <button
@@ -55,7 +55,7 @@ export default function LocalAgentButton() {
       onClick={doUpdate}
       disabled={busy}
       title={tip}
-      aria-label="mettre à jour l'agent local"
+      aria-label="update local agent"
     >
       {busy ? '⟳' : '⇪'} agent
     </button>

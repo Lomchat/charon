@@ -17,7 +17,7 @@ export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const all = getAllSettings();
-  // Ne pas exposer la VAPID privée
+  // Do not expose the private VAPID
   delete all['vapid.private'];
   return NextResponse.json(all);
 }

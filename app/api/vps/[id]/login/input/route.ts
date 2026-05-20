@@ -3,8 +3,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { getLoginSession } from '@/lib/server/agent/loginSession';
 
 // POST /api/vps/[id]/login/input  Body: { content: string }
-// Le content est écrit tel quel dans le stdin du process distant.
-// Pour envoyer une ligne complète, le caller doit inclure "\n" dans content.
+// The content is written as-is to the stdin of the remote process.
+// To send a complete line, the caller must include "\n" in content.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

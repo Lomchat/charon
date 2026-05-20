@@ -3,24 +3,25 @@ import { eq, inArray } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudeSessionLogs } from '@/lib/db';
 import { getAgentClient } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
+import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
 import type { Vps } from '@/lib/db/schema';
 
 const g = globalThis as unknown as { _agentBooted?: boolean };
 
 /**
- * Au boot de Charon : pour chaque VPS en DB, lance la connexion à son agent
- * en arrière-plan et branche un hook qui re-réconcilie l'état dès que la SSH
- * est établie (à chaque (re)connexion, pas seulement au boot).
+ * On Charon boot: for each VPS in DB, start the connection to its agent
+ * in the background and wire a hook that reconciles state as soon as the
+ * SSH is established (on every (re)connection, not just at boot).
  *
- * Le hook `onStatus('connected')` est ce qui rend le système auto-réparable
- * après un `systemctl restart charon` : on lit `hello.sessions` (sessions
- * VRAIMENT vivantes côté agent) et on (ré)attache les SessionStream + on
- * resync le status DB. Cf. `reconcileVpsAgentState` pour le détail.
+ * The `onStatus('connected')` hook is what makes the system self-healing
+ * after a `systemctl restart charon`: we read `hello.sessions` (sessions
+ * that are REALLY alive on the agent side) and (re)attach the SessionStreams
+ * + resync the DB status. Cf. `reconcileVpsAgentState` for the details.
  *
- * En parallèle on tente un resume opportuniste pour les sessions DB en
- * 'active'/'thinking'/'starting' — utile quand l'agent est joignable
- * immédiatement (cas commun), ou comme fallback si le hook onStatus a déjà
- * fired avant qu'on s'y abonne (HMR dev).
+ * In parallel we attempt an opportunistic resume for DB sessions in
+ * 'active'/'thinking'/'starting' — useful when the agent is reachable
+ * immediately (common case), or as a fallback if the onStatus hook already
+ * fired before we subscribed (HMR dev).
  *
  * Idempotent (guard `_agentBooted`).
  */
@@ -37,28 +38,41 @@ export function autoConnectAgentsIfNeeded(): void {
     for (const v of vpses) {
       try {
         const client = getAgentClient(v);
-        // Hook self-healing : à chaque (re)connexion du SSH, on reconcile.
+        // Self-healing hook: on every (re)connection of the SSH, reconcile.
         client.onStatus((status) => {
           if (status !== 'connected') return;
           const hello = client.hello;
           if (!hello) return;
           reconcileVpsAgentState(v.id, hello.sessions).catch(() => {});
+          // Auto-check `claude login` if we've never checked or if the
+          // last check is too old (TTL 24h). Re-query the row to get an
+          // up-to-date `claudeLoggedInCheckedAt` (otherwise the closure
+          // `v` is stale and we'd re-check on every SSH reconnect).
+          // Cf. `claudeLoginCheck.ts` for the logic.
+          try {
+            const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
+            if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
+          } catch {}
         });
-        // Cas où le client est déjà connecté quand on enregistre le hook
-        // (peut arriver en dev HMR — sinon improbable au cold boot).
+        // Case where the client is already connected when we register the
+        // hook (can happen in dev HMR — otherwise unlikely at cold boot).
         if (client.status === 'connected' && client.hello) {
           reconcileVpsAgentState(v.id, client.hello.sessions).catch(() => {});
+          try {
+            const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
+            if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
+          } catch {}
         }
       } catch {}
     }
 
-    // Best-effort : tente un resume direct pour les sessions DB en cours
-    // d'exécution. Le reconcile-on-hello qui suit gérera proprement le cas
-    // où l'agent met du temps à connecter ; mais ce premier coup direct rend
-    // les chats utilisables dès que la connexion réussit, sans attendre un
-    // event status. Étendu de 'active' uniquement à 'active'/'thinking'/
-    // 'starting' (bug constaté : après SIGTERM pendant une query, la session
-    // restait 'thinking' en DB et était ignorée ici).
+    // Best-effort: attempt a direct resume for DB sessions currently
+    // running. The reconcile-on-hello below will cleanly handle the case
+    // where the agent takes time to connect; but this first direct shot
+    // makes chats usable as soon as the connection succeeds, without
+    // waiting for a status event. Extended from 'active' only to
+    // 'active'/'thinking'/'starting' (bug observed: after SIGTERM during
+    // a query, the session stayed 'thinking' in DB and was ignored here).
     let active: { id: string }[] = [];
     try {
       active = db.select({ id: claudeSessions.id })
@@ -83,8 +97,8 @@ export function autoConnectAgentsIfNeeded(): void {
               sessionId: s.id, level: 'warn', event: 'auto_resume',
               detail: JSON.stringify({ err: e?.message ?? String(e) }),
             }).run();
-            // Si l'agent est down, on dégrade en 'sleeping' pour que l'UI
-            // affiche un bouton resume manuel.
+            // If the agent is down, degrade to 'sleeping' so the UI
+            // shows a manual resume button.
             db.update(claudeSessions).set({ status: 'sleeping' })
               .where(eq(claudeSessions.id, s.id)).run();
           } catch {}

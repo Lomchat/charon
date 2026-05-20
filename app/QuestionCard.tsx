@@ -14,10 +14,10 @@ type Props = {
   onCancel: () => void;
 };
 
-// Carte affichée quand Claude appelle AskUserQuestion. Pour chaque question,
-// l'utilisateur clique une option (ou plusieurs si multiSelect), OU tape une
-// réponse libre dans le textarea (qui override le clic).
-// Le retour est { question_text: "label1, label2" } ou { question_text: "free text" }.
+// Card displayed when Claude calls AskUserQuestion. For each question,
+// the user clicks an option (or several if multiSelect), OR types a free
+// answer in the textarea (which overrides the click).
+// The return is { question_text: "label1, label2" } or { question_text: "free text" }.
 export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
   const [selections, setSelections] = useState<Record<number, Set<string>>>(() => {
     const init: Record<number, Set<string>> = {};
@@ -64,7 +64,7 @@ export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
     <div className="user-question-card">
       <header className="uq-card-head">
         <span className="uq-tag">❓ question{questions.length > 1 ? `s × ${questions.length}` : ''}</span>
-        <span className="uq-sub">choisis une option ou écris ta propre réponse</span>
+        <span className="uq-sub">choose an option or write your own answer</span>
       </header>
       <div className="uq-body">
         {questions.map((q, qIdx) => {
@@ -76,7 +76,7 @@ export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
             <div key={qIdx} className="uq-question">
               {q.header && <div className="uq-header">{q.header}</div>}
               <div className="uq-text">{q.question}</div>
-              {multi && <div className="uq-multi-hint">choix multiple (☑)</div>}
+              {multi && <div className="uq-multi-hint">multiple choice (☑)</div>}
               <div className={`uq-options${hasCustom ? ' dimmed' : ''}`}>
                 {q.options.map((opt) => {
                   const on = sel.has(opt.label);
@@ -95,10 +95,10 @@ export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
                 })}
               </div>
               <div className="uq-custom">
-                <label className="uq-custom-label">ou réponse libre :</label>
+                <label className="uq-custom-label">or free answer:</label>
                 <textarea
                   className="uq-custom-input"
-                  placeholder="tape ta propre réponse — elle sera utilisée à la place des options"
+                  placeholder="type your own answer — it will be used instead of the options"
                   value={customVal}
                   onChange={(e) => setCustoms((c) => ({ ...c, [qIdx]: e.target.value }))}
                   rows={2}
@@ -109,9 +109,9 @@ export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
         })}
       </div>
       <footer className="uq-actions">
-        <button type="button" className="uq-cancel" onClick={onCancel}>annuler</button>
+        <button type="button" className="uq-cancel" onClick={onCancel}>cancel</button>
         <button type="button" className="uq-submit" onClick={submit} disabled={!allAnswered}>
-          envoyer
+          send
         </button>
       </footer>
     </div>

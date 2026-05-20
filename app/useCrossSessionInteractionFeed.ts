@@ -7,18 +7,17 @@ import { subscribeAll } from './globalEventStream';
 
 // useCrossSessionInteractionFeed
 // ─────────────────────────────────────────────────────────────────────────────
-// S'abonne au flux global multiplexé via `globalEventStream` et maintient
-// les queues d'interactions cross-session :
-//   - permission_request → permQueue (popup en haut à droite)
+// Subscribes to the multiplexed global stream via `globalEventStream` and
+// maintains the cross-session interaction queues:
+//   - permission_request → permQueue (top-right popup)
 //   - user_question → questionQueue
 //   - exit_plan_request → exitPlanQueue
-//   - interaction_resolved → vide la queue correspondante
+//   - interaction_resolved → empties the corresponding queue
 //
-// Le serveur émet ces events à TOUTES les connexions (events "low-volume",
-// cf. eventConnections.ts § isLowVolume) — pas besoin de focus pour les
-// recevoir. C'est ce qui permet la popup permission cross-session :
-// si tu es sur Session A et qu'une perm tombe sur Session B, tu la vois
-// quand même.
+// The server emits these events to ALL connections (low-volume events,
+// cf. eventConnections.ts § isLowVolume) — no focus needed to receive
+// them. This is what enables the cross-session permission popup:
+// if you're on Session A and a perm fires on Session B, you still see it.
 
 export type CrossSessionInteractions = {
   perms: PermissionRequest[];
@@ -36,8 +35,8 @@ export function useCrossSessionInteractionFeed(): CrossSessionInteractions {
     const now = () => Math.floor(Date.now() / 1000);
 
     const unsubscribe = subscribeAll((ev) => {
-      // `subscribeAll` reçoit aussi des install events qui n'ont pas de
-      // sessionId — on les filtre via le type discriminant `'sessionId' in ev`.
+      // `subscribeAll` also receives install events which have no
+      // sessionId — we filter them via the discriminant `'sessionId' in ev`.
       const sid = 'sessionId' in ev ? ev.sessionId : null;
       if (!sid) return;
       if (ev.type === 'permission_request') {

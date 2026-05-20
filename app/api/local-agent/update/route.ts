@@ -6,8 +6,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // POST /api/local-agent/update
-// Redéploie le .pyz embarqué sur ~/.charon/charon-agent.pyz puis restart le
-// service systemd-user (fallback nohup).
+// Redeploys the embedded .pyz to ~/.charon/charon-agent.pyz then restarts
+// the systemd-user service (nohup fallback).
 export async function POST() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

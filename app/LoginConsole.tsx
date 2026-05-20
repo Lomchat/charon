@@ -10,18 +10,18 @@ type Props = {
 };
 
 /**
- * Console interactive pour `claude login` distant.
+ * Interactive console for remote `claude login`.
  *
- * Utilise xterm.js (vrai émulateur VT100) pour rendre le TUI de `claude login`
- * correctement — sinon le repositionnement curseur ANSI casse l'affichage.
+ * Uses xterm.js (a real VT100 emulator) to render the `claude login` TUI
+ * correctly — otherwise the ANSI cursor repositioning breaks the display.
  *
- * Flux :
+ * Flow:
  *   1. POST /api/vps/<id>/login → spawn `ssh -tt host claude login`
  *   2. SSE /api/vps/<id>/login/stream → terminal.write(text)
- *   3. terminal.onData (clavier user) → POST /api/vps/<id>/login/input
+ *   3. terminal.onData (user keyboard) → POST /api/vps/<id>/login/input
  *
- * Donc tout marche comme un vrai terminal : ↑↓ navigation menus,
- * URLs cliquables (addon-web-links), copier-coller, etc.
+ * So everything works like a real terminal: ↑↓ menu navigation,
+ * clickable URLs (addon-web-links), copy-paste, etc.
  */
 export default function LoginConsole({ vps, onClose }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -30,13 +30,13 @@ export default function LoginConsole({ vps, onClose }: Props) {
   const esRef = useRef<EventSource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
-  // Détection d'URL longue dans le flux terminal — affiche un overlay
-  // copier/ouvrir si `claude login` (ou tout autre programme) imprime un URL
-  // OAuth wrappé sur plusieurs lignes que l'user ne peut pas sélectionner.
+  // Long URL detection in the terminal stream — displays a copy/open
+  // overlay if `claude login` (or any other program) prints an OAuth URL
+  // wrapped over multiple lines that the user can't select.
   const { ingest: urlIngest, dismiss: urlDismiss, visibleUrl } = useTerminalUrlOverlay();
 
-  // Échap (au niveau window) ferme la modale uniquement si le terminal n'a pas
-  // le focus — sinon Échap est envoyé au TUI distant.
+  // Escape (at the window level) closes the modal only if the terminal does
+  // not have focus — otherwise Escape is sent to the remote TUI.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !termRef.current?.element?.contains(e.target as Node)) {
@@ -53,15 +53,15 @@ export default function LoginConsole({ vps, onClose }: Props) {
     let fit: any = null;
 
     (async () => {
-      // Lazy import xterm (côté client uniquement)
+      // Lazy import xterm (client side only)
       const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
         import('@xterm/xterm'),
         import('@xterm/addon-fit'),
         import('@xterm/addon-web-links'),
       ]);
-      // Le CSS de xterm — chargé dynamiquement pour ne pas le mettre dans le
-      // bundle principal (la modale est ouverte à la demande)
-      // @ts-ignore — pas de typing pour import sans default
+      // The xterm CSS — loaded dynamically to keep it out of the main
+      // bundle (the modal is opened on demand)
+      // @ts-ignore — no typing for default-less import
       await import('@xterm/xterm/css/xterm.css');
 
       if (cancelled || !containerRef.current) return;
@@ -88,13 +88,13 @@ export default function LoginConsole({ vps, onClose }: Props) {
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
       term.open(containerRef.current);
-      // Premier fit avant ouverture du stream
+      // First fit before opening the stream
       try { fit.fit(); } catch {}
       termRef.current = term;
       fitRef.current = fit;
       term.focus();
 
-      // Stdin user → POST vers le PTY remote
+      // User stdin → POST to the remote PTY
       term.onData((data: string) => {
         fetch(`/api/vps/${vps.id}/login/input`, {
           method: 'POST',
@@ -103,7 +103,7 @@ export default function LoginConsole({ vps, onClose }: Props) {
         }).catch(() => {});
       });
 
-      // Démarre la session SSH côté serveur
+      // Start the SSH session on the server side
       try {
         const res = await fetch(`/api/vps/${vps.id}/login`, { method: 'POST' });
         if (!res.ok) throw new Error(`start: HTTP ${res.status}`);
@@ -120,22 +120,22 @@ export default function LoginConsole({ vps, onClose }: Props) {
         try {
           const ev: { kind: string; text: string } = JSON.parse(e.data);
           if (ev.kind === 'meta') {
-            // Les meta-events charon sont injectés en jaune doux, sans CR/LF supplémentaire
+            // Charon meta-events are injected in soft yellow, without extra CR/LF
             term.write(`\x1b[2m\x1b[33m${ev.text}\x1b[0m\r\n`);
             if (/closed|exited/.test(ev.text)) setClosed(true);
           } else {
             term.write(ev.text);
-            // Scan en parallèle pour détecter un URL OAuth long
+            // Scan in parallel to detect a long OAuth URL
             urlIngest(ev.text);
           }
         } catch {}
       };
-      es.onerror = () => { /* connexion fermée, OK si session terminée */ };
+      es.onerror = () => { /* connection closed, OK if the session has ended */ };
 
       // Refit on resize
       const onResize = () => { try { fit.fit(); } catch {} };
       window.addEventListener('resize', onResize);
-      // Cleanup local pour ce subscriber
+      // Local cleanup for this subscriber
       (term as any)._charonCleanup = () => window.removeEventListener('resize', onResize);
     })();
 
@@ -158,8 +158,8 @@ export default function LoginConsole({ vps, onClose }: Props) {
       <div className="login-console-card">
         <header>
           <span className="title">claude login — {vps.name}</span>
-          <span className="hint">vrai terminal · ↑↓ Enter pour menus · URL = clic · code OAuth = colle puis Enter</span>
-          {closed && <span className="closed-badge">terminé</span>}
+          <span className="hint">real terminal · ↑↓ Enter for menus · URL = click · OAuth code = paste then Enter</span>
+          {closed && <span className="closed-badge">ended</span>}
           <button onClick={onClose} className="dismiss">✕</button>
         </header>
         {error && <div className="login-error">{error}</div>}

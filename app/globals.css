@@ -104,7 +104,7 @@ a { color: inherit; }
 .auth-card button:hover:not(:disabled) { box-shadow: 0 0 18px rgba(138, 180, 228, 0.3); }
 .auth-card button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ── MobileRedirectPrompt ── popup affiché au boot sur écran étroit ── */
+/* ── MobileRedirectPrompt ── popup shown at boot on narrow screens ── */
 .m-prompt-bg {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.65);

@@ -6,14 +6,16 @@ import type { Vps } from '@/lib/db/schema';
 import { bootstrapVps, type BootstrapEvent } from '@/lib/server/claude/bootstrap';
 import { sendPushToAll } from '@/lib/server/claude/webPush';
 
-// ── Install sessions — éphémères, mémoire seulement ─────────────────────────
-// Pattern emprunté à shellSession.ts : pool global, ring buffer, subscribers
-// SSE. Une fois Charon redémarré, toutes les installs en cours sont perdues —
-// l'user devra relancer manuellement. C'est volontaire (cf. choix de design
-// validé : cohérent avec les shells, simple, pas de migration DB nécessaire).
+// ── Install sessions — ephemeral, memory only ───────────────────────────────
+// Pattern borrowed from shellSession.ts: global pool, ring buffer, SSE
+// subscribers. Once Charon restarts, all in-progress installs are lost —
+// the user will have to relaunch manually. This is intentional (cf.
+// validated design choice: consistent with shells, simple, no DB migration
+// required).
 //
-// Au max UNE install par VPS à la fois : si l'user clique "Installer" alors
-// qu'une install est déjà active pour ce VPS, on retourne l'existante (focus).
+// At most ONE install per VPS at a time: if the user clicks "Install"
+// while an install is already active for this VPS, return the existing
+// one (focus).
 
 export type InstallStatus = 'running' | 'success' | 'error';
 
@@ -28,8 +30,8 @@ export type InstallInfo = {
   eventCount: number;
 };
 
-// Messages envoyés au client SSE per-install. `replay_begin`/`replay_end`
-// encadrent le replay du ring buffer (envoyé au subscribe). Ensuite, du live.
+// Messages sent to the per-install SSE client. `replay_begin`/`replay_end`
+// bracket the replay of the ring buffer (sent at subscribe). Then live.
 export type InstallStreamMessage =
   | { kind: 'event'; ev: BootstrapEvent }
   | { kind: 'status'; status: InstallStatus; endedAt: number | null }
@@ -54,14 +56,14 @@ class InstallSession {
   currentPhase: BootstrapEvent['phase'] | null = null;
   ring: BootstrapEvent[] = [];
   private subs = new Map<string, Sink>();
-  // Marque la session comme stoppée — `start()` interrompt le for-await dès
-  // qu'il voit ce flag. bootstrapVps n'accepte pas (encore) un signal, donc on
-  // ne peut pas annuler proprement le RPC SSH en cours, mais on évite au moins
-  // de continuer à traiter les yields suivants.
+  // Marks the session as stopped — `start()` interrupts the for-await as
+  // soon as it sees this flag. bootstrapVps does not (yet) accept a signal,
+  // so we can't cleanly cancel the in-flight SSH RPC, but we at least
+  // avoid processing the following yields.
   private aborted = false;
-  // Listeners "fin du run courant" — utilisé par retry() qui doit attendre que
-  // le run en cours se termine avant d'en lancer un nouveau (cas rare mais
-  // possible si le user spam le bouton).
+  // "End of current run" listeners — used by retry() which must wait for
+  // the current run to finish before launching a new one (rare case but
+  // possible if the user spams the button).
   private doneListeners = new Set<() => void>();
 
   constructor(id: string, vps: Vps) {
@@ -79,13 +81,13 @@ class InstallSession {
     };
   }
 
-  /** Lance bootstrapVps, broadcast les events, met à jour le status à la fin. */
+  /** Run bootstrapVps, broadcast the events, update the status at the end. */
   async run(vps: Vps): Promise<void> {
     if (this.aborted) return;
     this.status = 'running';
     this.endedAt = null;
     this._broadcastStatus();
-    // Notifie le bus global : install démarrée
+    // Notify the global bus: install started
     emitInstallBusEvent({
       type: 'install_started',
       installId: this.id, vpsId: this.vpsId, vpsName: this.vpsName,
@@ -109,19 +111,19 @@ class InstallSession {
       this.endedAt = Date.now();
       this._broadcastStatus();
     } finally {
-      // Si bootstrapVps a return-é mid-phase sur erreur (sans yield 'done'),
-      // on marque manuellement comme erreur.
+      // If bootstrapVps returned mid-phase on error (without yielding 'done'),
+      // mark manually as error.
       if (this.status === 'running' && !this.aborted) {
         this.status = 'error';
         this.endedAt = Date.now();
-        const errEv: BootstrapEvent = { phase: 'done', status: 'error', detail: 'bootstrap interrompu sans phase done' };
+        const errEv: BootstrapEvent = { phase: 'done', status: 'error', detail: 'bootstrap interrupted without done phase' };
         this._addEvent(errEv);
         this._broadcastStatus();
       }
-      // Notif "fin du run" pour les retry()-eurs en attente.
+      // "End of run" notif for waiting retry()-ers.
       for (const cb of this.doneListeners) { try { cb(); } catch {} }
       this.doneListeners.clear();
-      // Notif globale (push + bus) si on est terminé.
+      // Global notif (push + bus) if we're finished.
       if (this.status !== 'running') {
         emitInstallBusEvent({
           type: 'install_finished',
@@ -133,17 +135,17 @@ class InstallSession {
     }
   }
 
-  /** Relance bootstrap. Si un run est encore en cours, attend qu'il finisse. */
+  /** Relaunch bootstrap. If a run is still in progress, wait for it to finish. */
   async retry(): Promise<void> {
     if (this.status === 'running') {
       await new Promise<void>((res) => this.doneListeners.add(res));
     }
-    // Marque visuel "── retry ──" pour que l'user comprenne dans le log que
-    // c'est une nouvelle tentative et pas la suite de la précédente.
+    // Visual marker "── retry ──" so the user understands in the log that
+    // this is a new attempt and not the continuation of the previous one.
     this._addEvent({ phase: 'verify', status: 'running', detail: '── retry ──' });
     const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
     if (!v) {
-      this._addEvent({ phase: 'done', status: 'error', detail: 'vps introuvable (supprimé ?)' });
+      this._addEvent({ phase: 'done', status: 'error', detail: 'vps not found (deleted?)' });
       this.status = 'error';
       this.endedAt = Date.now();
       this._broadcastStatus();
@@ -152,9 +154,9 @@ class InstallSession {
     await this.run(v);
   }
 
-  /** Stop : ferme les subscribers, marque aborted. Le run en cours ne sera
-   *  pas vraiment annulé (le SSH en cours continue jusqu'à son timeout) mais
-   *  on n'émet plus rien. */
+  /** Stop: close subscribers, mark aborted. The in-progress run won't
+   *  actually be cancelled (the in-flight SSH continues until its timeout)
+   *  but nothing more is emitted. */
   stop(): void {
     this.aborted = true;
     for (const s of this.subs.values()) {
@@ -197,10 +199,10 @@ class InstallSession {
     const success = this.status === 'success';
     try {
       await sendPushToAll({
-        title: success ? '✓ installation OK' : '✗ installation échouée',
-        body: `${this.vpsName} — ${success ? 'agent installé et opérationnel' : 'voir le log'}`,
-        // L'URL contient l'installId pour que le service worker (sw.js) puisse
-        // ouvrir la bonne session via ?install=<id> au clic.
+        title: success ? '✓ install OK' : '✗ install failed',
+        body: `${this.vpsName} — ${success ? 'agent installed and operational' : 'see the log'}`,
+        // The URL contains the installId so the service worker (sw.js) can
+        // open the right session via ?install=<id> on click.
         url: '/?install=' + this.id,
         tag: 'install:' + this.vpsId,
       });
@@ -208,11 +210,12 @@ class InstallSession {
   }
 }
 
-// ── Bus global pour les events install (notifs cross-session) ───────────────
-// Bus séparé du bus session-tagged (sessionOps.ts § subscribeGlobalSessionEvents)
-// parce que les installs n'ont pas de Claude sessionId. Le SSE multiplexé
-// `/api/claude/events` s'y abonne en plus du bus session, et forward les
-// events à toutes les connexions (low-volume, broadcast).
+// ── Global bus for install events (cross-session notifs) ────────────────────
+// Bus separate from the session-tagged bus (sessionOps.ts §
+// subscribeGlobalSessionEvents) because installs have no Claude sessionId.
+// The multiplexed `/api/claude/events` SSE subscribes to it in addition to
+// the session bus, and forwards the events to all connections (low-volume,
+// broadcast).
 
 export type InstallBusEvent =
   | { type: 'install_started'; installId: string; vpsId: string; vpsName: string; status: InstallStatus }
@@ -233,13 +236,13 @@ function emitInstallBusEvent(ev: InstallBusEvent): void {
   }
 }
 
-// ── Pool global keyed par installId ─────────────────────────────────────────
+// ── Global pool keyed by installId ──────────────────────────────────────────
 const gPool = globalThis as unknown as { _installSessions?: Map<string, InstallSession> };
 if (!gPool._installSessions) gPool._installSessions = new Map();
 const pool: Map<string, InstallSession> = gPool._installSessions;
 
-/** Démarre une nouvelle install pour ce VPS. Si une install est déjà en cours
- *  pour ce VPS, retourne l'existante (focus, pas double-run). */
+/** Start a new install for this VPS. If an install is already in progress
+ *  for this VPS, return the existing one (focus, no double-run). */
 export function startInstall(vpsId: string): InstallSession {
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) throw new Error('vps not found');
@@ -251,8 +254,8 @@ export function startInstall(vpsId: string): InstallSession {
   const id = crypto.randomBytes(8).toString('hex');
   const sess = new InstallSession(id, v);
   pool.set(id, sess);
-  // Lance en arrière-plan — la promise est dropée volontairement, on suit la
-  // progression via le ring buffer.
+  // Launch in the background — the promise is intentionally dropped, we
+  // follow progress via the ring buffer.
   sess.run(v).catch(() => {});
   return sess;
 }

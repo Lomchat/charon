@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // check-protocol-sync.mjs
 //
-// Vérifie que la liste des méthodes JSON-RPC est identique côté Python
-// (agent/charon_agent/protocol.py — set METHODS) et côté TypeScript
-// (lib/server/agent/types.ts — union AgentMethodName).
+// Checks that the list of JSON-RPC methods is identical on the Python side
+// (agent/charon_agent/protocol.py — METHODS set) and on the TypeScript side
+// (lib/server/agent/types.ts — AgentMethodName union).
 //
-// Exit non-zéro + diagnostic clair si drift. Branché en prebuild dans
-// package.json — toute désync casse le `npm run build`.
+// Non-zero exit + clear diagnostic if drift. Wired as prebuild in
+// package.json — any desync breaks `npm run build`.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -25,26 +25,26 @@ function fail(msg) {
 }
 
 function extractPyMethods(src) {
-  // Cherche le bloc:  METHODS = { "hello", "ping", ... }
+  // Look for the block:  METHODS = { "hello", "ping", ... }
   const m = src.match(/METHODS\s*=\s*{([\s\S]*?)}/);
-  if (!m) fail(`pas trouvé "METHODS = {...}" dans ${PY_PATH}`);
+  if (!m) fail(`could not find "METHODS = {...}" in ${PY_PATH}`);
   const inside = m[1];
   const names = [...inside.matchAll(/["']([a-z_][a-z0-9_]*)["']/g)].map((x) => x[1]);
   return new Set(names);
 }
 
 function extractTsMethods(src) {
-  // Cherche:  export type AgentMethodName =
+  // Look for:  export type AgentMethodName =
   //            | 'hello'
   //            | 'ping'
   //            ...
   const idx = src.indexOf('export type AgentMethodName');
-  if (idx < 0) fail(`pas trouvé "export type AgentMethodName" dans ${TS_PATH}`);
-  // Coupe à partir du = et jusqu'au ; final du type.
+  if (idx < 0) fail(`could not find "export type AgentMethodName" in ${TS_PATH}`);
+  // Slice from the = through the final ; of the type.
   const after = src.slice(idx);
   const eq = after.indexOf('=');
   const end = after.indexOf(';', eq);
-  if (eq < 0 || end < 0) fail('parsing AgentMethodName cassé');
+  if (eq < 0 || end < 0) fail('AgentMethodName parsing broken');
   const body = after.slice(eq + 1, end);
   const names = [...body.matchAll(/['"]([a-z_][a-z0-9_]*)['"]/g)].map((x) => x[1]);
   return new Set(names);
@@ -61,14 +61,14 @@ const onlyTs = [...tsSet].filter((n) => !pySet.has(n)).sort();
 
 if (onlyPy.length === 0 && onlyTs.length === 0) {
   // eslint-disable-next-line no-console
-  console.log(`✓ protocol-sync: ${pySet.size} méthodes alignées Py/TS`);
+  console.log(`✓ protocol-sync: ${pySet.size} methods aligned Py/TS`);
   process.exit(0);
 }
 
 const lines = [];
-lines.push(`Drift entre protocol.py et lib/server/agent/types.ts.`);
-if (onlyPy.length) lines.push(`  - Présentes côté Py mais absentes côté TS : ${onlyPy.join(', ')}`);
-if (onlyTs.length) lines.push(`  - Présentes côté TS mais absentes côté Py : ${onlyTs.join(', ')}`);
-lines.push(`Fix : aligne les deux listes (agent/charon_agent/protocol.py METHODS,`);
-lines.push(`      lib/server/agent/types.ts AgentMethodName) puis rebuild.`);
+lines.push(`Drift between protocol.py and lib/server/agent/types.ts.`);
+if (onlyPy.length) lines.push(`  - Present on Py side but missing on TS side: ${onlyPy.join(', ')}`);
+if (onlyTs.length) lines.push(`  - Present on TS side but missing on Py side: ${onlyTs.join(', ')}`);
+lines.push(`Fix: align both lists (agent/charon_agent/protocol.py METHODS,`);
+lines.push(`     lib/server/agent/types.ts AgentMethodName) then rebuild.`);
 fail(lines.join('\n'));

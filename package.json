@@ -2,10 +2,37 @@
   "name": "charon",
   "version": "0.1.0",
   "private": true,
+  "description": "Self-hosted web hub for orchestrating Claude Code / Claude Agent SDK sessions across multiple VPS over SSH.",
+  "license": "Apache-2.0",
+  "author": "Lomchat",
+  "homepage": "https://github.com/Lomchat/charon#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lomchat/charon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lomchat/charon/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-agent-sdk",
+    "anthropic",
+    "ssh",
+    "vps",
+    "nextjs",
+    "self-hosted",
+    "agent",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 10556",
     "build": "node scripts/check-protocol-sync.mjs && next build",
     "start": "next start -H 127.0.0.1 -p 10556",
+    "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node ./scripts/migrate.mjs"
   },

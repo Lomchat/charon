@@ -4,15 +4,15 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 
-// Type partagé desktop/mobile défini dans `./sessionTypes`. Réexporté ici
-// pour préserver les imports historiques (`import { Msg } from './Message'`).
+// Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
+// to preserve historical imports (`import { Msg } from './Message'`).
 import type { Msg } from './sessionTypes';
 export type { Msg };
 
 type Props = {
   m: Msg;
   streaming?: boolean;
-  // Si fourni, le tool_result lié à ce tool_use est rendu inline en dessous (style ⎿)
+  // If provided, the tool_result linked to this tool_use is rendered inline below (⎿ style)
   attachedResult?: Msg;
 };
 
@@ -20,8 +20,8 @@ export default function Message({ m, streaming = false, attachedResult }: Props)
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
-  // user_question et exit_plan_request sont déjà représentés par le tool_use
-  // AskUserQuestion / ExitPlanMode au-dessus — on ne rend pas le doublon brut.
+  // user_question and exit_plan_request are already represented by the
+  // AskUserQuestion / ExitPlanMode tool_use above — we don't render the raw duplicate.
   if (m.role === 'user_question' || m.role === 'exit_plan_request') return null;
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
 
@@ -83,7 +83,7 @@ function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
   const input = parsed?.input ?? {};
   const summary = summarizeToolInput(name, input);
 
-  // Parse du result attaché
+  // Parse the attached result
   let resultObj: { content: string; isError: boolean } | null = null;
   if (attachedResult) {
     try {
@@ -109,7 +109,7 @@ function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
         <span className="tu-glyph">⚒</span>
         <span className="tu-name">{name}</span>
         <span className="tu-summary">{summary}</span>
-        {!resultObj && <span className="tu-running"><span className="dot" /> en cours</span>}
+        {!resultObj && <span className="tu-running"><span className="dot" /> running</span>}
         {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
       </header>
       {openInput && <pre className="tu-detail">{JSON.stringify(input, null, 2)}</pre>}
@@ -118,13 +118,13 @@ function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
           <div className="tr-line" onClick={() => resultIsLong && setOpenResult((v) => !v)} style={{ cursor: resultIsLong ? 'pointer' : 'default' }}>
             <span className="elbow">⎿</span>
             {resultObj.isError ? <span className="r-status err">✗</span> : <span className="r-status ok">✓</span>}
-            <span className="r-preview">{resultPreview || '(vide)'}</span>
+            <span className="r-preview">{resultPreview || '(empty)'}</span>
             {resultIsLong && <span className="caret">{openResult ? '▾' : '▸'}</span>}
           </div>
           {openResult && resultIsLong && (
             <pre className="tr-detail">
               {resultObj.content.slice(0, 8000)}
-              {resultObj.content.length > 8000 ? `\n[…tronqué ${resultObj.content.length - 8000} chars]` : ''}
+              {resultObj.content.length > 8000 ? `\n[…truncated ${resultObj.content.length - 8000} chars]` : ''}
             </pre>
           )}
         </div>
@@ -134,8 +134,8 @@ function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
 }
 
 function ToolResultCard({ m }: { m: Msg }) {
-  // Affiché en standalone quand on n'a pas réussi à le lier à un tool_use
-  // (devrait être rare). Style discret.
+  // Displayed standalone when we couldn't link it to a tool_use
+  // (should be rare). Discreet style.
   const [open, setOpen] = useState(false);
   let content = m.content;
   try {
@@ -152,7 +152,7 @@ function ToolResultCard({ m }: { m: Msg }) {
         <span className="tr-preview">{preview}{content.length > 120 ? '…' : ''}</span>
       </header>
       {(open || !isLong) && (
-        <pre className="tr-detail">{content.slice(0, 8000)}{content.length > 8000 ? `\n[…tronqué ${content.length - 8000} chars]` : ''}</pre>
+        <pre className="tr-detail">{content.slice(0, 8000)}{content.length > 8000 ? `\n[…truncated ${content.length - 8000} chars]` : ''}</pre>
       )}
     </div>
   );
@@ -183,5 +183,5 @@ export function summarizeToolInput(name: string, input: any): string {
 
 function fmtTime(ts: number): string {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }

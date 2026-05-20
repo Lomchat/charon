@@ -2,8 +2,8 @@
 import { useEffect, useState } from 'react';
 import { ROW_COLORS, type RowColor } from '../SessionContextMenu';
 
-// Bottom-sheet mobile pour les actions session / shell — équivalent du
-// SessionContextMenu desktop (clic droit) mais adapté au tactile.
+// Mobile bottom-sheet for session / shell actions — equivalent of the
+// desktop SessionContextMenu (right-click) but adapted for touch.
 type Props = {
   title: string;
   subtitle?: string;
@@ -13,14 +13,14 @@ type Props = {
   killLabel?: string;
   killDisabledReason?: string;
   showDelete?: boolean;
-  // Callbacks. Le sheet gère lui-même le renommage inline (passe le nouveau nom),
-  // les autres actions sont des triggers simples.
+  // Callbacks. The sheet handles inline renaming itself (passes the new name),
+  // the other actions are simple triggers.
   onRename: (newName: string) => void;
   onColor: (color: RowColor) => void;
   onEditCwd?: () => void;
-  // Sleep pour les sessions Claude actives. Le caller ne passe `onSleep`
-  // que quand la session est active/thinking/starting — sinon l'item
-  // n'apparaît pas. Placé au-dessus de Supprimer définitivement.
+  // Sleep for active Claude sessions. The caller only passes `onSleep` when
+  // the session is active/thinking/starting — otherwise the item doesn't
+  // appear. Placed above Delete permanently.
   onSleep?: () => void;
   onKill?: () => void;
   onDelete?: () => void;
@@ -36,7 +36,7 @@ export default function MobileContextSheet({
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(initialName);
 
-  // ESC ferme
+  // ESC closes
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -65,29 +65,29 @@ export default function MobileContextSheet({
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="nouveau nom"
+              placeholder="new name"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') { e.preventDefault(); submitRename(); }
                 if (e.key === 'Escape') setRenaming(false);
               }}
             />
             <div className="m-ctx-rename-actions">
-              <button type="button" onClick={() => setRenaming(false)}>annuler</button>
+              <button type="button" onClick={() => setRenaming(false)}>cancel</button>
               <button type="button" className="primary" onClick={submitRename}>OK</button>
             </div>
           </div>
         ) : (
           <>
             <button type="button" className="m-ctx-item" onClick={() => setRenaming(true)}>
-              <span className="g">✎</span> Renommer
+              <span className="g">✎</span> Rename
             </button>
             {onEditCwd && (
               <button type="button" className="m-ctx-item" onClick={() => { onEditCwd(); onClose(); }}>
-                <span className="g">▤</span> Modifier le dossier (cwd)
+                <span className="g">▤</span> Edit folder (cwd)
               </button>
             )}
 
-            <div className="m-ctx-color-row" role="group" aria-label="couleur">
+            <div className="m-ctx-color-row" role="group" aria-label="color">
               {ROW_COLORS.map((c) => {
                 const selected = (currentColor ?? null) === c.token;
                 const isNone = c.token === null;
@@ -99,7 +99,7 @@ export default function MobileContextSheet({
                     title={c.label}
                     style={{ background: c.css }}
                     onClick={() => { onColor(c.token); onClose(); }}
-                    aria-label={`couleur ${c.label}`}
+                    aria-label={`color ${c.label}`}
                   >
                     {isNone && <span>∅</span>}
                   </button>
@@ -107,15 +107,15 @@ export default function MobileContextSheet({
               })}
             </div>
 
-            {/* Sleep — pour les sessions Claude actives. Placé juste avant
-                Supprimer pour que l'action réversible soit en haut. */}
+            {/* Sleep — for active Claude sessions. Placed just before
+                Delete so the reversible action is at the top. */}
             {onSleep && (
               <button
                 type="button"
                 className="m-ctx-item"
                 onClick={() => { onSleep(); onClose(); }}
               >
-                <span className="g">💤</span> Mettre en pause (sleep)
+                <span className="g">💤</span> Sleep
               </button>
             )}
             {onKill && (
@@ -137,7 +137,7 @@ export default function MobileContextSheet({
                 className="m-ctx-item danger"
                 onClick={() => { onDelete(); onClose(); }}
               >
-                <span className="g">✗</span> Supprimer définitivement
+                <span className="g">✗</span> Delete permanently
               </button>
             )}
           </>

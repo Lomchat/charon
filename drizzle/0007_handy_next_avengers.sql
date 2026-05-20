@@ -1,11 +1,11 @@
--- Ajoute le tracking de l'état `claude login` sur chaque VPS.
--- claude_logged_in : 1 = connecté, 0 = non connecté, NULL = jamais vérifié.
--- claude_logged_in_checked_at : unix ts du dernier check (utile pour TTL si on
--- veut auto-recheck dans le futur).
+-- Add tracking of the `claude login` state on each VPS.
+-- claude_logged_in: 1 = logged in, 0 = not logged in, NULL = never checked.
+-- claude_logged_in_checked_at: unix ts of the last check (useful for TTL if
+-- we want to auto-recheck in the future).
 --
--- Note : drizzle-kit avait généré un .sql qui re-créait les changements des
--- migrations 0005/0006 car les snapshots associés manquaient dans meta/. Le
--- contenu a été remplacé à la main pour ne garder que les vrais ADD COLUMN.
--- Cf. CLAUDE.md §4 pour la timeline des migrations.
+-- Note: drizzle-kit had generated a .sql that re-created changes from
+-- migrations 0005/0006 because the associated snapshots were missing from
+-- meta/. The content was replaced by hand to only keep the real ADD COLUMNs.
+-- Cf. CLAUDE.md §4 for the migration timeline.
 ALTER TABLE `vps` ADD `claude_logged_in` integer;--> statement-breakpoint
 ALTER TABLE `vps` ADD `claude_logged_in_checked_at` integer;

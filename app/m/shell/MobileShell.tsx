@@ -25,7 +25,7 @@ export default function MobileShell({ shellId }: { shellId: string }) {
         const sh = (r?.shells ?? []).find((s: any) => s.id === shellId);
         if (!cancelled) {
           if (sh) setMeta(sh);
-          else setError('shell introuvable');
+          else setError('shell not found');
         }
       } catch (e: any) {
         if (!cancelled) setError(String(e?.message ?? e));
@@ -37,7 +37,7 @@ export default function MobileShell({ shellId }: { shellId: string }) {
   return (
     <>
       <header className="m-topbar">
-        <button className="m-back" onClick={() => router.push('/m/select')} aria-label="retour">←</button>
+        <button className="m-back" onClick={() => router.push('/m/select')} aria-label="back">←</button>
         <div className="m-title-block">
           <span className="m-title">{meta?.name ?? 'shell'}</span>
           <span className="m-subtitle">
@@ -56,7 +56,7 @@ export default function MobileShell({ shellId }: { shellId: string }) {
             />
           ) : (
             <div style={{ padding: 24, color: 'var(--parchment-soft)' }}>
-              {error ?? 'chargement…'}
+              {error ?? 'loading…'}
             </div>
           )}
         </div>

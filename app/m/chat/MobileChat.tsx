@@ -15,10 +15,10 @@ import {
 // ──────────────────────────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────────────────────────
-// Types Msg / ToolCallEntry / Todo / EditSnapshot / PermissionRequest /
-// PendingQuestion / PendingExitPlan importés depuis le module partagé avec
-// la vue desktop. La forme inclut `sessionId: string` (rempli côté mobile
-// avec le sessionId courant, voir constructions plus bas).
+// Msg / ToolCallEntry / Todo / EditSnapshot / PermissionRequest /
+// PendingQuestion / PendingExitPlan types imported from the module shared
+// with the desktop view. The shape includes `sessionId: string` (filled on
+// the mobile side with the current sessionId, see constructions below).
 import type {
   Msg, ToolCallEntry, Todo, EditSnapshot,
   PermissionRequest, PendingQuestion, PendingExitPlan,
@@ -46,13 +46,13 @@ type Props = {
 };
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
-  starting: 'démarrage',
-  active: 'actif',
-  thinking: 'réfléchit',
-  sleeping: 'endormi',
-  killed: 'tué',
-  error: 'erreur',
-  reconnecting: 'reconnexion…',
+  starting: 'starting',
+  active: 'active',
+  thinking: 'thinking',
+  sleeping: 'sleeping',
+  killed: 'killed',
+  error: 'error',
+  reconnecting: 'reconnecting…',
 };
 const STATUS_DOT: Record<WorkerStatus, string> = {
   starting: 'amber',
@@ -66,10 +66,10 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 
 export default function MobileChat({ sessionId, vpsList }: Props) {
   const router = useRouter();
-  // Cache stable (cf. ../chatCache.ts) — passé au hook via le contrat StreamCache.
-  // L'invalidation après suppression nettoie l'entrée pour ne pas afficher une
-  // session déjà supprimée comme encore active en cas de retour-arrière vers
-  // /m/select pendant que le poll n'a pas encore tourné.
+  // Stable cache (cf. ../chatCache.ts) — passed to the hook via the StreamCache contract.
+  // Invalidating after deletion clears the entry so we don't display an
+  // already-deleted session as still active on the way back to
+  // /m/select while the poll hasn't yet run.
   const cacheRef = useRef<StreamCache>({
     get: (id) => getCached(id),
     fetch: (id, force) => fetchAndCache(id, force),
@@ -77,7 +77,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     extendWithOlder: (id, older) => extendWithOlder(id, older),
   });
 
-  // ── Stream session (SSE + state + actions) — hook partagé desktop/mobile ──
+  // ── Session stream (SSE + state + actions) — shared desktop/mobile hook ──
   const stream = useClaudeSessionStream(sessionId, {
     cache: cacheRef.current,
     onKilled: () => {
@@ -94,20 +94,20 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     clearPrefillInput, clearError, loadMoreHistory,
   } = stream;
 
-  // Cross-session interactions feed : compte les perms/questions/exit-plans
-  // qui attendent sur des sessions AUTRES que celle-ci. Affiché en bandeau
-  // en haut de la vue chat, click → /m/select pour aller les traiter.
+  // Cross-session interactions feed: counts the perms/questions/exit-plans
+  // pending on OTHER sessions than this one. Displayed as a banner at the
+  // top of the chat view, click → /m/select to go process them.
   const cross = useCrossSessionInteractionFeed();
   const otherSessionsPending = useMemo(() => {
     const filter = <T extends { sessionId: string }>(arr: T[]) => arr.filter((x) => x.sessionId !== sessionId);
     return filter(cross.perms).length + filter(cross.questions).length + filter(cross.exitPlans).length;
   }, [cross, sessionId]);
 
-  // State purement UI mobile (textarea + menus + scroll).
-  // `input` est branché sur `inputDraftStore` pour que le brouillon survive
-  // aux navigations /m/chat ↔ /m/select ainsi qu'au switch de session via
-  // `?id=…` (la page mobile n'a pas de `key`, donc on s'appuie sur la
-  // réconciliation in-render du hook). F5 vide tout (Map in-memory).
+  // Purely mobile UI state (textarea + menus + scroll).
+  // `input` is wired to `inputDraftStore` so the draft survives
+  // /m/chat ↔ /m/select navigations as well as session switches via
+  // `?id=…` (the mobile page has no `key`, so we rely on the hook's
+  // in-render reconciliation). F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
   const [showMenu, setShowMenu] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -115,9 +115,9 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
 
-  // Drain de prefill_input : le hook expose un texte que l'agent veut nous
-  // faire taper (event SSE prefill_input). On le copie dans la textarea
-  // puis on clear pour ne pas re-jouer si la session se ré-ouvre.
+  // Drain prefill_input: the hook exposes text the agent wants us to
+  // type (prefill_input SSE event). We copy it into the textarea then
+  // clear so we don't re-play it if the session reopens.
   useEffect(() => {
     if (prefillInput !== null) {
       setInput(prefillInput);
@@ -125,41 +125,41 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     }
   }, [prefillInput, clearPrefillInput]);
 
-  // ── Scroll : flex-direction: column-reverse ─────────────────────────────
-  // Le chat body est rendu en column-reverse, donc :
-  //   - DOM[0] = bas visuel (message le plus récent)
-  //   - scrollTop = 0 = vraiment en bas (peu importe le scrollHeight)
-  //   - Quand on ajoute un message (à DOM[0]) le browser garde scrollTop=0 →
-  //     on suit auto le nouveau message.
-  //   - Quand on prepend des anciens en haut (append à la fin du DOM), le
-  //     browser fait du scroll anchoring → on reste à la même position.
-  //   - Markdown / images qui changent scrollHeight ? scrollTop=0 reste 0,
-  //     on est toujours en bas, pas de drift.
-  // → 0 useLayoutEffect, le browser fait tout le boulot.
+  // ── Scroll: flex-direction: column-reverse ──────────────────────────────
+  // The chat body is rendered in column-reverse, so:
+  //   - DOM[0] = visual bottom (newest message)
+  //   - scrollTop = 0 = really at the bottom (regardless of scrollHeight)
+  //   - When we add a message (at DOM[0]) the browser keeps scrollTop=0 →
+  //     we auto-follow the new message.
+  //   - When we prepend old ones at the top (append to the end of the DOM),
+  //     the browser does scroll anchoring → we stay at the same position.
+  //   - Markdown / images that change scrollHeight? scrollTop=0 stays 0,
+  //     we're always at the bottom, no drift.
+  // → 0 useLayoutEffect, the browser does all the work.
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const lastMessageCountRef = useRef(0);
 
-  // Progressive batching supprimé : on render tous les messages d'un coup.
-  // Combiné au cache + column-reverse, ça donne un affichage instant SANS
-  // effet "défilage" perçu (plus de batches qui arrivent un par un).
+  // Progressive batching removed: we render all messages at once.
+  // Combined with the cache + column-reverse, this gives an instant display
+  // WITHOUT a perceived "scrolling" effect (no more batches arriving one by one).
 
   const [isAtTop, setIsAtTop] = useState(false);
   const handleScroll = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
-    // En column-reverse, scrollTop ≈ 0 signifie "au bas visuel".
-    // L'utilisateur "scroll up" pour voir les anciens → scrollTop devient
-    // négatif sur certains browsers (Safari) ou positif (Chrome/Firefox).
-    // On considère "au bas" = |scrollTop| < threshold.
+    // In column-reverse, scrollTop ≈ 0 means "visually at the bottom".
+    // The user "scrolls up" to see older messages → scrollTop becomes
+    // negative on some browsers (Safari) or positive (Chrome/Firefox).
+    // We consider "at the bottom" = |scrollTop| < threshold.
     const atBottom = Math.abs(el.scrollTop) < 80;
     if (atBottom !== isAtBottomRef.current) {
       isAtBottomRef.current = atBottom;
       setIsAtBottom(atBottom);
     }
     if (atBottom) setNewCount(0);
-    // Near-top → loadMore. Cf. ClaudeSessionView pour la formule.
+    // Near-top → loadMore. Cf. ClaudeSessionView for the formula.
     const max = el.scrollHeight - el.clientHeight;
     const distFromTop = max - Math.abs(el.scrollTop);
     if (distFromTop < 400 && hasMore && !isLoadingMore) {
@@ -167,7 +167,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     }
     setIsAtTop(max <= 0 || distFromTop < 4);
   }, [hasMore, isLoadingMore, loadMoreHistory]);
-  // Recompute isAtTop quand le contenu change.
+  // Recompute isAtTop when the content changes.
   useEffect(() => { handleScroll(); }, [messages.length, handleScroll]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
@@ -175,12 +175,12 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  // ── Scroll-up vers le précédent message utilisateur ────────────────────
-  // Symétrique de la pill ↓ : remonte au dernier user message au-dessus de la
-  // zone visible. Clic répété → on remonte de proche en proche. Si rien
-  // au-dessus mais pagination dispo, déclenche loadMoreHistory. Sinon, saute
-  // au sommet visuel. Cf. ClaudeSessionView.tsx pour la version desktop.
-  // scrollIntoView({block:'start'}) gère le signe scrollTop cross-browser.
+  // ── Scroll-up to the previous user message ────────────────────────────
+  // Symmetric to the ↓ pill: jump to the last user message above the visible
+  // area. Repeated click → we keep stepping back. If nothing above but
+  // pagination available, trigger loadMoreHistory. Otherwise jump to the
+  // visual top. Cf. ClaudeSessionView.tsx for the desktop version.
+  // scrollIntoView({block:'start'}) handles the cross-browser scrollTop sign.
   const onScrollUpClick = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -208,7 +208,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
 
-  // Auto-resize de la textarea : on suit le scrollHeight avec un max ~30vh.
+  // Textarea auto-resize: we follow scrollHeight with a max of ~30vh.
   useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
@@ -219,14 +219,14 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 
   const vps = useMemo(() => vpsList.find((v) => v.id === sessionMeta?.vpsId) ?? null, [vpsList, sessionMeta]);
 
-  // [SSE + state + refetch sont gérés par useClaudeSessionStream (hook
-  // partagé desktop/mobile, cf. ../../useClaudeSessionStream.ts). Avant
-  // l'extraction, ce fichier contenait ~250 lignes pour applyApiData /
-  // refetchHistory / useEffect SSE / useEffect visibilitychange — tout est
-  // maintenant dans le hook.]
+  // [SSE + state + refetch are handled by useClaudeSessionStream (shared
+  // desktop/mobile hook, cf. ../../useClaudeSessionStream.ts). Before the
+  // extraction, this file contained ~250 lines for applyApiData /
+  // refetchHistory / SSE useEffect / visibilitychange useEffect — all of it
+  // now lives in the hook.]
 
-  // Compte les nouveaux messages QUAND l'utilisateur n'est PAS en bas, pour
-  // afficher la pill "↓ N". (Si en bas, on suit déjà auto via column-reverse.)
+  // Count new messages WHEN the user is NOT at the bottom, in order to
+  // display the "↓ N" pill. (At the bottom, we auto-follow via column-reverse.)
   useEffect(() => {
     const prev = lastMessageCountRef.current;
     const cur = messages.length;
@@ -236,7 +236,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     lastMessageCountRef.current = cur;
   }, [messages.length]);
 
-  // Pair tool_use ↔ tool_result pour le rendu inline.
+  // Pair tool_use ↔ tool_result for inline rendering.
   const renderable = useMemo(() => {
     const resultByToolUseId = new Map<string, Msg>();
     for (const m of messages) {
@@ -277,7 +277,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     return out;
   }, [messages]);
 
-  // ── Pending interaction la plus ancienne ────────────────────────────
+  // ── Oldest pending interaction ──────────────────────────────────────
   type PendingInteraction =
     | { kind: 'permission'; createdAt: number; perm: PermissionRequest }
     | { kind: 'question'; createdAt: number; q: PendingQuestion }
@@ -336,9 +336,9 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     return count;
   }, [messages]);
 
-  // ── Actions UI mobile (wrappers minces autour des actions du hook) ──────
-  // Les wrappers gèrent uniquement le state UI mobile (fermer le menu après
-  // l'action, vider la textarea après send). La logique métier vit dans
+  // ── Mobile UI actions (thin wrappers around the hook's actions) ─────────
+  // The wrappers only handle mobile UI state (closing the menu after the
+  // action, emptying the textarea after send). The business logic lives in
   // useClaudeSessionStream.
   async function send() {
     const content = input.trim();
@@ -363,12 +363,12 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     await stream.doResume();
   }
   async function doDelete() {
-    if (!confirm('Supprimer définitivement cette session et tout son historique ?')) return;
+    if (!confirm('Permanently delete this session and all its history?')) return;
     setShowMenu(false);
     await stream.doDelete();
-    // navigation vers /m/select gérée par le callback onKilled du hook
+    // navigation to /m/select handled by the hook's onKilled callback
   }
-  // setMode est utilisé directement comme `stream.setMode` dans le JSX.
+  // setMode is used directly as `stream.setMode` in the JSX.
 
   // ── Render ────────────────────────────────────────────────────────────
   const title = sessionMeta?.name || (sessionMeta?.cwd ? sessionMeta.cwd.split('/').slice(-2).join('/') : 'session');
@@ -377,7 +377,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   return (
     <>
       <header className="m-topbar">
-        <button className="m-back" onClick={() => router.push('/m/select')} aria-label="retour">←</button>
+        <button className="m-back" onClick={() => router.push('/m/select')} aria-label="back">←</button>
         <div className="m-title-block">
           <span className="m-title">{title}</span>
           {subtitle && <span className="m-subtitle">{subtitle}</span>}
@@ -386,7 +386,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           <button
             className="m-act-btn"
             onClick={() => setDrawerOpen(true)}
-            aria-label="outils"
+            aria-label="tools"
             title="diffs / todos / tools"
             disabled={edits.size === 0 && todos.length === 0 && toolCalls.length === 0}
           >▤</button>
@@ -414,20 +414,20 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           type="button"
           className="m-cross-banner"
           onClick={() => router.push('/m/select')}
-          aria-label="aller aux autres sessions"
+          aria-label="go to other sessions"
         >
-          ↑ {otherSessionsPending} {otherSessionsPending === 1 ? 'interaction' : 'interactions'} en attente sur d'autres sessions
+          ↑ {otherSessionsPending} {otherSessionsPending === 1 ? 'interaction' : 'interactions'} pending on other sessions
         </button>
       )}
 
       <div className="m-chat-statusbar">
         {status === 'thinking' ? (
           <span className="m-status-pill status-amber-pulse">
-            <span className="dot" /> claude réfléchit
+            <span className="dot" /> claude is thinking
           </span>
         ) : oldestPending ? (
           <span className="m-status-pill status-orange-pulse">
-            <span className="dot" /> attend votre réponse
+            <span className="dot" /> waiting for your response
           </span>
         ) : status ? (
           <span className={`m-status-pill status-${STATUS_DOT[status]}`}>
@@ -441,12 +441,12 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 
       {(status === 'sleeping' || status === 'error') && (
         <div className="m-banner disconnect" onClick={doResume} role="button">
-          ↺ session inactive — tap pour reconnecter
+          ↺ session inactive — tap to reconnect
           {error?.msg && (<><br/><em style={{ fontStyle: 'italic', fontSize: 10, opacity: 0.7 }}>{error.msg.split('\n')[0].slice(0, 80)}</em></>)}
         </div>
       )}
       {status === 'reconnecting' && (
-        <div className="m-banner reconnect">↻ reconnexion auto en cours…</div>
+        <div className="m-banner reconnect">↻ auto-reconnecting…</div>
       )}
       {error && status !== 'sleeping' && status !== 'error' && (
         <div className="m-banner error">
@@ -463,7 +463,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           {isLoadingHistory && messages.length === 0 ? (
             <div className="m-history-loading" role="status" aria-live="polite">
               <span className="m-history-loading-spinner" aria-hidden />
-              <span>chargement de l'historique…</span>
+              <span>loading history…</span>
             </div>
           ) : (
             <>
@@ -480,31 +480,31 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
               {[...renderable].reverse().map(({ msg, attached }) => (
                 <MobileMessage key={msg.id} m={msg} attached={attached} />
               ))}
-              {/* En column-reverse, le dernier enfant DOM rend visuellement
-                  en haut — c'est là qu'on attend l'indicateur "plus ancien". */}
+              {/* In column-reverse, the last DOM child renders visually at
+                  the top — that's where we expect the "older" indicator. */}
               {(hasMore || isLoadingMore) && (
                 <div className="m-loadmore-indicator" role="status" aria-live="polite">
                   {isLoadingMore ? (
-                    <><span className="m-history-loading-spinner" aria-hidden /> chargement…</>
+                    <><span className="m-history-loading-spinner" aria-hidden /> loading…</>
                   ) : (
-                    <button type="button" onClick={() => loadMoreHistory()}>↑ plus ancien</button>
+                    <button type="button" onClick={() => loadMoreHistory()}>↑ older</button>
                   )}
                 </div>
               )}
               {!hasMore && !isLoadingMore && messages.length > 0 && (
-                <div className="m-history-start">— début —</div>
+                <div className="m-history-start">— start —</div>
               )}
             </>
           )}
         </div>
-        {/* Zone fixe pour les boutons scroll. La pill ↓ peut disparaître quand
-            on est en bas mais le bouton ↑ garde sa position au-dessus. */}
+        {/* Fixed area for the scroll buttons. The ↓ pill can disappear when
+            at the bottom but the ↑ button keeps its position above. */}
         {showScrollUpButton && (
           <button
             type="button"
             className="m-scroll-up-pill"
             onClick={onScrollUpClick}
-            aria-label="remonter au dernier message utilisateur"
+            aria-label="scroll up to last user message"
           >
             <span className="m-scroll-arrow">▴</span>
           </button>
@@ -514,7 +514,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
             type="button"
             className={`m-scroll-pill${newCount > 0 ? ' has-new' : ''}`}
             onClick={onPillClick}
-            aria-label={newCount > 0 ? `${newCount} nouveau message — aller en bas` : 'aller en bas'}
+            aria-label={newCount > 0 ? `${newCount} new message — go to bottom` : 'go to bottom'}
           >
             <span className="m-scroll-arrow">▾</span>
             {newCount > 0 && <span className="m-scroll-count">{newCount}</span>}
@@ -526,17 +526,17 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
         <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} />
       )}
 
-      {/* Bottom zone : 3 cas (l'ancien middle state `'killed'` n'existe plus,
-          cf. CLAUDE.md §10 — la suppression définitive vide la session
-          immédiatement, et l'event `status='killed'` du serveur déclenche
-          `onKilled` du hook qui nous redirige vers /m/select avant qu'on
-          ait l'occasion d'afficher ce branch) :
-          1. session sleeping/error → resume CTA
-          2. interaction pending → carte
+      {/* Bottom zone: 3 cases (the old `'killed'` middle state no longer
+          exists, cf. CLAUDE.md §10 — permanent deletion empties the session
+          immediately, and the server's `status='killed'` event triggers the
+          hook's `onKilled` which redirects us to /m/select before we have a
+          chance to display this branch):
+          1. sleeping/error session → resume CTA
+          2. pending interaction → card
           3. normal → mode switch + input bar */}
       {status === 'sleeping' || status === 'error' ? (
         <div className="m-resume-cta">
-          <button onClick={doResume}>↺ RESUME CETTE SESSION</button>
+          <button onClick={doResume}>↺ RESUME THIS SESSION</button>
         </div>
       ) : oldestPending ? (
         <div className="m-pending-zone">
@@ -563,7 +563,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
         </div>
       ) : (
         <>
-          <div className="m-mode-switch" role="radiogroup" aria-label="mode permissions">
+          <div className="m-mode-switch" role="radiogroup" aria-label="permission mode">
             <button
               type="button"
               className={`m-mode-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
@@ -590,18 +590,18 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
               ref={taRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="message à Claude…"
+              placeholder="message to Claude…"
               rows={2}
               onKeyDown={(e) => {
-                // Pas de submit sur Enter mobile — toujours saut de ligne natif.
-                // Ctrl/Cmd+Enter envoie pour le clavier hardware connecté.
+                // No submit on Enter on mobile — always native line break.
+                // Ctrl/Cmd+Enter sends for connected hardware keyboards.
                 if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                   e.preventDefault();
                   send();
                 }
               }}
             />
-            <button className="m-send" onClick={send} disabled={!input.trim()} aria-label="envoyer">
+            <button className="m-send" onClick={send} disabled={!input.trim()} aria-label="send">
               ▶
             </button>
           </footer>
@@ -630,10 +630,10 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 // ──────────────────────────────────────────────────────────────────────────
 // Menu popover (sleep/resume/delete/interrupt/force-stop)
 //
-// L'ancien bouton "pause session" (qui appelait `kill`) a été supprimé : le
-// soft-kill `status='killed'` n'existe plus. La suppression définitive est
-// derrière `onDelete` (avec confirm côté caller). Pour mettre en pause sans
-// perdre l'historique, c'est `onSleep` (réversible).
+// The old "pause session" button (which called `kill`) was removed: soft-
+// kill `status='killed'` no longer exists. Permanent deletion is behind
+// `onDelete` (with confirm on the caller side). To pause without losing
+// history, use `onSleep` (reversible).
 // ──────────────────────────────────────────────────────────────────────────
 function MenuPopover({
   status, onClose, onSleep, onResume, onDelete, onInterrupt, onForceStop,
@@ -663,7 +663,7 @@ function MenuPopover({
         }}
       >
         {status === 'thinking' && (
-          <MenuItem onClick={onInterrupt} label="⏸ interrompre" />
+          <MenuItem onClick={onInterrupt} label="⏸ interrupt" />
         )}
         {['thinking', 'active', 'starting'].includes(status ?? '') && (
           <MenuItem onClick={onForceStop} label="⏹ force stop" danger />
@@ -673,7 +673,7 @@ function MenuPopover({
         ) : (
           <MenuItem onClick={onSleep} label="💤 sleep" />
         )}
-        <MenuItem onClick={onDelete} label="🗑 supprimer" danger />
+        <MenuItem onClick={onDelete} label="🗑 delete" danger />
       </div>
     </>
   );
@@ -786,11 +786,11 @@ function ToolUseBubble({ m, attached }: { m: Msg; attached?: Msg }) {
       {resultObj && (
         <>
           <div className="m-tu-result" onClick={() => setExpanded((v) => !v)}>
-            {resultObj.content || '(vide)'}
+            {resultObj.content || '(empty)'}
           </div>
           {resultObj.content.length > 100 && (
             <span className="m-tu-toggle" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? '▾ moins' : '▸ tout afficher'}
+              {expanded ? '▾ less' : '▸ show all'}
             </span>
           )}
         </>
@@ -837,14 +837,14 @@ function ThinkingBar({
   return (
     <div className="m-thinking-bar">
       <span className="m-tb-dot" />
-      <span style={{ color: 'var(--gold-bright)' }}>réfléchit</span>
+      <span style={{ color: 'var(--gold-bright)' }}>thinking</span>
       {currentTool && (
         <span className="m-tb-tool">
           · {currentTool.name} {summarizeToolInput(currentTool.name, currentTool.input)}
         </span>
       )}
       <span className="m-tb-elapsed">
-        {stepCount > 0 && `· étape ${stepCount}`}
+        {stepCount > 0 && `· step ${stepCount}`}
         {elapsed != null && ` · ${fmtElapsed(elapsed)}`}
       </span>
     </div>
@@ -858,14 +858,14 @@ function PermCard({ perm, onRespond }: { perm: PermissionRequest; onRespond: (al
   const summary = summarizeToolInput(perm.tool, perm.input);
   return (
     <div className="m-perm-card">
-      <h3>🔒 permission demandée</h3>
+      <h3>🔒 permission requested</h3>
       <div className="m-pc-tool">{perm.tool}</div>
       {summary && <div className="m-pc-summary">{summary}</div>}
       <pre>{JSON.stringify(perm.input, null, 2).slice(0, 1200)}</pre>
       <div className="m-pc-actions">
-        <button type="button" className="allow" onClick={() => onRespond(true, false)}>autoriser une fois</button>
-        <button type="button" className="always" onClick={() => onRespond(true, true)}>toujours (session)</button>
-        <button type="button" className="deny" onClick={() => onRespond(false, false)}>refuser</button>
+        <button type="button" className="allow" onClick={() => onRespond(true, false)}>allow once</button>
+        <button type="button" className="always" onClick={() => onRespond(true, true)}>always (session)</button>
+        <button type="button" className="deny" onClick={() => onRespond(false, false)}>deny</button>
       </div>
     </div>
   );
@@ -928,7 +928,7 @@ function QuestionCard({ q, onAnswer, onCancel }: {
           <div key={qIdx} className="m-q-block">
             {qq.header && <div className="m-q-header">{qq.header}</div>}
             <div className="m-q-text">{qq.question}</div>
-            {multi && <div className="m-q-multi-hint">choix multiple ☑</div>}
+            {multi && <div className="m-q-multi-hint">multiple choice ☑</div>}
             {qq.options.map((opt) => {
               const on = sel.has(opt.label);
               return (
@@ -945,7 +945,7 @@ function QuestionCard({ q, onAnswer, onCancel }: {
               );
             })}
             <textarea
-              placeholder="ou réponse libre…"
+              placeholder="or free-form answer…"
               value={customVal}
               onChange={(e) => setCustoms((c) => ({ ...c, [qIdx]: e.target.value }))}
               rows={2}
@@ -955,8 +955,8 @@ function QuestionCard({ q, onAnswer, onCancel }: {
         );
       })}
       <div className="m-pc-actions">
-        <button type="button" className="approve" onClick={submit} disabled={!allAnswered}>envoyer</button>
-        <button type="button" className="deny" onClick={onCancel}>annuler</button>
+        <button type="button" className="approve" onClick={submit} disabled={!allAnswered}>send</button>
+        <button type="button" className="deny" onClick={onCancel}>cancel</button>
       </div>
     </div>
   );
@@ -971,25 +971,25 @@ function ExitPlanCard({ plan, onApprove, onReject }: {
   const [feedback, setFeedback] = useState('');
   return (
     <div className="m-exitplan-card">
-      <h3>📋 plan prêt</h3>
+      <h3>📋 plan ready</h3>
       <div style={{ marginTop: 8 }} className="m-md">
         {plan ? (
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         ) : (
-          <em style={{ color: 'var(--parchment-soft)' }}>Le plan a été écrit dans un fichier (voir messages au-dessus).</em>
+          <em style={{ color: 'var(--parchment-soft)' }}>The plan was written to a file (see messages above).</em>
         )}
       </div>
       {!askingFeedback ? (
         <div className="m-pc-actions">
-          <button type="button" className="approve" onClick={onApprove}>approuver et exécuter</button>
-          <button type="button" className="reject" onClick={() => setAskingFeedback(true)}>demander des changements</button>
+          <button type="button" className="approve" onClick={onApprove}>approve and execute</button>
+          <button type="button" className="reject" onClick={() => setAskingFeedback(true)}>request changes</button>
         </div>
       ) : (
         <>
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="que veux-tu modifier ?"
+            placeholder="what would you like to change?"
             rows={4}
             autoFocus
           />
@@ -999,8 +999,8 @@ function ExitPlanCard({ plan, onApprove, onReject }: {
               className="approve"
               onClick={() => onReject(feedback.trim() || 'Please revise the plan.')}
               disabled={!feedback.trim()}
-            >envoyer le feedback</button>
-            <button type="button" className="deny" onClick={() => { setAskingFeedback(false); setFeedback(''); }}>annuler</button>
+            >send feedback</button>
+            <button type="button" className="deny" onClick={() => { setAskingFeedback(false); setFeedback(''); }}>cancel</button>
           </div>
         </>
       )}
@@ -1029,7 +1029,7 @@ function Drawer({
       <div className="m-drawer-bg" onClick={onClose} />
       <div className="m-drawer" role="dialog" aria-modal="true">
         <div className="m-drawer-handle" onClick={onClose} />
-        <button className="m-drawer-close" onClick={onClose} aria-label="fermer">✕</button>
+        <button className="m-drawer-close" onClick={onClose} aria-label="close">✕</button>
         <nav className="m-drawer-tabs">
           <button className={tab === 'diffs' ? 'on' : ''} onClick={() => setTab('diffs')}>
             diffs {editArr.length > 0 && <span className="m-badge">{editArr.length}</span>}
@@ -1053,9 +1053,9 @@ function Drawer({
 
 function DiffsTab({ edits, onRevert }: { edits: EditSnapshot[]; onRevert: (filePath: string, content: string | null) => Promise<void> }) {
   const [busy, setBusy] = useState<string | null>(null);
-  if (edits.length === 0) return <div className="m-tp-empty">aucun fichier modifié</div>;
+  if (edits.length === 0) return <div className="m-tp-empty">no modified files</div>;
   async function revert(filePath: string, before: string | null) {
-    if (!confirm(`Restaurer "${filePath}" à son état initial ?`)) return;
+    if (!confirm(`Restore "${filePath}" to its initial state?`)) return;
     setBusy(filePath);
     try { await onRevert(filePath, before); } finally { setBusy(null); }
   }
@@ -1081,7 +1081,7 @@ function DiffsTab({ edits, onRevert }: { edits: EditSnapshot[]; onRevert: (fileP
                 disabled={busy === e.filePath}
               >{busy === e.filePath ? '…' : 'revert'}</button>
             </div>
-            {e.truncated && <div style={{ fontSize: 11, color: '#f0a060', marginTop: 4 }}>⚠ snapshot tronqué</div>}
+            {e.truncated && <div style={{ fontSize: 11, color: '#f0a060', marginTop: 4 }}>⚠ snapshot truncated</div>}
             <pre>{lines.map((l, i) => {
               let cls = 'ctx';
               if (l.startsWith('+')) cls = 'add';
@@ -1097,7 +1097,7 @@ function DiffsTab({ edits, onRevert }: { edits: EditSnapshot[]; onRevert: (fileP
 }
 
 function TodosTab({ todos }: { todos: Todo[] }) {
-  if (todos.length === 0) return <div className="m-tp-empty">aucune todo</div>;
+  if (todos.length === 0) return <div className="m-tp-empty">no todo</div>;
   return (
     <ul className="m-tp-todo-list">
       {todos.map((t, i) => (
@@ -1111,7 +1111,7 @@ function TodosTab({ todos }: { todos: Todo[] }) {
 }
 
 function CallsTab({ calls }: { calls: ToolCallEntry[] }) {
-  if (calls.length === 0) return <div className="m-tp-empty">aucun tool call</div>;
+  if (calls.length === 0) return <div className="m-tp-empty">no tool call</div>;
   return (
     <ul className="m-tp-calls-list">
       {calls.slice().reverse().map((c) => (
@@ -1160,7 +1160,7 @@ function summarizeToolInput(name: string, input: any): string {
 
 function fmtTime(ts: number): string {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function fmtElapsed(s: number): string {
@@ -1170,5 +1170,5 @@ function fmtElapsed(s: number): string {
   return `${m}m${r.toString().padStart(2, '0')}s`;
 }
 
-// rebuildStateFromMessages : extrait dans `app/sessionRebuild.ts` (partagé
-// avec ClaudePanel desktop). Import en haut du fichier.
+// rebuildStateFromMessages: extracted to `app/sessionRebuild.ts` (shared
+// with ClaudePanel desktop). Import at the top of the file.

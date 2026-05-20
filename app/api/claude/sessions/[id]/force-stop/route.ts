@@ -3,8 +3,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { forceStopSession } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/[id]/force-stop
-// Annulation brutale d'une session bloquée (le SDK ne rend pas la main sur
-// `interrupt` soft). La session passe en 'sleeping' immédiatement.
+// Brutal cancellation of a stuck session (the SDK doesn't yield on soft
+// `interrupt`). The session immediately goes to 'sleeping'.
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

@@ -11,11 +11,11 @@ export default function LoginPage() {
         <h1>Charon</h1>
         <form action={formAction}>
           <label>
-            <span>mot de passe</span>
+            <span>password</span>
             <input type="password" name="password" autoComplete="current-password" required autoFocus />
           </label>
           {state?.error && <div className="err">{state.error}</div>}
-          <button type="submit" disabled={pending}>{pending ? '…' : 'entrer'}</button>
+          <button type="submit" disabled={pending}>{pending ? '…' : 'enter'}</button>
         </form>
       </div>
     </div>

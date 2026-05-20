@@ -4,7 +4,7 @@ import { getStream } from '@/lib/server/agent/sessionOps';
 import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 
-// ── Types Telegram (subset) ─────────────────────────────────────────────────
+// ── Telegram types (subset) ─────────────────────────────────────────────────
 type TgInlineKeyboard = { text: string; callback_data: string }[][];
 type TgUpdate = {
   update_id: number;
@@ -17,17 +17,18 @@ type TgUpdate = {
   };
 };
 
-// ── Contexte des messages envoyés (pour edit après action) ──────────────────
-// MessageId → ce qui a été envoyé (sert à éditer le message après réponse).
-// Aussi : chatId → réponse libre attendue (sessionId+qid+qIdx) pour la prochaine
-// réponse texte non-boutonnée.
+// ── Context of sent messages (for edit after action) ────────────────────────
+// MessageId → what was sent (used to edit the message after the reply).
+// Also: chatId → free reply expected (sessionId+qid+qIdx) for the next
+// non-button text reply.
 type PermContext = { kind: 'perm'; sessionId: string; permId: string; toolName: string };
 type QuestionContext = {
   kind: 'q';
   sessionId: string;
   qid: string;
-  // Pour permettre une réponse libre par texte, on stocke les question objects
-  // et l'index courant qu'on attend. On chaîne les questions si plusieurs.
+  // To allow a free text reply, we store the question objects and the
+  // current index we're expecting. We chain the questions if there are
+  // multiple.
   questions: { question: string; options: { label: string }[]; multiSelect?: boolean }[];
   answers: Record<string, string>;
   qIdx: number;
@@ -75,11 +76,11 @@ async function tgCall<T = any>(method: string, body: any, tokenOverride?: string
 }
 
 function escapeMd(s: string): string {
-  // MarkdownV2 escape — pratique pour mettre du `code`
+  // MarkdownV2 escape — handy for `code` blocks
   return String(s).replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, (c) => '\\' + c);
 }
 
-// Le callback_data Telegram est limité à 64 bytes. On utilise des indices.
+// Telegram's callback_data is limited to 64 bytes. We use indices.
 function sessionLabel(sessionId: string): string {
   try {
     const [s] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
@@ -95,7 +96,7 @@ function sessionLabel(sessionId: string): string {
   return sessionId.slice(0, 8);
 }
 
-// ── Envoi : permission ──────────────────────────────────────────────────────
+// ── Send: permission ────────────────────────────────────────────────────────
 export async function sendPermissionToTelegram(
   sessionId: string, permId: string, tool: string, input: any
 ): Promise<void> {
@@ -105,7 +106,7 @@ export async function sendPermissionToTelegram(
   const summary = typeof input === 'object' ? JSON.stringify(input).slice(0, 300) : String(input).slice(0, 300);
   const text =
     `🔒 *Permission* — _${escapeMd(name)}_\n` +
-    `outil: \`${escapeMd(tool)}\`\n` +
+    `tool: \`${escapeMd(tool)}\`\n` +
     `\`\`\`\n${summary.slice(0, 600)}\n\`\`\``;
   const keyboard: TgInlineKeyboard = [
     [
@@ -128,10 +129,9 @@ export async function sendPermissionToTelegram(
   }
 }
 
-// ── Envoi : question (AskUserQuestion) ──────────────────────────────────────
-// On envoie un message par question (s'il y en a plusieurs). À chaque clic on
-// chaîne avec la suivante. Une fois toutes répondues, on envoie la réponse au
-// worker.
+// ── Send: question (AskUserQuestion) ────────────────────────────────────────
+// We send one message per question (if there are several). On each click,
+// chain with the next. Once all are answered, send the reply to the worker.
 export async function sendQuestionToTelegram(
   sessionId: string, qid: string,
   questions: Array<{ question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }>
@@ -158,7 +158,7 @@ async function sendOneQuestionStep(
     `❓ *Question*${progress} — _${escapeMd(name)}_\n` +
     header +
     `${escapeMd(q.question)}\n\n` +
-    `_${q.multiSelect ? 'plusieurs choix possibles' : 'choisis une option'} ou tape ta réponse_`;
+    `_${q.multiSelect ? 'multiple choices possible' : 'pick an option'} or type your reply_`;
   const keyboard: TgInlineKeyboard = [];
   q.options.forEach((opt, oi) => {
     const label = opt.label.length > 60 ? opt.label.slice(0, 57) + '…' : opt.label;
@@ -176,14 +176,14 @@ async function sendOneQuestionStep(
       kind: 'q', sessionId, qid, questions, answers: answersSoFar, qIdx,
     };
     state.sentByMessage.set(key, ctx);
-    // Marque ce chat comme attendant éventuellement une réponse libre
+    // Mark this chat as possibly awaiting a free reply
     state.awaitingReplyByChat.set(String(res.chat.id), key);
   } catch (e: any) {
     console.warn('[telegram] sendQuestion:', e?.message ?? e);
   }
 }
 
-// ── Edit un message après action (pour montrer "✓ Allowed" etc.) ────────────
+// ── Edit a message after action (to show "✓ Allowed" etc.) ──────────────────
 async function tagMessageAsResolved(chatId: number, messageId: number, label: string): Promise<void> {
   const cfg = configured();
   if (!cfg) return;
@@ -218,7 +218,7 @@ async function pollLoop(): Promise<void> {
         }
       }
     } catch (e: any) {
-      // Si pas configuré, ou erreur ponctuelle, on patiente.
+      // If not configured, or a one-off error, wait.
       const msg = String(e?.message ?? e);
       if (!msg.includes('not configured')) {
         console.warn('[telegram] poll error:', msg);
@@ -240,16 +240,16 @@ async function handleUpdate(u: TgUpdate): Promise<void> {
 async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Promise<void> {
   const cfg = configured();
   if (!cfg) return;
-  // Filtre chat_id : on ne réagit qu'au chat configuré (sécu basique)
+  // chat_id filter: only react to the configured chat (basic security)
   if (cb.message && String(cb.message.chat.id) !== cfg.chatId) {
-    await tgCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'chat non autorisé' });
+    await tgCall('answerCallbackQuery', { callback_query_id: cb.id, text: 'chat not authorized' });
     return;
   }
   await tgCall('answerCallbackQuery', { callback_query_id: cb.id }); // dismiss spinner
   const data = cb.data ?? '';
   if (data === 'noop' || !cb.message) return;
   const parts = data.split('|');
-  // permission : "p|a|<permId>" | "p|s|<permId>" | "p|d|<permId>"
+  // permission: "p|a|<permId>" | "p|s|<permId>" | "p|d|<permId>"
   if (parts[0] === 'p') {
     const action = parts[1];
     const permId = parts[2];
@@ -268,14 +268,14 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Prom
       else if (action === 'd') { await w.respondPermission(permId, false, false); label = '✗ denied'; }
       else return;
     } catch (e: any) {
-      label = '⚠ ' + (e?.message ?? 'erreur');
+      label = '⚠ ' + (e?.message ?? 'error');
     }
     await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, label);
     state.sentByMessage.delete(ctxKey);
     state.awaitingReplyByChat.delete(String(cb.message.chat.id));
     return;
   }
-  // question : "q|<qid>|<qIdx>|<optIdx>"
+  // question: "q|<qid>|<qIdx>|<optIdx>"
   if (parts[0] === 'q') {
     const qid = parts[1];
     const qIdx = Number(parts[2]);
@@ -287,15 +287,15 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>): Prom
     if (!q) return;
     const opt = q.options[optIdx];
     if (!opt) return;
-    // Si multiSelect, on agrège (séparé par ", ") mais Telegram on n'a pas vraiment
-    // de "submit" — pour simplifier, en multiSelect on traite le clic comme la
-    // sélection finale (1 seule option par appel Telegram). User peut taper en
-    // texte libre s'il veut plusieurs.
+    // If multiSelect, we'd aggregate (separated by ", ") but Telegram doesn't
+    // really have a "submit" — for simplicity, in multiSelect we treat the
+    // click as the final selection (1 option per Telegram call). User can
+    // type free text if they want multiple.
     ctx.answers[q.question] = opt.label;
     await tagMessageAsResolved(cb.message.chat.id, cb.message.message_id, `→ ${opt.label.slice(0, 40)}`);
     state.sentByMessage.delete(ctxKey);
     state.awaitingReplyByChat.delete(String(cb.message.chat.id));
-    // Question suivante ou terminer
+    // Next question or finish
     if (ctx.qIdx + 1 < ctx.questions.length) {
       await sendOneQuestionStep(ctx.sessionId, ctx.qid, ctx.questions, ctx.answers, ctx.qIdx + 1);
     } else {
@@ -314,7 +314,7 @@ async function handleText(msg: NonNullable<TgUpdate['message']>): Promise<void> 
   if (String(msg.chat.id) !== cfg.chatId) return;
   const chatKey = String(msg.chat.id);
   const awaitingMsgKey = state.awaitingReplyByChat.get(chatKey);
-  if (!awaitingMsgKey) return; // pas de question en attente, on ignore
+  if (!awaitingMsgKey) return; // no question pending, ignore
   const ctx = state.sentByMessage.get(awaitingMsgKey);
   if (!ctx || ctx.kind !== 'q') return;
   const q = ctx.questions[ctx.qIdx];
@@ -322,7 +322,7 @@ async function handleText(msg: NonNullable<TgUpdate['message']>): Promise<void> 
   const userText = msg.text!.trim();
   if (!userText) return;
   ctx.answers[q.question] = userText;
-  // Marque la question répondue
+  // Mark the question as answered
   const [chat, mid] = awaitingMsgKey.split(':');
   await tagMessageAsResolved(Number(chat), Number(mid), `→ ${userText.slice(0, 40)}`);
   state.sentByMessage.delete(awaitingMsgKey);
@@ -339,41 +339,41 @@ async function handleText(msg: NonNullable<TgUpdate['message']>): Promise<void> 
 
 // ── Bot lifecycle ──────────────────────────────────────────────────────────
 export function startTelegramBot(): void {
-  if (state.pollInterval != null) return; // déjà démarré
-  // Démarre la boucle de poll (non-bloquant). On stocke un flag, pas l'interval
-  // (poll est une boucle async).
+  if (state.pollInterval != null) return; // already started
+  // Start the poll loop (non-blocking). We store a flag, not the interval
+  // (poll is an async loop).
   state.pollInterval = setTimeout(() => {
     pollLoop().catch((e) => console.warn('[telegram] poll crashed:', e));
   }, 0);
 }
 
-// ── Notifier les workers qu'une interaction est résolue ailleurs ───────────
-// (à appeler depuis SessionWorker quand interaction_resolved est broadcasté
-// pour signaler qu'on doit "consommer" le message Telegram correspondant)
+// ── Notify the workers that an interaction was resolved elsewhere ──────────
+// (to call from SessionWorker when interaction_resolved is broadcast, to
+// signal we must "consume" the corresponding Telegram message)
 export function markInteractionResolvedInTelegram(_kind: 'permission' | 'question' | 'exit_plan', interactionId: string): void {
-  // Cherche le message Telegram lié et l'édite
+  // Look for the related Telegram message and edit it
   for (const [key, ctx] of state.sentByMessage.entries()) {
     if (ctx.kind === 'perm' && ctx.permId === interactionId) {
       const [chat, mid] = key.split(':');
-      tagMessageAsResolved(Number(chat), Number(mid), 'résolu côté dashboard').catch(() => {});
+      tagMessageAsResolved(Number(chat), Number(mid), 'resolved from dashboard').catch(() => {});
       state.sentByMessage.delete(key);
     } else if (ctx.kind === 'q' && ctx.qid === interactionId) {
       const [chat, mid] = key.split(':');
-      tagMessageAsResolved(Number(chat), Number(mid), 'résolu côté dashboard').catch(() => {});
+      tagMessageAsResolved(Number(chat), Number(mid), 'resolved from dashboard').catch(() => {});
       state.sentByMessage.delete(key);
       state.awaitingReplyByChat.delete(chat);
     }
   }
 }
 
-// ── Test de configuration (envoyé depuis l'UI Settings) ─────────────────────
+// ── Configuration test (sent from the Settings UI) ──────────────────────────
 export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }> {
   try {
     const cfg = configured();
-    if (!cfg) return { ok: false, error: 'telegram.enabled=false ou bot_token/chat_id manquant' };
+    if (!cfg) return { ok: false, error: 'telegram.enabled=false or bot_token/chat_id missing' };
     await tgCall('sendMessage', {
       chat_id: cfg.chatId,
-      text: '✓ Hub claude — connexion Telegram OK. Les questions et permissions arriveront ici.',
+      text: '✓ Charon hub — Telegram connection OK. Questions and permissions will arrive here.',
     });
     return { ok: true };
   } catch (e: any) {

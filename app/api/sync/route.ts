@@ -2,15 +2,18 @@ import { NextResponse } from 'next/server';
 import { db, vps, vpsPaths } from '@/lib/db';
 import { eq, and } from 'drizzle-orm';
 
-// POST /api/sync — réception du sync hub → charon (modèle "vps + paths").
+// POST /api/sync — ingest VPS + paths from an external source ("vps + paths"
+// model). Originally used to migrate from a sibling deployment, but works as
+// a generic upsert endpoint for anyone wanting to push VPS metadata into
+// Charon without going through the UI.
 //
-// Auth : Authorization: Bearer <SYNC_TOKEN> (env partagé entre hub et charon).
+// Auth: Authorization: Bearer <SYNC_TOKEN> (env-shared with the caller).
 //
-// Payload : { vps?: VpsRow[], vpsPaths?: VpsPathRow[] }
+// Payload: { vps?: VpsRow[], vpsPaths?: VpsPathRow[] }
 //
-// - vps : upsert par id (les rows charon-only sont préservées)
-// - vpsPaths : insert si (vps_id, path) n'existe pas, sinon update du label
-//   uniquement si on en reçoit un. Pas de delete.
+// - vps: upsert by id (rows that exist only locally are preserved).
+// - vpsPaths: insert if (vps_id, path) is new; otherwise update the label
+//   only if one is provided. No delete.
 
 type VpsRow = {
   id: string;
@@ -80,9 +83,9 @@ export async function POST(req: Request) {
       counts.vps += 1;
     }
 
-    // vpsPaths : pas de PK utile pour upsert (id autoincrement), dédup
-    // sur (vps_id, path). Si existe et qu'on reçoit un label différent,
-    // on update juste le label.
+    // vpsPaths: no useful PK for upsert (id autoincrement), dedup
+    // on (vps_id, path). If it exists and we receive a different label,
+    // we just update the label.
     for (const r of inPaths) {
       if (!r?.vpsId || !r?.path) continue;
       const vpsId = String(r.vpsId);

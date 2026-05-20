@@ -8,12 +8,12 @@ export const dynamic = 'force-dynamic';
 // POST /api/claude/focus
 // Body: { conn: string; sessionId: string | null }
 //
-// Change le focus d'une connexion SSE multiplexée (cf. /api/claude/events).
-// Le streaming high-volume (assistant_text, tool_*, edit_snapshot…) suit la
-// nouvelle session sans qu'on ait besoin de close/reopen la SSE.
+// Changes the focus of a multiplexed SSE connection (cf. /api/claude/events).
+// High-volume streaming (assistant_text, tool_*, edit_snapshot...) follows
+// the new session without needing to close/reopen the SSE.
 //
-// Le client doit en parallèle GET /api/claude/sessions/[id] pour récupérer
-// l'historique persisté de la nouvelle session — la SSE ne replay rien.
+// The client must in parallel GET /api/claude/sessions/[id] to fetch the
+// persisted history of the new session — the SSE replays nothing.
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   }
 
   const ok = setConnectionFocus(conn, sessionId ?? null);
-  // Si false : la connexion n'existe pas (SSE pas encore ouverte ou déjà
-  // fermée). Pas une erreur fatale — le client peut retry.
+  // If false: the connection does not exist (SSE not yet opened or already
+  // closed). Not a fatal error — the client can retry.
   return NextResponse.json({ ok });
 }

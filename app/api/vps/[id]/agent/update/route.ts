@@ -10,9 +10,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // POST /api/vps/[id]/agent/update
-// Redéploie le .pyz embarqué + restart le service systemd-user (fallback nohup).
-// Renvoie { ok, newVersion, newPyzSha, builtPyzSha } pour que l'UI mette
-// à jour le badge "out of date" sans avoir à refetch.
+// Redeploys the embedded .pyz + restarts the systemd-user service (nohup fallback).
+// Returns { ok, newVersion, newPyzSha, builtPyzSha } so the UI can update
+// the "out of date" badge without having to refetch.
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -20,11 +20,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // Important : on coupe la connexion live AVANT de killer le process,
-  // sinon AgentClient déclenche son retry-loop sur un binaire en cours
-  // de remplacement → soit on lit l'ancien (race), soit on reste "reconnecting"
-  // longtemps. dropAgentClient() ferme et purge du pool, une nouvelle
-  // instance sera créée à la prochaine demande.
+  // Important: we cut the live connection BEFORE killing the process,
+  // otherwise AgentClient triggers its retry-loop on a binary currently
+  // being replaced -> either we read the old one (race), or we stay
+  // "reconnecting" for a long time. dropAgentClient() closes and purges
+  // from the pool, a new instance will be created on the next request.
   try { await dropAgentClient(v.id); } catch {}
 
   let result;
@@ -40,8 +40,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ ok: false, error: result.detail }, { status: 500 });
   }
 
-  // Persiste la nouvelle version + sha (AgentClient le repersistera aussi
-  // au prochain hello, mais on évite la fenêtre où l'UI voit encore l'ancien).
+  // Persist the new version + sha (AgentClient will repersist it too
+  // on the next hello, but this avoids the window where the UI still
+  // sees the old one).
   try {
     db.update(vpsTable).set({
       agentVersion: result.newVersion ?? null,

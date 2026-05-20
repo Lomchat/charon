@@ -3,7 +3,7 @@ import { db, claudeSessions, claudeSessionMessages } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
 // GET /api/claude/sessions/[id]/export
-// Renvoie le transcript en markdown (text/markdown).
+// Returns the transcript in markdown (text/markdown).
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -18,10 +18,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const lines: string[] = [];
   lines.push(`# Session ${sess.name ?? sess.id}`);
   lines.push('');
-  lines.push(`- **cwd** : \`${sess.cwd}\``);
-  lines.push(`- **status** : ${sess.status}`);
-  lines.push(`- **claudeSessionId** : ${sess.claudeSessionId ?? '—'}`);
-  lines.push(`- **createdAt** : ${new Date((sess.createdAt ?? 0) * 1000).toISOString()}`);
+  lines.push(`- **cwd**: \`${sess.cwd}\``);
+  lines.push(`- **status**: ${sess.status}`);
+  lines.push(`- **claudeSessionId**: ${sess.claudeSessionId ?? '—'}`);
+  lines.push(`- **createdAt**: ${new Date((sess.createdAt ?? 0) * 1000).toISOString()}`);
   lines.push('');
   lines.push('---');
   lines.push('');

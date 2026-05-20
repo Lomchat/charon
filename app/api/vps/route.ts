@@ -24,10 +24,10 @@ export async function POST(req: Request) {
     ? String(body.defaultPath).trim()
     : null;
 
-  // Résolution du dossier : si folderId fourni et existant on l'utilise,
-  // sinon on tombe sur le premier dossier non-'default' (par position). Le
-  // dossier 'default' est volontairement écarté car il est par convention
-  // "Sans dossier" — fallback uniquement si aucun autre dossier n'existe.
+  // Folder resolution: if folderId is provided and exists we use it,
+  // otherwise we fall back on the first non-'default' folder (by position).
+  // The 'default' folder is intentionally excluded as it is conventionally
+  // "No folder" — fallback only if no other folder exists.
   let folderId: string;
   const requested = body.folderId != null ? String(body.folderId).trim() : null;
   if (requested) {
@@ -40,7 +40,7 @@ export async function POST(req: Request) {
     folderId = first?.id ?? DEFAULT_FOLDER_ID;
   }
 
-  // Position : append à la fin du dossier choisi.
+  // Position: append at the end of the chosen folder.
   const m = db.select({ p: max(vps.position) }).from(vps).where(eq(vps.folderId, folderId)).get();
   const position = (m?.p ?? -1) + 1;
 

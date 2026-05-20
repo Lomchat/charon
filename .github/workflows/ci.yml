@@ -1,11 +1,12 @@
 name: CI
 
-# Lance le check protocole, le build Next, le test des migrations Drizzle
-# sur une DB temporaire, et compile le module Python de l'agent.
+# Runs the protocol drift check, the Next build, the Drizzle migration suite
+# against a temp DB, the Python agent compile + zipapp build, and a strict
+# `tsc --noEmit` pass.
 #
-# Pas de "tests unitaires" historiquement (rien de tel dans le repo).
-# Cette CI attrape les régressions structurelles : drift protocole, TS
-# cassé, migration cassée, agent .pyz qui ne build pas.
+# There are no unit tests in the repo yet — see CONTRIBUTING.md "Tests". This
+# CI catches structural regressions: protocol drift between Python and TS,
+# broken TS, broken migrations, agent that no longer compiles or zipapps.
 
 on:
   push:
@@ -17,13 +18,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22']
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: Setup Python
@@ -34,30 +39,51 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test migrations on temp DB
-        # Vérifie qu'une DB fraîche peut appliquer toutes les migrations
-        # sans erreur (catch les "duplicate column", FK cassées, etc.).
+      - name: Typecheck
+        # tsc --noEmit, isolated from the Next build so failures are easy to
+        # read. `next build` also runs the compiler but its output mixes TS
+        # errors with bundler chatter.
+        run: npm run typecheck
+
+      - name: Test migrations on a temp DB
+        # Verifies a fresh DB can apply every migration in order without
+        # error (catches duplicate column adds, broken FK, etc.).
         run: DATABASE_URL=/tmp/charon-ci.db npm run db:migrate
 
       - name: Build Next.js
-        # `build` exécute aussi `check-protocol-sync.mjs` (prebuild via
-        # le script npm). Couvre TS + protocole Py↔TS aligné.
+        # `build` also runs `check-protocol-sync.mjs` (prebuild via the npm
+        # script). Covers TS + the Python↔TS protocol union check.
         env:
           NODE_ENV: production
-          # Secrets factices pour ne pas casser le seed (Charon les lit au
-          # boot via env, mais en build statique le code n'est pas
-          # exécuté — ils restent quand même nécessaires si une route
-          # nécessite leur présence lors d'un dry-run SSG).
-          SESSION_SECRET: ci-dummy-session-secret-not-used
+          # Dummy secrets so any code that reads env at import time doesn't
+          # crash during SSG. Charon doesn't actually use these — but a
+          # missing env triggers `throw` in `lib/server/auth.ts`.
+          SESSION_SECRET: ci-dummy-session-secret
           MASTER_PASSWORD: ci-dummy
           MASTER_SALT: ci-dummy-salt
           SYNC_TOKEN: ci-dummy-sync-token
         run: npm run build
 
       - name: Build agent .pyz
-        # Vérifie que le packaging zipapp passe (script bash + python3 -m zipapp).
+        # Validates the zipapp packaging (bash script + python3 -m zipapp).
         run: bash agent/build.sh
 
       - name: Python compile check
-        # Catch les SyntaxError / imports cassés dans l'agent.
+        # Catches SyntaxError / broken imports in the agent.
         run: python3 -m compileall -q agent/charon_agent
+
+  audit:
+    runs-on: ubuntu-latest
+    # Non-blocking vigilance. We don't want a transient advisory to wedge
+    # PRs, but we do want a visible signal on the run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: npm audit (production)
+        run: npm audit --omit=dev --audit-level=high

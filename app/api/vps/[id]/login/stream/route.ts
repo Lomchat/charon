@@ -5,7 +5,7 @@ import { getLoginSession } from '@/lib/server/agent/loginSession';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// GET /api/vps/[id]/login/stream  → SSE stdout/stderr/meta du `claude login`
+// GET /api/vps/[id]/login/stream  → SSE stdout/stderr/meta of `claude login`
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

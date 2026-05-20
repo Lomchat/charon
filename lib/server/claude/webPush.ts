@@ -55,7 +55,7 @@ export async function sendPushToAll(payload: {
         .set({ lastUsedAt: Math.floor(Date.now() / 1000) })
         .where(eq(claudePushSubs.id, s.id)).run();
     } catch (e: any) {
-      // 410 = endpoint gone, on supprime
+      // 410 = endpoint gone, delete it
       if (e?.statusCode === 404 || e?.statusCode === 410) {
         db.delete(claudePushSubs).where(eq(claudePushSubs.id, s.id)).run();
       }

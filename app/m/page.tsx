@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 
-// /m → écran de sélection par défaut.
+// /m → default selection screen.
 export default function MobileIndex() {
   redirect('/m/select');
 }

@@ -29,8 +29,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const [row] = db.select().from(vps).where(eq(vps.id, id)).all();
     return NextResponse.json(row ?? null);
   }
-  // Si on touche aux credentials/host, drop le client (il sera recréé avec
-  // les nouvelles valeurs au prochain accès).
+  // If we touch credentials/host, drop the client (it will be recreated
+  // with the new values on next access).
   const credsChanged = ['ip', 'sshUser', 'sshPort'].some((k) => k in update);
   if (credsChanged) await dropAgentClient(id).catch(() => {});
   db.update(vps).set(update).where(eq(vps.id, id)).run();
@@ -42,7 +42,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  // Ferme la SSH multiplexée avant de supprimer le row VPS
+  // Close the multiplexed SSH before deleting the VPS row
   await dropAgentClient(id).catch(() => {});
   db.delete(vps).where(eq(vps.id, id)).run();
   return NextResponse.json({ ok: true });

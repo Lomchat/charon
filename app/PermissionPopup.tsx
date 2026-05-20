@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 
-// Type partagé desktop/mobile défini dans `./sessionTypes`. Réexporté ici
-// pour préserver les imports historiques.
+// Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
+// to preserve historical imports.
 export type { PermissionRequest } from './sessionTypes';
 import type { PermissionRequest } from './sessionTypes';
 
@@ -23,9 +23,9 @@ export default function PermissionPopup({ queue, currentSessionId, onRespond, on
       <div className="perm-card">
         <header>
           <span className="badge">{queue.length}</span>
-          <span className="title">permission demandée</span>
+          <span className="title">permission requested</span>
           {!isCurrent && (
-            <button className="switch" onClick={() => onSwitchSession(top.sessionId)} title="ouvrir cette session">
+            <button className="switch" onClick={() => onSwitchSession(top.sessionId)} title="open this session">
               ↗ session {top.sessionId.slice(0, 6)}
             </button>
           )}

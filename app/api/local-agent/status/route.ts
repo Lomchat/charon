@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // GET /api/local-agent/status
-// Renvoie l'état de l'agent qui tourne sur la machine du dashboard.
+// Returns the state of the agent running on the dashboard machine.
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

@@ -9,9 +9,9 @@ import { seedInitialData } from '@/lib/server/seed';
 
 export async function loginAction(_prev: { error?: string } | null, formData: FormData) {
   const password = String(formData.get('password') ?? '');
-  if (!password) return { error: 'mot de passe requis' };
+  if (!password) return { error: 'password required' };
 
-  if (!checkPassword(password)) return { error: 'mot de passe invalide' };
+  if (!checkPassword(password)) return { error: 'invalid password' };
 
   // Idempotent seed at first login
   seedInitialData();

@@ -5,7 +5,7 @@ import { getShell } from '@/lib/server/shell/shellSession';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// GET /api/shells/[id]/stream  → SSE stdout/stderr/meta du shell
+// GET /api/shells/[id]/stream  → SSE stdout/stderr/meta of the shell
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

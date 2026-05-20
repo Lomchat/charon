@@ -13,7 +13,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 }
 
 // PATCH /api/shells/[id]  Body: { name?, color? }
-// Update mémoire seulement (les shells sont éphémères, pas de DB).
+// In-memory update only (shells are ephemeral, no DB).
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

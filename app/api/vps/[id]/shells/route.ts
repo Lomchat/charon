@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { startShell, listShells } from '@/lib/server/shell/shellSession';
 
-// GET /api/vps/[id]/shells → liste les shells actifs pour ce VPS
+// GET /api/vps/[id]/shells → lists active shells for this VPS
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

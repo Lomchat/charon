@@ -1,4 +1,4 @@
-"""Entry point — choisit entre le mode daemon et le mode --connect."""
+"""Entry point — selects between daemon mode and --connect mode."""
 from __future__ import annotations
 
 import argparse
@@ -25,15 +25,15 @@ def _default_state_file(state_dir: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="charon-agent",
-        description="Daemon Claude pour les sessions Charon (mode daemon par défaut).",
+        description="Claude daemon for Charon sessions (daemon mode by default).",
     )
     p.add_argument("--version", action="version", version=f"charon-agent {__version__}")
     p.add_argument("--socket", type=Path, default=None,
-                   help="chemin du Unix socket (défaut: ~/.charon/agent.sock)")
+                   help="path to the Unix socket (default: ~/.charon/agent.sock)")
     p.add_argument("--state", type=Path, default=None,
-                   help="chemin de state.json (défaut: ~/.charon/state.json)")
+                   help="path to state.json (default: ~/.charon/state.json)")
     p.add_argument("--connect", action="store_true",
-                   help="mode proxy stdio ↔ socket (utilisé par Charon via SSH)")
+                   help="stdio ↔ socket proxy mode (used by Charon over SSH)")
     args = p.parse_args(argv)
 
     state_dir = _default_state_dir()

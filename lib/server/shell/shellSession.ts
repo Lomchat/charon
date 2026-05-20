@@ -6,9 +6,9 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { getSetting } from '@/lib/server/claude/settings';
 
-// ── Sessions SSH "shells" — légères, ephémères ───────────────────────────────
-// Une fois perdue (Charon restart, SSH drop, kill explicite), elle est perdue.
-// Pas de resume. Pas de DB. Pool en mémoire seulement. Multi-shells par VPS OK.
+// ── SSH "shells" sessions — lightweight, ephemeral ───────────────────────────
+// Once lost (Charon restart, SSH drop, explicit kill), it's gone.
+// No resume. No DB. In-memory pool only. Multi-shells per VPS OK.
 
 const SSH_OPTS = [
   '-o', 'BatchMode=yes',
@@ -72,7 +72,7 @@ class ShellSession {
     if (this.child) return false;
     const keyPath = getSetting('ssh.private_key_path');
     const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
-    // Si cwd fourni : on lance un bash login dans ce dir, sinon le shell par défaut.
+    // If cwd is provided: run a login bash in that dir, otherwise the default shell.
     const remoteCmd = this.cwd
       ? `cd ${shellQuote(this.cwd)} && exec $SHELL -l`
       : 'exec $SHELL -l';
@@ -94,13 +94,13 @@ class ShellSession {
       this.exited = true;
       this._emit('meta', `\n[charon] ssh exited (code=${code ?? '?'})\n`);
       this.child = null;
-      // Garde le shell un peu pour que les late subscribers voient l'exit
+      // Keep the shell around a bit so late subscribers see the exit
       setTimeout(() => {
         for (const s of this.subs.values()) {
           try { s.close(); } catch {}
         }
         this.subs.clear();
-        // Et purge du pool après 30s
+        // And purge from the pool after 30s
         setTimeout(() => { pool.delete(this.id); }, 30_000);
       }, 500);
     });
@@ -148,13 +148,13 @@ class ShellSession {
 }
 
 function shellQuote(s: string): string {
-  // Quote simple pour cwd : on entoure de '...' et on escape les single quotes.
-  // Marche pour les chemins normaux ; si l'utilisateur met du shell injection
-  // dans son cwd, eh bah il le mérite (il a un accès SSH root déjà).
+  // Simple quote for cwd: wrap in '...' and escape single quotes.
+  // Works for normal paths; if the user puts shell injection in their cwd,
+  // well, they deserve it (they already have root SSH access).
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-// Pool global keyed par shellId (UUID). Multi-shells par VPS supportés.
+// Global pool keyed by shellId (UUID). Multi-shells per VPS supported.
 const g = globalThis as unknown as { _shellSessions?: Map<string, ShellSession> };
 if (!g._shellSessions) g._shellSessions = new Map();
 const pool: Map<string, ShellSession> = g._shellSessions;

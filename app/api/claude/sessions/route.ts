@@ -6,7 +6,7 @@ import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 
 // GET /api/claude/sessions
-// Query : ?vpsId= ?status=
+// Query: ?vpsId= ?status=
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -22,7 +22,7 @@ export async function GET(req: Request) {
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
 
-  // Annoter avec statut live + subs count + pendingPermissions
+  // Annotate with live status + subs count + pendingPermissions
   const streams = new Map(listStreams().map((s) => [s.id, s] as const));
   const pendingRows = db.select({
     sessionId: claudePendingPermissions.sessionId,
@@ -71,7 +71,7 @@ export async function GET(req: Request) {
 }
 
 // POST /api/claude/sessions
-// Body : { vpsId, cwd, name?, permissionMode? }
+// Body: { vpsId, cwd, name?, permissionMode? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

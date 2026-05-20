@@ -6,13 +6,13 @@ import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
 
 // POST /api/claude/sessions/import
-// Body : { vpsId, claudeSessionId, cwd, name?, permissionMode? }
+// Body: { vpsId, claudeSessionId, cwd, name?, permissionMode? }
 //
-// 1. Crée un row claude_sessions en status='sleeping' avec le claudeSessionId
-// 2. Fetch le .jsonl du VPS et insère les messages historiques en DB
-//    → la chat affiche l'historique immédiatement après import
-// 3. Au resume ultérieur, l'agent fait start_session(claude_session_id=...)
-//    qui reprend la conversation côté SDK pour pouvoir continuer.
+// 1. Creates a claude_sessions row with status='sleeping' and the claudeSessionId
+// 2. Fetches the .jsonl from the VPS and inserts the historical messages in DB
+//    -> the chat displays the history immediately after import
+// 3. On a later resume, the agent calls start_session(claude_session_id=...)
+//    which resumes the conversation on the SDK side so it can continue.
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -36,8 +36,8 @@ export async function POST(req: Request) {
         : 'auto',
     });
 
-    // Fetch + insert messages (best-effort : si ça échoue, la session est
-    // quand même importable, juste sans historique visible).
+    // Fetch + insert messages (best-effort: if it fails, the session is
+    // still importable, just without visible history).
     let importedCount = 0;
     let importError: string | undefined;
     try {
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
       if (!r.ok) {
         importError = r.error;
       } else if (r.messages.length > 0) {
-        // Bulk insert dans une transaction
+        // Bulk insert inside a transaction
         db.transaction((tx) => {
           for (const m of r.messages) {
             tx.insert(claudeSessionMessages).values({

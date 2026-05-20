@@ -9,11 +9,11 @@ type Props = {
   onClose: () => void;
 };
 
-// Vue split-screen old | new, à la VSCode. Alignement par ligne :
-// - Lignes inchangées : affichées des deux côtés
-// - Lignes ajoutées : vide à gauche, vert à droite
-// - Lignes supprimées : rouge à gauche, vide à droite
-// - Modifications : généralement supprimée puis ajoutée (diff par ligne)
+// Split-screen old | new view, VSCode-style. Line-by-line alignment:
+// - Unchanged lines: shown on both sides
+// - Added lines: empty on the left, green on the right
+// - Deleted lines: red on the left, empty on the right
+// - Modifications: usually deleted then added (line-level diff)
 export default function SplitDiffModal({ filePath, before, after, onClose }: Props) {
   const rows = useMemo(() => computeAlignedRows(before ?? '', after ?? ''), [before, after]);
   const stats = useMemo(() => {
@@ -42,11 +42,11 @@ export default function SplitDiffModal({ filePath, before, after, onClose }: Pro
             <span className="add">+{stats.add}</span>
             <span className="del">−{stats.del}</span>
           </span>
-          <button className="sdm-close" onClick={onClose} title="fermer (Esc)">✕</button>
+          <button className="sdm-close" onClick={onClose} title="close (Esc)">✕</button>
         </header>
         <div className="sdm-cols-head">
-          <span className="left">avant{before == null ? ' (nouveau fichier)' : ''}</span>
-          <span className="right">après{after == null ? ' (supprimé)' : ''}</span>
+          <span className="left">before{before == null ? ' (new file)' : ''}</span>
+          <span className="right">after{after == null ? ' (deleted)' : ''}</span>
         </div>
         <div className="sdm-body">
           <table className="sdm-table">
@@ -89,9 +89,9 @@ type Row = {
   rightText?: string;
 };
 
-// Aligne les deux fichiers en lignes via diffLines. Quand un bloc supprimé
-// est immédiatement suivi d'un bloc ajouté de même taille, on les apparie
-// en "mod" (modification) — visuel plus lisible.
+// Aligns the two files into lines via diffLines. When a removed block is
+// immediately followed by an added block of the same size, we pair them
+// as "mod" (modification) — visually more readable.
 function computeAlignedRows(before: string, after: string): Row[] {
   const parts = diffLines(before, after);
   const rows: Row[] = [];
@@ -109,7 +109,7 @@ function computeAlignedRows(before: string, after: string): Row[] {
     }
 
     if (p.removed) {
-      // Apparier avec un éventuel "added" qui suit
+      // Pair with a potential "added" that follows
       const next = parts[i + 1];
       if (next?.added) {
         const addedLines = splitLines(next.value);
@@ -127,7 +127,7 @@ function computeAlignedRows(before: string, after: string): Row[] {
             rows.push({ kind: 'add', rightLine: rightN++, rightText: addedLines[k] });
           }
         }
-        i++; // consommé
+        i++; // consumed
         continue;
       }
       for (const ln of lines) {
@@ -146,8 +146,8 @@ function computeAlignedRows(before: string, after: string): Row[] {
 }
 
 function splitLines(s: string): string[] {
-  // Split en gardant les lignes vides finales correctement. Pour un diff
-  // visuel, on veut chaque ligne séparément, sans le \n final.
+  // Split while correctly preserving trailing empty lines. For a visual
+  // diff, we want each line separately, without the trailing \n.
   if (s === '') return [];
   const noTrailingNL = s.endsWith('\n') ? s.slice(0, -1) : s;
   return noTrailingNL.split('\n');

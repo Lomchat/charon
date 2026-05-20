@@ -1,11 +1,11 @@
-"""Persistance de la liste des sessions connues (~/.charon/state.json).
+"""Persistence of the list of known sessions (~/.charon/state.json).
 
-Format v1 :
+Format v1:
 {
   "version": 1,
   "sessions": [
     {"session_id": "abc",
-     "claude_session_id": "uuid",        # nullable tant que la 1re query n'est pas faite
+     "claude_session_id": "uuid",        # nullable until the 1st query has been made
      "cwd": "/path",
      "name": null,
      "permission_mode": "normal",
@@ -13,8 +13,8 @@ Format v1 :
   ]
 }
 
-L'agent ne stocke PAS les messages — Charon a sa DB. On garde juste assez
-pour resume au boot.
+The agent does NOT store messages — Charon has its DB. We keep just enough
+to resume at boot.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def load_state(path: Path) -> dict[str, Any]:
         data = json.loads(path.read_text())
         if not isinstance(data, dict):
             return {"version": STATE_VERSION, "sessions": []}
-        # Tolérant : remplit les champs manquants
+        # Tolerant: fills in missing fields
         data.setdefault("version", STATE_VERSION)
         sessions = data.get("sessions")
         if not isinstance(sessions, list):
@@ -46,7 +46,7 @@ def load_state(path: Path) -> dict[str, Any]:
 
 
 def save_state(path: Path, sessions: list[dict[str, Any]]) -> None:
-    """Écriture atomique : tmp + rename."""
+    """Atomic write: tmp + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": STATE_VERSION, "sessions": sessions}
     fd, tmp_path = tempfile.mkstemp(

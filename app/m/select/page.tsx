@@ -10,10 +10,10 @@ export default async function MobileSelectPage() {
   await requireSession();
   seedInitialData();
 
-  // Mobile partage la même organisation en dossiers que desktop. L'état
-  // `collapsed` des dossiers est stocké en DB (`vps_folders.collapsed`) donc
-  // un dossier fermé sur desktop est aussi fermé sur mobile, et vice-versa.
-  // Le collapse par-VPS reste local (localStorage), comme sur desktop.
+  // Mobile shares the same folder organization as desktop. The folders'
+  // `collapsed` state is stored in DB (`vps_folders.collapsed`) so a folder
+  // closed on desktop is also closed on mobile, and vice-versa.
+  // Per-VPS collapse stays local (localStorage), as on desktop.
   const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
   const folderRows = db.select().from(vpsFoldersTable)
     .orderBy(asc(vpsFoldersTable.position), asc(vpsFoldersTable.createdAt))

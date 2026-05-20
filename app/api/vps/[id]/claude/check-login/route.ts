@@ -2,15 +2,18 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { refreshClaudeLoginStatus } from '@/lib/server/agent/claudeLoginCheck';
 
 export const runtime = 'nodejs';
 
 // POST /api/vps/[id]/claude/check-login
-// Re-vérifie via SSH si l'utilisateur a un `claude login` valide sur ce VPS.
-// Persiste le résultat dans `vps.claude_logged_in` (1=oui, 0=non). Utilisé
-// par la sidebar (masque le bouton "claude login" quand inutile) et déclenché
-// automatiquement quand l'utilisateur ferme LoginConsole.
+// Re-checks via SSH whether the user has a valid `claude login` on this VPS.
+// Persists the result in `vps.claude_logged_in` (1=yes, 0=no). Used by
+// the sidebar (hides the "claude login" button when unnecessary) and triggered
+// automatically when the user closes LoginConsole.
+//
+// The SSH+DB logic lives in `lib/server/agent/claudeLoginCheck.ts` to be
+// shared with the auto-check performed by `autoConnect` on agent connection.
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -18,30 +21,14 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  // PATH étendu (cf. bootstrap.ts § check_login pour le contexte).
-  const r = await sshExec(
-    v,
-    'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; ' +
-    'claude config get oauth.refresh_token 2>/dev/null > /dev/null && echo OK || echo MISSING',
-    { timeoutMs: 8_000 },
-  );
-  // Si SSH plante on ne touche pas la valeur — on ne sait pas. L'UI gardera
-  // la valeur précédente (potentiellement stale, c'est OK).
-  if (!r.ok && !r.stdout) {
+  const r = await refreshClaudeLoginStatus(v);
+  if (!r.ok) {
     return NextResponse.json({
       ok: false,
-      error: r.stderr.slice(-200) || `exit ${r.code}`,
-      loggedIn: v.claudeLoggedIn === 1,
-      checkedAt: v.claudeLoggedInCheckedAt,
+      error: r.error,
+      loggedIn: r.loggedIn,
+      checkedAt: r.checkedAt,
     });
   }
-  const loggedIn = r.stdout.includes('OK');
-  const checkedAt = Math.floor(Date.now() / 1000);
-  try {
-    db.update(vpsTable).set({
-      claudeLoggedIn: loggedIn ? 1 : 0,
-      claudeLoggedInCheckedAt: checkedAt,
-    }).where(eq(vpsTable.id, id)).run();
-  } catch {}
-  return NextResponse.json({ ok: true, loggedIn, checkedAt });
+  return NextResponse.json({ ok: true, loggedIn: r.loggedIn, checkedAt: r.checkedAt });
 }

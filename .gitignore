@@ -2,10 +2,15 @@ node_modules
 .next
 build
 tsconfig.tsbuildinfo
-data/
+data/*
+!data/.gitkeep
 .env
 .env.*
 !.env.example
+
+# Local docker artifacts (not committed)
+docker/dummy-key
+docker/known_hosts
 
 # Python artifacts (agent/charon_agent/)
 __pycache__/

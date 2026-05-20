@@ -1,9 +1,9 @@
-/* Styles pour les composants liés au charon-agent
- * (LoginConsole, badges agent dans DataModal, banner bootstrap étendu).
- * Garde une apparence cohérente avec le reste de claude.css.
+/* Styles for components related to charon-agent
+ * (LoginConsole, agent badges in DataModal, extended bootstrap banner).
+ * Keeps a consistent appearance with the rest of claude.css.
  */
 
-/* ── Badges agent dans la liste VPS (DataModal) ─────────────────────────── */
+/* ── Agent badges in the VPS list (DataModal) ───────────────────────────── */
 .pg-agent {
   font-size: 0.78em;
   width: 16px;
@@ -13,9 +13,9 @@
   font-family: monospace;
   cursor: help;
 }
-.pg-agent.agent-ok      { color: #6cbf6c; }     /* vert */
+.pg-agent.agent-ok      { color: #6cbf6c; }     /* green */
 .pg-agent.agent-missing { color: #999; }
-.pg-agent.agent-error   { color: #d97a6b; }     /* rouge doux */
+.pg-agent.agent-error   { color: #d97a6b; }     /* soft red */
 .pg-agent.agent-unknown { color: #777; opacity: 0.5; }
 
 .pg-action {
@@ -33,7 +33,7 @@
   background: rgba(255,255,255,0.08);
 }
 
-/* ── Sidebar v2 : card VPS avec hiérarchie nette ────────────────────────── */
+/* ── Sidebar v2: VPS card with clean hierarchy ──────────────────────────── */
 /* Each VPS is a "card" with header, meta, action bar, then projects inside. */
 
 .claude-sidebar .vps-card {
@@ -43,11 +43,11 @@
   background: rgba(0,0,0,0.15);
   overflow: hidden;
 }
-/* Quand l'agent n'est pas ok, on signale visuellement le card */
+/* When the agent isn't ok, visually flag the card */
 .claude-sidebar .vps-card.agent-missing { border-color: rgba(200,162,98,0.35); }
 .claude-sidebar .vps-card.agent-error   { border-color: rgba(217,122,107,0.4); }
 
-/* Override : le head devient plus compact, pas de border-bottom dashed */
+/* Override: the head becomes more compact, no dashed border-bottom */
 .claude-sidebar .vps-card .vps-head {
   padding: 7px 11px 5px;
   border-bottom: 0;
@@ -58,7 +58,7 @@
   padding-bottom: 7px;
 }
 
-/* Pastille agent au bout du nom — taille modeste, couleur explicite */
+/* Agent dot at the end of the name — modest size, explicit color */
 .vps-agent-dot {
   display: inline-block;
   width: 14px;
@@ -72,16 +72,16 @@
 .vps-agent-dot.agent-missing { color: #d8a85a; }
 .vps-agent-dot.agent-error   { color: #d97a6b; }
 .vps-agent-dot.agent-unknown { color: #777; }
-/* Out of date : on supplante la couleur "ok" pour signaler qu'il faut update */
+/* Out of date: override the "ok" color to signal an update is needed */
 .vps-agent-dot.outdated      { color: #d8a85a; animation: vps-agent-pulse 2s ease-in-out infinite; }
 @keyframes vps-agent-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
 }
 
-/* Ligne meta : user@ip · agent v0.1.0 — un cran plus petit, gris */
+/* Meta line: user@ip · agent v0.1.0 — one step smaller, gray */
 .claude-sidebar .vps-meta {
-  padding: 0 11px 5px 30px;  /* indenté pour aligner avec le nom (après caret+glyph) */
+  padding: 0 11px 5px 30px;  /* indented to align with the name (after caret+glyph) */
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 10px;
   line-height: 1.4;
@@ -99,7 +99,7 @@
 .vps-agent-text.agent-error   { color: #d97a6b; font-weight: 500; }
 .vps-agent-text.agent-unknown { color: rgba(220,220,220,0.5); }
 
-/* Ligne d'actions : install / login / scan — boutons texte lisibles */
+/* Actions line: install / login / scan — readable text buttons */
 .claude-sidebar .vps-actions {
   padding: 4px 11px 9px 30px;
   display: flex;
@@ -121,7 +121,7 @@
   cursor: pointer;
   line-height: 1.2;
   white-space: nowrap;
-  height: auto; width: auto; /* override 22x20 du vieux .vps-action */
+  height: auto; width: auto; /* override 22x20 from the old .vps-action */
 }
 .vps-act-btn:hover {
   background: rgba(255,255,255,0.08);
@@ -137,7 +137,7 @@
   background: rgba(216, 168, 90, 0.28);
   border-color: rgba(216, 168, 90, 0.8);
 }
-/* update agent : amber subtil, distinct du "install primary" en or */
+/* update agent: subtle amber, distinct from the gold "install primary" */
 .vps-act-btn.agent-update {
   background: rgba(216, 168, 90, 0.10);
   border-color: rgba(216, 168, 90, 0.45);
@@ -163,8 +163,8 @@
   line-height: 1;
   vertical-align: -2px;
   margin-right: 2px;
-  /* Les emojis ignorent text-transform mais on enlève quand même l'effet
-     letter-spacing qui les sépare visuellement du texte */
+  /* Emojis ignore text-transform but we still remove the letter-spacing
+     effect that visually separates them from the text */
   letter-spacing: 0;
   filter: saturate(0.85);
 }
@@ -180,12 +180,12 @@
   width: 12px; height: 12px;
 }
 
-/* Override le margin global de section pour le card */
+/* Override the global section margin for the card */
 .claude-sidebar .vps-section.vps-card {
   margin-bottom: 14px;
 }
 
-/* Indente les proj-block dans le card pour montrer la hiérarchie */
+/* Indent proj-blocks inside the card to show hierarchy */
 .claude-sidebar .vps-card .proj-block {
   margin: 4px 0;
   padding-left: 0;
@@ -195,7 +195,7 @@
   padding: 4px 11px 4px 20px;
   font-size: 11.5px;
 }
-/* Indicateur vertical à gauche pour chaque projet (rappel d'arborescence) */
+/* Vertical indicator on the left for each project (tree-view hint) */
 .claude-sidebar .vps-card .proj-block::before {
   content: '';
   position: absolute;
@@ -210,13 +210,13 @@
   width: calc(100% - 36px);
 }
 
-/* Le dernier proj-block (avant la fin du card) — pas de bord inférieur sur la
- * dernière action-bar */
+/* The last proj-block (before the end of the card) — no bottom border on the
+ * last action-bar */
 .claude-sidebar .vps-card .proj-block.empty {
   padding: 6px 11px 8px 20px;
 }
 
-/* ── LoginConsole : modale plein écran ───────────────────────────────── */
+/* ── LoginConsole: fullscreen modal ──────────────────────────────────── */
 .login-console-modal {
   position: fixed;
   inset: 0;
@@ -267,8 +267,8 @@
   border-bottom: 1px solid #4a1f1f;
   font-size: 0.9em;
 }
-/* Wrapper qui héberge le xterm ET l'overlay URL flottant. Position relative
-   pour ancrer l'overlay. */
+/* Wrapper that hosts the xterm AND the floating URL overlay. Relative
+   positioning to anchor the overlay. */
 .login-xterm-wrap {
   flex: 1;
   position: relative;
@@ -276,7 +276,7 @@
   flex-direction: column;
   min-height: 0;
 }
-/* Vrai terminal xterm.js — flex remplit toute la card */
+/* Real xterm.js terminal — flex fills the entire card */
 .login-xterm {
   flex: 1;
   padding: 8px 10px;
@@ -292,10 +292,10 @@
   background: transparent !important;
 }
 
-/* ── Overlay "URL détecté dans le terminal" ─────────────────────────────────
- * Posé en bas (à droite) du wrapper xterm. Utilisé par LoginConsole
- * (claude login OAuth URL coupé sur plusieurs lignes) et ShellTerminal.
- * Pattern visuel : carte sombre, action `copier` + `ouvrir`, dismissable.
+/* ── Overlay "URL detected in terminal" ─────────────────────────────────────
+ * Placed at the bottom-right of the xterm wrapper. Used by LoginConsole
+ * (claude login OAuth URL wrapped across multiple lines) and ShellTerminal.
+ * Visual pattern: dark card, `copy` + `open` actions, dismissable.
  */
 .term-url-overlay {
   position: absolute;
@@ -356,7 +356,7 @@
   color: var(--parchment-soft);
   overflow-wrap: anywhere;
   word-break: break-all;
-  user-select: all;  /* facilite la copie manuelle si l'auto échoue */
+  user-select: all;  /* eases manual copy if auto fails */
   max-height: 60px;
   overflow-y: auto;
 }
@@ -384,7 +384,7 @@
   border-color: var(--gold);
 }
 
-/* ── DataModal v2 : single-view VPS + paths ─────────────────────────────── */
+/* ── DataModal v2: single-view VPS + paths ──────────────────────────────── */
 .data-modal-v2 .data-head {
   display: flex;
   align-items: center;
@@ -428,7 +428,7 @@
   padding: 40px 12px;
 }
 
-/* Card par VPS — bord coloré selon l'état agent */
+/* Card per VPS — border colored according to agent state */
 .data-vps-card {
   border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
   background: var(--shadow, rgba(0,0,0,0.2));
@@ -522,7 +522,7 @@
   background: rgba(217,122,107,0.08);
 }
 
-/* Liste des paths d'un VPS */
+/* List of paths for a VPS */
 .data-vps-paths {
   padding: 6px 14px 10px;
 }
@@ -579,7 +579,7 @@
 }
 .dv-path-del:hover { color: #d97a6b; }
 
-/* Formulaire d'ajout de path inline en bas de chaque VPS */
+/* Inline path-add form at the bottom of each VPS */
 .dv-add-path {
   display: grid;
   grid-template-columns: 16px minmax(120px, 1fr) 2fr auto;
@@ -630,12 +630,12 @@
   cursor: not-allowed;
 }
 
-/* ── Color stripe à gauche des rows (sessions et shells) ────────────────── */
-/* Variable --row-color est settée inline par le composant (transparent par défaut)
- * Sans color → stripe invisible, pas de décalage. Avec color → barre 3px à gauche. */
+/* ── Color stripe on the left of rows (sessions and shells) ─────────────── */
+/* The --row-color variable is set inline by the component (transparent by default).
+ * Without color → invisible stripe, no offset. With color → 3px bar on the left. */
 .session-row {
   position: relative;
-  overflow: hidden; /* pour que la barre ne déborde pas du border-radius */
+  overflow: hidden; /* so the bar doesn't overflow the border-radius */
 }
 .session-row .row-color-stripe {
   position: absolute;
@@ -646,8 +646,8 @@
   background: var(--row-color, transparent);
   pointer-events: none;
 }
-/* Quand la stripe a une couleur visible (.has-color), on tinte légèrement
- * le fond pour renforcer le marquage. */
+/* When the stripe has a visible color (.has-color), we slightly tint
+ * the background to reinforce the marking. */
 .session-row.has-color::before {
   content: '';
   position: absolute;
@@ -659,22 +659,22 @@
 .session-row.has-color.selected::before {
   opacity: 0.22;
 }
-/* Session en pause (sleeping) avec une couleur custom : override --row-color
- * pour griser la stripe et le tint sans toucher au token color en DB. Au
- * resume, la classe `is-sleeping` disparaît et la couleur custom est
- * automatiquement restaurée. Signal visuel cohérent avec le dot gris déjà
- * appliqué par DOT_CLASS.
+/* Paused session (sleeping) with a custom color: override --row-color
+ * to gray out the stripe and tint without touching the color token in DB. On
+ * resume, the `is-sleeping` class disappears and the custom color is
+ * automatically restored. Visual signal consistent with the gray dot already
+ * applied by DOT_CLASS.
  *
- * Pourquoi `is-sleeping.has-color` et pas juste `is-sleeping` : sans
- * `has-color`, le row n'a pas de couleur custom → la stripe est
- * `transparent` par défaut. Si on overridait `--row-color` pour TOUTES
- * les sessions sleeping, on rajouterait une stripe grise sur des rows qui
- * n'en avaient pas avant — bruit visuel inutile. La classe combinée garde
- * la modification ciblée. */
+ * Why `is-sleeping.has-color` and not just `is-sleeping`: without
+ * `has-color`, the row has no custom color → the stripe is
+ * `transparent` by default. If we overrode `--row-color` for ALL
+ * sleeping sessions, we'd add a gray stripe on rows that didn't have
+ * one before — pointless visual noise. The combined class keeps
+ * the modification targeted. */
 .session-row.is-sleeping.has-color {
   --row-color: rgba(140, 140, 140, 0.55);
 }
-/* Le row-head doit rester au-dessus du voile coloré */
+/* The row-head must stay above the colored veil */
 .session-row .row-head,
 .session-row .row-preview,
 .session-row .row-meta {
@@ -682,23 +682,23 @@
   z-index: 1;
 }
 
-/* ── Palette de couleurs dans le context menu ───────────────────────────── */
+/* ── Color palette in the context menu ──────────────────────────────────── */
 .session-ctx-menu .ctx-color-row {
   display: flex;
   gap: 6px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
-  align-items: center;       /* évite que flex stretch les dots */
+  align-items: center;       /* prevents flex from stretching the dots */
 }
-/* Les .ctx-color-dot sont des <button> dans .session-ctx-menu — claude.css
- * y applique padding/text-align par défaut ; on override tout pour avoir des
- * cercles parfaits. */
+/* The .ctx-color-dot elements are <button>s in .session-ctx-menu — claude.css
+ * applies padding/text-align by default; we override everything to get
+ * perfect circles. */
 .session-ctx-menu .ctx-color-dot {
   width: 20px;
   height: 20px;
-  min-width: 20px;            /* protège contre les overrides flex */
+  min-width: 20px;            /* protects against flex overrides */
   min-height: 20px;
-  flex: 0 0 20px;             /* pas de stretch flexbox */
+  flex: 0 0 20px;             /* no flexbox stretch */
   aspect-ratio: 1 / 1;
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.2);
@@ -716,7 +716,7 @@
 .session-ctx-menu .ctx-color-dot:hover {
   transform: scale(1.18);
   border-color: rgba(255,255,255,0.6);
-  background-color: var(--row-color, transparent); /* hover ne casse pas la couleur */
+  background-color: var(--row-color, transparent); /* hover doesn't break the color */
 }
 .session-ctx-menu .ctx-color-dot.on {
   border-color: #fff;
@@ -749,7 +749,7 @@
   font-weight: normal;
 }
 
-/* ── ShellTerminal : plein écran dans le main panel ──────────────────────── */
+/* ── ShellTerminal: fullscreen in the main panel ────────────────────────── */
 .claude-main.shell-main {
   display: flex;
   flex-direction: column;
@@ -822,8 +822,8 @@
   border-bottom: 1px solid rgba(217,122,107,0.3);
   font-size: 12px;
 }
-/* Wrapper qui héberge le xterm ET l'overlay URL flottant. Position relative
-   pour ancrer l'overlay (cf. .term-url-overlay défini plus haut). */
+/* Wrapper that hosts the xterm AND the floating URL overlay. Relative
+   positioning to anchor the overlay (cf. .term-url-overlay defined above). */
 .shell-xterm-wrap {
   flex: 1;
   position: relative;
@@ -842,13 +842,13 @@
 .shell-xterm .xterm-viewport,
 .shell-xterm .xterm-screen { background: transparent !important; }
 
-/* Shell row dans la sidebar (couleur cyan pour distinguer des sessions claude) */
+/* Shell row in the sidebar (cyan color to distinguish from claude sessions) */
 .dot.dot-cyan {
   background: #7ac4c4;
   box-shadow: 0 0 6px rgba(122,196,196,0.5);
 }
 .session-row.shell-row {
-  /* Hérite des styles session-row, juste un petit accent */
+  /* Inherits session-row styles, just a small accent */
 }
 .session-row.shell-row .label {
   font-family: var(--mono, 'JetBrains Mono', monospace);
@@ -870,7 +870,7 @@
   margin-left: auto;
 }
 
-/* Bouton ⌨ dans proj-head (plus discret que le +) */
+/* ⌨ button in proj-head (more discreet than the +) */
 .proj-action.proj-shell {
   color: var(--gold-deep, rgba(200,162,98,0.5));
   font-size: 11px;
@@ -892,9 +892,9 @@
   letter-spacing: 0.08em;
 }
 
-/* ── Folders dans la sidebar ────────────────────────────────────────────────
-   Un dossier = wrapper autour de N vps-section. Header repliable avec
-   compteur de VPS et compteur de sessions actives (quand replié). */
+/* ── Folders in the sidebar ─────────────────────────────────────────────────
+   A folder = wrapper around N vps-section. Collapsible header with
+   VPS count and active sessions count (when collapsed). */
 .folder-section {
   margin-bottom: 14px;
   border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
@@ -944,7 +944,7 @@
   font-size: 11px; text-align: center;
 }
 
-/* ── DataModal : section dossier draggable ────────────────────────────────── */
+/* ── DataModal: draggable folder section ──────────────────────────────────── */
 .data-modal-v2 .data-help {
   margin: -4px 0 14px;
   font-family: var(--mono); font-size: 11px;
@@ -1025,7 +1025,7 @@
   background: rgba(0,0,0,0.1);
 }
 
-/* Handle de drag sur les VPS cards */
+/* Drag handle on VPS cards */
 .data-vps-drag-handle {
   cursor: grab; user-select: none;
   color: var(--parchment-soft);
@@ -1040,7 +1040,7 @@
   z-index: 100;
 }
 
-/* Overlay rendu pendant le drag */
+/* Overlay rendered during drag */
 .dv-card-drag-overlay,
 .dv-folder-drag-overlay {
   background: var(--stone-2, #1a1d28);
@@ -1058,7 +1058,7 @@
   color: var(--gold-bright);
 }
 
-/* Folder static (dossier "default" verrouillé en dernier) */
+/* Static folder ("default" folder locked at the end) */
 .data-folder-static .data-folder-head { background: rgba(216, 117, 127, 0.06); }
 .data-folder-static .data-folder-name-static {
   flex: 1;
@@ -1074,7 +1074,7 @@
   opacity: 0.7;
 }
 
-/* Select de changement de dossier dans la carte VPS */
+/* Folder-change select inside the VPS card */
 .dv-folder-select {
   background: rgba(0,0,0,0.25);
   border: 1px solid var(--gold-deep, rgba(200,162,98,0.35));

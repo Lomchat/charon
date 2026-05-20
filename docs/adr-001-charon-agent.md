@@ -1,69 +1,102 @@
-# ADR-001 — charon-agent : daemon par VPS pour sessions persistantes
+# ADR-001 — charon-agent: a per-VPS daemon for persistent sessions
 
-**Statut** : adopté · **Date** : 2026-05-18
+**Status**: adopted · **Date**: 2026-05-18
 
-## Contexte
+> **Historical note**: this ADR documents the migration **from** the old
+> pre-v2 architecture (a `bridge.py` process as a child of one SSH per
+> session) **to** the current architecture (a `charon-agent` daemon per VPS
+> that multiplexes N sessions). Everything described in the "Decision"
+> section below is the present state of the code. The "Context" section
+> describes the old architecture, kept to explain the *why*. A deployer
+> starting on a fresh DB has nothing to do — the
+> `migrationV2IfNeeded()` is a no-op on a fresh base.
 
-Aujourd'hui une session Claude = un process `bridge.py` enfant d'une `ssh` lancée par le `SessionWorker` Node.js de Charon. Conséquences :
+## Context
 
-1. **Couplage à la vie du process Charon** : restart Charon → toutes les SSH meurent → tous les bridges meurent → tous les `ClaudeSDKClient` distants meurent. Le resume marche (le SDK relit son historique disque) mais on perd les permissions en cours et tout interrupt en vol.
-2. **N sessions = N connexions SSH** par VPS, ce qui multiplie les handshakes et complique le ratelimit / le monitoring.
-3. **Installation lourde** : chaque VPS doit avoir `python3.10+`, `claude-agent-sdk`, et un `claude login`. Le `bridge.py` est redéployé en base64 à chaque session.
+Today a Claude session = one `bridge.py` process as a child of an `ssh`
+spawned by Charon's Node.js `SessionWorker`. Consequences:
 
-## Décision
+1. **Coupling to Charon's process lifetime**: restart Charon → all SSHs
+   die → all bridges die → all remote `ClaudeSDKClient` die. Resume works
+   (the SDK re-reads its disk history) but we lose pending permissions and
+   any in-flight interrupt.
+2. **N sessions = N SSH connections** per VPS, which multiplies handshakes
+   and complicates rate-limiting / monitoring.
+3. **Heavy installation**: each VPS must have `python3.10+`,
+   `claude-agent-sdk`, and a `claude login`. `bridge.py` is redeployed in
+   base64 on every session.
 
-Sur chaque VPS, un seul **daemon** (`charon-agent`) gère **N sessions Claude** en interne (chaque session = une coroutine asyncio avec son `ClaudeSDKClient`). Charon (le hub Next.js) ne crée plus de child SSH par session : il maintient **une seule connexion SSH par VPS**, multiplexée en JSON-RPC, vers le socket Unix `~/.charon/agent.sock` du daemon.
+## Decision
+
+On each VPS, a single **daemon** (`charon-agent`) manages **N Claude
+sessions** internally (each session = an asyncio coroutine with its
+`ClaudeSDKClient`). Charon (the Next.js hub) no longer spawns a child SSH
+per session: it maintains **a single SSH connection per VPS**, multiplexed
+in JSON-RPC, to the daemon's Unix socket `~/.charon/agent.sock`.
 
 ```
-┌───────────────┐    HTTPS/SSE     ┌───────────────────────┐    SSH (1 par VPS)     ┌──────────────────────┐
-│  Navigateur   │ ◄───────────────►│  Charon (Next.js)     │ ◄────────────────────► │  charon-agent (VPS)  │
-│  ClaudePanel  │   SSE par session│  - AgentClientPool    │  exec: agent --connect │  - asyncio Unix sock │
-└───────────────┘                  │  - 1 SSH/VPS multi-   │  → proxy stdio↔socket  │  - N sessions        │
-                                   │    plexée JSON-RPC    │                        │  - state.json        │
-                                   └───────────────────────┘                        │  - persiste resumes  │
+┌───────────────┐    HTTPS/SSE     ┌───────────────────────┐    SSH (1 per VPS)     ┌──────────────────────┐
+│  Browser      │ ◄───────────────►│  Charon (Next.js)     │ ◄────────────────────► │  charon-agent (VPS)  │
+│  ClaudePanel  │   SSE per session│  - AgentClientPool    │  exec: agent --connect │  - asyncio Unix sock │
+└───────────────┘                  │  - 1 multiplexed SSH/ │  → stdio↔socket proxy  │  - N sessions        │
+                                   │    VPS, JSON-RPC      │                        │  - state.json        │
+                                   └───────────────────────┘                        │  - persists resumes  │
                                                                                     └──────────────────────┘
 ```
 
-### Propriétés clés
+### Key properties
 
-- **Sessions indépendantes de Charon**. Restart Charon ne tue plus aucune session — l'agent continue à tourner, et la prochaine connexion de Charon re-subscribe.
-- **Sessions indépendantes de l'agent aussi** (autant que possible) : l'agent écrit `~/.charon/state.json` après chaque change ; au boot du daemon, il restore toutes les sessions connues en mode `resume` (via leur `claude_session_id` SDK persisté).
-- **Une seule SSH par VPS** : multiplexée, auto-reconnect avec backoff côté Charon. La session DB côté Charon reste `active` pendant les reconnects (UI affiche `reconnecting`).
-- **Install ultra-light** : un seul fichier `charon-agent.pyz` (zipapp Python stdlib, ~50KB) + un unit systemd-user. Pas de `pip install` côté agent (le SDK est installé séparément ; lui c'est un blob qu'on `scp`).
-- **`claude login` reste manuel** mais facilité par un mini-terminal dans l'UI (SSE pour stdout + POST pour stdin).
+- **Sessions independent of Charon**. Restarting Charon no longer kills any
+  session — the agent keeps running, and Charon's next connection
+  re-subscribes.
+- **Sessions independent of the agent too** (as much as possible): the
+  agent writes `~/.charon/state.json` after every change; at daemon boot, it
+  restores all known sessions in `resume` mode (via their persisted SDK
+  `claude_session_id`).
+- **A single SSH per VPS**: multiplexed, auto-reconnect with backoff on the
+  Charon side. The Charon-side DB session stays `active` during reconnects
+  (the UI displays `reconnecting`).
+- **Ultra-light install**: a single `charon-agent.pyz` file (Python stdlib
+  zipapp, ~50KB) + a systemd-user unit. No `pip install` on the agent side
+  (the SDK is installed separately; this is just a blob we `scp`).
+- **`claude login` is still manual** but made easier by a mini-terminal in
+  the UI (SSE for stdout + POST for stdin).
 
-## Protocole JSON-RPC (line-delimited JSON)
+## JSON-RPC protocol (line-delimited JSON)
 
 ### Transport
 
-Charon ouvre une SSH long-running par VPS :
+Charon opens a long-running SSH per VPS:
 
 ```
 ssh user@host -- /opt/charon/charon-agent.pyz --connect
 ```
 
-Le binaire en mode `--connect` ouvre `~/.charon/agent.sock` et fait un proxy bidirectionnel stdin ↔ socket. Si le socket est absent, il sort code 2 (Charon le détecte → propose un setup à l'utilisateur).
+The binary in `--connect` mode opens `~/.charon/agent.sock` and acts as a
+bidirectional stdin ↔ socket proxy. If the socket is absent, it exits with
+code 2 (Charon detects this → offers a setup to the user).
 
-Pas de `socat` / `nc` requis : tout est dans le `.pyz`.
+No `socat` / `nc` required: everything is in the `.pyz`.
 
 ### Format
 
-Chaque ligne (séparée par `\n`) est un objet JSON. Trois variantes :
+Each line (separated by `\n`) is a JSON object. Three variants:
 
-- **Request** (Charon → Agent) : `{"id": <int>, "method": "<str>", "params": {...}}`
-- **Response** (Agent → Charon) : `{"id": <int>, "result": {...}}` ou `{"id": <int>, "error": {"code": <int>, "message": "<str>"}}`
-- **Event** (Agent → Charon, non sollicité) : `{"event": "<str>", "session_id": "<id>", ...}`
+- **Request** (Charon → Agent): `{"id": <int>, "method": "<str>", "params": {...}}`
+- **Response** (Agent → Charon): `{"id": <int>, "result": {...}}` or `{"id": <int>, "error": {"code": <int>, "message": "<str>"}}`
+- **Event** (Agent → Charon, unsolicited): `{"event": "<str>", "session_id": "<id>", ...}`
 
-Les `id` sont alloués par Charon (entiers croissants, scoped à la connexion).
+The `id`s are allocated by Charon (increasing integers, scoped to the
+connection).
 
-### Méthodes (Charon → Agent)
+### Methods (Charon → Agent)
 
-| Méthode | Params | Result |
+| Method | Params | Result |
 |---|---|---|
 | `hello` | `{client: "charon", version}` | `{agent_version, sdk_version, sessions: [SessionInfo]}` |
 | `list_sessions` | `{}` | `[SessionInfo]` |
 | `start_session` | `{session_id, cwd, name?, permission_mode?, claude_session_id?}` | `{session_id}` |
-| `subscribe` | `{session_id, replay?: int}` | `{ok: true, replay_count}` — l'agent push ensuite les events bufferisés (jusqu'à `replay` derniers) puis live |
+| `subscribe` | `{session_id, replay?: int}` | `{ok: true, replay_count}` — the agent then pushes the buffered events (up to `replay` last ones) then live |
 | `unsubscribe` | `{session_id}` | `{ok: true}` |
 | `send_input` | `{session_id, content}` | `{ok: true}` |
 | `interrupt` | `{session_id}` | `{ok: true}` |
@@ -71,17 +104,17 @@ Les `id` sont alloués par Charon (entiers croissants, scoped à la connexion).
 | `respond_permission` | `{session_id, perm_id, allow, always?}` | `{ok: true}` |
 | `respond_question` | `{session_id, q_id, answers}` | `{ok: true}` |
 | `respond_exit_plan` | `{session_id, q_id, decision, feedback?}` | `{ok: true}` |
-| `sleep_session` | `{session_id}` | `{ok: true}` — arrête la session, garde le `claude_session_id` |
-| `kill_session` | `{session_id}` | `{ok: true}` — arrête + supprime de state.json |
+| `sleep_session` | `{session_id}` | `{ok: true}` — stops the session, keeps the `claude_session_id` |
+| `kill_session` | `{session_id}` | `{ok: true}` — stops + removes from state.json |
 | `ping` | `{}` | `{pong: true, ts}` |
 
 ### Events (Agent → Charon)
 
-Tous portent `session_id`. Le set est calqué sur l'actuel `BridgeEvent` :
+All carry `session_id`. The set mirrors the current `BridgeEvent`:
 
 ```
 {event: "status", session_id, status: "starting"|"active"|"thinking"|"sleeping"|"error"}
-{event: "session_id", session_id, claude_session_id}     # SDK uuid persisté
+{event: "session_id", session_id, claude_session_id}     # SDK uuid persisted
 {event: "ready", session_id}
 {event: "assistant_text", session_id, delta}
 {event: "thinking", session_id, text}
@@ -99,20 +132,27 @@ Tous portent `session_id`. Le set est calqué sur l'actuel `BridgeEvent` :
 
 ### Ring buffer
 
-L'agent buffer les **N=300 derniers events par session** en mémoire. Sur `subscribe`, il les envoie d'abord (encadrés par events synthétiques `history_begin`/`history_end` envoyés par Charon vers le navigateur, pas dans le protocole agent). Les permissions/questions encore `pending` ne sont pas dans le ring : l'agent maintient des collections séparées et les renvoie en premier sur subscribe.
+The agent buffers the **last N=300 events per session** in memory. On
+`subscribe`, it sends them first (bracketed by synthetic
+`history_begin`/`history_end` events sent by Charon to the browser, not
+part of the agent protocol). Permissions/questions still `pending` are not
+in the ring: the agent maintains separate collections and re-sends them
+first on subscribe.
 
-## Lifecycle de l'agent
+## Agent lifecycle
 
-### Démarrage daemon
+### Daemon startup
 
 ```
 charon-agent [--socket PATH]
 ```
 
-1. Crée `~/.charon/` si absent (chmod 700).
-2. Ouvre le Unix socket `~/.charon/agent.sock` (chmod 600).
-3. Lit `~/.charon/state.json` : pour chaque session connue, **lance le restore** (asyncio task qui réinstancie un `ClaudeSDKClient` avec `resume=claude_session_id`).
-4. Boucle accept : chaque connexion = un task qui lit/écrit du JSON-RPC.
+1. Creates `~/.charon/` if absent (chmod 700).
+2. Opens the Unix socket `~/.charon/agent.sock` (chmod 600).
+3. Reads `~/.charon/state.json`: for each known session, **launches a
+   restore** (asyncio task that re-instantiates a `ClaudeSDKClient` with
+   `resume=claude_session_id`).
+4. Accept loop: each connection = a task that reads/writes JSON-RPC.
 
 ### state.json (atomic write)
 
@@ -132,46 +172,59 @@ charon-agent [--socket PATH]
 }
 ```
 
-Réécrit après chaque création/kill/sleep + après chaque `session_id` SDK initial.
+Rewritten after each creation/kill/sleep + after each initial SDK
+`session_id`.
 
 ### Sessions
 
-Chaque session a son propre `ClaudeSDKClient` (réutilisation du code de `bridge.py`, refactoré en classe `AgentSession`).
+Each session has its own `ClaudeSDKClient` (reusing the code from
+`bridge.py`, refactored into an `AgentSession` class).
 
-- Persistance : juste le `claude_session_id` SDK (suffit pour resume — le SDK garde tout dans `~/.claude/projects/...`).
-- Pas d'historique de messages dans l'agent (c'est Charon qui le stocke en DB).
+- Persistence: just the SDK `claude_session_id` (enough for resume — the
+  SDK keeps everything in `~/.claude/projects/...`).
+- No message history in the agent (Charon stores it in DB).
 
-### Gestion des clients multiples
+### Handling multiple clients
 
-Plusieurs connexions Charon possibles simultanément (pour resilience pendant un restart : nouveau Charon connecte, l'ancien meurt, no down-time). Subscriptions par-connexion.
+Multiple simultaneous Charon connections possible (for resilience during a
+restart: a new Charon connects, the old one dies, no down-time).
+Per-connection subscriptions.
 
 ## Installation
 
-### Pré-requis détectés sur le VPS
+### Detected prerequisites on the VPS
 
-- **Ubuntu** ≥ 22.04 : `python3` est ≥ 3.10. `apt install python3-pip python3-venv` si manquant.
-- **CentOS / Rocky / RHEL 9** : `python3` est 3.9 → `dnf install python3.11 python3.11-pip`.
-- **systemd** ≥ 230 (pour `--user` mode). Quasi-toujours présent. Fallback : `nohup setsid` + cron `@reboot`.
+- **Ubuntu** ≥ 22.04: `python3` is ≥ 3.10. `apt install python3-pip
+  python3-venv` if missing.
+- **CentOS / Rocky / RHEL 9**: `python3` is 3.9 → `dnf install python3.11
+  python3.11-pip`.
+- **systemd** ≥ 230 (for `--user` mode). Almost always present. Fallback:
+  `nohup setsid` + cron `@reboot`.
 
-### Flow d'install (orchestré côté Charon)
+### Install flow (orchestrated on the Charon side)
 
-1. **SSH check** (`charon → agent v2 bootstrap stream`) :
-   - Détecte OS via `/etc/os-release`
-   - Installe Python ≥ 3.10 si absent
-   - `pip install --user claude-agent-sdk` (le SDK reste séparé de l'agent)
-2. **Drop l'agent** :
-   - `scp` (ou `ssh ... cat > ...`) `charon-agent.pyz` vers `~/.charon/charon-agent.pyz`
+1. **SSH check** (`charon → agent v2 bootstrap stream`):
+   - Detects OS via `/etc/os-release`
+   - Installs Python ≥ 3.10 if absent
+   - `pip install --user claude-agent-sdk` (the SDK stays separate from
+     the agent)
+2. **Drop the agent**:
+   - `scp` (or `ssh ... cat > ...`) `charon-agent.pyz` to
+     `~/.charon/charon-agent.pyz`
    - `chmod +x`
-3. **Service systemd-user** :
-   - Drop `~/.config/systemd/user/charon-agent.service` (template ci-dessous)
-   - `loginctl enable-linger <user>` (nécessite sudo OU le user est root)
+3. **systemd-user service**:
+   - Drop `~/.config/systemd/user/charon-agent.service` (template below)
+   - `loginctl enable-linger <user>` (requires sudo OR the user is root)
    - `systemctl --user daemon-reload && systemctl --user enable --now charon-agent`
-4. **Vérif socket vivant** :
-   - Test : `charon-agent --connect <<< '{"id":1,"method":"ping"}'` → doit retourner `{"id":1,"result":{"pong":true...}}`
-5. **Setup Claude** :
-   - Si `claude login` jamais fait, ouvrir le **setup console** dans l'UI : on lance `ssh -tt host claude login`, l'utilisateur copie l'URL dans son nav local, colle le code → l'OAuth est stocké.
+4. **Live socket check**:
+   - Test: `charon-agent --connect <<< '{"id":1,"method":"ping"}'` → must
+     return `{"id":1,"result":{"pong":true...}}`
+5. **Claude setup**:
+   - If `claude login` was never run, open the **setup console** in the
+     UI: we run `ssh -tt host claude login`, the user copies the URL into
+     their local browser, pastes the code → OAuth is stored.
 
-### Unit systemd-user
+### systemd-user unit
 
 ```
 [Unit]
@@ -189,58 +242,88 @@ StandardError=append:%h/.charon/agent.log
 WantedBy=default.target
 ```
 
-### Fallback (systemd-user indispo)
+### Fallback (systemd-user unavailable)
 
-`nohup setsid ~/.charon/charon-agent.pyz >> ~/.charon/agent.log 2>&1 &` + cron `@reboot ~/.charon/charon-agent.pyz`.
+`nohup setsid ~/.charon/charon-agent.pyz >> ~/.charon/agent.log 2>&1 &` +
+cron `@reboot ~/.charon/charon-agent.pyz`.
 
-## Côté Charon
+## On the Charon side
 
-### Nouveau lib/server/agent/
+### New lib/server/agent/
 
-- `AgentClient.ts` : gère la connexion SSH long-running à un VPS, parser JSON-RPC line-delimited, queue des requêtes en cours, dispatch des events vers les subscribers (par session_id).
-- `AgentClientPool.ts` : `Map<vpsId, AgentClient>`, lazy-init.
-- `types.ts` : protocole TypeScript miroir de `agent/charon_agent/protocol.py`.
+- `AgentClient.ts`: manages the long-running SSH connection to a VPS,
+  line-delimited JSON-RPC parser, queue of in-flight requests, dispatches
+  events to subscribers (per session_id).
+- `AgentClientPool.ts`: `Map<vpsId, AgentClient>`, lazy-init.
+- `types.ts`: TypeScript protocol mirror of `agent/charon_agent/protocol.py`.
 
-### Auto-reconnect SSH
+### SSH auto-reconnect
 
-Quand la SSH drop (network, agent restart, etc.) : backoff 2s → 5min, status DB `active` reste, status live `reconnecting`. À la reconnexion : `hello` → réconcilie la liste des sessions avec la DB, re-subscribe aux sessions qui ont des SSE clients en vol.
+When the SSH drops (network, agent restart, etc.): backoff 2s → 5min, DB
+status stays `active`, live status `reconnecting`. On reconnect: `hello` →
+reconcile the sessions list with the DB, re-subscribe to sessions that have
+SSE clients in flight.
 
-### Migration DB
+### DB migration
 
-Une migration drizzle ajoute deux colonnes à `vps` :
+A drizzle migration adds two columns to `vps`:
 
 ```sql
 ALTER TABLE vps ADD COLUMN agent_version TEXT;
 ALTER TABLE vps ADD COLUMN agent_status TEXT NOT NULL DEFAULT 'unknown'; -- unknown | ok | missing | error
 ```
 
-Et une migration data : toutes les sessions `claudeSessions.status='active'` au boot sont passées à `sleeping` une seule fois (les bridges du vieux code sont morts à coup sûr). L'utilisateur peut resume → ça tentera de connecter à l'agent. Si l'agent n'est pas installé : message clair "VPS non setup, fais l'install".
+And a data migration: all sessions `claudeSessions.status='active'` at boot
+are switched to `sleeping` exactly once (the bridges from the old code are
+dead for sure). The user can resume → that will try to connect to the
+agent. If the agent is not installed: clear message "VPS not set up, run
+the install".
 
-### Refactor des API routes
+### API routes refactor
 
-Les routes existantes (`/api/claude/sessions/*`) gardent leur shape côté front. À l'intérieur, `getWorker(id)` devient `getAgentForSession(sessionId)` (résolu via `claudeSessions.vpsId` → `AgentClientPool.get(vpsId)`), et les `w.sendUserMessage(...)` etc. deviennent `agent.sendInput(sessionId, ...)`.
+Existing routes (`/api/claude/sessions/*`) keep their front-end shape.
+Inside, `getWorker(id)` becomes `getAgentForSession(sessionId)` (resolved
+via `claudeSessions.vpsId` → `AgentClientPool.get(vpsId)`), and the
+`w.sendUserMessage(...)` etc. become `agent.sendInput(sessionId, ...)`.
 
-Le SSE stream lit les events de `agent.subscribe(sessionId, sink)` au lieu de `w.subscribe(sink)`.
+The SSE stream reads events from `agent.subscribe(sessionId, sink)` instead
+of `w.subscribe(sink)`.
 
-## Compatibilité ascendante
+## Backward compatibility
 
-Pas de compat avec l'ancienne archi : c'est une refonte one-shot. Au boot après migration, les sessions existantes sont mises en `sleeping` (statut intermédiaire) — l'utilisateur les revoit dans la sidebar et peut décider de les killer ou de les resume. Le resume tentera de joindre l'agent. Si l'agent n'est pas encore installé sur le VPS : erreur explicite + bouton "Setup VPS".
+No compat with the old architecture: this is a one-shot rework. After the
+migration boot, existing sessions are set to `sleeping` (an intermediate
+status) — the user sees them again in the sidebar and can decide to kill
+them or resume them. The resume will try to reach the agent. If the agent
+is not yet installed on the VPS: explicit error + "Setup VPS" button.
 
-## Sécurité
+## Security
 
-- Socket Unix `~/.charon/agent.sock` en chmod 600 → seul l'user du daemon y a accès.
-- L'agent n'écoute aucun port réseau. Tout passe par SSH.
-- Pas d'auth additionnelle entre Charon et l'agent : la possession du SSH key est l'autorisation (modèle existant).
-- L'agent exécute en tant que l'user SSH (typiquement root sur ces VPS) — pas de privesc nouvelle.
+- Unix socket `~/.charon/agent.sock` in chmod 600 → only the daemon's user
+  can access it.
+- The agent listens on no network port. Everything goes through SSH.
+- No additional auth between Charon and the agent: possession of the SSH
+  key is the authorization (existing model).
+- The agent runs as the SSH user (typically root on these VPSes) — no new
+  privilege escalation.
 
-## Choses non couvertes (out-of-scope)
+## Things not covered (out-of-scope)
 
-- Auto-update de l'agent : on le redéploie manuellement via le setup. Plus tard : version check au `hello`, drop + restart si stale.
-- Multi-utilisateur : on reste mono-user (un Charon = un user).
-- Partage de l'OAuth Claude Code entre VPS : non, chaque VPS fait son `claude login` (cf. discussion produit, trop fragile sinon).
+- Agent auto-update: we redeploy it manually via the setup. Later: version
+  check on `hello`, drop + restart if stale.
+- Multi-user: we stay mono-user (one Charon = one user).
+- Sharing the Claude Code OAuth across VPSes: no, each VPS runs its own
+  `claude login` (cf. product discussion, too fragile otherwise).
 
-## Risques
+## Risks
 
-- **L'agent crash et `Restart=on-failure` ne suffit pas** : systemd retry. Si crashloop persistant, le state.json reste mais les sessions ne tournent plus. Charon affichera `reconnecting` indéfiniment — l'utilisateur devra SSH et lire `agent.log`.
-- **Le `claude_session_id` est devenu invalide côté SDK** (purge `~/.claude/projects/...`) : le restore au boot agent émet une erreur, la session passe en `error`, l'utilisateur la kill et en recrée une.
-- **Drift de version SDK** : l'agent fait un check au démarrage (`import claude_agent_sdk`) ; si import fails, exit code != 0 et systemd retry. Le setup console permet de réparer.
+- **The agent crashes and `Restart=on-failure` isn't enough**: systemd
+  retries. If the crashloop persists, the state.json stays but the
+  sessions no longer run. Charon will display `reconnecting`
+  indefinitely — the user will have to SSH in and read `agent.log`.
+- **The `claude_session_id` became invalid on the SDK side** (purge of
+  `~/.claude/projects/...`): the restore at agent boot emits an error, the
+  session goes to `error`, the user kills it and creates a new one.
+- **SDK version drift**: the agent does a check at startup (`import
+  claude_agent_sdk`); if the import fails, exit code != 0 and systemd
+  retries. The setup console lets you repair.

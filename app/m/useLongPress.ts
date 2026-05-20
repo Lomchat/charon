@@ -2,18 +2,18 @@
 import { useRef } from 'react';
 import type { TouchEvent as RTouchEvent, MouseEvent as RMouseEvent } from 'react';
 
-// Hook : détecte un long-press (touch ou souris longue) et fournit des
-// handlers à spreader sur un élément. Si le long-press se déclenche, le
-// onClick suivant est swallow (pour éviter une navigation parasite).
+// Hook: detects a long-press (touch or long mouse press) and provides
+// handlers to spread onto an element. If the long-press fires, the
+// following onClick is swallowed (to avoid an unwanted navigation).
 //
-// Usage :
+// Usage:
 //   const lp = useLongPress(() => openMenu(), { ms: 500 });
 //   <button {...lp.handlers} onClick={...} onContextMenu={lp.onContextMenu}>
 //     ...
 //   </button>
 //
-// L'onClick passé par l'appelant peut tester `lp.consume()` au début pour
-// savoir si le long-press a fired (auquel cas il doit return).
+// The onClick passed by the caller can test `lp.consume()` at the start to
+// know whether the long-press fired (in which case it should return).
 
 const MOVE_THRESHOLD_PX = 8;
 
@@ -28,8 +28,8 @@ export type LongPressApi = {
     onMouseLeave: () => void;
   };
   onContextMenu: (e: RMouseEvent) => void;
-  /** À appeler au début du onClick : retourne true si le long-press
-   * a fired et que le click doit être ignoré. */
+  /** Call at the start of onClick: returns true if the long-press
+   * fired and the click should be ignored. */
   consume: () => boolean;
 };
 
@@ -41,7 +41,7 @@ export function useLongPress(callback: () => void, opts: { ms?: number } = {}): 
 
   function fire() {
     firedRef.current = true;
-    // haptic feedback si dispo (Android)
+    // haptic feedback if available (Android)
     try { (navigator as any).vibrate?.(15); } catch {}
     callback();
   }
@@ -80,9 +80,9 @@ export function useLongPress(callback: () => void, opts: { ms?: number } = {}): 
       onMouseLeave: cancel,
     },
     onContextMenu: (e) => {
-      // Sur mobile, un long-press déclenche aussi parfois oncontextmenu.
-      // Sur desktop (mode mobile forcé), c'est le clic droit.
-      // Dans les deux cas on prévient la menu native et on ouvre le sheet.
+      // On mobile, a long-press also sometimes triggers oncontextmenu.
+      // On desktop (forced mobile mode), it's the right-click.
+      // In both cases we prevent the native menu and open the sheet.
       e.preventDefault();
       cancel();
       if (!firedRef.current) fire();

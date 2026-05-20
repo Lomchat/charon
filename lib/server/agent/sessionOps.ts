@@ -20,32 +20,32 @@ import type { EventListener as AgentEventListener } from './AgentClient';
 
 const newId = () => crypto.randomBytes(8).toString('hex');
 
-// ── Pool de dispatcher par session ──────────────────────────────────────────
-// Chaque session active a un SessionStream (= un dispatcher entre l'agent et
-// les SSE consumers). Le SessionStream :
-//   - Est créé lazily à la 1re subscribe SSE ou au boot (autoResume)
-//   - Sub à l'agent et persiste tous les events en DB (msgs/permissions/etc.)
-//   - Broadcast aux SSE sinks attachés (live uniquement — pas de replay côté
-//     Charon, la DB est la source de vérité, le client GET au mount)
+// ── Per-session dispatcher pool ─────────────────────────────────────────────
+// Each active session has a SessionStream (= a dispatcher between the agent
+// and the SSE consumers). The SessionStream:
+//   - Is created lazily on the 1st SSE subscribe or at boot (autoResume)
+//   - Subscribes to the agent and persists all events in DB (msgs/permissions/etc.)
+//   - Broadcasts to attached SSE sinks (live only — no replay on Charon
+//     side, the DB is the source of truth, the client GETs on mount)
 const g = globalThis as unknown as { _sessionStreams?: Map<string, SessionStream> };
 if (!g._sessionStreams) g._sessionStreams = new Map();
 const streams: Map<string, SessionStream> = g._sessionStreams;
 
-// Ring buffer côté Charon : SUPPRIMÉ (cf. CLAUDE.md §14 piège 14). La DB
-// est désormais la seule source de vérité pour les events persistés ; la
-// SSE par-session ne transmet plus que du live, et le client refetch via
-// GET /api/claude/sessions/[id] au mount + au reconnect + au retour foreground.
+// Charon-side ring buffer: REMOVED (cf. CLAUDE.md §14 gotcha 14). The DB
+// is now the only source of truth for persisted events; the per-session
+// SSE only relays live, and the client refetches via GET
+// /api/claude/sessions/[id] on mount + on reconnect + on foreground return.
 
-// ── Bus global d'events session-tagged ─────────────────────────────────────
-// TOUS les events broadcast par les SessionStreams passent par ce bus, tagués
-// avec leur sessionId. Le SSE multiplexé `/api/claude/events` en est l'unique
-// consommateur côté HTTP — il filtre par focus de connexion (cf.
+// ── Global session-tagged event bus ────────────────────────────────────────
+// ALL events broadcast by the SessionStreams pass through this bus, tagged
+// with their sessionId. The multiplexed SSE `/api/claude/events` is its only
+// HTTP-side consumer — it filters by connection focus (cf.
 // `eventConnections.ts` § filterAndForward).
 //
-// Avant le refactor : une SSE par session (`/api/claude/sessions/[id]/stream`)
-// + une SSE agrégée pour les interactions. Switcher de session = close+open de
-// la SSE per-session = ~50-150ms de latence visible + double mécanisme à
-// maintenir. Maintenant : UNE seule SSE par browser, focus changé via POST.
+// Before the refactor: one SSE per session (`/api/claude/sessions/[id]/stream`)
+// + an aggregated SSE for interactions. Switching session = close+open of
+// the per-session SSE = ~50-150ms of visible latency + a double mechanism to
+// maintain. Now: ONE SSE per browser, focus changed via POST.
 export type GlobalSessionEvent = WorkerEvent & { sessionId: string };
 
 const gBus = globalThis as unknown as { _globalSessionSubs?: Set<(ev: GlobalSessionEvent) => void> };
@@ -76,14 +76,14 @@ export class SessionStream {
   private agentListener: AgentEventListener | null = null;
   private attached = false;
   private alwaysAllow = new Set<string>();
-  // True pendant qu'on traite des events replay-és par l'agent (entre
-  // replay_begin et replay_end). Pendant cette fenêtre, on déduplique chaque
-  // event contre la DB pour éviter de re-persister du contenu déjà connu.
-  // Le but : après un restart Charon (où l'agent VPS a continué à streamer
-  // des events qu'on n'a pas vus), récupérer SEULEMENT les events manquants
-  // sans dupliquer ce qui est déjà en DB.
+  // True while we're processing events replayed by the agent (between
+  // replay_begin and replay_end). During this window, we dedupe each event
+  // against the DB to avoid re-persisting content already known. The goal:
+  // after a Charon restart (where the VPS agent kept streaming events we
+  // didn't see), pick up ONLY the missing events without duplicating what's
+  // already in the DB.
   private isReplaying = false;
-  // Sets chargés au replay_begin depuis la DB pour dedupe rapide.
+  // Sets loaded at replay_begin from the DB for fast dedup.
   private replayKnownToolUseIds: Set<string> = new Set();
   private replayKnownToolResultIds: Set<string> = new Set();
   private replayKnownAssistantContents: Set<string> = new Set();
@@ -104,7 +104,7 @@ export class SessionStream {
     this.claudeSessionId = opts.claudeSessionId;
   }
 
-  /** Branche le listener sur l'agent (idempotent). */
+  /** Wires the listener to the agent (idempotent). */
   attach(): void {
     if (this.attached) return;
     this.attached = true;
@@ -113,7 +113,7 @@ export class SessionStream {
     client.subscribe(this.id, this.agentListener);
   }
 
-  /** Détache du listener (utilisé sur kill définitif). */
+  /** Detach the listener (used on permanent kill). */
   detach(): void {
     if (!this.attached) return;
     this.attached = false;
@@ -124,34 +124,34 @@ export class SessionStream {
     this.agentListener = null;
   }
 
-  /** Texte assistant en cours d'accumulation (depuis le dernier flush).
-   *  Exposé pour que l'API GET puisse le passer au client → permet à
-   *  l'UI de reprendre un streaming "en cours" sans avoir à re-écouter
-   *  les deltas qui sont déjà passés (et déjà perçus comme "défilage"). */
+  /** Assistant text currently being accumulated (since the last flush).
+   *  Exposed so the GET API can pass it to the client → lets the UI
+   *  resume an "in-progress" streaming without having to re-listen
+   *  to deltas that have already passed (and already perceived as "scrolling"). */
   getStreamingText(): string {
     return this.currentAssistant;
   }
 
-  /** Idempotent — attache au listener agent. Appelé lazy depuis le code
-   * appelant qui crée le SessionStream (autoConnect, startNewSession,
-   * resumeSession). N'a plus de lien avec un subscriber HTTP : la SSE
-   * écoute le bus global. */
+  /** Idempotent — attach to the agent listener. Called lazily from the
+   * calling code that creates the SessionStream (autoConnect,
+   * startNewSession, resumeSession). No longer tied to an HTTP
+   * subscriber: the SSE listens to the global bus. */
   ensureAttached(): void {
     if (!this.attached) this.attach();
   }
 
   /**
-   * Dispatch d'un event agent : persistance DB + broadcast SSE.
-   * Garde la sémantique de SessionWorker.handleBridgeEvent.
+   * Dispatch an agent event: DB persistence + SSE broadcast.
+   * Preserves the semantics of SessionWorker.handleBridgeEvent.
    */
   private _onAgentEvent(ev: AgentEvent): void {
     switch (ev.event) {
       case 'replay_begin':
-        // On entre dans la fenêtre de replay : les events qui suivent peuvent
-        // être des doublons (déjà persistés) OU des events manqués (par ex.
-        // après un restart Charon, l'agent VPS a continué à streamer pendant
-        // qu'on était down). On charge les "déjà connus" et on traite chaque
-        // event normalement avec dedup par event-type.
+        // We enter the replay window: the events that follow may be
+        // duplicates (already persisted) OR missed events (e.g. after
+        // a Charon restart, the VPS agent kept streaming while we were
+        // down). Load the "already known" set and process each event
+        // normally with per-event-type dedup.
         this.isReplaying = true;
         this._loadReplayDedup();
         return;
@@ -208,7 +208,7 @@ export class SessionStream {
         break;
       case 'permission_request':
         if (this.alwaysAllow.has(ev.tool)) {
-          // Auto-allow : forward au agent immédiatement
+          // Auto-allow: forward to the agent immediately
           this.respondPermission(ev.id, true).catch(() => {});
           return;
         }
@@ -227,7 +227,7 @@ export class SessionStream {
         this._log('info', 'permission', { id: ev.id, tool: ev.tool });
         this._maybePush({
           title: `🔒 ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : permission`,
-          body: `outil ${ev.tool} — clique pour valider`,
+          body: `tool ${ev.tool} — tap to approve`,
           tag: `perm-${this.id}`,
         });
         sendPermissionToTelegram(this.id, ev.id, ev.tool, ev.input).catch(() => {});
@@ -245,7 +245,7 @@ export class SessionStream {
         this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
         this._maybePush({
           title: `❓ ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : question`,
-          body: `${ev.questions[0]?.question ?? 'question utilisateur'}`,
+          body: `${ev.questions[0]?.question ?? 'user question'}`,
           tag: `q-${this.id}`,
         });
         sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
@@ -262,8 +262,8 @@ export class SessionStream {
         this._persist('exit_plan_request', { type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._maybePush({
-          title: `📋 ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : plan prêt`,
-          body: 'Claude a fini de planifier — clique pour valider',
+          title: `📋 ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : plan ready`,
+          body: 'Claude finished planning — tap to approve',
           tag: `plan-${this.id}`,
         });
         break;
@@ -292,12 +292,12 @@ export class SessionStream {
         this._broadcast({ type: 'stop', subtype: ev.subtype });
         this._maybePush({
           title: `✓ ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)}`,
-          body: 'Claude a fini sa réponse',
+          body: 'Claude finished its response',
           tag: `stop-${this.id}`,
         });
         break;
       case 'interrupted':
-        this._broadcast({ type: 'mode_changed', mode: this.permissionMode }); // forme libre
+        this._broadcast({ type: 'mode_changed', mode: this.permissionMode }); // free-form
         break;
       case 'error':
         this._log('error', 'sdk_error', { msg: ev.msg, fatal: !!ev.fatal });
@@ -306,7 +306,7 @@ export class SessionStream {
     }
   }
 
-  // ── Actions (forwardées à l'agent) ───────────────────────────────────────
+  // ── Actions (forwarded to the agent) ─────────────────────────────────────
   async sendUserMessage(content: string): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     this._persist('user', content);
@@ -323,9 +323,9 @@ export class SessionStream {
   }
 
   async forceStop(): Promise<void> {
-    // Force le SDK à lâcher : la session passe 'sleeping' immédiatement
-    // côté agent, on peut resume juste après. Utilisé quand `interrupt`
-    // (soft) ne fait rien parce qu'un tool est stuck.
+    // Force the SDK to let go: the session switches to 'sleeping'
+    // immediately on the agent side, we can resume just after. Used when
+    // `interrupt` (soft) does nothing because a tool is stuck.
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('force_stop', { session_id: this.id });
     this.status = 'sleeping';
@@ -335,7 +335,7 @@ export class SessionStream {
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('set_permission_mode', { session_id: this.id, mode });
-    // Le mode_changed event reviendra et fera le sync DB
+    // The mode_changed event will come back and do the DB sync
   }
 
   async respondPermission(permId: string, allow: boolean, always = false): Promise<void> {
@@ -382,26 +382,26 @@ export class SessionStream {
 
   // ── Privates ─────────────────────────────────────────────────────────────
   private _broadcast(ev: WorkerEvent): void {
-    // Push tous les events sur le bus global — le SSE multiplexé /events
-    // se charge du fan-out + filtre par focus de connexion. Tag sessionId
-    // pour que les consommateurs sachent de quelle session ça vient.
+    // Push all events on the global bus — the multiplexed /events SSE
+    // handles the fan-out + filter by connection focus. Tag with sessionId
+    // so consumers know which session it came from.
     emitGlobalSession({ ...ev, sessionId: this.id } as GlobalSessionEvent);
   }
 
   /**
-   * Flush du texte assistant en cours d'accumulation (currentAssistant) :
-   * persiste un message 'assistant' en DB et reset le buffer. À appeler
-   * avant tout event qui interrompt le texte assistant (tool_use, thinking,
-   * permission_request, etc.) — sinon le texte écrit AVANT le tool serait
-   * concaténé avec le texte d'APRÈS et inséré en bloc à la fin (à `stop`),
-   * ce qui casse l'ordre chronologique au reload.
+   * Flush the assistant text currently being accumulated (currentAssistant):
+   * persist an 'assistant' message in DB and reset the buffer. To be called
+   * before any event that interrupts the assistant text (tool_use, thinking,
+   * permission_request, etc.) — otherwise the text written BEFORE the tool
+   * would be concatenated with the text AFTER and inserted as a single block
+   * at the end (on `stop`), breaking chronological order on reload.
    *
-   * Pendant un replay, on est plus prudent :
-   *  - Si le contenu accumulé existe déjà en DB → skip (déjà persisté).
-   *  - Si la DERNIÈRE ligne assistant en DB est un préfixe du contenu accumulé
-   *    → c'est un partial flushé par SIGTERM, on étend la ligne au lieu d'en
-   *    insérer une nouvelle (sinon on aurait un partial + un complet en DB).
-   *  - Sinon → insert normal.
+   * During a replay, we're more careful:
+   *  - If the accumulated content already exists in DB → skip (already persisted).
+   *  - If the LAST assistant line in DB is a prefix of the accumulated content
+   *    → it's a partial flushed by SIGTERM, extend the line instead of
+   *    inserting a new one (otherwise we'd have a partial + a complete in DB).
+   *  - Otherwise → normal insert.
    */
   private _flushAssistant(): void {
     if (!this.currentAssistant) return;
@@ -409,9 +409,9 @@ export class SessionStream {
     this.currentAssistant = '';
 
     if (this.isReplaying) {
-      // Exact match → déjà en DB
+      // Exact match → already in DB
       if (this.replayKnownAssistantContents.has(finalContent)) return;
-      // Préfixe → étend le partial existant
+      // Prefix → extend the existing partial
       try {
         const lastRows = db.select().from(claudeSessionMessages)
           .where(and(
@@ -438,14 +438,14 @@ export class SessionStream {
     if (this.isReplaying) this.replayKnownAssistantContents.add(finalContent);
   }
 
-  /** Variante publique pour le graceful shutdown : persiste sans broadcast. */
+  /** Public variant for graceful shutdown: persists without broadcasting. */
   flushPendingAssistant(): void {
     this._flushAssistant();
   }
 
   /**
-   * Au replay_begin : charge depuis la DB les IDs/contenus déjà connus pour
-   * dedupe chaque event pendant la fenêtre de replay.
+   * On replay_begin: load from the DB the IDs/contents already known to
+   * dedupe each event during the replay window.
    */
   private _loadReplayDedup(): void {
     this.replayKnownToolUseIds.clear();
@@ -470,7 +470,7 @@ export class SessionStream {
           } else if (r.role === 'thinking') {
             this.replayKnownThinkingContents.add(r.content);
           } else if (r.role === 'event') {
-            // events 'thinking' anciens (avant le rôle dédié) sont parfois stockés ici
+            // old 'thinking' events (before the dedicated role) are sometimes stored here
             try {
               const p = JSON.parse(r.content);
               if (p?.type === 'thinking' && typeof p.text === 'string') {
@@ -523,7 +523,7 @@ export class SessionStream {
   }
 }
 
-// ── Helpers : ouverture/fermeture des streams ───────────────────────────────
+// ── Helpers: stream open/close ──────────────────────────────────────────────
 function _vpsName(vpsId: string): string {
   const [row] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   return row?.name ?? vpsId.slice(0, 6);
@@ -552,13 +552,13 @@ export function listStreams(): SessionStream[] {
   return Array.from(streams.values());
 }
 
-// ── Lifecycle des sessions (create/resume/sleep/kill/import) ────────────────
+// ── Session lifecycle (create/resume/sleep/kill/import) ─────────────────────
 
 /**
- * Crée un row DB pour une session Claude qui existe déjà côté SDK (ex : trouvée
- * par /api/vps/[id]/claude/scan). La session naît 'sleeping' avec son
- * claude_session_id ; un resume ultérieur la matérialise côté agent via
- * start_session(claude_session_id=...).
+ * Create a DB row for a Claude session that already exists SDK-side (e.g.
+ * found by /api/vps/[id]/claude/scan). The session is born 'sleeping' with
+ * its claude_session_id; a later resume materializes it on the agent side
+ * via start_session(claude_session_id=...).
  */
 export async function importExistingSession(opts: {
   vpsId: string;
@@ -592,7 +592,7 @@ export async function startNewSession(opts: {
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
   const sessionId = newId();
-  // Insert en DB d'abord (statut 'starting' jusqu'à confirmation agent)
+  // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
@@ -611,10 +611,10 @@ export async function startNewSession(opts: {
   });
   streams.set(sessionId, stream);
 
-  // ORDRE IMPORTANT : start_session AVANT subscribe.
-  // Le subscribe agent-side throw si la session n'existe pas encore.
-  // Les events émis pendant start_session (`status=starting`) restent dans le
-  // ring buffer côté agent et sont rejoués au moment du subscribe (replay=300).
+  // IMPORTANT ORDER: start_session BEFORE subscribe.
+  // The agent-side subscribe throws if the session doesn't exist yet.
+  // Events emitted during start_session (`status=starting`) stay in the
+  // ring buffer on the agent side and are replayed at subscribe time (replay=300).
   try {
     const client = getAgentClientForVpsId(opts.vpsId);
     await client.call('start_session', {
@@ -633,19 +633,19 @@ export async function startNewSession(opts: {
   return stream;
 }
 
-// Dedup des appels concurrents à resumeSession pour un même sessionId.
-// Sans ça, deux paths (autoConnect.opportunistic + reconcileVpsAgentState
-// fallback) pourraient courser sur start_session et l'un échouerait avec
-// "already exists" → la catch handler demoterait la session à 'sleeping'
-// alors que l'autre vient juste de la réveiller. cf. CLAUDE.md §14 piège 24.
+// Dedup of concurrent calls to resumeSession for the same sessionId.
+// Without this, two paths (autoConnect.opportunistic + reconcileVpsAgentState
+// fallback) could race on start_session and one would fail with
+// "already exists" → the catch handler would demote the session to 'sleeping'
+// while the other just woke it up. Cf. CLAUDE.md §14 gotcha 24.
 const _resumeInflight = new Map<string, Promise<SessionStream>>();
 
 /**
- * Resume : tente la séquence (resume_session si la session existe côté agent,
- * sinon start_session avec le claude_session_id sauvegardé). Idempotent côté
- * DB : laisse le statut à 'active' une fois l'agent confirme. Idempotent côté
- * concurrence aussi : deux appels simultanés pour la même session partagent
- * la même promesse (cf. `_resumeInflight`).
+ * Resume: attempts the sequence (resume_session if the session exists on
+ * the agent side, otherwise start_session with the saved claude_session_id).
+ * Idempotent DB-side: leaves the status at 'active' once the agent confirms.
+ * Idempotent concurrency-side too: two simultaneous calls for the same
+ * session share the same promise (cf. `_resumeInflight`).
  */
 export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const existing = _resumeInflight.get(sessionId);
@@ -653,8 +653,8 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
-    // Note : la garde `status === 'killed'` a sauté avec la fusion kill→delete.
-    // Une session killed n'existe plus en DB ; ce path est mort.
+    // Note: the `status === 'killed'` guard was removed with the kill→delete
+    // merge. A killed session no longer exists in DB; this path is dead.
 
     const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
     if (!vps) throw new Error('vps no longer exists');
@@ -671,14 +671,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     }
 
     const client = getAgentClientForVpsId(row.vpsId);
-    // ORDRE : on s'assure que la session existe côté agent AVANT de subscribe
-    // (sinon le subscribe RPC throw session_not_found).
+    // ORDER: make sure the session exists on the agent side BEFORE subscribing
+    // (otherwise the subscribe RPC throws session_not_found).
     try {
       await client.call('resume_session', { session_id: sessionId });
     } catch (e: any) {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
       if (!isNotFound) throw e;
-      // Recreate from scratch (l'agent ne connaît pas cette session)
+      // Recreate from scratch (the agent doesn't know this session)
       try {
         await client.call('start_session', {
           session_id: sessionId,
@@ -688,17 +688,17 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           claude_session_id: row.claudeSessionId,
         });
       } catch (startErr: any) {
-        // Si un autre appel concurrent vient juste de la créer (race entre
-        // deux paths de resume), agent répond "already exists". Dans ce cas
-        // on traite ça comme un succès : la session est bien là côté agent.
+        // If another concurrent call just created it (race between
+        // two resume paths), the agent replies "already exists". In that
+        // case we treat it as a success: the session is properly on the agent.
         const msg = startErr?.message ?? '';
         if (!/already exists/i.test(msg)) throw startErr;
       }
     }
     stream.attach();
-    // Si l'utilisateur avait déjà ouvert l'SSE avant le resume, attach() a déjà
-    // tenté un subscribe côté agent qui a failed (session pas encore existante).
-    // On force un nouveau subscribe maintenant qu'elle existe.
+    // If the user had already opened the SSE before the resume, attach() has
+    // already tried a subscribe on the agent side that failed (session not yet
+    // existing). Force a new subscribe now that it exists.
     client.resubscribe(sessionId);
     db.update(claudeSessions).set({ status: 'active' })
       .where(eq(claudeSessions.id, sessionId)).run();
@@ -721,7 +721,7 @@ export async function sleepSession(sessionId: string): Promise<void> {
     const client = getAgentClientForVpsId(row.vpsId);
     await client.call('sleep_session', { session_id: sessionId });
   } catch (e) {
-    // Agent peut être down — on a déjà mis 'sleeping' en DB, on log
+    // Agent may be down — we already set 'sleeping' in DB, just log
     console.warn(`[sessionOps] sleep ${sessionId}: agent unreachable, DB marked anyway`);
   }
 }
@@ -735,43 +735,42 @@ export async function forceStopSession(sessionId: string): Promise<void> {
   if (stream) {
     await stream.forceStop();
   } else {
-    // Pas de stream en mémoire — on essaye quand même de joindre l'agent
+    // No stream in memory — try to reach the agent anyway
     try {
       const client = getAgentClientForVpsId(row.vpsId);
       await client.call('force_stop', { session_id: sessionId });
     } catch {
-      // Agent down : la DB est déjà 'sleeping', l'user peut resume plus tard
+      // Agent down: DB is already 'sleeping', user can resume later
     }
   }
 }
 
 /**
- * Suppression définitive d'une session : tue côté agent, libère le stream,
- * notifie les SSE, et cascade la suppression DB (messages/permissions/
- * questions/logs/row session).
+ * Permanent deletion of a session: kills on the agent side, releases the
+ * stream, notifies the SSEs, and cascades the DB deletion (messages/
+ * permissions/questions/logs/session row).
  *
- * Note historique : il existait avant un état intermédiaire `'killed'` (DB
- * row gardé pour consultation post-mortem mais resume bloqué). C'était un
- * faux ami UX — le bouton "pause" du header appelait en fait `kill`. La
- * refonte a fusionné ce middle state avec la suppression dure : seule
- * `sleep` est désormais réversible, tout le reste détruit la session.
+ * Historical note: there used to be an intermediate `'killed'` state (DB
+ * row kept for post-mortem inspection but resume blocked). That was a
+ * UX false friend — the "pause" button in the header actually called
+ * `kill`. The refactor merged this middle state with hard deletion:
+ * only `sleep` is reversible now, everything else destroys the session.
  *
- * L'event `status='killed'` est encore émis sur le bus comme **signal
- * transient** vers les SSE actives (= "déguerpis, la session n'existe
- * plus"). Aucune row DB ne porte ce status — la migration 0008 a purgé
- * les vestiges.
+ * The `status='killed'` event is still emitted on the bus as a **transient
+ * signal** to active SSEs (= "get out, the session no longer exists").
+ * No DB row carries this status — migration 0008 purged the vestiges.
  *
- * Ordre des opérations :
- *   1. Émet `status=killed` immédiatement (notifier les SSE encore branchées
- *      avant que le stream soit detaché → ne ratent pas le signal).
- *   2. Detach + supprime le SessionStream local.
- *   3. Cascade DB. La FK ON DELETE CASCADE couvre messages/permissions/
- *      questions/logs depuis `claudeSessions`, mais on supprime explicitement
- *      les logs aussi par défense en profondeur (ils existaient hors cascade
- *      dans l'historique du code).
- *   4. Best-effort : appelle `kill_session` côté agent pour qu'il oublie
- *      la session. Si l'agent est down, tant pis — la prochaine reconcile
- *      ignore les sessions orphelines (cf. `reconcileVpsAgentState`).
+ * Order of operations:
+ *   1. Emit `status=killed` immediately (notify SSEs still attached
+ *      before the stream is detached → don't miss the signal).
+ *   2. Detach + remove the local SessionStream.
+ *   3. DB cascade. The FK ON DELETE CASCADE covers messages/permissions/
+ *      questions/logs from `claudeSessions`, but we explicitly delete
+ *      logs too as defense in depth (they existed outside the cascade
+ *      historically in the code).
+ *   4. Best-effort: call `kill_session` on the agent side so it forgets
+ *      the session. If the agent is down, never mind — the next reconcile
+ *      will ignore orphan sessions (cf. `reconcileVpsAgentState`).
  */
 export async function deleteSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
@@ -788,35 +787,35 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const client = getAgentClientForVpsId(row.vpsId);
     await client.call('kill_session', { session_id: sessionId });
   } catch (e) {
-    // Agent down : la session est déjà supprimée côté Charon, l'agent a
-    // peut-être encore un orphan dans son state.json — sera ignoré par
-    // reconcileVpsAgentState (no DB row), puis nettoyé à son prochain restart.
+    // Agent down: the session is already deleted on the Charon side, the
+    // agent may still have an orphan in its state.json — will be ignored
+    // by reconcileVpsAgentState (no DB row), then cleaned at its next restart.
   }
 }
 
-// ── Reconciliation Charon ↔ agent (self-healing après restart) ─────────────
-// Appelé à chaque (re)connexion d'un AgentClient, dès que `hello` est revenu
-// avec la liste des sessions VRAIMENT vivantes côté agent.
+// ── Charon ↔ agent reconciliation (self-healing after restart) ─────────────
+// Called on every (re)connection of an AgentClient, as soon as `hello` comes
+// back with the list of REALLY alive sessions on the agent side.
 //
-// Le problème qu'on résout : après un `systemctl restart charon`, le process
-// Next redémarre mais le daemon agent côté VPS, lui, continue à vivre avec
-// ses sessions SDK ouvertes. Du côté Charon, la DB garde le dernier statut
-// connu — typiquement 'thinking' pour les sessions qui étaient en train de
-// traiter une query au moment du SIGTERM. Sans rien faire, ces sessions
-// restent "pendues" : aucun SessionStream n'est attaché au listener agent,
-// donc aucun event ne remonte à l'UI, qui affiche un spinner éternel. Le
-// user devait faire force_stop puis resume manuellement pour rattacher.
+// The problem we solve: after a `systemctl restart charon`, the Next process
+// restarts but the agent daemon on the VPS side keeps living with its open
+// SDK sessions. On the Charon side, the DB keeps the last known status —
+// typically 'thinking' for sessions that were processing a query at SIGTERM
+// time. Without doing anything, these sessions stay "hanging": no
+// SessionStream is attached to the agent listener, so no event reaches the
+// UI, which shows an eternal spinner. The user had to do force_stop then
+// resume manually to reattach.
 //
-// Cette fonction prend `hello.sessions` comme source de vérité, et pour
-// chaque session vivante côté agent :
-//   - Crée (ou récupère) le SessionStream en mémoire
-//   - Attache le listener au flux d'events de l'agent (idempotent)
-//   - Aligne le status DB sur celui rapporté par l'agent
+// This function takes `hello.sessions` as the source of truth, and for
+// each session alive on the agent side:
+//   - Creates (or retrieves) the SessionStream in memory
+//   - Attaches the listener to the agent's event stream (idempotent)
+//   - Aligns the DB status with the one reported by the agent
 //
-// Et pour les sessions DB en 'active'/'thinking'/'starting' que l'agent ne
-// connaît PAS (cas où l'agent VPS a redémarré et a perdu son state.json) :
-//   - Lance resumeSession() qui essaiera resume_session, puis fallback sur
-//     start_session(claude_session_id=...) pour les recréer côté SDK.
+// And for DB sessions in 'active'/'thinking'/'starting' that the agent does
+// NOT know (case where the VPS agent restarted and lost its state.json):
+//   - Run resumeSession() which will try resume_session, then fall back on
+//     start_session(claude_session_id=...) to recreate them SDK-side.
 export async function reconcileVpsAgentState(
   vpsId: string,
   agentSessions: AgentSessionInfo[],
@@ -824,27 +823,28 @@ export async function reconcileVpsAgentState(
   const agentSidMap = new Map<string, AgentSessionInfo>();
   for (const a of agentSessions) agentSidMap.set(a.session_id, a);
 
-  // 1) Sessions vivantes côté agent : attache un SessionStream + sync status.
+  // 1) Sessions alive on the agent side: attach a SessionStream + sync status.
   for (const [sid, info] of agentSidMap) {
     let row: typeof claudeSessions.$inferSelect | undefined;
     try {
       [row] = db.select().from(claudeSessions)
         .where(eq(claudeSessions.id, sid)).all();
     } catch { continue; }
-    if (!row) continue;            // session inconnue de Charon, on n'invente pas
-    // (l'ancienne garde `row.status === 'killed'` est obsolète : la fusion
-    // kill→delete a supprimé ce status persistant ; une session DB existante
-    // est par construction non-killed.)
+    if (!row) continue;            // session unknown to Charon, we don't invent
+    // (the old `row.status === 'killed'` guard is obsolete: the
+    // kill→delete merge removed this persistent status; an existing DB
+    // session is by construction non-killed.)
 
-    const stream = getStream(sid);  // crée le stream depuis la DB si nécessaire
+    const stream = getStream(sid);  // creates the stream from DB if needed
     if (!stream) continue;
-    // Attache le listener — c'EST la pièce manquante après un restart Charon.
-    // Sans ça, les events agent ne remontent pas au browser et l'UI reste figée.
+    // Attach the listener — this IS the missing piece after a Charon restart.
+    // Without it, agent events don't reach the browser and the UI stays frozen.
     stream.ensureAttached();
 
-    // Si le DB status diverge de l'agent (typiquement DB='thinking' figé alors
-    // que l'agent est revenu à 'active'), aligner. On ne touche pas si l'agent
-    // dit 'killed' (improbable ici puisqu'il l'aurait retiré de sessions).
+    // If DB status diverges from agent (typically DB='thinking' frozen
+    // while the agent is back to 'active'), realign. Don't touch if the
+    // agent says 'killed' (unlikely here since it would have removed it
+    // from sessions).
     const agentStatus = info.status;
     if (agentStatus !== row.status && agentStatus !== 'killed') {
       try {
@@ -852,19 +852,19 @@ export async function reconcileVpsAgentState(
           .where(eq(claudeSessions.id, sid)).run();
       } catch {}
       stream.status = agentStatus as WorkerStatus;
-      // Émet sur le bus pour que les SSE clientes voient le bon statut tout
-      // de suite (sans dépendre d'un futur event status de l'agent).
+      // Emit on the bus so SSE clients see the right status immediately
+      // (without depending on a future status event from the agent).
       emitGlobalSession({
         type: 'status', sessionId: sid, status: agentStatus as any,
       } as GlobalSessionEvent);
     }
   }
 
-  // 2) Sessions DB qui devraient tourner mais que l'agent ne connaît pas.
-  //    Typiquement : l'agent VPS a été redémarré pendant qu'on était down
-  //    et a perdu son state.json (sessions persistées en 'sleeping' qui ne
-  //    sont pas restartées au boot). On les relance via resumeSession() qui
-  //    fallback sur start_session(claude_session_id=...) si pas trouvée.
+  // 2) DB sessions that should be running but the agent doesn't know.
+  //    Typically: the VPS agent was restarted while we were down and
+  //    lost its state.json (sessions persisted as 'sleeping' that are
+  //    not restarted at boot). Relaunch them via resumeSession() which
+  //    falls back to start_session(claude_session_id=...) if not found.
   let dbRows: { id: string; status: string }[] = [];
   try {
     dbRows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
@@ -878,7 +878,7 @@ export async function reconcileVpsAgentState(
     return;
   }
   for (const row of dbRows) {
-    if (agentSidMap.has(row.id)) continue;  // déjà géré au step 1
+    if (agentSidMap.has(row.id)) continue;  // already handled in step 1
     resumeSession(row.id)
       .then(() => {
         try {
@@ -897,8 +897,8 @@ export async function reconcileVpsAgentState(
               err: e?.message ?? String(e),
             }),
           }).run();
-          // Si la relance échoue (cwd disparu, SDK KO…), on dégrade en sleeping
-          // pour que l'UI montre clairement un bouton "resume" manuel.
+          // If the relaunch fails (cwd gone, SDK broken…), degrade to sleeping
+          // so the UI clearly shows a manual "resume" button.
           db.update(claudeSessions).set({ status: 'sleeping' })
             .where(eq(claudeSessions.id, row.id)).run();
           emitGlobalSession({
@@ -910,22 +910,21 @@ export async function reconcileVpsAgentState(
 }
 
 // ── Graceful shutdown ──────────────────────────────────────────────────────
-// Quand systemd / l'utilisateur tue le process Next (SIGTERM ou SIGINT), on
-// flush en DB le texte assistant en cours d'accumulation dans chaque
-// SessionStream. Sans ça, tout texte assistant streamé avant le prochain
-// `stop` est perdu (cf. bug constaté quand l'app a été restartée pendant
-// que Claude était encore en train d'écrire).
+// When systemd / the user kills the Next process (SIGTERM or SIGINT), we
+// flush to DB the assistant text being accumulated in each SessionStream.
+// Without this, any assistant text streamed before the next `stop` is lost
+// (cf. bug observed when the app was restarted while Claude was still
+// writing).
 //
-// On utilise un flag module-level pour éviter une double-registration en cas
-// de hot-reload Next.
+// We use a module-level flag to avoid double-registration on Next hot-reload.
 declare global {
   // eslint-disable-next-line no-var
   var __charon_shutdownRegistered: boolean | undefined;
 }
-// Skip pendant `next build` : le module est importé par les workers de build
-// (analyse SSR), qui reçoivent un SIGINT/SIGTERM en fin de phase. Si on
-// enregistre le handler, on `process.exit(0)` prématurément et ça peut
-// fausser le build (cf. logs `graceful flush done on SIGINT` pendant build).
+// Skip during `next build`: the module is imported by build workers
+// (SSR analysis), which receive a SIGINT/SIGTERM at the end of the phase.
+// If we register the handler, we `process.exit(0)` prematurely and that
+// can break the build (cf. logs `graceful flush done on SIGINT` during build).
 const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build';
 if (!isBuildPhase && !globalThis.__charon_shutdownRegistered) {
   globalThis.__charon_shutdownRegistered = true;

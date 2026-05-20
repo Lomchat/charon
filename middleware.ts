@@ -7,9 +7,12 @@ export const config = {
 };
 
 const PUBLIC_PATHS = ['/login'];
-// Routes API qui s'authentifient elles-mêmes (Bearer token, etc.) — le
-// middleware les laisse passer sans cookie.
-const PUBLIC_API_PATHS = ['/api/sync'];
+// API routes that authenticate themselves (Bearer token, etc.) or that need
+// to be reachable without a session — the middleware lets them through
+// without a cookie.
+// - /api/sync : Bearer-authenticated upsert endpoint.
+// - /api/health : public liveness probe for reverse proxies / Docker.
+const PUBLIC_API_PATHS = ['/api/sync', '/api/health'];
 const SESSION_COOKIE = 'charon_session';
 const SESSION_TTL_SECS = 24 * 60 * 60;
 
@@ -46,9 +49,9 @@ export async function middleware(req: NextRequest) {
       })();
 
   if (valid && sid) {
-    // `secure: true` en prod (cookie envoyé uniquement sur HTTPS — protège
-    // d'une fuite si l'utilisateur tape http://). En dev local le serveur
-    // tourne sur http://127.0.0.1, on garde false pour pas casser le login.
+    // `secure: true` in prod (cookie only sent over HTTPS — protects against
+    // a leak if the user types http://). In local dev the server runs on
+    // http://127.0.0.1, keep it false so login still works.
     res.cookies.set(SESSION_COOKIE, sid, {
       path: '/',
       httpOnly: true,

@@ -1,17 +1,17 @@
-// Reconstruction d'un état session à partir des messages persistés en DB
-// (utilisé au mount, switch de session, retour onglet).
+// Reconstruction of a session state from messages persisted in the DB
+// (used at mount, session switch, tab return).
 //
-// Partagé entre `app/ClaudePanel.tsx` et `app/m/chat/MobileChat.tsx` — avant
-// ce fichier, la même fonction était dupliquée à l'identique avec un
-// commentaire "copié de ClaudePanel.rebuildStateFromMessages" côté mobile.
+// Shared between `app/ClaudePanel.tsx` and `app/m/chat/MobileChat.tsx` — before
+// this file, the same function was duplicated identically with a comment
+// "copied from ClaudePanel.rebuildStateFromMessages" on the mobile side.
 
 import type {
   Msg, ToolCallEntry, Todo, EditSnapshot,
 } from './sessionTypes';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 
-// Forme d'un message tel qu'il vient de l'API `GET /api/claude/sessions/[id]`.
-// Volontairement permissif (les `role` côté DB sont des strings libres).
+// Shape of a message as it comes from the `GET /api/claude/sessions/[id]` API.
+// Deliberately permissive (the `role` values in the DB are free-form strings).
 export type PersistedMessage = {
   id: number;
   role: string;
@@ -97,7 +97,7 @@ export function rebuildStateFromMessages(
       });
       continue;
     }
-    // tool_result / user / assistant / system / autres
+    // tool_result / user / assistant / system / others
     out.messages.push({
       id: 'm' + m.id, role: m.role,
       content: m.content, createdAt: m.createdAt,

@@ -1,184 +1,185 @@
-# CLAUDE.md — Guide complet du repo Charon
+# CLAUDE.md — Full guide to the Charon repo
 
-Document destiné à tout agent Claude qui ouvre ce repo pour la première fois.
-Lis-le avant de commencer une tâche : il décrit l'architecture, le protocole,
-la structure DB, le build et les pièges connus. Pour la motivation détaillée,
-voir aussi `docs/adr-001-charon-agent.md` (le présent fichier est une version
-plus large et plus opérationnelle).
+Document aimed at any Claude agent opening this repo for the first time.
+Read it before starting a task: it describes the architecture, the protocol,
+the DB structure, the build, and the known gotchas. For detailed motivation,
+also see `docs/adr-001-charon-agent.md` (this file is a broader and more
+operational version).
 
-> ## ⚠ Mets à jour ce fichier à chaque changement
+> ## ⚠ Update this file with every change
 >
-> **Ce CLAUDE.md est la source de vérité pour les futurs agents.** Si tu
-> modifies une des choses suivantes, **mets à jour la section concernée
-> dans le même commit** :
+> **This CLAUDE.md is the source of truth for future agents.** If you
+> modify any of the following, **update the relevant section in the
+> same commit**:
 >
-> - Protocole JSON-RPC (méthodes, params, codes d'erreur, events)
-> - Schéma DB (table/colonne/index, nouvelle migration)
-> - Routes API (nouveau endpoint, suppression, changement de shape)
-> - Layout du repo (nouveau dossier, déplacement, renommage)
-> - Build / scripts npm / config Next / config Drizzle
-> - Variables d'environnement (`.env` keys)
-> - Topologie de déploiement (systemd, reverse proxy, chemins sur VPS)
-> - Lifecycle de l'agent (fichiers dans `~/.charon/`, unit systemd)
-> - Composants frontend majeurs (ajout/refonte d'un composant clé)
-> - Pièges connus (nouveau footgun découvert → §14)
+> - JSON-RPC protocol (methods, params, error codes, events)
+> - DB schema (table/column/index, new migration)
+> - API routes (new endpoint, removal, shape change)
+> - Repo layout (new folder, move, rename)
+> - Build / npm scripts / Next config / Drizzle config
+> - Environment variables (`.env` keys)
+> - Deployment topology (systemd, reverse proxy, paths on the VPS)
+> - Agent lifecycle (files in `~/.charon/`, systemd unit)
+> - Major frontend components (adding/redesigning a key component)
+> - Known gotchas (newly discovered footgun → §14)
 >
-> Pour les renommages, mets aussi à jour la table « Quick lookup » (§15).
-> Pour les changements protocole/schéma, suis la checklist §17.
+> For renames, also update the "Quick lookup" table (§15).
+> For protocol/schema changes, follow the §17 checklist.
 >
-> Ne laisse pas ce fichier mentir : un agent qui se fie à un CLAUDE.md
-> périmé fait pire que pas de doc du tout.
+> Don't let this file lie: an agent relying on a stale CLAUDE.md is
+> worse off than one with no doc at all.
 
 ---
 
-## 1. Ce que fait Charon
+## 1. What Charon does
 
-Charon est un **hub Next.js** (App Router, React 19, SQLite) qui pilote des
-**sessions Claude Code/Agent SDK** tournant sur **des VPS distants**. Côté
-chaque VPS, un **daemon Python** (`charon-agent`, packagé en `.pyz`) héberge
-les sessions `ClaudeSDKClient` et expose un protocole JSON-RPC sur un **socket
-Unix local** ; Charon s'y connecte via **une seule SSH multiplexée par VPS**.
+Charon is a **Next.js hub** (App Router, React 19, SQLite) that drives
+**Claude Code/Agent SDK sessions** running on **remote VPSes**. On each
+VPS, a **Python daemon** (`charon-agent`, packaged as a `.pyz`) hosts
+the `ClaudeSDKClient` sessions and exposes a JSON-RPC protocol on a
+**local Unix socket**; Charon connects to it via **one multiplexed SSH
+per VPS**.
 
-Le tout offre :
-- Un dashboard desktop multi-session (sidebar VPS → sessions → messages)
-- Une UI mobile dédiée (`/m/...`)
-- Des shells SSH éphémères (xterm.js) en plus des sessions Claude
-- La survie des sessions au restart de Charon (l'agent continue, Charon
-  re-subscribe au reboot avec replay du ring buffer)
-- Un bootstrap automatique des VPS (install Python + SDK + agent en stream SSE)
-- Web Push + Telegram pour notifier l'utilisateur quand une permission est
-  attendue ou qu'un tour de message se termine
+The whole thing offers:
+- A desktop multi-session dashboard (sidebar VPS → sessions → messages)
+- A dedicated mobile UI (`/m/...`)
+- Ephemeral SSH shells (xterm.js) in addition to Claude sessions
+- Session survival across Charon restarts (the agent keeps running, Charon
+  re-subscribes on reboot with ring buffer replay)
+- Automated VPS bootstrap (install Python + SDK + agent in an SSE stream)
+- Web Push + Telegram to notify the user when a permission is pending
+  or a message turn finishes
 
 ```
-┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 par VPS)  ┌──────────────────────┐
-│  Navigateur   │ ◄──────────► │  Charon (Next.js)      │ ◄───────────────► │  charon-agent (VPS)  │
+┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 per VPS)  ┌──────────────────────┐
+│   Browser     │ ◄──────────► │  Charon (Next.js)      │ ◄───────────────► │  charon-agent (VPS)  │
 │  ClaudePanel  │  SSE / POST  │  - AgentClientPool     │  exec: pyz        │  - asyncio Unix sock │
-└───────────────┘              │  - 1 SSH/VPS, JSON-RPC │  --connect proxy  │  - N sessions SDK    │
+└───────────────┘              │  - 1 SSH/VPS, JSON-RPC │  --connect proxy  │  - N SDK sessions    │
                                │  - SQLite (charon.db)  │  stdio↔socket     │  - state.json        │
                                └────────────────────────┘                   └──────────────────────┘
 ```
 
 ---
 
-## 2. Layout du repo
+## 2. Repo layout
 
 ```
 /srv/charon
 ├── app/                       # Next.js App Router (UI + API)
-│   ├── api/                   # toutes les routes API
-│   ├── m/                     # routes mobile
-│   ├── login/                 # page de login (mot de passe maître)
-│   ├── ClaudePanel.tsx        # UI desktop principale (~1400 lignes)
+│   ├── api/                   # all API routes
+│   ├── m/                     # mobile routes
+│   ├── login/                 # login page (master password)
+│   ├── ClaudePanel.tsx        # main desktop UI (~1400 lines)
 │   ├── Sidebar.tsx            # folders → VPS → sessions/shells/installs
-│   ├── ToolPanel.tsx          # panneau droit (diffs / todos / calls / files)
-│   ├── Message.tsx            # rendu d'un message (markdown, tool, thinking)
-│   ├── PermissionPopup.tsx    # popup d'autorisation outil
-│   ├── InstallNotificationPopup.tsx # popup top-right "install OK/échec"
+│   ├── ToolPanel.tsx          # right panel (diffs / todos / calls / files)
+│   ├── Message.tsx            # message rendering (markdown, tool, thinking)
+│   ├── PermissionPopup.tsx    # tool authorization popup
+│   ├── InstallNotificationPopup.tsx # top-right popup "install OK/failed"
 │   ├── QuestionCard.tsx       # AskUserQuestion → form
 │   ├── ExitPlanCard.tsx       # ExitPlanMode → approve/reject
-│   ├── InstallSessionView.tsx # vue plein-écran log d'installation d'agent
-│   ├── useInstallNotifications.ts # hook queue locale (events install_finished)
-│   ├── TerminalUrlOverlay.tsx # overlay copier/ouvrir sur URL long détecté
-│   ├── useTerminalUrlOverlay.ts # hook qui scrute le buffer xterm pour URLs
-│   ├── terminalUrlDetect.ts   # regex URL avec dewrap (newlines au milieu)
-│   ├── LoginConsole.tsx       # TUI xterm pour `claude login`
-│   ├── ShellTerminal.tsx      # xterm pour shells SSH éphémères
-│   ├── NewSessionDialog.tsx   # modal création session
-│   ├── ResumeModal.tsx        # modal resume / import
-│   ├── SessionContextMenu.tsx # menu clic-droit session/shell
-│   ├── DataModal.tsx          # gestion VPS + folders (DnD via @dnd-kit) + paths
-│   ├── SearchModal.tsx        # recherche full-text
-│   ├── SettingsModal.tsx      # settings clé/valeur
+│   ├── InstallSessionView.tsx # full-screen view of an agent install log
+│   ├── useInstallNotifications.ts # hook local queue (install_finished events)
+│   ├── TerminalUrlOverlay.tsx # copy/open overlay on detected long URL
+│   ├── useTerminalUrlOverlay.ts # hook that scans the xterm buffer for URLs
+│   ├── terminalUrlDetect.ts   # URL regex with dewrap (newlines in the middle)
+│   ├── LoginConsole.tsx       # xterm TUI for `claude login`
+│   ├── ShellTerminal.tsx      # xterm for ephemeral SSH shells
+│   ├── NewSessionDialog.tsx   # session creation modal
+│   ├── ResumeModal.tsx        # resume / import modal
+│   ├── SessionContextMenu.tsx # right-click session/shell menu
+│   ├── DataModal.tsx          # VPS + folders (DnD via @dnd-kit) + paths management
+│   ├── SearchModal.tsx        # full-text search
+│   ├── SettingsModal.tsx      # key/value settings
 │   ├── MobileRedirectPrompt.tsx
-│   ├── pushClient.ts          # helpers Web Push
-│   ├── inputDraftStore.ts     # store in-memory des brouillons textarea par session (desktop+mobile)
-│   ├── icons.tsx              # icônes SVG
-│   ├── globals.css            # base tokens (couleurs, fonts)
-│   ├── claude.css             # layout desktop (3 colonnes)
-│   ├── agent-ui.css           # badges/banner agent
-│   ├── layout.tsx, page.tsx   # racine
+│   ├── pushClient.ts          # Web Push helpers
+│   ├── inputDraftStore.ts     # in-memory store of textarea drafts per session (desktop+mobile)
+│   ├── icons.tsx              # SVG icons
+│   ├── globals.css            # base tokens (colors, fonts)
+│   ├── claude.css             # desktop layout (3 columns)
+│   ├── agent-ui.css           # agent badges/banner
+│   ├── layout.tsx, page.tsx   # root
 │   └── icon.svg               # favicon
 ├── lib/
-│   ├── api.ts                 # client API (fetch wrappers)
+│   ├── api.ts                 # API client (fetch wrappers)
 │   ├── db/
-│   │   ├── schema.ts          # tables Drizzle
+│   │   ├── schema.ts          # Drizzle tables
 │   │   └── index.ts           # better-sqlite3 + WAL + FK ON
 │   └── server/
 │       ├── agent/             # client Charon → charon-agent
-│       │   ├── AgentClient.ts        # 1 SSH long-running, JSON-RPC framing
+│       │   ├── AgentClient.ts        # 1 long-running SSH, JSON-RPC framing
 │       │   ├── AgentClientPool.ts    # Map<vpsId, AgentClient>
 │       │   ├── sessionOps.ts         # CRUD sessions + bridge events ↔ DB ↔ SSE
-│       │   ├── autoConnect.ts        # boot-time : spawn pools + resume
-│       │   ├── builtPyzSha.ts        # SHA256 du .pyz embarqué (out-of-date check)
-│       │   └── types.ts              # miroir TS du protocole
+│       │   ├── autoConnect.ts        # boot-time: spawn pools + resume
+│       │   ├── builtPyzSha.ts        # SHA256 of the embedded .pyz (out-of-date check)
+│       │   └── types.ts              # TS mirror of the protocol
 │       ├── claude/
-│       │   ├── bootstrap.ts          # async generator phases d'install VPS
+│       │   ├── bootstrap.ts          # async generator of VPS install phases
 │       │   └── types.ts              # BridgeEvent / WorkerStatus / SSE shape
-│       ├── shell/                    # gestion shells SSH éphémères
-│       ├── install/                  # sessions d'installation d'agent
-│       │   └── installSession.ts     # pool mémoire + ring buffer + bus events
-│       ├── auth.ts, session.ts       # auth + cookie session
-│       ├── crypto.ts                 # AES-256-GCM (clé dérivée du mdp)
-│       ├── seed.ts                   # init au boot (migration v2 + autoConnect)
-│       └── migrationV2.ts            # one-shot : active → sleeping après refonte
-├── agent/                     # daemon Python (déployé sur les VPS)
+│       ├── shell/                    # ephemeral SSH shell management
+│       ├── install/                  # agent install sessions
+│       │   └── installSession.ts     # in-memory pool + ring buffer + event bus
+│       ├── auth.ts, session.ts       # auth + session cookie
+│       ├── crypto.ts                 # AES-256-GCM (key derived from password)
+│       ├── seed.ts                   # boot init (migration v2 + autoConnect)
+│       └── migrationV2.ts            # one-shot: active → sleeping after refactor
+├── agent/                     # Python daemon (deployed on the VPSes)
 │   ├── charon_agent/
 │   │   ├── __main__.py        # CLI daemon | --connect
-│   │   ├── server.py          # asyncio Unix socket + dispatch JSON-RPC
+│   │   ├── server.py          # asyncio Unix socket + JSON-RPC dispatch
 │   │   ├── session.py         # AgentSession (1 = 1 ClaudeSDKClient + hooks)
 │   │   ├── state.py           # ~/.charon/state.json (atomic)
-│   │   ├── protocol.py        # codes d'erreur + helpers
-│   │   ├── client.py          # mode --connect (stdio↔socket)
+│   │   ├── protocol.py        # error codes + helpers
+│   │   ├── client.py          # --connect mode (stdio↔socket)
 │   │   └── __init__.py        # __version__
-│   ├── build.sh               # bash → produit dist/charon-agent.pyz (zipapp)
-│   ├── dist/charon-agent.pyz  # binaire embarqué (~36KB), envoyé en base64 aux VPS
+│   ├── build.sh               # bash → produces dist/charon-agent.pyz (zipapp)
+│   ├── dist/charon-agent.pyz  # embedded binary (~36KB), shipped base64 to the VPSes
 │   └── README.md
-├── drizzle/                   # migrations SQL générées + journal
+├── drizzle/                   # generated SQL migrations + journal
 ├── scripts/
-│   ├── migrate.mjs                  # applique les migrations Drizzle
-│   └── check-protocol-sync.mjs      # vérifie alignement Py↔TS (prebuild)
+│   ├── migrate.mjs                  # applies Drizzle migrations
+│   └── check-protocol-sync.mjs      # checks Py↔TS alignment (prebuild)
 ├── docs/adr-001-charon-agent.md
 ├── data/charon.db             # SQLite WAL (~43MB)
 ├── middleware.ts              # gate /api + redirect /login
 ├── next.config.mjs, tsconfig.json, drizzle.config.ts, package.json
-└── /etc/systemd/system/charon.service   (en dehors du repo)
+└── /etc/systemd/system/charon.service   (outside the repo)
 ```
 
 ---
 
-## 3. Build, dev, prod — et le piège Turbopack
+## 3. Build, dev, prod — and the Turbopack gotcha
 
-### Scripts npm
+### npm scripts
 
 ```json
 "dev":          "next dev -H 127.0.0.1 -p 10556",
-"build":        "next build",                  // PAS --turbopack (cf §14)
+"build":        "next build",                  // NO --turbopack (see §14)
 "start":        "next start -H 127.0.0.1 -p 10556",
 "db:generate":  "drizzle-kit generate",
 "db:migrate":   "node ./scripts/migrate.mjs"
 ```
 
-### ⚠ PIÈGE PRODUCTION : Turbopack + `next start`
+### ⚠ PRODUCTION GOTCHA: Turbopack + `next start`
 
-**Sur Next.js 15.5.18, un build produit avec `--turbopack` n'est pas servi
-correctement par `next start`** : tous les `/_next/static/*` répondent 404,
-le site charge le HTML mais aucun CSS ni JS. Les chunks `turbopack-*.js`
-existent sur disque mais le serveur ne les route pas.
+**On Next.js 15.5.18, a build produced with `--turbopack` is not served
+correctly by `next start`**: every `/_next/static/*` returns 404, the
+site loads its HTML but no CSS or JS. The `turbopack-*.js` chunks exist
+on disk but the server doesn't route them.
 
-C'est pour ça que le script `"build"` est `next build` tout court (sans
-`--turbopack`). **Ne réintroduis pas le flag tant que Next n'a pas
-stabilisé Turbopack pour `next start`.** Le dev (`"dev"`) reste en
-turbopack — c'est seulement le couple build+start qui foire.
+That's why the `"build"` script is plain `next build` (no `--turbopack`).
+**Don't reintroduce the flag until Next has stabilized Turbopack for
+`next start`.** Dev (`"dev"`) stays on turbopack — it's only the
+build+start combo that breaks.
 
-**Symptômes du retour du piège** : `.next/turbopack` (fichier vide) présent,
-chunks nommés `turbopack-*.js` dans `static/chunks/`, pas de répertoire
-`static/css/`. **Fix** : `systemctl stop charon && rm -rf .next && npm run
-build && systemctl start charon`.
+**Symptoms of the gotcha returning**: `.next/turbopack` (empty file)
+present, chunks named `turbopack-*.js` in `static/chunks/`, no
+`static/css/` directory. **Fix**: `systemctl stop charon && rm -rf
+.next && npm run build && systemctl start charon`.
 
-Autre symptôme proche : si un `next dev` tourne sur ce répertoire et meurt,
-le `.next` reste pollué (manifests de dev, pas de `BUILD_ID`). systemd
-lance alors `next start` qui boucle en restart avec *"Could not find a
-production build in the '.next' directory"*. Même fix.
+Another close symptom: if a `next dev` is running in this directory
+and dies, `.next` stays polluted (dev manifests, no `BUILD_ID`).
+systemd then launches `next start` which restart-loops with *"Could
+not find a production build in the '.next' directory"*. Same fix.
 
 ### Systemd unit (`/etc/systemd/system/charon.service`)
 
@@ -191,140 +192,141 @@ Restart=on-failure
 RestartSec=3
 ```
 
-Logs : `journalctl -u charon -f`.
-Status : `systemctl status charon`.
+Logs: `journalctl -u charon -f`.
+Status: `systemctl status charon`.
 
-### Dev local
+### Local dev
 
 ```bash
-npm run dev        # turbopack dev sur 127.0.0.1:10556
+npm run dev        # turbopack dev on 127.0.0.1:10556
 ```
 
-Note que `dev` utilise turbopack sans casse — c'est uniquement le couple
-`build --turbopack` puis `start` qui foire.
+Note that `dev` uses turbopack without breaking — it's only the
+`build --turbopack` then `start` combo that fails.
 
 ### Next.js config (`next.config.mjs`)
 
 ```js
-serverExternalPackages: ['better-sqlite3'],  // sinon SSR casse
+serverExternalPackages: ['better-sqlite3'],  // otherwise SSR breaks
 reactStrictMode: false,
 poweredByHeader: false
 ```
 
-### Variables d'environnement (`.env`)
+### Environment variables (`.env`)
 
-Clés attendues (valeurs jamais en clair dans la doc) :
+Expected keys (values never spelled out in the doc):
 
-| Clé | Rôle |
+| Key | Role |
 |---|---|
-| `DATABASE_URL` | chemin vers SQLite (défaut `./data/charon.db`) |
-| `MASTER_PASSWORD` | mot de passe d'admin du hub |
-| `MASTER_SALT` | sel scrypt pour dériver la clé AES |
-| `SESSION_SECRET` | signature cookies session |
-| `SYNC_TOKEN` | bearer pour `/api/sync` |
-| `VAPID_SUBJECT` | identité de l'expéditeur Web Push (ex: `mailto:admin@example.com`). Override possible via `SettingsModal` |
-| `HOST`, `PORT`, `NODE_ENV` | usuels. **`NODE_ENV=production` active HSTS + cookie `secure`** |
+| `DATABASE_URL` | path to SQLite (default `./data/charon.db`) |
+| `MASTER_PASSWORD` | hub admin password |
+| `MASTER_SALT` | scrypt salt for deriving the AES key |
+| `SESSION_SECRET` | signature for session cookies |
+| `SYNC_TOKEN` | bearer for `/api/sync` |
+| `VAPID_SUBJECT` | Web Push sender identity (e.g. `mailto:admin@example.com`). Overridable via `SettingsModal` |
+| `HOST`, `PORT`, `NODE_ENV` | usual ones. **`NODE_ENV=production` enables HSTS + `secure` cookie** |
 
-Web push : la VAPID key est exposée par `/api/claude/push/key` ; clés stockées
-en settings DB (cf table `claudeSettings`).
+Web push: the VAPID key is exposed by `/api/claude/push/key`; keys stored
+in DB settings (see `claudeSettings` table).
 
 ---
 
-## 4. Base de données
+## 4. Database
 
-**SQLite WAL** à `/srv/charon/data/charon.db`. Driver : `better-sqlite3`
-(sync). ORM : `drizzle-orm`. Le client active `PRAGMA journal_mode=WAL` et
-`PRAGMA foreign_keys=ON`.
+**SQLite WAL** at `/srv/charon/data/charon.db`. Driver: `better-sqlite3`
+(sync). ORM: `drizzle-orm`. The client enables `PRAGMA journal_mode=WAL`
+and `PRAGMA foreign_keys=ON`.
 
-### Tables (résumé)
+### Tables (summary)
 
-| Table | Clés | Rôle |
+| Table | Keys | Role |
 |---|---|---|
-| `users` | `id` PK | utilisateur unique (un hub = un user) |
-| `sessions` | `id` PK, FK `userId` | cookies session navigateur |
-| `vpsFolders` | `id` PK | dossiers d'organisation des VPS (drag-and-drop dans DataModal, collapse persisté en DB). Dossier `id='default'` créé par migration 0006, protégé contre suppression (cf. piège §14.19). |
-| `vps` | `id` PK | VPS distants (voir détail ci-dessous). Colonnes `folderId` + `position` (ordre intra-folder). |
-| `vpsPaths` | `id` PK, FK `vpsId` | cwd connus par VPS (sidebar) |
-| `claudeSessions` | `id` PK, FK `vpsId` | sessions Claude (status, mode, cwd, name, color, claudeSessionId) |
-| `claudeSessionMessages` | autoincrement, FK `sessionId` | historique (role, content, createdAt) |
-| `claudePendingPermissions` | `id` PK, FK `sessionId` | gates outils en attente |
-| `claudePendingQuestions` | `id` PK, FK `sessionId` | `kind` = `question` (AskUserQuestion) ou `exit_plan` |
-| `claudeSessionLogs` | autoincrement | audit / debug par session |
-| `claudeSettings` | `key` PK | settings clé/valeur (telegram token, VAPID, etc.) |
-| `claudePushSubs` | `id` PK, UNIQUE `endpoint` | endpoints Web Push |
+| `users` | `id` PK | unique user (one hub = one user) |
+| `sessions` | `id` PK, FK `userId` | browser session cookies |
+| `vpsFolders` | `id` PK | folders organizing VPSes (drag-and-drop in DataModal, collapse persisted in DB). Folder `id='default'` created by migration 0006, protected against deletion (see gotcha §14.19). |
+| `vps` | `id` PK | remote VPSes (see detail below). `folderId` + `position` columns (intra-folder ordering). |
+| `vpsPaths` | `id` PK, FK `vpsId` | known cwds per VPS (sidebar) |
+| `claudeSessions` | `id` PK, FK `vpsId` | Claude sessions (status, mode, cwd, name, color, claudeSessionId) |
+| `claudeSessionMessages` | autoincrement, FK `sessionId` | history (role, content, createdAt) |
+| `claudePendingPermissions` | `id` PK, FK `sessionId` | pending tool gates |
+| `claudePendingQuestions` | `id` PK, FK `sessionId` | `kind` = `question` (AskUserQuestion) or `exit_plan` |
+| `claudeSessionLogs` | autoincrement | per-session audit / debug |
+| `claudeSettings` | `key` PK | key/value settings (telegram token, VAPID, etc.) |
+| `claudePushSubs` | `id` PK, UNIQUE `endpoint` | Web Push endpoints |
 
-Cascades : `vps → vpsPaths`, `vps → claudeSessions`, `claudeSessions → messages/permissions/questions/logs` (toutes CASCADE).
+Cascades: `vps → vpsPaths`, `vps → claudeSessions`, `claudeSessions → messages/permissions/questions/logs` (all CASCADE).
 
-### Table `vps` (détail — souvent modifiée)
+### `vps` table (detail — often modified)
 
 ```ts
 id: text PK
 name, ip, sshUser: text NOT NULL
 sshPort: integer DEFAULT 22
 defaultPath: text
-folderId: text NOT NULL DEFAULT 'default'  -- FK logique → vps_folders.id (non enforced SQLite)
-position: integer NOT NULL DEFAULT 0       -- ordre intra-folder (drag-and-drop)
+folderId: text NOT NULL DEFAULT 'default'  -- logical FK → vps_folders.id (not SQLite-enforced)
+position: integer NOT NULL DEFAULT 0       -- intra-folder ordering (drag-and-drop)
 agentStatus: text DEFAULT 'unknown'  -- 'unknown' | 'ok' | 'missing' | 'error'
-agentVersion: text                   -- __version__ remonté par hello()
-agentPyzSha: text                    -- 12 premiers chars sha256(.pyz) — out-of-date check
+agentVersion: text                   -- __version__ reported by hello()
+agentPyzSha: text                    -- first 12 chars of sha256(.pyz) — out-of-date check
 agentLastSeenAt: integer             -- ping
-claudeLoggedIn: integer              -- 1/0/null : `claude config get oauth.refresh_token`
-claudeLoggedInCheckedAt: integer     -- ts unix du dernier check
+claudeLoggedIn: integer              -- 1/0/null: `claude config get oauth.refresh_token`
+claudeLoggedInCheckedAt: integer     -- unix ts of last check
 createdAt: integer DEFAULT unixepoch()
 ```
 
-### Table `vps_folders` (organisation sidebar)
+### `vps_folders` table (sidebar organization)
 
 ```ts
-id: text PK                          -- 'default' pour le dossier protégé
+id: text PK                          -- 'default' for the protected folder
 name: text NOT NULL
-position: integer NOT NULL DEFAULT 0  -- ordre entre dossiers (drag-and-drop)
-collapsed: integer NOT NULL DEFAULT 0 -- 0/1 boolean, persisté DB (toggle sidebar)
+position: integer NOT NULL DEFAULT 0  -- ordering between folders (drag-and-drop)
+collapsed: integer NOT NULL DEFAULT 0 -- 0/1 boolean, persisted in DB (sidebar toggle)
 createdAt: integer DEFAULT unixepoch()
 ```
 
-**Règle "default folder always last"** : le dossier `id='default'` (« Sans
-dossier ») est toujours en dernière position côté UI. Il n'est pas
-draggable comme dossier (mais les VPS qu'il contient le restent), et
-toute tentative de modifier sa `position` via `POST /api/vps-folders/
-layout` est silencieusement ignorée côté serveur. À la création d'un
-nouveau dossier, sa `position` stockée est forcée à `max(autres) + 1`
-pour rester cohérent avec un `ORDER BY position` simple. Côté UI, un
-comparateur force l'ordre même si le stockage divergeait. Cf.
-`app/DataModal.tsx` (rendu hors `SortableContext` via `StaticFolder`)
-et `app/Sidebar.tsx` (`sortedFolders` comparator). La même règle est
-appliquée côté mobile dans `app/m/select/MobileSelect.tsx`.
+**"Default folder always last" rule**: the `id='default'` folder ("No
+folder") is always last in the UI. It is not draggable as a folder
+(but the VPSes inside it still are), and any attempt to change its
+`position` via `POST /api/vps-folders/layout` is silently ignored
+server-side. When creating a new folder, its stored `position` is
+forced to `max(others) + 1` to stay consistent with a simple
+`ORDER BY position`. UI-side, a comparator forces the order even if
+storage diverged. See `app/DataModal.tsx` (rendered outside
+`SortableContext` via `StaticFolder`) and `app/Sidebar.tsx`
+(`sortedFolders` comparator). The same rule is applied mobile-side
+in `app/m/select/MobileSelect.tsx`.
 
-Note : la FK `vps.folder_id → vps_folders.id` n'est **pas** enforced côté
-SQLite. SQLite refuse `ADD COLUMN ... REFERENCES` quand le DEFAULT est
-non-NULL ("Cannot add a REFERENCES column with non-NULL default value"). Le
-schéma TS (`lib/db/schema.ts`) déclare la relation via `.references()` pour
-le typage, mais la validation runtime se fait côté API (`/api/vps-folders/
-layout` rejette les `folderId` inconnus).
+Note: the FK `vps.folder_id → vps_folders.id` is **not** enforced
+SQLite-side. SQLite refuses `ADD COLUMN ... REFERENCES` when the
+DEFAULT is non-NULL ("Cannot add a REFERENCES column with non-NULL
+default value"). The TS schema (`lib/db/schema.ts`) declares the
+relation via `.references()` for typing, but runtime validation
+happens API-side (`/api/vps-folders/layout` rejects unknown
+`folderId`s).
 
 ### Migrations (`/srv/charon/drizzle/`)
 
 | # | Description |
 |---|---|
-| 0000 | tables initiales |
+| 0000 | initial tables |
 | 0001 | `vps` += `agent_status`, `agent_version`, `agent_last_seen_at` |
-| 0002 | refonte `vps_project_paths` → `vps_paths` (drop `projects`) |
+| 0002 | refactor `vps_project_paths` → `vps_paths` (drop `projects`) |
 | 0003 | `claude_sessions` += `color` |
-| 0004 | **no-op** (`SELECT 1`). Doublon accidentel de 0003 (même `ADD COLUMN color`). SQLite n'a pas `ADD COLUMN IF NOT EXISTS` donc on a remplacé le SQL par un statement neutre plutôt que supprimer le fichier — ça garde l'idx du journal stable. **Ne pas réintroduire d'ALTER ici** ; pour une vraie modif, crée une nouvelle migration. |
+| 0004 | **no-op** (`SELECT 1`). Accidental duplicate of 0003 (same `ADD COLUMN color`). SQLite has no `ADD COLUMN IF NOT EXISTS` so we replaced the SQL with a neutral statement rather than deleting the file — that keeps the journal idx stable. **Don't reintroduce an ALTER here**; for a real change, create a new migration. |
 | 0005 | `vps` += `agent_pyz_sha` |
-| 0006 | crée `vps_folders` + insère dossier `'default'` + `vps` += `folder_id`/`position`. Initialise les positions par tri alphabétique de `name`. La FK n'est pas enforced (cf. limitation SQLite ci-dessus). |
-| 0007 | `vps` += `claude_logged_in` + `claude_logged_in_checked_at`. Tracking de l'état `claude login` pour masquer le bouton sidebar quand inutile. **Note importante** : drizzle-kit a généré un .sql qui répétait 0005/0006 (snapshots manquants dans `meta/`) — le contenu a été remplacé à la main pour ne garder que les vrais ADD COLUMN, et le `when` du journal a été remonté > 0006 pour que drizzle l'applique. Si tu refais une migration plus tard, vérifie le .sql avant `db:migrate`. |
-| 0008 | purge des sessions `status='killed'` (cascade vers logs explicite + FK cascade pour messages/permissions/questions). Accompagne la refonte kill→delete (cf. §10) : le middle state `'killed'` n'existe plus comme état persistant. Pas de modif de schéma — juste un `DELETE` data. Écrite à la main (drizzle-kit ne sait pas générer de migration data-only sans modif schéma). |
+| 0006 | creates `vps_folders` + inserts `'default'` folder + `vps` += `folder_id`/`position`. Initializes positions by alphabetical sort on `name`. The FK is not enforced (see SQLite limitation above). |
+| 0007 | `vps` += `claude_logged_in` + `claude_logged_in_checked_at`. Tracks the `claude login` state to hide the sidebar button when not needed. **Important note**: drizzle-kit generated a .sql that repeated 0005/0006 (missing snapshots in `meta/`) — the contents were manually replaced to only keep the actual ADD COLUMNs, and the journal `when` was bumped > 0006 so drizzle would apply it. If you do another migration later, double-check the .sql before `db:migrate`. |
+| 0008 | purges sessions with `status='killed'` (explicit cascade to logs + FK cascade for messages/permissions/questions). Accompanies the kill→delete refactor (see §10): the `'killed'` middle state no longer exists as a persistent state. No schema change — just a `DELETE` on data. Hand-written (drizzle-kit can't generate a data-only migration without a schema change). |
 
-Workflow type pour modifier le schéma :
-1. Édite `lib/db/schema.ts`
-2. `npm run db:generate` → produit `drizzle/NNNN_*.sql`
-3. `npm run db:migrate` → applique
-4. Commit le SQL ET le snapshot dans `drizzle/meta/`
+Typical workflow for changing the schema:
+1. Edit `lib/db/schema.ts`
+2. `npm run db:generate` → produces `drizzle/NNNN_*.sql`
+3. `npm run db:migrate` → applies it
+4. Commit both the SQL AND the snapshot in `drizzle/meta/`
 
 ---
 
-## 5. Architecture côté agent (Python pyz)
+## 5. Agent-side architecture (Python pyz)
 
 ### Build
 
@@ -332,82 +334,85 @@ Workflow type pour modifier le schéma :
 bash agent/build.sh           # → agent/dist/charon-agent.pyz
 ```
 
-Utilise `python3 -m zipapp` (stdlib pure, **zéro dépendance pip pour le pyz**).
-Le fichier produit fait ~36KB. Le shebang `#!/usr/bin/env python3` le rend
-exécutable directement.
+Uses `python3 -m zipapp` (pure stdlib, **zero pip dependencies for the
+pyz**). The produced file is ~36KB. The `#!/usr/bin/env python3`
+shebang makes it directly executable.
 
-`lib/server/agent/builtPyzSha.ts` calcule en mémoire le SHA256 (12 chars) du
-`.pyz` embarqué et l'expose via `getBuiltPyzSha()`. C'est ce qu'on compare à
-`vps.agentPyzSha` (remonté par l'agent dans `hello`) pour décider si une mise
-à jour est due.
+`lib/server/agent/builtPyzSha.ts` computes the SHA256 (12 chars) of
+the embedded `.pyz` in memory and exposes it via `getBuiltPyzSha()`.
+That's what we compare against `vps.agentPyzSha` (reported by the
+agent in `hello`) to decide whether an update is due.
 
-### Fichiers sur le VPS
+### Files on the VPS
 
 ```
-~/.charon/charon-agent.pyz      # le daemon (~36KB)
+~/.charon/charon-agent.pyz      # the daemon (~36KB)
 ~/.charon/agent.sock            # Unix socket (chmod 600)
-~/.charon/state.json            # sessions persistées (atomic write)
+~/.charon/state.json            # persisted sessions (atomic write)
 ~/.charon/agent.log             # stdout/stderr append-only
-~/.charon/venv/                 # venv créé par bootstrap (PEP 668 friendly)
-~/.config/systemd/user/charon-agent.service   # unit systemd-user
-                                # fallback : nohup setsid + crontab @reboot
+~/.charon/venv/                 # venv created by bootstrap (PEP 668 friendly)
+~/.config/systemd/user/charon-agent.service   # systemd-user unit
+                                # fallback: nohup setsid + crontab @reboot
 ```
 
-Pré-requis VPS :
+VPS prerequisites:
 - Python ≥ 3.10
-- `claude-agent-sdk` (installé via `pip install --user` dans `~/.charon/venv`)
-- `claude login` fait au moins une fois (OAuth Claude Code)
-- systemd ≥ 230 pour `--user` (sinon fallback nohup + cron)
+- `claude-agent-sdk` (installed via `pip install --user` in `~/.charon/venv`)
+- `claude login` done at least once (Claude Code OAuth)
+- systemd ≥ 230 for `--user` (otherwise fallback nohup + cron)
 
-### Lifecycle du daemon
+### Daemon lifecycle
 
-1. Création de `~/.charon/` (chmod 700)
-2. Ouverture du socket (chmod 600)
-3. Lecture de `state.json` :
-   - sessions `killed` → ignorées
-   - sessions `sleeping` → chargées en mémoire mais **pas** redémarrées
-   - sessions actives → restore (instanciation `ClaudeSDKClient(resume=claude_session_id)`)
-4. Boucle `accept` : chaque connexion = 1 task, lit du line-delimited JSON
-5. SIGINT/SIGTERM : save state, stop sessions (mark `sleeping`), unlink socket
+1. Create `~/.charon/` (chmod 700)
+2. Open the socket (chmod 600)
+3. Read `state.json`:
+   - `killed` sessions → ignored
+   - `sleeping` sessions → loaded into memory but **not** restarted
+   - active sessions → restore (instantiate `ClaudeSDKClient(resume=claude_session_id)`)
+4. `accept` loop: each connection = 1 task, reads line-delimited JSON
+5. SIGINT/SIGTERM: save state, stop sessions (mark `sleeping`), unlink socket
 
-### Mode `--connect` (le proxy stdio↔socket)
+### `--connect` mode (the stdio↔socket proxy)
 
 ```bash
 charon-agent.pyz --connect
 ```
 
-Démarré par Charon via `ssh user@host exec ~/.charon/charon-agent.pyz --connect`.
-Deux threads (pas asyncio — pipes stdin/stdout) :
-- `_pump_to_socket` : stdin → socket, `shutdown(SHUT_WR)` sur EOF
-- `_pump_from_socket` : socket → stdout, signale EOF
+Started by Charon via `ssh user@host exec ~/.charon/charon-agent.pyz --connect`.
+Two threads (no asyncio — stdin/stdout pipes):
+- `_pump_to_socket`: stdin → socket, `shutdown(SHUT_WR)` on EOF
+- `_pump_from_socket`: socket → stdout, signals EOF
 
-Exit codes : `0` clean, `2` socket absent (daemon mort), `3` connect failed
-(perms). Charon utilise `2` pour proposer un setup à l'utilisateur.
+Exit codes: `0` clean, `2` socket absent (daemon dead), `3` connect
+failed (perms). Charon uses `2` to offer a setup to the user.
 
-### Modules de l'agent
+### Agent modules
 
-- **`server.py`** : asyncio Unix server, `Client` par connexion (`subscribed:
-  set[str]`, `_send_lock`). Dispatch via une table de méthodes (cf §6). Ring
-  buffer `RING_SIZE = 300` events par session (`deque(maxlen=300)`), broadcast
-  via `subscribers: dict[session_id, set[Client]]`. Save state debounced
+- **`server.py`**: asyncio Unix server, `Client` per connection
+  (`subscribed: set[str]`, `_send_lock`). Dispatch via a method table
+  (see §6). Ring buffer `RING_SIZE = 300` events per session
+  (`deque(maxlen=300)`), broadcast via
+  `subscribers: dict[session_id, set[Client]]`. State save is debounced
   (`schedule_save()`, 0.2s).
-- **`session.py`** : `AgentSession`. Encapsule un `ClaudeSDKClient`, des hooks
-  `PreToolUse`/`PostToolUse`, le callback `can_use_tool` (AskUserQuestion),
-  les futures `_pending_perms`/`_pending_questions`/`_pending_exit_plans`,
-  les snapshots before/after fichiers (max 256KB), la traduction `SDK event →
-  protocol event` (`AssistantMessage` → `assistant_text`/`thinking`/`tool_use`,
-  `UserMessage.ToolResultBlock` → `tool_result`, `ResultMessage` → `stop`).
-- **`state.py`** : load tolerant (defaults sur missing fields), save atomic
-  (`tempfile + fsync + os.replace`).
-- **`protocol.py`** : codes d'erreur JSON-RPC, helpers `make_response`,
-  `make_error`, `make_event`. Liste canonique des méthodes.
+- **`session.py`**: `AgentSession`. Wraps a `ClaudeSDKClient`,
+  `PreToolUse`/`PostToolUse` hooks, the `can_use_tool` callback
+  (AskUserQuestion), the
+  `_pending_perms`/`_pending_questions`/`_pending_exit_plans` futures,
+  before/after file snapshots (max 256KB), and the translation
+  `SDK event → protocol event` (`AssistantMessage` →
+  `assistant_text`/`thinking`/`tool_use`, `UserMessage.ToolResultBlock`
+  → `tool_result`, `ResultMessage` → `stop`).
+- **`state.py`**: tolerant load (defaults on missing fields), atomic
+  save (`tempfile + fsync + os.replace`).
+- **`protocol.py`**: JSON-RPC error codes, `make_response`,
+  `make_error`, `make_event` helpers. Canonical method list.
 
 ---
 
-## 6. Protocole JSON-RPC (Charon ↔ agent)
+## 6. JSON-RPC protocol (Charon ↔ agent)
 
-Transport : Unix socket (côté VPS), pipes SSH stdin/stdout (côté hub via
-`--connect`). Encodage : **un objet JSON par ligne** (`\n` séparateur).
+Transport: Unix socket (VPS-side), SSH stdin/stdout pipes (hub-side via
+`--connect`). Encoding: **one JSON object per line** (`\n` separator).
 
 ### Frames
 
@@ -421,16 +426,16 @@ Transport : Unix socket (côté VPS), pipes SSH stdin/stdout (côté hub via
 // Response error
 {"id": 1, "error": {"code": -32000, "message": "session not found"}}
 
-// Event (Agent → Charon, non sollicité)
+// Event (Agent → Charon, unsolicited)
 {"event": "assistant_text", "session_id": "ab12cd34", "delta": "..."}
 ```
 
-Les `id` sont alloués par Charon (entiers monotones, scoped à la connexion
-SSH). Timeout par requête côté `AgentClient.ts` : 60s.
+`id`s are allocated by Charon (monotonic integers, scoped to the SSH
+connection). Per-request timeout in `AgentClient.ts`: 60s.
 
-### Méthodes (14)
+### Methods (14)
 
-| Méthode | Params | Result |
+| Method | Params | Result |
 |---|---|---|
 | `hello` | `{}` | `{agent_version, agent_pyz_sha, sdk_available, sdk_error, pid, sessions:[SessionInfo]}` |
 | `ping` | `{}` | `{pong:true, ts}` |
@@ -439,19 +444,19 @@ SSH). Timeout par requête côté `AgentClient.ts` : 60s.
 | `subscribe` | `{session_id, replay?:int}` | `{ok, replay_count, status}` + replay events |
 | `unsubscribe` | `{session_id}` | `{ok}` |
 | `send_input` | `{session_id, content}` | `{ok}` |
-| `interrupt` | `{session_id}` | `{ok}` — soft, peut être ignoré par le SDK si un tool est en cours |
-| `force_stop` | `{session_id}` | `{ok}` — cancel forcé : status `sleeping` immédiat, resume possible (cf §14 piège 11) |
+| `interrupt` | `{session_id}` | `{ok}` — soft, may be ignored by the SDK if a tool is in flight |
+| `force_stop` | `{session_id}` | `{ok}` — forced cancel: status `sleeping` immediately, resume possible (see §14 gotcha 11) |
 | `set_permission_mode` | `{session_id, mode}` | `{ok, mode}` |
 | `respond_permission` | `{session_id, perm_id, allow}` | `{ok}` |
 | `respond_question` | `{session_id, q_id, answers}` | `{ok}` |
 | `respond_exit_plan` | `{session_id, q_id, decision, feedback?}` | `{ok}` |
 | `resume_session` | `{session_id}` | `{ok, status, noop?}` |
-| `sleep_session` | `{session_id}` | `{ok}` — arrête, garde `claude_session_id` |
-| `kill_session` | `{session_id}` | `{ok}` — arrête + supprime de state.json |
+| `sleep_session` | `{session_id}` | `{ok}` — stops, keeps `claude_session_id` |
+| `kill_session` | `{session_id}` | `{ok}` — stops + removes from state.json |
 
-### Codes d'erreur
+### Error codes
 
-| Code | Sens |
+| Code | Meaning |
 |---|---|
 | `-32700` | parse error |
 | `-32600` | invalid request |
@@ -460,17 +465,17 @@ SSH). Timeout par requête côté `AgentClient.ts` : 60s.
 | `-32603` | internal |
 | `-32000` | session not found |
 | `-32001` | session dead |
-| `-32010` | SDK unavailable (import failed sur l'agent) |
+| `-32010` | SDK unavailable (import failed on the agent) |
 
 ### Events (Agent → Charon)
 
-Tous portent `session_id`. Le ring buffer en stocke jusqu'à 300 par session.
+All carry `session_id`. The ring buffer stores up to 300 per session.
 
-| Event | Payload (extrait) |
+| Event | Payload (excerpt) |
 |---|---|
-| `status` | `{status: 'starting'|'active'|'thinking'|'sleeping'|'error'|'killed'}` — `'killed'` n'est plus persisté en DB depuis la refonte kill→delete (cf. §10). C'est un **signal transient** émis par `deleteSession()` au moment de la suppression pour notifier les SSE actives qu'il faut déguerpir (le hook `useClaudeSessionStream` déclenche `onKilled` quand il reçoit cet event). |
-| `session_id` | `{claude_session_id}` (UUID SDK, persisté en DB) |
-| `ready` | (signal SDK ouvert) |
+| `status` | `{status: 'starting'|'active'|'thinking'|'sleeping'|'error'|'killed'}` — `'killed'` is no longer persisted in DB since the kill→delete refactor (see §10). It is a **transient signal** emitted by `deleteSession()` at deletion time to notify active SSEs that they should bail out (the `useClaudeSessionStream` hook triggers `onKilled` when it receives this event). |
+| `session_id` | `{claude_session_id}` (SDK UUID, persisted in DB) |
+| `ready` | (SDK opened signal) |
 | `assistant_text` | `{delta}` |
 | `thinking` | `{text}` |
 | `tool_use` | `{id, name, input}` |
@@ -483,116 +488,132 @@ Tous portent `session_id`. Le ring buffer en stocke jusqu'à 300 par session.
 | `mode_changed` | `{mode}` |
 | `stop` | `{subtype}` |
 | `error` | `{msg, fatal?}` |
-| `interrupted` | `{forced?: bool}` — `forced=true` si déclenché par `force_stop` |
-| `replay_begin` | `{count}` (sur subscribe avec replay) |
+| `interrupted` | `{forced?: bool}` — `forced=true` if triggered by `force_stop` |
+| `replay_begin` | `{count}` (on subscribe with replay) |
 | `replay_end` | `{}` |
 
 ---
 
-## 7. Côté hub : la connexion à l'agent
+## 7. Hub-side: the connection to the agent
 
 ### `lib/server/agent/AgentClient.ts`
 
-Une instance par VPS. Maintient :
-- une SSH long-running (`ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+One instance per VPS. Maintains:
+- a long-running SSH (`ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
   -o ConnectTimeout=10 -o ServerAliveInterval=30 ... user@ip exec "$PY"
-  ~/.charon/charon-agent.pyz --connect`) où `$PY` est `python3.13 || python3.12 || ... || python3.10` (le plus récent dispo)
-- un parser line-delimited JSON
-- une `pending: Map<id, {resolve, reject, method, timer}>` (60s timeout)
-- des `subscribers: Map<sessionId, Set<EventListener>>` pour dispatch des events
-- statuts : `idle → connecting → connected → reconnecting → closed`
-- **backoff reconnect** : `[1s, 3s, 8s, 20s, 60s, 120s, 300s]` (cap 5min)
-- au reconnect : `hello` → comparaison `agent_pyz_sha` vs build → mise à jour
-  `vps.agentStatus`/`agentVersion`/`agentPyzSha` + re-subscribe automatique aux
-  sessions encore actives en mémoire
+  ~/.charon/charon-agent.pyz --connect`) where `$PY` is `python3.13 || python3.12 || ... || python3.10` (the newest available)
+- a line-delimited JSON parser
+- a `pending: Map<id, {resolve, reject, method, timer}>` (60s timeout)
+- `subscribers: Map<sessionId, Set<EventListener>>` for event dispatch
+- statuses: `idle → connecting → connected → reconnecting → closed`
+- **reconnect backoff**: `[1s, 3s, 8s, 20s, 60s, 120s, 300s]` (cap 5min)
+- on reconnect: `hello` → compare `agent_pyz_sha` vs build → update
+  `vps.agentStatus`/`agentVersion`/`agentPyzSha` + automatic re-subscribe
+  to sessions still active in memory
 
 ### `lib/server/agent/AgentClientPool.ts`
 
-`Map<vpsId, AgentClient>` mémoïsée sur `globalThis` (survit aux HMR en dev).
-Lazy : créé au premier accès.
+`Map<vpsId, AgentClient>` memoized on `globalThis` (survives HMR in
+dev). Lazy: created on first access.
 
 ### `lib/server/agent/sessionOps.ts`
 
-Le pont entre les events agent, la DB, et les SSE clients du navigateur.
+The bridge between agent events, the DB, and the browser's SSE clients.
 
-- **Pas de ring buffer côté Charon** : la SSE par-session ne fait que du
-  **live**. Au mount / reconnexion / retour foreground, le client fait un
-  GET `/api/claude/sessions/[id]` — la DB est la source unique. Décision
-  prise après que le double-mécanisme (ring SSE + GET) provoquait races et
-  duplicates dans l'historique. Cf. §14 piège 14.
-- **Dédup au replay agent** : pendant `replay_begin → replay_end` (events
-  envoyés par charon-agent côté VPS au reconnect SSH), les events déjà
-  présents en DB (par `tool_use_id`, hash de texte, etc.) sont filtrés pour
-  éviter la double persistance après un restart Charon. C'est différent du
-  feu ring SSE Charon-side — celui-ci venait de l'agent VPS qui, lui, a
-  toujours son ring buffer (cf. §5).
-- **Persistance** : `assistant_text` accumulés et flushés sur `stop`/`tool_use`/
-  `permission_request`. `tool_use`, `tool_result`, `thinking`, `permission_request`,
-  `user_question`, `exit_plan_request` sont insérés dans les tables idoines.
-- **Notifications** : sur `permission_request`/`user_question`/`exit_plan_request`/
-  `stop`, push Web + Telegram si configuré.
-- **alwaysAllow** : set par-session (en mémoire) ; permet l'auto-respond sans UI.
-- **Fonctions clés** : `startNewSession`, `resumeSession`, `sleepSession`,
-  `deleteSession`, `importExistingSession`. (Anciennement `killSession` →
-  renommée `deleteSession` lors de la refonte kill→delete : cf. §10.)
+- **No ring buffer on the Charon side**: the per-session SSE only does
+  **live**. On mount / reconnect / foreground return, the client does
+  a GET `/api/claude/sessions/[id]` — the DB is the single source.
+  Decision made after the dual mechanism (ring SSE + GET) caused races
+  and duplicates in history. See §14 gotcha 14.
+- **Dedup on agent replay**: during `replay_begin → replay_end`
+  (events sent by charon-agent VPS-side on SSH reconnect), events
+  already present in DB (by `tool_use_id`, text hash, etc.) are
+  filtered to avoid double persistence after a Charon restart. This
+  is different from the Charon-side SSE ring — that one came from
+  the VPS agent, which still has its ring buffer (see §5).
+- **Persistence**: `assistant_text` accumulated and flushed on
+  `stop`/`tool_use`/`permission_request`. `tool_use`, `tool_result`,
+  `thinking`, `permission_request`, `user_question`, `exit_plan_request`
+  are inserted into the appropriate tables.
+- **Notifications**: on `permission_request`/`user_question`/
+  `exit_plan_request`/`stop`, Web push + Telegram if configured.
+- **alwaysAllow**: per-session set (in memory); allows auto-respond
+  without UI.
+- **Key functions**: `startNewSession`, `resumeSession`, `sleepSession`,
+  `deleteSession`, `importExistingSession`. (Formerly `killSession` →
+  renamed `deleteSession` during the kill→delete refactor: see §10.)
 
 ### `lib/server/agent/autoConnect.ts`
 
-Au boot du process Charon (via `seed.ts`) :
-1. Pour chaque VPS, lance l'`AgentClient` (non bloquant — backoff individuel).
-2. **Hook self-healing** : enregistre un `onStatus('connected')` qui appelle
-   `reconcileVpsAgentState(vpsId, hello.sessions)` à CHAQUE (re)connexion
-   SSH. C'est cette réconciliation qui ré-attache les SessionStream après
-   un restart Charon : sans ça, les sessions qui étaient en `'thinking'`
-   au moment du SIGTERM restent figées en DB et l'UI affiche un spinner
-   éternel parce qu'aucun listener n'est branché côté agent (cf. §14
-   piège 23).
-3. En parallèle, tente un `resumeSession()` opportuniste pour toutes les
-   sessions DB en `'active'`/`'thinking'`/`'starting'` (= "devraient être
-   en cours d'exécution"). Si l'agent répond pas dans le timeout RPC, on
-   dégrade en `'sleeping'` pour exposer un bouton resume manuel.
-4. Logs en DB (`claudeSessionLogs`, event `auto_resume`).
+On Charon process boot (via `seed.ts`):
+1. For each VPS, launch the `AgentClient` (non-blocking — individual backoff).
+2. **Self-healing hook**: registers an `onStatus('connected')` that
+   calls `reconcileVpsAgentState(vpsId, hello.sessions)` on EVERY SSH
+   (re)connection. This reconciliation is what re-attaches the
+   SessionStreams after a Charon restart: without it, sessions that
+   were in `'thinking'` at SIGTERM time stay stuck in DB and the UI
+   shows an eternal spinner because no listener is wired up agent-side
+   (see §14 gotcha 23).
+3. In parallel, attempts an opportunistic `resumeSession()` for all DB
+   sessions in `'active'`/`'thinking'`/`'starting'` (= "should be
+   running"). If the agent doesn't respond within the RPC timeout, we
+   degrade to `'sleeping'` to expose a manual resume button.
+4. DB logs (`claudeSessionLogs`, event `auto_resume`).
+5. **Auto-check `claude login`**: in the same `onStatus('connected')`
+   hook, calls `refreshClaudeLoginStatusIfStale(v)` (see
+   `lib/server/agent/claudeLoginCheck.ts`). Best-effort SSH that
+   updates `vps.claudeLoggedIn`/`_checkedAt` if never checked or
+   older than 24h. Without this step, VPSes bootstrapped before the
+   `check_login` phase was added keep `claudeLoggedIn=NULL` forever
+   → the "claude login" sidebar button stays visible even when the
+   OAuth is valid. The browser sees the new status on the next SSR
+   (no SSE event for it — acceptable as page reload is occasional).
 
-`reconcileVpsAgentState(vpsId, agentSessions)` dans `sessionOps.ts` est la
-fonction qui fait le travail : pour chaque session que l'agent connaît, elle
-`getStream()` + `ensureAttached()` + sync DB status. Pour chaque session DB
-"devrait tourner" que l'agent NE connaît pas (= l'agent a été redémarré et
-a perdu son state.json), elle relance via `resumeSession()` (qui fallback
-sur `start_session(claude_session_id=…)`).
+`reconcileVpsAgentState(vpsId, agentSessions)` in `sessionOps.ts` does
+the work: for each session the agent knows about, it `getStream()` +
+`ensureAttached()` + sync DB status. For each DB session "should be
+running" that the agent does NOT know about (= the agent was restarted
+and lost its state.json), it relaunches via `resumeSession()` (which
+falls back to `start_session(claude_session_id=…)`).
 
 ### `lib/server/claude/bootstrap.ts`
 
-Générateur asynchrone qui produit les phases du setup VPS, consommé par
-`POST /api/vps/[id]/claude/setup` (SSE) et `GET /api/vps/[id]/claude/bootstrap`.
+Async generator that produces the VPS setup phases, consumed by
+`POST /api/vps/[id]/claude/setup` (SSE) and
+`GET /api/vps/[id]/claude/bootstrap`.
 
-Phases (chacune émet `{phase, status:'running'|'ok'|'warn'|'error', detail?}`) :
+Phases (each emits `{phase, status:'running'|'ok'|'warn'|'error', detail?}`):
 
 1. `verify` — `"$PY" -c 'import claude_agent_sdk'`
 2. `detect_os` — parse `/etc/os-release` (apt/dnf/yum/apk/pacman)
-3. `install_python` — package manager distro
-4. `install_sdk` — crée `~/.charon/venv` (évite PEP 668), `pip install
-   claude-agent-sdk`
-5. `install_claude_cli` — CLI shell `claude` (`curl -fsSL https://claude.ai/install.sh
-   | bash`). Distincte du SDK Python. Nécessaire pour `claude login` (OAuth).
-   Échec = `warn` non bloquant : l'agent peut tourner sans, mais l'user devra
-   installer à la main si `claude login` est requis. PATH étendu à
-   `~/.local/bin:~/.claude/bin:/usr/local/bin` pour les check + re-check.
-6. `install_agent` — base64-pipe le `.pyz` embarqué vers `~/.charon/charon-agent.pyz`
+3. `install_python` — distro package manager
+4. `install_sdk` — creates `~/.charon/venv` (avoids PEP 668),
+   `pip install claude-agent-sdk`
+5. `install_claude_cli` — `claude` shell CLI (`curl -fsSL
+   https://claude.ai/install.sh | bash`). Distinct from the Python
+   SDK. Needed for `claude login` (OAuth). Failure = non-blocking
+   `warn`: the agent can run without it, but the user will need to
+   install it by hand if `claude login` is required. PATH extended
+   to `~/.local/bin:~/.claude/bin:/usr/local/bin` for the check +
+   re-check.
+6. `install_agent` — base64-pipe the embedded `.pyz` to `~/.charon/charon-agent.pyz`
 7. `install_service` — systemd-user (fallback nohup + cron @reboot)
-8. `ping_agent` — ping + hello RPC. **Écrit `agentVersion`/`agentPyzSha` en DB
-   immédiatement** (sinon l'UI affiche "outdated" jusqu'au prochain hello lazy
-   d'`AgentClient` — cf. §14 piège 27).
-9. `check_login` — `claude config get oauth.refresh_token` (warn-only, PATH
-   étendu pour trouver `claude` même si install.sh l'a mis dans `~/.local/bin`)
+8. `ping_agent` — ping + hello RPC. **Writes `agentVersion`/
+   `agentPyzSha` in DB immediately** (otherwise the UI shows
+   "outdated" until the next lazy `AgentClient` hello — see §14
+   gotcha 27).
+9. `check_login` — `claude config get oauth.refresh_token` (warn-only,
+   PATH extended to find `claude` even if install.sh put it in
+   `~/.local/bin`)
 
-`updateVpsAgent(vps)` : redeploy du `.pyz` + restart service + ping vérif.
+`updateVpsAgent(vps)`: redeploy the `.pyz` + restart service + ping check.
 
 ---
 
-## 8. Routes API (catalogue)
+## 8. API routes (catalog)
 
-Toutes sous `/api/`. Préfixées par le middleware (sauf `/api/sync` qui s'auth
-en Bearer `SYNC_TOKEN`).
+All under `/api/`. Prefixed by the middleware (except `/api/sync` which
+auths with Bearer `SYNC_TOKEN`).
 
 ### Auth & settings
 
@@ -603,222 +624,232 @@ en Bearer `SYNC_TOKEN`).
 
 ### VPS CRUD
 
-- `POST /api/vps` — création. Accepte un `folderId` optionnel ; sinon tombe sur le premier dossier (par position) — typiquement `default`. Auto-assigne une `position` = max+1 dans le dossier choisi.
+- `POST /api/vps` — create. Accepts an optional `folderId`; otherwise falls back to the first folder (by position) — typically `default`. Auto-assigns a `position` = max+1 in the chosen folder.
 - `PATCH /api/vps/[id]` — update name/ip/sshUser/sshPort/defaultPath
 - `DELETE /api/vps/[id]` — cascade
-- `POST /api/vps/[id]/test` — test SSH
+- `POST /api/vps/[id]/test` — SSH test
 
 ### VPS folders
 
-- `GET /api/vps-folders` — liste triée par position
-- `POST /api/vps-folders` — body `{name, position?}` ; append si position omise
-- `PATCH /api/vps-folders/[id]` — body `{name?, collapsed?}` (rename + toggle collapse persisté)
-- `DELETE /api/vps-folders/[id]` — refuse pour `id='default'` ; sinon déplace les VPS contenus vers le dossier `default` puis supprime
-- `POST /api/vps-folders/layout` — re-layout atomique. Body `{folders:[{id,position}], vps:[{id,folderId,position}]}`. L'UI envoie l'état complet après un drag-end ; le serveur applique en transaction et renvoie l'état resynchronisé.
+- `GET /api/vps-folders` — list sorted by position
+- `POST /api/vps-folders` — body `{name, position?}`; append if position omitted
+- `PATCH /api/vps-folders/[id]` — body `{name?, collapsed?}` (rename + persisted collapse toggle)
+- `DELETE /api/vps-folders/[id]` — refused for `id='default'`; otherwise moves the contained VPSes to the `default` folder then deletes
+- `POST /api/vps-folders/layout` — atomic re-layout. Body `{folders:[{id,position}], vps:[{id,folderId,position}]}`. The UI sends the full state after a drag-end; the server applies it in a transaction and returns the resynced state.
 
 ### VPS paths
 
 - `GET /api/vps-paths`
 - `POST /api/vps-paths`, `PATCH /api/vps-paths/[id]`, `DELETE /api/vps-paths/[id]`
 
-### VPS agent (bootstrap, update, login Claude)
+### VPS agent (bootstrap, update, Claude login)
 
 - `GET /api/vps/[id]/claude/check` — ping + hello
 - `GET /api/vps/[id]/claude/bootstrap` — SSE phases
-- `POST /api/vps/[id]/claude/setup` — bootstrap one-shot
+- `POST /api/vps/[id]/claude/setup` — one-shot bootstrap
 - `POST /api/vps/[id]/agent/update` — redeploy `.pyz`
-- `GET /api/vps/[id]/claude/scan` — sessions Claude trouvées sur disque (pour import)
-- `POST /api/vps/[id]/claude/check-login` — re-vérifie `claude config get oauth.refresh_token` via SSH + persiste `vps.claudeLoggedIn` en DB. Déclenché automatiquement à la fermeture de `LoginConsole` côté UI.
-- `GET|POST|DELETE /api/vps/[id]/login` — gérer `claude login`
+- `GET /api/vps/[id]/claude/scan` — Claude sessions found on disk (for import)
+- `POST /api/vps/[id]/claude/check-login` — re-checks `claude config get oauth.refresh_token` via SSH + persists `vps.claudeLoggedIn` in DB. Triggered: (1) on `LoginConsole` close UI-side, (2) automatically by `autoConnect` on every `connected` event of an `AgentClient` if `claudeLoggedIn` is null or `claudeLoggedInCheckedAt` older than 24h (TTL). The SSH+DB logic lives in `lib/server/agent/claudeLoginCheck.ts` (`refreshClaudeLoginStatus` + `refreshClaudeLoginStatusIfStale`) to be shared between the route and the auto-check.
+- `GET|POST|DELETE /api/vps/[id]/login` — manage `claude login`
 - `GET /api/vps/[id]/login/stream` — SSE TUI
 - `POST /api/vps/[id]/login/input` — stdin
 
-### Shells SSH éphémères
+### Ephemeral SSH shells
 
 - `GET|POST /api/shells`
 - `GET|PATCH|DELETE /api/shells/[id]`
 - `GET /api/shells/[id]/stream` — SSE
 - `POST /api/shells/[id]/input`
 
-### Installs d'agent (sessions install, mémoire, 1 par VPS max)
+### Agent installs (install sessions, in-memory, max 1 per VPS)
 
-- `GET /api/installs` — liste toutes les installs (running + terminées en mémoire)
+- `GET /api/installs` — list all installs (running + finished in memory)
 - `GET /api/installs/[id]` — info
-- `DELETE /api/installs/[id]` — ferme la session install (retire du pool ; le
-  run SSH en cours n'est pas vraiment annulé, juste plus suivi)
-- `GET /api/installs/[id]/stream` — SSE replay ring buffer + live
+- `DELETE /api/installs/[id]` — closes the install session (removes
+  it from the pool; the in-flight SSH run isn't really canceled, just
+  no longer tracked)
+- `GET /api/installs/[id]/stream` — SSE ring buffer replay + live
   (`replay_begin/end`, `event`, `status`)
-- `POST /api/installs/[id]/retry` — relance bootstrap dans la même session
-- `GET /api/vps/[id]/installs` — install courante pour ce VPS (ou null)
-- `POST /api/vps/[id]/installs` — démarre (ou récupère) une install pour ce
-  VPS. Si une install est déjà en cours, retourne l'existante (focus, pas
-  double-run)
+- `POST /api/installs/[id]/retry` — relaunches bootstrap in the same session
+- `GET /api/vps/[id]/installs` — current install for this VPS (or null)
+- `POST /api/vps/[id]/installs` — start (or fetch) an install for this
+  VPS. If an install is already running, returns the existing one
+  (focus, no double-run)
 
-Les events `install_started` / `install_finished` passent aussi par le SSE
-multiplexé `/api/claude/events` (bus install, broadcast à toutes les
-connexions, classés "low-volume"). C'est ce qui alimente la popup
-top-right `<InstallNotificationPopup>` et la mise à jour live de la
-liste sidebar.
+The `install_started` / `install_finished` events also flow through
+the multiplexed SSE `/api/claude/events` (install bus, broadcast to
+all connections, classed as "low-volume"). That's what feeds the
+top-right `<InstallNotificationPopup>` and the live update of the
+sidebar list.
 
-### Sessions Claude
+### Claude sessions
 
-- `GET /api/claude/sessions` (filtres `vpsId`, `status`)
-- `POST /api/claude/sessions` — créer
-- `POST /api/claude/sessions/import` — depuis scan
-- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supporte `?limit=N` (default 200, cap 1000) et `?before=K` (cursor pagination scroll-up). La limite ne compte QUE les rôles "chat" (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking) ; `edit_snapshot` et `event` sont chargés en pièces jointes par range d'IDs (cf. §14 piège 25). Réponse : `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` sert de cursor pour le prochain loadMore. **DELETE** = suppression définitive (cascade DB + kill agent best-effort) — plus de `?hard=1`, plus de soft-kill (cf. §10).
-- `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — **SSE multiplexée unique** : ouverte UNE FOIS par tab browser, persistante. Émet `status` initial pour toutes les sessions + tous les pendings + flux live filtré par focus. Les changements de session focus sont gérés via POST `/focus` sans reconnect SSE.
-- `POST /api/claude/focus` — Body `{ conn, sessionId }`. Change le focus d'une connexion SSE. Le serveur commence/arrête de streamer les events high-volume (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) de la session ciblée. Les events low-volume (status, perms, questions, exit_plans, interaction_resolved, mode_changed, error, ready, session_id) sont toujours envoyés à toutes les connexions.
-- `POST /api/claude/sessions/[id]/input` — `{content}` ou `{type:'interrupt'}`
+- `GET /api/claude/sessions` (filters `vpsId`, `status`)
+- `POST /api/claude/sessions` — create
+- `POST /api/claude/sessions/import` — from scan
+- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supports `?limit=N` (default 200, cap 1000) and `?before=K` (cursor pagination for scroll-up). The limit only counts "chat" roles (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking); `edit_snapshot` and `event` are loaded as attachments by ID range (see §14 gotcha 25). Response: `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` serves as cursor for the next loadMore. **DELETE** = definitive deletion (DB cascade + best-effort agent kill) — no more `?hard=1`, no more soft-kill (see §10).
+- `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — **single multiplexed SSE**: opened ONCE per browser tab, persistent. Emits initial `status` for all sessions + all pendings + live stream filtered by focus. Session focus changes are handled via POST `/focus` without SSE reconnect.
+- `POST /api/claude/focus` — Body `{ conn, sessionId }`. Changes the focus of an SSE connection. The server starts/stops streaming the high-volume events (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) of the targeted session. Low-volume events (status, perms, questions, exit_plans, interaction_resolved, mode_changed, error, ready, session_id) are always sent to all connections.
+- `POST /api/claude/sessions/[id]/input` — `{content}` or `{type:'interrupt'}`
 - `POST /api/claude/sessions/[id]/permission` — `{id, allow, always?}`
 - `POST /api/claude/sessions/[id]/question` — `{id, answers}`
 - `POST /api/claude/sessions/[id]/exit-plan` — `{id, decision, feedback?}`
 - `POST /api/claude/sessions/[id]/mode` — `{mode}`
 - `POST /api/claude/sessions/[id]/sleep`, `POST .../resume`
-- `POST /api/claude/sessions/[id]/force-stop` — cancel forcé quand le SDK ne répond plus au `interrupt` (status → `sleeping`)
-- `POST /api/claude/sessions/[id]/revert` — undo une édition (`{filePath, content}`)
+- `POST /api/claude/sessions/[id]/force-stop` — forced cancel when the SDK no longer responds to `interrupt` (status → `sleeping`)
+- `POST /api/claude/sessions/[id]/revert` — undo an edit (`{filePath, content}`)
 - `GET /api/claude/sessions/[id]/export` — JSONL
-- `GET /api/claude/search` — full-text sur messages
+- `GET /api/claude/search` — full-text on messages
 
-### Local agent (le hub lui-même)
+### Local agent (the hub itself)
 
 - `GET /api/local-agent/status`, `POST /api/local-agent/update`
 
 ### Sync
 
-- `POST /api/sync` — pour l'ancien hub qui pousse VPS/paths (Bearer auth)
+- `POST /api/sync` — for the legacy hub pushing VPS/paths (Bearer auth)
 
 ---
 
-## 9. SSE côté navigateur (mapping events)
+## 9. Browser-side SSE (event mapping)
 
-Le navigateur ouvre `EventSource('/api/claude/sessions/{id}/stream')`. Côté
-serveur (`sessionOps.ts`), les events sont relayés depuis l'`AgentClient` +
-quelques events synthétiques. Côté client (`ClaudePanel.tsx`), la routing :
+The browser opens `EventSource('/api/claude/sessions/{id}/stream')`.
+Server-side (`sessionOps.ts`), events are relayed from the `AgentClient`
++ a few synthetic events. Client-side (`ClaudePanel.tsx`), the routing:
 
-| Event SSE | Action UI |
+| SSE event | UI action |
 |---|---|
-| `status` | met à jour `cur.status` (pill header). **Cas spécial `'killed'`** : depuis la refonte kill→delete (cf. §10), `'killed'` est un signal transient émis par `deleteSession()` côté serveur — le hook `useClaudeSessionStream` ne met PAS à jour le local state mais déclenche `onKilled?.()` (= redirection hors session). |
-| `user_echo` | append message user |
-| `assistant_text` | accumule dans `assistantBufRef`, streaming display |
-| `thinking` | ajoute un thinking message (collapsible) |
-| `tool_use` | flush buffer, append message tool_use + entrée dans `toolCalls[]` |
-| `tool_result` | pair avec tool_use via `tool_use_id`, met à jour la résultat |
-| `permission_request` | push dans `permQueue` → `PermissionPopup` |
-| `user_question` | push dans `questionQueue` → `QuestionCard` remplace l'input |
-| `exit_plan_request` | push dans `exitPlanQueue` → `ExitPlanCard` |
-| `interaction_resolved` | retire de la queue correspondante |
-| `mode_changed` | met à jour le badge mode |
-| `todo_update` | met à jour onglet `todos` du `ToolPanel` |
-| `edit_snapshot` | range dans `edits` Map (before/after par filePath) pour `ToolPanel`/`SplitDiffModal` |
-| `stop` | flush final, prêt pour le tour suivant |
-| `error` | banner d'erreur ; détecte "import error" → propose bootstrap |
-| `prefill_input` | pré-remplit la textarea |
-| `replay_begin/end` | gérés côté serveur, transparents pour le client (events agent VPS au reconnect SSH, pas Charon→browser) |
+| `status` | updates `cur.status` (header pill). **Special case `'killed'`**: since the kill→delete refactor (see §10), `'killed'` is a transient signal emitted by `deleteSession()` server-side — the `useClaudeSessionStream` hook does NOT update local state but triggers `onKilled?.()` (= redirect out of the session). |
+| `user_echo` | append user message |
+| `assistant_text` | accumulates in `assistantBufRef`, streaming display |
+| `thinking` | adds a thinking message (collapsible) |
+| `tool_use` | flush buffer, append tool_use message + entry in `toolCalls[]` |
+| `tool_result` | paired with tool_use via `tool_use_id`, updates the result |
+| `permission_request` | push into `permQueue` → `PermissionPopup` |
+| `user_question` | push into `questionQueue` → `QuestionCard` replaces the input |
+| `exit_plan_request` | push into `exitPlanQueue` → `ExitPlanCard` |
+| `interaction_resolved` | removes from the matching queue |
+| `mode_changed` | updates the mode badge |
+| `todo_update` | updates the `todos` tab of `ToolPanel` |
+| `edit_snapshot` | stored in `edits` Map (before/after per filePath) for `ToolPanel`/`SplitDiffModal` |
+| `stop` | final flush, ready for the next turn |
+| `error` | error banner; detects "import error" → offers bootstrap |
+| `prefill_input` | pre-fills the textarea |
+| `replay_begin/end` | handled server-side, transparent to the client (VPS agent events on SSH reconnect, not Charon→browser) |
 
-Note : `permission_request`/`user_question`/`exit_plan_request`/
-`interaction_resolved` arrivent via **deux chemins** complémentaires :
-1. La SSE par-session (`useClaudeSessionStream`) qui les push dans la queue
-   per-session (visible dans la vue chat de la session active)
-2. La SSE agrégée `/api/claude/interactions/stream` consommée par
-   `useCrossSessionInteractionFeed` qui maintient des queues cross-session
-   (utilisées par la popup globale ClaudePanel + le bandeau mobile)
+Note: `permission_request`/`user_question`/`exit_plan_request`/
+`interaction_resolved` arrive via **two complementary paths**:
+1. The per-session SSE (`useClaudeSessionStream`) which pushes them
+   into the per-session queue (visible in the active session's chat
+   view)
+2. The aggregated SSE `/api/claude/interactions/stream` consumed by
+   `useCrossSessionInteractionFeed` which maintains cross-session
+   queues (used by the global ClaudePanel popup + the mobile banner)
 
-Les deux états sont indépendants et non synchronisés — c'est voulu, chaque
-vue gère son propre cycle d'affichage. Le serveur émet un seul event mais
-le client le route différemment selon le contexte.
+The two states are independent and not synchronized — that's by
+design, each view manages its own display cycle. The server emits a
+single event but the client routes it differently depending on the
+context.
 
 ---
 
-## 10. Parcours utilisateur typique (golden path)
+## 10. Typical user journey (golden path)
 
-1. Browser → `/` → SSR `app/page.tsx` :
-   - `requireSession()` (cookie `charon_session` valide ? sinon redirect `/login`)
-   - `seedInitialData()` (migration v2 si pas faite + `autoConnectAgents()`)
-   - Charge `vps`, `vpsPaths`, `claudeSessions` triés desc, `builtPyzSha`
-   - Rend `<ClaudePanel ...>`
-2. ClaudePanel → mount → ouvre SSE pour la session sélectionnée (sinon attend)
-3. User clique « New Session » → `<NewSessionDialog>` → choisit VPS + cwd →
+1. Browser → `/` → SSR `app/page.tsx`:
+   - `requireSession()` (`charon_session` cookie valid? otherwise redirect `/login`)
+   - `seedInitialData()` (v2 migration if not done + `autoConnectAgents()`)
+   - Loads `vps`, `vpsPaths`, `claudeSessions` sorted desc, `builtPyzSha`
+   - Renders `<ClaudePanel ...>`
+2. ClaudePanel → mount → opens SSE for the selected session (otherwise waits)
+3. User clicks "New Session" → `<NewSessionDialog>` → picks VPS + cwd →
    `api.createClaudeSession()` → `POST /api/claude/sessions` →
-   `sessionOps.startNewSession()` :
+   `sessionOps.startNewSession()`:
    - INSERT `claudeSessions` (status `starting`)
-   - `AgentClient.start_session()` → l'agent crée `AgentSession` →
+   - `AgentClient.start_session()` → the agent creates `AgentSession` →
      `ClaudeSDKClient(cwd, hooks, can_use_tool, resume?)`
-   - `stream.attach()` → écoute les events agent
-4. UI reçoit `status=starting` → `ready` → `session_id` (claude_session_id
-   persisté en DB)
-5. User tape un message → `api.sendClaudeInput()` → `POST /input` →
+   - `stream.attach()` → listens for agent events
+4. UI receives `status=starting` → `ready` → `session_id`
+   (claude_session_id persisted in DB)
+5. User types a message → `api.sendClaudeInput()` → `POST /input` →
    `stream.sendUserMessage()` → agent `send_input` →
    `_stdin_queue.put(content)` → `ClaudeSDKClient.query(content)`
-6. Events streament : `assistant_text` * N, parfois `thinking`, puis
-   `tool_use` → l'agent attend le résultat (interne) ou demande permission :
-   - Si `permission_mode == 'normal'` ou tool non auto-safe : le hook
-     `_pre_tool_use` crée un `Future`, émet `permission_request` (timeout
-     10min)
-   - UI : `PermissionPopup` → user clique → `respond_permission` → résolution
-     du Future → tool exécuté → `tool_result` émis
-7. `stop` event termine le tour.
+6. Events stream: `assistant_text` * N, sometimes `thinking`, then
+   `tool_use` → the agent waits for the result (internal) or requests
+   permission:
+   - If `permission_mode == 'normal'` or tool not auto-safe: the
+     `_pre_tool_use` hook creates a `Future`, emits
+     `permission_request` (10min timeout)
+   - UI: `PermissionPopup` → user clicks → `respond_permission` →
+     Future resolved → tool executed → `tool_result` emitted
+7. `stop` event ends the turn.
 
-### Resume après restart Charon
+### Resume after Charon restart
 
-- Toutes les sessions DB en `status='active'` ont été passées à `sleeping`
-  par la migration V2 au premier boot après refonte (`migrationV2.ts`).
-- `autoConnect.ts` au boot tente de re-subscribe aux sessions encore vivantes
-  côté agent (`hello` renvoie la liste). Pour celles non-trouvées sur l'agent
-  mais ayant un `claudeSessionId`, un `start_session` avec ce paramètre
-  reprend la session SDK depuis l'historique disque.
-- En plus, un hook `onStatus('connected')` sur chaque `AgentClient` rappelle
-  `reconcileVpsAgentState()` à CHAQUE (re)connexion SSH — y compris donc
-  après un drop réseau. C'est ce qui garantit qu'après `systemctl restart
-  charon`, les sessions qui étaient en `'thinking'` au moment du SIGTERM
-  voient leur `SessionStream` ré-attaché automatiquement, sans avoir besoin
-  de faire force_stop + resume à la main (cf. §14 piège 23).
+- All DB sessions in `status='active'` were moved to `sleeping` by
+  the V2 migration on the first boot after the refactor
+  (`migrationV2.ts`).
+- `autoConnect.ts` at boot tries to re-subscribe to sessions still
+  alive agent-side (`hello` returns the list). For those not found
+  on the agent but having a `claudeSessionId`, a `start_session`
+  with that parameter resumes the SDK session from the on-disk
+  history.
+- On top of that, an `onStatus('connected')` hook on each
+  `AgentClient` calls `reconcileVpsAgentState()` on EVERY SSH
+  (re)connection — including after a network drop. That's what
+  guarantees that after `systemctl restart charon`, sessions that
+  were in `'thinking'` at SIGTERM time have their `SessionStream`
+  re-attached automatically, without needing to manually do
+  force_stop + resume (see §14 gotcha 23).
 
-### Sleep / delete (refonte kill→delete, novembre 2025)
+### Sleep / delete (kill→delete refactor, November 2025)
 
-Avant la refonte, il existait **3 états** : `sleep` (pause réversible),
-`kill` (statut `'killed'` non reprenable mais historique lisible), et
-`hardDelete` (cascade DB). Le bouton "pause" du header appelait en fait
-`kill` — faux ami UX. Le middle state `'killed'` ne servait à rien : côté
-agent il libérait exactement les mêmes ressources que `sleep` (la seule
-différence était `self.sessions.pop()` côté agent + un flag "ne pas
-resume" côté Charon). On a fusionné `kill` et `hardDelete` en une seule
-action **suppression définitive**.
+Before the refactor, there were **3 states**: `sleep` (reversible
+pause), `kill` (status `'killed'`, non-resumable but readable
+history), and `hardDelete` (DB cascade). The "pause" button in the
+header actually called `kill` — UX false friend. The `'killed'`
+middle state served no purpose: agent-side it freed exactly the same
+resources as `sleep` (the only difference was `self.sessions.pop()`
+agent-side + a "don't resume" flag Charon-side). We merged `kill`
+and `hardDelete` into a single **definitive deletion** action.
 
-Le modèle actuel : **2 boutons**.
+The current model: **2 buttons**.
 
-- **`sleep`** : `agent.stop(mark='sleeping')`, state.json à jour, DB →
-  `sleeping`. Le `claude_session_id` est conservé → resume possible.
-- **`delete`** (`POST /api/claude/sessions/[id]` DELETE → `deleteSession()`
-  dans `lib/server/agent/sessionOps.ts`) : émet `status='killed'` sur le
-  bus comme signal transient, detach + retire le SessionStream, cascade
-  DB (logs + row session → cascade FK pour messages/permissions/questions),
-  puis best-effort `kill_session` RPC pour que l'agent oublie la session.
+- **`sleep`**: `agent.stop(mark='sleeping')`, state.json updated, DB
+  → `sleeping`. The `claude_session_id` is kept → resume possible.
+- **`delete`** (`POST /api/claude/sessions/[id]` DELETE →
+  `deleteSession()` in `lib/server/agent/sessionOps.ts`): emits
+  `status='killed'` on the bus as a transient signal, detaches +
+  removes the SessionStream, DB cascade (logs + session row → FK
+  cascade for messages/permissions/questions), then best-effort
+  `kill_session` RPC so the agent forgets the session.
 
-Le status DB `'killed'` n'existe plus comme état persistant — la
-migration 0008 a purgé les vestiges. L'event `status='killed'` survit
-uniquement comme **signal transient** : le hook `useClaudeSessionStream`
-déclenche `onKilled` (= navigation hors de la session) quand il le
-reçoit. La row DB est supprimée immédiatement, donc le client ne peut
-jamais observer une session "killed mais consultable".
+The DB status `'killed'` no longer exists as a persistent state —
+migration 0008 purged the remnants. The `status='killed'` event
+survives only as a **transient signal**: the
+`useClaudeSessionStream` hook triggers `onKilled` (= navigation out
+of the session) when it receives it. The DB row is deleted
+immediately, so the client can never observe a "killed but
+viewable" session.
 
-L'enum TS `WorkerStatus` (`lib/server/claude/types.ts`) garde encore le
-membre `'killed'` pour le typage du signal transient — pas la peine de
-le retirer.
+The TS enum `WorkerStatus` (`lib/server/claude/types.ts`) still
+keeps the `'killed'` member to type the transient signal — no need
+to remove it.
 
-### Import d'une session existante
+### Importing an existing session
 
-`GET /api/vps/[id]/claude/scan` → l'agent énumère `~/.claude/projects/...`
-et renvoie les sessions trouvées avec leur résumé. L'UI propose
-`<ResumeModal>` pour importer : crée une `claudeSessions` en DB (status
-`sleeping`, `claudeSessionId` rempli), pas de `start_session` immédiat.
-Quand l'user fait Resume, on lance `start_session` avec `claude_session_id`
-+ `cwd` détecté.
+`GET /api/vps/[id]/claude/scan` → the agent enumerates
+`~/.claude/projects/...` and returns the sessions found along with
+their summary. The UI offers `<ResumeModal>` to import: creates a
+`claudeSessions` row in DB (status `sleeping`, `claudeSessionId`
+filled), no immediate `start_session`. When the user clicks Resume,
+we launch `start_session` with `claude_session_id` + the detected
+`cwd`.
 
 ---
 
-## 11. Frontend en détail
+## 11. Frontend in detail
 
-### Layout 3-colonnes (desktop, `claude.css`)
+### 3-column layout (desktop, `claude.css`)
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -833,515 +864,617 @@ Quand l'user fait Resume, on lance `start_session` avec `claude_session_id`
 └──────────────┴─────────────────────────────┴─────────────────────┘
 ```
 
-### `ClaudePanel.tsx` (~1400 lignes) — état clé
+### `ClaudePanel.tsx` (~1400 lines) — key state
 
-- `selectedId` : session courante
-- `stateById` : `Map<sessionId, { messages, currentAssistant, status,
+- `selectedId`: current session
+- `stateById`: `Map<sessionId, { messages, currentAssistant, status,
   permissionMode, toolCalls, todos, edits }>`
-- `permQueue`, `questionQueue`, `exitPlanQueue` : interactions en attente
-- `assistantBufRef` : buffer du delta streamé
-- `esRef` : `EventSource` courante
-- Scroll : stick-to-bottom natif à la WhatsApp (`flex-direction: column-reverse`,
-  scroll anchoring browser, 0 `useLayoutEffect`) ; cursor pagination scroll-up
-  qui charge 200 messages chat plus anciens quand l'utilisateur arrive à
-  <400px du haut visuel (cf. §14 piège 25 et `useClaudeSessionStream.loadMoreHistory`)
-- Service worker : reçoit les push, `postMessage` à la fenêtre, force le
-  `selectedId` sur le tap d'une notification
+- `permQueue`, `questionQueue`, `exitPlanQueue`: pending interactions
+- `assistantBufRef`: streamed delta buffer
+- `esRef`: current `EventSource`
+- Scroll: WhatsApp-style native stick-to-bottom
+  (`flex-direction: column-reverse`, browser scroll anchoring, 0
+  `useLayoutEffect`); cursor pagination scroll-up that loads 200
+  older chat messages when the user reaches <400px from the visual
+  top (see §14 gotcha 25 and `useClaudeSessionStream.loadMoreHistory`)
+- Service worker: receives pushes, `postMessage`s the window, forces
+  `selectedId` on a notification tap
 
-### Composants secondaires
+### Secondary components
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `Sidebar.tsx` | Folders (pliables, compteur de sessions actives quand replié) → VPS pliables, sessions/shells/installs groupés, badges agent status, rename inline. État `collapsed` du dossier persisté DB (toggle → `PATCH /api/vps-folders/[id]`). Le collapsed par-VPS reste en localStorage. **Boutons disabled** quand `agentStatus !== 'ok'` : "new claude session" et "historique" — seul "shell SSH" + "install agent" restent dispo. |
-| `Message.tsx` | rendu par role (markdown + remark-gfm + rehype-highlight, tool cards, thinking collapsible) |
-| `ToolPanel.tsx` | 4 onglets diffs/todos/calls/files ; bouton revert sur un diff → `api.revertClaudeEdit` |
-| `SplitDiffModal.tsx` | diff before/after en grand |
-| `PermissionPopup.tsx` | flottant, badge queue, allow once / allow always / deny |
-| `InstallNotificationPopup.tsx` | flottant top-right, queue locale (events `install_finished` du bus global). Bouton "voir le log" → `selectInstall(id)`. Style copié sur PermissionPopup. |
-| `QuestionCard.tsx` | remplace l'input quand AskUserQuestion ; multi-select + free text |
-| `ExitPlanCard.tsx` | markdown du plan + Approve / Ask for changes (feedback) |
-| `NewSessionDialog.tsx` | VPS dropdown + cwd + autosuggest paths + bouton setup si SDK absent |
-| `ResumeModal.tsx` | onglets « resumable DB » et « scanned » |
-| `SessionContextMenu.tsx` | clic-droit : rename, cwd, color (8), delete (cf `ROW_COLORS`). Pour les sessions Claude : seulement "Supprimer définitivement" (pas de "kill" intermédiaire depuis la refonte kill→delete, cf. §10). Pour les shells / installs : "Fermer" (le `onKill` du composant sert ici comme close, pas comme kill de session Claude). |
-| `InstallSessionView.tsx` | vue plein-écran (occupe `.claude-main`) qui rend le log d'une session d'installation. SSE sur `/api/installs/[id]/stream` (replay ring buffer + live). Header avec status pill + boutons Retry / Setup login / Fermer selon état. Remplace l'ancien `BootstrapBanner` (qui était un bandeau supérieur). |
-| `LoginConsole.tsx` | xterm.js, OAuth Claude Code via SSH `-tt`. Branche le flux SSE sur `useTerminalUrlOverlay` pour détecter et proposer copier/ouvrir l'URL OAuth (souvent wrappé sur plusieurs lignes). |
-| `ShellTerminal.tsx` | xterm.js, shells SSH éphémères. Idem URL overlay : si l'user voit un URL long dans la sortie d'une commande, overlay copier/ouvrir. |
-| `TerminalUrlOverlay.tsx` | Petite carte flottante bottom-right d'un terminal, boutons copier (clipboard API + fallback execCommand) et ouvrir (window.open new tab). |
-| `useTerminalUrlOverlay.ts` + `terminalUrlDetect.ts` | Hook qui accumule un rolling buffer (64 KB) du texte stream, applique `extractWrappedUrls` (regex `https?://` + suivi des URL-chars en sautant `\n`/`\r`/jusqu'à 4 espaces — gère hard-wrap et soft-wrap). Seuil 60 chars (en-dessous l'user copie à la main). |
-| `DataModal.tsx` | CRUD VPS + folders + paths. Drag-and-drop via `@dnd-kit/core` + `@dnd-kit/sortable` : on peut réordonner les dossiers entre eux et déplacer/réordonner les VPS (intra-dossier ou cross-dossier). Le drag-end POST `/api/vps-folders/layout` (atomique). Folders avec body `useDroppable` pour capter les drops sur l'espace vide. |
-| `SearchModal.tsx` | recherche full-text (debounced) sur `/api/claude/search` |
-| `SettingsModal.tsx` | settings clé/valeur, test Telegram |
-| `MobileRedirectPrompt.tsx` | suggère `/m` quand < 768px ou touch only |
-| `LocalAgentButton.tsx` | badge "agent out of date" sur le hub lui-même |
-| `pushClient.ts` | helpers Web Push (VAPID, base64↔Uint8Array) |
+| `Sidebar.tsx` | Folders (collapsible, active session counter when collapsed) → collapsible VPSes, grouped sessions/shells/installs, agent status badges, inline rename. Folder `collapsed` state persisted in DB (toggle → `PATCH /api/vps-folders/[id]`). Per-VPS collapsed remains in localStorage. **Disabled buttons** when `agentStatus !== 'ok'`: "new claude session" and "history" — only "SSH shell" + "install agent" remain available. |
+| `Message.tsx` | rendering per role (markdown + remark-gfm + rehype-highlight, tool cards, collapsible thinking) |
+| `ToolPanel.tsx` | 4 tabs diffs/todos/calls/files; revert button on a diff → `api.revertClaudeEdit` |
+| `SplitDiffModal.tsx` | large before/after diff |
+| `PermissionPopup.tsx` | floating, queue badge, allow once / allow always / deny |
+| `InstallNotificationPopup.tsx` | floating top-right, local queue (`install_finished` events from the global bus). "View log" button → `selectInstall(id)`. Style copied from PermissionPopup. |
+| `QuestionCard.tsx` | replaces the input on AskUserQuestion; multi-select + free text |
+| `ExitPlanCard.tsx` | plan markdown + Approve / Ask for changes (feedback) |
+| `NewSessionDialog.tsx` | VPS dropdown + cwd + path autosuggest + setup button if SDK missing |
+| `ResumeModal.tsx` | "resumable DB" and "scanned" tabs |
+| `SessionContextMenu.tsx` | right-click: rename, cwd, color (8), delete (see `ROW_COLORS`). For Claude sessions: only "Delete permanently" (no intermediate "kill" since the kill→delete refactor, see §10). For shells / installs: "Close" (the component's `onKill` serves as close here, not as a Claude session kill). |
+| `InstallSessionView.tsx` | full-screen view (fills `.claude-main`) rendering an install session's log. SSE on `/api/installs/[id]/stream` (ring buffer replay + live). Header with status pill + Retry / Setup login / Close buttons depending on state. Replaces the old `BootstrapBanner` (which was a top banner). |
+| `LoginConsole.tsx` | xterm.js, Claude Code OAuth via SSH `-tt`. Wires the SSE stream into `useTerminalUrlOverlay` to detect and offer copy/open of the OAuth URL (often wrapped over several lines). |
+| `ShellTerminal.tsx` | xterm.js, ephemeral SSH shells. Same URL overlay: if the user sees a long URL in a command's output, copy/open overlay. |
+| `TerminalUrlOverlay.tsx` | Small floating card bottom-right of a terminal, copy (clipboard API + execCommand fallback) and open (window.open new tab) buttons. |
+| `useTerminalUrlOverlay.ts` + `terminalUrlDetect.ts` | Hook that accumulates a rolling buffer (64 KB) of streamed text, applies `extractWrappedUrls` (regex `https?://` + tracking URL-chars while skipping `\n`/`\r`/up to 4 spaces — handles hard-wrap and soft-wrap). 60 char threshold (below it the user copies by hand). |
+| `DataModal.tsx` | VPS + folders + paths CRUD. Drag-and-drop via `@dnd-kit/core` + `@dnd-kit/sortable`: you can reorder folders among themselves and move/reorder VPSes (intra-folder or cross-folder). Drag-end POSTs `/api/vps-folders/layout` (atomic). Folders with body `useDroppable` to catch drops on empty space. |
+| `SearchModal.tsx` | full-text search (debounced) on `/api/claude/search` |
+| `SettingsModal.tsx` | key/value settings, Telegram test |
+| `MobileRedirectPrompt.tsx` | suggests `/m` when < 768px or touch-only |
+| `LocalAgentButton.tsx` | "agent out of date" badge on the hub itself |
+| `pushClient.ts` | Web Push helpers (VAPID, base64↔Uint8Array) |
 | `icons.tsx` | SVG icons (Bootstrap Icons) |
 
 ### Mobile (`app/m/`)
 
-Layout dédié `.m-root`, fixed, safe-area-insets. Routes :
+Dedicated `.m-root` layout, fixed, safe-area-insets. Routes:
 
 - `/m` → redirect `/m/select`
-- `/m/select` (`MobileSelect.tsx`) : sessions groupées **par dossier puis par
-  VPS** (mêmes folders que desktop, état `collapsed` persisté DB via
-  `PATCH /api/vps-folders/[id]` → un dossier fermé sur desktop l'est aussi
-  mobile, et vice-versa ; un poll 5s sync les folders), long-press →
-  bottom sheet contextuel (`MobileContextSheet.tsx`), bouton `+` →
-  `NewSessionSheet.tsx`. Le collapse par-VPS reste local (localStorage,
-  par-device).
-- `/m/chat?id=...` (`MobileChat.tsx`) : version condensée de ClaudePanel
-  (pas de ToolPanel à droite), SSE identique, modals overlay
-- `/m/shell?id=...` (`MobileShell.tsx`) : xterm fullscreen
+- `/m/select` (`MobileSelect.tsx`): sessions grouped **by folder then
+  by VPS** (same folders as desktop, `collapsed` state persisted in
+  DB via `PATCH /api/vps-folders/[id]` → a folder closed on desktop
+  is closed on mobile too, and vice versa; a 5s poll syncs folders),
+  long-press → contextual bottom sheet (`MobileContextSheet.tsx`),
+  `+` button → `NewSessionSheet.tsx`. Per-VPS collapse stays local
+  (localStorage, per device).
+- `/m/chat?id=...` (`MobileChat.tsx`): condensed version of
+  ClaudePanel (no ToolPanel on the right), identical SSE, overlay
+  modals
+- `/m/shell?id=...` (`MobileShell.tsx`): fullscreen xterm
 
 ### CSS
 
-- `globals.css` : tokens (`--stone`, `--parchment`, `--gold`, `--teal`,
-  `--crimson`, `--lavender`), Inter + JetBrains Mono, scrollbars, page auth
-- `claude.css` : layout 3-col desktop, bubbles par role, modals, popups
-- `agent-ui.css` : badges status agent (●/○/◐/?), banner bootstrap, login console
-- `app/m/mobile.css` : mobile (touch ≥44px, no body scroll, sans 3-col)
+- `globals.css`: tokens (`--stone`, `--parchment`, `--gold`,
+  `--teal`, `--crimson`, `--lavender`), Inter + JetBrains Mono,
+  scrollbars, auth page
+- `claude.css`: 3-col desktop layout, bubbles per role, modals, popups
+- `agent-ui.css`: agent status badges (●/○/◐/?), bootstrap banner,
+  login console
+- `app/m/mobile.css`: mobile (touch ≥44px, no body scroll, no 3-col)
 
 ### `lib/api.ts`
 
-Wrappers `fetch` autour des routes, organisés par domaine (VPS, shells, paths,
-sessions, settings, push). Lis-le quand tu cherches un endpoint depuis l'UI.
+`fetch` wrappers around the routes, organized by domain (VPS, shells,
+paths, sessions, settings, push). Read it when looking for an
+endpoint from the UI.
 
-**Tous typés** : les couples request/response par méthode sont déclarés dans
-`lib/types/api.ts`. Le générique `send<TRes>()` propage le typage, donc
-`api.foo(...)` renvoie déjà le bon type — pas de cast nécessaire côté caller.
-Si tu ajoutes une route, ajoute son couple `XxxBody`/`XxxResponse` dans
-`lib/types/api.ts` puis annote la méthode dans `lib/api.ts`.
+**All typed**: the per-method request/response pairs are declared in
+`lib/types/api.ts`. The generic `send<TRes>()` propagates typing, so
+`api.foo(...)` already returns the right type — no cast needed on the
+caller side. If you add a route, add its `XxxBody`/`XxxResponse` pair
+in `lib/types/api.ts` then annotate the method in `lib/api.ts`.
 
-### Code partagé desktop ↔ mobile
+### Shared desktop ↔ mobile code
 
-Le `ClaudePanel.tsx` (desktop) et `MobileChat.tsx` (mobile) consomment du
-code commun extrait après l'audit maintenabilité :
+`ClaudePanel.tsx` (desktop) and `MobileChat.tsx` (mobile) consume
+common code extracted after the maintainability audit:
 
-- **`app/sessionTypes.ts`** : `Msg`, `ToolCallEntry`, `Todo`, `EditSnapshot`,
-  `PermissionRequest`, `PendingQuestion`, `PendingExitPlan`. `sessionId` est
-  requis partout (mobile remplit avec le sessionId courant).
-- **`app/sessionRebuild.ts`** : `rebuildStateFromMessages()` — reconstruit
-  l'état d'une session depuis les messages persistés (utilisé au mount /
-  switch / retour onglet).
-- **`app/sessionCache.ts`** : cache module-level d'une session
+- **`app/sessionTypes.ts`**: `Msg`, `ToolCallEntry`, `Todo`,
+  `EditSnapshot`, `PermissionRequest`, `PendingQuestion`,
+  `PendingExitPlan`. `sessionId` is required everywhere (mobile
+  fills it with the current sessionId).
+- **`app/sessionRebuild.ts`**: `rebuildStateFromMessages()` —
+  rebuilds a session's state from persisted messages (used on mount
+  / switch / tab return).
+- **`app/sessionCache.ts`**: module-level cache of a session
   (`getCached` / `fetchAndCache` / `prefetchAll` / `invalidate`).
-  Anciennement `app/m/chatCache.ts` — promu en partagé pour servir desktop
-  aussi. `app/m/chatCache.ts` reste comme ré-export pour rétrocompat.
-- **`app/inputDraftStore.ts`** : store in-memory `Map<sessionId, string>`
-  pour le brouillon de la zone d'input (textarea). Expose le hook
-  `useInputDraft(sessionId)` qui s'utilise comme un `useState` classique
-  mais persiste le texte au switch de session — desktop (re-mount du
-  `<ClaudeSessionView key={sid}>`) **et** mobile (changement de prop
-  `sessionId` sur la même instance `MobileChat`, géré par une
-  réconciliation in-render). Volontairement non persisté à disque : un F5
-  vide tout.
-- **`app/useClaudeSessionStream.ts`** : hook React qui encapsule SSE +
-  state + actions + cache d'**une** session. Utilisé par `MobileChat.tsx`
-  et par `<ClaudeSessionView>` (zone chat desktop).
-  Le hook expose :
-  - State : `messages`, `currentAssistant`, `status`, `permissionMode`,
-    `toolCalls`, `todos`, `edits`, `files`, `permQueue`, `questionQueue`,
-    `exitPlanQueue`, `prefillInput`, `error`, `sessionMeta`
-  - Actions : `send`, `interrupt`, `forceStop`, `setMode`, `doSleep`,
+  Formerly `app/m/chatCache.ts` — promoted to shared to serve
+  desktop too. `app/m/chatCache.ts` remains as a re-export for
+  backward compat.
+- **`app/inputDraftStore.ts`**: in-memory store
+  `Map<sessionId, string>` for the input area (textarea) draft.
+  Exposes the `useInputDraft(sessionId)` hook that's used like a
+  regular `useState` but persists the text across session switches —
+  desktop (re-mount of `<ClaudeSessionView key={sid}>`) **and**
+  mobile (change of `sessionId` prop on the same `MobileChat`
+  instance, handled by an in-render reconciliation). Intentionally
+  not persisted to disk: an F5 clears everything.
+- **`app/useClaudeSessionStream.ts`**: React hook that wraps SSE +
+  state + actions + cache of **one** session. Used by
+  `MobileChat.tsx` and by `<ClaudeSessionView>` (desktop chat area).
+  The hook exposes:
+  - State: `messages`, `currentAssistant`, `status`,
+    `permissionMode`, `toolCalls`, `todos`, `edits`, `files`,
+    `permQueue`, `questionQueue`, `exitPlanQueue`, `prefillInput`,
+    `error`, `sessionMeta`
+  - Actions: `send`, `interrupt`, `forceStop`, `setMode`, `doSleep`,
     `doResume`, `doKill`, `respondPermission`/`Question`/`ExitPlan`,
     `refetchHistory`, `clearError`, `clearPrefillInput`
-- **`app/useCrossSessionInteractionFeed.ts`** : hook React qui ouvre **une
-  seule SSE multiplexée** (`/api/claude/interactions/stream`) écoutant les
-  events `permission_request` / `user_question` / `exit_plan_request` /
-  `interaction_resolved` de **toutes** les sessions. Maintient les 3 queues
-  agrégées (dédup par `id`). Utilisé par :
-  - **ClaudePanel** : alimente `<PermissionPopup>` cross-session — tu vois
-    les perms d'une autre session en temps réel sans devoir y avoir été.
-  - **MobileChat** : compte les interactions sur les autres sessions,
-    affiche un bandeau cliquable vers `/m/select`.
+- **`app/useCrossSessionInteractionFeed.ts`**: React hook that opens
+  **a single multiplexed SSE** (`/api/claude/interactions/stream`)
+  listening to `permission_request` / `user_question` /
+  `exit_plan_request` / `interaction_resolved` events of **all**
+  sessions. Maintains the 3 aggregated queues (dedup by `id`). Used
+  by:
+  - **ClaudePanel**: feeds cross-session `<PermissionPopup>` — you
+    see another session's perms in real time without needing to
+    have been on it.
+  - **MobileChat**: counts interactions on other sessions, displays
+    a clickable banner to `/m/select`.
 
-  **Pourquoi 1 SSE et pas N** : sur HTTP/1.1, le browser limite à
-  6 connexions par origine. Avec 8 sessions + la SSE de la session active,
-  les POST (envoi de message, création) restaient en queue. La route
-  serveur `app/api/claude/interactions/stream/route.ts` agrège.
-- **`app/ClaudeSessionView.tsx`** : composant qui rend la zone chat de la
-  session active (header bar avec sleep/resume/interrupt/force-stop — pas
-  de bouton "delete" ici, la suppression passe par le menu contextuel
-  sidebar pour exiger un right-click délibéré ; cf. §10),
-  bannières reconnect/disconnect/error, chat scroll-reverse + **scroll
-  pills ↓/↑** (↓ = aller en bas, masquée si déjà en bas ; ↑ = remonter au
-  dernier user message au-dessus de la vue, position fixe au-dessus de ↓,
-  reste visible tant qu'on n'est pas au sommet absolu ou que la pagination
-  a encore des messages à charger),
-  ThinkingBar, input bar avec mode-switch, QuestionCard/ExitPlanCard/
-  InlinePermissionCard quand pending, et le ToolPanel). Consomme
-  `useClaudeSessionStream`. ClaudePanel l'instancie avec `key={selectedId}`
-  pour re-monter sur changement de session (cache module-level rend le
-  switch instantané). Mirror mobile dans `app/m/chat/MobileChat.tsx` :
-  mêmes pills (`m-scroll-pill` / `m-scroll-up-pill`).
+  **Why 1 SSE and not N**: on HTTP/1.1, the browser caps at 6
+  connections per origin. With 8 sessions + the active session's
+  SSE, POSTs (sending a message, creating) stayed queued. The
+  server route `app/api/claude/interactions/stream/route.ts`
+  aggregates.
+- **`app/ClaudeSessionView.tsx`**: component that renders the chat
+  area of the active session (header bar with
+  sleep/resume/interrupt/force-stop — no "delete" button here,
+  deletion goes through the sidebar context menu to require a
+  deliberate right-click; see §10), reconnect/disconnect/error
+  banners, scroll-reverse chat + **↓/↑ scroll pills** (↓ = go to
+  bottom, hidden if already at bottom; ↑ = go up to the last user
+  message above the view, fixed above ↓, stays visible as long as
+  we're not at the absolute top or pagination still has messages to
+  load), ThinkingBar, input bar with mode-switch,
+  QuestionCard/ExitPlanCard/InlinePermissionCard when pending, and
+  the ToolPanel). Consumes `useClaudeSessionStream`. ClaudePanel
+  instantiates it with `key={selectedId}` to re-mount on session
+  change (module-level cache makes the switch instant). Mobile
+  mirror in `app/m/chat/MobileChat.tsx`: same pills
+  (`m-scroll-pill` / `m-scroll-up-pill`).
 
 ---
 
 ## 12. Auth, crypto, session
 
-- **Single-user** : `users` contient 1 ligne, créée à partir de
-  `MASTER_PASSWORD` + `MASTER_SALT` au seed.
-- **Login** : la page `/login` valide le mot de passe via scrypt, crée une row
-  `sessions` (TTL 24h sliding), pose le cookie `charon_session`.
-- **`middleware.ts`** : sur toute requête non `_next`/`favicon`/`/login`/
-  `/api/sync` : valide le cookie. API non auth → 401. Sinon redirect `/login`.
-- **`lib/server/auth.ts`** : helpers `createSession`/`getSession`/`touchSession`.
-- **`lib/server/session.ts`** : `requireSession()` (server components),
-  `requireApiSession()` (routes API).
-- **`lib/server/crypto.ts`** : AES-256-GCM, clé dérivée scrypt. Sert à
-  chiffrer ce qui doit l'être en DB (peu de choses actuellement).
+- **Single-user**: `users` contains 1 row, created from
+  `MASTER_PASSWORD` + `MASTER_SALT` at seed time.
+- **Login**: the `/login` page validates the password via scrypt,
+  creates a `sessions` row (24h sliding TTL), sets the
+  `charon_session` cookie.
+- **`middleware.ts`**: on every non-`_next`/`favicon`/`/login`/
+  `/api/sync` request: validates the cookie. Non-auth API → 401.
+  Otherwise redirect `/login`.
+- **`lib/server/auth.ts`**: `createSession`/`getSession`/`touchSession` helpers.
+- **`lib/server/session.ts`**: `requireSession()` (server components),
+  `requireApiSession()` (API routes).
+- **`lib/server/crypto.ts`**: AES-256-GCM, scrypt-derived key. Used
+  to encrypt what needs to be encrypted in DB (little currently).
 
 ---
 
-## 13. Sécurité
+## 13. Security
 
-- Le socket Unix de l'agent est en `chmod 600` ; pas d'auth additionnelle
-  entre Charon et l'agent — possession de la clé SSH = autorisation.
-- L'agent **n'écoute aucun port réseau** ; tout transite par SSH.
-- L'agent s'exécute typiquement en root (modèle existant). Pas de privesc
-  nouvelle introduite.
-- `SYNC_TOKEN` : pour `/api/sync` (Bearer). Rotate via `.env`.
-- Les secrets (`.env`) ne doivent **jamais** être commités. `MASTER_PASSWORD`,
-  `MASTER_SALT`, `SESSION_SECRET` sont critiques.
-- **Cookie session** (`charon_session`) : `httpOnly: true`, `sameSite: 'lax'`,
-  `secure: process.env.NODE_ENV === 'production'`. Modifier les deux endroits
-  qui le posent : `middleware.ts` (refresh) et `app/login/actions.ts`
-  (création initiale).
-- **Headers HTTP** (cf. `next.config.mjs`) : `X-Frame-Options: DENY`,
+- The agent's Unix socket is `chmod 600`; no additional auth
+  between Charon and the agent — possession of the SSH key =
+  authorization.
+- The agent **listens on no network port**; everything goes through SSH.
+- The agent typically runs as root (existing model). No new privesc
+  introduced.
+- `SYNC_TOKEN`: for `/api/sync` (Bearer). Rotate via `.env`.
+- Secrets (`.env`) must **never** be committed. `MASTER_PASSWORD`,
+  `MASTER_SALT`, `SESSION_SECRET` are critical.
+- **Session cookie** (`charon_session`): `httpOnly: true`,
+  `sameSite: 'lax'`,
+  `secure: process.env.NODE_ENV === 'production'`. Modify both
+  places that set it: `middleware.ts` (refresh) and
+  `app/login/actions.ts` (initial creation).
+- **HTTP headers** (see `next.config.mjs`): `X-Frame-Options: DENY`,
   `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: strict-origin-when-cross-origin`,
   `Permissions-Policy: camera=(), microphone=(), geolocation=()`,
-  `Strict-Transport-Security: max-age=31536000; includeSubDomains` (prod only).
-  Pas de CSP — Next inline des scripts SSR sans nonce, une CSP stricte
-  casserait le SSR. À implémenter avec nonce SSR si besoin un jour.
-- **Injection shell** : tout `filePath`/`cwd` interpolé dans une commande
-  `sshExec` doit passer par `shQuote()` (cf. §14 piège 11).
+  `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  (prod only). No CSP — Next inlines SSR scripts without a nonce, a
+  strict CSP would break SSR. To be implemented with SSR nonce if
+  ever needed.
+- **Shell injection**: every `filePath`/`cwd` interpolated into an
+  `sshExec` command must go through `shQuote()` (see §14 gotcha 11).
 
 ---
 
-## 14. Pièges / gotchas connus
+## 14. Known gotchas
 
-1. **`next build --turbopack` casse `next start` sur 15.5.18** → site sans
-   CSS/JS (404 sur `/_next/static/*`). Build sans turbopack en prod.
-2. **`.next` pollué par un `next dev` mort** → `next start` boucle en
+1. **`next build --turbopack` breaks `next start` on 15.5.18** → site
+   without CSS/JS (404 on `/_next/static/*`). Build without turbopack
+   in prod.
+2. **`.next` polluted by a dead `next dev`** → `next start` loops on
    "Could not find a production build". `rm -rf .next && next build`.
-3. **Snapshot Drizzle absent au commit** → migrations peuvent diverger.
-   Toujours commit `drizzle/*.sql` ET `drizzle/meta/`.
-4. **`color` ajouté deux fois** (migrations 0003 et 0004) — le second est
-   inerte mais reste un témoin à ne pas reproduire.
-5. **Agent out of date** : si `vps.agentPyzSha !== getBuiltPyzSha()`, l'UI
-   doit proposer le bouton update (`POST /api/vps/[id]/agent/update`). Ne pas
-   oublier de bump `__version__` dans `agent/charon_agent/__init__.py` quand
-   on touche au protocole.
-6. **`claude login` se fait par VPS** (pas de partage OAuth global), via
-   le `<LoginConsole>` (xterm SSH `-tt`).
-7. **Permissions `alwaysAllow` sont en mémoire** côté hub (par session, par
-   tool) — perdues au restart Charon. Voulu : la rétention permanente passe
-   par `permission_mode='auto'`.
-8. **better-sqlite3 + Next** : `serverExternalPackages: ['better-sqlite3']`
-   est obligatoire dans `next.config.mjs`. Sans ça, SSR crash.
-9. **SQLite WAL** : 3 fichiers (`.db`, `.db-shm`, `.db-wal`). Tous critiques.
-   `PRAGMA foreign_keys=ON` activé au boot.
-10. **`--turbopack` retiré du script `"build"`** (cf §3). Si tu le
-    réintroduis dans `package.json` — ou si tu lances `next build --turbopack`
-    manuellement — le site servira son HTML sans CSS ni JS. Marqueur :
-    présence de `.next/turbopack` et de chunks `turbopack-*.js`.
-11. **SSH injection** : tout `filePath`/`cwd`/slug interpolé dans une
-    commande `sshExec` **doit passer par `shQuote()`** (exporté de
-    `lib/server/claude/sshExec.ts`). Quoter `"$x"` ne suffit pas — `$`,
-    `` ` ``, `\\` et `\n` traversent. shQuote utilise les single quotes
-    POSIX qui sont opaques à tout sauf à `'`.
-12. **Handlers signaux module-level** : `sessionOps.ts` enregistre
-    `SIGTERM`/`SIGINT` à l'import. C'est gardé par
-    `process.env.NEXT_PHASE !== 'phase-production-build'` pour ne pas faire
-    `process.exit(0)` pendant `next build` (qui import les modules pour le
-    SSR analysis et reçoit des signaux entre les workers). Si tu ajoutes
-    d'autres handlers globaux à l'import d'un module server, applique la
-    même garde.
-13. **`interrupt` SDK n'annule pas un tool en cours**. Le SDK envoie un signal
-    mais `receive_response()` reste bloqué jusqu'à la fin de l'opération
-    courante. Pour vraiment couper, utiliser `force_stop` (cancel forcé du
-    main task agent, status → `sleeping` immédiat, resume possible). Le
-    bouton existe dans le header desktop et le menu mobile. Implémenté en
-    agent v0.3.0 — si un VPS est sur 0.2.0, l'UI affichera *agent out of
+3. **Drizzle snapshot missing at commit** → migrations can diverge.
+   Always commit `drizzle/*.sql` AND `drizzle/meta/`.
+4. **`color` added twice** (migrations 0003 and 0004) — the second
+   is inert but stays as a marker not to reproduce.
+5. **Agent out of date**: if `vps.agentPyzSha !== getBuiltPyzSha()`,
+   the UI must offer the update button
+   (`POST /api/vps/[id]/agent/update`). Don't forget to bump
+   `__version__` in `agent/charon_agent/__init__.py` when touching
+   the protocol.
+6. **`claude login` is per-VPS** (no shared global OAuth), via
+   `<LoginConsole>` (xterm SSH `-tt`).
+7. **`alwaysAllow` permissions are in memory** hub-side (per
+   session, per tool) — lost on Charon restart. By design:
+   permanent retention goes through `permission_mode='auto'`.
+8. **better-sqlite3 + Next**:
+   `serverExternalPackages: ['better-sqlite3']` is mandatory in
+   `next.config.mjs`. Without it, SSR crashes.
+9. **SQLite WAL**: 3 files (`.db`, `.db-shm`, `.db-wal`). All
+   critical. `PRAGMA foreign_keys=ON` enabled at boot.
+10. **`--turbopack` removed from the `"build"` script** (see §3).
+    If you reintroduce it in `package.json` — or if you run
+    `next build --turbopack` manually — the site will serve its
+    HTML with no CSS or JS. Marker: `.next/turbopack` and
+    `turbopack-*.js` chunks present.
+11. **SSH injection**: every `filePath`/`cwd`/slug interpolated
+    into an `sshExec` command **must go through `shQuote()`**
+    (exported from `lib/server/claude/sshExec.ts`). Quoting `"$x"`
+    is not enough — `$`, `` ` ``, `\\` and `\n` go through.
+    shQuote uses POSIX single quotes which are opaque to anything
+    but `'`.
+12. **Module-level signal handlers**: `sessionOps.ts` registers
+    `SIGTERM`/`SIGINT` at import. It's guarded by
+    `process.env.NEXT_PHASE !== 'phase-production-build'` to avoid
+    `process.exit(0)` during `next build` (which imports modules
+    for SSR analysis and receives signals between workers). If you
+    add other global handlers at server module import, apply the
+    same guard.
+13. **SDK `interrupt` does not cancel an in-flight tool**. The SDK
+    sends a signal but `receive_response()` stays blocked until
+    the current operation finishes. To really cut, use `force_stop`
+    (forced cancel of the agent main task, status → `sleeping`
+    immediately, resume possible). The button exists in the
+    desktop header and the mobile menu. Implemented in agent
+    v0.3.0 — if a VPS is on 0.2.0, the UI will show *agent out of
     date*.
-14. **SSE Charon-side est live-only — pas de ring buffer**. Au mount /
-    reconnexion / retour foreground, le client doit refetch via GET
-    `/api/claude/sessions/[id]` (la DB est source de vérité). Avant, le
-    SessionStream maintenait un ring buffer 200 events rejoué à chaque
-    subscribe SSE, MAIS le client faisait quand même un GET → events
-    traités deux fois (race + duplicates dans l'historique). On a tout
-    supprimé : pas de ring buffer ni de markers `history_begin/end`. Si
-    tu ajoutes une nouvelle vue, **fais un GET d'abord** — la SSE seule
-    ne suffit pas (elle ne fait que du live).
-15. **Architecture SSE = un seul stream multiplexé par browser**. Le
-    pattern est : 1 EventSource sur `/api/claude/events` (singleton
-    `app/globalEventStream.ts`), focus mutable via POST `/focus`. Pas
-    d'EventSource par session, pas de close/reopen sur switch. Pourquoi :
-    le navigateur limite à 6 connexions par origine en HTTP/1.1 (Apache
-    devant Charon n'a pas HTTP/2 activé), et fermer/réouvrir sur switch
-    coûte 50-150ms de latence visible. Côté serveur, le bus
-    `subscribeGlobalSessionEvents` reçoit TOUS les events tagués avec
-    sessionId ; le registre `eventConnections` filtre par focus avant
-    d'envoyer au client. **Si tu ajoutes un hook qui veut écouter des
-    events serveur, ne crée pas d'EventSource — abonne-toi au global
-    stream via `subscribeSession(sid, cb)` ou `subscribeAll(cb)`**.
-16. **Events low-volume vs high-volume**. Le serveur classe les events
-    en 2 catégories (cf. `eventConnections.ts` § LOW_VOLUME_EVENTS) :
-    low-volume (status, mode_changed, ready, session_id,
-    permission_request, user_question, exit_plan_request,
-    interaction_resolved, error) → envoyés à toutes les connexions.
-    High-volume (assistant_text, tool_use, tool_result, edit_snapshot,
-    todo_update, thinking, user_echo, stop, prefill_input,
-    reconnecting) → uniquement à la connexion focus. Si tu ajoutes un
-    nouvel event au protocole, range-le explicitement dans une des deux
-    catégories sinon il sera high-volume par défaut.
-17. **Per-token re-render = streaming qui lag**. `assistant_text` arrive
-    token par token (100+/sec sur Claude Sonnet 4.6). Si tu fais
-    `setState` à chaque token, tu re-render le sous-arbre 100x/sec.
-    `useClaudeSessionStream` batche via `requestAnimationFrame` (60Hz max).
-    Ne fais pas la même erreur si tu ajoutes un autre stream textuel.
-18. **Acks pessimistes sur les interactions**. `respondPermission` /
-    `respondQuestion` / `respondExitPlan` attendent l'OK du POST avant de
-    retirer la card de la queue (avant : c'était optimiste, l'UI se vidait
-    mais si le POST foirait, la card revenait au reload et confusion).
-    Sauf si t'as une bonne raison, garde ce pattern.
-19. **`cmd &;` est une syntax error en bash**. Si tu joins une liste de
-    commandes shell avec `'; '` et qu'une des commandes finit par `&`
-    (background), tu produis `cmd & ; next` qui fait sauter le parser :
-    `bash: -c: syntax error near unexpected token ';'`. Le piège réel
-    rencontré : `bootstrap.ts § installAgentService` faisait
-    `[...].join('; ')` sur un fallback nohup avec un `nohup ... &` au
-    milieu — l'install échouait silencieusement sur tout VPS fresh où
-    systemd-user était indispo. **Fix** : joindre avec `\n` plutôt qu'avec
-    `'; '` quand un item peut contenir un `&` terminal.
-20. **`'...\\'...'` ne fonctionne PAS en bash**. À l'intérieur d'une
-    single-quoted string, le backslash est **littéral** — tu ne peux pas
-    escape une single quote. Le pattern POSIX valide est `'...'\''...'`
-    (ferme, escape, rouvre). Si tu dois construire une commande qui
-    contient une chaîne avec des `'`, **base64-encode-la** au lieu de
-    quoter (cf. `bootstrap.ts § installAgentService` pour la ligne
-    crontab — bytes base64 → `base64 -d` côté VPS).
-21. **systemd-user "Failed to connect to bus" sur VPS fresh**. Sur un VPS
-    où root n'a jamais eu de session interactive, `systemctl --user` ne
-    peut pas trouver le bus dbus (`/run/user/$UID/bus`). `enable-linger`
-    seul ne suffit pas — il faut **forcer le démarrage du user manager**
-    avec `systemctl start user@$(id -u).service` AVANT le `daemon-reload`.
-    Sinon le bootstrap tombe sur le fallback nohup (qui marche, mais
-    perd les bénéfices de systemd : auto-restart, append:log, etc.).
-22. **Sessions install = pool mémoire, pattern shell**. Une session
-    install (`lib/server/install/installSession.ts`) est créée quand
-    l'user clique "install agent" sur un VPS. Elle wrap `bootstrapVps()`,
-    broadcast les events à des subscribers SSE et au bus global
-    (`subscribeInstallBus`). Max 1 par VPS — un 2e `startInstall(vpsId)`
-    pendant qu'une tourne déjà retourne l'existante. Au restart Charon :
-    tout est perdu (mémoire). Les events `install_started` /
-    `install_finished` sont classés low-volume → broadcast à toutes les
-    connexions du SSE multiplexé pour alimenter `<InstallNotificationPopup>`.
-23. **Échec SSH = abort tout le bootstrap**. Avant : si `tryVerify()`
-    tombait sur un SSH timeout/refus/auth, il retournait `reason: 'other'`
-    et `bootstrapVps()` poursuivait sur `install_sdk` (qui re-SSH-failait
-    après 4 minutes de timeout pip). Maintenant : `detectSshFailure(r:
-    SshResult)` dans `bootstrap.ts` reconnaît les patterns `ssh: connect
-    to host`, `Host key verification failed`, `Permission denied (...)`,
-    `kex_exchange_identification`, `Could not resolve hostname`, et le
-    sentinel `[timeout]` injecté par `sshExec`. Sur match : `tryVerify`
-    retourne `reason: 'ssh'` avec un message lisible, et `bootstrapVps`
-    yield `verify: error` + `done: error` immédiatement. Si tu ajoutes
-    une nouvelle phase dans `bootstrapVps`, **appelle `detectSshFailure`
-    sur le résultat de chaque `sshExec`** (cf. les 5 phases existantes qui
-    le font déjà) — sinon le piège revient.
-24. **Chats bloqués après `systemctl restart charon`**. Le SIGTERM handler
-    de `sessionOps.ts` flush juste les buffers assistant : il ne touche pas
-    aux statuts en DB. Conséquence : une session qui était en `'thinking'`
-    au moment du restart reste `'thinking'` en DB. Le bug avait DEUX moitiés :
+14. **Charon-side SSE is live-only — no ring buffer**. On mount /
+    reconnect / foreground return, the client must refetch via GET
+    `/api/claude/sessions/[id]` (the DB is source of truth).
+    Before, SessionStream maintained a 200-event ring buffer
+    replayed on every SSE subscribe, BUT the client did a GET
+    anyway → events processed twice (race + duplicates in
+    history). We removed everything: no ring buffer, no
+    `history_begin/end` markers. If you add a new view, **do a GET
+    first** — SSE alone is not enough (it only does live).
+15. **SSE architecture = a single multiplexed stream per browser**.
+    The pattern is: 1 EventSource on `/api/claude/events`
+    (singleton `app/globalEventStream.ts`), mutable focus via POST
+    `/focus`. No per-session EventSource, no close/reopen on
+    switch. Why: the browser caps at 6 connections per origin in
+    HTTP/1.1 (Apache in front of Charon doesn't have HTTP/2
+    enabled), and close/reopen on switch costs 50-150ms of visible
+    latency. Server-side, the `subscribeGlobalSessionEvents` bus
+    receives ALL events tagged with sessionId; the
+    `eventConnections` registry filters by focus before sending to
+    the client. **If you add a hook that wants to listen to server
+    events, don't create an EventSource — subscribe to the global
+    stream via `subscribeSession(sid, cb)` or `subscribeAll(cb)`**.
+16. **Low-volume vs high-volume events**. The server classifies
+    events into 2 categories (see `eventConnections.ts` §
+    LOW_VOLUME_EVENTS): low-volume (status, mode_changed, ready,
+    session_id, permission_request, user_question,
+    exit_plan_request, interaction_resolved, error) → sent to all
+    connections. High-volume (assistant_text, tool_use,
+    tool_result, edit_snapshot, todo_update, thinking, user_echo,
+    stop, prefill_input, reconnecting) → only to the focus
+    connection. If you add a new event to the protocol, classify
+    it explicitly into one of the two categories or it will be
+    high-volume by default.
+17. **Per-token re-render = laggy streaming**. `assistant_text`
+    arrives token by token (100+/sec on Claude Sonnet 4.6). If you
+    `setState` on every token, you re-render the subtree 100x/sec.
+    `useClaudeSessionStream` batches via `requestAnimationFrame`
+    (60Hz max). Don't make the same mistake if you add another
+    text stream.
+18. **Pessimistic acks on interactions**. `respondPermission` /
+    `respondQuestion` / `respondExitPlan` wait for the POST OK
+    before removing the card from the queue (before: it was
+    optimistic, the UI cleared but if the POST failed, the card
+    came back on reload and caused confusion). Unless you have a
+    good reason, keep this pattern.
+19. **`cmd &;` is a bash syntax error**. If you join a list of
+    shell commands with `'; '` and one of the commands ends with
+    `&` (background), you produce `cmd & ; next` which trips the
+    parser: `bash: -c: syntax error near unexpected token ';'`.
+    The real gotcha encountered: `bootstrap.ts §
+    installAgentService` was doing `[...].join('; ')` on a nohup
+    fallback with a `nohup ... &` in the middle — install was
+    silently failing on every fresh VPS where systemd-user was
+    unavailable. **Fix**: join with `\n` rather than `'; '` when
+    an item can end with a `&`.
+20. **`'...\\'...'` does NOT work in bash**. Inside a
+    single-quoted string, the backslash is **literal** — you
+    can't escape a single quote. The valid POSIX pattern is
+    `'...'\''...'` (close, escape, reopen). If you must build a
+    command containing a string with `'`s, **base64-encode it**
+    instead of quoting (see `bootstrap.ts § installAgentService`
+    for the crontab line — base64 bytes → `base64 -d` VPS-side).
+21. **systemd-user "Failed to connect to bus" on fresh VPS**. On
+    a VPS where root has never had an interactive session,
+    `systemctl --user` can't find the dbus bus
+    (`/run/user/$UID/bus`). `enable-linger` alone isn't enough —
+    you need to **force-start the user manager** with
+    `systemctl start user@$(id -u).service` BEFORE the
+    `daemon-reload`. Otherwise the bootstrap falls back to nohup
+    (which works, but loses systemd's benefits: auto-restart,
+    append:log, etc.).
+22. **Install sessions = in-memory pool, shell pattern**. An
+    install session (`lib/server/install/installSession.ts`) is
+    created when the user clicks "install agent" on a VPS. It
+    wraps `bootstrapVps()`, broadcasts events to SSE subscribers
+    and to the global bus (`subscribeInstallBus`). Max 1 per VPS
+    — a 2nd `startInstall(vpsId)` while one is already running
+    returns the existing one. On Charon restart: everything is
+    lost (in memory). The `install_started` / `install_finished`
+    events are classified low-volume → broadcast to all
+    connections of the multiplexed SSE to feed
+    `<InstallNotificationPopup>`.
+23. **SSH failure = abort the whole bootstrap**. Before: if
+    `tryVerify()` hit an SSH timeout/refusal/auth, it returned
+    `reason: 'other'` and `bootstrapVps()` proceeded to
+    `install_sdk` (which re-SSH-failed after 4 minutes of pip
+    timeout). Now: `detectSshFailure(r: SshResult)` in
+    `bootstrap.ts` recognizes patterns `ssh: connect to host`,
+    `Host key verification failed`, `Permission denied (...)`,
+    `kex_exchange_identification`, `Could not resolve hostname`,
+    and the `[timeout]` sentinel injected by `sshExec`. On a
+    match: `tryVerify` returns `reason: 'ssh'` with a readable
+    message, and `bootstrapVps` yields `verify: error` + `done:
+    error` immediately. If you add a new phase in `bootstrapVps`,
+    **call `detectSshFailure` on each `sshExec` result** (see the
+    5 existing phases that already do it) — otherwise the gotcha
+    returns.
+24. **Chats stuck after `systemctl restart charon`**. The SIGTERM
+    handler in `sessionOps.ts` just flushes assistant buffers: it
+    doesn't touch DB statuses. Consequence: a session that was in
+    `'thinking'` at restart time stays `'thinking'` in DB. The
+    bug had TWO halves:
 
-    **Moitié back-end** : `autoConnect` ne resumait QUE les sessions
-    `status='active'` — celles en `'thinking'`/`'starting'` étaient
-    ignorées, leur `SessionStream` jamais ré-attaché au listener agent,
-    et l'UI affichait un spinner éternel. Le user devait faire `force_stop`
-    puis `resume` à la main pour que `resumeSession()` re-fasse le
-    `stream.attach()`. **Fix** : (a) `autoConnect` couvre désormais
-    `active`/`thinking`/`starting` via `inArray`, et (b) un hook
-    `onStatus('connected')` appelle `reconcileVpsAgentState(vpsId, hello.
-    sessions)` à chaque (re)connexion SSH, qui utilise la liste des sessions
-    rapportée par `hello` comme source de vérité et (ré-)attache un
-    SessionStream pour chacune. Idempotent et exécuté à chaque reconnect
-    réseau aussi. Cf. `lib/server/agent/autoConnect.ts` +
+    **Backend half**: `autoConnect` only resumed sessions with
+    `status='active'` — those in `'thinking'`/`'starting'` were
+    ignored, their `SessionStream` never re-attached to the agent
+    listener, and the UI showed an eternal spinner. The user had
+    to do `force_stop` then `resume` by hand for
+    `resumeSession()` to redo the `stream.attach()`. **Fix**: (a)
+    `autoConnect` now covers
+    `active`/`thinking`/`starting` via `inArray`, and (b) an
+    `onStatus('connected')` hook calls
+    `reconcileVpsAgentState(vpsId, hello.sessions)` on every SSH
+    (re)connection, which uses the session list reported by
+    `hello` as source of truth and (re-)attaches a SessionStream
+    for each one. Idempotent and executed on every network
+    reconnect too. See `lib/server/agent/autoConnect.ts` +
     `lib/server/agent/sessionOps.ts § reconcileVpsAgentState`.
 
-    **Moitié front-end** : même quand le back recommence à streamer, le
-    browser ne refetchait PAS l'historique manqué pendant le drop SSE. La
-    SSE est live-only côté Charon (cf. piège 14) ; les messages persistés
-    en DB pendant le gap ne sont pas relayés. `useClaudeSessionStream`
-    refetchait au mount et sur `visibilitychange` mais PAS sur reconnect
-    SSE — l'user voyait son chat figé et devait refresh la page. **Fix**
-    dans `app/globalEventStream.ts` : l'`EventSource.onopen` compte les
-    opens ; à partir de la 2e (= reconnect), (i) re-POST `/api/claude/focus`
-    avec le focus courant — l'URL d'origine de l'EventSource utilise un
-    `?focus=` figé que l'auto-reconnect browser rejoue, ce qui peut écraser
-    le focus serveur si l'user a switché de session entre temps —, et (ii)
-    notifie les `subscribeReconnect` listeners. `useClaudeSessionStream`
-    s'y abonne et déclenche `refetchHistory()` → l'UI se met à jour seule.
-    Si tu ajoutes un autre hook qui maintient un state synchronisé avec la
-    DB serveur, **abonne-le aussi à `subscribeReconnect`** sinon il
-    restera figé après un restart back.
-25. **`edit_snapshot` et `event` noient `claudeSessionMessages`**. Une session
-    "active" écrit 4 rows par Edit (1 tool_use + 1 tool_result + 2 snapshots
-    before/after). Avec 240 Edits → 480 snapshots. Un slice `-200` naïf sur
-    la table renvoyait alors 186 snapshots + 14 events = 0 messages visibles
-    dans le chat (user/assistant/tool_use décalés hors fenêtre). **Fix**
-    (`app/api/claude/sessions/[id]/route.ts § loadMessageWindow`) : le limit
-    NE COMPTE QUE les rôles "chat" (`NON_PAGINATED_ROLES = ['edit_snapshot',
-    'event']` est filtré). Les snapshots/events sont chargés en pièces
-    jointes par range d'IDs (`gte(minId), lte(maxId)`) car ils sont émis
-    temporellement entre `tool_use` et `tool_result`. Si tu ajoutes un
-    nouveau rôle "side-channel" (genre log non-visible côté chat), **range-le
-    dans `NON_PAGINATED_ROLES`** sinon il consommera des slots de fenêtre.
-26. **Pagination scroll-up = cursor par `id`, pas par index**. Le client
-    déclenche `loadMoreHistory()` quand le scroll passe sous 400px du haut
-    visuel (column-reverse : `scrollHeight - clientHeight - |scrollTop| <
-    400`). Le hook envoie `GET ?before=<oldestChatId>&limit=200` et PRÉPEND
-    le résultat. Le browser fait du scroll anchoring nativement quand on
-    append à la fin du DOM (= haut visuel en column-reverse), donc **0 manip
-    manuelle de scrollTop**. Garde-fous dans `useClaudeSessionStream` :
-    `loadMoreInflightRef` empêche les appels concurrents, `hasMore=false`
-    + cursor null désactivent les loadMore suivants. **Note** : un
-    `refetchHistory()` (visibilitychange, doResume) RESET le cursor à la
-    fenêtre la plus récente — les pages étendues sont perdues côté state
-    ET côté cache (cf. `sessionCache.fetchAndCache` qui remplace l'entrée).
-    Acceptable car visibilitychange est rare ; l'user scroll juste à nouveau.
-    Pour les `edits` au merge : on n'écrase JAMAIS une entrée existante par
-    une plus ancienne du même `file_path` (le live/récent gagne — sinon on
-    perdrait le diff courant en chargeant un Edit antérieur sur le même file).
-27. **Post-bootstrap : persister `agentPyzSha` immédiatement**. La DB
-    `vps.agentPyzSha` est normalement mise à jour par `AgentClient` sur
-    `hello` (cf. `AgentClient.ts` § hello). Mais ce hello arrive **lazy** —
-    seulement quand quelqu'un demande à utiliser l'agent (`AgentClientPool.
-    get(vpsId)`), typiquement à la 1re création de session Claude. Donc
-    après un bootstrap réussi, la DB garde l'ancien `agentPyzSha` (souvent
-    `null`), l'UI calcule `agentOutOfDate=true` et propose "update agent"
-    alors qu'on vient juste d'installer le bon. **Fix** : `bootstrapVps`
-    écrit directement en DB après la phase `ping_agent` réussie (duplique
-    le code de `AgentClient.hello` mais c'est volontaire — état cohérent
-    dès la fin du bootstrap). Côté client, le handler `install_finished`
-    dans `ClaudePanel` patche aussi `agentPyzSha: builtPyzSha` localement
-    (par construction le pyz qu'on vient de déployer est la version
-    embarquée).
-28. **`python -m venv` peut foirer sur "ensurepip is not available"** —
-    typique Debian/Ubuntu où le module venv vit dans un paquet OS séparé
-    (`python3.12-venv` sur Ubuntu 24.04, `python3.11-venv` sur Debian 12,
-    etc.). Quand le VPS a déjà un python installé mais sans son paquet
-    venv, `verify` retourne `no_sdk` (python trouvé, SDK absent) donc la
-    phase `install_python` est SKIP — son `apt-get install python3-venv`
-    n'est jamais exécuté. On arrive direct dans `install_sdk` et le venv
-    pète avec un message du type *"The virtual environment was not created
-    successfully because ensurepip is not available"*. L'ancien fallback
-    `--without-pip` + `ensurepip --upgrade` ne marche PAS dans ce cas
-    (`ensurepip --upgrade` dépend exactement du module qui manque). **Fix**
-    dans `bootstrap.ts § install_sdk` : on tente le venv, on capture le
-    log, et si grep matche `ensurepip is not available` ou `No module
-    named ensurepip`, on `apt-get install -y python$PY_VER-venv`
-    (puis fallback `python3-venv`) avec/sans `sudo -n`, puis on retry le
-    `python -m venv`. Pour dnf : `dnf install python$PY_VER`. Best-effort,
-    si l'install échoue on yield `error` avec un message explicite. Si tu
-    découvres un autre distro/paquet à couvrir (Alpine : `py3-virtualenv`
-    p.ex.), ajoute une branche dans la condition `if command -v ...`.
-29. **Refonte kill→delete : il n'y a plus de "soft-kill"**. Historique :
-    il existait `sleep` (pause réversible), `kill` (statut `'killed'` non
-    reprenable mais historique gardé), et `hardDelete` (cascade DB). Le
-    bouton "pause" du header appelait en fait `kill` → faux ami UX. La
-    fusion `kill` ⊕ `hardDelete` → suppression définitive (1 seule action
-    destructive, avec `confirm()`) ne laisse plus que `sleep` comme état
-    réversible. **Le status DB `'killed'` n'existe plus** ; la migration
-    0008 a purgé les vestiges. **L'event `status='killed'`** survit
-    uniquement comme signal transient émis au moment de la suppression
-    pour notifier les SSE actives — le hook `useClaudeSessionStream` le
-    capture et déclenche `onKilled` (= navigation hors session). Pièges
-    associés :
-    - Si tu réintroduis un statut intermédiaire ("archived", "frozen",
-      etc.), **n'utilise pas `'killed'`** comme nom — il a un sens
-      transient et ça casserait le hook.
-    - L'enum TS `WorkerStatus` garde encore `'killed'` pour typer le
-      signal transient. Ne le retire pas.
-    - Côté agent Python (`charon_agent/server.py § kill_session`),
-      l'RPC retire la session du dict ET du state.json. Côté Charon ça
-      tombe juste au bon moment puisque on cascade DB en parallèle —
-      mais c'est best-effort : si l'agent est down, on a un orphan côté
-      agent (session SDK encore vivante, nettoyée au prochain restart
-      de l'agent puisque pas de row Charon → ignorée par
-      `reconcileVpsAgentState`).
-    - Si tu ajoutes une nouvelle action "kill agent-side mais garde l'UI",
-      ne marche pas en rond — c'est exactement ce qu'on a supprimé. Pose-toi
-      la question : "est-ce que `sleep` suffit ?" Spoiler : oui.
+    **Frontend half**: even when the backend resumes streaming,
+    the browser didn't refetch the history missed during the SSE
+    drop. The SSE is live-only Charon-side (see gotcha 14);
+    messages persisted in DB during the gap are not relayed.
+    `useClaudeSessionStream` refetched on mount and on
+    `visibilitychange` but NOT on SSE reconnect — the user saw
+    their chat frozen and had to refresh the page. **Fix** in
+    `app/globalEventStream.ts`: `EventSource.onopen` counts opens;
+    from the 2nd on (= reconnect), (i) re-POST
+    `/api/claude/focus` with the current focus — the EventSource's
+    original URL uses a fixed `?focus=` that the browser's
+    auto-reconnect replays, which can overwrite the server focus
+    if the user has switched session in the meantime —, and (ii)
+    notifies the `subscribeReconnect` listeners.
+    `useClaudeSessionStream` subscribes and triggers
+    `refetchHistory()` → the UI updates itself. If you add
+    another hook that maintains state synced with the server DB,
+    **subscribe it to `subscribeReconnect` too** otherwise it
+    will stay frozen after a backend restart.
+25. **`edit_snapshot` and `event` drown `claudeSessionMessages`**. An
+    "active" session writes 4 rows per Edit (1 tool_use + 1
+    tool_result + 2 before/after snapshots). With 240 Edits → 480
+    snapshots. A naive `-200` slice on the table then returned 186
+    snapshots + 14 events = 0 messages visible in the chat
+    (user/assistant/tool_use shifted out of the window). **Fix**
+    (`app/api/claude/sessions/[id]/route.ts § loadMessageWindow`):
+    the limit ONLY COUNTS "chat" roles (`NON_PAGINATED_ROLES =
+    ['edit_snapshot', 'event']` is filtered out). Snapshots/events
+    are loaded as attachments by ID range (`gte(minId), lte(maxId)`)
+    because they are emitted temporally between `tool_use` and
+    `tool_result`. If you add a new "side-channel" role (e.g. a
+    log invisible chat-side), **add it to `NON_PAGINATED_ROLES`**
+    otherwise it will consume window slots.
+26. **Scroll-up pagination = cursor by `id`, not by index**. The
+    client triggers `loadMoreHistory()` when scroll goes below
+    400px from the visual top (column-reverse:
+    `scrollHeight - clientHeight - |scrollTop| < 400`). The hook
+    sends `GET ?before=<oldestChatId>&limit=200` and PREPENDs the
+    result. The browser handles scroll anchoring natively when we
+    append to the end of the DOM (= visual top in column-reverse),
+    so **0 manual scrollTop manipulation**. Safeguards in
+    `useClaudeSessionStream`: `loadMoreInflightRef` prevents
+    concurrent calls, `hasMore=false` + cursor null disable
+    further loadMores. **Note**: a `refetchHistory()`
+    (visibilitychange, doResume) RESETS the cursor to the most
+    recent window — extended pages are lost both state-side AND
+    cache-side (see `sessionCache.fetchAndCache` which replaces
+    the entry). Acceptable because visibilitychange is rare; the
+    user just scrolls again. For `edits` at merge time: we NEVER
+    overwrite an existing entry with an older one of the same
+    `file_path` (the live/recent one wins — otherwise we'd lose
+    the current diff when loading an earlier Edit on the same
+    file).
+27. **Post-bootstrap: persist `agentPyzSha` immediately**. The DB
+    `vps.agentPyzSha` is normally updated by `AgentClient` on
+    `hello` (see `AgentClient.ts § hello`). But this hello
+    arrives **lazy** — only when someone asks to use the agent
+    (`AgentClientPool.get(vpsId)`), typically at the 1st Claude
+    session creation. So after a successful bootstrap, the DB
+    keeps the old `agentPyzSha` (often `null`), the UI computes
+    `agentOutOfDate=true` and offers "update agent" when we just
+    installed the right one. **Fix**: `bootstrapVps` writes
+    directly to the DB after the successful `ping_agent` phase
+    (duplicates the `AgentClient.hello` code but it's
+    intentional — consistent state right after bootstrap ends).
+    Client-side, the `install_finished` handler in `ClaudePanel`
+    also patches `agentPyzSha: builtPyzSha` locally (by
+    construction the pyz we just deployed is the embedded
+    version).
+28. **`python -m venv` can fail on "ensurepip is not available"** —
+    typical of Debian/Ubuntu where the venv module lives in a
+    separate OS package (`python3.12-venv` on Ubuntu 24.04,
+    `python3.11-venv` on Debian 12, etc.). When the VPS already
+    has a python installed but without its venv package, `verify`
+    returns `no_sdk` (python found, SDK missing) so the
+    `install_python` phase is SKIPped — its `apt-get install
+    python3-venv` is never executed. We go straight to
+    `install_sdk` and venv blows up with a message like *"The
+    virtual environment was not created successfully because
+    ensurepip is not available"*. The old `--without-pip` +
+    `ensurepip --upgrade` fallback does NOT work in this case
+    (`ensurepip --upgrade` depends on exactly the module that's
+    missing).
 
-| Question | Fichier(s) |
+    **Subtle twist**: when ensurepip fails, `python -m venv`
+    leaves a **partial venv** behind — the directory exists and
+    `bin/python` IS dropped (as a symlink), but pip never got
+    installed. So a naive check `[ ! -x ${VENV_PY} ]` is false
+    and any retry would skip the venv-creation block entirely,
+    then crash on `pip install` with *"No module named pip"*.
+    Equally fatal: the first attempt's recovery branch was gated
+    on `[ ! -x ${VENV_PY} ]`, so it didn't fire on the first run
+    either (since bin/python had been created).
+
+    **Fix** in `bootstrap.ts § install_sdk`: the health check is
+    `${VENV_PY} -m pip --version`, not `[ -x ${VENV_PY} ]`. If
+    pip doesn't work we (a) wipe `${VENV_DIR}`, (b) retry
+    `python -m venv`, (c) if pip is *still* broken AND the log
+    mentions ensurepip (or bin/python exists but pip doesn't),
+    we `apt-get install -y python$PY_VER-venv` (then fallback
+    `python3-venv`) with/without `sudo -n`, (d) wipe + recreate.
+    For dnf: `dnf install python$PY_VER`. Final gate verifies
+    both bin/python AND pip work; otherwise exit 11 with an
+    explicit message. The whole block is idempotent and
+    self-healing across retries. If you discover another
+    distro/package to cover (Alpine: `py3-virtualenv` for
+    example), add a branch in the `if command -v ...`
+    condition.
+29. **kill→delete refactor: no more "soft-kill"**. History: there
+    were `sleep` (reversible pause), `kill` (status `'killed'`
+    non-resumable but history kept), and `hardDelete` (DB
+    cascade). The header's "pause" button actually called `kill`
+    → UX false friend. The merge `kill` ⊕ `hardDelete` →
+    definitive deletion (1 single destructive action, with
+    `confirm()`) leaves only `sleep` as a reversible state.
+    **The DB status `'killed'` no longer exists**; migration
+    0008 purged the remnants. **The `status='killed'` event**
+    survives only as a transient signal emitted at deletion time
+    to notify active SSEs — the `useClaudeSessionStream` hook
+    catches it and triggers `onKilled` (= navigation out of
+    session). Associated gotchas:
+    - If you reintroduce an intermediate status ("archived",
+      "frozen", etc.), **don't use `'killed'`** as the name — it
+      has a transient meaning and would break the hook.
+    - The TS enum `WorkerStatus` still keeps `'killed'` to type
+      the transient signal. Don't remove it.
+    - Python agent-side (`charon_agent/server.py § kill_session`),
+      the RPC removes the session from the dict AND from
+      state.json. Charon-side this happens at the right moment
+      since we cascade the DB in parallel — but it's
+      best-effort: if the agent is down, we have an orphan
+      agent-side (SDK session still alive, cleaned up at the
+      next agent restart since there's no Charon row → ignored
+      by `reconcileVpsAgentState`).
+    - If you add a new "kill agent-side but keep the UI" action,
+      don't go in circles — that's exactly what we removed. Ask
+      yourself: "is `sleep` enough?" Spoiler: yes.
+30. **Multi-phase SSH flows MUST multiplex over a single
+    `SshSession`**. Every `sshExec()` call spawns a fresh `ssh`
+    process — without multiplexing each phase pays a full
+    TCP+SSH handshake (200-2000ms of latency per phase, more on
+    high-RTT links). Worse: a long phase like `install_sdk`
+    (apt-get + pip, 60-180s) can leave the VPS in a state where
+    the *next* fresh handshake hits `Connection timed out`
+    (observed in the wild after the venv recovery code triggers
+    `apt-get install python3.12-venv`). Likely causes: sshd
+    `MaxStartups` rate-limit, `conntrack` saturation, fail2ban,
+    machine in swap, etc. The handshake never gets to send a
+    SYN-ACK in time and the 10s `ConnectTimeout` fires.
+
+    **Fix** (`lib/server/claude/sshExec.ts`):
+    `openSshSession(vps)` / `closeSshSession(session)` +
+    `opts.session` on `sshExec`. Under the hood, ControlMaster
+    + ControlPath + ControlPersist=120 — the first call opens
+    the master, all subsequent calls piggyback on the same TCP.
+    `bootstrapVps` and `updateVpsAgent` both wrap their whole
+    flow in a `try { ... } finally { closeSshSession(...) }`.
+    The socket file lives at `tmpdir()/charon-ssh-<8hex>.sock`
+    (~30 chars, well under the 108-char `sun_path` limit on
+    Linux). If the master crashes mid-flow, `ControlMaster=auto`
+    transparently opens a new one — degraded but functional.
+
+    **If you add a new multi-phase SSH flow**, follow the same
+    pattern. Single one-shots (`shell.ts`, `claudeLoginCheck.ts`,
+    etc.) don't need it — the overhead doesn't matter for one
+    SSH connection. Threshold to start caring: ≥3 sequential
+    `sshExec` to the same VPS within a few seconds.
+
+| Question | File(s) |
 |---|---|
-| Liste des routes API | `app/api/**/route.ts` |
-| Wrapper fetch côté client | `lib/api.ts` |
-| Types request/response API (par méthode) | `lib/types/api.ts` |
-| Schéma DB | `lib/db/schema.ts` |
-| Migrations SQL | `drizzle/*.sql` + `drizzle/meta/_journal.json` |
-| Protocole JSON-RPC (TS) | `lib/server/agent/types.ts` |
-| Protocole JSON-RPC (Py) | `agent/charon_agent/protocol.py` |
-| Une session côté agent | `agent/charon_agent/session.py` |
-| Dispatch RPC côté agent | `agent/charon_agent/server.py` |
-| Connexion SSH + JSON-RPC client | `lib/server/agent/AgentClient.ts` |
+| List of API routes | `app/api/**/route.ts` |
+| Client-side fetch wrapper | `lib/api.ts` |
+| API request/response types (per method) | `lib/types/api.ts` |
+| DB schema | `lib/db/schema.ts` |
+| SQL migrations | `drizzle/*.sql` + `drizzle/meta/_journal.json` |
+| JSON-RPC protocol (TS) | `lib/server/agent/types.ts` |
+| JSON-RPC protocol (Py) | `agent/charon_agent/protocol.py` |
+| One session agent-side | `agent/charon_agent/session.py` |
+| RPC dispatch agent-side | `agent/charon_agent/server.py` |
+| SSH connection + JSON-RPC client | `lib/server/agent/AgentClient.ts` |
 | Bridge events ↔ DB ↔ SSE | `lib/server/agent/sessionOps.ts` |
 | Reconnect / pool | `lib/server/agent/AgentClientPool.ts` |
-| Phases d'install VPS | `lib/server/claude/bootstrap.ts` |
-| Pool install sessions (mémoire, ring buffer) | `lib/server/install/installSession.ts` |
-| Routes install | `app/api/installs/**` + `app/api/vps/[id]/installs/route.ts` |
-| Vue plein-écran log d'install | `app/InstallSessionView.tsx` |
-| Popup top-right "install OK/échec" | `app/InstallNotificationPopup.tsx` + `app/useInstallNotifications.ts` |
-| Overlay URL copier/ouvrir dans terminaux xterm | `app/TerminalUrlOverlay.tsx` + `app/useTerminalUrlOverlay.ts` + `app/terminalUrlDetect.ts` |
-| State machine UI desktop | `app/ClaudePanel.tsx` |
-| Handlers SSE côté client | `app/ClaudePanel.tsx` (`es.onmessage`) + `app/useClaudeSessionStream.ts` (utilisé par MobileChat) |
-| Hook React session (SSE + state + actions + pagination loadMoreHistory) | `app/useClaudeSessionStream.ts` |
-| Pagination scroll-up de l'historique (backend) | `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` |
-| Hook React feed cross-session (perms d'autres sessions en temps réel) | `app/useCrossSessionInteractionFeed.ts` |
-| Zone chat desktop (consomme le hook) | `app/ClaudeSessionView.tsx` |
-| Types partagés desktop/mobile | `app/sessionTypes.ts` |
-| Reconstruire l'état d'une session depuis les messages DB | `app/sessionRebuild.ts` |
-| Cache module-level d'une session | `app/sessionCache.ts` |
-| Brouillons textarea par session (preservés au switch, vidés au F5) | `app/inputDraftStore.ts` (hook `useInputDraft`) |
-| Vérif protocole Py↔TS aligné (script prebuild) | `scripts/check-protocol-sync.mjs` |
+| `claude login` check (SSH + DB) + 24h TTL variant | `lib/server/agent/claudeLoginCheck.ts` |
+| VPS install phases | `lib/server/claude/bootstrap.ts` |
+| SSH one-shot exec + multiplexing session | `lib/server/claude/sshExec.ts` |
+| Install session pool (in-memory, ring buffer) | `lib/server/install/installSession.ts` |
+| Install routes | `app/api/installs/**` + `app/api/vps/[id]/installs/route.ts` |
+| Full-screen install log view | `app/InstallSessionView.tsx` |
+| Top-right "install OK/failed" popup | `app/InstallNotificationPopup.tsx` + `app/useInstallNotifications.ts` |
+| Copy/open URL overlay in xterm terminals | `app/TerminalUrlOverlay.tsx` + `app/useTerminalUrlOverlay.ts` + `app/terminalUrlDetect.ts` |
+| Desktop UI state machine | `app/ClaudePanel.tsx` |
+| Client-side SSE handlers | `app/ClaudePanel.tsx` (`es.onmessage`) + `app/useClaudeSessionStream.ts` (used by MobileChat) |
+| React session hook (SSE + state + actions + loadMoreHistory pagination) | `app/useClaudeSessionStream.ts` |
+| History scroll-up pagination (backend) | `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` |
+| React cross-session feed hook (other sessions' perms in real time) | `app/useCrossSessionInteractionFeed.ts` |
+| Desktop chat area (consumes the hook) | `app/ClaudeSessionView.tsx` |
+| Shared desktop/mobile types | `app/sessionTypes.ts` |
+| Rebuild a session's state from DB messages | `app/sessionRebuild.ts` |
+| Module-level cache of a session | `app/sessionCache.ts` |
+| Per-session textarea drafts (preserved on switch, cleared on F5) | `app/inputDraftStore.ts` (hook `useInputDraft`) |
+| Py↔TS protocol alignment check (prebuild script) | `scripts/check-protocol-sync.mjs` |
 | Markdown / tool cards | `app/Message.tsx` |
 | Diffs / todos / tools | `app/ToolPanel.tsx` |
 | Permission popup | `app/PermissionPopup.tsx` |
 | AskUserQuestion form | `app/QuestionCard.tsx` |
 | ExitPlanMode UI | `app/ExitPlanCard.tsx` |
-| Sidebar VPS | `app/Sidebar.tsx` |
-| Folders d'organisation VPS (DnD + collapse) | `lib/db/schema.ts` (`vpsFolders`), `app/api/vps-folders/**`, `app/DataModal.tsx` (DnD), `app/Sidebar.tsx` (rendu groupé) |
+| VPS sidebar | `app/Sidebar.tsx` |
+| VPS organization folders (DnD + collapse) | `lib/db/schema.ts` (`vpsFolders`), `app/api/vps-folders/**`, `app/DataModal.tsx` (DnD), `app/Sidebar.tsx` (grouped rendering) |
 | Mobile | `app/m/**` |
 | Auth (cookie, scrypt) | `lib/server/auth.ts`, `lib/server/session.ts` |
-| Build du pyz | `agent/build.sh` |
+| pyz build | `agent/build.sh` |
 | Boot init (seed + autoConnect) | `lib/server/seed.ts` |
-| Migration data v2 → sleeping | `lib/server/migrationV2.ts` |
+| Data migration v2 → sleeping | `lib/server/migrationV2.ts` |
 
 ---
 
-## 16. Commandes à connaître
+## 16. Commands to know
 
 ```bash
 # Dev
 npm run dev                                # turbopack dev, 127.0.0.1:10556
 
-# Prod (sur le serveur)
-npx next build                             # SANS --turbopack !
+# Prod (on the server)
+npx next build                             # WITHOUT --turbopack!
 systemctl restart charon
 journalctl -u charon -f
 
 # DB
-npm run db:generate                        # après édition de schema.ts
-npm run db:migrate                         # applique
-sqlite3 data/charon.db                     # inspection
+npm run db:generate                        # after editing schema.ts
+npm run db:migrate                         # apply
+sqlite3 data/charon.db                     # inspect
 
 # Agent
 bash agent/build.sh                        # → agent/dist/charon-agent.pyz
-python3 -m charon_agent                    # daemon en local
-./agent/dist/charon-agent.pyz --connect    # mode proxy stdio↔sock
+python3 -m charon_agent                    # daemon locally
+./agent/dist/charon-agent.pyz --connect    # stdio↔sock proxy mode
 
-# Sur un VPS (debug)
+# On a VPS (debug)
 ssh root@<ip> systemctl --user status charon-agent
 ssh root@<ip> tail -f .charon/agent.log
 echo '{"id":1,"method":"ping"}' | ssh root@<ip> ~/.charon/charon-agent.pyz --connect
@@ -1349,48 +1482,54 @@ echo '{"id":1,"method":"ping"}' | ssh root@<ip> ~/.charon/charon-agent.pyz --con
 
 ---
 
-## 17. Quand tu touches au repo
+## 17. When you touch the repo
 
-**Rappel** : si une de ces modifications change un fait documenté ici,
-**mets à jour ce CLAUDE.md dans le même commit** (cf. bandeau du haut).
+**Reminder**: if one of these changes alters a fact documented
+here, **update this CLAUDE.md in the same commit** (see top
+banner).
 
-- **Modifier le protocole JSON-RPC** : édite à la fois `agent/charon_agent/server.py`
-  (dispatch + handlers), `agent/charon_agent/protocol.py` (set METHODS),
-  `lib/server/agent/types.ts` (miroir TS, **union `AgentMethodName` ET `AgentEvent`**),
-  `lib/server/agent/AgentClient.ts` (le wrapper de méthode), et bump
-  `agent/charon_agent/__init__.py` `__version__`. Rebuild le `.pyz`
-  (`bash agent/build.sh`) → le SHA changera → tous les VPS apparaîtront
-  "out of date" dans l'UI tant que tu n'as pas push l'update.
-  **→ Mets à jour §6 (méthodes/events) et le bump de version.**
-  **Garde-fou automatique** : `scripts/check-protocol-sync.mjs` est exécuté
-  par `npm run build` (prebuild). Il compare le set Python `METHODS` à
-  l'union TS `AgentMethodName` ; si drift, le build échoue avec un message
-  pointant les noms manquants. Pas besoin de t'en souvenir, **le build te le
-  rappellera**.
-- **Ajouter un event** : `_emit("nouveau_event", session_id=..., ...)` dans
-  `session.py`, ajoute le type côté `lib/server/agent/types.ts` et le handler
-  côté `sessionOps.ts` puis dans `ClaudePanel.tsx`. **→ Ajoute la ligne dans
-  les tables §6 (events) et §9 (mapping SSE).**
-- **Nouveau champ DB** : édite `lib/db/schema.ts`, `npm run db:generate`,
-  vérifie le SQL, `npm run db:migrate`, commit le `.sql` et le snapshot.
-  **→ Ajoute la migration dans la timeline §4 et le champ dans le détail
-  de la table.**
-- **Nouvelle route API** : crée le `route.ts`, ajoute le wrapper dans
-  `lib/api.ts`. **→ Ajoute la ligne dans le catalogue §8.**
-- **Nouveau composant UI** : préfère éditer un existant (pas de duplication).
-  La majorité de l'état UI vit dans `ClaudePanel.tsx`. **→ Ajoute le
-  composant dans la table §11 si c'est un composant majeur, et dans le
-  Quick lookup §15.**
-- **Permissions / hooks SDK** : tout passe par `agent/charon_agent/session.py`
-  (`_pre_tool_use`, `_post_tool_use`, `_can_use_tool`, `_is_safe_bash`).
-  C'est là qu'on whiteliste/blacklist.
-- **Changement d'infra** (systemd unit, reverse proxy, paths sur VPS, env
-  vars) : **→ Mets à jour §3 (systemd), §3 (.env), §5 (fichiers VPS), et
-  ajoute un piège en §14 si c'est subtil.**
-- **Nouveau footgun découvert** : **→ §14 sans hésiter.** Préviens les
-  futurs agents avant qu'ils marchent dessus.
+- **Modify the JSON-RPC protocol**: edit
+  `agent/charon_agent/server.py` (dispatch + handlers),
+  `agent/charon_agent/protocol.py` (METHODS set),
+  `lib/server/agent/types.ts` (TS mirror, **`AgentMethodName` AND
+  `AgentEvent` unions**), `lib/server/agent/AgentClient.ts` (the
+  method wrapper), and bump `agent/charon_agent/__init__.py`
+  `__version__`. Rebuild the `.pyz` (`bash agent/build.sh`) → the
+  SHA will change → all VPSes will appear "out of date" in the UI
+  until you push the update.
+  **→ Update §6 (methods/events) and bump the version.**
+  **Automatic safeguard**: `scripts/check-protocol-sync.mjs` is
+  run by `npm run build` (prebuild). It compares the Python
+  `METHODS` set to the TS `AgentMethodName` union; on drift, the
+  build fails with a message pointing to the missing names. No
+  need to remember, **the build will remind you**.
+- **Add an event**: `_emit("new_event", session_id=..., ...)` in
+  `session.py`, add the type in `lib/server/agent/types.ts` and
+  the handler in `sessionOps.ts` then in `ClaudePanel.tsx`.
+  **→ Add the line to the §6 (events) and §9 (SSE mapping)
+  tables.**
+- **New DB field**: edit `lib/db/schema.ts`, `npm run db:generate`,
+  check the SQL, `npm run db:migrate`, commit the `.sql` and the
+  snapshot. **→ Add the migration to the §4 timeline and the
+  field to the table detail.**
+- **New API route**: create the `route.ts`, add the wrapper in
+  `lib/api.ts`. **→ Add the line to the §8 catalog.**
+- **New UI component**: prefer editing an existing one (no
+  duplication). Most UI state lives in `ClaudePanel.tsx`.
+  **→ Add the component to the §11 table if it's a major
+  component, and to the Quick lookup §15.**
+- **Permissions / SDK hooks**: everything goes through
+  `agent/charon_agent/session.py` (`_pre_tool_use`,
+  `_post_tool_use`, `_can_use_tool`, `_is_safe_bash`). That's
+  where we whitelist/blacklist.
+- **Infra change** (systemd unit, reverse proxy, VPS paths, env
+  vars): **→ Update §3 (systemd), §3 (.env), §5 (VPS files), and
+  add a gotcha in §14 if it's subtle.**
+- **Newly discovered footgun**: **→ §14 without hesitation.**
+  Warn future agents before they walk into it.
 
 ---
 
-Bonne route. En cas de doute, lis aussi `docs/adr-001-charon-agent.md` qui
-explique le **pourquoi** des choix d'architecture.
+Safe travels. When in doubt, also read
+`docs/adr-001-charon-agent.md` which explains the **why** of the
+architecture choices.
