@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import type { Vps, VpsPath, ClaudeSession } from '@/lib/db/schema';
+import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 import type { RowColor } from '../../SessionContextMenu';
 import NewSessionSheet from '../NewSessionSheet';
@@ -43,6 +43,7 @@ const COLLAPSED_KEY = 'm.hub.claude.collapsedVps';
 
 type Props = {
   vpsList: Vps[];
+  vpsFolders: VpsFolder[];
   vpsPaths: VpsPath[];
   initialSessions: ClaudeSession[];
 };
@@ -74,11 +75,16 @@ function formatAge(unixSeconds: number | null | undefined): string {
   return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
 }
 
-export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Props) {
+export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsPaths, initialSessions }: Props) {
   const router = useRouter();
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
   const [shells, setShells] = useState<ShellListItem[]>([]);
+  // Collapse par-VPS : conservé en localStorage (par-device, comme desktop).
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  // Liste des dossiers — synchronisée à intervalle régulier avec le serveur
+  // pour qu'un toggle desktop se reflète mobile (collapsed est persisté en DB
+  // via PATCH /api/vps-folders/[id], cf. CLAUDE.md §4 vps_folders).
+  const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [newSheet, setNewSheet] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [ctxMenu, setCtxMenu] = useState<
     | { kind: 'session'; session: SessionListItem }
@@ -86,7 +92,7 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
     | null
   >(null);
 
-  // Persiste l'état collapse
+  // Persiste l'état collapse par-VPS (localStorage seulement, par-device)
   useEffect(() => {
     try {
       const raw = localStorage.getItem(COLLAPSED_KEY);
@@ -103,7 +109,22 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
     });
   }
 
-  // Poll sessions toutes les 5s
+  // Toggle collapsed d'un dossier — optimiste, persisté en DB (PATCH).
+  // Le rollback en cas d'échec revert l'état local. Sur desktop on a la même
+  // approche dans ClaudePanel.onToggleFolderCollapsed.
+  async function toggleFolderCollapsed(folderId: string, collapsedNext: boolean) {
+    setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsedNext ? 1 : 0 } : f));
+    try {
+      await api.updateVpsFolder(folderId, { collapsed: collapsedNext });
+    } catch (e: any) {
+      // Rollback : reapply l'inverse pour rester cohérent
+      setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsedNext ? 0 : 1 } : f));
+      alert('toggle folder : ' + (e?.message ?? e));
+    }
+  }
+
+  // Poll sessions + folders toutes les 5s. Les folders sont sync pour qu'un
+  // toggle desktop (changement DB) se propage côté mobile sans refresh.
   const refresh = useCallback(async () => {
     try {
       const r = (await api.listClaudeSessions()) as { sessions: SessionListItem[] };
@@ -112,6 +133,10 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
     try {
       const r = await api.listShells();
       setShells(r?.shells ?? []);
+    } catch {}
+    try {
+      const r = await api.listVpsFolders();
+      setVpsFolders(r.folders);
     } catch {}
   }, []);
   useEffect(() => {
@@ -142,6 +167,42 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
     }
     return m;
   }, [vpsPaths]);
+
+  // Groupe les VPS par folderId, en respectant l'ordre `position` intra-folder.
+  // Mêmes règles que Sidebar.tsx desktop.
+  const vpsByFolder = useMemo(() => {
+    const m = new Map<string, Vps[]>();
+    for (const v of vpsList) {
+      const arr = m.get(v.folderId) ?? [];
+      arr.push(v);
+      m.set(v.folderId, arr);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.position - b.position);
+    return m;
+  }, [vpsList]);
+
+  // Folders triés par position, avec règle "default last". Si un VPS pointe
+  // vers un folderId inconnu, on crée un dossier virtuel "(orphelins)" en bas.
+  const sortedFolders = useMemo(() => {
+    const sorted = [...vpsFolders].sort((a, b) => {
+      if (a.id === 'default') return 1;
+      if (b.id === 'default') return -1;
+      return a.position - b.position;
+    });
+    const known = new Set(sorted.map((f) => f.id));
+    const orphanedFolderIds = new Set<string>();
+    for (const v of vpsList) if (!known.has(v.folderId)) orphanedFolderIds.add(v.folderId);
+    if (orphanedFolderIds.size > 0) {
+      sorted.push({
+        id: '__orphans__',
+        name: '(orphelins)',
+        position: 999999,
+        collapsed: 0,
+        createdAt: 0,
+      } as VpsFolder);
+    }
+    return sorted;
+  }, [vpsFolders, vpsList]);
 
   function openSession(id: string) {
     router.push(`/m/chat?id=${encodeURIComponent(id)}`);
@@ -210,6 +271,149 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
     }
   }
 
+  // Rendu d'une carte VPS — extrait pour pouvoir la rendre depuis le loop
+  // folder. Toute la logique groups/paths/sessions est ici (identique au
+  // pré-folders, simplement déplacée dans une fonction).
+  function renderVpsCard(v: Vps) {
+    const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
+    const vpsShells = shells.filter((sh) => sh.vpsId === v.id);
+    const paths = pathsByVps.get(v.id) ?? [];
+
+    const groups = new Map<number | null, {
+      path: VpsPath | null; sessions: SessionListItem[]; shells: ShellListItem[];
+    }>();
+    for (const p of paths) {
+      groups.set(p.id, { path: p, sessions: [], shells: [] });
+    }
+    for (const s of vpsSessions) {
+      const best = bestPathFor(s.cwd, paths);
+      const key = best ? best.id : null;
+      if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
+      groups.get(key)!.sessions.push(s);
+    }
+    for (const sh of vpsShells) {
+      const best = sh.cwd ? bestPathFor(sh.cwd, paths) : null;
+      const key = best ? best.id : null;
+      if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
+      groups.get(key)!.shells.push(sh);
+    }
+    for (const g of groups.values()) {
+      g.sessions.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    }
+
+    const isCollapsed = collapsed.has(v.id);
+    const activeCount = vpsSessions.filter((s) =>
+      ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
+    ).length;
+    const agentStatus = (v as any).agentStatus ?? 'unknown';
+
+    return (
+      <section key={v.id} className={`m-vps-card agent-${agentStatus}${isCollapsed ? ' collapsed' : ''}`}>
+        <div className="m-vps-head" onClick={() => toggleCollapsed(v.id)}>
+          <span className="m-vps-caret">{isCollapsed ? '▸' : '▾'}</span>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span className="m-vps-name">{v.name}</span>
+            <span className="m-vps-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
+          </div>
+          <span className={`m-vps-count${activeCount === 0 ? ' zero' : ''}`}>
+            {activeCount}/{vpsSessions.length}
+          </span>
+        </div>
+
+        {!isCollapsed && (
+          <div className="m-vps-body">
+            {paths.map((p) => {
+              const g = groups.get(p.id);
+              return (
+                <div key={p.id} className="m-path-block">
+                  <div className="m-path-head">
+                    <span className="m-path-label">{labelOf(p)}</span>
+                    <span className="m-path-cwd">{p.path}</span>
+                    <button
+                      className="m-path-action"
+                      onClick={() => setNewSheet({ vpsId: v.id, cwd: p.path })}
+                      title="nouvelle session"
+                      aria-label="nouvelle session"
+                    >+</button>
+                    <button
+                      className="m-path-action"
+                      onClick={() => startNewShell(v.id, p.path)}
+                      title="nouveau shell"
+                      aria-label="nouveau shell"
+                      style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
+                    >⌨</button>
+                  </div>
+                  <div className="m-path-sessions">
+                    {g?.sessions.map((s) => (
+                      <SessionRow
+                        key={s.id} s={s}
+                        onTap={() => openSession(s.id)}
+                        onLongPress={() => setCtxMenu({ kind: 'session', session: s })}
+                      />
+                    ))}
+                    {g?.shells.map((sh) => (
+                      <ShellRow
+                        key={sh.id} sh={sh}
+                        onTap={() => openShell(sh.id)}
+                        onLongPress={() => setCtxMenu({ kind: 'shell', shell: sh })}
+                      />
+                    ))}
+                    {(g?.sessions.length ?? 0) === 0 && (g?.shells.length ?? 0) === 0 && (
+                      <div style={{ fontSize: 12, color: 'var(--parchment-soft)', fontStyle: 'italic', padding: '6px 0' }}>
+                        aucune session
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {(() => {
+              const orphSessions = groups.get(null)?.sessions ?? [];
+              const orphShells = groups.get(null)?.shells ?? [];
+              if (orphSessions.length === 0 && orphShells.length === 0 && paths.length > 0) return null;
+              return (
+                <div className="m-path-block">
+                  <div className="m-path-head">
+                    <span className="m-path-label">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
+                    <button
+                      className="m-path-action"
+                      onClick={() => setNewSheet({ vpsId: v.id })}
+                      title="nouvelle session"
+                      aria-label="nouvelle session"
+                    >+</button>
+                    <button
+                      className="m-path-action"
+                      onClick={() => startNewShell(v.id, null)}
+                      title="nouveau shell"
+                      style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
+                    >⌨</button>
+                  </div>
+                  <div className="m-path-sessions">
+                    {orphSessions.map((s) => (
+                      <SessionRow
+                        key={s.id} s={s}
+                        onTap={() => openSession(s.id)}
+                        onLongPress={() => setCtxMenu({ kind: 'session', session: s })}
+                      />
+                    ))}
+                    {orphShells.map((sh) => (
+                      <ShellRow
+                        key={sh.id} sh={sh}
+                        onTap={() => openShell(sh.id)}
+                        onLongPress={() => setCtxMenu({ kind: 'shell', shell: sh })}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <>
       <header className="m-topbar">
@@ -239,137 +443,48 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
           </div>
         )}
 
-        {vpsList.map((v) => {
-          const vpsSessions = sessions.filter((s) => s.vpsId === v.id);
-          const vpsShells = shells.filter((sh) => sh.vpsId === v.id);
-          const paths = pathsByVps.get(v.id) ?? [];
-
-          const groups = new Map<number | null, {
-            path: VpsPath | null; sessions: SessionListItem[]; shells: ShellListItem[];
-          }>();
-          for (const p of paths) {
-            groups.set(p.id, { path: p, sessions: [], shells: [] });
+        {sortedFolders.map((folder) => {
+          let folderVps: Vps[];
+          if (folder.id === '__orphans__') {
+            const known = new Set(vpsFolders.map((f) => f.id));
+            folderVps = vpsList.filter((v) => !known.has(v.folderId));
+          } else {
+            folderVps = vpsByFolder.get(folder.id) ?? [];
           }
-          for (const s of vpsSessions) {
-            const best = bestPathFor(s.cwd, paths);
-            const key = best ? best.id : null;
-            if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
-            groups.get(key)!.sessions.push(s);
-          }
-          for (const sh of vpsShells) {
-            const best = sh.cwd ? bestPathFor(sh.cwd, paths) : null;
-            const key = best ? best.id : null;
-            if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
-            groups.get(key)!.shells.push(sh);
-          }
-
-          const isCollapsed = collapsed.has(v.id);
-          const activeCount = vpsSessions.filter((s) =>
-            ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
+          // Compteur agrégé : sessions actives à travers tous les VPS du dossier
+          const folderActiveCount = sessions.filter(
+            (s) => folderVps.some((v) => v.id === s.vpsId) && ACTIVE_STATUSES.has(s.liveStatus ?? s.status),
           ).length;
-          const agentStatus = (v as any).agentStatus ?? 'unknown';
+          const folderCollapsed = folder.collapsed === 1;
 
           return (
-            <section key={v.id} className={`m-vps-card agent-${agentStatus}${isCollapsed ? ' collapsed' : ''}`}>
-              <div className="m-vps-head" onClick={() => toggleCollapsed(v.id)}>
-                <span className="m-vps-caret">{isCollapsed ? '▸' : '▾'}</span>
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span className="m-vps-name">{v.name}</span>
-                  <span className="m-vps-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
-                </div>
-                <span className={`m-vps-count${activeCount === 0 ? ' zero' : ''}`}>
-                  {activeCount}/{vpsSessions.length}
-                </span>
+            <section key={folder.id} className={`m-folder-section${folderCollapsed ? ' m-folder-collapsed' : ''}`}>
+              <div
+                className="m-folder-head"
+                onClick={() => {
+                  if (folder.id === '__orphans__') return;
+                  toggleFolderCollapsed(folder.id, !folderCollapsed);
+                }}
+                role="button"
+                aria-expanded={!folderCollapsed}
+                title={folderCollapsed ? 'cliquer pour déplier le dossier' : 'cliquer pour replier le dossier'}
+              >
+                <span className="m-folder-caret">{folderCollapsed ? '▸' : '▾'}</span>
+                <span className="m-folder-glyph">▤</span>
+                <span className="m-folder-name">{folder.name}</span>
+                <span className="m-folder-count" title={`${folderVps.length} VPS dans ce dossier`}>{folderVps.length}</span>
+                {folderActiveCount > 0 && (
+                  <span className="m-folder-active-count" title={`${folderActiveCount} session(s) active(s) dans ce dossier`}>
+                    {folderActiveCount}
+                  </span>
+                )}
               </div>
-
-              {!isCollapsed && (
-                <div className="m-vps-body">
-                  {paths.map((p) => {
-                    const g = groups.get(p.id);
-                    return (
-                      <div key={p.id} className="m-path-block">
-                        <div className="m-path-head">
-                          <span className="m-path-label">{labelOf(p)}</span>
-                          <span className="m-path-cwd">{p.path}</span>
-                          <button
-                            className="m-path-action"
-                            onClick={() => setNewSheet({ vpsId: v.id, cwd: p.path })}
-                            title="nouvelle session"
-                            aria-label="nouvelle session"
-                          >+</button>
-                          <button
-                            className="m-path-action"
-                            onClick={() => startNewShell(v.id, p.path)}
-                            title="nouveau shell"
-                            aria-label="nouveau shell"
-                            style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
-                          >⌨</button>
-                        </div>
-                        <div className="m-path-sessions">
-                          {g?.sessions.map((s) => (
-                            <SessionRow
-                              key={s.id} s={s}
-                              onTap={() => openSession(s.id)}
-                              onLongPress={() => setCtxMenu({ kind: 'session', session: s })}
-                            />
-                          ))}
-                          {g?.shells.map((sh) => (
-                            <ShellRow
-                              key={sh.id} sh={sh}
-                              onTap={() => openShell(sh.id)}
-                              onLongPress={() => setCtxMenu({ kind: 'shell', shell: sh })}
-                            />
-                          ))}
-                          {(g?.sessions.length ?? 0) === 0 && (g?.shells.length ?? 0) === 0 && (
-                            <div style={{ fontSize: 12, color: 'var(--parchment-soft)', fontStyle: 'italic', padding: '6px 0' }}>
-                              aucune session
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {(() => {
-                    const orphSessions = groups.get(null)?.sessions ?? [];
-                    const orphShells = groups.get(null)?.shells ?? [];
-                    if (orphSessions.length === 0 && orphShells.length === 0 && paths.length > 0) return null;
-                    return (
-                      <div className="m-path-block">
-                        <div className="m-path-head">
-                          <span className="m-path-label">{paths.length === 0 ? 'sans path enregistré' : 'autres'}</span>
-                          <button
-                            className="m-path-action"
-                            onClick={() => setNewSheet({ vpsId: v.id })}
-                            title="nouvelle session"
-                            aria-label="nouvelle session"
-                          >+</button>
-                          <button
-                            className="m-path-action"
-                            onClick={() => startNewShell(v.id, null)}
-                            title="nouveau shell"
-                            style={{ fontFamily: 'var(--mono)', fontSize: 14 }}
-                          >⌨</button>
-                        </div>
-                        <div className="m-path-sessions">
-                          {orphSessions.map((s) => (
-                            <SessionRow
-                              key={s.id} s={s}
-                              onTap={() => openSession(s.id)}
-                              onLongPress={() => setCtxMenu({ kind: 'session', session: s })}
-                            />
-                          ))}
-                          {orphShells.map((sh) => (
-                            <ShellRow
-                              key={sh.id} sh={sh}
-                              onTap={() => openShell(sh.id)}
-                              onLongPress={() => setCtxMenu({ kind: 'shell', shell: sh })}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
+              {!folderCollapsed && (
+                <div className="m-folder-body">
+                  {folderVps.map((v) => renderVpsCard(v))}
+                  {folderVps.length === 0 && folder.id !== '__orphans__' && (
+                    <div className="m-folder-empty">aucun VPS dans ce dossier</div>
+                  )}
                 </div>
               )}
             </section>
@@ -394,7 +509,7 @@ export default function MobileSelect({ vpsList, vpsPaths, initialSessions }: Pro
           initialName={ctxMenu.session.name ?? ''}
           currentColor={(ctxMenu.session as any).color}
           canKill={ctxMenu.session.status !== 'killed'}
-          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà tuée' : undefined}
+          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà en pause' : undefined}
           onRename={(name) => renameSession(ctxMenu.session.id, name)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color: RowColor) => patchSession(ctxMenu.session.id, { color })}

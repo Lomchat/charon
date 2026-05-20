@@ -57,6 +57,14 @@ export const vps = sqliteTable('vps', {
   // de __version__. Comparé au sha du .pyz embarqué dans le dashboard.
   agentPyzSha: text('agent_pyz_sha'),
   agentLastSeenAt: integer('agent_last_seen_at'),
+  // État du `claude login` sur ce VPS. 1 = connecté (oauth.refresh_token
+  // présent), 0 = non connecté, NULL = jamais vérifié. Sert à masquer le
+  // bouton "claude login" dans la sidebar quand inutile. Mis à jour par
+  // - phase `check_login` du bootstrap (cf. bootstrap.ts)
+  // - POST /api/vps/[id]/claude/check-login (déclenché à la fermeture de
+  //   LoginConsole, ou à la demande)
+  claudeLoggedIn: integer('claude_logged_in'),
+  claudeLoggedInCheckedAt: integer('claude_logged_in_checked_at'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 

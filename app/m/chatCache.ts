@@ -5,4 +5,5 @@
 // `../chatCache` dans `app/m/`. Préférer le nouveau chemin pour le code neuf.
 export {
   getCached, isCacheFresh, fetchAndCache, prefetchAll, invalidate,
+  extendWithOlder,
 } from '../sessionCache';

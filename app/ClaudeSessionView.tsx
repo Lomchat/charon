@@ -11,19 +11,23 @@ import type {
   PermissionRequest, PendingQuestion, PendingExitPlan, ToolCallEntry,
 } from './sessionTypes';
 import { useClaudeSessionStream, type StreamCache } from './useClaudeSessionStream';
-import { getCached, fetchAndCache, invalidate as invalidateCache } from './sessionCache';
+import {
+  getCached, fetchAndCache, invalidate as invalidateCache,
+  extendWithOlder as extendCacheWithOlder,
+} from './sessionCache';
+import { useInputDraft } from './inputDraftStore';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
 // Composant qui rend toute la zone "session active" du dashboard desktop :
 //   - Barre des actions (sleep / resume / kill / interrupt / force-stop)
 //   - Bannière reconnexion / déconnexion / erreur
-//   - Slot pour BootstrapBanner / LoginConsole (passés par le parent)
+//   - Slot pour overlay (LoginConsole pour `claude login`)
 //   - Chat scroll-reverse + scroll pill
 //   - ThinkingBar pendant 'thinking'
 //   - Input bar (mode switch + textarea + send) — remplacée par
 //     QuestionCard / ExitPlanCard / InlinePermissionCard si pending
-//   - ToolPanel (diffs / todos / calls / files)
+//   - ToolPanel (diffs / todos / calls)
 //
 // Toute la logique SSE + state per-session est dans useClaudeSessionStream,
 // donc ce composant est essentiellement du rendu + computeds.
@@ -35,14 +39,15 @@ type Props = {
   sessionId: string;
   selected: SessionListItem;
   selectedVps: Vps | null;
-  // Slot pour overlays parent (BootstrapBanner pendant install agent,
-  // LoginConsole pour `claude login`). Rendus entre la bar et le chat.
+  // Slot pour overlay parent (LoginConsole pour `claude login`). Rendu entre
+  // la bar et le chat. Le bootstrap d'agent ne passe plus par ici — il ouvre
+  // une session install dédiée (cf. ClaudePanel.openInstallSession).
   overlay?: React.ReactNode;
   // Sound + native Notification gérés côté parent (cross-session), mais on
   // peut quand même jouer un beep sur stop si configuré.
   notifSoundEnabled?: boolean;
-  // Détection d'erreur "claude-agent-sdk pas installé" → parent décide
-  // d'afficher le BootstrapBanner (a accès au vpsRow + state global).
+  // Détection d'erreur "claude-agent-sdk pas installé" sur le VPS → parent
+  // ouvre une session install pour ce VPS (cf. ClaudePanel.openInstallSession).
   onImportError?: (vps: Vps) => void;
   // Navigation post-kill (parent setSelectedId(null) + refresh).
   onKilled: () => void;
@@ -56,6 +61,7 @@ const sharedCacheRef: StreamCache = {
   get: (id) => getCached(id),
   fetch: (id, force) => fetchAndCache(id, force),
   invalidate: (id) => invalidateCache(id),
+  extendWithOlder: (id, older) => extendCacheWithOlder(id, older),
 };
 
 export default function ClaudeSessionView({
@@ -68,17 +74,21 @@ export default function ClaudeSessionView({
   });
   const {
     messages, currentAssistant, status, permissionMode,
-    toolCalls, todos, edits, files,
+    toolCalls, todos, edits,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error,
+    prefillInput, error, isLoadingHistory,
+    hasMore, isLoadingMore,
     send: streamSend, interrupt, forceStop, setMode,
     doSleep, doResume, doKill: streamDoKill,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, clearError,
+    clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
 
   // ── State UI local (textarea, scroll, error détails) ──────────────────────
-  const [input, setInput] = useState('');
+  // `input` est branché sur `inputDraftStore` pour que le brouillon survive au
+  // switch de session (re-mount du composant via `key={selectedId}`) — cf.
+  // app/inputDraftStore.ts. F5 vide tout (Map in-memory).
+  const [input, setInput] = useInputDraft(sessionId);
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
 
@@ -96,7 +106,7 @@ export default function ClaudeSessionView({
     }
   }, [prefillInput, clearPrefillInput]);
 
-  // Détection import-error → callback parent pour BootstrapBanner.
+  // Détection import-error → callback parent pour ouvrir une session install.
   // Le message d'erreur "No module named claude_agent_sdk" remonte du SDK
   // Python qui ne peut pas charger le module — l'agent est probablement
   // installé mais pas la dépendance pip.
@@ -214,6 +224,15 @@ export default function ClaudeSessionView({
   }, [messages]);
 
   // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = bas visuel) ───────
+  // En column-reverse :
+  //   scrollTop ≈ 0           → visuellement en bas (newest message)
+  //   |scrollTop| ≈ scrollHeight - clientHeight → visuellement en haut (oldest)
+  // Donc distance du HAUT visuel = scrollHeight - clientHeight - |scrollTop|.
+  // Threshold loadMore : 400px ≈ 2-3 messages avant la fin → laisse le
+  // temps au backend de répondre avant que l'user soit visuellement bloqué.
+  // `isAtTop` = au sommet ABSOLU (utilisé pour décider si le bouton ↑ doit
+  // disparaître ; il reste tant qu'il y a quelque chose à remonter).
+  const [isAtTop, setIsAtTop] = useState(false);
   const handleChatScroll = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -223,12 +242,71 @@ export default function ClaudeSessionView({
       setIsAtBottom(atBottom);
     }
     if (atBottom) setNewCount(0);
-  }, []);
+    // Near-top detect → loadMore. Le hook guard contre les appels concurrents
+    // et le hasMore=false. Le browser fait du scroll anchoring nativement
+    // quand on append à la fin du DOM (= haut visuel en column-reverse),
+    // donc la position est préservée sans manip manuelle de scrollTop.
+    const max = el.scrollHeight - el.clientHeight;
+    const distFromTop = max - Math.abs(el.scrollTop);
+    if (distFromTop < 400 && hasMore && !isLoadingMore) {
+      loadMoreHistory();
+    }
+    setIsAtTop(max <= 0 || distFromTop < 4);
+  }, [hasMore, isLoadingMore, loadMoreHistory]);
+  // Recompute isAtTop quand le contenu change (nouveaux messages → max bouge).
+  useEffect(() => { handleChatScroll(); }, [messages.length, handleChatScroll]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
     const el = chatBodyRef.current;
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  // ── Scroll-up vers le précédent message utilisateur ────────────────────
+  // Le bouton "↑" (au-dessus de la pill ↓) remonte au dernier message user
+  // au-dessus de la zone visible. Clic répété → on continue de message en
+  // message. Si plus aucun user message au-dessus mais qu'il reste de
+  // l'historique à paginer, on déclenche loadMoreHistory. Sinon (tout en
+  // haut, plus rien à charger), on saute au sommet visuel.
+  //
+  // On utilise scrollIntoView({block:'start'}) qui aligne le top de
+  // l'élément avec le top du container EN SCREEN COORDS, indépendamment
+  // du signe scrollTop (Chrome négatif, Firefox positif en column-reverse).
+  const onScrollUpClick = useCallback(() => {
+    const el = chatBodyRef.current;
+    if (!el) return;
+    const containerRect = el.getBoundingClientRect();
+    const userBubbles = Array.from(el.querySelectorAll<HTMLElement>('[data-msg-role="user"]'));
+    let target: HTMLElement | null = null;
+    let bestGap = Infinity;
+    for (const bubble of userBubbles) {
+      const r = bubble.getBoundingClientRect();
+      const gap = containerRect.top - r.top;
+      // gap > 4 : bubble est au moins 4px au-dessus du top visible
+      // (filtre les hits sur le bubble qui est exactement à la limite).
+      if (gap > 4 && gap < bestGap) {
+        bestGap = gap;
+        target = bubble;
+      }
+    }
+    if (target) {
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else if (hasMore && !isLoadingMore) {
+      // Plus aucun user message au-dessus, mais il reste de l'historique :
+      // pagine. Une fois les anciens chargés, l'user pourra recliquer pour
+      // continuer à remonter.
+      loadMoreHistory();
+    } else {
+      // Sommet visuel atteint : aligne le dernier enfant DOM (= visuellement
+      // tout en haut en column-reverse) sur le top du container.
+      const last = el.lastElementChild as HTMLElement | null;
+      if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [hasMore, isLoadingMore, loadMoreHistory]);
+
+  // Le bouton ↑ reste visible tant qu'on a quelque chose à remonter :
+  //   - pas au sommet visuel ABSOLU, OU
+  //   - il reste de l'historique à paginer (hasMore || isLoadingMore).
+  const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
 
   // Compte les nouveaux messages quand l'user n'est PAS en bas, pour la pill ↓ N.
   useEffect(() => {
@@ -273,7 +351,7 @@ export default function ClaudeSessionView({
           ) : (
             <button onClick={doSleep}>sleep</button>
           )}
-          <button className="kill" onClick={doKill}>kill</button>
+          <button className="kill" onClick={doKill}>pause</button>
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
           <button
             className="kill"
@@ -329,13 +407,54 @@ export default function ClaudeSessionView({
 
         <div className="claude-chat-wrap">
           <div className="claude-chat" ref={chatBodyRef} onScroll={handleChatScroll}>
-            {currentAssistant && (
-              <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0 }} streaming />
+            {isLoadingHistory && messages.length === 0 ? (
+              // Placeholder pendant le 1er refetch — différencie « session vide »
+              // de « historique pas encore chargé ». Disparaît dès que
+              // applyApiData est passé (cache ou fetch).
+              <div className="claude-history-loading" role="status" aria-live="polite">
+                <span className="claude-history-loading-spinner" aria-hidden />
+                <span>chargement de l'historique…</span>
+              </div>
+            ) : (
+              <>
+                {currentAssistant && (
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0 }} streaming />
+                )}
+                {[...renderable].reverse().map(({ msg, attached }) => (
+                  <Message key={msg.id} m={msg} attachedResult={attached} />
+                ))}
+                {/* Indicateur "chargement plus ancien" / "début de l'historique".
+                    En column-reverse, le dernier enfant DOM rend visuellement
+                    en HAUT du chat — c'est exactement où l'user le veut. */}
+                {(hasMore || isLoadingMore) && (
+                  <div className="claude-loadmore-indicator" role="status" aria-live="polite">
+                    {isLoadingMore ? (
+                      <><span className="claude-history-loading-spinner" aria-hidden /> chargement de l'historique…</>
+                    ) : (
+                      <button type="button" onClick={() => loadMoreHistory()}>↑ charger plus ancien</button>
+                    )}
+                  </div>
+                )}
+                {!hasMore && !isLoadingMore && messages.length > 0 && (
+                  <div className="claude-history-start">— début de l'historique —</div>
+                )}
+              </>
             )}
-            {[...renderable].reverse().map(({ msg, attached }) => (
-              <Message key={msg.id} m={msg} attachedResult={attached} />
-            ))}
           </div>
+          {/* Zone fixe pour les boutons de scroll. La pill ↓ peut disparaître
+              (quand on est en bas), mais le bouton ↑ garde sa position fixe
+              au-dessus, indépendamment. */}
+          {showScrollUpButton && (
+            <button
+              type="button"
+              className="claude-scroll-up-pill"
+              onClick={onScrollUpClick}
+              aria-label="remonter au dernier message utilisateur"
+              title="remonter au dernier message utilisateur"
+            >
+              <span className="claude-scroll-arrow">▴</span>
+            </button>
+          )}
           {!isAtBottom && (
             <button
               type="button"
@@ -449,7 +568,6 @@ export default function ClaudeSessionView({
         toolCalls={toolCalls}
         todos={todos}
         edits={edits}
-        files={files}
         onRevert={() => onAfterRevert?.()}
       />
     </>

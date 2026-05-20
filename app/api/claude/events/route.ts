@@ -6,6 +6,10 @@ import { requireApiSession } from '@/lib/server/session';
 import { registerConnection } from '@/lib/server/agent/eventConnections';
 import { getStream } from '@/lib/server/agent/sessionOps';
 import type { GlobalSessionEvent } from '@/lib/server/agent/sessionOps';
+import {
+  subscribeInstallBus, listInstalls,
+  type InstallBusEvent,
+} from '@/lib/server/install/installSession';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,6 +37,7 @@ export async function GET(req: Request) {
   const encoder = new TextEncoder();
   let hbTimer: NodeJS.Timeout | null = null;
   let unregister: (() => void) | null = null;
+  let unsubInstall: (() => void) | null = null;
 
   const sseStream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -48,11 +53,18 @@ export async function GET(req: Request) {
       const send = (ev: GlobalSessionEvent) => {
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
       };
+      // Les install events n'ont pas de sessionId Claude et ne passent pas par
+      // le filtre par focus — ils sont broadcast à tout le monde, comme une
+      // notif de niveau "hub" (cf. installSession.ts § subscribeInstallBus).
+      const sendInstall = (ev: InstallBusEvent) => {
+        sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
+      };
       const close = () => {
         if (closed) return;
         closed = true;
         if (hbTimer) clearInterval(hbTimer);
         if (unregister) { unregister(); unregister = null; }
+        if (unsubInstall) { unsubInstall(); unsubInstall = null; }
         try { controller.close(); } catch {}
       };
 
@@ -94,8 +106,25 @@ export async function GET(req: Request) {
         }
       } catch {}
 
-      // Branche au bus global avec filtrage par focus.
+      // Snapshot initial des installs : envoie un install_started pour chaque
+      // install encore active. Permet au client (Sidebar / popup) de se mettre
+      // à jour au mount sans dépendre d'un GET séparé.
+      try {
+        for (const inst of listInstalls()) {
+          if (inst.status === 'running') {
+            sendInstall({
+              type: 'install_started',
+              installId: inst.id, vpsId: inst.vpsId, vpsName: inst.vpsName,
+              status: 'running',
+            });
+          }
+        }
+      } catch {}
+
+      // Branche au bus global session avec filtrage par focus.
       unregister = registerConnection({ connId, send, initialFocus });
+      // Branche au bus install (broadcast à tout le monde, pas de filtre focus).
+      unsubInstall = subscribeInstallBus(sendInstall);
 
       hbTimer = setInterval(() => sendRaw(`: hb\n\n`), 15_000);
 
@@ -105,6 +134,7 @@ export async function GET(req: Request) {
     cancel() {
       if (hbTimer) clearInterval(hbTimer);
       if (unregister) { unregister(); unregister = null; }
+      if (unsubInstall) { unsubInstall(); unsubInstall = null; }
     },
   });
 

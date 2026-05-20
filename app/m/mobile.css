@@ -109,6 +109,67 @@
   font-style: italic;
 }
 
+/* ── Folders mobile (miroir desktop) ───────────────────────────────────────
+   Un folder regroupe N VPS cards. Le toggle collapse est persisté en DB via
+   PATCH /api/vps-folders/[id], donc un dossier fermé desktop l'est aussi
+   mobile. Le collapse par-VPS reste local (localStorage) comme desktop. */
+.m-folder-section {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--gold-deep);
+  background: linear-gradient(180deg, rgba(138,180,228,0.04), transparent);
+}
+.m-folder-section.m-folder-collapsed {
+  background: rgba(138,180,228,0.02);
+}
+.m-folder-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  font-family: var(--display); font-size: 11px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--gold-bright);
+  border-bottom: 1px solid var(--gold-deep);
+  background: rgba(138,180,228,0.06);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.m-folder-section.m-folder-collapsed .m-folder-head {
+  border-bottom: 0;
+}
+.m-folder-caret {
+  color: var(--parchment-soft); font-family: var(--mono);
+  width: 12px; flex-shrink: 0; font-size: 11px;
+}
+.m-folder-glyph { color: var(--gold); }
+.m-folder-name {
+  flex: 1; color: var(--gold-bright);
+  letter-spacing: 0.18em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-folder-count {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--parchment-soft); letter-spacing: 0;
+  background: rgba(0,0,0,0.2); padding: 2px 8px;
+  border: 1px solid var(--gold-deep);
+}
+.m-folder-active-count {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(160,200,123,0.15);
+  border: 1px solid #a0c87b;
+  color: #a0c87b;
+  padding: 2px 8px;
+  letter-spacing: 0;
+}
+.m-folder-body {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 10px 10px 12px;
+}
+.m-folder-empty {
+  padding: 12px;
+  font-style: italic; color: var(--parchment-soft);
+  font-size: 11px; text-align: center;
+}
+
 .m-vps-card {
   background: linear-gradient(180deg, var(--stone-2), var(--stone));
   border: 1px solid var(--gold-deep);
@@ -324,6 +385,50 @@
   overscroll-behavior: contain;
 }
 
+.m-history-loading {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 24px;
+  color: rgba(243, 235, 218, 0.55);
+  font-size: 13px;
+  font-style: italic;
+  user-select: none;
+}
+.m-history-loading-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid rgba(243, 235, 218, 0.18);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: m-history-spin 0.8s linear infinite;
+}
+@keyframes m-history-spin { to { transform: rotate(360deg); } }
+
+/* Indicateur loadMore mobile (en haut visuel = fin DOM en column-reverse) */
+.m-loadmore-indicator {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 14px;
+  color: rgba(243, 235, 218, 0.55);
+  font-size: 12px;
+  font-style: italic;
+  user-select: none;
+}
+.m-loadmore-indicator button {
+  background: transparent;
+  border: 1px solid var(--gold-deep);
+  color: rgba(243, 235, 218, 0.75);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.m-history-start {
+  text-align: center;
+  padding: 6px 14px 12px;
+  color: rgba(243, 235, 218, 0.35);
+  font-size: 10px;
+  font-style: italic;
+  user-select: none;
+}
+
 /* Pill flottante "↓ N" en bas-droite du chat (style WhatsApp) */
 .m-scroll-pill {
   position: absolute;
@@ -344,6 +449,29 @@
 }
 .m-scroll-pill:active { background: var(--stone-3); }
 .m-scroll-pill .m-scroll-arrow { display: inline-block; transform: translateY(-1px); }
+
+/* Pill "↑" — placée juste au-dessus de la pill ↓, à la même abscisse. Sa
+   position reste FIXE indépendamment du fait que la pill ↓ soit visible ou
+   non. Calcul : bottom = 14 (pill ↓ bottom) + 44 (height) + 10 (gap) = 68. */
+.m-scroll-up-pill {
+  position: absolute;
+  right: 14px;
+  bottom: 68px;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--stone-2), var(--stone));
+  border: 1px solid var(--gold);
+  color: var(--gold-bright);
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  font-size: 18px;
+  line-height: 1;
+  z-index: 5;
+  padding: 0;
+  animation: m-pill-pop 0.18s ease;
+}
+.m-scroll-up-pill:active { background: var(--stone-3); }
+.m-scroll-up-pill .m-scroll-arrow { display: inline-block; transform: translateY(1px); }
 .m-scroll-pill .m-scroll-count {
   position: absolute;
   top: -6px; right: -6px;

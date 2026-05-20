@@ -4,17 +4,20 @@ import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus } from '@/lib/server/claude/types';
-import Sidebar, { type SessionListItem, type ShellListItem } from './Sidebar';
+import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import ShellTerminal from './ShellTerminal';
+import InstallSessionView from './InstallSessionView';
 import NewSessionDialog from './NewSessionDialog';
 import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
 import PermissionPopup from './PermissionPopup';
+import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
+import { useInstallNotifications } from './useInstallNotifications';
+import { subscribeAll } from './globalEventStream';
 import SearchModal from './SearchModal';
 import SettingsModal from './SettingsModal';
 import SessionContextMenu from './SessionContextMenu';
-import BootstrapBanner from './BootstrapBanner';
 import LoginConsole from './LoginConsole';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
@@ -93,17 +96,46 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [ctxMenu, setCtxMenu] = useState<
     | { kind: 'session'; session: SessionListItem; x: number; y: number }
     | { kind: 'shell'; shell: ShellListItem; x: number; y: number }
+    | { kind: 'install'; install: InstallInfo; x: number; y: number }
     | null
   >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Bootstrap auto en cours pour un VPS donné (déclenché par un import error)
-  const [bootstrapping, setBootstrapping] = useState<{ vps: Vps; resumeSessionId: string | null } | null>(null);
   // Console claude login interactive
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
+
+  // Quand l'user ferme la LoginConsole, on re-check l'état `claude login` du
+  // VPS — il vient peut-être de se connecter (ou de déconnecter). Le résultat
+  // est persisté côté serveur et patché localement pour que la sidebar masque
+  // immédiatement le bouton "claude login" si plus nécessaire.
+  const closeLoginConsole = useCallback(() => {
+    const v = loginVps;
+    setLoginVps(null);
+    if (!v) return;
+    // Best-effort, async. Si SSH plante, on garde l'ancienne valeur.
+    api.checkVpsClaudeLogin(v.id)
+      .then((r) => {
+        if (!r.ok) return;
+        setVpsList((prev) => prev.map((vp) =>
+          vp.id === v.id
+            ? ({
+                ...vp,
+                claudeLoggedIn: r.loggedIn ? 1 : 0,
+                claudeLoggedInCheckedAt: r.checkedAt,
+              } as Vps)
+            : vp,
+        ));
+      })
+      .catch(() => {});
+  }, [loginVps]);
   // Shells SSH ephémères. Liste live (pollée au mount, mise à jour locale).
   const [shells, setShells] = useState<ShellListItem[]>([]);
   // Si non-null, c'est un shell qui est affiché dans le main panel (au lieu du chat)
   const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
+  // Sessions d'installation d'agent. Mémoire seulement (pattern shell). Une
+  // install par VPS au max (cf. installSession.ts § startInstall).
+  const [installs, setInstalls] = useState<InstallInfo[]>([]);
+  // Si non-null, c'est une session install qui occupe le main panel.
+  const [selectedInstallId, setSelectedInstallId] = useState<string | null>(null);
 
   // Charge la liste des shells au mount + refresh quand un sélecteur change
   useEffect(() => {
@@ -114,12 +146,72 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => { cancelled = true; };
   }, []);
 
+  // Charge la liste des installs au mount (pour récupérer les installs encore
+  // en cours après un refresh d'onglet — le pool est mémoire serveur, survit).
+  useEffect(() => {
+    let cancelled = false;
+    api.listInstalls().then((r) => {
+      if (!cancelled) setInstalls(r?.installs ?? []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Refresh live de la liste des installs sur events bus :
+  //   - install_started → ajoute / met à jour la row sidebar
+  //   - install_finished → mise à jour du status, on garde la row pour que
+  //     l'user puisse rouvrir le log (close manuel via clic-droit)
+  useEffect(() => {
+    const refreshOne = async (installId: string) => {
+      try {
+        const info = await api.getInstall(installId);
+        setInstalls((prev) => {
+          const others = prev.filter((i) => i.id !== installId);
+          return [...others, info];
+        });
+      } catch {}
+    };
+    const unsub = subscribeAll((ev) => {
+      if (!('installId' in ev)) return;
+      if (ev.type === 'install_started' || ev.type === 'install_finished') {
+        refreshOne(ev.installId);
+        // Met à jour vps.agentStatus + agentPyzSha localement quand l'install
+        // réussit. Sans ça : le badge "outdated" reste affiché parce que le
+        // local `agentPyzSha` (récupéré au SSR initial) est encore l'ancien,
+        // alors que côté serveur le bootstrap a déjà persisté le nouveau sha
+        // (cf. bootstrap.ts § ping_agent). Par construction, après un
+        // bootstrap success, le sha déployé EST `builtPyzSha` — on peut donc
+        // patcher localement sans refetch.
+        if (ev.type === 'install_finished' && ev.status === 'success') {
+          setVpsList((prev) => prev.map((v) =>
+            v.id === ev.vpsId
+              ? ({
+                  ...v,
+                  agentStatus: 'ok',
+                  // builtPyzSha vient du prop ; null tolérable (fallback au
+                  // prochain hello de l'AgentClient).
+                  agentPyzSha: builtPyzSha ?? v.agentPyzSha,
+                } as Vps)
+              : v,
+          ));
+        }
+      }
+    });
+    return () => unsub();
+  }, [builtPyzSha]);
+
+  // Notifs install (queue locale au tab, populée par le bus global)
+  const {
+    notifications: installNotifications,
+    dismiss: dismissInstallNotif,
+  } = useInstallNotifications();
+
   async function startShell(opts: { vpsId: string; cwd?: string | null }) {
     try {
       const sh = await api.startShell(opts.vpsId, opts.cwd ?? null);
       setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
       setSelectedShellId(sh.id);
       setSelectedId(null);  // mutuellement exclusif avec une session claude
+      setSelectedInstallId(null);
     } catch (e: any) {
       setError({ msg: 'shell: ' + (e?.message ?? e) });
     }
@@ -127,15 +219,58 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   function selectShell(id: string) {
     setSelectedShellId(id);
     setSelectedId(null);
+    setSelectedInstallId(null);
   }
   function shellKilled(id: string) {
     setShells((prev) => prev.filter((s) => s.id !== id));
     if (selectedShellId === id) setSelectedShellId(null);
   }
-  // Quand on sélectionne une session Claude, on désélectionne le shell
+  // Quand on sélectionne une session Claude, on désélectionne shell + install
   function selectClaude(id: string) {
     setSelectedId(id);
     setSelectedShellId(null);
+    setSelectedInstallId(null);
+  }
+  function selectInstall(id: string) {
+    setSelectedInstallId(id);
+    setSelectedId(null);
+    setSelectedShellId(null);
+  }
+  function installClosed(id: string) {
+    setInstalls((prev) => prev.filter((i) => i.id !== id));
+    if (selectedInstallId === id) setSelectedInstallId(null);
+  }
+
+  /**
+   * Ouvre (ou crée si pas existante) une session install pour ce VPS.
+   * Sert à 3 cas :
+   *   1. Bouton "install agent" dans la Sidebar (VPS sans agent)
+   *   2. Erreur "import claude_agent_sdk" en pleine session (re-déclenche
+   *      l'install automatiquement)
+   *   3. Update agent out-of-date — déjà géré par `runUpdateAgent`, pas via
+   *      session install (cf. choix design : update reste un appel direct).
+   */
+  async function openInstallSession(vps: Vps) {
+    try {
+      const info = await api.startInstall(vps.id);
+      // Mise à jour optimiste — l'event install_started arrivera aussi via SSE.
+      setInstalls((prev) => {
+        const others = prev.filter((i) => i.id !== info.id);
+        return [...others, info];
+      });
+      selectInstall(info.id);
+    } catch (e: any) {
+      setError({ msg: 'start install: ' + (e?.message ?? e) });
+    }
+  }
+
+  async function killInstallOne(id: string) {
+    try {
+      await api.closeInstall(id);
+      installClosed(id);
+    } catch (e: any) {
+      setError({ msg: 'close install: ' + (e?.message ?? e) });
+    }
   }
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
@@ -511,20 +646,24 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         vpsPaths={vpsPaths}
         sessions={sessions}
         shells={shells}
+        installs={installs}
         selectedId={selectedId}
         selectedShellId={selectedShellId}
+        selectedInstallId={selectedInstallId}
         onSelect={selectClaude}
         onSelectShell={selectShell}
+        onSelectInstall={selectInstall}
         onNew={(opts) => setNewDialog(opts)}
         onNewShell={startShell}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
-        onOpenResumeModal={() => setResumeOpen({ vpsId: selected?.vpsId })}
+        onOpenData={() => setDataOpen(true)}
         onContext={(s, x, y) => setCtxMenu({ kind: 'session', session: s, x, y })}
         onContextShell={(sh, x, y) => setCtxMenu({ kind: 'shell', shell: sh, x, y })}
+        onContextInstall={(inst, x, y) => setCtxMenu({ kind: 'install', install: inst, x, y })}
         editingId={editingId}
         onRenameSubmit={renameSession}
         onRenameCancel={() => setEditingId(null)}
-        onInstallAgent={(v) => setBootstrapping({ vps: v, resumeSessionId: null })}
+        onInstallAgent={openInstallSession}
         onLoginAgent={(v) => setLoginVps(v)}
         onUpdateAgent={(v) => { runUpdateAgent(v); }}
         onToggleFolderCollapsed={async (folderId, collapsed) => {
@@ -541,9 +680,41 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         updatingAgentVpsIds={updatingAgentVpsIds}
       />
 
-      {/* Si un shell est sélectionné : main panel = terminal plein écran.
-          Sinon : le panneau Claude habituel (chat, tools, etc.). */}
-      {selectedShellId ? (() => {
+      {/* Routing main panel : 3 vues mutuellement exclusives.
+          - selectedInstallId → <InstallSessionView> (full-screen log d'install)
+          - selectedShellId   → <ShellTerminal> (xterm SSH éphémère)
+          - selectedId        → <ClaudeSessionView> (chat + tool panel)
+          - sinon : placeholder. */}
+      {selectedInstallId ? (() => {
+        const inst = installs.find((i) => i.id === selectedInstallId);
+        if (!inst) return <main className="claude-main"><div className="bar-empty">install introuvable</div></main>;
+        const vps = vpsList.find((v) => v.id === inst.vpsId);
+        return (
+          <InstallSessionView
+            key={inst.id}
+            installId={inst.id}
+            vpsId={inst.vpsId}
+            vpsName={inst.vpsName}
+            onClosed={() => installClosed(inst.id)}
+            onSetupLogin={vps ? () => setLoginVps(vps) : undefined}
+            onInstallSuccess={() => {
+              // Patch local : l'agent est désormais OK ET à la version embarquée.
+              // Sans le agentPyzSha, le badge "outdated" resterait affiché.
+              // Le handler subscribeAll au-dessus fait la même chose en cas
+              // de finished cross-session — c'est idempotent.
+              setVpsList((prev) => prev.map((v) =>
+                v.id === inst.vpsId
+                  ? ({
+                      ...v,
+                      agentStatus: 'ok',
+                      agentPyzSha: builtPyzSha ?? v.agentPyzSha,
+                    } as Vps)
+                  : v,
+              ));
+            }}
+          />
+        );
+      })() : selectedShellId ? (() => {
         const sh = shells.find((s) => s.id === selectedShellId);
         if (!sh) return <main className="claude-main"><div className="bar-empty">shell introuvable</div></main>;
         return (
@@ -564,33 +735,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           selectedVps={selectedVps}
           overlay={
             <>
-              {bootstrapping && (
-                <BootstrapBanner
-                  vps={bootstrapping.vps}
-                  onCancel={() => setBootstrapping(null)}
-                  onDone={(success) => {
-                    const sid = bootstrapping.resumeSessionId;
-                    const installedVpsId = bootstrapping.vps.id;
-                    setBootstrapping(null);
-                    if (success) {
-                      setVpsList((prev) => prev.map((v) =>
-                        v.id === installedVpsId ? ({ ...v, agentStatus: 'ok' } as Vps) : v,
-                      ));
-                    }
-                    if (success && sid) {
-                      // Pas accès direct au doResume du hook ici ; on délègue
-                      // à la prochaine action user (le bandeau "session
-                      // inactive" reste cliquable).
-                      setSelectedId(sid);
-                    }
-                  }}
-                />
-              )}
-              {loginVps && <LoginConsole vps={loginVps} onClose={() => setLoginVps(null)} />}
+              {loginVps && <LoginConsole vps={loginVps} onClose={closeLoginConsole} />}
             </>
           }
           onImportError={(vps) => {
-            if (!bootstrapping) setBootstrapping({ vps, resumeSessionId: selected.id });
+            // L'agent VPS a planté un import claude_agent_sdk → on déclenche
+            // l'install dans une nouvelle session install (au lieu de
+            // l'overlay BootstrapBanner qui existait avant). L'user revient à
+            // sa session Claude une fois l'install OK (via notif + clic).
+            const existing = installs.find((i) => i.vpsId === vps.id && i.status === 'running');
+            if (existing) {
+              selectInstall(existing.id);
+            } else {
+              openInstallSession(vps);
+            }
           }}
           onKilled={() => {
             setSelectedId(null);
@@ -609,11 +767,24 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       </main>
       )}
 
+      {/* Aussi rendre la LoginConsole quand sélectionné AVEC un install/shell —
+          loginVps est cross-panneau (déclenché depuis Sidebar ou
+          InstallSessionView). On garde un montage global. */}
+      {loginVps && (selectedShellId || selectedInstallId) && (
+        <LoginConsole vps={loginVps} onClose={closeLoginConsole} />
+      )}
+
       <PermissionPopup
         queue={permQueue}
         currentSessionId={selectedId}
         onRespond={respondPermissionCrossSession}
         onSwitchSession={(id) => setSelectedId(id)}
+      />
+
+      <InstallNotificationPopup
+        notifications={installNotifications}
+        onOpen={(installId) => selectInstall(installId)}
+        onDismiss={dismissInstallNotif}
       />
 
       {newDialog && (
@@ -662,6 +833,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             setVpsFolders(folders);
             setVpsPaths(paths);
           }}
+          onInstallAgent={openInstallSession}
         />
       )}
 
@@ -673,7 +845,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           y={ctxMenu.y}
           currentColor={(ctxMenu.session as any).color}
           canKill={ctxMenu.session.status !== 'killed'}
-          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà tuée' : undefined}
+          killDisabledReason={ctxMenu.session.status === 'killed' ? 'déjà en pause' : undefined}
           onRename={() => setEditingId(ctxMenu.session.id)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
@@ -698,6 +870,31 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           }}
           onColor={(color) => patchShell(ctxMenu.shell.id, { color })}
           onKill={() => killShellOne(ctxMenu.shell.id)}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+      {ctxMenu && ctxMenu.kind === 'install' && (
+        <SessionContextMenu
+          title={`⚙ installation · ${ctxMenu.install.vpsName}`}
+          subtitle={
+            ctxMenu.install.status === 'running'
+              ? `en cours — phase: ${ctxMenu.install.currentPhase ?? 'init'}`
+              : ctxMenu.install.status === 'success'
+                ? 'terminée avec succès'
+                : 'échec'
+          }
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          showRename={false}
+          showColor={false}
+          showDelete={false}
+          killLabel="Fermer"
+          killDisabledReason={
+            ctxMenu.install.status === 'running'
+              ? "l'install est encore en cours — elle continue côté serveur"
+              : undefined
+          }
+          onKill={() => killInstallOne(ctxMenu.install.id)}
           onClose={() => setCtxMenu(null)}
         />
       )}

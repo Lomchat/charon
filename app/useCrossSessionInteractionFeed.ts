@@ -36,7 +36,9 @@ export function useCrossSessionInteractionFeed(): CrossSessionInteractions {
     const now = () => Math.floor(Date.now() / 1000);
 
     const unsubscribe = subscribeAll((ev) => {
-      const sid = ev.sessionId;
+      // `subscribeAll` reçoit aussi des install events qui n'ont pas de
+      // sessionId — on les filtre via le type discriminant `'sessionId' in ev`.
+      const sid = 'sessionId' in ev ? ev.sessionId : null;
       if (!sid) return;
       if (ev.type === 'permission_request') {
         setPerms((q) => q.some((p) => p.id === ev.id) ? q : [...q, {

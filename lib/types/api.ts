@@ -10,11 +10,13 @@ import type {
 } from '@/lib/db/schema';
 import type { PermissionMode, WorkerStatus } from '@/lib/server/claude/types';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
+import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
 
 // Ré-export pour que les consommateurs n'aient pas à connaître la source
 export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
   ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
-  ClaudePushSub, PermissionMode, WorkerStatus, ShellInfo };
+  ClaudePushSub, PermissionMode, WorkerStatus, ShellInfo,
+  InstallInfo, InstallStatus };
 
 // ── VPS ──────────────────────────────────────────────────────────────────────
 
@@ -79,6 +81,12 @@ export type ShellsListResponse = { shells: ShellInfo[] };
 export type StartShellBody = { cwd?: string | null };
 export type UpdateShellBody = { name?: string | null; color?: string | null };
 
+// ── Installs (sessions d'installation d'agent) ───────────────────────────────
+// Mémoire seulement, pattern shell. Pas de body POST (l'id du VPS suffit).
+
+export type InstallsListResponse = { installs: InstallInfo[] };
+export type VpsInstallResponse = { install: InstallInfo | null };
+
 // ── VPS paths ────────────────────────────────────────────────────────────────
 
 export type CreateVpsPathBody = {
@@ -106,6 +114,14 @@ export type SetupVpsClaudeResponse = {
   code: number;
   stdout: string;
   stderr: string;
+};
+
+// État du `claude login` sur un VPS. Retourné par POST /api/vps/[id]/claude/check-login.
+export type CheckClaudeLoginResponse = {
+  ok: boolean;
+  error?: string;
+  loggedIn: boolean;
+  checkedAt: number | null;
 };
 
 export type ScannedClaudeSession = {
@@ -157,11 +173,32 @@ export type ClaudeSessionDetailResponse = {
   session: ClaudeSession;
   liveStatus: WorkerStatus | string;
   subscribers: number;
+  // Fenêtre des `limit` derniers messages "chat" (user/assistant/tool_use/
+  // tool_result/user_question/exit_plan_request/thinking) + tous les
+  // edit_snapshot et event dans la même plage d'IDs (cf. backend
+  // loadMessageWindow). Triés asc par id.
   messages: ClaudeSessionMessage[];
+  // True s'il existe des messages chat encore plus anciens que `oldestChatId`.
+  // Utilisé par le client pour décider d'activer le scroll-up loadMore.
+  hasMore: boolean;
+  // id du plus ancien message CHAT dans cette fenêtre. Sert de cursor à
+  // passer en `?before=<oldestChatId>` au prochain loadMore. null si la
+  // fenêtre est vide.
+  oldestChatId: number | null;
   streamingText: string;
   pendingPermissions: PendingPermissionPayload[];
   pendingQuestions: PendingQuestionPayload[];
   pendingExitPlans: PendingExitPlanPayload[];
+};
+
+// Response du loadMore (GET ...?before=<id>) — même shape côté serveur que
+// ClaudeSessionDetailResponse mais on n'utilise que la fenêtre de messages
+// pour étendre l'historique côté client. (Les autres champs sont quand même
+// renseignés par la route pour rester typés ; le client les ignore.)
+export type ClaudeSessionMessageWindow = {
+  messages: ClaudeSessionMessage[];
+  hasMore: boolean;
+  oldestChatId: number | null;
 };
 
 export type CreateClaudeSessionBody = {

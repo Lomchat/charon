@@ -15,13 +15,12 @@ type Props = {
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
-  files: Set<string>;
   onRevert: () => void; // signal de rafraîchir
 };
 
-type Tab = 'diffs' | 'todos' | 'calls' | 'files';
+type Tab = 'diffs' | 'todos' | 'calls';
 
-export default function ToolPanel({ sessionId, toolCalls, todos, edits, files, onRevert }: Props) {
+export default function ToolPanel({ sessionId, toolCalls, todos, edits, onRevert }: Props) {
   const [tab, setTab] = useState<Tab>('diffs');
   const editArr = useMemo(() => Array.from(edits.values()), [edits]);
 
@@ -37,15 +36,11 @@ export default function ToolPanel({ sessionId, toolCalls, todos, edits, files, o
         <button className={tab === 'calls' ? 'on' : ''} onClick={() => setTab('calls')}>
           tools {toolCalls.length > 0 && <span className="badge">{toolCalls.length}</span>}
         </button>
-        <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
-          files {files.size > 0 && <span className="badge">{files.size}</span>}
-        </button>
       </nav>
       <div className="tp-body">
         {tab === 'diffs' && <DiffsTab sessionId={sessionId} edits={editArr} onRevert={onRevert} />}
         {tab === 'todos' && <TodosTab todos={todos} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
-        {tab === 'files' && <FilesTab files={files} />}
       </div>
     </aside>
   );
@@ -77,15 +72,19 @@ function DiffsTab({ sessionId, edits, onRevert }: { sessionId: string | null; ed
           return (
             <div key={e.toolUseId + e.filePath} className="diff-card">
               <div className="diff-head">
-                <span className="path">{e.filePath}</span>
-                <span className="stats">
-                  <span className="add">+{stats.add}</span>
-                  <span className="del">−{stats.del}</span>
-                </span>
-                <button className="compare" onClick={() => setOpen(e)} title="comparer côte à côte">⇄ split</button>
-                <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
-                  {busy === e.filePath ? '…' : 'revert'}
-                </button>
+                <div className="diff-path-row">
+                  <span className="path">{e.filePath}</span>
+                </div>
+                <div className="diff-meta-row">
+                  <span className="stats">
+                    <span className="add">+{stats.add}</span>
+                    <span className="del">−{stats.del}</span>
+                  </span>
+                  <button className="compare" onClick={() => setOpen(e)} title="comparer côte à côte">⇄ split</button>
+                  <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
+                    {busy === e.filePath ? '…' : 'revert'}
+                  </button>
+                </div>
               </div>
               {e.truncated && <div className="warn">⚠ snapshot tronqué (fichier &gt; 256KB)</div>}
               {e.before == null && <div className="note">nouveau fichier (Write)</div>}
@@ -139,16 +138,6 @@ function CallsTab({ calls }: { calls: ToolCallEntry[] }) {
           )}
         </li>
       ))}
-    </ul>
-  );
-}
-
-function FilesTab({ files }: { files: Set<string> }) {
-  if (files.size === 0) return <div className="tp-empty">aucun fichier touché</div>;
-  const sorted = Array.from(files).sort();
-  return (
-    <ul className="files-list">
-      {sorted.map((f) => <li key={f}><code>{f}</code></li>)}
     </ul>
   );
 }

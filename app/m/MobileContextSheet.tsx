@@ -25,7 +25,7 @@ type Props = {
 
 export default function MobileContextSheet({
   title, subtitle, initialName = '', currentColor,
-  canKill = true, killLabel = 'Kill', killDisabledReason,
+  canKill = true, killLabel = 'Pause', killDisabledReason,
   showDelete = true,
   onRename, onColor, onEditCwd, onKill, onDelete, onClose,
 }: Props) {
@@ -110,7 +110,7 @@ export default function MobileContextSheet({
                 onClick={() => { if (canKill) { onKill(); onClose(); } }}
                 disabled={!canKill}
               >
-                <span className="g">⏻</span> {killLabel}
+                <span className="g">⏏</span> {killLabel}
                 {!canKill && killDisabledReason && (
                   <span className="m-ctx-hint"> · {killDisabledReason}</span>
                 )}

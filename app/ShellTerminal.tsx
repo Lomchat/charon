@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useTerminalUrlOverlay } from './useTerminalUrlOverlay';
+import TerminalUrlOverlay from './TerminalUrlOverlay';
 
 type Props = {
   shellId: string;
@@ -20,6 +22,9 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
   const esRef = useRef<EventSource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
+  // Détection d'URL long (typiquement OAuth) wrappé sur plusieurs lignes —
+  // overlay copier/ouvrir. Pareil que LoginConsole, factorisable un jour.
+  const { ingest: urlIngest, dismiss: urlDismiss, visibleUrl } = useTerminalUrlOverlay();
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +89,7 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
             if (/exited/.test(ev.text)) setExited(true);
           } else {
             term.write(ev.text);
+            urlIngest(ev.text);
           }
         } catch {}
       };
@@ -123,7 +129,12 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
         </button>
       </header>
       {error && <div className="shell-error">{error}</div>}
-      <div ref={containerRef} className="shell-xterm" />
+      <div className="shell-xterm-wrap">
+        <div ref={containerRef} className="shell-xterm" />
+        {visibleUrl && (
+          <TerminalUrlOverlay url={visibleUrl} onDismiss={urlDismiss} />
+        )}
+      </div>
     </div>
   );
 }

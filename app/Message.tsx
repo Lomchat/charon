@@ -27,7 +27,10 @@ export default function Message({ m, streaming = false, attachedResult }: Props)
 
   const isAssistant = m.role === 'assistant';
   return (
-    <div className={`bubble role-${m.role}${streaming ? ' streaming' : ''}`}>
+    <div
+      className={`bubble role-${m.role}${streaming ? ' streaming' : ''}`}
+      data-msg-role={m.role}
+    >
       <header className="bubble-h">
         <span className="tag">{m.role}</span>
         {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}

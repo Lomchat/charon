@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
+import { useTerminalUrlOverlay } from './useTerminalUrlOverlay';
+import TerminalUrlOverlay from './TerminalUrlOverlay';
 
 type Props = {
   vps: Vps;
@@ -28,6 +30,10 @@ export default function LoginConsole({ vps, onClose }: Props) {
   const esRef = useRef<EventSource | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closed, setClosed] = useState(false);
+  // Détection d'URL longue dans le flux terminal — affiche un overlay
+  // copier/ouvrir si `claude login` (ou tout autre programme) imprime un URL
+  // OAuth wrappé sur plusieurs lignes que l'user ne peut pas sélectionner.
+  const { ingest: urlIngest, dismiss: urlDismiss, visibleUrl } = useTerminalUrlOverlay();
 
   // Échap (au niveau window) ferme la modale uniquement si le terminal n'a pas
   // le focus — sinon Échap est envoyé au TUI distant.
@@ -119,6 +125,8 @@ export default function LoginConsole({ vps, onClose }: Props) {
             if (/closed|exited/.test(ev.text)) setClosed(true);
           } else {
             term.write(ev.text);
+            // Scan en parallèle pour détecter un URL OAuth long
+            urlIngest(ev.text);
           }
         } catch {}
       };
@@ -155,7 +163,12 @@ export default function LoginConsole({ vps, onClose }: Props) {
           <button onClick={onClose} className="dismiss">✕</button>
         </header>
         {error && <div className="login-error">{error}</div>}
-        <div ref={containerRef} className="login-xterm" />
+        <div className="login-xterm-wrap">
+          <div ref={containerRef} className="login-xterm" />
+          {visibleUrl && (
+            <TerminalUrlOverlay url={visibleUrl} onDismiss={urlDismiss} />
+          )}
+        </div>
       </div>
     </div>
   );

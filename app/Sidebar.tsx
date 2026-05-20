@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
-import type { SessionListItem } from '@/lib/types/api';
-import { IconClockHistory, IconRobot, IconTerminal, IconThreeDotsVertical } from './icons';
+import type { SessionListItem, InstallInfo } from '@/lib/types/api';
+import { IconClockHistory, IconRobot, IconServers, IconTerminal, IconTools } from './icons';
 import { colorToCss } from './SessionContextMenu';
 
 // SessionListItem est défini dans `lib/types/api.ts` (source de vérité,
@@ -10,6 +10,9 @@ import { colorToCss } from './SessionContextMenu';
 // pour ne pas casser les imports historiques `import { SessionListItem }
 // from './Sidebar'`.
 export type { SessionListItem };
+
+// Re-export pour les consommateurs (ClaudePanel) qui passent des installs.
+export type { InstallInfo };
 
 const COLLAPSED_KEY = 'hub.claude.collapsedVps.v2';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
@@ -63,19 +66,31 @@ type Props = {
   vpsPaths: VpsPath[];
   sessions: SessionListItem[];
   shells: ShellListItem[];
+  // Sessions d'installation d'agent. Mémoire seulement, comme les shells.
+  // Listées par VPS. Une session install apparaît au-dessus des paths quand
+  // active OU récemment terminée (au max 1 par VPS, cf. installSession.ts).
+  installs: InstallInfo[];
   selectedId: string | null;
   selectedShellId: string | null;
+  selectedInstallId: string | null;
   onSelect: (id: string) => void;
   onSelectShell: (id: string) => void;
+  onSelectInstall: (id: string) => void;
   onNew: (opts: { vpsId: string; cwd?: string }) => void;
   onNewShell: (opts: { vpsId: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
-  onOpenResumeModal: () => void;
+  // Bouton "gérer VPS & dossiers" dans le toolbar de la sidebar (remplace
+  // l'ancien bouton "historique global" qui était redondant avec le bouton
+  // par-VPS "historique" présent sur chaque carte).
+  onOpenData: () => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
+  onContextInstall?: (install: InstallInfo, x: number, y: number) => void;
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
+  // Ouvre une session install pour ce VPS (crée si pas existante, focus
+  // l'existante sinon).
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
@@ -96,10 +111,12 @@ const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 
 
 export default function Sidebar({
-  vpsList, vpsFolders, vpsPaths, sessions, shells,
-  selectedId, selectedShellId,
-  onSelect, onSelectShell, onNew, onNewShell, onScan, onOpenResumeModal,
-  onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
+  vpsList, vpsFolders, vpsPaths, sessions, shells, installs,
+  selectedId, selectedShellId, selectedInstallId,
+  onSelect, onSelectShell, onSelectInstall,
+  onNew, onNewShell, onScan, onOpenData,
+  onContext, onContextShell, onContextInstall,
+  editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent, onUpdateAgent, onToggleFolderCollapsed,
   builtPyzSha, updatingAgentVpsIds,
 }: Props) {
@@ -148,11 +165,17 @@ export default function Sidebar({
     return m;
   }, [vpsList]);
 
-  // Folders triés par position. On garde aussi un fallback : si un VPS pointe
-  // vers un folderId inconnu (théoriquement impossible, mais data drift), on
-  // crée un dossier virtuel "(orphelins)" en bas de la sidebar.
+  // Folders triés par position, avec règle "default last" : le dossier
+  // 'default' (Sans dossier) est forcé en bas, peu importe sa `position`
+  // stockée. On garde aussi un fallback : si un VPS pointe vers un
+  // folderId inconnu (théoriquement impossible, mais data drift), on crée
+  // un dossier virtuel "(orphelins)" en bas de la sidebar.
   const sortedFolders = useMemo(() => {
-    const sorted = [...vpsFolders].sort((a, b) => a.position - b.position);
+    const sorted = [...vpsFolders].sort((a, b) => {
+      if (a.id === 'default') return 1;
+      if (b.id === 'default') return -1;
+      return a.position - b.position;
+    });
     const known = new Set(sorted.map((f) => f.id));
     const orphanedFolderIds = new Set<string>();
     for (const v of vpsList) if (!known.has(v.folderId)) orphanedFolderIds.add(v.folderId);
@@ -175,10 +198,10 @@ export default function Sidebar({
         <span className="sidebar-title">SESSIONS</span>
         <button
           className="sidebar-tb-btn"
-          onClick={onOpenResumeModal}
-          title="sessions resume-ables / import"
-          aria-label="sessions resume-ables"
-        ><IconThreeDotsVertical /></button>
+          onClick={onOpenData}
+          title="gérer les VPS, dossiers et paths"
+          aria-label="gérer les VPS et dossiers"
+        ><IconServers /></button>
       </div>
 
       {sortedFolders.map((folder) => {
@@ -223,12 +246,15 @@ export default function Sidebar({
             {!folderCollapsed && folderVps.map((v) => renderVpsCard(v, {
               vpsSessions: sessions.filter((s) => s.vpsId === v.id),
               vpsShells: shells.filter((sh) => sh.vpsId === v.id),
+              vpsInstall: installs.find((i) => i.vpsId === v.id) ?? null,
               paths: pathsByVps.get(v.id) ?? [],
               isCollapsed: collapsed.has(v.id),
               onToggle: () => toggleCollapsed(v.id),
-              selectedId, selectedShellId,
-              onSelect, onSelectShell, onNew, onNewShell, onScan,
-              onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
+              selectedId, selectedShellId, selectedInstallId,
+              onSelect, onSelectShell, onSelectInstall,
+              onNew, onNewShell, onScan,
+              onContext, onContextShell, onContextInstall,
+              editingId, onRenameSubmit, onRenameCancel,
               onInstallAgent, onLoginAgent, onUpdateAgent,
               builtPyzSha, updatingAgentVpsIds,
             }))}
@@ -247,18 +273,22 @@ export default function Sidebar({
 type VpsRenderOpts = {
   vpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
+  vpsInstall: InstallInfo | null;
   paths: VpsPath[];
   isCollapsed: boolean;
   onToggle: () => void;
   selectedId: string | null;
   selectedShellId: string | null;
+  selectedInstallId: string | null;
   onSelect: (id: string) => void;
   onSelectShell: (id: string) => void;
+  onSelectInstall: (id: string) => void;
   onNew: (opts: { vpsId: string; cwd?: string }) => void;
   onNewShell: (opts: { vpsId: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
+  onContextInstall?: (install: InstallInfo, x: number, y: number) => void;
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
@@ -271,9 +301,12 @@ type VpsRenderOpts = {
 
 function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
   const {
-    vpsSessions, vpsShells, paths, isCollapsed, onToggle,
-    selectedId, selectedShellId, onSelect, onSelectShell, onNew, onNewShell, onScan,
-    onContext, onContextShell, editingId, onRenameSubmit, onRenameCancel,
+    vpsSessions, vpsShells, vpsInstall, paths, isCollapsed, onToggle,
+    selectedId, selectedShellId, selectedInstallId,
+    onSelect, onSelectShell, onSelectInstall,
+    onNew, onNewShell, onScan,
+    onContext, onContextShell, onContextInstall,
+    editingId, onRenameSubmit, onRenameCancel,
     onInstallAgent, onLoginAgent, onUpdateAgent, builtPyzSha, updatingAgentVpsIds,
   } = opts;
 
@@ -296,6 +329,14 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
     if (!groups.has(key)) groups.set(key, { path: best, sessions: [], shells: [] });
     groups.get(key)!.shells.push(sh);
   }
+  // Pour une même route (path), on liste les sessions dans l'ordre
+  // chronologique d'apparition : la plus ancienne en haut, la plus récente
+  // en bas. Une nouvelle session apparaît donc systématiquement en queue
+  // de liste et n'est jamais re-rangée (pas de "remonter la session la
+  // plus active") — c'est explicitement le comportement voulu.
+  for (const g of groups.values()) {
+    g.sessions.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
   const activeCount = vpsSessions.filter((s) =>
     ACTIVE_STATUSES.has(s.liveStatus ?? s.status)
   ).length;
@@ -309,6 +350,15 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
   const agentUpdating = !!updatingAgentVpsIds?.has(v.id);
   const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
   const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}${agentOutOfDate ? ' — mise à jour dispo' : ''}`;
+  // Si l'agent n'est pas OK, les boutons qui nécessitent l'agent (new claude
+  // session, historique = scan des sessions Claude sur disque) sont disabled.
+  // Le shell SSH reste OK car il n'a pas besoin de l'agent.
+  const agentReady = agentStatus === 'ok';
+  const noAgentReason = agentStatus === 'missing'
+    ? "installe l'agent d'abord"
+    : agentStatus === 'error'
+    ? "l'agent est en erreur — réinstalle-le"
+    : "agent pas encore vérifié — clique \"install agent\"";
   return (
     <section key={v.id} className={`vps-section vps-card${isCollapsed ? ' collapsed' : ''} agent-${agentStatus}`}>
       <div
@@ -359,11 +409,19 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
               title={`mettre à jour l'agent (déployé: ${agentPyzSha ?? 'inconnu'}, dispo: ${builtPyzSha})`}
             >{agentUpdating ? '⟳ mise à jour…' : '⇪ update agent'}</button>
           )}
-          {onLoginAgent && (
+          {/* Bouton "claude login" : masqué si on a déjà vérifié et qu'un
+              compte est connecté (`claudeLoggedIn === 1`). Affiché si pas
+              connecté OU si on n'a jamais vérifié (`null`, valeur par défaut
+              pour les VPS pré-migration ou pas encore bootstrap-és). */}
+          {onLoginAgent && agentReady && (v as any).claudeLoggedIn !== 1 && (
             <button
               className="vps-act-btn"
               onClick={(e) => { e.stopPropagation(); onLoginAgent(v); }}
-              title="claude login interactif (OAuth) sur ce VPS"
+              title={
+                (v as any).claudeLoggedIn === 0
+                  ? "claude login interactif (OAuth) sur ce VPS — pas connecté"
+                  : "claude login interactif (OAuth) sur ce VPS"
+              }
             ><span className="btn-icon"><IconRobot /></span> claude login</button>
           )}
           <button
@@ -374,9 +432,38 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
           <button
             className="vps-act-btn"
             onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
-            title="scanner les sessions Claude existantes sur ce VPS"
+            disabled={!agentReady}
+            title={agentReady ? "scanner les sessions Claude existantes sur ce VPS" : `historique indisponible — ${noAgentReason}`}
           ><span className="btn-icon"><IconClockHistory /></span> historique</button>
         </div>
+      )}
+      {/* Session install si présente — au-dessus des paths, sous les boutons.
+          Visible aussi quand l'install est terminée (success/error) pour que
+          l'user puisse rouvrir le log. Fermeture via clic-droit → Fermer. */}
+      {!isCollapsed && vpsInstall && (
+        <button
+          type="button"
+          className={`session-row install-row ${vpsInstall.status}${vpsInstall.id === selectedInstallId ? ' selected' : ''}`}
+          onClick={() => onSelectInstall(vpsInstall.id)}
+          onContextMenu={(e) => {
+            if (!onContextInstall) return;
+            e.preventDefault();
+            onContextInstall(vpsInstall, e.clientX, e.clientY);
+          }}
+          title={`installation agent · ${vpsInstall.status === 'running' ? 'en cours' : vpsInstall.status === 'success' ? 'terminée' : 'échec'}`}
+        >
+          <div className="row-head">
+            <span className="dot" />
+            <span className="label">⚙ installation</span>
+            <span className="install-row-tag">
+              {vpsInstall.status === 'running'
+                ? (vpsInstall.currentPhase ?? 'init')
+                : vpsInstall.status === 'success'
+                  ? 'OK'
+                  : 'échec'}
+            </span>
+          </div>
+        </button>
       )}
       {!isCollapsed && (
         <>
@@ -392,7 +479,8 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
                   <button
                     className="proj-action"
                     onClick={() => onNew({ vpsId: v.id, cwd: p.path })}
-                    title="nouvelle session Claude sur ce path"
+                    disabled={!agentReady}
+                    title={agentReady ? "nouvelle session Claude sur ce path" : `nouvelle session indisponible — ${noAgentReason}`}
                     aria-label="nouvelle session Claude"
                   ><IconRobot /></button>
                   <button
@@ -436,7 +524,8 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
                   <button
                     className="proj-action"
                     onClick={() => onNew({ vpsId: v.id })}
-                    title="nouvelle session Claude libre"
+                    disabled={!agentReady}
+                    title={agentReady ? "nouvelle session Claude libre" : `nouvelle session indisponible — ${noAgentReason}`}
                     aria-label="nouvelle session Claude"
                   ><IconRobot /></button>
                   <button

@@ -29,11 +29,13 @@ type Props = {
   y: number;
   currentColor?: string | null;
   canKill?: boolean;
-  killLabel?: string;                // 'Kill' (session) ou 'Fermer' (shell)
+  killLabel?: string;                // 'Pause' (session) ou 'Fermer' (shell/install)
   killDisabledReason?: string;
   showDelete?: boolean;              // bouton "Supprimer définitivement"
-  onRename: () => void;
-  onColor: (color: RowColor) => void;
+  showRename?: boolean;              // par défaut true ; false pour install
+  showColor?: boolean;               // par défaut true ; false pour install
+  onRename?: () => void;
+  onColor?: (color: RowColor) => void;
   onEditCwd?: () => void;            // option "Modifier le dossier"
   onKill?: () => void;
   onDelete?: () => void;
@@ -41,8 +43,9 @@ type Props = {
 };
 
 export default function SessionContextMenu({
-  title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Kill',
+  title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Pause',
   killDisabledReason, showDelete = true,
+  showRename = true, showColor = true,
   onRename, onColor, onEditCwd, onKill, onDelete, onClose,
 }: Props) {
   useEffect(() => {
@@ -65,30 +68,35 @@ export default function SessionContextMenu({
         {title}
         {subtitle && <div className="ctx-subtitle">{subtitle}</div>}
       </div>
-      <button type="button" onClick={() => { onRename(); onClose(); }}>Renommer</button>
+      {showRename && onRename && (
+        <button type="button" onClick={() => { onRename(); onClose(); }}>Renommer</button>
+      )}
       {onEditCwd && (
         <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Modifier le dossier (cwd)</button>
       )}
 
-      {/* Palette de couleurs — ligne horizontale de pastilles cliquables */}
-      <div className="ctx-color-row" role="group" aria-label="couleur">
-        {ROW_COLORS.map((c) => {
-          const selected = (currentColor ?? null) === c.token;
-          const isNone = c.token === null;
-          return (
-            <button
-              key={c.token ?? 'none'}
-              type="button"
-              className={`ctx-color-dot${selected ? ' on' : ''}${isNone ? ' none' : ''}`}
-              title={c.label}
-              style={{ background: c.css }}
-              onClick={() => { onColor(c.token); onClose(); }}
-            >
-              {isNone && <span className="x">∅</span>}
-            </button>
-          );
-        })}
-      </div>
+      {/* Palette de couleurs — ligne horizontale de pastilles cliquables.
+          Masquée pour les installs (pas de personnalisation utile). */}
+      {showColor && onColor && (
+        <div className="ctx-color-row" role="group" aria-label="couleur">
+          {ROW_COLORS.map((c) => {
+            const selected = (currentColor ?? null) === c.token;
+            const isNone = c.token === null;
+            return (
+              <button
+                key={c.token ?? 'none'}
+                type="button"
+                className={`ctx-color-dot${selected ? ' on' : ''}${isNone ? ' none' : ''}`}
+                title={c.label}
+                style={{ background: c.css }}
+                onClick={() => { onColor(c.token); onClose(); }}
+              >
+                {isNone && <span className="x">∅</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {onKill && (
         <button

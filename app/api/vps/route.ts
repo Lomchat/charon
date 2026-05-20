@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db, vps, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { eq, max, asc } from 'drizzle-orm';
+import { eq, max, asc, ne } from 'drizzle-orm';
 
 const newId = () => crypto.randomBytes(8).toString('hex');
 const DEFAULT_FOLDER_ID = 'default';
@@ -25,14 +25,18 @@ export async function POST(req: Request) {
     : null;
 
   // Résolution du dossier : si folderId fourni et existant on l'utilise,
-  // sinon on tombe sur le premier dossier (par position) — typiquement 'default'.
+  // sinon on tombe sur le premier dossier non-'default' (par position). Le
+  // dossier 'default' est volontairement écarté car il est par convention
+  // "Sans dossier" — fallback uniquement si aucun autre dossier n'existe.
   let folderId: string;
   const requested = body.folderId != null ? String(body.folderId).trim() : null;
   if (requested) {
     const [f] = db.select().from(vpsFolders).where(eq(vpsFolders.id, requested)).all();
     folderId = f ? f.id : DEFAULT_FOLDER_ID;
   } else {
-    const [first] = db.select().from(vpsFolders).orderBy(asc(vpsFolders.position)).all();
+    const [first] = db.select().from(vpsFolders)
+      .where(ne(vpsFolders.id, DEFAULT_FOLDER_ID))
+      .orderBy(asc(vpsFolders.position)).all();
     folderId = first?.id ?? DEFAULT_FOLDER_ID;
   }
 

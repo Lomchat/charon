@@ -1,6 +1,6 @@
 'use client';
 import { api } from '@/lib/api';
-import type { ClaudeSessionDetailResponse } from '@/lib/types/api';
+import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
 
 // Cache module-level partagé desktop + mobile.
 // - Mobile : `/m/select` prefetch toutes les sessions au mount → `/m/chat`
@@ -69,4 +69,33 @@ export function prefetchAll(ids: string[]): void {
 
 export function invalidate(id: string): void {
   cache.delete(id);
+}
+
+/**
+ * Étend l'entrée cache d'une session avec une fenêtre de messages plus
+ * anciens (résultat d'un loadOlderClaudeMessages). Préserve la position
+ * dans l'historique au switch de session / remount du composant.
+ *
+ * Pas d'erreur si l'entrée n'existe pas (no-op) — l'appelant peut tout
+ * de même avoir des données fraîches en local. Note : on ne préserve PAS
+ * les pages étendues à travers un `fetchAndCache(force=true)` — un refresh
+ * full reload (visibilitychange, manuel) reset à la dernière fenêtre. Le
+ * trade-off : simplicité > fidélité absolue du scroll après long absence.
+ */
+export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow): void {
+  const e = cache.get(id);
+  if (!e) return;
+  // Le merge garde l'ordre asc par id. Les anciens viennent par définition
+  // avant les actuels (id plus petits). On garde le hasMore/oldestChatId
+  // de la dernière page chargée (la plus ancienne).
+  cache.set(id, {
+    ...e,
+    data: {
+      ...e.data,
+      messages: [...older.messages, ...e.data.messages],
+      hasMore: older.hasMore,
+      oldestChatId: older.oldestChatId,
+    },
+    // fetchedAt inchangé : on n'a pas refresh la session, juste rallongé.
+  });
 }

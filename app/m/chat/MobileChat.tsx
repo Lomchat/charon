@@ -8,7 +8,9 @@ import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath } from '@/lib/db/schema';
 import type { WorkerStatus, PermissionMode } from '@/lib/server/claude/types';
-import { getCached, fetchAndCache, invalidate as invalidateCache } from '../chatCache';
+import {
+  getCached, fetchAndCache, invalidate as invalidateCache, extendWithOlder,
+} from '../chatCache';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
@@ -23,6 +25,7 @@ import type {
 } from '../../sessionTypes';
 import { useClaudeSessionStream, type StreamCache } from '../../useClaudeSessionStream';
 import { useCrossSessionInteractionFeed } from '../../useCrossSessionInteractionFeed';
+import { useInputDraft } from '../../inputDraftStore';
 
 type SessionMeta = {
   id: string;
@@ -70,6 +73,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     get: (id) => getCached(id),
     fetch: (id, force) => fetchAndCache(id, force),
     invalidate: (id) => invalidateCache(id),
+    extendWithOlder: (id, older) => extendWithOlder(id, older),
   });
 
   // ── Stream session (SSE + state + actions) — hook partagé desktop/mobile ──
@@ -82,10 +86,11 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   });
   const {
     sessionMeta, messages, currentAssistant, status, permissionMode,
-    toolCalls, todos, edits, files,
+    toolCalls, todos, edits,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error,
-    clearPrefillInput, clearError,
+    prefillInput, error, isLoadingHistory,
+    hasMore, isLoadingMore,
+    clearPrefillInput, clearError, loadMoreHistory,
   } = stream;
 
   // Cross-session interactions feed : compte les perms/questions/exit-plans
@@ -98,7 +103,11 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   }, [cross, sessionId]);
 
   // State purement UI mobile (textarea + menus + scroll).
-  const [input, setInput] = useState('');
+  // `input` est branché sur `inputDraftStore` pour que le brouillon survive
+  // aux navigations /m/chat ↔ /m/select ainsi qu'au switch de session via
+  // `?id=…` (la page mobile n'a pas de `key`, donc on s'appuie sur la
+  // réconciliation in-render du hook). F5 vide tout (Map in-memory).
+  const [input, setInput] = useInputDraft(sessionId);
   const [showMenu, setShowMenu] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -135,6 +144,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   // Combiné au cache + column-reverse, ça donne un affichage instant SANS
   // effet "défilage" perçu (plus de batches qui arrivent un par un).
 
+  const [isAtTop, setIsAtTop] = useState(false);
   const handleScroll = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -148,12 +158,54 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
       setIsAtBottom(atBottom);
     }
     if (atBottom) setNewCount(0);
-  }, []);
+    // Near-top → loadMore. Cf. ClaudeSessionView pour la formule.
+    const max = el.scrollHeight - el.clientHeight;
+    const distFromTop = max - Math.abs(el.scrollTop);
+    if (distFromTop < 400 && hasMore && !isLoadingMore) {
+      loadMoreHistory();
+    }
+    setIsAtTop(max <= 0 || distFromTop < 4);
+  }, [hasMore, isLoadingMore, loadMoreHistory]);
+  // Recompute isAtTop quand le contenu change.
+  useEffect(() => { handleScroll(); }, [messages.length, handleScroll]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
     const el = chatBodyRef.current;
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  // ── Scroll-up vers le précédent message utilisateur ────────────────────
+  // Symétrique de la pill ↓ : remonte au dernier user message au-dessus de la
+  // zone visible. Clic répété → on remonte de proche en proche. Si rien
+  // au-dessus mais pagination dispo, déclenche loadMoreHistory. Sinon, saute
+  // au sommet visuel. Cf. ClaudeSessionView.tsx pour la version desktop.
+  // scrollIntoView({block:'start'}) gère le signe scrollTop cross-browser.
+  const onScrollUpClick = useCallback(() => {
+    const el = chatBodyRef.current;
+    if (!el) return;
+    const containerRect = el.getBoundingClientRect();
+    const userBubbles = Array.from(el.querySelectorAll<HTMLElement>('[data-msg-role="user"]'));
+    let target: HTMLElement | null = null;
+    let bestGap = Infinity;
+    for (const bubble of userBubbles) {
+      const r = bubble.getBoundingClientRect();
+      const gap = containerRect.top - r.top;
+      if (gap > 4 && gap < bestGap) {
+        bestGap = gap;
+        target = bubble;
+      }
+    }
+    if (target) {
+      target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else if (hasMore && !isLoadingMore) {
+      loadMoreHistory();
+    } else {
+      const last = el.lastElementChild as HTMLElement | null;
+      if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [hasMore, isLoadingMore, loadMoreHistory]);
+
+  const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
 
   // Auto-resize de la textarea : on suit le scrollHeight avec un max ~30vh.
   useEffect(() => {
@@ -407,20 +459,55 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
             On met donc le streaming en 1er, puis les messages en ordre inverse
             (newest first dans le DOM = en bas, oldest last = en haut). */}
         <div className="m-chat-body" ref={chatBodyRef} onScroll={handleScroll}>
-          {currentAssistant && (
-            <div className="m-bubble assistant streaming">
-              <div className="m-bubble-h"><span>assistant</span></div>
-              <div className="m-md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}>
-                  {currentAssistant}
-                </ReactMarkdown>
-              </div>
+          {isLoadingHistory && messages.length === 0 ? (
+            <div className="m-history-loading" role="status" aria-live="polite">
+              <span className="m-history-loading-spinner" aria-hidden />
+              <span>chargement de l'historique…</span>
             </div>
+          ) : (
+            <>
+              {currentAssistant && (
+                <div className="m-bubble assistant streaming">
+                  <div className="m-bubble-h"><span>assistant</span></div>
+                  <div className="m-md">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}>
+                      {currentAssistant}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              )}
+              {[...renderable].reverse().map(({ msg, attached }) => (
+                <MobileMessage key={msg.id} m={msg} attached={attached} />
+              ))}
+              {/* En column-reverse, le dernier enfant DOM rend visuellement
+                  en haut — c'est là qu'on attend l'indicateur "plus ancien". */}
+              {(hasMore || isLoadingMore) && (
+                <div className="m-loadmore-indicator" role="status" aria-live="polite">
+                  {isLoadingMore ? (
+                    <><span className="m-history-loading-spinner" aria-hidden /> chargement…</>
+                  ) : (
+                    <button type="button" onClick={() => loadMoreHistory()}>↑ plus ancien</button>
+                  )}
+                </div>
+              )}
+              {!hasMore && !isLoadingMore && messages.length > 0 && (
+                <div className="m-history-start">— début —</div>
+              )}
+            </>
           )}
-          {[...renderable].reverse().map(({ msg, attached }) => (
-            <MobileMessage key={msg.id} m={msg} attached={attached} />
-          ))}
         </div>
+        {/* Zone fixe pour les boutons scroll. La pill ↓ peut disparaître quand
+            on est en bas mais le bouton ↑ garde sa position au-dessus. */}
+        {showScrollUpButton && (
+          <button
+            type="button"
+            className="m-scroll-up-pill"
+            onClick={onScrollUpClick}
+            aria-label="remonter au dernier message utilisateur"
+          >
+            <span className="m-scroll-arrow">▴</span>
+          </button>
+        )}
         {!isAtBottom && (
           <button
             type="button"
@@ -527,7 +614,6 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           toolCalls={toolCalls}
           todos={todos}
           edits={edits}
-          files={files}
           onRevert={async (filePath, content) => {
             try {
               await api.revertClaudeEdit(sessionId, filePath, content);
@@ -542,7 +628,7 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Menu popover (sleep/resume/kill/interrupt)
+// Menu popover (sleep/resume/pause/interrupt)
 // ──────────────────────────────────────────────────────────────────────────
 function MenuPopover({
   status, onClose, onSleep, onResume, onKill, onInterrupt, onForceStop,
@@ -583,7 +669,7 @@ function MenuPopover({
           <MenuItem onClick={onSleep} label="💤 sleep" />
         )}
         {status !== 'killed' && (
-          <MenuItem onClick={onKill} label="✗ kill session" danger />
+          <MenuItem onClick={onKill} label="⏏ pause session" danger />
         )}
       </div>
     </>
@@ -621,7 +707,10 @@ function MobileMessage({ m, attached }: { m: Msg; attached?: Msg }) {
   const isAssistant = m.role === 'assistant';
   const isUser = m.role === 'user';
   return (
-    <div className={`m-bubble ${isUser ? 'user' : isAssistant ? 'assistant' : 'system'}`}>
+    <div
+      className={`m-bubble ${isUser ? 'user' : isAssistant ? 'assistant' : 'system'}`}
+      data-msg-role={m.role}
+    >
       <div className="m-bubble-h">
         <span>{m.role}</span>
         {m.createdAt > 0 && <span style={{ marginLeft: 'auto' }}>{fmtTime(m.createdAt)}</span>}
@@ -919,15 +1008,14 @@ function ExitPlanCard({ plan, onApprove, onReject }: {
 // ──────────────────────────────────────────────────────────────────────────
 // Drawer (ToolPanel mobile)
 // ──────────────────────────────────────────────────────────────────────────
-type DrawerTab = 'diffs' | 'todos' | 'calls' | 'files';
+type DrawerTab = 'diffs' | 'todos' | 'calls';
 function Drawer({
-  onClose, toolCalls, todos, edits, files, onRevert,
+  onClose, toolCalls, todos, edits, onRevert,
 }: {
   onClose: () => void;
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
-  files: Set<string>;
   onRevert: (filePath: string, content: string | null) => Promise<void>;
 }) {
   const [tab, setTab] = useState<DrawerTab>(edits.size > 0 ? 'diffs' : todos.length > 0 ? 'todos' : 'calls');
@@ -949,15 +1037,11 @@ function Drawer({
           <button className={tab === 'calls' ? 'on' : ''} onClick={() => setTab('calls')}>
             tools {toolCalls.length > 0 && <span className="m-badge">{toolCalls.length}</span>}
           </button>
-          <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
-            files {files.size > 0 && <span className="m-badge">{files.size}</span>}
-          </button>
         </nav>
         <div className="m-drawer-body">
           {tab === 'diffs' && <DiffsTab edits={editArr} onRevert={onRevert} />}
           {tab === 'todos' && <TodosTab todos={todos} />}
           {tab === 'calls' && <CallsTab calls={toolCalls} />}
-          {tab === 'files' && <FilesTab files={files} />}
         </div>
       </div>
     </>
@@ -1041,16 +1125,6 @@ function CallsTab({ calls }: { calls: ToolCallEntry[] }) {
           )}
         </li>
       ))}
-    </ul>
-  );
-}
-
-function FilesTab({ files }: { files: Set<string> }) {
-  if (files.size === 0) return <div className="m-tp-empty">aucun fichier touché</div>;
-  const sorted = Array.from(files).sort();
-  return (
-    <ul className="m-tp-files-list">
-      {sorted.map((f) => <li key={f}>{f}</li>)}
     </ul>
   );
 }

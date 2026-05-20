@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { db, vps, vpsFolders } from '@/lib/db';
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, max, ne } from 'drizzle-orm';
 import { requireApiSession } from '@/lib/server/session';
+
+const DEFAULT_FOLDER_ID = 'default';
 
 // POST /api/vps-folders/layout — apply atomic re-layout.
 //
@@ -46,6 +48,10 @@ export async function POST(req: Request) {
   db.transaction((tx) => {
     for (const f of inFolders) {
       if (!f?.id || typeof f.position !== 'number') continue;
+      // Le dossier 'default' n'est jamais réordonnable côté UI — on ignore
+      // toute tentative de changer sa position via ce endpoint. Sa position
+      // finale est forcée plus bas après tous les autres updates.
+      if (f.id === DEFAULT_FOLDER_ID) continue;
       tx.update(vpsFolders).set({ position: Math.floor(f.position) }).where(eq(vpsFolders.id, f.id)).run();
     }
     for (const v of inVps) {
@@ -55,6 +61,13 @@ export async function POST(req: Request) {
         position: Math.floor(v.position),
       }).where(eq(vps.id, v.id)).run();
     }
+    // Force 'default' à position = (max des autres) + 1 pour qu'il reste
+    // toujours en dernier dans un `ORDER BY position`.
+    const m = tx.select({ p: max(vpsFolders.position) }).from(vpsFolders)
+      .where(ne(vpsFolders.id, DEFAULT_FOLDER_ID)).get();
+    const targetDefaultPos = (m?.p ?? -1) + 1;
+    tx.update(vpsFolders).set({ position: targetDefaultPos })
+      .where(eq(vpsFolders.id, DEFAULT_FOLDER_ID)).run();
   });
 
   const folders = db.select().from(vpsFolders).orderBy(asc(vpsFolders.position), asc(vpsFolders.createdAt)).all();

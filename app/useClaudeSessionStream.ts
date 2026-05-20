@@ -9,8 +9,8 @@ import { rebuildStateFromMessages } from './sessionRebuild';
 import type {
   WorkerEvent, WorkerStatus, PermissionMode,
 } from '@/lib/server/claude/types';
-import type { ClaudeSessionDetailResponse } from '@/lib/types/api';
-import { subscribeSession, setFocus } from './globalEventStream';
+import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
+import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
 
 // useClaudeSessionStream
 // ─────────────────────────────────────────────────────────────────────────────
@@ -45,6 +45,12 @@ export type StreamCache = {
   get(id: string): ClaudeSessionDetailResponse | undefined;
   fetch(id: string, force?: boolean): Promise<ClaudeSessionDetailResponse>;
   invalidate?(id: string): void;
+  /**
+   * Étend l'entrée cache avec une fenêtre de messages plus anciens (loadMore).
+   * Permet de préserver les pages chargées au switch de session/remount.
+   * No-op si l'implémentation ne le supporte pas.
+   */
+  extendWithOlder?(id: string, older: ClaudeSessionMessageWindow): void;
 };
 
 export type UseClaudeSessionStreamOptions = {
@@ -83,6 +89,16 @@ export type ClaudeSessionStreamState = {
   prefillInput: string | null;
   // Dernière erreur affichable à l'utilisateur
   error: { msg: string } | null;
+  // true tant qu'on n'a JAMAIS appliqué de données pour cette session
+  // (ni depuis le cache, ni depuis le fetch). Permet à l'UI de différencier
+  // « session vide » de « historique en cours de chargement ».
+  isLoadingHistory: boolean;
+  // Pagination scroll-up : true s'il existe des messages chat plus anciens
+  // que `oldestChatId` côté serveur. False quand on a atteint le début.
+  hasMore: boolean;
+  // true pendant qu'un loadMoreHistory est en vol. Le caller peut afficher
+  // un spinner en haut du chat (visuel : column-reverse → "en haut").
+  isLoadingMore: boolean;
 };
 
 export type ClaudeSessionStreamActions = {
@@ -100,6 +116,13 @@ export type ClaudeSessionStreamActions = {
   clearPrefillInput(): void;
   /** Force un refetch depuis la DB (cache bypass). */
   refetchHistory(): Promise<void>;
+  /**
+   * Charge une fenêtre de messages chat plus anciens et les préprend à
+   * l'historique. No-op si `hasMore=false`, si `oldestChatId=null`, ou si
+   * un loadMore est déjà en cours. Le caller le déclenche quand l'user
+   * scrolle vers le haut du chat (proche de la limite visuelle).
+   */
+  loadMoreHistory(): Promise<void>;
   /** Reset l'erreur affichée. */
   clearError(): void;
 };
@@ -125,6 +148,14 @@ export function useClaudeSessionStream(
   const [exitPlanQueue, setExitPlanQueue] = useState<PendingExitPlan[]>([]);
   const [prefillInput, setPrefillInput] = useState<string | null>(null);
   const [error, setError] = useState<{ msg: string } | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  // Pagination state. `oldestChatIdRef` est aussi tenu en ref pour pouvoir
+  // être lu sans re-render dans le handler scroll (qui peut spam) et dans
+  // loadMoreHistory (qui doit lire la dernière valeur avant d'envoyer le POST).
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const oldestChatIdRef = useRef<number | null>(null);
+  const loadMoreInflightRef = useRef(false);
 
   // streamKey : bump pour forcer la re-création de la SSE (utilisé après
   // doResume — la session est repartie et on veut une SSE fraîche).
@@ -164,6 +195,16 @@ export function useClaudeSessionStream(
       .map((q) => ({ ...q, sessionId: sid })));
     setExitPlanQueue(((r.pendingExitPlans ?? []) as Omit<PendingExitPlan, 'sessionId'>[])
       .map((e) => ({ ...e, sessionId: sid })));
+    // On a des données, qu'elles viennent du cache ou du fetch fresh → on
+    // peut masquer le loader. Vrai-zéro-message = on saura par messages.length.
+    setIsLoadingHistory(false);
+    // Reset pagination cursor depuis la fenêtre fraîche. `r.hasMore` et
+    // `r.oldestChatId` viennent du backend (cf. loadMessageWindow). Si la
+    // réponse ne les a pas (response cachée d'une version antérieure), on
+    // tombe sur false/null → pagination simplement désactivée pour cette
+    // session jusqu'au prochain fetch fresh.
+    setHasMore(!!r.hasMore);
+    oldestChatIdRef.current = r.oldestChatId ?? null;
   }, []);
 
   // refetchHistory : utilisé au mount, à chaque reconnexion SSE et au retour
@@ -179,7 +220,10 @@ export function useClaudeSessionStream(
         const fresh = await cache.fetch(sessionId, true);
         applyApiData(fresh);
       } catch (e) {
-        if (!cached) setError({ msg: String((e as Error)?.message ?? e) });
+        if (!cached) {
+          setError({ msg: String((e as Error)?.message ?? e) });
+          setIsLoadingHistory(false); // on abandonne le loader, l'erreur s'affiche
+        }
       }
     } else {
       try {
@@ -187,9 +231,66 @@ export function useClaudeSessionStream(
         applyApiData(r);
       } catch (e) {
         setError({ msg: String((e as Error)?.message ?? e) });
+        setIsLoadingHistory(false);
       }
     }
   }, [sessionId, cache, applyApiData]);
+
+  // loadMoreHistory : charge une page d'historique plus ancien, prépend à
+  // l'état local. Déclenché par le caller au scroll-up. Idempotent et
+  // protégé contre les appels concurrents par loadMoreInflightRef.
+  const loadMoreHistory = useCallback(async () => {
+    if (loadMoreInflightRef.current) return;
+    const cursor = oldestChatIdRef.current;
+    if (cursor == null) return;
+    if (!hasMore) return;
+    loadMoreInflightRef.current = true;
+    setIsLoadingMore(true);
+    try {
+      const older = await api.loadOlderClaudeMessages(sessionId, cursor, 200);
+      // Server peut renvoyer hasMore=false même si la page est non vide :
+      // l'ancien curseur était déjà la limite. On met à jour quand même.
+      const olderRebuilt = rebuildStateFromMessages(
+        older.messages,
+        (status ?? 'sleeping') as WorkerStatus,
+      );
+      if (olderRebuilt.messages.length > 0) {
+        setMessages((cur) => [...olderRebuilt.messages, ...cur]);
+        setToolCalls((cur) => [...olderRebuilt.toolCalls, ...cur]);
+        setFiles((cur) => {
+          const next = new Set(cur);
+          for (const f of olderRebuilt.files) next.add(f);
+          return next;
+        });
+        setEdits((cur) => {
+          // Pour edits : les snapshots récents (live ou déjà chargés) ont
+          // priorité — on n'écrase pas une entrée existante avec une plus
+          // ancienne du même file_path. Sinon on perdrait le diff récent.
+          const next = new Map(cur);
+          for (const [k, v] of olderRebuilt.edits) {
+            if (!next.has(k)) next.set(k, v);
+          }
+          return next;
+        });
+        // Todos : on n'écrase JAMAIS la liste actuelle avec d'anciens snapshots —
+        // les todos sont par-définition state-driven, la dernière version
+        // est la vraie (cf. rebuild qui fait latest-wins de toute façon).
+      }
+      // Avance le cursor + statut hasMore selon la nouvelle limite.
+      oldestChatIdRef.current = older.oldestChatId ?? cursor;
+      setHasMore(!!older.hasMore);
+      // Persist dans le cache pour préserver les pages au switch/remount.
+      if (cache?.extendWithOlder && older.messages.length > 0) {
+        try { cache.extendWithOlder(sessionId, older); } catch {}
+      }
+    } catch (e) {
+      setError({ msg: String((e as Error)?.message ?? e) });
+    } finally {
+      setIsLoadingMore(false);
+      loadMoreInflightRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, hasMore, cache, status]);
 
   // ── Subscription au global event stream ───────────────────────────────
   useEffect(() => {
@@ -372,6 +473,19 @@ export function useClaudeSessionStream(
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [refetchHistory]);
 
+  // Refetch sur reconnect SSE (= la connexion EventSource a été
+  // ré-établie après un drop, typiquement après un `systemctl restart
+  // charon`). La SSE elle-même est live-only côté Charon — les messages
+  // persistés en DB pendant le gap ne sont jamais relayés. Sans ce
+  // refetch, l'UI reste figée sur le dernier état pré-drop, l'user
+  // devait refresh à la main (cf. CLAUDE.md §14 piège 24).
+  useEffect(() => {
+    const unsub = subscribeReconnect(() => {
+      refetchHistory();
+    });
+    return () => unsub();
+  }, [refetchHistory]);
+
   // ── Actions ────────────────────────────────────────────────────────────
   const send = useCallback(async (content: string) => {
     const trimmed = content.trim();
@@ -466,19 +580,21 @@ export function useClaudeSessionStream(
     sessionMeta, messages, currentAssistant, status, permissionMode,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error,
+    prefillInput, error, isLoadingHistory,
+    hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode,
     doSleep, doResume, doKill,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, clearError,
+    clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error,
+    prefillInput, error, isLoadingHistory,
+    hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode,
     doSleep, doResume, doKill,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, clearError,
+    clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   ]);
 }

@@ -9,10 +9,12 @@ import type {
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
+  InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
   ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse,
+  CheckClaudeLoginResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
-  ClaudeSessionDetailResponse,
+  ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
   CreateClaudeSessionBody, CreateClaudeSessionResponse,
   ImportClaudeSessionBody, ImportClaudeSessionResponse,
   RenameClaudeSessionBody,
@@ -72,6 +74,20 @@ export const api = {
   updateLocalAgent: () =>
     send<UpdateVpsAgentResponse>('POST', '/api/local-agent/update'),
 
+  // ── Installs d'agent (éphémères, mémoire, 1 par VPS max) ───────────────────
+  listInstalls: () =>
+    send<InstallsListResponse>('GET', '/api/installs'),
+  getInstall: (id: string) =>
+    send<InstallInfo>('GET', `/api/installs/${id}`),
+  getVpsInstall: (vpsId: string) =>
+    send<VpsInstallResponse>('GET', `/api/vps/${vpsId}/installs`),
+  startInstall: (vpsId: string) =>
+    send<InstallInfo>('POST', `/api/vps/${vpsId}/installs`),
+  retryInstall: (id: string) =>
+    send<InstallInfo>('POST', `/api/installs/${id}/retry`),
+  closeInstall: (id: string) =>
+    send<OkResponse>('DELETE', `/api/installs/${id}`),
+
   // ── Shells SSH (éphémères, multi par VPS) ──────────────────────────────────
   listShells: () =>
     send<ShellsListResponse>('GET', '/api/shells'),
@@ -113,6 +129,11 @@ export const api = {
     send<SetupVpsClaudeResponse>('POST', `/api/vps/${id}/claude/setup`),
   scanVpsClaude: (id: string) =>
     send<ScanVpsClaudeResponse>('GET', `/api/vps/${id}/claude/scan`),
+  // Re-vérifie l'état `claude login` du VPS. Persiste en DB + retourne.
+  // Déclenché à la fermeture de LoginConsole (l'user vient peut-être de se
+  // connecter ou de logout), ou à la demande manuelle.
+  checkVpsClaudeLogin: (id: string) =>
+    send<CheckClaudeLoginResponse>('POST', `/api/vps/${id}/claude/check-login`),
   bootstrapVpsUrl: (id: string) => `/api/vps/${id}/claude/bootstrap`,
 
   // ── Claude sessions ───────────────────────────────────────────────────────
@@ -125,6 +146,17 @@ export const api = {
   },
   getClaudeSession: (id: string) =>
     send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}`),
+  // Charge une fenêtre de messages chat plus anciens (scroll-up pagination).
+  // Le cursor est l'`oldestChatId` retourné par la réponse précédente.
+  // Réutilise le même endpoint que getClaudeSession avec `?before=<id>` — la
+  // réponse contient les mêmes champs mais le client n'utilise que
+  // messages/hasMore/oldestChatId pour étendre l'historique. Cap serveur 1000.
+  loadOlderClaudeMessages: (id: string, before: number, limit = 200) => {
+    const p = new URLSearchParams();
+    p.set('before', String(before));
+    p.set('limit', String(limit));
+    return send<ClaudeSessionMessageWindow>('GET', `/api/claude/sessions/${id}?${p.toString()}`);
+  },
   createClaudeSession: (data: CreateClaudeSessionBody) =>
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>

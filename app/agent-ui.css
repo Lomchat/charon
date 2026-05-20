@@ -267,6 +267,15 @@
   border-bottom: 1px solid #4a1f1f;
   font-size: 0.9em;
 }
+/* Wrapper qui héberge le xterm ET l'overlay URL flottant. Position relative
+   pour ancrer l'overlay. */
+.login-xterm-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 /* Vrai terminal xterm.js — flex remplit toute la card */
 .login-xterm {
   flex: 1;
@@ -281,6 +290,98 @@
 .login-xterm .xterm-viewport,
 .login-xterm .xterm-screen {
   background: transparent !important;
+}
+
+/* ── Overlay "URL détecté dans le terminal" ─────────────────────────────────
+ * Posé en bas (à droite) du wrapper xterm. Utilisé par LoginConsole
+ * (claude login OAuth URL coupé sur plusieurs lignes) et ShellTerminal.
+ * Pattern visuel : carte sombre, action `copier` + `ouvrir`, dismissable.
+ */
+.term-url-overlay {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 10;
+  min-width: 280px;
+  max-width: min(520px, calc(100% - 28px));
+  background: rgba(20, 22, 25, 0.96);
+  border: 1px solid var(--gold);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  padding: 10px 12px;
+  font-family: var(--body);
+  color: var(--parchment);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  pointer-events: auto;
+}
+.term-url-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.term-url-glyph { font-size: 14px; }
+.term-url-title {
+  font-family: var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-bright);
+}
+.term-url-hint {
+  color: var(--parchment-soft);
+  opacity: 0.7;
+  font-style: italic;
+  font-size: 10.5px;
+}
+.term-url-dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft);
+  width: 22px; height: 22px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.term-url-dismiss:hover {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+}
+.term-url-display {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--parchment-soft);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;  /* facilite la copie manuelle si l'auto échoue */
+  max-height: 60px;
+  overflow-y: auto;
+}
+.term-url-actions {
+  display: flex;
+  gap: 6px;
+}
+.term-url-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment);
+  padding: 5px 10px;
+  font-family: var(--body);
+  font-size: 12px;
+  cursor: pointer;
+}
+.term-url-btn:hover {
+  background: rgba(212, 168, 90, 0.10);
+  color: var(--gold-bright);
+  border-color: var(--gold);
+}
+.term-url-btn.primary {
+  color: var(--gold-bright);
+  border-color: var(--gold);
 }
 
 /* ── DataModal v2 : single-view VPS + paths ─────────────────────────────── */
@@ -706,6 +807,15 @@
   border-bottom: 1px solid rgba(217,122,107,0.3);
   font-size: 12px;
 }
+/* Wrapper qui héberge le xterm ET l'overlay URL flottant. Position relative
+   pour ancrer l'overlay (cf. .term-url-overlay défini plus haut). */
+.shell-xterm-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .shell-xterm {
   flex: 1;
   padding: 8px 12px;
@@ -766,3 +876,199 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
+
+/* ── Folders dans la sidebar ────────────────────────────────────────────────
+   Un dossier = wrapper autour de N vps-section. Header repliable avec
+   compteur de VPS et compteur de sessions actives (quand replié). */
+.folder-section {
+  margin-bottom: 14px;
+  border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
+  background: linear-gradient(180deg, rgba(138,180,228,0.04), transparent);
+}
+.folder-section.folder-collapsed {
+  background: rgba(138,180,228,0.02);
+}
+.folder-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  font-family: var(--display); font-size: 10px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--gold-bright);
+  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
+  cursor: pointer;
+  user-select: none;
+  background: rgba(138,180,228,0.06);
+}
+.folder-head:hover { background: rgba(138,180,228,0.12); }
+.folder-section.folder-collapsed .folder-head {
+  border-bottom: 0;
+}
+.folder-caret {
+  color: var(--parchment-soft); font-family: var(--mono);
+  width: 12px; flex-shrink: 0; font-size: 10px;
+}
+.folder-glyph { color: var(--gold); }
+.folder-name { flex: 1; color: var(--gold-bright); letter-spacing: 0.18em; }
+.folder-count {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--parchment-soft); letter-spacing: 0;
+  background: rgba(0,0,0,0.2); padding: 1px 6px;
+  border: 1px solid var(--gold-deep);
+}
+.folder-active-count {
+  font-family: var(--mono); font-size: 11px;
+  background: rgba(160,200,123,0.15);
+  border: 1px solid #a0c87b;
+  color: #a0c87b;
+  padding: 1px 7px;
+  letter-spacing: 0;
+}
+.folder-empty {
+  padding: 14px;
+  font-style: italic; color: var(--parchment-soft);
+  font-size: 11px; text-align: center;
+}
+
+/* ── DataModal : section dossier draggable ────────────────────────────────── */
+.data-modal-v2 .data-help {
+  margin: -4px 0 14px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--parchment-soft); font-style: italic;
+}
+.data-modal-v2 .data-head-actions {
+  display: flex; gap: 8px;
+}
+.data-modal-v2 .data-add-folder {
+  margin-bottom: 14px;
+}
+.data-folder-list {
+  display: flex; flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+.data-folder-card {
+  border: 1px solid var(--gold-deep, rgba(200,162,98,0.4));
+  background: linear-gradient(180deg, rgba(138,180,228,0.06), rgba(138,180,228,0.02));
+  transition: opacity .15s ease, box-shadow .15s ease;
+}
+.data-folder-card.is-dragging {
+  box-shadow: 0 0 18px rgba(138,180,228,0.3);
+  z-index: 50;
+}
+.data-folder-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: rgba(138,180,228,0.08);
+  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.3));
+}
+.data-folder-drag-handle {
+  cursor: grab; user-select: none;
+  color: var(--parchment-soft);
+  font-size: 14px; letter-spacing: -2px;
+  padding: 2px 4px;
+  font-family: var(--mono);
+}
+.data-folder-drag-handle:active { cursor: grabbing; }
+.data-folder-glyph {
+  color: var(--gold); font-family: var(--display); font-size: 14px;
+}
+.data-folder-name-input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--gold-bright);
+  font-family: var(--display);
+  font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 4px 8px;
+  outline: none;
+}
+.data-folder-name-input:hover { border-color: rgba(200,162,98,0.25); }
+.data-folder-name-input:focus {
+  border-color: var(--gold);
+  background: rgba(0,0,0,0.25);
+}
+.data-folder-count {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--parchment-soft);
+  background: rgba(0,0,0,0.25); padding: 2px 8px;
+  border: 1px solid var(--gold-deep);
+  letter-spacing: 0.04em;
+}
+.data-folder-body {
+  display: flex; flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  min-height: 60px;
+}
+.data-folder-empty {
+  padding: 18px;
+  font-style: italic; color: var(--parchment-soft);
+  font-size: 11px; text-align: center;
+  border: 1px dashed var(--gold-deep);
+  background: rgba(0,0,0,0.1);
+}
+
+/* Handle de drag sur les VPS cards */
+.data-vps-drag-handle {
+  cursor: grab; user-select: none;
+  color: var(--parchment-soft);
+  font-size: 13px; letter-spacing: -2px;
+  padding: 2px 4px;
+  font-family: var(--mono);
+  flex-shrink: 0;
+}
+.data-vps-drag-handle:active { cursor: grabbing; }
+.data-vps-card.is-dragging {
+  box-shadow: 0 0 18px rgba(138,180,228,0.3);
+  z-index: 100;
+}
+
+/* Overlay rendu pendant le drag */
+.dv-card-drag-overlay,
+.dv-folder-drag-overlay {
+  background: var(--stone-2, #1a1d28);
+  border: 1px solid var(--gold);
+  padding: 10px 14px;
+  display: flex; align-items: center; gap: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 18px rgba(138,180,228,0.3);
+  font-family: var(--mono); font-size: 12px;
+  color: var(--parchment);
+  cursor: grabbing;
+}
+.dv-folder-drag-overlay {
+  font-family: var(--display);
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--gold-bright);
+}
+
+/* Folder static (dossier "default" verrouillé en dernier) */
+.data-folder-static .data-folder-head { background: rgba(216, 117, 127, 0.06); }
+.data-folder-static .data-folder-name-static {
+  flex: 1;
+  color: var(--gold-bright);
+  font-family: var(--display);
+  font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 4px 8px;
+}
+.data-folder-lock {
+  font-size: 12px;
+  width: 16px; text-align: center;
+  color: var(--parchment-soft);
+  opacity: 0.7;
+}
+
+/* Select de changement de dossier dans la carte VPS */
+.dv-folder-select {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid var(--gold-deep, rgba(200,162,98,0.35));
+  color: var(--parchment);
+  font-family: var(--mono); font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+  max-width: 130px;
+  outline: none;
+}
+.dv-folder-select:hover { border-color: var(--gold); }
+.dv-folder-select:focus { border-color: var(--gold); background: rgba(0,0,0,0.4); }

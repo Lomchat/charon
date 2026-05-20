@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, lte, notInArray } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages, claudeSessionLogs, vps as vpsTable,
   claudePendingPermissions, claudePendingQuestions,
+  type ClaudeSessionMessage,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { killSession, getStream } from '@/lib/server/agent/sessionOps';
@@ -52,7 +53,83 @@ async function relocateJsonl(
   return { ok: false, detail: r.stderr.slice(-200) || r.stdout.slice(-200) || `exit ${r.code}` };
 }
 
+// Rôles considérés comme "chat" pour la pagination. edit_snapshot et event
+// ne comptent PAS dans la fenêtre — ils sont chargés en pièces jointes par
+// range d'IDs (ils sont temporellement proches de leur tool_use). Sinon une
+// session avec beaucoup d'Edit/Write inonde les 200 messages de snapshots
+// (cf. piège §14 dans CLAUDE.md).
+//
+// 'event' contient soit `todo_update` (pas d'affichage chat — seul le
+// dernier compte), soit `thinking` (affichable mais sparse). Les deux cas
+// sont gérés correctement en chargement par range.
+const NON_PAGINATED_ROLES: string[] = ['edit_snapshot', 'event'];
+
+/**
+ * Charge une fenêtre de messages chat (rôle ≠ edit_snapshot/event) en
+ * pagination cursor-based, puis ajoute les edit_snapshot/event qui tombent
+ * dans la même plage d'IDs (ils sont émis temporellement proches de leur
+ * tool_use parent).
+ *
+ * @param before  Si fourni, fenêtre des `limit` messages dont l'id < before.
+ *                Sinon (initial load), fenêtre des `limit` derniers messages.
+ * @returns       messages (asc par id, chat + snapshots/events mergés),
+ *                hasMore (true s'il y a des messages chat encore plus anciens),
+ *                oldestChatId (id du plus ancien message CHAT renvoyé — sert
+ *                de cursor pour le prochain loadMore).
+ */
+function loadMessageWindow(
+  sessionId: string,
+  limit: number,
+  before: number | null,
+): { messages: ClaudeSessionMessage[]; hasMore: boolean; oldestChatId: number | null } {
+  // Fetch chat messages DESC, limit+1 pour détecter hasMore
+  const chatRows = db.select().from(claudeSessionMessages)
+    .where(and(
+      eq(claudeSessionMessages.sessionId, sessionId),
+      notInArray(claudeSessionMessages.role, NON_PAGINATED_ROLES),
+      before != null ? lt(claudeSessionMessages.id, before) : undefined,
+    ))
+    .orderBy(desc(claudeSessionMessages.id))
+    .limit(limit + 1)
+    .all();
+  const hasMore = chatRows.length > limit;
+  const window = chatRows.slice(0, limit).reverse(); // asc par id
+  if (window.length === 0) {
+    return { messages: [], hasMore: false, oldestChatId: null };
+  }
+  const minId = window[0].id;
+  const maxId = window[window.length - 1].id;
+  // Fetch edit_snapshot + event dans la plage du chat window. Ils sont émis
+  // temporellement proches de leur tool_use (l'agent envoie tool_use →
+  // edit_snapshot before/after → tool_result), donc leurs ids tombent
+  // ENTRE les chat messages de la même conversation.
+  const attachments = db.select().from(claudeSessionMessages)
+    .where(and(
+      eq(claudeSessionMessages.sessionId, sessionId),
+      gte(claudeSessionMessages.id, minId),
+      lte(claudeSessionMessages.id, maxId),
+      // Filter dans le code (drizzle inArray sur tuple → ok mais on a déjà le range)
+    ))
+    .all()
+    .filter((m) => NON_PAGINATED_ROLES.includes(m.role));
+  // Merge + tri par id asc
+  const merged = [...window, ...attachments].sort((a, b) => a.id - b.id);
+  return { messages: merged, hasMore, oldestChatId: minId };
+}
+
 // GET /api/claude/sessions/[id]
+//
+// Query params :
+//   ?limit=N   (default 200, max 1000) — taille de la fenêtre chat
+//   ?before=K  — pagination cursor : ne retourne que les messages chat dont
+//                id < K. Permet le scroll-up "charger l'historique plus ancien".
+//                Quand ce param est passé, la response contient la fenêtre
+//                paginée mais les champs lourds (pendings, liveStatus,
+//                streamingText) restent quand même renseignés pour rester
+//                compatible avec le shape du type.
+//
+// Note : edit_snapshot et event NE COMPTENT PAS dans la limite. Ils sont
+// chargés en pièces jointes par range d'IDs (cf. loadMessageWindow).
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -60,12 +137,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const url = new URL(req.url);
-  const limit = Math.min(Number(url.searchParams.get('limit') ?? 200), 1000);
-  const messages = db.select().from(claudeSessionMessages)
-    .where(eq(claudeSessionMessages.sessionId, id))
-    .orderBy(asc(claudeSessionMessages.id))
-    .all()
-    .slice(-limit);
+  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
+  const beforeRaw = url.searchParams.get('before');
+  const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : null;
+  const { messages, hasMore, oldestChatId } = loadMessageWindow(id, limit, before);
   const stream = getStream(id);
 
   // Pendings (permission/question/exit_plan) — retournés pour que le client
@@ -85,6 +160,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     liveStatus: stream ? stream.status : row.status,
     subscribers: focusCountFor(id),
     messages,
+    hasMore,
+    oldestChatId,
     // Texte assistant en cours d'accumulation (non encore persisté). Vide
     // si pas de streaming actif. Le client l'injecte dans son assistantBuf
     // pour montrer "où on en est" sans re-jouer les deltas.

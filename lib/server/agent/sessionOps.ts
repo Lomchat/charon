@@ -1,6 +1,6 @@
 import 'server-only';
 import crypto from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages,
   claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
@@ -9,6 +9,7 @@ import {
 import type { PermissionMode } from '@/lib/server/claude/types';
 import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
+import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/claude/webPush';
 import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
@@ -632,55 +633,82 @@ export async function startNewSession(opts: {
   return stream;
 }
 
+// Dedup des appels concurrents à resumeSession pour un même sessionId.
+// Sans ça, deux paths (autoConnect.opportunistic + reconcileVpsAgentState
+// fallback) pourraient courser sur start_session et l'un échouerait avec
+// "already exists" → la catch handler demoterait la session à 'sleeping'
+// alors que l'autre vient juste de la réveiller. cf. CLAUDE.md §14 piège 24.
+const _resumeInflight = new Map<string, Promise<SessionStream>>();
+
 /**
  * Resume : tente la séquence (resume_session si la session existe côté agent,
  * sinon start_session avec le claude_session_id sauvegardé). Idempotent côté
- * DB : laisse le statut à 'active' une fois l'agent confirme.
+ * DB : laisse le statut à 'active' une fois l'agent confirme. Idempotent côté
+ * concurrence aussi : deux appels simultanés pour la même session partagent
+ * la même promesse (cf. `_resumeInflight`).
  */
 export async function resumeSession(sessionId: string): Promise<SessionStream> {
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
-  if (!row) throw new Error(`session ${sessionId} not found`);
-  if (row.status === 'killed') throw new Error('session killed (cannot resume)');
+  const existing = _resumeInflight.get(sessionId);
+  if (existing) return existing;
+  const p = (async () => {
+    const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+    if (!row) throw new Error(`session ${sessionId} not found`);
+    if (row.status === 'killed') throw new Error('session killed (cannot resume)');
 
-  const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
-  if (!vps) throw new Error('vps no longer exists');
+    const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
+    if (!vps) throw new Error('vps no longer exists');
 
-  let stream = streams.get(sessionId);
-  if (!stream) {
-    stream = new SessionStream({
-      id: row.id, vpsId: row.vpsId, vpsName: vps.name,
-      name: row.name, status: row.status as WorkerStatus,
-      permissionMode: row.permissionMode as PermissionMode,
-      claudeSessionId: row.claudeSessionId,
-    });
-    streams.set(sessionId, stream);
-  }
+    let stream = streams.get(sessionId);
+    if (!stream) {
+      stream = new SessionStream({
+        id: row.id, vpsId: row.vpsId, vpsName: vps.name,
+        name: row.name, status: row.status as WorkerStatus,
+        permissionMode: row.permissionMode as PermissionMode,
+        claudeSessionId: row.claudeSessionId,
+      });
+      streams.set(sessionId, stream);
+    }
 
-  const client = getAgentClientForVpsId(row.vpsId);
-  // ORDRE : on s'assure que la session existe côté agent AVANT de subscribe
-  // (sinon le subscribe RPC throw session_not_found).
+    const client = getAgentClientForVpsId(row.vpsId);
+    // ORDRE : on s'assure que la session existe côté agent AVANT de subscribe
+    // (sinon le subscribe RPC throw session_not_found).
+    try {
+      await client.call('resume_session', { session_id: sessionId });
+    } catch (e: any) {
+      const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
+      if (!isNotFound) throw e;
+      // Recreate from scratch (l'agent ne connaît pas cette session)
+      try {
+        await client.call('start_session', {
+          session_id: sessionId,
+          cwd: row.cwd,
+          name: row.name,
+          permission_mode: row.permissionMode,
+          claude_session_id: row.claudeSessionId,
+        });
+      } catch (startErr: any) {
+        // Si un autre appel concurrent vient juste de la créer (race entre
+        // deux paths de resume), agent répond "already exists". Dans ce cas
+        // on traite ça comme un succès : la session est bien là côté agent.
+        const msg = startErr?.message ?? '';
+        if (!/already exists/i.test(msg)) throw startErr;
+      }
+    }
+    stream.attach();
+    // Si l'utilisateur avait déjà ouvert l'SSE avant le resume, attach() a déjà
+    // tenté un subscribe côté agent qui a failed (session pas encore existante).
+    // On force un nouveau subscribe maintenant qu'elle existe.
+    client.resubscribe(sessionId);
+    db.update(claudeSessions).set({ status: 'active' })
+      .where(eq(claudeSessions.id, sessionId)).run();
+    return stream;
+  })();
+  _resumeInflight.set(sessionId, p);
   try {
-    await client.call('resume_session', { session_id: sessionId });
-  } catch (e: any) {
-    const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
-    if (!isNotFound) throw e;
-    // Recreate from scratch (l'agent ne connaît pas cette session)
-    await client.call('start_session', {
-      session_id: sessionId,
-      cwd: row.cwd,
-      name: row.name,
-      permission_mode: row.permissionMode,
-      claude_session_id: row.claudeSessionId,
-    });
+    return await p;
+  } finally {
+    _resumeInflight.delete(sessionId);
   }
-  stream.attach();
-  // Si l'utilisateur avait déjà ouvert l'SSE avant le resume, attach() a déjà
-  // tenté un subscribe côté agent qui a failed (session pas encore existante).
-  // On force un nouveau subscribe maintenant qu'elle existe.
-  client.resubscribe(sessionId);
-  db.update(claudeSessions).set({ status: 'active' })
-    .where(eq(claudeSessions.id, sessionId)).run();
-  return stream;
 }
 
 export async function sleepSession(sessionId: string): Promise<void> {
@@ -735,6 +763,119 @@ export async function killSession(sessionId: string): Promise<void> {
     await client.call('kill_session', { session_id: sessionId });
   } catch (e) {
     // Agent down : ce n'est pas grave, on a déjà cleanup local
+  }
+}
+
+// ── Reconciliation Charon ↔ agent (self-healing après restart) ─────────────
+// Appelé à chaque (re)connexion d'un AgentClient, dès que `hello` est revenu
+// avec la liste des sessions VRAIMENT vivantes côté agent.
+//
+// Le problème qu'on résout : après un `systemctl restart charon`, le process
+// Next redémarre mais le daemon agent côté VPS, lui, continue à vivre avec
+// ses sessions SDK ouvertes. Du côté Charon, la DB garde le dernier statut
+// connu — typiquement 'thinking' pour les sessions qui étaient en train de
+// traiter une query au moment du SIGTERM. Sans rien faire, ces sessions
+// restent "pendues" : aucun SessionStream n'est attaché au listener agent,
+// donc aucun event ne remonte à l'UI, qui affiche un spinner éternel. Le
+// user devait faire force_stop puis resume manuellement pour rattacher.
+//
+// Cette fonction prend `hello.sessions` comme source de vérité, et pour
+// chaque session vivante côté agent :
+//   - Crée (ou récupère) le SessionStream en mémoire
+//   - Attache le listener au flux d'events de l'agent (idempotent)
+//   - Aligne le status DB sur celui rapporté par l'agent
+//
+// Et pour les sessions DB en 'active'/'thinking'/'starting' que l'agent ne
+// connaît PAS (cas où l'agent VPS a redémarré et a perdu son state.json) :
+//   - Lance resumeSession() qui essaiera resume_session, puis fallback sur
+//     start_session(claude_session_id=...) pour les recréer côté SDK.
+export async function reconcileVpsAgentState(
+  vpsId: string,
+  agentSessions: AgentSessionInfo[],
+): Promise<void> {
+  const agentSidMap = new Map<string, AgentSessionInfo>();
+  for (const a of agentSessions) agentSidMap.set(a.session_id, a);
+
+  // 1) Sessions vivantes côté agent : attache un SessionStream + sync status.
+  for (const [sid, info] of agentSidMap) {
+    let row: typeof claudeSessions.$inferSelect | undefined;
+    try {
+      [row] = db.select().from(claudeSessions)
+        .where(eq(claudeSessions.id, sid)).all();
+    } catch { continue; }
+    if (!row) continue;            // session inconnue de Charon, on n'invente pas
+    if (row.status === 'killed') continue;
+
+    const stream = getStream(sid);  // crée le stream depuis la DB si nécessaire
+    if (!stream) continue;
+    // Attache le listener — c'EST la pièce manquante après un restart Charon.
+    // Sans ça, les events agent ne remontent pas au browser et l'UI reste figée.
+    stream.ensureAttached();
+
+    // Si le DB status diverge de l'agent (typiquement DB='thinking' figé alors
+    // que l'agent est revenu à 'active'), aligner. On ne touche pas si l'agent
+    // dit 'killed' (improbable ici puisqu'il l'aurait retiré de sessions).
+    const agentStatus = info.status;
+    if (agentStatus !== row.status && agentStatus !== 'killed') {
+      try {
+        db.update(claudeSessions).set({ status: agentStatus })
+          .where(eq(claudeSessions.id, sid)).run();
+      } catch {}
+      stream.status = agentStatus as WorkerStatus;
+      // Émet sur le bus pour que les SSE clientes voient le bon statut tout
+      // de suite (sans dépendre d'un futur event status de l'agent).
+      emitGlobalSession({
+        type: 'status', sessionId: sid, status: agentStatus as any,
+      } as GlobalSessionEvent);
+    }
+  }
+
+  // 2) Sessions DB qui devraient tourner mais que l'agent ne connaît pas.
+  //    Typiquement : l'agent VPS a été redémarré pendant qu'on était down
+  //    et a perdu son state.json (sessions persistées en 'sleeping' qui ne
+  //    sont pas restartées au boot). On les relance via resumeSession() qui
+  //    fallback sur start_session(claude_session_id=...) si pas trouvée.
+  let dbRows: { id: string; status: string }[] = [];
+  try {
+    dbRows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
+      .from(claudeSessions)
+      .where(and(
+        eq(claudeSessions.vpsId, vpsId),
+        inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+      ))
+      .all() as { id: string; status: string }[];
+  } catch {
+    return;
+  }
+  for (const row of dbRows) {
+    if (agentSidMap.has(row.id)) continue;  // déjà géré au step 1
+    resumeSession(row.id)
+      .then(() => {
+        try {
+          db.insert(claudeSessionLogs).values({
+            sessionId: row.id, level: 'info', event: 'auto_resume',
+            detail: JSON.stringify({ trigger: 'reconcile', wasStatus: row.status }),
+          }).run();
+        } catch {}
+      })
+      .catch((e) => {
+        try {
+          db.insert(claudeSessionLogs).values({
+            sessionId: row.id, level: 'warn', event: 'auto_resume',
+            detail: JSON.stringify({
+              trigger: 'reconcile', wasStatus: row.status,
+              err: e?.message ?? String(e),
+            }),
+          }).run();
+          // Si la relance échoue (cwd disparu, SDK KO…), on dégrade en sleeping
+          // pour que l'UI montre clairement un bouton "resume" manuel.
+          db.update(claudeSessions).set({ status: 'sleeping' })
+            .where(eq(claudeSessions.id, row.id)).run();
+          emitGlobalSession({
+            type: 'status', sessionId: row.id, status: 'sleeping',
+          } as GlobalSessionEvent);
+        } catch {}
+      });
   }
 }
 
