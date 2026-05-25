@@ -157,6 +157,18 @@ export const api = {
     p.set('limit', String(limit));
     return send<ClaudeSessionMessageWindow>('GET', `/api/claude/sessions/${id}?${p.toString()}`);
   },
+  // Delta poll: returns ONLY messages whose id > `since` (chat + snapshots),
+  // plus the live session state (liveStatus, streamingText, pendings).
+  // Used as the safety-net polling loop in useClaudeSessionStream — no
+  // matter what state the SSE + React tree are in, every ~5s we ask the
+  // server "anything new since id X?" and append the delta if any. The
+  // response shape matches the full GET (ClaudeSessionDetailResponse) so
+  // we can reuse it; `messages` here is the delta, not a window.
+  pollClaudeSessionSince: (id: string, since: number) => {
+    const p = new URLSearchParams();
+    p.set('since', String(since));
+    return send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}?${p.toString()}`);
+  },
   createClaudeSession: (data: CreateClaudeSessionBody) =>
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>

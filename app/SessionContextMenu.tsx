@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 // Color palette to mark a row in the sidebar.
 // "transparent" = no marker (default option, neutralizes an existing marker).
@@ -70,8 +70,45 @@ export default function SessionContextMenu({
     };
   }, [onClose]);
 
+  // Reposition the menu to keep it inside the viewport: if it would
+  // overflow at the bottom, flip it upward (anchor its bottom edge to
+  // the click Y); same idea horizontally on the right edge.
+  // First render is hidden; useLayoutEffect measures + commits the
+  // final position before the browser paints → no flicker.
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 8; // breathing room from viewport edges
+
+    let left = x;
+    let top = y;
+    if (top + rect.height > vh - margin) {
+      // Not enough room below: flip upward (anchor bottom to click Y).
+      top = Math.max(margin, y - rect.height);
+    }
+    if (left + rect.width > vw - margin) {
+      left = Math.max(margin, vw - margin - rect.width);
+    }
+    setPos({ left, top });
+  }, [x, y]);
+
   return (
-    <div className="session-ctx-menu" style={{ left: x, top: y }} role="menu">
+    <div
+      ref={menuRef}
+      className="session-ctx-menu"
+      style={{
+        left: pos ? pos.left : x,
+        top: pos ? pos.top : y,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+      role="menu"
+    >
       <div className="ctx-head">
         {title}
         {subtitle && <div className="ctx-subtitle">{subtitle}</div>}

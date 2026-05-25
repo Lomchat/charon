@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal, IconTools } from './icons';
@@ -138,6 +138,83 @@ export default function Sidebar({
       return next;
     });
   }
+  function uncollapseVps(vpsId: string) {
+    setCollapsed((prev) => {
+      if (!prev.has(vpsId)) return prev;
+      const next = new Set(prev);
+      next.delete(vpsId);
+      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }
+
+  // ── Auto-scroll to the selected entity (VSCode-style "reveal in
+  // explorer"). On any change to selectedId/selectedShellId/selectedInstallId
+  // (clicked tab, sidebar click, URL ?session=... param), we:
+  //   1. Identify the parent VPS + folder of the selected entity.
+  //   2. Expand the VPS section if it was collapsed (localStorage).
+  //   3. Expand the folder if it was collapsed (server-persisted via
+  //      `onToggleFolderCollapsed`).
+  //   4. After the next render commits, scroll the row into view —
+  //      centered if not visible, no-op if already in view (avoids jarring
+  //      scrolls when the user clicks a tab that's already visible).
+  // We use a 2-pass strategy: trigger expand → useEffect re-runs on the
+  // next render once the row is in the DOM → scrollIntoView.
+  const asideRef = useRef<HTMLElement | null>(null);
+  // Active selection (whichever kind is non-null). `null` if nothing
+  // selected — no scroll in that case.
+  const activeTabId = selectedId ?? selectedShellId ?? selectedInstallId ?? null;
+  // Identify the parent VPS (and via that, its folder) of the active
+  // entity. We look it up in sessions/shells/installs.
+  const parentVpsId = useMemo(() => {
+    if (!activeTabId) return null;
+    return (
+      sessions.find((s) => s.id === activeTabId)?.vpsId
+      ?? shells.find((sh) => sh.id === activeTabId)?.vpsId
+      ?? installs.find((i) => i.id === activeTabId)?.vpsId
+      ?? null
+    );
+  }, [activeTabId, sessions, shells, installs]);
+  const parentFolderId = useMemo(() => {
+    if (!parentVpsId) return null;
+    return vpsList.find((v) => v.id === parentVpsId)?.folderId ?? null;
+  }, [parentVpsId, vpsList]);
+
+  // 1st pass: expand collapsed parents if needed.
+  useEffect(() => {
+    if (!parentVpsId) return;
+    if (collapsed.has(parentVpsId)) uncollapseVps(parentVpsId);
+    if (parentFolderId) {
+      const f = vpsFolders.find((ff) => ff.id === parentFolderId);
+      if (f && f.collapsed === 1) onToggleFolderCollapsed?.(parentFolderId, false);
+    }
+    // `collapsed` and `vpsFolders` are intentionally NOT in the deps:
+    // we only want this to fire when the SELECTION changes. Otherwise
+    // the user manually collapsing the parent would immediately re-expand
+    // it (loop). The whole point is "reveal on navigate".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, parentVpsId, parentFolderId]);
+
+  // 2nd pass: once the row is in the DOM (= after the expand has
+  // committed), scroll it into view. Runs on every render where
+  // `activeTabId` is set, but is a no-op if the row is already visible.
+  useEffect(() => {
+    if (!activeTabId) return;
+    const aside = asideRef.current;
+    if (!aside) return;
+    // Defer to next frame so the DOM has settled (relevant when the
+    // expand above just changed state).
+    const raf = requestAnimationFrame(() => {
+      const row = aside.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeTabId)}"]`);
+      if (!row) return;
+      const aRect = aside.getBoundingClientRect();
+      const rRect = row.getBoundingClientRect();
+      const isFullyVisible = rRect.top >= aRect.top && rRect.bottom <= aRect.bottom;
+      if (isFullyVisible) return;
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activeTabId, collapsed, vpsFolders]);
 
   // Precompute: paths per VPS, sorted by decreasing length (best-match)
   const pathsByVps = useMemo(() => {
@@ -193,7 +270,7 @@ export default function Sidebar({
   }, [vpsFolders, vpsList]);
 
   return (
-    <aside className="claude-sidebar">
+    <aside className="claude-sidebar" ref={asideRef}>
       <div className="sidebar-toolbar">
         <span className="sidebar-title">SESSIONS</span>
         <button
@@ -443,6 +520,7 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
       {!isCollapsed && vpsInstall && (
         <button
           type="button"
+          data-tab-id={vpsInstall.id}
           className={`session-row install-row ${vpsInstall.status}${vpsInstall.id === selectedInstallId ? ' selected' : ''}`}
           onClick={() => onSelectInstall(vpsInstall.id)}
           onContextMenu={(e) => {
@@ -606,6 +684,7 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
   return (
     <button
       type="button"
+      data-tab-id={s.id}
       className={`session-row${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${colorToken ? ' has-color' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}`}
       onClick={() => onSelect(s.id)}
       onContextMenu={(e) => {
@@ -613,7 +692,16 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
         e.preventDefault();
         onContext(s, e.clientX, e.clientY);
       }}
+      // `title` + `age` below are Date.now()-derived → SSR/client time
+      // skew may produce different strings. `suppressHydrationWarning`
+      // on the affected nodes lets React skip the diff. Fixing this
+      // matters because a hydration error makes React 19 re-render the
+      // ENTIRE root, which fires all useEffect cleanups, which tears
+      // down our subscribeReconnect listeners on the global SSE → after
+      // a `systemctl restart charon`, the chat never refetches.
+      // cf. CLAUDE.md §14 gotcha 24.
       title={`${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
+      suppressHydrationWarning
       style={colorToken ? { ['--row-color' as any]: colorToCss(colorToken) } : undefined}
     >
       <span className="row-color-stripe" />
@@ -632,7 +720,7 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
       )}
       <div className="row-meta">
         <span className="meta-cwd">{cwdTail}</span>
-        {age && <span className="meta-age">· {age}</span>}
+        {age && <span className="meta-age" suppressHydrationWarning>· {age}</span>}
       </div>
     </button>
   );
@@ -652,6 +740,7 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
   return (
     <button
       type="button"
+      data-tab-id={sh.id}
       className={`session-row shell-row${selected ? ' selected' : ''}${sh.exited ? ' exited' : ''}${sh.color ? ' has-color' : ''}`}
       onClick={() => onSelect(sh.id)}
       onContextMenu={(e) => {

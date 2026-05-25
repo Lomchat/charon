@@ -164,6 +164,19 @@ export class SessionStream {
         this.replayKnownPendingIds.clear();
         return;
       case 'status':
+        // Skip replayed status events: the agent's ring buffer contains the
+        // historical status chronology (e.g. active→thinking→active→sleeping
+        // before the session was paused). Applying them as if live causes UI
+        // flicker on every resubscribe (sidebar stuck on the last replayed
+        // status, chat view recovering only via the next GET → desync).
+        // The agent always sends its CURRENT status as a final event AFTER
+        // `replay_end` (cf. agent/server.py § subscribe), so we just trust
+        // that one to be the source of truth.
+        if (this.isReplaying) {
+          console.warn(`[resume-debug] ${this.id} agent→status=${ev.status} SKIPPED (replay) @${Date.now()}`);
+          break;
+        }
+        console.warn(`[resume-debug] ${this.id} agent→status=${ev.status} (prev=${this.status}) @${Date.now()}`);
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
         try {
@@ -649,7 +662,11 @@ const _resumeInflight = new Map<string, Promise<SessionStream>>();
  */
 export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const existing = _resumeInflight.get(sessionId);
-  if (existing) return existing;
+  if (existing) {
+    console.warn(`[resume-debug] ${sessionId} resumeSession() called — dedup (existing inflight) @${Date.now()}`);
+    return existing;
+  }
+  console.warn(`[resume-debug] ${sessionId} resumeSession() called @${Date.now()}`);
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
@@ -661,6 +678,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
 
     let stream = streams.get(sessionId);
     if (!stream) {
+      console.warn(`[resume-debug] ${sessionId} creating stream from DB row (db.status=${row.status}) @${Date.now()}`);
       stream = new SessionStream({
         id: row.id, vpsId: row.vpsId, vpsName: vps.name,
         name: row.name, status: row.status as WorkerStatus,
@@ -668,15 +686,19 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         claudeSessionId: row.claudeSessionId,
       });
       streams.set(sessionId, stream);
+    } else {
+      console.warn(`[resume-debug] ${sessionId} reusing existing stream (stream.status=${stream.status}, db.status=${row.status}) @${Date.now()}`);
     }
 
     const client = getAgentClientForVpsId(row.vpsId);
     // ORDER: make sure the session exists on the agent side BEFORE subscribing
     // (otherwise the subscribe RPC throws session_not_found).
     try {
-      await client.call('resume_session', { session_id: sessionId });
+      const rpcRes = await client.call('resume_session', { session_id: sessionId });
+      console.warn(`[resume-debug] ${sessionId} resume_session RPC OK: ${JSON.stringify(rpcRes)} @${Date.now()}`);
     } catch (e: any) {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
+      console.warn(`[resume-debug] ${sessionId} resume_session RPC threw (isNotFound=${isNotFound}): ${e?.message ?? e} @${Date.now()}`);
       if (!isNotFound) throw e;
       // Recreate from scratch (the agent doesn't know this session)
       try {
@@ -687,12 +709,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           permission_mode: row.permissionMode,
           claude_session_id: row.claudeSessionId,
         });
+        console.warn(`[resume-debug] ${sessionId} fallback start_session OK @${Date.now()}`);
       } catch (startErr: any) {
         // If another concurrent call just created it (race between
         // two resume paths), the agent replies "already exists". In that
         // case we treat it as a success: the session is properly on the agent.
         const msg = startErr?.message ?? '';
         if (!/already exists/i.test(msg)) throw startErr;
+        console.warn(`[resume-debug] ${sessionId} fallback start_session: already exists → treated as OK @${Date.now()}`);
       }
     }
     stream.attach();
@@ -702,6 +726,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     client.resubscribe(sessionId);
     db.update(claudeSessions).set({ status: 'active' })
       .where(eq(claudeSessions.id, sessionId)).run();
+    console.warn(`[resume-debug] ${sessionId} resumeSession() returning (stream.status=${stream.status}, DB set to 'active') @${Date.now()}`);
     return stream;
   })();
   _resumeInflight.set(sessionId, p);

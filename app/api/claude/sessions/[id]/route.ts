@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, desc, eq, gte, lt, lte, notInArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, lt, lte, notInArray } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages, claudeSessionLogs, vps as vpsTable,
   claudePendingPermissions, claudePendingQuestions,
@@ -128,9 +128,20 @@ function loadMessageWindow(
 //                paginated window but the heavy fields (pendings, liveStatus,
 //                streamingText) remain populated to stay compatible with
 //                the type shape.
+//   ?since=K   — DELTA mode: returns ONLY messages with id > K (chat AND
+//                edit_snapshot/event in the range), sorted ASC.
+//                `hasMore`/`oldestChatId` are not meaningful and set to
+//                false/null. Used by the client's polling safety net
+//                (cf. useClaudeSessionStream pollDelta) to catch any
+//                messages missed because the SSE was down or its
+//                listeners were torn down by a React error. Cheap: the
+//                vast majority of calls return an empty messages array.
+//                When provided, ?before and ?limit are ignored.
 //
-// Note: edit_snapshot and event DO NOT COUNT toward the limit. They are
-// loaded as attachments by ID range (cf. loadMessageWindow).
+// Note: edit_snapshot and event DO NOT COUNT toward the limit (chat-window
+// mode). They are loaded as attachments by ID range (cf. loadMessageWindow).
+// In ?since mode they are returned unconditionally — the client needs them
+// for ToolPanel diffs / todos.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -138,10 +149,35 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const url = new URL(req.url);
-  const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
-  const beforeRaw = url.searchParams.get('before');
-  const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : null;
-  const { messages, hasMore, oldestChatId } = loadMessageWindow(id, limit, before);
+  const sinceRaw = url.searchParams.get('since');
+  const since = sinceRaw != null && /^\d+$/.test(sinceRaw) ? Number(sinceRaw) : null;
+
+  let messages: ClaudeSessionMessage[];
+  let hasMore: boolean;
+  let oldestChatId: number | null;
+  if (since != null) {
+    // Delta mode: every row with id > since. Cap at 1000 just in case
+    // (a very long gap could otherwise return thousands of rows; in
+    // practice we poll every 5s so the gap is small).
+    messages = db.select().from(claudeSessionMessages)
+      .where(and(
+        eq(claudeSessionMessages.sessionId, id),
+        gt(claudeSessionMessages.id, since),
+      ))
+      .orderBy(asc(claudeSessionMessages.id))
+      .limit(1000)
+      .all();
+    hasMore = false;
+    oldestChatId = null;
+  } else {
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
+    const beforeRaw = url.searchParams.get('before');
+    const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : null;
+    const win = loadMessageWindow(id, limit, before);
+    messages = win.messages;
+    hasMore = win.hasMore;
+    oldestChatId = win.oldestChatId;
+  }
   const stream = getStream(id);
 
   // Pendings (permission/question/exit_plan) — returned so the client can

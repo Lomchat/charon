@@ -53,6 +53,14 @@ export async function refreshClaudeLoginStatus(v: Vps): Promise<ClaudeLoginCheck
   return { ok: true, loggedIn, checkedAt };
 }
 
+// Backoff schedule for retrying a failed SSH check. At Charon boot the host
+// often has 20+ simultaneous SSH connect attempts (one per VPS via
+// AgentClient.start), which can blow past `sshd MaxStartups` / conntrack
+// limits and cause our `claude config get` SSH (which spawns a fresh TCP) to
+// timeout even on VPSes where the agent eventually connects fine. Spreading
+// retries over a couple of minutes lets that initial rush settle.
+const RETRY_DELAYS_MS = [10_000, 30_000, 120_000];
+
 /**
  * "Lazy" variant: only run the SSH check if we've never checked
  * (`claude_logged_in IS NULL`) or if the last check is older than
@@ -60,8 +68,12 @@ export async function refreshClaudeLoginStatus(v: Vps): Promise<ClaudeLoginCheck
  * has just connected — avoids re-checking on every SSH reconnect (which
  * can happen every few minutes on an unstable network).
  *
+ * If the first SSH attempt fails (typical at boot: see RETRY_DELAYS_MS),
+ * retries with backoff. Bails early if another caller (LoginConsole close,
+ * concurrent autoConnect for the same VPS) wrote a value while we waited.
+ *
  * Returns `'fresh'` if we skipped (recent value), otherwise the result
- * of `refreshClaudeLoginStatus`.
+ * of `refreshClaudeLoginStatus` (last attempt, success or failure).
  */
 export async function refreshClaudeLoginStatusIfStale(
   v: Vps,
@@ -71,5 +83,23 @@ export async function refreshClaudeLoginStatusIfStale(
   if (v.claudeLoggedInCheckedAt && now - v.claudeLoggedInCheckedAt < ttlSeconds) {
     return 'fresh';
   }
-  return refreshClaudeLoginStatus(v);
+  let last = await refreshClaudeLoginStatus(v);
+  if (last.ok) return last;
+  for (const delay of RETRY_DELAYS_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    // Someone else may have checked while we were waiting — re-query and
+    // bail out if so (don't waste an SSH on a fresh value).
+    const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
+    if (!fresh) return last;
+    if (fresh.claudeLoggedInCheckedAt) {
+      return {
+        ok: true,
+        loggedIn: fresh.claudeLoggedIn === 1,
+        checkedAt: fresh.claudeLoggedInCheckedAt,
+      };
+    }
+    last = await refreshClaudeLoginStatus(fresh);
+    if (last.ok) return last;
+  }
+  return last;
 }

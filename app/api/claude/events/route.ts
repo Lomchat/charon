@@ -131,7 +131,20 @@ export async function GET(req: Request) {
       // Connect to the install bus (broadcast to everyone, no focus filter).
       unsubInstall = subscribeInstallBus(sendInstall);
 
-      hbTimer = setInterval(() => sendRaw(`: hb\n\n`), 15_000);
+      // Heartbeat: sent as a TYPED DATA event (not an SSE comment), because
+      // EventSource does NOT surface comment lines (`: ...`) to JavaScript —
+      // we need a JS-visible event so the client can track liveness and
+      // detect silent stalls (TCP alive but proxy buffering / no data
+      // flowing). The client filters out `heartbeat` in its routing.
+      // Sent every 8s with a watchdog at 20s on the client → up to 2
+      // missed beats before reconnect (margin against transient hiccups,
+      // fast enough that the user notices recovery quickly).
+      hbTimer = setInterval(() => {
+        sendRaw(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}\n\n`);
+      }, 8_000);
+      // Send a first heartbeat immediately so the client knows the
+      // connection is alive without waiting 8s.
+      sendRaw(`data: ${JSON.stringify({ type: 'heartbeat', ts: Date.now() })}\n\n`);
 
       // @ts-ignore — AbortSignal listener
       req.signal?.addEventListener('abort', close);

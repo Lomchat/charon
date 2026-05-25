@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
+import TabBar, { computeTabs, type EntityTab } from './TabBar';
 import ShellTerminal from './ShellTerminal';
 import InstallSessionView from './InstallSessionView';
 import NewSessionDialog from './NewSessionDialog';
@@ -272,6 +273,78 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       setError({ msg: 'close install: ' + (e?.message ?? e) });
     }
   }
+  // ── Tabs (VSCode-style) ────────────────────────────────────────────────
+  // `keptOpenIds` is the set of entity ids the user wants to keep visible in
+  // the tab bar even after they've become inactive (sleeping session, exited
+  // shell, finished install). Active entities always show a tab regardless.
+  //
+  // Auto-populated as soon as an entity is selected or becomes active —
+  // that way a session put to sleep doesn't immediately vanish; it stays
+  // greyed-out with a × until the user explicitly closes it.
+  //
+  // Cleared when the user clicks × on a closable tab.
+  const [keptOpenIds, setKeptOpenIds] = useState<Set<string>>(new Set());
+
+  const keepOpen = useCallback((id: string) => {
+    setKeptOpenIds((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
+  const forgetOpen = useCallback((id: string) => {
+    setKeptOpenIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // Whenever a new active entity appears (or is selected), pin its tab.
+  // Active Claude sessions, live shells, running installs.
+  useEffect(() => {
+    const ids: string[] = [];
+    for (const s of sessions) {
+      const st = s.liveStatus ?? s.status;
+      if (st === 'active' || st === 'thinking' || st === 'starting') ids.push(s.id);
+    }
+    for (const sh of shells) if (!sh.exited) ids.push(sh.id);
+    for (const i of installs) if (i.status === 'running') ids.push(i.id);
+    if (selectedId) ids.push(selectedId);
+    if (selectedShellId) ids.push(selectedShellId);
+    if (selectedInstallId) ids.push(selectedInstallId);
+    setKeptOpenIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (!next.has(id)) { next.add(id); changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [sessions, shells, installs, selectedId, selectedShellId, selectedInstallId]);
+
+  // Garbage-collect ids of entities that no longer exist (deleted sessions,
+  // killed shells removed from the list, etc.) — otherwise the Set grows
+  // monotonically.
+  useEffect(() => {
+    setKeptOpenIds((prev) => {
+      if (prev.size === 0) return prev;
+      const alive = new Set<string>();
+      for (const s of sessions) alive.add(s.id);
+      for (const sh of shells) alive.add(sh.id);
+      for (const i of installs) alive.add(i.id);
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (alive.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [sessions, shells, installs]);
+
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -341,6 +414,160 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     );
   }, [permQueue, questionQueue, exitPlanQueue, selectedId]);
 
+  // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
+  // change to sessions/shells/installs/pendings/keptOpen — cheap, ~O(n).
+  // `ShellListItem` is structurally identical to `ShellInfo` (same fields).
+  const tabGroups = useMemo(
+    () => computeTabs({
+      sessions,
+      shells,
+      installs,
+      vpsList,
+      vpsFolders,
+      keptOpenIds,
+      permQueue, questionQueue, exitPlanQueue,
+    }),
+    [sessions, shells, installs, vpsList, vpsFolders, keptOpenIds,
+     permQueue, questionQueue, exitPlanQueue],
+  );
+
+  // Active VPS for the 2-row tab bar.
+  // Source of truth: derived from the currently selected entity (its
+  // vpsId), with a per-VPS memory of the last selected entity so the
+  // user can hop between VPSes without losing context.
+  const lastSelectedByVpsRef = useRef<Map<string, EntityTab>>(new Map());
+  // Remember the entity each time it gets selected.
+  useEffect(() => {
+    const tab = tabGroups.flat.find((t) => (
+      (t.kind === 'session' && t.id === selectedId)
+      || (t.kind === 'shell' && t.id === selectedShellId)
+      || (t.kind === 'install' && t.id === selectedInstallId)
+    ));
+    if (tab) lastSelectedByVpsRef.current.set(tab.vpsId, tab);
+  }, [selectedId, selectedShellId, selectedInstallId, tabGroups]);
+
+  // The "active VPS" is the one of the currently selected entity. If
+  // nothing is selected, fall back to the first VPS that has tabs.
+  const activeVpsId = useMemo(() => {
+    const selectedEntity = tabGroups.flat.find((t) => (
+      (t.kind === 'session' && t.id === selectedId)
+      || (t.kind === 'shell' && t.id === selectedShellId)
+      || (t.kind === 'install' && t.id === selectedInstallId)
+    ));
+    if (selectedEntity) return selectedEntity.vpsId;
+    return tabGroups.vpsTabs[0]?.vps.id ?? null;
+  }, [selectedId, selectedShellId, selectedInstallId, tabGroups]);
+
+  // Click on a VPS tab → switch to that VPS. Selects:
+  //   - the entity we last selected for that VPS (if it's still around), OR
+  //   - the first entity in that VPS's row (sidebar order).
+  function onVpsTabClick(vps: Vps) {
+    const entities = tabGroups.entitiesByVps.get(vps.id);
+    if (!entities || entities.length === 0) return;
+    const remembered = lastSelectedByVpsRef.current.get(vps.id);
+    const stillExists = remembered && entities.some((e) =>
+      e.kind === remembered.kind && e.id === remembered.id
+    );
+    const next = stillExists ? remembered! : entities[0];
+    selectEntity(next);
+  }
+
+  // Tab click dispatch (handles all 3 kinds). Mutually exclusive views —
+  // selecting one clears the others (mirrors selectClaude/selectShell/selectInstall).
+  function selectEntity(t: EntityTab) {
+    if (t.kind === 'session') {
+      setSelectedId(t.id); setSelectedShellId(null); setSelectedInstallId(null);
+    } else if (t.kind === 'shell') {
+      setSelectedShellId(t.id); setSelectedId(null); setSelectedInstallId(null);
+    } else {
+      setSelectedInstallId(t.id); setSelectedId(null); setSelectedShellId(null);
+    }
+  }
+  /**
+   * Resolves the "default cwd" for a "+ new tab" action triggered from
+   * row 2's action buttons. Strategy (mirrors the user expectation
+   * "same path as the last tab"):
+   *   1. Walk the active VPS's entities from the rightmost (most recent)
+   *      backward, returning the first cwd we find. Sessions always
+   *      carry a cwd; shells may have null (user home); installs don't
+   *      have one. The walk skips entries without a cwd.
+   *   2. Otherwise fall back to `Vps.defaultPath` (DB-configured per VPS).
+   *   3. Otherwise undefined (server-side falls back to user home).
+   */
+  function defaultCwdFor(vpsId: string): string | undefined {
+    const entities = tabGroups.entitiesByVps.get(vpsId) ?? [];
+    for (let i = entities.length - 1; i >= 0; i--) {
+      const e = entities[i];
+      if (e.kind === 'session') {
+        const s = sessions.find((x) => x.id === e.id);
+        if (s?.cwd) return s.cwd;
+      } else if (e.kind === 'shell') {
+        const sh = shells.find((x) => x.id === e.id);
+        if (sh?.cwd) return sh.cwd;
+      }
+      // installs: no cwd, skip
+    }
+    const vps = vpsList.find((v) => v.id === vpsId);
+    return vps?.defaultPath ?? undefined;
+  }
+
+  /** "+ Claude" button on the right of row 2 — open the NewSessionDialog
+   *  pre-filled with the active VPS and the same cwd as the last tab. */
+  function onTabBarNewSession(vpsId: string) {
+    const cwd = defaultCwdFor(vpsId);
+    setNewDialog({ vpsId, cwd });
+  }
+  /** "+ shell" button on the right of row 2 — start an ephemeral SSH
+   *  shell in the same cwd as the last tab. No dialog (mirrors the
+   *  sidebar's behavior). */
+  function onTabBarNewShell(vpsId: string) {
+    const cwd = defaultCwdFor(vpsId) ?? null;
+    startShell({ vpsId, cwd });
+  }
+  /** Reason to disable the "+ Claude" button (agent not ready). The
+   *  shell button stays enabled — SSH doesn't need the agent. Mirrors
+   *  the sidebar's `agentReady`/`noAgentReason` logic. */
+  function newSessionDisabledReasonFor(vpsId: string | null): string | null {
+    if (!vpsId) return null;
+    const vps = vpsList.find((v) => v.id === vpsId);
+    if (!vps) return null;
+    const status = (vps as any).agentStatus ?? 'unknown';
+    if (status === 'ok') return null;
+    if (status === 'missing') return 'agent not installed';
+    if (status === 'error') return 'agent in error';
+    return 'agent not yet verified';
+  }
+
+  // Closing a tab is purely local — it just removes the entity from the
+  // tab bar (not from the DB or from the sidebar). Active tabs are not
+  // closable so this only fires on greyed-out / sleeping tabs.
+  function onEntityClose(t: EntityTab) {
+    forgetOpen(t.id);
+    lastSelectedByVpsRef.current.delete(t.vpsId);
+    // If we just closed the currently-selected tab, jump elsewhere so the
+    // user isn't left looking at an "orphan" view. Prefer the previous tab
+    // in the same VPS row first, falling back to the global flat order.
+    const wasSelected =
+      (t.kind === 'session' && t.id === selectedId)
+      || (t.kind === 'shell' && t.id === selectedShellId)
+      || (t.kind === 'install' && t.id === selectedInstallId);
+    if (!wasSelected) return;
+    const sameVps = tabGroups.entitiesByVps.get(t.vpsId) ?? [];
+    const sameVpsIdx = sameVps.findIndex((x) => x.id === t.id);
+    const sameVpsRemaining = sameVps.filter((x) => x.id !== t.id);
+    if (sameVpsRemaining.length > 0) {
+      const next = sameVpsIdx > 0 ? sameVps[sameVpsIdx - 1] : sameVpsRemaining[0];
+      selectEntity(next);
+      return;
+    }
+    const flatRemaining = tabGroups.flat.filter((x) => x.id !== t.id);
+    if (flatRemaining.length === 0) {
+      setSelectedId(null); setSelectedShellId(null); setSelectedInstallId(null);
+      return;
+    }
+    selectEntity(flatRemaining[0]);
+  }
+
   // ── Sessions list (poll 15s) ──
   // Before: 4s. But each tick did `setSessions(...)` (same content) which
   // re-rendered the Sidebar + main panel → CPU + flicker. Intra-session
@@ -408,11 +635,23 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }, []);
 
-  // Local sound toggle (localStorage)
-  const [notifSoundEnabled, setNotifSoundEnabled] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    return localStorage.getItem('hub.claude.notif.sound') !== '0';
-  });
+  // Local sound toggle (localStorage). MUST init to the SSR default and
+  // only read localStorage AFTER mount — otherwise the value read during
+  // hydration (if localStorage = '0') differs from the SSR'd `true`, the
+  // <button title> + icon swap produces a hydration mismatch, React 19
+  // recovers by re-rendering the entire root, the useEffect cleanups all
+  // run, and any module-level subscriptions (here: subscribeReconnect on
+  // the SSE) are torn down. End result: the SSE reconnect handler has no
+  // listeners → after `systemctl restart charon`, the chat stays frozen
+  // until F5. Don't reintroduce the localStorage-in-useState-init pattern
+  // here — see CLAUDE.md §14 gotcha 24.
+  const [notifSoundEnabled, setNotifSoundEnabled] = useState<boolean>(true);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('hub.claude.notif.sound');
+      if (stored === '0') setNotifSoundEnabled(false);
+    } catch {}
+  }, []);
   function toggleNotifSound() {
     setNotifSoundEnabled((v) => {
       const next = !v;
@@ -687,6 +926,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         }}
         builtPyzSha={builtPyzSha}
         updatingAgentVpsIds={updatingAgentVpsIds}
+      />
+
+      <TabBar
+        vpsTabs={tabGroups.vpsTabs}
+        entitiesByVps={tabGroups.entitiesByVps}
+        activeVpsId={activeVpsId}
+        selectedSessionId={selectedId}
+        selectedShellId={selectedShellId}
+        selectedInstallId={selectedInstallId}
+        onVpsClick={onVpsTabClick}
+        onEntitySelect={selectEntity}
+        onEntityClose={onEntityClose}
+        onNewSession={onTabBarNewSession}
+        onNewShell={onTabBarNewShell}
+        newSessionDisabledReason={newSessionDisabledReasonFor(activeVpsId)}
       />
 
       {/* Main panel routing: 3 mutually exclusive views.

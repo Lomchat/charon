@@ -22,14 +22,19 @@
   --mono:            'JetBrains Mono', monospace;
 }
 
-/* ── /claude: 3-col layout (sidebar | main | tools) + header ── */
+/* ── /claude: 3-col layout (sidebar | main | tools) + header + tab strip ──
+   The dedicated `tabs` row spans only the main column. The sidebar
+   and tool panel auto-span rows 2 and 3 (same area name = implicit span).
+   The tabs row uses `auto` height: it collapses to 0 when no tab is open
+   (the TabBar returns null). */
 .claude-root {
   position: fixed; inset: 0;
   display: grid;
   grid-template-columns: 280px 1fr 340px;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   grid-template-areas:
     "head head head"
+    "side tabs tools"
     "side main tools";
   background: var(--stone-2);
   color: var(--parchment);
@@ -39,10 +44,12 @@
   grid-template-columns: 280px 1fr;
   grid-template-areas:
     "head head"
+    "side tabs"
     "side main";
 }
 .claude-head    { grid-area: head; }
 .claude-sidebar { grid-area: side; overflow-y: auto; min-height: 0; }
+.claude-tabbar  { grid-area: tabs; min-width: 0; }
 /* min-height: 0 on the flex parent: without it, children with flex: 1 + overflow: auto
    refuse to shrink below their content and the scroll doesn't work. */
 .claude-main    { grid-area: main; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -420,6 +427,281 @@
 .claude-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
 .claude-bar button.kill { color: var(--crimson); border-color: var(--crimson-deep); }
 .claude-bar button.kill:hover { color: var(--crimson); border-color: var(--crimson); }
+
+/* ── Tab bar (2 rows, VSCode/Chrome-style) ─────────────────────────────────
+   Placed above .claude-bar via the grid `tabs` row.
+     Row 1 (.tab-row-vps)      → one tab per VPS that has an open entity
+     Row 2 (.tab-row-entities) → entities of the active VPS
+
+   Colors (border-top of each tab):
+     .tab-active   → green   (idle, ready for input)
+     .tab-thinking → amber pulse (claude currently working)
+     .tab-waiting  → orange pulse (perm/question/exit-plan pending)
+     .tab-starting → amber   (claude session booting)
+     .tab-sleeping → grey, dimmed; closable (× appears in row 2 only)
+
+   Row 1 reflects the AGGREGATE state of its VPS (waiting > thinking >
+   active > sleeping). Row 2 reflects each entity's own state.
+
+   No drag-and-drop reordering — order follows the sidebar.            */
+.claude-tabbar {
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--gold-deep);
+  background: linear-gradient(180deg, #14171f, #1a1d27);
+  min-width: 0;
+}
+.tab-row {
+  display: flex; align-items: stretch;
+  gap: 4px;
+  padding: 6px 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  min-width: 0;
+}
+.tab-row::-webkit-scrollbar { height: 5px; }
+.tab-row::-webkit-scrollbar-thumb { background: var(--gold-deep); }
+.tab-row::-webkit-scrollbar-track { background: transparent; }
+
+/* Row 1: VPS tabs — slightly more compact, all in caps to look like a
+   "tab strip" header rather than a body tab. */
+.tab-row-vps {
+  background: rgba(0,0,0,0.20);
+  padding-top: 5px;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--gold-deep);
+}
+.vps-tab {
+  display: inline-flex; align-items: center;
+  gap: 7px;
+  background: var(--stone-2);
+  color: var(--parchment);
+  border: 1px solid var(--gold-deep);
+  border-top-width: 2px;
+  border-bottom: none;
+  padding: 5px 11px 6px;
+  margin-bottom: -1px;          /* overlap the row's bottom border when selected */
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 180px;
+  transition: background .12s ease, border-color .12s ease;
+}
+.vps-tab:hover { background: var(--stone-3); }
+.vps-tab.selected {
+  background: var(--stone-3);
+  border-bottom: 1px solid var(--stone-3);   /* merge into row 2 */
+  color: var(--gold-bright);
+  z-index: 1;
+}
+.vps-tab .vps-tab-glyph {
+  font-size: 12px;
+  color: var(--parchment-soft);
+  opacity: 0.75;
+}
+.vps-tab .vps-tab-name {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  min-width: 0;
+}
+.vps-tab .vps-tab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0;
+  padding: 0 5px;
+  min-width: 16px;
+  height: 14px;
+  border-radius: 7px;
+}
+.vps-tab.selected .vps-tab-count {
+  background: rgba(138,180,228,0.12);
+  border-color: var(--gold);
+  color: var(--gold-bright);
+}
+
+/* Row 2: entity tabs */
+.tab-row-entities {
+  background: rgba(0,0,0,0.10);
+  padding-bottom: 0;
+  min-height: 32px;
+}
+.tab-row-empty {
+  display: inline-flex; align-items: center;
+  padding: 6px 4px;
+  font-family: var(--body);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--parchment-soft);
+  opacity: 0.7;
+}
+
+/* One entity tab = colored top border + body. Active tab is brighter
+   and visually "merges" with the .claude-bar below. */
+.tab {
+  display: inline-flex; align-items: stretch;
+  position: relative;
+  background: var(--stone-2);
+  border: 1px solid var(--gold-deep);
+  border-top-width: 2px;
+  border-bottom: none;
+  margin-bottom: -1px;
+  max-width: 220px;
+  min-width: 0;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+  flex-shrink: 0;
+}
+.tab:hover { background: var(--stone-3); }
+.tab.selected {
+  background: var(--stone-3);
+  border-bottom: 1px solid var(--stone-3);
+  z-index: 1;
+}
+.tab .tab-main {
+  display: inline-flex; align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 5px 10px 6px;
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+}
+.tab .tab-glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px;
+  color: var(--parchment-soft);
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+.tab .tab-glyph svg { width: 13px; height: 13px; display: block; }
+.tab .tab-label {
+  font-family: var(--body);
+  font-size: 12px;
+  color: var(--parchment);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  min-width: 0;
+}
+.tab.selected .tab-label { color: var(--gold-bright); }
+.tab .tab-state-dot,
+.vps-tab .tab-state-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* "+ Claude" / "+ shell" action buttons, sit at the right of row 2.
+   Mirror the icons used in the sidebar (IconRobot / IconTerminal) +
+   a small "+" badge. Disabled state mirrors the sidebar's logic when
+   the agent isn't OK (only the Claude button is gated; SSH shells
+   work without the agent). */
+.tab-row-actions {
+  display: inline-flex; align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  margin-bottom: 1px;          /* align baseline with tabs */
+  flex-shrink: 0;
+}
+.tab-new-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 2px;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  color: var(--gold);
+  padding: 4px 8px;
+  cursor: pointer;
+  height: 26px;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.tab-new-btn:hover:not(:disabled) {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+  background: rgba(138,180,228,0.08);
+}
+.tab-new-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.tab-new-btn .tab-new-glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+}
+.tab-new-btn .tab-new-glyph svg { width: 14px; height: 14px; display: block; }
+.tab-new-btn .tab-new-plus {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--parchment-soft);
+  margin-left: 1px;
+}
+.tab-new-btn:hover:not(:disabled) .tab-new-plus { color: var(--gold-bright); }
+
+/* Close button — only visible on closable (sleeping) tabs in row 2 */
+.tab .tab-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--parchment-soft);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 7px;
+  margin: 3px 3px 3px 0;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity .12s, color .12s, background .12s;
+}
+.tab .tab-close:hover {
+  opacity: 1;
+  color: var(--crimson);
+  background: rgba(216,117,127,0.12);
+}
+
+/* ── Tab states (shared between .tab and .vps-tab) ─────────────────────────
+   Color convention aligned with the sidebar dots:
+     - active   = green
+     - starting = amber/gold-bright (the actual gold-bright var resolves
+                  to a blue in the Nordic Tokyo theme — kept as-is for
+                  consistency with `dot-amber`/`status-amber`)
+     - thinking = BLUE pulse (--gold = #8ab4e4) — was amber before; orange
+                  is now reserved exclusively for "waiting"
+     - waiting  = orange pulse (= a perm/question/exit_plan is pending)
+     - sleeping = grey
+*/
+.tab.tab-active,     .vps-tab.tab-active     { border-top-color: #6cbf6c; }
+.tab.tab-starting,   .vps-tab.tab-starting   { border-top-color: var(--gold-bright); }
+.tab.tab-thinking,   .vps-tab.tab-thinking   { border-top-color: var(--gold); animation: tab-thinking-pulse 1.6s ease-in-out infinite; }
+.tab.tab-waiting,    .vps-tab.tab-waiting    { border-top-color: #f0a060; animation: tab-waiting-pulse 1.3s ease-in-out infinite; }
+.tab.tab-sleeping,   .vps-tab.tab-sleeping   { border-top-color: var(--gold-deep); opacity: 0.55; }
+.tab.tab-sleeping .tab-label { color: var(--parchment-soft); font-style: italic; }
+.tab.tab-sleeping.selected,
+.vps-tab.tab-sleeping.selected { opacity: 0.85; }
+
+.tab.tab-thinking .tab-state-dot,
+.vps-tab.tab-thinking .tab-state-dot { background: var(--gold-bright); box-shadow: 0 0 6px rgba(138,180,228,0.7); }
+.tab.tab-waiting  .tab-state-dot,
+.vps-tab.tab-waiting  .tab-state-dot { background: #f0a060; box-shadow: 0 0 6px rgba(240,160,96,0.7); }
+
+@keyframes tab-thinking-pulse {
+  0%, 100% { box-shadow: inset 0 2px 0 0 rgba(138,180,228,0.35); }
+  50%      { box-shadow: inset 0 2px 8px 0 rgba(138,180,228,0.65); }
+}
+@keyframes tab-waiting-pulse {
+  0%, 100% { box-shadow: inset 0 2px 0 0 rgba(240,160,96,0.40); }
+  50%      { box-shadow: inset 0 2px 10px 0 rgba(240,160,96,0.70); }
+}
 
 /* Transient error (rename, server action, etc.) — dismissable */
 .claude-error {
