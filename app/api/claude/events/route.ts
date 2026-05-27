@@ -4,7 +4,7 @@ import {
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { registerConnection } from '@/lib/server/agent/eventConnections';
-import { getStream } from '@/lib/server/agent/sessionOps';
+import { peekStream } from '@/lib/server/agent/sessionOps';
 import type { GlobalSessionEvent } from '@/lib/server/agent/sessionOps';
 import {
   subscribeInstallBus, listInstalls,
@@ -83,7 +83,7 @@ export async function GET(req: Request) {
         for (const row of rows) {
           if (row.status === 'killed') continue;
           // Prefer the live (in-memory) status over the DB one if available.
-          const live = getStream(row.id);
+          const live = peekStream(row.id);
           const effective = live ? live.status : row.status;
           send({ type: 'status', sessionId: row.id, status: effective as any });
         }

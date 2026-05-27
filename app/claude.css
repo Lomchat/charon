@@ -100,6 +100,23 @@
   color: var(--gold-bright); border-color: var(--gold);
 }
 .claude-head .head-btn:disabled { opacity: 0.4; cursor: wait; }
+/* Toggle buttons (push bell, in-app sound): make the ON/OFF state obvious
+   at a glance. ON = bright accent + subtle fill; OFF = dimmed/greyed so
+   you can tell instantly whether the feature is active. */
+.claude-head .head-btn.toggle-btn.is-on {
+  color: var(--gold-bright);
+  border-color: var(--gold);
+  background: rgba(138, 180, 228, 0.14);
+}
+.claude-head .head-btn.toggle-btn.is-off {
+  color: #5b6373;
+  border-color: var(--gold-deep);
+  background: var(--shadow);
+}
+.claude-head .head-btn.toggle-btn.is-off:hover:not(:disabled) {
+  color: #8b93a3;
+  border-color: #4a5161;
+}
 /* "update local agent" button: visible ONLY when the local agent
    is out-of-date. Wider than the others (text + glyph), amber
    pulse to catch the eye without shouting. */

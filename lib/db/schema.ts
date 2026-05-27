@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, integer, text, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
@@ -79,7 +79,10 @@ export const vpsPaths = sqliteTable('vps_paths', {
   path: text('path').notNull(),
   label: text('label'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
-});
+}, (t) => [
+  // Sidebar groupings: GET /api/vps-paths filtered by vpsId.
+  index('idx_vps_paths_vps_id').on(t.vpsId),
+]);
 
 export const claudeSessions = sqliteTable('claude_sessions', {
   id: text('id').primaryKey(),
@@ -92,6 +95,19 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   color: text('color'),
   status: text('status').notNull(),
   permissionMode: text('permission_mode').notNull().default('normal'),
+  // Last `seq` from the agent's durable event log that Charon has
+  // successfully persisted. Used on reconnect to call
+  // subscribe({after_seq: lastSeenSeq}) — the agent then replays
+  // exactly the missed events instead of being bound by the
+  // in-memory ring (cf. agent/charon_agent/event_log.py).
+  // Null until the first event from an agent >= 0.4.0 lands.
+  lastSeenSeq: integer('last_seen_seq'),
+  // Highest `seq` of a `stop` event for which we've already emitted a
+  // "Claude finished" push notification. Prevents re-notifying the same
+  // finish when the agent replays events on reconnect (Charon reboot, SSH
+  // reconnect). A genuinely new finish has a higher seq → notifies once.
+  // Null = never notified a finish yet.
+  lastStopNotifiedSeq: integer('last_stop_notified_seq'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 });
@@ -102,7 +118,14 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   role: text('role').notNull(),
   content: text('content').notNull(),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
-});
+}, (t) => [
+  // Hot path: window query (session_id + id range), delta polling
+  // (session_id + id > since), pagination (session_id + id < before).
+  // The autoincrement PK already indexes `id` alone, but the FK on
+  // session_id has no automatic index in SQLite. The compound
+  // (session_id, id) is the right shape for every chat read query.
+  index('idx_claude_session_messages_session_id_id').on(t.sessionId, t.id),
+]);
 
 export const claudePendingPermissions = sqliteTable('claude_pending_permissions', {
   id: text('id').primaryKey(),
@@ -112,7 +135,10 @@ export const claudePendingPermissions = sqliteTable('claude_pending_permissions'
   status: text('status').notNull().default('pending'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   respondedAt: integer('responded_at')
-});
+}, (t) => [
+  // GET session detail + SSE init snapshot filter by (session_id, status='pending').
+  index('idx_claude_pending_permissions_session_id_status').on(t.sessionId, t.status),
+]);
 
 // Pending interactive questions (AskUserQuestion). We persist them so we can
 // re-emit them to clients that reconnect or switch tabs.
@@ -126,7 +152,11 @@ export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
   answers: text('answers'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   respondedAt: integer('responded_at'),
-});
+}, (t) => [
+  // GET session detail + SSE init snapshot filter by (session_id, status='pending').
+  // `kind` is post-filtered in JS — too few distinct values to add to the index.
+  index('idx_claude_pending_questions_session_id_status').on(t.sessionId, t.status),
+]);
 
 export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -135,7 +165,10 @@ export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   event: text('event').notNull(),
   detail: text('detail'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
-});
+}, (t) => [
+  // auto_resume + debug queries filter by sessionId then order by id.
+  index('idx_claude_session_logs_session_id_id').on(t.sessionId, t.id),
+]);
 
 export const claudeSettings = sqliteTable('claude_settings', {
   key: text('key').primaryKey(),

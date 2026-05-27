@@ -24,6 +24,20 @@ export async function pushSupported(): Promise<boolean> {
     && 'Notification' in window;
 }
 
+// Force the browser to re-check /sw.js and activate a newer version.
+// The SW caches aggressively; without this, a deployed sw.js change
+// (e.g. the notif-sound postMessage) can stay dormant until the user
+// manually clears it. Only updates an EXISTING registration — we don't
+// auto-register for users who never enabled push. skipWaiting +
+// clients.claim in sw.js make the new SW take control immediately.
+export async function ensureFreshServiceWorker(): Promise<void> {
+  if (!(await pushSupported())) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) await reg.update();
+  } catch {}
+}
+
 export async function pushCurrentEndpoint(): Promise<string | null> {
   if (!(await pushSupported())) return null;
   const reg = await navigator.serviceWorker.getRegistration();

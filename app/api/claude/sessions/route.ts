@@ -10,64 +10,74 @@ import { focusCountFor } from '@/lib/server/agent/eventConnections';
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  const url = new URL(req.url);
-  const filters: any[] = [];
-  const vpsId = url.searchParams.get('vpsId');
-  const status = url.searchParams.get('status');
-  if (vpsId) filters.push(eq(claudeSessions.vpsId, vpsId));
-  if (status) filters.push(eq(claudeSessions.status, status));
-  const where = filters.length ? and(...filters) : undefined;
-  const rows = db.select().from(claudeSessions)
-    .where(where as any)
-    .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
-    .all();
+  try {
+    const url = new URL(req.url);
+    const filters: any[] = [];
+    const vpsId = url.searchParams.get('vpsId');
+    const status = url.searchParams.get('status');
+    if (vpsId) filters.push(eq(claudeSessions.vpsId, vpsId));
+    if (status) filters.push(eq(claudeSessions.status, status));
+    const where = filters.length ? and(...filters) : undefined;
+    const rows = db.select().from(claudeSessions)
+      .where(where as any)
+      .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
+      .all();
 
-  // Annotate with live status + subs count + pendingPermissions
-  const streams = new Map(listStreams().map((s) => [s.id, s] as const));
-  const pendingRows = db.select({
-    sessionId: claudePendingPermissions.sessionId,
-    n: sql<number>`count(*)`.as('n'),
-  })
-    .from(claudePendingPermissions)
-    .where(eq(claudePendingPermissions.status, 'pending'))
-    .groupBy(claudePendingPermissions.sessionId)
-    .all();
-  const pendingBySession = new Map(pendingRows.map((r) => [r.sessionId, Number(r.n)] as const));
-  const pendingQRows = db.select({
-    sessionId: claudePendingQuestions.sessionId,
-    n: sql<number>`count(*)`.as('n'),
-  })
-    .from(claudePendingQuestions)
-    .where(eq(claudePendingQuestions.status, 'pending'))
-    .groupBy(claudePendingQuestions.sessionId)
-    .all();
-  const pendingQBySession = new Map(pendingQRows.map((r) => [r.sessionId, Number(r.n)] as const));
+    // Annotate with live status + subs count + pendingPermissions
+    const streams = new Map(listStreams().map((s) => [s.id, s] as const));
+    const pendingRows = db.select({
+      sessionId: claudePendingPermissions.sessionId,
+      n: sql<number>`count(*)`.as('n'),
+    })
+      .from(claudePendingPermissions)
+      .where(eq(claudePendingPermissions.status, 'pending'))
+      .groupBy(claudePendingPermissions.sessionId)
+      .all();
+    const pendingBySession = new Map(pendingRows.map((r) => [r.sessionId, Number(r.n)] as const));
+    const pendingQRows = db.select({
+      sessionId: claudePendingQuestions.sessionId,
+      n: sql<number>`count(*)`.as('n'),
+    })
+      .from(claudePendingQuestions)
+      .where(eq(claudePendingQuestions.status, 'pending'))
+      .groupBy(claudePendingQuestions.sessionId)
+      .all();
+    const pendingQBySession = new Map(pendingQRows.map((r) => [r.sessionId, Number(r.n)] as const));
 
-  const firstMsgRows = db.all(sql`
-    SELECT session_id as sessionId, content
-    FROM claude_session_messages
-    WHERE id IN (
-      SELECT MIN(id) FROM claude_session_messages
-      WHERE role = 'user'
-      GROUP BY session_id
-    )
-  `) as Array<{ sessionId: string; content: string }>;
-  const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
+    const firstMsgRows = db.all(sql`
+      SELECT session_id as sessionId, content
+      FROM claude_session_messages
+      WHERE id IN (
+        SELECT MIN(id) FROM claude_session_messages
+        WHERE role = 'user'
+        GROUP BY session_id
+      )
+    `) as Array<{ sessionId: string; content: string }>;
+    const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
-  const annotated = rows.map((r) => {
-    const stream = streams.get(r.id);
-    const perms = pendingBySession.get(r.id) ?? 0;
-    const qs = pendingQBySession.get(r.id) ?? 0;
-    const firstMsg = firstMsgBySession.get(r.id) ?? null;
-    return {
-      ...r,
-      liveStatus: stream ? stream.status : r.status,
-      subscribers: focusCountFor(r.id),
-      pendingPermissions: perms + qs,
-      firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
-    };
-  });
-  return NextResponse.json({ sessions: annotated });
+    const annotated = rows.map((r) => {
+      const stream = streams.get(r.id);
+      const perms = pendingBySession.get(r.id) ?? 0;
+      const qs = pendingQBySession.get(r.id) ?? 0;
+      const firstMsg = firstMsgBySession.get(r.id) ?? null;
+      return {
+        ...r,
+        liveStatus: stream ? stream.status : r.status,
+        subscribers: focusCountFor(r.id),
+        pendingPermissions: perms + qs,
+        firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
+      };
+    });
+    return NextResponse.json({ sessions: annotated });
+  } catch (e: any) {
+    // Never let a transient DB hiccup surface as an unhandled 500 (which
+    // returns an HTML error page that breaks the client's JSON parsing and
+    // can cascade into a "stuck" UI). Log the real cause, return a clean,
+    // retryable 503 — the client's 5s poll / sidebar refresh will retry.
+    // eslint-disable-next-line no-console
+    console.error('[api/claude/sessions GET] failed:', e?.stack ?? e);
+    return NextResponse.json({ error: e?.message ?? String(e), sessions: [] }, { status: 503 });
+  }
 }
 
 // POST /api/claude/sessions

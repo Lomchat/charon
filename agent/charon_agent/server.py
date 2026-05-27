@@ -50,24 +50,45 @@ from .protocol import (
     ERR_SESSION_NOT_FOUND,
     RpcError,
 )
+from .event_log import EventLog, cleanup_orphans
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR
 from .state import load_state, save_state
 
 
-RING_SIZE = 300  # events buffered per session for late subscribers
+RING_SIZE = 2000  # events buffered per session for late subscribers
+# Why 2000: deltas (assistant_text, thinking) arrive at ~50-100/sec during
+# a streaming response. The previous 300 saturated in ~3-6s, which meant a
+# normal Charon `systemctl restart` during a long response could lose events
+# the hub never persisted (cf. CLAUDE.md gotchas around layer-4 resilience).
+# 2000 covers ~20-40s of high-throughput streaming, which is well above any
+# expected hub-side downtime window. Memory cost is bounded: payloads are
+# small dicts (~200 bytes typical), so 2000 events × ~16 active sessions
+# fits in a few MB.
 
 
 class Server:
     def __init__(self, *, socket_path: Path, state_path: Path) -> None:
         self.socket_path = socket_path
         self.state_path = state_path
+        # Durable event logs live next to state.json, in ~/.charon/events/.
+        self.events_dir = state_path.parent / "events"
         self.sessions: dict[str, AgentSession] = {}
         self.rings: dict[str, deque[dict[str, Any]]] = {}
+        # Per-session durable log. Created on first emit (lazy via _emit),
+        # cleaned up on kill. Lookups via _event_log(session_id).
+        self.event_logs: dict[str, EventLog] = {}
         # subscribers: session_id → set[Client]
         self.subscribers: dict[str, set[Client]] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
+
+    def _event_log(self, session_id: str) -> EventLog:
+        log = self.event_logs.get(session_id)
+        if log is None:
+            log = EventLog(session_id, self.events_dir)
+            self.event_logs[session_id] = log
+        return log
 
     # ── Persistence ──────────────────────────────────────────────────────────
     async def _save_state_now(self) -> None:
@@ -95,11 +116,32 @@ class Server:
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     def _emit(self, payload: dict[str, Any]) -> None:
-        """Callback that sessions call to broadcast an event."""
+        """Callback that sessions call to broadcast an event.
+
+        Order of operations matters here:
+        1. Append to durable log FIRST — this attaches `seq` and `ts` to
+           the payload in place. Subscribers and the ring then see the
+           same fields. If we appended last, the live broadcast would
+           reach clients without a seq, which defeats the whole point.
+        2. Append to in-memory ring (live replay for re-subscribe).
+        3. Broadcast to current subscribers.
+
+        The log append is best-effort: a disk failure logs to stderr but
+        does not block the broadcast (the ring is still populated, so
+        live UI keeps working).
+        """
         sid = payload.get("session_id")
         if isinstance(sid, str):
+            # 1. durable log (mutates payload to add seq, ts)
+            try:
+                self._event_log(sid).append(payload)
+            except Exception as e:
+                print(f"[server] event_log.append error sid={sid}: {e}",
+                      file=sys.stderr, flush=True)
+            # 2. ring buffer (fast path for in-memory replay)
             ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
             ring.append(payload)
+            # 3. live broadcast
             for client in list(self.subscribers.get(sid, ())):
                 client.send_json(payload)
 
@@ -220,26 +262,50 @@ class Server:
         if method == "subscribe":
             sid = self._require_sid(params)
             s = self._require_session(sid)
+            # Two replay modes, prefer after_seq when both are provided:
+            #   - `after_seq`: durable replay from event_log (new in 0.4.0).
+            #     Returns ALL events with seq > after_seq, across rotations.
+            #   - `replay`: in-memory ring tail (backward compat for old hub
+            #     clients pre-0.4.0). Capped by RING_SIZE.
+            after_seq_param = params.get("after_seq")
+            after_seq = int(after_seq_param) if isinstance(after_seq_param, (int, float)) else None
             replay = int(params.get("replay") or 0)
             if sid not in self.subscribers:
                 self.subscribers[sid] = set()
             self.subscribers[sid].add(client)
             client.subscribed.add(sid)
-            ring = self.rings.get(sid)
             sent = 0
+            items: list[dict[str, Any]] = []
+            if after_seq is not None:
+                try:
+                    items = self._event_log(sid).read_since(after_seq)
+                except Exception as e:
+                    print(f"[server] event_log.read_since error sid={sid}: {e}",
+                          file=sys.stderr, flush=True)
+                    items = []
+            elif replay > 0:
+                ring = self.rings.get(sid)
+                if ring:
+                    items = list(ring)[-replay:]
             # "Replay start" marker so that the client can skip DB
             # persistence for events it already saw before its drop.
-            if ring and replay > 0:
-                items = list(ring)[-replay:]
-                if items:
-                    client.send_json({"event": "replay_begin", "session_id": sid, "count": len(items)})
-                    for item in items:
-                        client.send_json(item)
-                        sent += 1
-                    client.send_json({"event": "replay_end", "session_id": sid})
+            if items:
+                client.send_json({"event": "replay_begin", "session_id": sid, "count": len(items)})
+                for item in items:
+                    client.send_json(item)
+                    sent += 1
+                client.send_json({"event": "replay_end", "session_id": sid})
             # Emit a status so that the client knows the current state
             client.send_json({"event": "status", "session_id": sid, "status": s.status})
-            return {"ok": True, "replay_count": sent, "status": s.status}
+            # `current_seq` lets the caller checkpoint at subscribe time —
+            # useful if they want to advance their cursor even when the
+            # replay was empty (e.g. they were already caught up).
+            try:
+                current_seq = self._event_log(sid).current_seq()
+            except Exception:
+                current_seq = 0
+            return {"ok": True, "replay_count": sent, "status": s.status,
+                    "current_seq": current_seq}
 
         if method == "unsubscribe":
             sid = self._require_sid(params)
@@ -341,6 +407,16 @@ class Server:
             self.sessions.pop(sid, None)
             self.rings.pop(sid, None)
             self.subscribers.pop(sid, None)
+            # Tear down the durable event log for this session — it is
+            # gone for good, no future subscriber will ever want its
+            # history.
+            log = self.event_logs.pop(sid, None)
+            if log is not None:
+                try:
+                    log.delete()
+                except Exception as e:
+                    print(f"[server] event_log.delete error sid={sid}: {e}",
+                          file=sys.stderr, flush=True)
             self.schedule_save()
             return {"ok": True}
 
@@ -374,6 +450,19 @@ class Server:
             pass
 
         await self._restore_existing()
+
+        # Cleanup orphan event logs: any .jsonl file in ~/.charon/events/
+        # whose session_id is not in our restored state. These accumulate
+        # when sessions are deleted while the agent is offline.
+        try:
+            known = set(self.sessions.keys())
+            removed = cleanup_orphans(self.events_dir, known)
+            if removed:
+                print(f"[boot] cleaned up {removed} orphan event log file(s)",
+                      file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[boot] event log cleanup failed: {e}",
+                  file=sys.stderr, flush=True)
 
         server = await asyncio.start_unix_server(
             self._handle_client, path=str(self.socket_path)

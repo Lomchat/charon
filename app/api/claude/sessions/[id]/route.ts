@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { and, asc, desc, eq, gt, gte, lt, lte, notInArray } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, lt, lte, notInArray, sql } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages, claudeSessionLogs, vps as vpsTable,
   claudePendingPermissions, claudePendingQuestions,
   type ClaudeSessionMessage,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { deleteSession, getStream } from '@/lib/server/agent/sessionOps';
+import { deleteSession, peekStream } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
@@ -146,6 +146,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  try {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const url = new URL(req.url);
@@ -178,7 +179,20 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     hasMore = win.hasMore;
     oldestChatId = win.oldestChatId;
   }
-  const stream = getStream(id);
+  const stream = peekStream(id);
+
+  // True max message id for this session (ALL roles, including
+  // edit_snapshot/event that fall outside the chat window). The client
+  // uses THIS as the polling cursor — NOT the max id of the returned
+  // window, which can be lower when the newest rows are non-chat
+  // attachments. Using the window max caused the delta poll to return the
+  // same trailing rows forever (cursor never advanced). cf. CLAUDE.md §14
+  // gotcha 24.
+  const maxRow = db.select({ m: sql<number>`max(${claudeSessionMessages.id})` })
+    .from(claudeSessionMessages)
+    .where(eq(claudeSessionMessages.sessionId, id))
+    .get();
+  const maxMessageId = maxRow?.m ?? 0;
 
   // Pendings (permission/question/exit_plan) — returned so the client can
   // display them immediately on refetch without having to wait for the SSE
@@ -199,6 +213,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     messages,
     hasMore,
     oldestChatId,
+    maxMessageId,
     // Assistant text currently being accumulated (not yet persisted). Empty
     // if no active streaming. The client injects it into its assistantBuf
     // to show "where we are" without replaying the deltas.
@@ -219,6 +234,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       return { id: q.id, plan: payload?.plan ?? '', createdAt: q.createdAt };
     }),
   });
+  } catch (e: any) {
+    // Same rationale as the list route: a transient failure must not
+    // become an unhandled 500 (HTML error page → client JSON parse
+    // failure → cascading "stuck" UI). Log + clean retryable 503; the
+    // 5s poll retries on its own.
+    // eslint-disable-next-line no-console
+    console.error(`[api/claude/sessions/${id} GET] failed:`, e?.stack ?? e);
+    return NextResponse.json({ error: e?.message ?? String(e) }, { status: 503 });
+  }
 }
 
 // PATCH /api/claude/sessions/[id]

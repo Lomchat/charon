@@ -71,6 +71,27 @@
       "when": 1779600000000,
       "tag": "0009_rename_default_folder",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1779700000000,
+      "tag": "0010_add_hot_path_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1779700100000,
+      "tag": "0011_add_last_seen_seq",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779700200000,
+      "tag": "0012_add_last_stop_notified_seq",
+      "breakpoints": true
     }
   ]
 }

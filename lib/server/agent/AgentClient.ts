@@ -61,6 +61,12 @@ export class AgentClient {
   // The session_ids we've explicitly "subscribed" to, so we can
   // re-subscribe after a reconnect.
   private subscribed = new Set<string>();
+  // Per-session checkpoint cursor for durable replay. Updated by
+  // SessionStream via setAfterSeq(sid, seq) as events are persisted.
+  // Looked up by _fireSubscribe on the next subscribe RPC (which is
+  // typically issued by the resubscribe-after-reconnect path).
+  // `null` means "no checkpoint yet — fall back to ring replay".
+  private _pendingAfterSeq = new Map<string, number | null>();
   private statusListeners = new Set<(s: AgentClientStatus) => void>();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -128,7 +134,19 @@ export class AgentClient {
     });
   }
 
-  subscribe(sessionId: string, listener: EventListener): void {
+  /**
+   * Subscribe to a session's events. Idempotent — multiple listeners can
+   * coexist for the same session (we deliver the same agent event to
+   * each).
+   *
+   * `opts.afterSeq` (optional, agent >= 0.4.0): durable replay. The agent
+   * will return ALL events with seq > afterSeq from its persistent event
+   * log, regardless of what's in its in-memory ring. Use this on
+   * resubscribe-after-restart to catch up cleanly. If omitted (or against
+   * an older agent), the agent falls back to a ring-tail replay of size
+   * `replay`.
+   */
+  subscribe(sessionId: string, listener: EventListener, opts?: { afterSeq?: number }): void {
     if (!this.subscribers.has(sessionId)) {
       this.subscribers.set(sessionId, new Set());
     }
@@ -137,7 +155,11 @@ export class AgentClient {
     if (!this.subscribed.has(sessionId)) {
       this.subscribed.add(sessionId);
       if (this.status === 'connected') {
-        this._fireSubscribe(sessionId);
+        this._fireSubscribe(sessionId, opts);
+      } else {
+        // Save the desired afterSeq until we can issue the RPC. Re-used
+        // by _onConnected when the connection settles.
+        this._pendingAfterSeq.set(sessionId, opts?.afterSeq ?? null);
       }
     }
   }
@@ -147,16 +169,36 @@ export class AgentClient {
    *  on the agent, then resume creates the session — the attach is not
    *  redone because it's idempotent, but the agent subscribe remains
    *  missing). */
-  resubscribe(sessionId: string): void {
+  resubscribe(sessionId: string, opts?: { afterSeq?: number }): void {
     if (!this.subscribers.has(sessionId)) return;  // no listener → nothing to do
     this.subscribed.add(sessionId);
     if (this.status === 'connected') {
-      this._fireSubscribe(sessionId);
+      this._fireSubscribe(sessionId, opts);
+    } else {
+      this._pendingAfterSeq.set(sessionId, opts?.afterSeq ?? null);
     }
   }
 
-  private _fireSubscribe(sessionId: string): void {
-    this.call('subscribe', { session_id: sessionId, replay: 300 })
+  /** Called from _onConnected to update the cursor for the next
+   *  reconnect-driven subscribe. The SessionStream calls this on every
+   *  event with a seq, but we throttle the syscall: only the latest
+   *  value matters when we actually re-issue the RPC. */
+  setAfterSeq(sessionId: string, afterSeq: number | null): void {
+    this._pendingAfterSeq.set(sessionId, afterSeq);
+  }
+
+  private _fireSubscribe(sessionId: string, opts?: { afterSeq?: number }): void {
+    // Prefer the explicit opts, else fall back to the cached cursor
+    // (updated by SessionStream as events are persisted).
+    const afterSeq = opts?.afterSeq ?? this._pendingAfterSeq.get(sessionId) ?? null;
+    const params: Record<string, unknown> = { session_id: sessionId };
+    if (typeof afterSeq === 'number') {
+      params.after_seq = afterSeq;
+    } else {
+      // Backward compat with agents <0.4.0: tail of the ring.
+      params.replay = 300;
+    }
+    this.call('subscribe', params)
       .catch((e) => {
         // If subscribe fails (typically session_not_found), remove from
         // `subscribed` so a future subscribe will retry spontaneously.
@@ -267,9 +309,14 @@ export class AgentClient {
             agentLastSeenAt: Math.floor(Date.now() / 1000),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
-        // Re-subscribe to everything
+        // Re-subscribe to everything. This is the critical path for
+        // "Charon was down, agent kept emitting events" — we want the
+        // agent to replay from the durable log, NOT from the in-memory
+        // ring (which may have rotated). _fireSubscribe consults
+        // _pendingAfterSeq to choose between after_seq (durable) and
+        // replay (ring tail, backward compat for old agents).
         for (const sid of this.subscribed) {
-          this.call('subscribe', { session_id: sid, replay: 300 }).catch(() => {});
+          this._fireSubscribe(sid);
         }
         // Resolve readys
         if (this.readyResolve) {

@@ -1,0 +1,14 @@
+-- Migration 0011: add `last_seen_seq` to claude_sessions.
+--
+-- Context: the VPS agent now (>= 0.4.0) maintains a durable per-session
+-- event log at `~/.charon/events/<session_id>.jsonl` with a monotonically
+-- increasing `seq` on every event. To survive a Charon restart without
+-- losing events, Charon must remember the highest seq it has successfully
+-- persisted; on reconnect it calls `subscribe({after_seq: lastSeenSeq})`
+-- and the agent replays exactly the missed events.
+--
+-- The column is nullable: NULL means "no agent event seen yet" (either
+-- the session predates agent 0.4.0 or no event has flowed since the
+-- agent upgrade). For NULL, the resubscribe code falls back to the
+-- ring-buffer-based `replay` mode for backwards compat.
+ALTER TABLE `claude_sessions` ADD COLUMN `last_seen_seq` integer;

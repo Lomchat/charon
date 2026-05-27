@@ -174,6 +174,24 @@ export function useClaudeSessionStream(
   const oldestChatIdRef = useRef<number | null>(null);
   const loadMoreInflightRef = useRef(false);
 
+  // Server reachability. true after consecutive request failures (the hub
+  // is down — typically a build+restart in progress); cleared on the first
+  // success. The view shows a "reconnecting to server…" banner while true,
+  // so the user knows to WAIT for auto-recovery instead of refreshing.
+  // cf. CLAUDE.md §14 gotcha 24.
+  const [serverUnreachable, setServerUnreachable] = useState(false);
+  const consecutiveFailuresRef = useRef(0);
+  const markServerOk = useCallback(() => {
+    consecutiveFailuresRef.current = 0;
+    setServerUnreachable((v) => (v ? false : v));
+  }, []);
+  const markServerFail = useCallback(() => {
+    consecutiveFailuresRef.current += 1;
+    // 2 consecutive failures (~10s of polling) before we declare it down,
+    // to avoid flashing the banner on a single transient blip.
+    if (consecutiveFailuresRef.current >= 2) setServerUnreachable((v) => (v ? v : true));
+  }, []);
+
   // streamKey: bump to force re-creation of the SSE (used after
   // doResume — the session restarted and we want a fresh SSE).
   const [streamKey, setStreamKey] = useState(0);
@@ -183,6 +201,14 @@ export function useClaudeSessionStream(
   // setCurrentAssistant = subtree re-render. At 100 tokens/sec, it lags.
   // With RAF, we cap at 60Hz, the browser rate-limits on its own.
   const assistantFlushRafRef = useRef<number | null>(null);
+
+  // Tokens for optimistically-rendered user messages. `send` pushes the
+  // trimmed content before the POST so the bubble + 'thinking' pill appear
+  // instantly; the matching `user_echo` SSE event (which the server
+  // broadcasts before the SSH round-trip) is then suppressed to avoid a
+  // duplicate. FIFO-by-content (indexOf, not shift) so it stays correct
+  // under out-of-order delivery and repeated identical messages.
+  const pendingUserEchoRef = useRef<string[]>([]);
 
   // ── Polling delta state ────────────────────────────────────────────────
   // Highest DB message id we have ever seen for this session. Used as the
@@ -194,10 +220,19 @@ export function useClaudeSessionStream(
   // SSE we have defense in depth (SSE = fast, polling = guaranteed).
   // cf. CLAUDE.md §14 gotcha 24.
   const lastSeenServerIdRef = useRef<number>(0);
+  // Whether the initial full load (applyApiData) has succeeded at least
+  // once. Distinct from `lastSeenServerId !== 0` because an empty session
+  // legitimately has cursor 0 yet must still be polled (so new messages
+  // arrive). Until this is true, the safety loop does a full refetch
+  // instead of a delta poll. cf. CLAUDE.md §14 gotcha 24.
+  const initialLoadDoneRef = useRef<boolean>(false);
   // Guard against concurrent polls. The setInterval fires every 5s but a
   // very slow network could delay a fetch beyond 5s — we don't want to
   // stack pending polls.
   const inflightPollRef = useRef<boolean>(false);
+  // AbortController of the in-flight poll, so wake-up handlers can cancel
+  // a request that hung while the device was asleep and start fresh.
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   // ── Apply an API payload to local state ────────────────────────────────
   // Full refresh path — used by refetchHistory (initial mount, switch,
@@ -206,10 +241,32 @@ export function useClaudeSessionStream(
   const applyApiData = useCallback((r: ClaudeSessionDetailResponse) => {
     if (!r?.session) return;
     const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus);
+    // Streaming preview reconciliation. applyApiData runs on the initial
+    // load AND on every poll-triggered clean reload (which can happen every
+    // 5s during active SSE streaming). We must NOT rewind a smoothly-
+    // streaming preview to an older server snapshot:
+    //   - server text >= local buffer → adopt (caught up / ahead; the
+    //     common case since the server processes deltas before forwarding
+    //     them to us).
+    //   - server text shorter (flushed to a persisted message, or briefly
+    //     behind) → if the latest reloaded assistant message already
+    //     contains our buffered text, the buffer was flushed: clear it to
+    //     avoid showing the preview twice. Otherwise keep our buffer (SSE
+    //     is mid-stream, server hasn't persisted yet) — don't rewind.
     const streamingText = String(r.streamingText ?? '');
-    assistantBufRef.current = streamingText;
+    if (streamingText.length >= assistantBufRef.current.length) {
+      assistantBufRef.current = streamingText;
+      setCurrentAssistant(streamingText);
+    } else {
+      const buf = assistantBufRef.current;
+      const lastAsst = [...rebuilt.messages].reverse().find((m) => m.role === 'assistant');
+      if (lastAsst && (lastAsst.content === buf || lastAsst.content.startsWith(buf))) {
+        assistantBufRef.current = '';
+        setCurrentAssistant('');
+      }
+      // else: keep the local buffer, don't rewind.
+    }
     setMessages(rebuilt.messages);
-    setCurrentAssistant(streamingText);
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
     setTodos(rebuilt.todos);
@@ -240,15 +297,35 @@ export function useClaudeSessionStream(
     // session until the next fresh fetch.
     setHasMore(!!r.hasMore);
     oldestChatIdRef.current = r.oldestChatId ?? null;
-    // Update polling cursor: the highest DB id we've seen.
+    // Update polling cursor. Prefer the server's authoritative
+    // `maxMessageId` (true max across ALL roles) over the max id of the
+    // returned window — the window can exclude trailing edit_snapshot/event
+    // rows, and using the window max made the delta poll return the same
+    // rows forever (cursor stuck). MONOTONIC: never let the cursor go
+    // backwards (a stale/cached response must not rewind it).
     let maxId = lastSeenServerIdRef.current;
+    const serverMax = typeof r.maxMessageId === 'number' ? r.maxMessageId : 0;
+    if (serverMax > maxId) maxId = serverMax;
     for (const m of (r.messages ?? []) as { id: number }[]) {
       if (typeof m.id === 'number' && m.id > maxId) maxId = m.id;
     }
     lastSeenServerIdRef.current = maxId;
+    // The initial load has produced data → the polling loop can switch
+    // from "full refetch" to "delta poll" (even if maxId is still 0 for an
+    // empty session).
+    initialLoadDoneRef.current = true;
   }, []);
 
   // ── Apply a polling DELTA to local state ───────────────────────────────
+  // ⚠ CURRENTLY UNUSED (kept for reference / possible future re-enable).
+  // The polling loop no longer merges deltas incrementally — it does a
+  // CLEAN full `refetchHistory()` whenever the cheap `?since=` probe reports
+  // new rows (see `pollDelta`). Incremental merging here proved fragile
+  // (duplicate React keys, partial tool pairs → render throw → error-
+  // boundary remount loop). The full reload is what "hitting refresh" does
+  // and is corruption-proof. If you re-enable this, fix the dedup first.
+  // cf. CLAUDE.md §14 gotcha 24.
+  //
   // Only handles messages with id > lastSeenServerIdRef. Crucial properties:
   //   - Idempotent: if a row was already added locally by an SSE event,
   //     we detect the duplicate by (role,content) match and upgrade the
@@ -284,10 +361,10 @@ export function useClaudeSessionStream(
       // Server has flushed (streamingText empty, the assistant_text is
       // now a persisted message). If our local buffer is still non-empty
       // AND the persisted message will be in the delta (we'll see it
-      // below as a new row), our dedup will upgrade the synthetic local
-      // assistant Msg. The buffer can be safely cleared.
+      // below as a new row matching our buf), the buffer is safe to clear.
       // BUT only if the corresponding row is in the delta — if it isn't,
-      // we'd lose the streaming preview. Defer to the messages-merge step.
+      // we'd lose the streaming preview. We detect the match below and
+      // clear at the end of applyDelta (see `clearBufAfterMerge`).
     }
     // Pendings: replace if the count or contents differ.
     const sid = r.session.id;
@@ -314,6 +391,34 @@ export function useClaudeSessionStream(
 
     const rebuilt = rebuildStateFromMessages(r.messages, newStatus);
     let anythingChanged = false;
+
+    // ── Phantom-buffer detection ─────────────────────────────────────
+    // Scenario: the SSE dropped mid-stream, `stop` never reached us, so
+    // `flushAssistantBuf` never ran. `assistantBufRef.current` still holds
+    // the partial response and `setCurrentAssistant` is rendering it.
+    // Meanwhile the server has long since persisted the final assistant
+    // message (visible in this delta) AND cleared its streamingText.
+    // Without the clear below, we'd display the finalized DB message AND
+    // the in-flight buffer in parallel — a "phantom" duplicate.
+    //
+    // Trigger: server has no in-flight stream (`serverStreamingText` empty)
+    // AND a new assistant row in this delta starts with our buf as a
+    // prefix (exact match if SSE dropped at a clean boundary; prefix
+    // match if SSE delivered the buf's tokens but missed the tail before
+    // dropping). We use prefix to catch both shapes — a false positive
+    // here would just clear a buf that's about to be flushed anyway by
+    // the next SSE event.
+    let shouldClearBufAfterMerge = false;
+    if (serverStreamingText.length === 0 && assistantBufRef.current.length > 0) {
+      const buf = assistantBufRef.current;
+      for (const m of rebuilt.messages) {
+        if (m.role === 'assistant' && typeof m.content === 'string' &&
+            (m.content === buf || m.content.startsWith(buf))) {
+          shouldClearBufAfterMerge = true;
+          break;
+        }
+      }
+    }
 
     // ── messages: append new, dedup against SSE-added local copies ────
     setMessages((prev) => {
@@ -420,6 +525,16 @@ export function useClaudeSessionStream(
       });
     }
 
+    // Clear the phantom streaming preview if we detected a matching
+    // persisted message above. We do this AFTER the setMessages so the
+    // new assistant row is visible in the same render cycle as the buf
+    // disappearing (no flash of "nothing while we waited for the row").
+    if (shouldClearBufAfterMerge) {
+      assistantBufRef.current = '';
+      setCurrentAssistant('');
+      anythingChanged = true;
+    }
+
     return anythingChanged;
   }, []);
 
@@ -473,11 +588,38 @@ export function useClaudeSessionStream(
     // Skip background tabs to save battery — visibilitychange handler
     // will trigger an immediate catch-up poll when the tab returns.
     if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    // Skip when the browser knows it's offline — pointless to fire a
+    // request that will immediately ERR_NETWORK. The `online` event
+    // handler force-polls the moment connectivity returns.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    // Don't poll before the initial full load has completed — a delta
+    // before we know the cursor would either pull the whole history
+    // (since=0) or miss the window. safetyTick does the full refetch in
+    // that state; once it's done we switch to cheap deltas.
+    if (!initialLoadDoneRef.current) return;
+    const since = lastSeenServerIdRef.current;
     inflightPollRef.current = true;
+    const ac = new AbortController();
+    pollAbortRef.current = ac;
     try {
-      const since = lastSeenServerIdRef.current;
-      const r = await api.pollClaudeSessionSince(sessionId, since) as ClaudeSessionDetailResponse;
-      applyDelta(r);
+      const r = await api.pollClaudeSessionSince(sessionId, since, ac.signal) as ClaudeSessionDetailResponse;
+      const n = r?.messages?.length ?? 0;
+      if (n > 0) {
+        // Something new on the server. Rather than incrementally merge the
+        // delta into local state (which historically produced corrupted
+        // state — duplicate React keys, partial tool pairs — that threw
+        // during render and looped the error boundary), we do a CLEAN FULL
+        // RELOAD: exactly what hitting F5 does, but without losing the SSE
+        // or scroll. `refetchHistory` → `applyApiData` →
+        // `rebuildStateFromMessages` rebuilds the whole chat from scratch
+        // and sets the cursor to the authoritative `maxMessageId`, so the
+        // next poll returns 0. cf. CLAUDE.md §14 gotcha 24.
+        if (typeof console !== 'undefined') {
+          // eslint-disable-next-line no-console
+          console.info(`[charon] poll ${sessionId.slice(0, 8)}: +${n} row(s) since ${since} → clean reload`);
+        }
+        await refetchHistory();
+      }
     } catch (e) {
       // Network errors are silent — the next tick will retry. We don't
       // want to surface a banner each time the user drops Wi-Fi for 2s.
@@ -489,9 +631,43 @@ export function useClaudeSessionStream(
         onKilledRef.current?.();
       }
     } finally {
+      if (pollAbortRef.current === ac) pollAbortRef.current = null;
       inflightPollRef.current = false;
     }
-  }, [sessionId, applyDelta]);
+  }, [sessionId, refetchHistory]);
+
+  // safetyTick: the unit of work the 5s loop runs. SELF-SUFFICIENT — it
+  // does NOT depend on the SSE or on the mount-time refetch ever
+  // succeeding:
+  //   - cursor not yet set (lastSeenServerId === 0): the initial full load
+  //     either hasn't completed or FAILED (e.g. it raced a Charon restart
+  //     and 503'd). Do a full refetch here — that sets the cursor. Without
+  //     this, a failed initial load left polling permanently disabled
+  //     (pollDelta bails on since===0), so the chat stayed frozen until
+  //     F5 even though the loop was "running".
+  //   - cursor set: cheap delta poll.
+  const safetyTick = useCallback(() => {
+    if (!initialLoadDoneRef.current) {
+      refetchHistory();
+    } else {
+      pollDelta();
+    }
+  }, [refetchHistory, pollDelta]);
+
+  // Force an immediate sync, cancelling any in-flight poll. Used by the
+  // wake-up handlers (online / visibilitychange): a poll that was issued
+  // before the device slept may still be "in flight" (hung socket), which
+  // would block the inflight guard. We abort it and start clean so the
+  // user sees fresh data within ~1s of waking, not after the hung
+  // request's 12s timeout.
+  const forcePoll = useCallback(() => {
+    if (pollAbortRef.current) {
+      try { pollAbortRef.current.abort(); } catch {}
+      pollAbortRef.current = null;
+    }
+    inflightPollRef.current = false;
+    safetyTick();
+  }, [safetyTick]);
 
   // loadMoreHistory: loads a page of older history, prepends to local
   // state. Triggered by the caller on scroll-up. Idempotent and
@@ -603,12 +779,22 @@ export function useClaudeSessionStream(
           }
           setStatus(ev.status);
           break;
-        case 'user_echo':
+        case 'user_echo': {
+          // If we already rendered this message optimistically in `send`,
+          // suppress the echo (consume its token) to avoid a duplicate.
+          // Echoes without a token (e.g. a message sent from another tab or
+          // device) fall through and append as before.
+          const tokenIdx = pendingUserEchoRef.current.indexOf(ev.content);
+          if (tokenIdx >= 0) {
+            pendingUserEchoRef.current.splice(tokenIdx, 1);
+            break;
+          }
           setMessages((prev) => [...prev, {
             id: 'u' + Date.now() + Math.random(), role: 'user',
             content: ev.content, createdAt: ev.createdAt,
           }]);
           break;
+        }
         case 'assistant_text':
           assistantBufRef.current += ev.delta;
           scheduleAssistantFlush();
@@ -770,32 +956,80 @@ export function useClaudeSessionStream(
     if (typeof window === 'undefined') return;
     // First tick fires immediately after mount (not 5s later) so resync
     // happens on session switch / tab return without waiting for the
-    // first interval.
-    pollDelta();
-    const id = setInterval(pollDelta, 5_000);
+    // first interval. safetyTick is self-sufficient (full refetch when the
+    // cursor isn't set yet, delta otherwise).
+    safetyTick();
+    const id = setInterval(safetyTick, 5_000);
     return () => clearInterval(id);
-  }, [pollDelta]);
+  }, [safetyTick]);
 
   // Immediate catch-up poll on tab focus / network online — don't wait
-  // 5s after the user obviously expects the latest state.
+  // 5s after the user obviously expects the latest state. Use forcePoll
+  // (not pollDelta) so a request that hung while the device slept is
+  // aborted and replaced immediately rather than blocking the inflight
+  // guard until its 12s timeout.
+  //
+  // The `window` 'focus' listener is what fixes the notification-click case:
+  // clicking a web-push notification calls `client.focus()` in the service
+  // worker, which refocuses the browser WINDOW. If the Charon tab was
+  // already the active tab (just the window was unfocused — second monitor,
+  // another app on top), `visibilityState` never left 'visible', so
+  // `visibilitychange` does NOT fire and nothing refetched — the pending
+  // question (which arrived live while we weren't looking, or was missed by
+  // a throttled SSE) stayed invisible until a manual refresh. 'focus' fires
+  // in that case and force-polls, pulling the pending interaction from the DB.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') pollDelta();
+      if (document.visibilityState === 'visible') forcePoll();
     };
-    const onOnline = () => pollDelta();
+    const onOnline = () => forcePoll();
+    const onFocus = () => forcePoll();
+    // Explicit signal: a notification was clicked targeting a session.
+    // ClaudePanel dispatches this on the SW `open-session` message. If it's
+    // for THIS session, force an immediate resync (covers the case where the
+    // hook was already mounted for this session but missed the live SSE
+    // event — e.g. the window was focused the whole time so neither 'focus'
+    // nor 'visibilitychange' fired).
+    const onNotifOpen = (e: Event) => {
+      const sid = (e as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!sid || sid === sessionId) forcePoll();
+    };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('online', onOnline);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('charon:notif-open', onNotifOpen as EventListener);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('charon:notif-open', onNotifOpen as EventListener);
     };
-  }, [pollDelta]);
+  }, [forcePoll, sessionId]);
 
   // ── Actions ────────────────────────────────────────────────────────────
   const send = useCallback(async (content: string) => {
     const trimmed = content.trim();
     if (!trimmed) return;
+    // Optimistic UI: render the user's bubble + flip the status pill to
+    // 'thinking' immediately, instead of waiting for the user_echo / status
+    // SSE to round-trip through the remote VPS agent. The token lets the
+    // user_echo handler suppress the (now-redundant) echo; the 5s delta poll
+    // later upgrades the synthetic 'u…' id to the DB-backed 'm<id>' via
+    // applyDelta's (role,content) dedup.
+    //
+    // On failure we intentionally keep the bubble + token: the dominant
+    // failure (the agent RPC throwing) happens AFTER the server has already
+    // persisted the row and broadcast the echo, so the message IS real. A
+    // genuinely-unsent phantom self-heals on the next full refetch
+    // (applyApiData replaces wholesale from the DB) and a stale token is
+    // reconciled by the poll. cf. CLAUDE.md §14 gotcha 24.
+    pendingUserEchoRef.current.push(trimmed);
+    setMessages((prev) => [...prev, {
+      id: 'u' + Date.now() + Math.random(), role: 'user',
+      content: trimmed, createdAt: Math.floor(Date.now() / 1000),
+    }]);
+    setStatus('thinking');
     try { await api.sendClaudeInput(sessionId, trimmed); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
@@ -812,14 +1046,24 @@ export function useClaudeSessionStream(
 
   const setMode = useCallback(async (mode: PermissionMode) => {
     if (permissionMode === mode) return;
+    const prev = permissionMode;
+    setPermissionMode(mode); // optimistic — reconciled by the mode_changed SSE
     try { await api.setClaudeMode(sessionId, mode); }
-    catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
+    catch (e) {
+      setPermissionMode(prev); // revert: the agent never applied the change
+      setError({ msg: String((e as Error)?.message ?? e) });
+    }
   }, [sessionId, permissionMode]);
 
   const doSleep = useCallback(async () => {
+    // Optimistic: the server marks the DB row 'sleeping' unconditionally
+    // (even if the agent is unreachable — cf. sessionOps.sleepSession), so
+    // flipping the pill now is always correct and saves the up-to-5s wait
+    // for the agent's SDK teardown (session.py stop() awaits the in-flight
+    // turn before the RPC returns).
+    setStatus('sleeping');
     try {
       await api.sleepClaudeSession(sessionId);
-      setStatus('sleeping');
     } catch (e) {
       setError({ msg: String((e as Error)?.message ?? e) });
     }

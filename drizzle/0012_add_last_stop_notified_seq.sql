@@ -1,0 +1,14 @@
+-- Migration 0012: add `last_stop_notified_seq` to claude_sessions.
+--
+-- Context: the `stop` push notification ("Claude finished its response")
+-- had no dedup guard. On every agent re-subscribe (Charon reboot, SSH
+-- reconnect) the agent replays recent events from its durable log/ring,
+-- including past `stop` events — which re-fired the push, so the user got
+-- a duplicate "finished" notification for every session, repeatedly.
+--
+-- This column records the highest `stop` seq we've already notified for.
+-- A replayed stop has seq <= this value → skipped. A genuinely new finish
+-- has a higher seq → notified exactly once. Null = no finish notified yet.
+-- Hand-written (drizzle-kit generates noisy table redeclarations; the
+-- schema source-of-truth stays in lib/db/schema.ts).
+ALTER TABLE `claude_sessions` ADD COLUMN `last_stop_notified_seq` integer;

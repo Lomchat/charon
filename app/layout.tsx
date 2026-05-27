@@ -2,6 +2,7 @@ import './globals.css';
 import './agent-ui.css';
 import type { Metadata } from 'next';
 import MobileRedirectPrompt from './MobileRedirectPrompt';
+import NotificationClickHandler from './NotificationClickHandler';
 
 export const metadata: Metadata = {
   title: 'Charon',
@@ -22,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {children}
         <MobileRedirectPrompt />
+        <NotificationClickHandler />
       </body>
     </html>
   );

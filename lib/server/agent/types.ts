@@ -33,9 +33,24 @@ export type AgentHelloResult = {
   sessions: AgentSessionInfo[];
 };
 
+// Common fields attached to every event by the agent's durable event log
+// (>= 0.4.0). Both are optional because (a) older agents don't emit them
+// and (b) replay markers (`replay_begin`/`replay_end`) intentionally omit
+// the seq — they wrap the replayed events, they aren't replayed themselves.
+export type AgentEventCommonFields = {
+  // Monotonically increasing per-session sequence number. Used by Charon
+  // to checkpoint progress (`last_seen_seq` in DB) and request durable
+  // replay via `subscribe({after_seq: lastSeenSeq})`. Absent on agents
+  // pre-0.4.0 and on replay marker events.
+  seq?: number;
+  // Server-side timestamp (Unix seconds, float) the agent stamped when
+  // appending to the log. Useful for debugging out-of-order delivery.
+  ts?: number;
+};
+
 // Events pushed by the agent. session_id required for all except global
 // errors (rare). We keep a wide union to not lie to ourselves.
-export type AgentEvent =
+export type AgentEvent = (
   | { event: 'replay_begin'; session_id: string; count: number }
   | { event: 'replay_end'; session_id: string }
   | { event: 'status'; session_id: string; status: AgentSessionStatus }
@@ -53,7 +68,8 @@ export type AgentEvent =
   | { event: 'mode_changed'; session_id: string; mode: PermissionMode }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
-  | { event: 'error'; session_id: string; msg: string; fatal?: boolean };
+  | { event: 'error'; session_id: string; msg: string; fatal?: boolean }
+) & AgentEventCommonFields;
 
 // ── Names of JSON-RPC methods supported by the agent ───────────────────────
 // Python source of truth: agent/charon_agent/protocol.py (METHODS set).

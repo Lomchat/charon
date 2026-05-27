@@ -22,8 +22,9 @@ import SessionContextMenu from './SessionContextMenu';
 import LoginConsole from './LoginConsole';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
+import SessionErrorBoundary from './SessionErrorBoundary';
 import { prefetchAll as sessionCachePrefetchAll } from './sessionCache';
-import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported } from './pushClient';
+import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp,
@@ -590,21 +591,32 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // (another session, another tab, another window). Detects 0 → N
   // transitions between 2 polls and fires a native Notification + a small sound.
   const prevPendingRef = useRef<Map<string, number>>(new Map());
+  // First effect run after mount only seeds the baseline — it must NOT
+  // notify. Otherwise every page refresh (which resets prevPendingRef to
+  // empty) re-fires a notification for every session that already had a
+  // pending, even though the user was already notified when it happened.
+  const attentionBaselineSetRef = useRef(false);
   useEffect(() => {
     const prev = prevPendingRef.current;
+    const firstRun = !attentionBaselineSetRef.current;
     const newAttentions: SessionListItem[] = [];
     for (const s of sessions) {
       const before = prev.get(s.id) ?? 0;
       const now = s.pendingPermissions ?? 0;
-      if (now > before && s.id !== selectedId) {
+      if (!firstRun && now > before && s.id !== selectedId) {
         newAttentions.push(s);
       }
       prev.set(s.id, now);
     }
+    attentionBaselineSetRef.current = true;
     if (newAttentions.length === 0) return;
     // Title flash + native Notification if tab is hidden OR another session
     for (const s of newAttentions) {
-      const title = `❓ ${s.name ?? s.id.slice(0, 6)} is awaiting a response`;
+      const label = s.name ?? s.cwd?.split('/').filter(Boolean).slice(-1)[0] ?? s.id.slice(0, 6);
+      const vpsName = vpsList.find((v) => v.id === s.vpsId)?.name;
+      const title = vpsName
+        ? `❓ ${vpsName} · ${label} is awaiting a response`
+        : `❓ ${label} is awaiting a response`;
       const body = s.cwd ?? '';
       try {
         if (typeof window !== 'undefined' && 'Notification' in window
@@ -618,6 +630,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         }
       } catch {}
     }
+    // Always beep here (tab open). The service worker ALSO drives the
+    // sound immediately on the push event, but that depends on the SW
+    // being up-to-date and on background-audio not being throttled — so
+    // this poll-driven call is the reliable fallback. playBeep() debounces
+    // internally, so the two paths don't double-play the same notification.
     if (notifSoundEnabled) playBeep();
   }, [sessions, selectedId]);
 
@@ -659,6 +676,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       return next;
     });
   }
+  // Ref mirroring the latest sound state so the service-worker message
+  // listener (registered once) reads a fresh value without re-subscribing.
+  // Used by the push-triggered in-app sound.
+  const notifSoundEnabledRef = useRef(notifSoundEnabled);
+  useEffect(() => { notifSoundEnabledRef.current = notifSoundEnabled; }, [notifSoundEnabled]);
 
   // Tab title: (N) hub claude when N sessions are waiting
   useEffect(() => {
@@ -667,21 +689,36 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     document.title = total > 0 ? `(${total}) hub claude` : 'hub claude';
   }, [sessions]);
 
-  // Initial detection of the push state
+  // Initial detection of the push state + force the SW to refresh so a
+  // newly-deployed sw.js (e.g. notif-sound support) takes over without a
+  // manual DevTools unregister.
   useEffect(() => {
     (async () => {
       if (!(await pushSupported())) return;
+      ensureFreshServiceWorker();
       const ep = await pushCurrentEndpoint();
       setPushOn(!!ep);
     })();
   }, []);
 
-  // Listens for service worker messages (notification click)
+  // Listens for service worker messages: notification click (open-session)
+  // and the push-triggered in-app sound (notif-sound). The SW fires
+  // `notif-sound` to the focused/visible tab on every push so the custom
+  // sound plays immediately when a tab is open (focused = reliable,
+  // backgrounded = best-effort, Chrome may throttle background audio).
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     const onMsg = (e: MessageEvent) => {
       if (e.data?.type === 'open-session' && e.data.sessionId) {
-        setSelectedId(e.data.sessionId);
+        const sid = e.data.sessionId as string;
+        setSelectedId(sid);
+        // Tell the (possibly already-mounted) session hook to force an
+        // immediate resync — the pending question/permission that the
+        // notification is about may have arrived while this tab wasn't the
+        // focused one, and a same-session click triggers no remount.
+        try { window.dispatchEvent(new CustomEvent('charon:notif-open', { detail: { sessionId: sid } })); } catch {}
+      } else if (e.data?.type === 'notif-sound') {
+        if (notifSoundEnabledRef.current) playBeep();
       }
     };
     navigator.serviceWorker.addEventListener('message', onMsg);
@@ -872,10 +909,27 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search">
             <IconSearch />
           </button>
-          <button className="head-btn" onClick={togglePush} disabled={pushBusy} title={pushOn ? 'notifications enabled' : 'enable notifications'} aria-label="notifications">
+          <button
+            className={`head-btn toggle-btn ${pushOn ? 'is-on' : 'is-off'}`}
+            onClick={togglePush}
+            disabled={pushBusy}
+            title={pushOn
+              ? 'Push notifications: ON — click to turn off'
+              : 'Push notifications: OFF — click to turn on'}
+            aria-label={pushOn ? 'Push notifications on, click to turn off' : 'Push notifications off, click to turn on'}
+            aria-pressed={pushOn}
+          >
             {pushOn ? <IconBellFill /> : <IconBellSlash />}
           </button>
-          <button className="head-btn" onClick={toggleNotifSound} title={notifSoundEnabled ? 'sound on' : 'sound muted'} aria-label="sound">
+          <button
+            className={`head-btn toggle-btn ${notifSoundEnabled ? 'is-on' : 'is-off'}`}
+            onClick={toggleNotifSound}
+            title={notifSoundEnabled
+              ? 'In-app sound: ON — click to mute (only plays while this tab is open)'
+              : 'In-app sound: OFF (muted) — click to unmute'}
+            aria-label={notifSoundEnabled ? 'In-app sound on, click to mute' : 'In-app sound muted, click to unmute'}
+            aria-pressed={notifSoundEnabled}
+          >
             {notifSoundEnabled ? <IconVolumeUp /> : <IconVolumeMute />}
           </button>
           <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data">
@@ -991,6 +1045,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           </main>
         );
       })() : selected ? (
+        // Error boundary: a render error in the chat subtree (hydration
+        // mismatch, transient undefined, bad markdown) must NOT permanently
+        // freeze the chat. The boundary catches it, shows "reconnecting…",
+        // and remounts after ~1.5s → all effects (polling/SSE/refetch)
+        // restart → self-heal. resetKey=selectedId clears errors on switch.
+        // cf. CLAUDE.md §14 gotcha 24.
+        <SessionErrorBoundary resetKey={selectedId ?? ''}>
         <ClaudeSessionView
           key={selectedId}
           sessionId={selected.id}
@@ -1019,6 +1080,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           }}
           onAfterRevert={() => refreshSessions()}
         />
+        </SessionErrorBoundary>
       ) : (
       // No session selected: placeholder. ToolPanel is not rendered in this
       // case (before the refactor it was, with sessionId=null, but displayed
@@ -1179,12 +1241,49 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 // `./ClaudeSessionView.tsx` (used only by the session view).
 // rebuildStateFromMessages: in `./sessionRebuild.ts`.
 
-// Small notification beep — Web Audio (no file to load).
-// Singleton AudioContext to avoid the Chrome warning (max 6 contexts).
-// Stays here because played by ClaudePanel when another session goes
+// Notification sound. Played by ClaudePanel when another session goes
 // pending (cross-session notification, not in the active view).
-let _audioCtx: AudioContext | null = null;
+//
+// ─────────────────────────────────────────────────────────────────────
+// CUSTOM SOUND: the file lives at `public/notif.wav` and is served at
+// `/notif.wav`. Replace that file with your own WAV/MP3 to change the
+// sound — no rebuild needed (it's a static asset). To use a different
+// filename/extension (e.g. an .mp3), just update NOTIF_SOUND_URL below.
+// If the file is missing or can't be decoded, we fall back to a
+// synthesized Web Audio beep so the notification is never silent.
+// ─────────────────────────────────────────────────────────────────────
+const NOTIF_SOUND_URL = '/notif.wav';
+let _notifAudio: HTMLAudioElement | null = null;
+// Debounce: two independent paths can call playBeep for the SAME
+// notification — the SW push message (immediate) and the 15s poll
+// (fallback). Swallow calls that land within this window so we don't
+// double-chime. Kept short (2s) so distinct notifications spaced further
+// apart still each chime.
+let _lastBeepAt = 0;
+const BEEP_DEBOUNCE_MS = 2000;
 function playBeep() {
+  if (typeof window === 'undefined') return;
+  const now = Date.now();
+  if (now - _lastBeepAt < BEEP_DEBOUNCE_MS) return;
+  _lastBeepAt = now;
+  try {
+    if (!_notifAudio) {
+      _notifAudio = new Audio(NOTIF_SOUND_URL);
+      _notifAudio.preload = 'auto';
+    }
+    _notifAudio.currentTime = 0;
+    const p = _notifAudio.play();
+    // play() rejects on 404 / decode error / autoplay block → synth fallback.
+    if (p && typeof p.catch === 'function') p.catch(() => playSynthBeep());
+  } catch {
+    playSynthBeep();
+  }
+}
+
+// Fallback beep — Web Audio (no file to load).
+// Singleton AudioContext to avoid the Chrome warning (max 6 contexts).
+let _audioCtx: AudioContext | null = null;
+function playSynthBeep() {
   if (typeof window === 'undefined') return;
   try {
     if (!_audioCtx) _audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();

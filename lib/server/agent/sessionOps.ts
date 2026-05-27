@@ -71,6 +71,7 @@ export class SessionStream {
   claudeSessionId: string | null = null;
   name: string | null = null;
   vpsName: string;
+  cwd: string | null = null;
 
   private currentAssistant = '';
   private agentListener: AgentEventListener | null = null;
@@ -90,27 +91,99 @@ export class SessionStream {
   private replayKnownThinkingContents: Set<string> = new Set();
   private replayKnownPendingIds: Set<string> = new Set();
 
+  // Durable event-log checkpoint (agent >= 0.4.0). `lastSeenSeq` is the
+  // highest seq we've successfully observed; `lastPersistedSeq` is what
+  // we've written back to the DB. We keep them split so we can throttle
+  // the DB write without losing the in-memory state. Persist happens:
+  //   - On landmark events (`status`, `stop`) — small in count, capture
+  //     turn boundaries that matter for recovery.
+  //   - On a 2s debounce timer for high-frequency events (assistant_text
+  //     deltas, etc.) — a Charon crash within 2s of the last event
+  //     would replay at most 2s of work via durable replay, which the
+  //     existing replay-dedup absorbs.
+  private lastSeenSeq: number | null = null;
+  private lastPersistedSeq: number | null = null;
+  private persistSeqTimer: NodeJS.Timeout | null = null;
+  // Highest `stop` seq we've already pushed a "finished" notification for.
+  // Replayed stops (Charon reboot / SSH reconnect) carry seq <= this →
+  // skipped. Persisted to DB so the dedup survives a Charon restart.
+  private lastStopNotifiedSeq: number | null = null;
+
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
     status: WorkerStatus; permissionMode: PermissionMode;
     claudeSessionId: string | null;
+    cwd?: string | null;
+    lastSeenSeq?: number | null;
+    lastStopNotifiedSeq?: number | null;
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
     this.vpsName = opts.vpsName;
     this.name = opts.name;
+    this.cwd = opts.cwd ?? null;
     this.status = opts.status;
     this.permissionMode = opts.permissionMode;
     this.claudeSessionId = opts.claudeSessionId;
+    this.lastSeenSeq = opts.lastSeenSeq ?? null;
+    this.lastPersistedSeq = this.lastSeenSeq;
+    this.lastStopNotifiedSeq = opts.lastStopNotifiedSeq ?? null;
   }
 
-  /** Wires the listener to the agent (idempotent). */
+  /** Wires the listener to the agent (idempotent).
+   *  Passes `afterSeq` to the agent so it can replay missed events from
+   *  its durable log (agent >= 0.4.0). For older agents this is a no-op:
+   *  the client falls back to ring replay. */
   attach(): void {
     if (this.attached) return;
     this.attached = true;
     const client = getAgentClientForVpsId(this.vpsId);
     this.agentListener = (ev) => this._onAgentEvent(ev);
-    client.subscribe(this.id, this.agentListener);
+    client.subscribe(this.id, this.agentListener,
+      this.lastSeenSeq != null ? { afterSeq: this.lastSeenSeq } : undefined,
+    );
+  }
+
+  /** Advance the durable-replay cursor. Called from _onAgentEvent
+   *  AFTER the event has been processed (persisted in DB), so we never
+   *  advance past an event we haven't actually saved. */
+  private _trackSeq(ev: AgentEvent): void {
+    const seq = (ev as { seq?: unknown }).seq;
+    if (typeof seq !== 'number') return; // old agent or replay marker
+    if (this.lastSeenSeq != null && seq <= this.lastSeenSeq) return;
+    this.lastSeenSeq = seq;
+    // Notify the AgentClient so a future reconnect uses the new cursor.
+    try {
+      getAgentClientForVpsId(this.vpsId).setAfterSeq(this.id, this.lastSeenSeq);
+    } catch {}
+    // Decide when to write to DB. Landmark events flush immediately;
+    // high-frequency events debounce.
+    const landmark = ev.event === 'status' || ev.event === 'stop';
+    if (landmark) {
+      this._persistSeqNow();
+    } else if (!this.persistSeqTimer) {
+      this.persistSeqTimer = setTimeout(() => this._persistSeqNow(), 2000);
+    }
+  }
+
+  private _persistSeqNow(): void {
+    if (this.persistSeqTimer) {
+      clearTimeout(this.persistSeqTimer);
+      this.persistSeqTimer = null;
+    }
+    if (this.lastSeenSeq == null) return;
+    if (this.lastSeenSeq === this.lastPersistedSeq) return;
+    try {
+      db.update(claudeSessions)
+        .set({ lastSeenSeq: this.lastSeenSeq })
+        .where(eq(claudeSessions.id, this.id))
+        .run();
+      this.lastPersistedSeq = this.lastSeenSeq;
+    } catch {
+      // Best-effort: next event triggers another attempt. Worst case
+      // we replay a few extra events on next reconnect (idempotent
+      // via the existing replay-dedup path).
+    }
   }
 
   /** Detach the listener (used on permanent kill). */
@@ -122,6 +195,13 @@ export class SessionStream {
       if (this.agentListener) client.unsubscribe(this.id, this.agentListener);
     } catch {}
     this.agentListener = null;
+    // Cancel the pending seq-persist timer — no more events are coming.
+    // We don't bother flushing one last time: the seq will be irrelevant
+    // after the session is deleted (agent will tear down its log too).
+    if (this.persistSeqTimer) {
+      clearTimeout(this.persistSeqTimer);
+      this.persistSeqTimer = null;
+    }
   }
 
   /** Assistant text currently being accumulated (since the last flush).
@@ -145,6 +225,19 @@ export class SessionStream {
    * Preserves the semantics of SessionWorker.handleBridgeEvent.
    */
   private _onAgentEvent(ev: AgentEvent): void {
+    try {
+      this._dispatchEvent(ev);
+    } finally {
+      // Advance the durable-replay cursor AFTER the dispatch ran. We do
+      // it in `finally` so a thrown handler still advances — replaying
+      // the same event would just hit the same exception. Idempotency
+      // is enforced upstream by the replay dedup. `_trackSeq` is a
+      // no-op for events without a seq (replay markers, old agents).
+      this._trackSeq(ev);
+    }
+  }
+
+  private _dispatchEvent(ev: AgentEvent): void {
     switch (ev.event) {
       case 'replay_begin':
         // We enter the replay window: the events that follow may be
@@ -239,7 +332,7 @@ export class SessionStream {
         this._broadcast({ type: 'permission_request', id: ev.id, tool: ev.tool, input: ev.input });
         this._log('info', 'permission', { id: ev.id, tool: ev.tool });
         this._maybePush({
-          title: `🔒 ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : permission`,
+          title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
           body: `tool ${ev.tool} — tap to approve`,
           tag: `perm-${this.id}`,
         });
@@ -257,7 +350,7 @@ export class SessionStream {
         this._persist('user_question', { type: 'user_question', id: ev.id, questions: ev.questions });
         this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
         this._maybePush({
-          title: `❓ ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : question`,
+          title: `❓ ${this.vpsName} · ${this._label()} : question`,
           body: `${ev.questions[0]?.question ?? 'user question'}`,
           tag: `q-${this.id}`,
         });
@@ -275,7 +368,7 @@ export class SessionStream {
         this._persist('exit_plan_request', { type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._maybePush({
-          title: `📋 ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)} : plan ready`,
+          title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
           body: 'Claude finished planning — tap to approve',
           tag: `plan-${this.id}`,
         });
@@ -303,11 +396,35 @@ export class SessionStream {
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'stop', subtype: ev.subtype });
-        this._maybePush({
-          title: `✓ ${this.vpsName} · ${this.name ?? this.id.slice(0, 6)}`,
-          body: 'Claude finished its response',
-          tag: `stop-${this.id}`,
-        });
+        // Dedup the "finished" push. Without this, every agent re-subscribe
+        // (Charon reboot / SSH reconnect) replays past `stop` events and
+        // re-notifies the user for sessions that finished long ago.
+        // Rule: never push during replay; otherwise only push a stop whose
+        // seq is strictly greater than the last we notified, then advance
+        // the marker (persisted to DB so it survives restarts). We advance
+        // the marker even for replayed stops so a later replay can't
+        // re-notify them. Agents without seq (< 0.4.0) fall back to the
+        // isReplaying guard alone.
+        {
+          const stopSeq = typeof ev.seq === 'number' ? ev.seq : null;
+          const isNewFinish = stopSeq == null
+            ? !this.isReplaying
+            : (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq);
+          if (!this.isReplaying && isNewFinish) {
+            this._maybePush({
+              title: `✓ ${this.vpsName} · ${this._label()}`,
+              body: 'Claude finished its response',
+              tag: `stop-${this.id}`,
+            });
+          }
+          if (stopSeq != null && (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq)) {
+            this.lastStopNotifiedSeq = stopSeq;
+            try {
+              db.update(claudeSessions).set({ lastStopNotifiedSeq: stopSeq })
+                .where(eq(claudeSessions.id, this.id)).run();
+            } catch {}
+          }
+        }
         break;
       case 'interrupted':
         this._broadcast({ type: 'mode_changed', mode: this.permissionMode }); // free-form
@@ -526,12 +643,32 @@ export class SessionStream {
     } catch {}
   }
 
+  /** Human-friendly session label for notifications: explicit name, else
+   * the last path segment of the cwd, else a short id. */
+  private _label(): string {
+    if (this.name) return this.name;
+    if (this.cwd) {
+      const base = this.cwd.split('/').filter(Boolean).slice(-1)[0];
+      if (base) return base;
+    }
+    return this.id.slice(0, 6);
+  }
+
   private _maybePush(payload: { title: string; body: string; tag?: string }): void {
     if (!getSettingBool('notif.global_enabled')) return;
+    // `url` is the openWindow fallback used by the service worker when no
+    // Charon tab is already open. Desktop hub is `/` — the ClaudePanel
+    // picks up `?session=…` via useSearchParams and switches selectedId.
+    // When a tab IS already open, the SW prefers focus+postMessage; the
+    // root layout handler (`NotificationClickHandler`) then routes via
+    // Next router to `/m/chat?id=…` or `/?session=…` depending on whether
+    // the current pathname is mobile or desktop. Mobile users with no
+    // Charon tab open fall back to `/?session=…` then go through the
+    // MobileRedirectPrompt — acceptable since it's an edge case.
     sendPushToAll({
       ...payload,
       sessionId: this.id,
-      url: `/claude?session=${this.id}`,
+      url: `/?session=${this.id}`,
     }).catch(() => {});
   }
 }
@@ -542,7 +679,29 @@ function _vpsName(vpsId: string): string {
   return row?.name ?? vpsId.slice(0, 6);
 }
 
-function _loadOrCreateStream(sessionId: string): SessionStream | null {
+/**
+ * Look up an in-memory SessionStream without instantiating one if absent.
+ * Use for READ paths (status snapshot for SSE init, GET /sessions/[id])
+ * where a null result is fine because the caller falls back to DB rows.
+ *
+ * Why this matters: every GET /api/claude/events used to call getStream()
+ * for every session row, which materialized SessionStream wrappers for
+ * sleeping/historical sessions that nobody was attached to. Harmless but
+ * wasteful — `peek` makes the read paths zero-allocation in steady state.
+ */
+export function peekStream(sessionId: string): SessionStream | null {
+  return streams.get(sessionId) ?? null;
+}
+
+/**
+ * Look up an in-memory SessionStream, or hydrate it from DB if absent.
+ * Use for LIFECYCLE / WRITE paths (input, permission/question/exit_plan
+ * response, mode change, reconcile-on-reconnect): these need a live
+ * SessionStream because the next step will attach/dispatch agent events.
+ *
+ * Returns null only if the DB row doesn't exist.
+ */
+export function getOrCreateStream(sessionId: string): SessionStream | null {
   let s = streams.get(sessionId);
   if (s) return s;
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
@@ -552,13 +711,26 @@ function _loadOrCreateStream(sessionId: string): SessionStream | null {
     name: row.name, status: row.status as WorkerStatus,
     permissionMode: row.permissionMode as PermissionMode,
     claudeSessionId: row.claudeSessionId,
+    cwd: row.cwd,
+    // Hydrate the durable-replay cursor from DB. On the next attach,
+    // SessionStream will pass this as `afterSeq` to the agent so it
+    // replays exactly the events we missed (agent >= 0.4.0). Null
+    // means "no checkpoint yet" — falls back to ring replay.
+    lastSeenSeq: row.lastSeenSeq ?? null,
+    lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
   });
   streams.set(sessionId, s);
   return s;
 }
 
+/**
+ * @deprecated Use `peekStream` for read paths and `getOrCreateStream` for
+ * lifecycle / write paths. Kept temporarily so external imports don't break;
+ * the create-on-miss behavior makes it equivalent to `getOrCreateStream`.
+ * Remove once no callers remain.
+ */
 export function getStream(sessionId: string): SessionStream | null {
-  return _loadOrCreateStream(sessionId);
+  return getOrCreateStream(sessionId);
 }
 
 export function listStreams(): SessionStream[] {
@@ -620,6 +792,7 @@ export async function startNewSession(opts: {
     id: sessionId, vpsId: opts.vpsId, vpsName: vps.name,
     name: opts.name ?? null, status: 'starting',
     permissionMode: opts.permissionMode ?? 'normal',
+    cwd: opts.cwd,
     claudeSessionId: null,
   });
   streams.set(sessionId, stream);
@@ -684,6 +857,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         name: row.name, status: row.status as WorkerStatus,
         permissionMode: row.permissionMode as PermissionMode,
         claudeSessionId: row.claudeSessionId,
+        cwd: row.cwd,
+        lastSeenSeq: row.lastSeenSeq ?? null,
+        lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
       });
       streams.set(sessionId, stream);
     } else {
@@ -742,11 +918,25 @@ export async function sleepSession(sessionId: string): Promise<void> {
   if (!row) return;
   db.update(claudeSessions).set({ status: 'sleeping' })
     .where(eq(claudeSessions.id, sessionId)).run();
+  // Optimistic broadcast: flip the status to 'sleeping' for ALL SSE clients
+  // (sidebar badges + other tabs) right away. The acting tab already updated
+  // locally; this covers everyone else. We deliberately do NOT wait for the
+  // agent's own status=sleeping event, which only comes back AFTER the SDK
+  // teardown — session.py stop() awaits the in-flight turn (up to 5s) before
+  // the RPC returns.
+  const stream = streams.get(sessionId);
+  if (stream) stream.status = 'sleeping';
+  emitGlobalSession({ type: 'status', status: 'sleeping', sessionId });
+  // Fire the agent RPC without blocking the HTTP response on the teardown.
+  // The DB + broadcast already reflect 'sleeping'; the agent stop() is
+  // best-effort cleanup. Errors are logged, never surfaced (the agent may
+  // simply be down).
   try {
     const client = getAgentClientForVpsId(row.vpsId);
-    await client.call('sleep_session', { session_id: sessionId });
+    client.call('sleep_session', { session_id: sessionId }).catch((e) => {
+      console.warn(`[sessionOps] sleep ${sessionId}: agent call failed`, (e as Error)?.message ?? e);
+    });
   } catch (e) {
-    // Agent may be down — we already set 'sleeping' in DB, just log
     console.warn(`[sessionOps] sleep ${sessionId}: agent unreachable, DB marked anyway`);
   }
 }
@@ -860,7 +1050,7 @@ export async function reconcileVpsAgentState(
     // kill→delete merge removed this persistent status; an existing DB
     // session is by construction non-killed.)
 
-    const stream = getStream(sid);  // creates the stream from DB if needed
+    const stream = getOrCreateStream(sid);  // hydrates the stream from DB if needed
     if (!stream) continue;
     // Attach the listener — this IS the missing piece after a Charon restart.
     // Without it, agent events don't reach the browser and the UI stays frozen.

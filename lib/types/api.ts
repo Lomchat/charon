@@ -185,6 +185,10 @@ export type ClaudeSessionDetailResponse = {
   // pass as `?before=<oldestChatId>` to the next loadMore. null if the
   // window is empty.
   oldestChatId: number | null;
+  // True max message id for the session across ALL roles (incl.
+  // edit_snapshot/event outside the chat window). The polling cursor.
+  // Optional for backward-compat with responses cached by older builds.
+  maxMessageId?: number;
   streamingText: string;
   pendingPermissions: PendingPermissionPayload[];
   pendingQuestions: PendingQuestionPayload[];

@@ -31,12 +31,36 @@ async function send<TRes = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  opts?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<TRes> {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // Bound EVERY request with a timeout. Without this, a fetch issued just
+  // before the device sleeps (laptop lid, mobile background) hangs forever
+  // — the socket is suspended, not closed, so the promise neither resolves
+  // nor rejects until the OS finally tears the socket down (can be
+  // minutes). A hung promise wedges any inflight-dedup guard built on top
+  // of it (sessionCache.inflight, useClaudeSessionStream.inflightPollRef),
+  // which is exactly the "chat frozen until refresh" class of bug.
+  // cf. CLAUDE.md §14 gotcha 24.
+  const timeoutMs = opts?.timeoutMs ?? 30_000;
+  const ac = new AbortController();
+  const onExternalAbort = () => ac.abort();
+  if (opts?.signal) {
+    if (opts.signal.aborted) ac.abort();
+    else opts.signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+    if (opts?.signal) opts.signal.removeEventListener('abort', onExternalAbort);
+  }
   if (!res.ok) {
     // Try to recover the body to display the real detail in the toast,
     // not just "→ 500". Graceful fallback if the body isn't JSON.
@@ -164,10 +188,16 @@ export const api = {
   // server "anything new since id X?" and append the delta if any. The
   // response shape matches the full GET (ClaudeSessionDetailResponse) so
   // we can reuse it; `messages` here is the delta, not a window.
-  pollClaudeSessionSince: (id: string, since: number) => {
+  pollClaudeSessionSince: (id: string, since: number, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     p.set('since', String(since));
-    return send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}?${p.toString()}`);
+    // Shorter timeout than the default: polling is a frequent background
+    // op, we'd rather abort a slow one and retry on the next 5s tick than
+    // let it pile up.
+    return send<ClaudeSessionDetailResponse>(
+      'GET', `/api/claude/sessions/${id}?${p.toString()}`,
+      undefined, { signal, timeoutMs: 12_000 },
+    );
   },
   createClaudeSession: (data: CreateClaudeSessionBody) =>
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),

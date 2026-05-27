@@ -188,7 +188,7 @@ and `PRAGMA foreign_keys=ON`.
 | `vpsFolders` | `id` PK | folders organizing VPSes (drag-and-drop in DataModal, collapse persisted in DB). Folder `id='default'` created by migration 0006, protected against deletion (see gotcha §14.19). |
 | `vps` | `id` PK | remote VPSes (see detail below). `folderId` + `position` columns (intra-folder ordering). |
 | `vpsPaths` | `id` PK, FK `vpsId` | known cwds per VPS (sidebar) |
-| `claudeSessions` | `id` PK, FK `vpsId` | Claude sessions (status, mode, cwd, name, color, claudeSessionId) |
+| `claudeSessions` | `id` PK, FK `vpsId` | Claude sessions (status, mode, cwd, name, color, claudeSessionId, lastSeenSeq, lastStopNotifiedSeq) |
 | `claudeSessionMessages` | autoincrement, FK `sessionId` | history (role, content, createdAt) |
 | `claudePendingPermissions` | `id` PK, FK `sessionId` | pending tool gates |
 | `claudePendingQuestions` | `id` PK, FK `sessionId` | `kind` = `question` (AskUserQuestion) or `exit_plan` |
@@ -259,6 +259,10 @@ happens API-side (`/api/vps-folders/layout` rejects unknown
 | 0006 | creates `vps_folders` + inserts `'default'` folder + `vps` += `folder_id`/`position`. Initializes positions by alphabetical sort on `name`. The FK is not enforced (see SQLite limitation above). |
 | 0007 | `vps` += `claude_logged_in` + `claude_logged_in_checked_at`. Tracks the `claude login` state to hide the sidebar button when not needed. **Important note**: drizzle-kit generated a .sql that repeated 0005/0006 (missing snapshots in `meta/`) — the contents were manually replaced to only keep the actual ADD COLUMNs, and the journal `when` was bumped > 0006 so drizzle would apply it. If you do another migration later, double-check the .sql before `db:migrate`. |
 | 0008 | purges sessions with `status='killed'` (explicit cascade to logs + FK cascade for messages/permissions/questions). Accompanies the kill→delete refactor (see §10): the `'killed'` middle state no longer exists as a persistent state. No schema change — just a `DELETE` on data. Hand-written (drizzle-kit can't generate a data-only migration without a schema change). |
+| 0009 | renames the default folder from 'Sans dossier' to 'No folder' for legacy deployments (idempotent UPDATE — no-op if already renamed or user-renamed). |
+| 0010 | adds 5 hot-path indexes: `claude_session_messages(session_id, id)`, `claude_pending_permissions(session_id, status)`, `claude_pending_questions(session_id, status)`, `claude_session_logs(session_id, id)`, `vps_paths(vps_id)`. SQLite doesn't auto-index FKs, so every `WHERE session_id = ?` was a full scan before this. The compound `(session_id, id)` matches the chat window / delta polling / pagination queries (filter by session then range over id). `CREATE INDEX IF NOT EXISTS` for idempotency. Hand-written (drizzle-kit generated noisy redeclarations of existing tables — keeping the schema source-of-truth in TS via the `(t) => [index(...)]` form). |
+| 0011 | `claude_sessions` += `last_seen_seq` (integer, nullable). Checkpoint of the highest agent-event-log `seq` Charon has persisted; used on reconnect via `subscribe({after_seq})` so the agent replays durably-stored events that fell out of the in-memory ring (agent >= 0.4.0). Null = no checkpoint yet → fallback to `replay: 300` ring tail. Hand-written. |
+| 0012 | `claude_sessions` += `last_stop_notified_seq` (integer, nullable). Dedup guard for the "Claude finished" push: the `stop` handler in `sessionOps.ts` previously had NO replay guard (unlike permission/question/exit_plan, which check `isReplaying && replayKnownPendingIds`), so every agent re-subscribe (Charon reboot, SSH reconnect) replayed past `stop` events and re-pushed a duplicate "finished" notification for each session. Now: skip push while `isReplaying`; otherwise only push a stop whose `seq` > this column, then advance + persist it (survives restarts so the dedup is durable). Agents < 0.4.0 (no `seq`) fall back to the `isReplaying` guard alone. Hand-written. |
 
 Typical workflow for changing the schema:
 1. Edit `lib/db/schema.ts`
@@ -288,10 +292,12 @@ agent in `hello`) to decide whether an update is due.
 ### Files on the VPS
 
 ```
-~/.charon/charon-agent.pyz      # the daemon (~36KB)
+~/.charon/charon-agent.pyz      # the daemon (~52KB since 0.4.0)
 ~/.charon/agent.sock            # Unix socket (chmod 600)
 ~/.charon/state.json            # persisted sessions (atomic write)
 ~/.charon/agent.log             # stdout/stderr append-only
+~/.charon/events/<sid>.jsonl    # durable per-session event log (>= 0.4.0)
+~/.charon/events/<sid>.jsonl.1  # rotated chunk, oldest first (.1 = previous)
 ~/.charon/venv/                 # venv created by bootstrap (PEP 668 friendly)
 ~/.config/systemd/user/charon-agent.service   # systemd-user unit
                                 # fallback: nohup setsid + crontab @reboot
@@ -332,10 +338,13 @@ failed (perms). Charon uses `2` to offer a setup to the user.
 
 - **`server.py`**: asyncio Unix server, `Client` per connection
   (`subscribed: set[str]`, `_send_lock`). Dispatch via a method table
-  (see §6). Ring buffer `RING_SIZE = 300` events per session
-  (`deque(maxlen=300)`), broadcast via
+  (see §6). Ring buffer `RING_SIZE = 2000` events per session
+  (`deque(maxlen=2000)`), broadcast via
   `subscribers: dict[session_id, set[Client]]`. State save is debounced
-  (`schedule_save()`, 0.2s).
+  (`schedule_save()`, 0.2s). The 2000 ceiling covers ~20-40s of high-
+  throughput streaming (deltas arrive ~50-100/sec during a response),
+  which is well above any expected Charon `systemctl restart` window
+  (was 300 before agent 0.3.1, which saturated in ~3-6s).
 - **`session.py`**: `AgentSession`. Wraps a `ClaudeSDKClient`,
   `PreToolUse`/`PostToolUse` hooks, the `can_use_tool` callback
   (AskUserQuestion), the
@@ -346,6 +355,19 @@ failed (perms). Charon uses `2` to offer a setup to the user.
   → `tool_result`, `ResultMessage` → `stop`).
 - **`state.py`**: tolerant load (defaults on missing fields), atomic
   save (`tempfile + fsync + os.replace`).
+- **`event_log.py`** (>= 0.4.0): durable per-session event log at
+  `~/.charon/events/<sid>.jsonl`. Every event emitted by the server
+  gets a monotonic per-session `seq` and `ts` attached, then is appended
+  to disk BEFORE the in-memory ring buffer and the live broadcast.
+  Rotation: 10 MB per file × 3 rotations (~30 MB worst case per session).
+  Charon checkpoints the highest seq it has persisted in
+  `claude_sessions.last_seen_seq` and passes it as
+  `subscribe({after_seq})` on reconnect → the agent replays exactly
+  what Charon missed, regardless of whether the ring still holds it.
+  Orphan logs (sessions deleted while the agent was offline) are
+  cleaned up at boot. Failure modes (disk full, corrupt line) log to
+  stderr and continue — the ring is the in-memory fallback for live
+  subscribers.
 - **`protocol.py`**: JSON-RPC error codes, `make_response`,
   `make_error`, `make_event` helpers. Canonical method list.
 
@@ -383,7 +405,7 @@ connection). Per-request timeout in `AgentClient.ts`: 60s.
 | `ping` | `{}` | `{pong:true, ts}` |
 | `list_sessions` | `{}` | `[SessionInfo]` |
 | `start_session` | `{session_id?, cwd, name?, permission_mode?, claude_session_id?}` | `{session_id}` |
-| `subscribe` | `{session_id, replay?:int}` | `{ok, replay_count, status}` + replay events |
+| `subscribe` | `{session_id, replay?:int, after_seq?:int}` | `{ok, replay_count, status, current_seq}` + replay events. `after_seq` (>= 0.4.0) wins over `replay` if both supplied — durable replay from `event_log.jsonl`. `replay` falls back to the ring tail for legacy clients. `current_seq` lets callers checkpoint even when the replay was empty. |
 | `unsubscribe` | `{session_id}` | `{ok}` |
 | `send_input` | `{session_id, content}` | `{ok}` |
 | `interrupt` | `{session_id}` | `{ok}` — soft, may be ignored by the SDK if a tool is in flight |
@@ -411,7 +433,7 @@ connection). Per-request timeout in `AgentClient.ts`: 60s.
 
 ### Events (Agent → Charon)
 
-All carry `session_id`. The ring buffer stores up to 300 per session.
+All carry `session_id`. The ring buffer stores up to 2000 per session (was 300 before agent 0.3.1). Since agent 0.4.0, all events (except replay markers `replay_begin` / `replay_end`) also carry `seq` (monotonic per-session integer) and `ts` (Unix seconds, float) added by the durable event log before broadcast. Charon persists the highest seq into `claude_sessions.last_seen_seq` and replays from there on resubscribe.
 
 | Event | Payload (excerpt) |
 |---|---|
@@ -512,11 +534,17 @@ On Charon process boot (via `seed.ts`):
    (no SSE event for it — acceptable as page reload is occasional).
 
 `reconcileVpsAgentState(vpsId, agentSessions)` in `sessionOps.ts` does
-the work: for each session the agent knows about, it `getStream()` +
-`ensureAttached()` + sync DB status. For each DB session "should be
+the work: for each session the agent knows about, it `getOrCreateStream()`
++ `ensureAttached()` + sync DB status. For each DB session "should be
 running" that the agent does NOT know about (= the agent was restarted
 and lost its state.json), it relaunches via `resumeSession()` (which
 falls back to `start_session(claude_session_id=…)`).
+
+**Naming convention**: `sessionOps.ts` exposes two lookups — `peekStream`
+(returns null if not in memory; use for READ endpoints) and
+`getOrCreateStream` (hydrates from DB if absent; use for WRITE / lifecycle
+endpoints). `getStream` is kept as a deprecated alias to
+`getOrCreateStream` for transitional code only.
 
 ### `lib/server/claude/bootstrap.ts`
 
@@ -929,13 +957,20 @@ common code extracted after the maintainability audit:
 
     **Final design — defense in depth via polling**:
     - SSE remains the fast path (sub-second latency when it works).
-    - **`useClaudeSessionStream` runs a 5s polling loop that is independent of the SSE.** Every 5s while the tab is visible, it calls `GET /api/claude/sessions/[id]?since=<lastSeenServerId>` (a cheap delta endpoint added in the route — returns ONLY rows with id > since, sorted ASC). Applied via `applyDelta` which is idempotent and dedups against locally-added SSE messages by `(role, content)` hash, upgrading the synthetic local id (`'a...'`/`'tu...'`) to the DB-derived `'m<id>'`. Together with `applyApiData` (full refetch path), this guarantees the chat catches up within 5s even if every SSE-related fix breaks.
+    - **`useClaudeSessionStream` runs a 5s polling loop that is independent of the SSE.** The loop runs `safetyTick`, which is SELF-SUFFICIENT: if the initial full load hasn't succeeded yet (`initialLoadDoneRef` false — e.g. the mount-time refetch raced a Charon restart and 503'd), it does a full `refetchHistory` (retry); once that has produced data it switches to a cheap `GET /api/claude/sessions/[id]?since=<lastSeenServerId>` delta (returns ONLY rows with id > since, sorted ASC). This matters: an earlier version bailed the poll on `since === 0`, so a FAILED initial load left polling permanently disabled and the chat frozen until F5 even though the interval was "running". Now the loop always makes forward progress on its own — it does NOT depend on the SSE or the SSE-triggered refetch ever succeeding.
+    - **The poll is a cheap PROBE; when it reports new rows the client does a CLEAN FULL `refetchHistory()`, NOT an incremental merge.** This is the single most important correctness decision in the whole saga. Incremental merging (the old `applyDelta`, now dead code kept for reference) produced corrupted state — duplicate React keys, partial tool_use/tool_result pairs — that threw during render, which the error boundary caught and remounted, which re-ran the poll, which re-corrupted… an infinite remount loop (symptom: `[charon] poll xxx: +N row(s)` repeating with the SAME `since` value, deep `uE/ux` render stacks). A full reload rebuilds the entire chat from scratch via `rebuildStateFromMessages` — exactly what hitting F5 does, and corruption-proof. A `[charon] poll <sid>: +N row(s) since X → clean reload` line is logged when this fires.
+    - **The polling cursor is the server's authoritative `maxMessageId`, NOT the max id of the returned window.** The window (`loadMessageWindow`) returns the last 200 CHAT messages + only the `edit_snapshot`/`event` attachments in THAT id range; a busy session accumulates thousands of trailing attachment rows whose ids are HIGHER than the last chat message. If the cursor is the window max, `?since=<windowMax>` returns those thousands of rows on EVERY poll forever (cursor never advances → the remount loop above). The `[id]` GET route returns `maxMessageId = MAX(id) WHERE session_id = ?` across ALL roles; `applyApiData` sets the cursor to it (monotonic — never rewinds). Verified: a real session had `maxMessageId=30589` vs `windowMax=27323`, a 3266-row gap that was being re-fetched every 5s.
+    - **The error boundary escalates to `window.location.reload()`** if it catches ≥4 errors within 8s (`SessionErrorBoundary § LOOP_THRESHOLD`). A deterministic render error re-throws on every remount, so remounting is futile — the only thing that always recovers is a clean page load. This is the literal "simulate the manual refresh" nuclear fallback. With the cursor + clean-reload fixes above the loop shouldn't happen, but this guarantees recovery if some other deterministic render bug appears.
     - Triggers for an immediate (non-interval) poll: SSE reconnect, `visibilitychange` (tab returns), `online` event. The setInterval also fires once on mount so session-switch resyncs immediately.
     - 404 from the delta endpoint → calls `onKilled` (= session was deleted server-side and we missed the `status='killed'` SSE event).
 
     **Invariants** if you touch ANY of these layers:
     - SSE liveness: (1) heartbeat is a JS-visible `data:` event; (2) watchdog threshold ≥ 2× heartbeat interval; (3) `connId` stable across manual reconnects (otherwise the server piles up zombie connections). Debug: `getStreamHealth()`.
-    - Polling: (1) `applyDelta` MUST be idempotent — same delta applied twice should produce the same state; (2) `lastSeenServerIdRef` is advanced BEFORE setState so a setState throw doesn't cause re-fetching the same rows; (3) dedup against SSE-added messages is by `(role, content)` — if you change the synthetic-id format in `rebuildStateFromMessages`, also update the `idStr.startsWith('m')` check in `applyDelta`; (4) don't poll for sleeping/killed sessions in the future — for now we poll always (the cost is negligible and it caught a "session resumed by another tab" bug for free).
+    - Polling: (1) `applyDelta` MUST be idempotent — same delta applied twice should produce the same state; (2) `lastSeenServerIdRef` is advanced BEFORE setState so a setState throw doesn't cause re-fetching the same rows; (3) dedup against SSE-added messages is by `(role, content)` — if you change the synthetic-id format in `rebuildStateFromMessages`, also update the `idStr.startsWith('m')` check in `applyDelta`; (4) don't poll for sleeping/killed sessions in the future — for now we poll always (the cost is negligible and it caught a "session resumed by another tab" bug for free); (5) phantom-buffer clear: if `serverStreamingText === ''` AND `assistantBufRef.current` is a prefix of (or equal to) the content of a new assistant row in the delta, we clear `assistantBufRef` + `currentAssistant`. Without this, an SSE drop mid-stream + server-side flush leaves the streaming preview visible alongside the finalized DB message. If you refactor the assistant-text flow (e.g. switch to a different buffer container), keep this check or the phantom returns.
+    - Network resilience (the device-sleep class of bug): **every `fetch` MUST be bounded by a timeout** (`lib/api.ts § send` wraps an `AbortController`, default 30s, 12s for the delta poll). A request issued just before the device sleeps (laptop lid, phone background) does NOT reject — the socket is suspended, so the promise hangs until the OS finally tears it down (minutes). A hung promise wedges any inflight-dedup guard built on top of it (`sessionCache.inflight`, `useClaudeSessionStream.inflightPollRef`) → polling silently stops → chat frozen. The timeout frees the guard; on wake (`online`/`visibilitychange`) the hook calls `forcePoll()` which **aborts the in-flight (hung) poll via `pollAbortRef` and starts a fresh one** so resync is ~1s, not 12s. The SSE side mirrors this: `scheduleReconnect` bails out when `navigator.onLine === false` and waits for the `online` event instead of burning the backoff schedule against a dead network.
+    - Both `/api/claude/sessions` and `/api/claude/sessions/[id]` GET are wrapped in try/catch → a transient DB hiccup returns a clean retryable **503** (logged server-side), never an unhandled 500. An unhandled 500 serves an HTML error page, which breaks the client's `res.json()` and can cascade into a stuck UI. DB has `busy_timeout=5000` for the rare multi-process lock.
+    - **Error boundary (`app/SessionErrorBoundary.tsx`) wraps `<ClaudeSessionView>` (desktop) and `<MobileChat>` (mobile page).** This is the universal safety net: the entire live-update pipeline (SSE subscription, 5s polling interval, reconnect listener) lives inside `useClaudeSessionStream`, which runs inside the chat subtree. If ANY render in that subtree throws — React 19 hydration mismatch (#418), a transient `undefined` while data is mid-flight, a bad markdown/diff parse — React unmounts the subtree, which fires every `useEffect` cleanup, which kills the polling interval + SSE subscription. Without a boundary that is a PERMANENT freeze (only F5 recovers). The boundary catches the error, shows a "reconnecting…" placeholder, and **remounts the subtree after ~1.5s by bumping an internal key** → all effects re-run → `lastSeenServerIdRef` resets to 0 → `refetchHistory` does a full reload → chat self-heals. It also resets on `resetKey` change (sessionId) so switching sessions never inherits a stale error. Keep this boundary; it is what makes "render bug ⇒ auto-recover" instead of "render bug ⇒ frozen until refresh".
+    - **SSE `onerror` policy** (`globalEventStream.ts`): reconnect manually ONLY on `readyState === CLOSED` (browser gave up, e.g. after a 502). On `CONNECTING` (transient blip, truncated stream) DO NOTHING — the browser auto-retries, and the watchdog + polling are the backstops. An earlier version tore down on every error including CONNECTING; combined with resetting `backoffMs` in `onopen`, that produced a pathological open→break→reopen loop every 1000ms during network instability (hammering the server, firing refetch every second). Fix: `backoffMs = 0` lives in `onmessage` (reset on real data) NOT `onopen` (which only means the HTTP response started). Don't move it back.
     - Don't remove the polling because "SSE seems to work now." Polling IS the contract that the chat will not freeze. SSE is just the latency optimisation on top.
 
 25. **`edit_snapshot` and `event` rows drown chat in `claudeSessionMessages`** (4 rows per Edit). The window query at `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` counts ONLY chat roles (`NON_PAGINATED_ROLES = ['edit_snapshot', 'event']`); side-channel rows load as attachments by ID range. Add any new side-channel role to `NON_PAGINATED_ROLES`.
@@ -944,7 +979,25 @@ common code extracted after the maintainability audit:
 28. **`python -m venv` fails on "ensurepip is not available"** (Debian/Ubuntu: `python3.12-venv` etc. is a separate package). On a VPS with python but no venv package, `verify` returns `no_sdk` → `install_python` is skipped → `install_sdk` blows up. Worse: a failed `python -m venv` leaves a **partial venv** with `bin/python` present but no pip — a naive `[ -x venv_py ]` check passes. Fix in `bootstrap.ts § install_sdk`: health check is `venv_py -m pip --version`; if pip fails, wipe + retry, install `python$PY_VER-venv` if log mentions ensurepip, wipe + retry. Idempotent across retries. Add a branch if you cover a new distro.
 29. **kill→delete refactor**: only `sleep` is reversible now. DB status `'killed'` no longer exists (purged by migration 0008). The `status='killed'` event survives ONLY as a transient signal at deletion time — `useClaudeSessionStream` catches it → `onKilled` (navigate out). Implications: (a) don't reuse `'killed'` for a new persistent status; (b) keep the TS enum member (types the signal); (c) agent-side `kill_session` is best-effort cleanup; (d) if tempted to add a new "kill but keep UI" action, ask "is `sleep` enough?" — yes.
 30. **Multi-phase SSH = multiplex over one `SshSession`**. Each `sshExec` spawns a fresh `ssh` (200-2000ms handshake) AND a long phase can wedge the VPS into refusing the next connection (sshd MaxStartups, conntrack, fail2ban…). `openSshSession(vps)`/`closeSshSession()` + `opts.session` use ControlMaster/ControlPath/ControlPersist=120 (socket at `tmpdir()/charon-ssh-<8hex>.sock`). `bootstrapVps` and `updateVpsAgent` wrap their whole flow in `try { ... } finally { closeSshSession() }`. Threshold to start caring: ≥3 sequential `sshExec` to the same VPS.
-31. **Agent event replay is not durable yet**. The VPS agent keeps only an in-memory per-session ring buffer (`RING_SIZE = 300`) for replay on subscribe/reconnect. Charon persists events to SQLite only while it is connected and attached to the agent stream. The browser's 5s polling catches up from Charon's DB, but it cannot recover agent events that were produced while Charon was down and later fell out of the agent ring. If you need stronger delivery guarantees, add a durable agent-side event log (`~/.charon/events/<session>.jsonl`) with monotonically increasing `seq`, then subscribe/replay by `afterSeq`; don't try to solve this only in the browser.
+31. **Agent event replay layering** (agent >= 0.4.0). Two complementary mechanisms now coexist:
+    - **Ring buffer** (`RING_SIZE = 2000`, `server.py`): in-memory, fast path for `subscribe({replay: N})` (legacy clients). Lost on agent restart.
+    - **Durable event log** (`event_log.py`): per-session JSONL at `~/.charon/events/<sid>.jsonl` with monotonic `seq`, rotated at 10MB × 3. Used for `subscribe({after_seq})` (Charon >= the one shipping this gotcha). Survives agent restart. Cleaned up at boot for sessions absent from `state.json`, on `kill_session` for the session being deleted.
+
+    **Invariants** if you touch the event-log code:
+    - `_emit` MUST append to the log BEFORE the live broadcast — otherwise subscribers see events without `seq`, defeating Charon's checkpoint.
+    - `_recover_seq` scans both the active file AND all rotated files for the max seq. Don't "optimize" it to only scan active: a rotation-then-crash window leaves the highest seq in `.1`, not active.
+    - Charon-side checkpoint (`SessionStream.lastSeenSeq` ⇄ `claude_sessions.last_seen_seq`) is throttled: persist on landmark events (`status`, `stop`) and on a 2s debounce otherwise. Worst-case 2s of duplicate replay on Charon crash — absorbed by `_loadReplayDedup`.
+    - `AgentClient._pendingAfterSeq` caches the cursor between reconnects. The reconnect path (`_onConnected`) re-issues `subscribe` via `_fireSubscribe(sid)` which reads from this map. Don't bypass with a raw `this.call('subscribe', ...)` — you'd lose the cursor.
+    - Replay markers (`replay_begin`, `replay_end`) intentionally lack `seq`. `_trackSeq` is a no-op for them.
+
+    Disk-space ceiling per session: 30MB (3 × 10MB). For 50 active sessions that's 1.5GB worst case, which is fine on any modern VPS. If you need compaction (drop events older than the last persisted seq), it goes in `event_log.py` — but probably YAGNI: sessions get deleted often, cleanup runs at boot and on kill.
+
+32. **Optimistic UI for send / sleep / mode** (don't confuse with the *pessimistic* interaction acks of gotcha 18 — those stay as-is). Every action travels browser → POST → Charon → multiplexed SSH → VPS agent → SDK; waiting for the round-trip (or for the echoing event to come back) made the UI lag "a few seconds" per action. So `useClaudeSessionStream` now updates local state BEFORE the `await`:
+    - **`send`**: appends the user bubble + sets `status='thinking'` immediately. To avoid a duplicate when the server's `user_echo` SSE arrives, `send` pushes the trimmed content into `pendingUserEchoRef` (a FIFO-by-content token list); the `user_echo` handler consumes a matching token and suppresses that echo. Echoes WITHOUT a token (message sent from another tab/device) still append. The synthetic `'u…'` id is later upgraded to `'m<dbid>'` by `applyDelta`'s `(role,content)` dedup. On failure we keep the bubble + token (the dominant failure — agent RPC throwing — happens AFTER the server persisted the row and broadcast the echo, so the message is real; a genuinely-unsent phantom self-heals on the next full refetch). **If you change the synthetic-id format or the user_echo path, keep the token dedup or duplicates return.**
+    - **`doSleep`**: sets `status='sleeping'` immediately. Safe because `sessionOps.sleepSession` marks the DB row `'sleeping'` *unconditionally* (even if the agent is unreachable), so the optimistic flip is always correct — no revert needed.
+    - **`setMode`**: sets the mode immediately, reverts to the previous mode on POST failure (the agent only applies it on success; reconciled by the `mode_changed` SSE).
+
+    Server side, `sleepSession` now (a) broadcasts `status='sleeping'` on the global bus right away (so the sidebar + other tabs flip without waiting) and sets the in-memory `stream.status`, and (b) fires `client.call('sleep_session')` **fire-and-forget** (`.catch()` logs) instead of `await`-ing it — the agent's `stop()` blocks up to 5s on `asyncio.wait_for(main_task, timeout=5.0)` (SDK teardown of the in-flight turn), which used to wedge the HTTP response. The DB + broadcast already reflect the truth; the agent stop is best-effort cleanup. (`resume` was already optimistic via `setStatus('starting')` — this generalises the pattern.)
 
 ## 15. Quick lookup (non-obvious entry points)
 
@@ -960,6 +1013,8 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | SSH multiplexing session (mandatory for multi-phase) | `lib/server/claude/sshExec.ts` |
 | SSE conn registry + low/high-volume routing | `lib/server/agent/eventConnections.ts` |
 | Singleton browser SSE (focus + reconnect + watchdog) | `app/globalEventStream.ts` |
+| Chat delta polling (safety net) + abort-on-wake | `app/useClaudeSessionStream.ts § pollDelta/applyDelta/forcePoll` + `?since=` in `app/api/claude/sessions/[id]/route.ts` |
+| Auto-recovering error boundary (render error ⇒ remount, not freeze) | `app/SessionErrorBoundary.tsx` (wraps `ClaudeSessionView` + `MobileChat`) |
 | History pagination cursor (backend) | `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` |
 | Cross-session interaction feed hook | `app/useCrossSessionInteractionFeed.ts` |
 | Rebuild a session's UI state from DB rows | `app/sessionRebuild.ts` |
@@ -968,6 +1023,7 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | Py↔TS protocol alignment check (prebuild) | `scripts/check-protocol-sync.mjs` |
 | TabBar layout logic | `app/TabBar.tsx` + `computeTabs`/`keptOpenIds`/`activeVpsId`/`lastSelectedByVpsRef` in `ClaudePanel.tsx` |
 | VPS folders (DnD + DB-persisted collapse) | `vpsFolders` in `lib/db/schema.ts` + `app/api/vps-folders/**` + `DataModal.tsx` |
+| Durable agent event log (rotation, seq, replay) | `agent/charon_agent/event_log.py` + `_emit` in `server.py` + `SessionStream.lastSeenSeq` in `sessionOps.ts` + `_pendingAfterSeq` in `AgentClient.ts` |
 
 ---
 
@@ -1022,7 +1078,13 @@ banner).
   need to remember, **the build will remind you**.
 - **Add an event**: `_emit("new_event", session_id=..., ...)` in
   `session.py`, add the type in `lib/server/agent/types.ts` and
-  the handler in `sessionOps.ts` then in `ClaudePanel.tsx`.
+  the handler in `sessionOps.ts` then in `ClaudePanel.tsx`. Since
+  agent 0.4.0 the `_emit` path stamps every payload with `seq` and
+  `ts` automatically via `event_log.append()`; the new event must
+  not carry pre-existing `seq` or `ts` keys (they would clash with
+  the durable log's monotonic sequencer). If the event is a pure
+  client-side hint (e.g. a UI marker that shouldn't be persisted),
+  add it AFTER the broadcast, not inside `_emit`.
   **→ Add the line to the §6 (events) and §9 (SSE mapping)
   tables.**
 - **New DB field**: edit `lib/db/schema.ts`, `npm run db:generate`,

@@ -118,11 +118,16 @@ let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 let windowListenersAttached = false;
 
 const MIN_BACKOFF_MS = 1_000;       // first retry after 1s
-const MAX_BACKOFF_MS = 15_000;      // cap retries at 15s spacing (lowered:
-                                    // a typical `systemctl restart charon`
-                                    // takes 3-6s, capping at 15s means we
-                                    // resync within 15s of recovery in the
-                                    // worst case rather than 30s)
+const MAX_BACKOFF_MS = 6_000;       // cap retries at 6s. A build+restart of
+                                    // the hub (the user develops Charon WITH
+                                    // Charon — a session runs `npm run build
+                                    // && systemctl restart charon`) keeps the
+                                    // hub down ~30-60s; Apache 503s the whole
+                                    // time. Capping at 6s (was 15s) means the
+                                    // SSE reconnects within 6s of the hub
+                                    // coming back, not 15s. The cost (a few
+                                    // extra failed reconnects during the down
+                                    // window) is negligible.
 const STALE_MS = 20_000;            // no event for 20s → assume dead. Lower
                                     // than 30s so we catch silent stalls
                                     // before the user notices. Still > 2x
@@ -163,6 +168,15 @@ function scheduleReconnect(reason: string): void {
   if (typeof window === 'undefined') return;
   // Don't pile up retries: if one is already queued, leave it alone.
   if (reconnectTimer != null) return;
+  // If the browser knows it's offline, don't burn retries — they will all
+  // fail instantly with ERR_NETWORK. Tear down and wait for the `online`
+  // event (wired in attachWindowListeners) to trigger reconnectNow. This
+  // is what stops the "reconnect in 1000ms / 2000ms / ..." spam in the
+  // console while a laptop is asleep / Wi-Fi is down.
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    teardownStream();
+    return;
+  }
   // Bump backoff for next failure; first retry after a fresh OPEN uses
   // MIN_BACKOFF_MS.
   if (backoffMs <= 0) backoffMs = MIN_BACKOFF_MS;
@@ -260,6 +274,14 @@ function openStream(): void {
   es.onmessage = (e) => {
     // Track liveness on EVERY incoming event (heartbeat or real).
     lastActivityTs = Date.now();
+    // Reset the backoff HERE (on real data), not on `onopen`. A connection
+    // that opens then immediately breaks (proxy cutting the stream, server
+    // restarting mid-response) should keep backing off — resetting on
+    // `onopen` made the backoff useless (it always reset to 1s right before
+    // the next break → tight open→break→reopen loop). The server sends a
+    // heartbeat immediately on connect, so a healthy stream resets the
+    // backoff within milliseconds anyway.
+    backoffMs = 0;
     let ev: GlobalEvent | HeartbeatEvent;
     try { ev = JSON.parse(e.data); } catch { return; }
     // Heartbeat: server-only liveness ping, not forwarded to listeners.
@@ -279,9 +301,9 @@ function openStream(): void {
     }
   };
   es.onopen = () => {
-    // Successful connection — reset the backoff so the next failure starts
-    // from MIN_BACKOFF_MS again.
-    backoffMs = 0;
+    // NOTE: backoff is reset in `onmessage` (on real data), NOT here — see
+    // the comment there. `onopen` only means the HTTP response started;
+    // the stream can still break immediately.
     lastActivityTs = Date.now();
     openCount++;
     if (openCount <= 1) return;  // 1st open (boot): not a reconnect
@@ -317,31 +339,29 @@ function openStream(): void {
   };
   es.onerror = () => {
     // The EventSource hit an error. Per the WHATWG spec, readyState is
-    // either CONNECTING (1, browser will auto-retry) or CLOSED (2,
-    // browser gave up — typical after a non-200 like Apache's 502 during
-    // a restart). We used to only react to CLOSED and trust the browser
-    // for CONNECTING, but that turned out to be too slow: on a typical
-    // `systemctl restart charon` the FIRST error is
-    // `ERR_INCOMPLETE_CHUNKED_ENCODING` with state=CONNECTING (the
-    // initial 200 was already received, the chunked stream just got
-    // truncated), and the browser's retry then hits Apache's 502 and
-    // bounces between failure modes for tens of seconds without ever
-    // firing `onopen` again. The user perceives this as "stuck".
+    // either CONNECTING (1) or CLOSED (2).
     //
-    // New strategy: we ALWAYS tear down and reconnect ourselves on any
-    // onerror. Predictable behavior, predictable timing, no fighting
-    // with the browser's internal retry FSM. Cost: we throw away the
-    // browser's in-flight retry attempt, but those reconnects are rare
-    // (a few per day at most), so the overhead is negligible.
+    //   - CLOSED (2): the browser gave up — typically after a non-200
+    //     (Apache 502 while Charon restarts). The browser will NOT retry
+    //     on its own. We MUST reconnect manually, with backoff.
     //
-    // The same connId is reused, so the server's eventConnections
-    // registry dedupes any zombie state cleanly.
+    //   - CONNECTING (1): the browser IS auto-retrying (transient network
+    //     blip, stream truncated). We deliberately DO NOTHING here. An
+    //     earlier version tore the stream down on every CONNECTING error
+    //     and reconnected manually — but that fought the browser's own
+    //     retry and, combined with the backoff reset on `onopen`, produced
+    //     a pathological open→break→reopen loop every 1000ms during any
+    //     network instability (hammering the server + firing refetch every
+    //     second). The watchdog (no event for STALE_MS) is the backstop:
+    //     if the browser's retry also stalls, the watchdog forces a clean
+    //     reconnect. And the 5s polling loop in useClaudeSessionStream
+    //     keeps the chat fresh regardless of SSE state.
     if (!es) return;
-    const state = es.readyState;
-    scheduleReconnect(state === 2 ? 'onerror & CLOSED' : 'onerror & CONNECTING');
-    // Tear down NOW so the browser doesn't keep retrying in parallel
-    // with our scheduled attempt.
-    teardownStream();
+    if (es.readyState === 2 /* CLOSED */) {
+      scheduleReconnect('onerror & CLOSED');
+      teardownStream();
+    }
+    // CONNECTING: leave it to the browser + watchdog + polling.
   };
 }
 

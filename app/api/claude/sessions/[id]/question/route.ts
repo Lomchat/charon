@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { getStream } from '@/lib/server/agent/sessionOps';
+import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 
 // POST /api/claude/sessions/[id]/question
 // Body: { id: qid, answers: Record<string,string> | null }
@@ -8,7 +8,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  const stream = getStream(id);
+  const stream = getOrCreateStream(id);
   if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json();
   const qid = String(body.id ?? '').trim();
