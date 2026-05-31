@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath } from '@/lib/db/schema';
+import ModelPicker from './ModelPicker';
 
 type Props = {
   vpsList: Vps[];
@@ -10,19 +11,6 @@ type Props = {
   onClose: () => void;
   onCreated: (id: string) => void;
 };
-
-// Suggestions surfaced in the datalist. Users can still type any model
-// string — the SDK validates at start_session. Kept short so the dropdown
-// stays tidy; edit here when new families ship. Don't bake versioned IDs
-// (claude-opus-4-7-20250929) into the UI; let the global default + the
-// per-session override carry the specific date-stamped string.
-const MODEL_SUGGESTIONS = [
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-4-5',
-  'claude-sonnet-4-7',
-  'claude-haiku-4-5',
-];
 
 const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
   { value: '', label: 'inherit (global default)' },
@@ -223,37 +211,26 @@ export default function NewSessionDialog({
         {/*
           Claude config (optional). Leaving fields blank inherits the global
           default (SettingsModal § Claude defaults), which itself can be
-          blank → SDK default. The placeholder shows what's currently
-          inherited so the user knows what to expect without overriding.
-          Free-text inputs for model/fallback (the SDK validates at start);
-          select for effort (typed literal).
+          blank → SDK default. Both model selects show the curated list
+          from /api/claude/models (single source of truth in
+          lib/server/claude/knownModels.ts). Free-text was the original UX
+          but produced silent SDK fallback when users typed an outdated
+          ID — closed list is more honest.
         */}
         <label>model (optional)
-          <input
+          <ModelPicker
             value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder={globalDefaults?.model
-              ? `inherit: ${globalDefaults.model}`
-              : 'inherit (SDK default)'}
-            list="claude-model-suggestions"
-            autoComplete="off"
+            onChange={setModel}
+            inheritPlaceholder={globalDefaults?.model || undefined}
           />
         </label>
         <label>fallback model (optional, used if rate-limited)
-          <input
+          <ModelPicker
             value={fallbackModel}
-            onChange={(e) => setFallbackModel(e.target.value)}
-            placeholder={globalDefaults?.fallbackModel
-              ? `inherit: ${globalDefaults.fallbackModel}`
-              : 'none'}
-            list="claude-model-suggestions"
-            autoComplete="off"
+            onChange={setFallbackModel}
+            inheritPlaceholder={globalDefaults?.fallbackModel || 'none'}
           />
         </label>
-        {/* Shared datalist for both model inputs. */}
-        <datalist id="claude-model-suggestions">
-          {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
-        </datalist>
         <label>effort (optional)
           <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
             {EFFORT_OPTIONS.map((o) => {

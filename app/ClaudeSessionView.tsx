@@ -11,6 +11,7 @@ import type {
   PermissionRequest, PendingQuestion, PendingExitPlan, ToolCallEntry,
 } from './sessionTypes';
 import { useClaudeSessionStream, type StreamCache } from './useClaudeSessionStream';
+import ModelPicker from './ModelPicker';
 import {
   getCached, fetchAndCache, invalidate as invalidateCache,
   extendWithOlder as extendCacheWithOlder,
@@ -78,6 +79,7 @@ export default function ClaudeSessionView({
     onKilled,
   });
   const {
+    sessionMeta,
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     toolCalls, todos, edits,
@@ -375,6 +377,7 @@ export default function ClaudeSessionView({
           <ModelEffortBadges
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
+            claudeSessionId={sessionMeta?.claudeSessionId ?? null}
             onSetModel={setModel} onSetEffort={setEffort}
           />
         </div>
@@ -653,17 +656,6 @@ function fmtElapsed(s: number): string {
   return `${m}m${r.toString().padStart(2, '0')}s`;
 }
 
-// Same suggestion list as NewSessionDialog. Duplicated to keep this component
-// self-contained — moving it to a shared constants file would be a one-line
-// change later if a third consumer appears.
-const MODEL_SUGGESTIONS = [
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-4-5',
-  'claude-sonnet-4-7',
-  'claude-haiku-4-5',
-];
-
 /**
  * Compact header badges + click-to-edit popover for per-session
  * model + effort. Designed to be near-invisible when set to defaults
@@ -674,10 +666,20 @@ const MODEL_SUGGESTIONS = [
  * Claude SDK binds model/effort at client construction. We surface that
  * via the `pending-apply` class so the badge gets a subtle accent until
  * the next sleep+resume cycle (which clears the flag via applyApiData).
+ *
+ * **Critical caveat we warn about in the popover** (cf. CLAUDE.md §14 #35):
+ * the Anthropic-side `claude_session_id` is bound to ONE model. A session
+ * created on Opus 4.7 cannot be hot-swapped to 4.8 via resume — the SDK
+ * will keep replying as 4.7 even though our DB says 4.8. To actually
+ * change the model on an existing session, the user must fork (= null
+ * out the claude_session_id and accept a fresh SDK session, losing
+ * Anthropic's server-side state but keeping Charon's chat history).
+ * That fork capability isn't wired up yet; for now we just warn.
  */
 function ModelEffortBadges({
   model, fallbackModel, effort,
   modelPendingApply, effortPendingApply,
+  claudeSessionId,
   onSetModel, onSetEffort,
 }: {
   model: string | null;
@@ -685,6 +687,11 @@ function ModelEffortBadges({
   effort: ClaudeEffortLevel | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
+  /** Set if the SDK has already created an upstream session bound to a
+   *  model. When non-null and the user picks a different model, we show a
+   *  red-ish warning that the change won't actually swap the running
+   *  Anthropic session. */
+  claudeSessionId: string | null;
   onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
   onSetEffort: (e: ClaudeEffortLevel | null) => Promise<void>;
 }) {
@@ -797,31 +804,44 @@ function ModelEffortBadges({
           <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>
             Per-session Claude config — applies at next sleep + resume.
           </div>
+          {claudeSessionId && (draftModel !== (model ?? '')) && (
+            <div
+              style={{
+                fontSize: 10.5,
+                color: 'var(--crimson, #c94a4a)',
+                border: '1px solid rgba(201, 74, 74, 0.5)',
+                background: 'rgba(201, 74, 74, 0.08)',
+                padding: 6,
+                borderRadius: 3,
+                lineHeight: 1.35,
+              }}
+            >
+              ⚠ This session is bound to its original model on Anthropic's
+              side (claude_session_id = <code style={{ fontSize: 9.5 }}>{claudeSessionId.slice(0, 8)}…</code>).
+              A simple resume with a new model will keep the original model.
+              <br />
+              To actually swap, create a new session, OR fork this one
+              (loses Anthropic-side context, keeps Charon's chat history).
+            </div>
+          )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>model</span>
-            <input
+            <ModelPicker
               value={draftModel}
-              onChange={(e) => setDraftModel(e.target.value)}
-              placeholder="(empty = inherit global default)"
-              list="claude-session-model-suggestions"
-              autoComplete="off"
-              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+              onChange={setDraftModel}
+              inheritPlaceholder="global default"
+              className="model-picker-popover"
             />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
-            <input
+            <ModelPicker
               value={draftFallback}
-              onChange={(e) => setDraftFallback(e.target.value)}
-              placeholder="(empty = none)"
-              list="claude-session-model-suggestions"
-              autoComplete="off"
-              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+              onChange={setDraftFallback}
+              inheritPlaceholder="none"
+              className="model-picker-popover"
             />
           </label>
-          <datalist id="claude-session-model-suggestions">
-            {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
-          </datalist>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>effort</span>
             <select

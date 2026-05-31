@@ -24,7 +24,7 @@ import type {
   SetClaudeModeResponse,
   SetClaudeSessionModelBody, SetClaudeSessionModelResponse,
   SetClaudeSessionEffortBody, SetClaudeSessionEffortResponse,
-  ClaudeEffortLevel,
+  ClaudeEffortLevel, ClaudeModelsResponse,
   RevertClaudeEditResponse, SearchClaudeResponse,
   ClaudeSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
   PushSubscribeResponse,
@@ -247,6 +247,11 @@ export const api = {
   setClaudeSessionEffort: (id: string, effort: ClaudeEffortLevel | null) =>
     send<SetClaudeSessionEffortResponse>('POST', `/api/claude/sessions/${id}/effort`,
       { effort } as SetClaudeSessionEffortBody),
+  // Curated list of model IDs (server-side source of truth in
+  // lib/server/claude/knownModels.ts). Cached aggressively client-side via
+  // the module-level cache in app/modelsCache.ts.
+  getClaudeModels: () =>
+    send<ClaudeModelsResponse>('GET', '/api/claude/models'),
   revertClaudeEdit: (id: string, filePath: string, content: string | null) =>
     send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath, content }),
   searchClaude: (q: string) =>

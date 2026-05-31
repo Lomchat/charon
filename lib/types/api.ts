@@ -301,6 +301,18 @@ export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
 export type SetClaudeSessionEffortBody = { effort: ClaudeEffortLevel | null };
 export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
 
+// GET /api/claude/models — curated picker source. Source of truth lives in
+// lib/server/claude/knownModels.ts (single hand-curated list, see header
+// there for why no autodiscovery).
+export type ClaudeModelGroup = 'aliases' | 'current' | 'previous';
+export type KnownClaudeModel = {
+  id: string;
+  label: string;
+  group: ClaudeModelGroup;
+  hint?: string;
+};
+export type ClaudeModelsResponse = { models: KnownClaudeModel[] };
+
 export type RevertClaudeEditBody = {
   filePath: string;
   content: string | null;

@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath } from '@/lib/db/schema';
+import ModelPicker from '../ModelPicker';
 
 type Props = {
   vpsList: Vps[];
@@ -13,17 +14,6 @@ type Props = {
 
 // Mobile bottom-sheet to create a new Claude session.
 // Mirrors the logic of NewSessionDialog in a simpler/mobile-friendly form.
-// Mirror MODEL_SUGGESTIONS / EFFORT_OPTIONS from NewSessionDialog. Kept
-// duplicated (not imported) to keep mobile chunk independent of the desktop
-// dialog, which mobile pages don't otherwise load.
-const MODEL_SUGGESTIONS = [
-  'claude-opus-4-7',
-  'claude-opus-4-8',
-  'claude-sonnet-4-5',
-  'claude-sonnet-4-7',
-  'claude-haiku-4-5',
-];
-
 const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
   { value: '', label: 'inherit (global default)' },
   { value: 'low', label: 'low' },
@@ -168,27 +158,20 @@ export default function NewSessionSheet({
           {/* Per-session Claude config — cf. NewSessionDialog for rationale. */}
           <label>
             <span>model (optional)</span>
-            <input
+            <ModelPicker
               value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={globalDefaults?.model ? `inherit: ${globalDefaults.model}` : 'inherit'}
-              list="claude-model-suggestions-m"
-              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              onChange={setModel}
+              inheritPlaceholder={globalDefaults?.model || undefined}
             />
           </label>
           <label>
             <span>fallback model (optional)</span>
-            <input
+            <ModelPicker
               value={fallbackModel}
-              onChange={(e) => setFallbackModel(e.target.value)}
-              placeholder={globalDefaults?.fallbackModel ? `inherit: ${globalDefaults.fallbackModel}` : 'none'}
-              list="claude-model-suggestions-m"
-              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              onChange={setFallbackModel}
+              inheritPlaceholder={globalDefaults?.fallbackModel || 'none'}
             />
           </label>
-          <datalist id="claude-model-suggestions-m">
-            {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
-          </datalist>
           <label>
             <span>effort (optional)</span>
             <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>

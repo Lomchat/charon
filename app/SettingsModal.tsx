@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import ModelPicker from './ModelPicker';
 
 type Props = {
   onClose: () => void;
@@ -110,30 +111,19 @@ export default function SettingsModal({ onClose }: Props) {
                 <code> high</code> · <code>xhigh</code> · <code>max</code>.
               </p>
               <label>default model
-                <input
+                <ModelPicker
                   value={s['claude.default_model'] ?? ''}
-                  onChange={(e) => set('claude.default_model', e.target.value)}
-                  placeholder="(empty = SDK default)"
-                  list="claude-default-model-suggestions"
-                  autoComplete="off"
+                  onChange={(v) => set('claude.default_model', v)}
+                  inheritPlaceholder="SDK default"
                 />
               </label>
               <label>default fallback model (used when primary is rate-limited)
-                <input
+                <ModelPicker
                   value={s['claude.default_fallback_model'] ?? ''}
-                  onChange={(e) => set('claude.default_fallback_model', e.target.value)}
-                  placeholder="(empty = no fallback)"
-                  list="claude-default-model-suggestions"
-                  autoComplete="off"
+                  onChange={(v) => set('claude.default_fallback_model', v)}
+                  inheritPlaceholder="none"
                 />
               </label>
-              <datalist id="claude-default-model-suggestions">
-                <option value="claude-opus-4-7" />
-                <option value="claude-opus-4-8" />
-                <option value="claude-sonnet-4-5" />
-                <option value="claude-sonnet-4-7" />
-                <option value="claude-haiku-4-5" />
-              </datalist>
               <label>default effort
                 <select
                   value={s['claude.default_effort'] ?? ''}
