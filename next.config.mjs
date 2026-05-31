@@ -28,7 +28,11 @@ const securityHeaders = [
 ];
 
 const nextConfig = {
-  serverExternalPackages: ['better-sqlite3'],
+  // Native modules must stay external so Next doesn't try to bundle their
+  // .node binaries (which would break SSR / the server runtime). `node-pty`
+  // (remote tmux shells) joins `better-sqlite3` here; both are compiled
+  // against the running Node ABI and must be rebuilt on a Node upgrade.
+  serverExternalPackages: ['better-sqlite3', 'node-pty'],
   reactStrictMode: false,
   poweredByHeader: false,
   async headers() {

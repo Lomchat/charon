@@ -29,6 +29,16 @@ const SSH_OPTS = [
 // Progressive backoff on reconnection. Capped at 5min.
 const RECONNECT_BACKOFFS_MS = [1_000, 3_000, 8_000, 20_000, 60_000, 120_000, 300_000];
 
+// How many consecutive failed reconnects before we PERSIST agentStatus='error'.
+// The SSH `--connect` proxy dropping is a TRANSPORT event — the agent daemon
+// keeps running on its Unix socket and survives it. A transient drop (network
+// blip, ServerAlive timeout, sshd restart) must NOT flip a healthy agent to
+// 'error' (it would stick in the UI until the next SSR — there's no live push
+// for agentStatus). We only flag 'error' once reconnection has genuinely failed
+// this many times in a row (~1+3+8 ≈ 12s of being unreachable). 'missing' (pyz
+// truly absent) is always persisted immediately. See §14 gotcha "agent in error".
+const ERROR_PERSIST_AFTER_ATTEMPTS = 3;
+
 type Pending = {
   resolve: (v: any) => void;
   reject: (e: Error) => void;
@@ -51,6 +61,12 @@ export class AgentClient {
   status: AgentClientStatus = 'idle';
   hello: AgentHelloResult | null = null;
   lastConnectError: string | null = null;
+  // Last classification of the agent's reachability, mirroring the DB
+  // `agentStatus` vocabulary ('ok' | 'missing' | 'error'). Updated on every
+  // hello success and every SSH exit, even when we choose NOT to persist it
+  // (transient-drop gating, see ERROR_PERSIST_AFTER_ATTEMPTS). The manual
+  // "refresh agent" endpoint reads this for a definitive verdict.
+  lastClassified: 'ok' | 'missing' | 'error' | null = null;
 
   private child: ChildProcessWithoutNullStreams | null = null;
   private nextReqId = 1;
@@ -299,6 +315,7 @@ export class AgentClient {
         this.hello = hello;
         this.reconnectAttempts = 0;
         this.lastConnectError = null;
+        this.lastClassified = 'ok';
         this._setStatus('connected');
         // Persist the ping side-effect: timestamp + version
         try {
@@ -389,12 +406,21 @@ export class AgentClient {
     }
     this.pending.clear();
 
-    // Tag DB: missing / error based on stderr (heuristic)
+    // Classify the exit and tag the DB. 'missing' (pyz absent) is definitive
+    // and persisted immediately. 'error' is only persisted once we've failed
+    // to reconnect ERROR_PERSIST_AFTER_ATTEMPTS times in a row — a transient
+    // SSH transport drop must not flip a healthy agent to 'error' (see the
+    // const comment above). We always record the in-memory classification so
+    // the manual "refresh agent" endpoint can give a definitive verdict.
+    const isMissing = /No such file|introuvable|not found/i.test(tail) || code === 127;
+    this.lastClassified = isMissing ? 'missing' : 'error';
     try {
-      const isMissing = /No such file|introuvable|not found/i.test(tail) || code === 127;
-      db.update(vpsTable).set({
-        agentStatus: isMissing ? 'missing' : 'error',
-      }).where(eq(vpsTable.id, this.vps.id)).run();
+      const shouldPersist = isMissing || this.reconnectAttempts >= ERROR_PERSIST_AFTER_ATTEMPTS;
+      if (shouldPersist) {
+        db.update(vpsTable).set({
+          agentStatus: this.lastClassified,
+        }).where(eq(vpsTable.id, this.vps.id)).run();
+      }
     } catch {}
 
     // If we hadn't resolved ready yet (first connect), reject.

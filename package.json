@@ -47,6 +47,7 @@
     "diff": "^9.0.0",
     "drizzle-orm": "^0.39.3",
     "next": "^15.1.6",
+    "node-pty": "^1.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

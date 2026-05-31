@@ -69,6 +69,24 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled }: Props
       fitRef.current = fit;
       term.focus();
 
+      // Forward the terminal size to the server so the remote tmux client
+      // (and thus htop/vim/…) match the browser. Debounced; deduped on
+      // unchanged dimensions.
+      let lastSize = '';
+      const pushResize = () => {
+        const cols = term.cols, rows = term.rows;
+        const key = `${cols}x${rows}`;
+        if (key === lastSize || !cols || !rows) return;
+        lastSize = key;
+        fetch(`/api/shells/${shellId}/resize`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cols, rows }),
+        }).catch(() => {});
+      };
+      pushResize();
+      term.onResize(() => pushResize());
+
       // User input → POST
       term.onData((data: string) => {
         fetch(`/api/shells/${shellId}/input`, {

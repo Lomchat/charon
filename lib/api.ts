@@ -6,6 +6,7 @@
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
+  RefreshVpsAgentResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -93,6 +94,10 @@ export const api = {
     send<TestVpsResponse>('POST', `/api/vps/${id}/test`),
   updateVpsAgent: (id: string) =>
     send<UpdateVpsAgentResponse>('POST', `/api/vps/${id}/agent/update`),
+  refreshVpsAgent: (id: string) =>
+    // Can take up to ~40s in the worst case (reconnect → start daemon →
+    // reconnect), so override the default 30s client timeout.
+    send<RefreshVpsAgentResponse>('POST', `/api/vps/${id}/agent/refresh`, undefined, { timeoutMs: 50_000 }),
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),
   updateLocalAgent: () =>

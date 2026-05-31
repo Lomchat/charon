@@ -67,6 +67,14 @@ export type UpdateVpsAgentResponse = {
   detail: string;
 };
 
+export type RefreshVpsAgentResponse = {
+  ok: boolean;
+  agentStatus: 'ok' | 'missing' | 'error' | 'unknown';
+  agentVersion?: string | null;
+  agentPyzSha?: string | null;
+  error?: string;
+};
+
 export type LocalAgentStatus = {
   installed: boolean;
   deployedPyzSha: string | null;
@@ -80,6 +88,10 @@ export type LocalAgentStatus = {
 export type ShellsListResponse = { shells: ShellInfo[] };
 export type StartShellBody = { cwd?: string | null };
 export type UpdateShellBody = { name?: string | null; color?: string | null };
+// POST /api/shells/[id]/resize — like /input, consumed via raw fetch from the
+// terminal component (no api.ts wrapper). Forwards xterm dimensions to the
+// node-pty attach (→ remote tmux client resize).
+export type ResizeShellBody = { cols: number; rows: number };
 
 // ── Installs (agent install sessions) ────────────────────────────────────────
 // In-memory only, shell pattern. No POST body (the VPS id is enough).

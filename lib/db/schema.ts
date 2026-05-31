@@ -170,6 +170,29 @@ export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   index('idx_claude_session_logs_session_id_id').on(t.sessionId, t.id),
 ]);
 
+// Persistent SSH shells. Unlike the pre-tmux design (in-memory only, lost on
+// Charon restart), the actual terminal now lives in a `tmux` session on the
+// VPS named `charon-<id>`. This table is just the index Charon uses to list
+// and re-attach to those sessions after a restart — the durable state is the
+// tmux session itself (which a human can also `tmux attach -t charon-<id>`).
+// Rows are pruned at boot for tmux sessions that no longer exist on the VPS
+// (cf. reconcileShellsOnBoot in lib/server/shell/shellSession.ts) and deleted
+// when the shell is explicitly closed (tmux kill-session + DELETE).
+export const shells = sqliteTable('shells', {
+  id: text('id').primaryKey(),
+  vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
+  // tmux session name on the VPS. Always `charon-<id>` (kept explicit so the
+  // mapping survives any future change to the id→name scheme).
+  tmuxName: text('tmux_name').notNull(),
+  cwd: text('cwd'),
+  name: text('name'),
+  color: text('color'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
+}, (t) => [
+  // GET /api/vps/[id]/shells + boot reconcile filter by vpsId.
+  index('idx_shells_vps_id').on(t.vpsId),
+]);
+
 export const claudeSettings = sqliteTable('claude_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
@@ -196,5 +219,6 @@ export type ClaudeSessionMessage = typeof claudeSessionMessages.$inferSelect;
 export type ClaudePendingPermission = typeof claudePendingPermissions.$inferSelect;
 export type ClaudePendingQuestion = typeof claudePendingQuestions.$inferSelect;
 export type ClaudeSessionLog = typeof claudeSessionLogs.$inferSelect;
+export type Shell = typeof shells.$inferSelect;
 export type ClaudeSetting = typeof claudeSettings.$inferSelect;
 export type ClaudePushSub = typeof claudePushSubs.$inferSelect;

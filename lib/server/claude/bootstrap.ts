@@ -373,6 +373,41 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
   }
 }
 
+// ── Ensure the agent daemon is running (START-if-not-running) ──────────────
+// Used by the manual "refresh agent" endpoint (POST /api/vps/[id]/agent/refresh)
+// when a plain reconnect fails: the SSH `--connect` proxy exits 2 when the
+// daemon's socket is absent (daemon dead). We then (re)start the daemon —
+// but ONLY if it isn't already running, so we NEVER kill a live daemon's
+// in-flight SDK turns. (The common "refresh" case is a transient transport
+// drop where the daemon is alive; the route tries a bare reconnect FIRST and
+// only calls this on failure.) This is `start`, not `restart`. Idempotent.
+export type EnsureRunningResult = { ok: boolean; mode: 'already' | 'systemd' | 'nohup' | 'failed'; detail: string };
+export async function ensureAgentRunning(vps: Vps): Promise<EnsureRunningResult> {
+  const cmd = [
+    'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
+    // Already running? Leave it strictly alone (don't disturb live sessions).
+    "if pgrep -f 'charon-agent\\.pyz$' >/dev/null 2>&1 || systemctl --user is-active charon-agent.service >/dev/null 2>&1; then echo ALREADY; exit 0; fi",
+    // systemd-user `start` (a no-op if somehow active; never `restart`).
+    'if systemctl --user start charon-agent.service 2>/dev/null; then',
+    '  sleep 1',
+    '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then echo OK_SYSTEMD; exit 0; fi',
+    'fi',
+    // nohup fallback (same PY resolution as install/update).
+    'if [ -x "$HOME/.charon/venv/bin/python" ]; then PY="$HOME/.charon/venv/bin/python"; else PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); fi',
+    '[ -z "$PY" ] && { echo NO_PYTHON >&2; exit 11; }',
+    'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
+    'sleep 1',
+    'echo OK_NOHUP',
+  ].join('\n');
+  const r = await sshExec(vps, cmd, { timeoutMs: 15_000 });
+  const out = r.stdout;
+  if (out.includes('ALREADY')) return { ok: true, mode: 'already', detail: 'daemon already running' };
+  if (out.includes('OK_SYSTEMD')) return { ok: true, mode: 'systemd', detail: 'started via systemd --user' };
+  if (out.includes('OK_NOHUP')) return { ok: true, mode: 'nohup', detail: 'started via nohup fallback' };
+  const tail = (r.stderr.slice(-300) || out.slice(-300) || `exit ${r.code}`).trim();
+  return { ok: false, mode: 'failed', detail: tail };
+}
+
 // ── Main flow ───────────────────────────────────────────────────────────────
 export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
   // Multiplex ALL phases over a single SSH master (cf. sshExec.ts §

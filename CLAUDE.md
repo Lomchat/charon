@@ -43,7 +43,9 @@ per VPS**.
 The whole thing offers:
 - A desktop multi-session dashboard (sidebar VPS → sessions → messages)
 - A dedicated mobile UI (`/m/...`)
-- Ephemeral SSH shells (xterm.js) in addition to Claude sessions
+- Persistent SSH shells (xterm.js) in addition to Claude sessions — the
+  terminal runs inside a `tmux` session on the VPS, so it survives Charon
+  restarts and a human can `tmux attach` to the same session from the server
 - Session survival across Charon restarts (the agent keeps running, Charon
   re-subscribes on reboot with ring buffer replay)
 - Automated VPS bootstrap (install Python + SDK + agent in an SSE stream)
@@ -86,7 +88,7 @@ The whole thing offers:
 │       ├── agent/        # AgentClient, AgentClientPool, sessionOps, autoConnect,
 │       │                 # eventConnections, builtPyzSha, claudeLoginCheck, types
 │       ├── claude/       # bootstrap.ts (install phases), sshExec.ts, types.ts
-│       ├── shell/        # ephemeral SSH shells
+│       ├── shell/        # persistent SSH shells (tmux on VPS + node-pty attach)
 │       ├── install/installSession.ts  # in-memory install pool
 │       ├── auth.ts, session.ts, crypto.ts
 │       └── seed.ts, migrationV2.ts
@@ -149,7 +151,7 @@ Note that `dev` uses turbopack without breaking — it's only the
 ### Next.js config (`next.config.mjs`)
 
 ```js
-serverExternalPackages: ['better-sqlite3'],  // otherwise SSR breaks
+serverExternalPackages: ['better-sqlite3', 'node-pty'],  // native modules — otherwise SSR breaks
 reactStrictMode: false,
 poweredByHeader: false
 ```
@@ -195,6 +197,7 @@ and `PRAGMA foreign_keys=ON`.
 | `claudeSessionLogs` | autoincrement | per-session audit / debug |
 | `claudeSettings` | `key` PK | key/value settings (telegram token, VAPID, etc.) |
 | `claudePushSubs` | `id` PK, UNIQUE `endpoint` | Web Push endpoints |
+| `shells` | `id` PK, FK `vpsId` | persistent SSH shells. The terminal lives in a `tmux` session `charon-<id>` on the VPS; this row is just the index Charon uses to re-list/re-attach after a restart. `tmuxName`, `cwd`, `name`, `color`. Cascade `vps → shells`. |
 
 Cascades: `vps → vpsPaths`, `vps → claudeSessions`, `claudeSessions → messages/permissions/questions/logs` (all CASCADE).
 
@@ -263,6 +266,7 @@ happens API-side (`/api/vps-folders/layout` rejects unknown
 | 0010 | adds 5 hot-path indexes: `claude_session_messages(session_id, id)`, `claude_pending_permissions(session_id, status)`, `claude_pending_questions(session_id, status)`, `claude_session_logs(session_id, id)`, `vps_paths(vps_id)`. SQLite doesn't auto-index FKs, so every `WHERE session_id = ?` was a full scan before this. The compound `(session_id, id)` matches the chat window / delta polling / pagination queries (filter by session then range over id). `CREATE INDEX IF NOT EXISTS` for idempotency. Hand-written (drizzle-kit generated noisy redeclarations of existing tables — keeping the schema source-of-truth in TS via the `(t) => [index(...)]` form). |
 | 0011 | `claude_sessions` += `last_seen_seq` (integer, nullable). Checkpoint of the highest agent-event-log `seq` Charon has persisted; used on reconnect via `subscribe({after_seq})` so the agent replays durably-stored events that fell out of the in-memory ring (agent >= 0.4.0). Null = no checkpoint yet → fallback to `replay: 300` ring tail. Hand-written. |
 | 0012 | `claude_sessions` += `last_stop_notified_seq` (integer, nullable). Dedup guard for the "Claude finished" push: the `stop` handler in `sessionOps.ts` previously had NO replay guard (unlike permission/question/exit_plan, which check `isReplaying && replayKnownPendingIds`), so every agent re-subscribe (Charon reboot, SSH reconnect) replayed past `stop` events and re-pushed a duplicate "finished" notification for each session. Now: skip push while `isReplaying`; otherwise only push a stop whose `seq` > this column, then advance + persist it (survives restarts so the dedup is durable). Agents < 0.4.0 (no `seq`) fall back to the `isReplaying` guard alone. Hand-written. |
+| 0013 | creates the `shells` table (`id`, `vps_id` FK→`vps` CASCADE, `tmux_name`, `cwd`, `name`, `color`, `created_at`) + index `idx_shells_vps_id`. Backs the persistent-shells refactor: SSH shells used to be in-memory only (one ssh child per shell, lost on any Charon restart); the terminal now lives in a remote `tmux` session and this row is the index for re-listing/re-attaching. Hand-written (drizzle-kit emits noisy table redeclarations; schema source-of-truth stays in TS). |
 
 Typical workflow for changing the schema:
 1. Edit `lib/db/schema.ts`
@@ -618,18 +622,35 @@ auths with Bearer `SYNC_TOKEN`).
 - `GET /api/vps/[id]/claude/bootstrap` — SSE phases
 - `POST /api/vps/[id]/claude/setup` — one-shot bootstrap
 - `POST /api/vps/[id]/agent/update` — redeploy `.pyz`
+- `POST /api/vps/[id]/agent/refresh` — manual "reconnect" for a VPS shown as `error`. Two-phase: (1) drop + recreate the `AgentClient` and await a fresh `hello` (bypasses the up-to-5min reconnect backoff, daemon untouched → safe for a live agent with in-flight turns); (2) only if (1) fails, `ensureAgentRunning(vps)` **starts the daemon if it isn't already running** (proxy exit 2 = socket absent = daemon dead) then reconnects. Never `restart`s a live daemon. Persists + returns a definitive `agentStatus` (`{ ok, agentStatus, agentVersion?, agentPyzSha?, error? }`). Client wrapper uses a 50s timeout (the route can take ~40s worst case). See §14 gotcha 34.
 - `GET /api/vps/[id]/claude/scan` — Claude sessions found on disk (for import)
 - `POST /api/vps/[id]/claude/check-login` — re-checks `claude config get oauth.refresh_token` via SSH + persists `vps.claudeLoggedIn` in DB. Triggered: (1) on `LoginConsole` close UI-side, (2) automatically by `autoConnect` on every `connected` event of an `AgentClient` if `claudeLoggedIn` is null or `claudeLoggedInCheckedAt` older than 24h (TTL). The SSH+DB logic lives in `lib/server/agent/claudeLoginCheck.ts` (`refreshClaudeLoginStatus` + `refreshClaudeLoginStatusIfStale`) to be shared between the route and the auto-check.
 - `GET|POST|DELETE /api/vps/[id]/login` — manage `claude login`
 - `GET /api/vps/[id]/login/stream` — SSE TUI
 - `POST /api/vps/[id]/login/input` — stdin
 
-### Ephemeral SSH shells
+### Persistent SSH shells (tmux-backed)
 
-- `GET|POST /api/shells`
-- `GET|PATCH|DELETE /api/shells/[id]`
-- `GET /api/shells/[id]/stream` — SSE
-- `POST /api/shells/[id]/input`
+The terminal runs inside a `tmux` session named `charon-<id>` on the VPS.
+Charon attaches over `ssh -tt … tmux new-session -A -s charon-<id>` driven by
+**node-pty** (so `TERM` + the window size forward correctly — fixes htop/vim
+"terminal unknown" + gives live resize). The attach is ephemeral and lazily
+(re)spawned; the durable terminal is the tmux session. See
+`lib/server/shell/shellSession.ts`.
+
+- `GET|POST /api/shells` — list all / (POST unused; create is per-VPS below)
+- `GET|PATCH|DELETE /api/shells/[id]` — PATCH name/color (persisted in DB). **DELETE** = `tmux kill-session` on the VPS + drop the row (the shell really ends).
+- `GET /api/shells/[id]/stream` — SSE (replays the in-memory ring; on a fresh attach the first output is tmux's full-screen redraw)
+- `POST /api/shells/[id]/input` — `{content}` → written to the node-pty attach
+- `POST /api/shells/[id]/resize` — `{cols, rows}` → `pty.resize()` → SIGWINCH through SSH → tmux client resizes. Sent by `ShellTerminal` on open + on every xterm `onResize` (deduped on unchanged dims). Like `/input`, consumed via raw fetch (no `api.ts` wrapper).
+- `POST /api/vps/[id]/shells` — create a shell on this VPS (`{cwd?}`). Inserts the `shells` row, best-effort `tmux` install, spawns the attach.
+- `GET /api/vps/[id]/shells` — list this VPS's shells (DB-backed → survives restart).
+
+Persistence: on Charon boot, `reconcileShellsOnBoot()` (called from
+`seedInitialData`, i.e. on first page SSR) SSHes each VPS that has shell rows
+and **prunes rows whose tmux session is gone** (inner shell exited / VPS
+rebooted). An SSH-level failure (unreachable) leaves rows untouched. Live
+sessions are re-attached lazily when a browser opens the shell.
 
 ### Agent installs (install sessions, in-memory, max 1 per VPS)
 
@@ -812,12 +833,12 @@ history refetch, delta polling, and stream event handling.
 
 Most components are self-describing by filename (`app/PermissionPopup.tsx`, `QuestionCard.tsx`, `ExitPlanCard.tsx`, `SearchModal.tsx`, `SettingsModal.tsx`, `Sidebar.tsx`, `Message.tsx`, `ToolPanel.tsx`, etc.). Notable behaviors that aren't obvious from reading the file:
 
-- **`Sidebar.tsx`**: folder `collapsed` state in DB (`PATCH /api/vps-folders/[id]`), per-VPS collapsed in localStorage. "+ Claude session" and "History" are disabled when `agentStatus !== 'ok'`; SSH shell + install agent remain available.
+- **`Sidebar.tsx`**: folder `collapsed` state in DB (`PATCH /api/vps-folders/[id]`), per-VPS collapsed in localStorage. "+ Claude session" and "History" are disabled when `agentStatus !== 'ok'`; SSH shell + install agent remain available. Agent action button depends on status: `missing`/`unknown` → "▸ install agent"; `error` → "↻ refresh agent" (reconnect, see §14 gotcha 34) + quiet "reinstall" fallback; `ok` + out-of-date → "⇪ update agent".
 - **`TabBar.tsx`**: 2-row VSCode-style strip above the main column (own grid row `tabs`). **Row 1** = VPSes with at least one open entity, in sidebar order; click switches "active VPS". **Row 2** = entities of the active VPS only. Border-top colors: green=active, amber=starting, amber-pulse=thinking, orange-pulse=waiting, grey+italic=sleeping. Only non-active tabs get a × (purely local — entity stays in DB/sidebar; permanent delete goes through the sidebar context menu). Right of row 2: "+ Claude" and "+ SSH" buttons, cwd computed by `defaultCwdFor(vpsId)` (rightmost tab's cwd → fallback `Vps.defaultPath`). "+ Claude" disabled when `agentStatus !== 'ok'`. Active VPS derived from selected entity (`useMemo`), with `lastSelectedByVpsRef` to restore last entity on tab switch. `keptOpenIds` is local. No drag-reorder. Helper `computeTabs(...)` returns `{ vpsTabs, entitiesByVps, flat }`.
 - **`DataModal.tsx`**: drag-and-drop via `@dnd-kit` for folders + VPSes (intra/cross-folder). Drag-end → atomic `POST /api/vps-folders/layout`.
 - **`SessionContextMenu.tsx`**: for Claude sessions, only "Delete permanently" (no intermediate "kill" since the refactor — see §10). For shells/installs, "Close".
 - **`InstallSessionView.tsx`**: full-screen install log (fills `.claude-main`), SSE on `/api/installs/[id]/stream` (ring buffer replay + live). Replaces the old `BootstrapBanner`.
-- **`LoginConsole.tsx` / `ShellTerminal.tsx`**: xterm.js terminals; both wire their SSE into `useTerminalUrlOverlay` to detect wrapped URLs and offer copy/open (`terminalUrlDetect.ts` regex handles newlines + up to 4 spaces of wrap; 60-char threshold).
+- **`LoginConsole.tsx` / `ShellTerminal.tsx`**: xterm.js terminals; both wire their SSE into `useTerminalUrlOverlay` to detect wrapped URLs and offer copy/open (`terminalUrlDetect.ts` regex handles newlines + up to 4 spaces of wrap; 60-char threshold). `ShellTerminal` also POSTs its dimensions to `/api/shells/[id]/resize` on open + on every `onResize` (fit-driven), so the remote tmux client matches the browser. It's shared by desktop (`ClaudePanel`) and mobile (`app/m/shell/MobileShell.tsx`), so both get persistence + resize for free.
 
 ### Mobile (`app/m/`)
 
@@ -930,7 +951,7 @@ common code extracted after the maintainability audit:
 6. **Agent out of date**: if `vps.agentPyzSha !== getBuiltPyzSha()`, UI offers the update button (`POST /api/vps/[id]/agent/update`). Bump `__version__` in `agent/charon_agent/__init__.py` on protocol changes.
 7. **`claude login` is per-VPS** (no shared OAuth). Goes through `<LoginConsole>` (xterm SSH `-tt`).
 8. **`alwaysAllow` is in-memory hub-side** (per session, per tool) — lost on Charon restart. By design: permanent retention = `permission_mode='auto'`.
-9. **better-sqlite3 + Next**: `serverExternalPackages: ['better-sqlite3']` mandatory in `next.config.mjs`. Otherwise SSR crashes.
+9. **Native modules + Next**: `serverExternalPackages: ['better-sqlite3', 'node-pty']` mandatory in `next.config.mjs`. Otherwise SSR crashes / Next tries to bundle the `.node` binary. Both are compiled against the running Node ABI (see gotcha 33).
 10. **SQLite WAL** = 3 files (`.db`, `.db-shm`, `.db-wal`), all critical. `PRAGMA foreign_keys=ON` set at boot.
 11. **SSH injection**: every `filePath`/`cwd`/slug interpolated into `sshExec` MUST go through `shQuote()` (`lib/server/claude/sshExec.ts`). POSIX single quotes only — `"$x"` is not enough.
 12. **Module-level signal handlers in `sessionOps.ts`**: SIGTERM/SIGINT guard with `process.env.NEXT_PHASE !== 'phase-production-build'` to avoid `process.exit(0)` during `next build`. Apply the same guard to any new global handler.
@@ -999,6 +1020,22 @@ common code extracted after the maintainability audit:
 
     Server side, `sleepSession` now (a) broadcasts `status='sleeping'` on the global bus right away (so the sidebar + other tabs flip without waiting) and sets the in-memory `stream.status`, and (b) fires `client.call('sleep_session')` **fire-and-forget** (`.catch()` logs) instead of `await`-ing it — the agent's `stop()` blocks up to 5s on `asyncio.wait_for(main_task, timeout=5.0)` (SDK teardown of the in-flight turn), which used to wedge the HTTP response. The DB + broadcast already reflect the truth; the agent stop is best-effort cleanup. (`resume` was already optimistic via `setStatus('starting')` — this generalises the pattern.)
 
+33. **Persistent SSH shells = remote tmux + node-pty attach** (`lib/server/shell/shellSession.ts`). The old shells were in-memory only (one piped `ssh` child per shell; lost on any Charon restart) and ran `exec $SHELL -l` with **no `TERM`** → ncurses apps (htop, vim, top, nano, less) died with *"Error opening terminal: unknown"* (NOT "command not found"). The redesign:
+    - The terminal is a `tmux` session `charon-<id>` on the VPS. Charon attaches via `node-pty.spawn('ssh', ['-tt', …, 'exec tmux -u new-session -A -s charon-<id> [-c <cwd>]'])`. node-pty gives the local ssh a **real controlling tty**, so `TERM` propagates and `pty.resize(cols,rows)` forwards `SIGWINCH` through SSH → the tmux client resizes. Inside tmux, `TERM=screen` (tmux's default `default-terminal` — a universally-present terminfo, so htop works; we deliberately don't set `screen-256color`/`tmux-256color` to avoid touching a shared tmux server's global options — colors are 8/16, acceptable; revisit if 256-color is wanted).
+    - **`-tt` is still required**: tmux refuses to attach without a remote PTY. node-pty supplies the *local* controlling tty that makes `-tt` + size-forwarding work.
+    - Persistence: the `shells` DB row (migration 0013) is just the index. The attach is ephemeral and **lazily (re)spawned** on subscribe/input/resize — so after a Charon restart the shell re-lists from DB and re-attaches to the SAME tmux session (full screen state preserved via tmux's redraw). A human can `tmux attach -t charon-<id>` from the server and share the exact terminal.
+    - **Distinguish detach from exit**: when the node-pty attach exits, the handler runs `tmux has-session`; if alive → it was a network drop → re-attach with backoff (while a viewer is present, capped at `MAX_REATTACH`); if gone → the inner shell exited → mark exited + purge row after a grace period. An SSH-level failure (VPS unreachable) is treated as "alive" (don't declare dead on a hiccup).
+    - **Boot reconcile** (`reconcileShellsOnBoot`, called from `seedInitialData` = first page SSR, NOT on API calls): per-VPS `tmux ls`, prune rows whose session is gone. Gotcha-within-gotcha: the prune guard must check `pool.get(id)?.attached` (a live/attaching attach), NOT `pool.has(id)` — because `listShells()` (GET `/api/shells`) hydrates a non-attached instance into the pool just to read `info()`, and a bare `pool.has` would then protect a genuinely-dead shell from pruning forever. On prune, also `pool.delete(id)` so a stale hydrated instance can't `new-session -A`-resurrect a dead session.
+    - **node-pty is a native module**: compiled against the running Node ABI (here `/root/.nvm/.../v20.19.5`). It MUST be rebuilt on a Node upgrade (`npm rebuild node-pty`), same constraint as `better-sqlite3`. Install with the v20 toolchain actually first in `PATH` — `npm`'s `#!/usr/bin/env node` shebang otherwise picks the system node (v16 here) and the build targets the wrong ABI (symptom: `Cannot find module '../build/Debug/pty.node'` at load).
+    - tmux is installed best-effort **inline in the attach command** (`TMUX_ENSURE`: `if ! command -v tmux; then <apt/dnf/yum/apk/pacman, with apt-get update fallback>; fi; exec tmux …`). Inline (not a separate fire-and-forget SSH) so there's no concurrent apt-lock race and cold re-attach after a restart self-heals too. When tmux is present (the common case + every re-attach) it's a single cheap `command -v` then `exec tmux`. No dedicated bootstrap phase.
+
+34. **False "agent in error" on a healthy VPS** (`lib/server/agent/AgentClient.ts § _handleExit`). The SSH `--connect` proxy is a *transport* tunnel to the agent's Unix socket; the agent daemon runs independently and survives the SSH dropping. The old code wrote `agentStatus='error'` on **every** non-"not found" SSH exit, so a transient drop (network blip, `ServerAliveInterval`×`ServerAliveCountMax`=120s timeout, sshd restart, VPS briefly unreachable) flipped a perfectly healthy agent to `error`. Two amplifiers made it stick visibly: (1) **there is no live SSE push for `agentStatus`** — the browser only reads it at SSR, so the stale `error` persisted until a manual page reload even after Charon reconnected seconds later; (2) the reconnect **backoff caps at 5min**, so the DB genuinely said `error` for minutes. The UI then offered "▸ install agent" (wrong — the agent IS installed).
+
+    **Fixes:**
+    - `_handleExit` now records the classification in `AgentClient.lastClassified` (`'ok'|'missing'|'error'`) but only **persists** `error` once `reconnectAttempts >= ERROR_PERSIST_AFTER_ATTEMPTS` (3 ≈ ~12s of genuinely-failed reconnects). `missing` (pyz absent: stderr "not found" / exit 127) stays definitive and is persisted immediately. So a quick reconnect never surfaces as `error`. Don't lower the threshold to 0 or you reintroduce the flapping.
+    - New manual endpoint `POST /api/vps/[id]/agent/refresh` (see §8): two-phase. Phase 1 drops the stuck client, recreates it, awaits a fresh `hello` (bypassing the backoff, daemon untouched). Phase 2 (only if Phase 1 fails) calls `ensureAgentRunning(vps)` in `bootstrap.ts` — a `start`-if-not-running (NOT `restart`, so a live daemon's in-flight turns are never killed) covering the dead-daemon case (proxy exits 2 when the socket is absent), then reconnects. On success the hello path persists `ok` + version + sha; on failure it persists the definitive `lastClassified` and returns it. This is the "reconnect / revive now" verdict.
+    - Sidebar (`app/Sidebar.tsx § renderVpsCard`): for `agentStatus==='error'` the primary action is now "↻ refresh agent" (calls `runRefreshAgent` in `ClaudePanel.tsx` → patches the local row with the returned status), with a quiet "reinstall" fallback. `missing`/`unknown` keep "▸ install agent". The badge/label text for `error` is now "agent unreachable" (it's a connection issue, not a broken agent). If you add another agent-status surface, mirror this distinction (`error` ≠ "needs reinstall").
+
 ## 15. Quick lookup (non-obvious entry points)
 
 Filenames cover most things; this table is for the entries you'd never grep from a cold start.
@@ -1024,6 +1061,8 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | TabBar layout logic | `app/TabBar.tsx` + `computeTabs`/`keptOpenIds`/`activeVpsId`/`lastSelectedByVpsRef` in `ClaudePanel.tsx` |
 | VPS folders (DnD + DB-persisted collapse) | `vpsFolders` in `lib/db/schema.ts` + `app/api/vps-folders/**` + `DataModal.tsx` |
 | Durable agent event log (rotation, seq, replay) | `agent/charon_agent/event_log.py` + `_emit` in `server.py` + `SessionStream.lastSeenSeq` in `sessionOps.ts` + `_pendingAfterSeq` in `AgentClient.ts` |
+| Persistent SSH shells (remote tmux + node-pty attach, resize, reconcile) | `lib/server/shell/shellSession.ts` + `app/ShellTerminal.tsx` + `app/api/shells/[id]/resize` + `shells` table in `lib/db/schema.ts` |
+| Agent-status classification (why "error", transient-drop gating, refresh) | `_handleExit`/`lastClassified`/`ERROR_PERSIST_AFTER_ATTEMPTS` in `lib/server/agent/AgentClient.ts` + `app/api/vps/[id]/agent/refresh` + `ensureAgentRunning` in `bootstrap.ts` + §14 gotcha 34 |
 
 ---
 

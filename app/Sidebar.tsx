@@ -94,18 +94,24 @@ type Props = {
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
+  // Re-establish the agent connection (for a VPS shown as 'error' that is
+  // actually healthy — the SSH transport just dropped). See
+  // /api/vps/[id]/agent/refresh.
+  onRefreshAgent?: (vps: Vps) => void;
   // Toggle a folder's collapsed state (persisted in DB via PATCH /api/vps-folders/[id]).
   onToggleFolderCollapsed?: (folderId: string, collapsed: boolean) => void;
   // SHA of the .pyz embedded in the dashboard (used to detect agent out-of-date)
   builtPyzSha?: string | null;
   // VPSes for which an update is in progress (UI loading)
   updatingAgentVpsIds?: Set<string>;
+  // VPSes for which a refresh (reconnect) is in progress (UI loading)
+  refreshingAgentVpsIds?: Set<string>;
 };
 
 const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
   ok:       { glyph: '●', label: 'agent operational' },
   missing:  { glyph: '○', label: 'agent not installed' },
-  error:    { glyph: '◐', label: 'agent in error' },
+  error:    { glyph: '◐', label: 'agent unreachable — connection dropped' },
   unknown:  { glyph: '?', label: 'agent never tested' },
 };
 
@@ -117,8 +123,8 @@ export default function Sidebar({
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
-  onInstallAgent, onLoginAgent, onUpdateAgent, onToggleFolderCollapsed,
-  builtPyzSha, updatingAgentVpsIds,
+  onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
+  builtPyzSha, updatingAgentVpsIds, refreshingAgentVpsIds,
 }: Props) {
 
   // Collapsed VPS sections (persisted in localStorage) — per-VPS, per-device.
@@ -332,8 +338,8 @@ export default function Sidebar({
               onNew, onNewShell, onScan,
               onContext, onContextShell, onContextInstall,
               editingId, onRenameSubmit, onRenameCancel,
-              onInstallAgent, onLoginAgent, onUpdateAgent,
-              builtPyzSha, updatingAgentVpsIds,
+              onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent,
+              builtPyzSha, updatingAgentVpsIds, refreshingAgentVpsIds,
             }))}
             {!folderCollapsed && folderVps.length === 0 && folder.id !== '__orphans__' && (
               <div className="folder-empty">no VPS in this folder — drag one here from the config modal</div>
@@ -372,8 +378,10 @@ type VpsRenderOpts = {
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
+  onRefreshAgent?: (vps: Vps) => void;
   builtPyzSha?: string | null;
   updatingAgentVpsIds?: Set<string>;
+  refreshingAgentVpsIds?: Set<string>;
 };
 
 function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
@@ -384,7 +392,8 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
-    onInstallAgent, onLoginAgent, onUpdateAgent, builtPyzSha, updatingAgentVpsIds,
+    onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent,
+    builtPyzSha, updatingAgentVpsIds, refreshingAgentVpsIds,
   } = opts;
 
   // Groupe sessions + shells par best-matching path
@@ -431,10 +440,11 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
   // session, history = scan of Claude sessions on disk) are disabled.
   // The SSH shell still works because it doesn't need the agent.
   const agentReady = agentStatus === 'ok';
+  const agentRefreshing = !!refreshingAgentVpsIds?.has(v.id);
   const noAgentReason = agentStatus === 'missing'
     ? "install the agent first"
     : agentStatus === 'error'
-    ? "the agent is in error — reinstall it"
+    ? "the agent connection dropped — click \"refresh agent\""
     : "agent not yet verified — click \"install agent\"";
   return (
     <section key={v.id} className={`vps-section vps-card${isCollapsed ? ' collapsed' : ''} agent-${agentStatus}`}>
@@ -464,20 +474,43 @@ function renderVpsCard(v: Vps, opts: VpsRenderOpts) {
           <span className={`vps-agent-text agent-${agentStatus}`}>
             {agentStatus === 'ok'      ? `agent ${agentVersion ? `v${agentVersion}` : 'ok'}`
             : agentStatus === 'missing' ? 'agent not installed'
-            : agentStatus === 'error'   ? 'agent in error'
+            : agentStatus === 'error'   ? 'agent unreachable'
             : 'agent untested'}
           </span>
         </div>
       )}
       {!isCollapsed && (
         <div className="vps-actions">
-          {agentStatus !== 'ok' && onInstallAgent && (
+          {/* 'error' means the SSH transport to the agent dropped — the agent
+              is almost always still installed and running. So we offer
+              "refresh agent" (reconnect) as the primary action instead of a
+              full reinstall, with a quiet "reinstall" fallback for the rare
+              case where the agent is genuinely broken. 'missing'/'unknown' get
+              the install button as before. */}
+          {agentStatus === 'error' && onRefreshAgent ? (
+            <>
+              <button
+                className="vps-act-btn primary"
+                disabled={agentRefreshing}
+                onClick={(e) => { e.stopPropagation(); onRefreshAgent(v); }}
+                title="reconnect to the agent on this VPS (the connection dropped — the agent is likely still running)"
+              >{agentRefreshing ? '⟳ refreshing…' : '↻ refresh agent'}</button>
+              {onInstallAgent && (
+                <button
+                  className="vps-act-btn"
+                  disabled={agentRefreshing}
+                  onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
+                  title="reinstall / repair the agent (only if refresh keeps failing)"
+                >reinstall</button>
+              )}
+            </>
+          ) : agentStatus !== 'ok' && onInstallAgent ? (
             <button
               className="vps-act-btn primary"
               onClick={(e) => { e.stopPropagation(); onInstallAgent(v); }}
               title="install / repair the agent on this VPS"
             >▸ install agent</button>
-          )}
+          ) : null}
           {agentOutOfDate && onUpdateAgent && (
             <button
               className="vps-act-btn agent-update"

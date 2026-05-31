@@ -355,6 +355,40 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [pushBusy, setPushBusy] = useState(false);
   // Set of VPSes whose agent is being updated (UI loading)
   const [updatingAgentVpsIds, setUpdatingAgentVpsIds] = useState<Set<string>>(new Set());
+  // Set of VPSes whose agent connection is being refreshed (UI loading)
+  const [refreshingAgentVpsIds, setRefreshingAgentVpsIds] = useState<Set<string>>(new Set());
+
+  // "Refresh agent": re-establish the SSH+hello connection without a full
+  // reinstall. For a VPS shown as 'error' whose agent is actually healthy
+  // (the transport just dropped). Patches the local row with the verdict.
+  async function runRefreshAgent(vps: Vps) {
+    if (refreshingAgentVpsIds.has(vps.id)) return;
+    setRefreshingAgentVpsIds((prev) => new Set(prev).add(vps.id));
+    try {
+      const r = await api.refreshVpsAgent(vps.id);
+      setVpsList((prev) => prev.map((v) =>
+        v.id === vps.id
+          ? ({
+              ...v,
+              agentStatus: r.agentStatus,
+              agentVersion: r.agentVersion ?? v.agentVersion,
+              agentPyzSha: r.agentPyzSha ?? v.agentPyzSha,
+            } as Vps)
+          : v
+      ));
+      if (!r.ok) {
+        setError({ msg: `refresh agent: ${r.error ?? 'agent still unreachable'}` });
+      }
+    } catch (e: any) {
+      setError({ msg: `refresh agent: ${e?.message ?? e}` });
+    } finally {
+      setRefreshingAgentVpsIds((prev) => {
+        const n = new Set(prev);
+        n.delete(vps.id);
+        return n;
+      });
+    }
+  }
 
   async function runUpdateAgent(vps: Vps) {
     if (updatingAgentVpsIds.has(vps.id)) return;
@@ -968,6 +1002,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onInstallAgent={openInstallSession}
         onLoginAgent={(v) => setLoginVps(v)}
         onUpdateAgent={(v) => { runUpdateAgent(v); }}
+        onRefreshAgent={(v) => { runRefreshAgent(v); }}
         onToggleFolderCollapsed={async (folderId, collapsed) => {
           // Optimistic: update immediately, then POST. Roll back if it fails.
           setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 1 : 0 } : f));
@@ -980,6 +1015,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         }}
         builtPyzSha={builtPyzSha}
         updatingAgentVpsIds={updatingAgentVpsIds}
+        refreshingAgentVpsIds={refreshingAgentVpsIds}
       />
 
       <TabBar
