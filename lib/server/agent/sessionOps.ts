@@ -1006,9 +1006,22 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     const client = getAgentClientForVpsId(row.vpsId);
     // ORDER: make sure the session exists on the agent side BEFORE subscribing
     // (otherwise the subscribe RPC throws session_not_found).
+    //
+    // `resolvedStatus` = the agent's AUTHORITATIVE status after the resume.
+    // It is the linchpin of the noop path below: when the agent already has
+    // the session running it returns {noop:true} and emits NO status event,
+    // so without adopting this value the in-memory stream would keep whatever
+    // stale status it had (typically 'sleeping' after a desync) forever — and
+    // the /resume route would keep reporting 'sleeping'. See CLAUDE.md §14
+    // gotcha 36.
+    let resolvedStatus: WorkerStatus = 'starting';
     try {
       const rpcRes = await client.call('resume_session', { session_id: sessionId });
       console.warn(`[resume-debug] ${sessionId} resume_session RPC OK: ${JSON.stringify(rpcRes)} @${Date.now()}`);
+      const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
+      if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
+        resolvedStatus = agentStatus;
+      }
     } catch (e: any) {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
       console.warn(`[resume-debug] ${sessionId} resume_session RPC threw (isNotFound=${isNotFound}): ${e?.message ?? e} @${Date.now()}`);
@@ -1043,9 +1056,18 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // already tried a subscribe on the agent side that failed (session not yet
     // existing). Force a new subscribe now that it exists.
     client.resubscribe(sessionId);
-    db.update(claudeSessions).set({ status: 'active' })
+    // Reconcile the in-memory stream + every SSE client + DB with the agent's
+    // authoritative status. CRITICAL for the noop path: a session the agent
+    // already considers active emits NO status event, so without this the
+    // in-memory status stays pinned to its stale value (typically 'sleeping'),
+    // /resume returns {status:'sleeping'}, and the UI shows the session as
+    // never resuming — clicking "resume" has no visible effect. Mirrors
+    // sleepSession's optimistic broadcast pattern. See CLAUDE.md §14 gotcha 36.
+    stream.status = resolvedStatus;
+    emitGlobalSession({ type: 'status', status: resolvedStatus, sessionId });
+    db.update(claudeSessions).set({ status: resolvedStatus })
       .where(eq(claudeSessions.id, sessionId)).run();
-    console.warn(`[resume-debug] ${sessionId} resumeSession() returning (stream.status=${stream.status}, DB set to 'active') @${Date.now()}`);
+    console.warn(`[resume-debug] ${sessionId} resumeSession() returning (stream.status=${stream.status}, DB set to '${resolvedStatus}') @${Date.now()}`);
     return stream;
   })();
   _resumeInflight.set(sessionId, p);
@@ -1204,7 +1226,13 @@ export async function reconcileVpsAgentState(
     // agent says 'killed' (unlikely here since it would have removed it
     // from sessions).
     const agentStatus = info.status;
-    if (agentStatus !== row.status && agentStatus !== 'killed') {
+    // Realign when the agent's status diverges from EITHER the DB row OR the
+    // in-memory stream. Checking the in-memory stream too matters: a prior
+    // desync can leave the stream stuck (e.g. 'sleeping') while the DB has
+    // already been pushed to match the agent — in that case
+    // `agentStatus !== row.status` is false and the stale in-memory status
+    // would never be corrected on reconnect. See CLAUDE.md §14 gotcha 36.
+    if (agentStatus !== 'killed' && (agentStatus !== row.status || agentStatus !== stream.status)) {
       try {
         db.update(claudeSessions).set({ status: agentStatus })
           .where(eq(claudeSessions.id, sid)).run();
