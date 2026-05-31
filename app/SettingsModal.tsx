@@ -97,6 +97,59 @@ export default function SettingsModal({ onClose }: Props) {
             </label>
 
             <fieldset className="tg-block">
+              <legend>Claude defaults (apply to NEW sessions)</legend>
+              <p className="tg-help">
+                These defaults are used when creating a new Claude session, unless
+                overridden in the new-session dialog. Existing sessions are
+                unaffected (they carry their own model/effort, set at creation
+                time). Leave a field blank to use the SDK default.
+                <br />
+                Model is a free string (e.g. <code>claude-opus-4-7</code>,
+                <code> claude-opus-4-8</code>). The SDK on the VPS validates it
+                at session start. Effort is one of <code>low</code> · <code>medium</code> ·
+                <code> high</code> · <code>xhigh</code> · <code>max</code>.
+              </p>
+              <label>default model
+                <input
+                  value={s['claude.default_model'] ?? ''}
+                  onChange={(e) => set('claude.default_model', e.target.value)}
+                  placeholder="(empty = SDK default)"
+                  list="claude-default-model-suggestions"
+                  autoComplete="off"
+                />
+              </label>
+              <label>default fallback model (used when primary is rate-limited)
+                <input
+                  value={s['claude.default_fallback_model'] ?? ''}
+                  onChange={(e) => set('claude.default_fallback_model', e.target.value)}
+                  placeholder="(empty = no fallback)"
+                  list="claude-default-model-suggestions"
+                  autoComplete="off"
+                />
+              </label>
+              <datalist id="claude-default-model-suggestions">
+                <option value="claude-opus-4-7" />
+                <option value="claude-opus-4-8" />
+                <option value="claude-sonnet-4-5" />
+                <option value="claude-sonnet-4-7" />
+                <option value="claude-haiku-4-5" />
+              </datalist>
+              <label>default effort
+                <select
+                  value={s['claude.default_effort'] ?? ''}
+                  onChange={(e) => set('claude.default_effort', e.target.value)}
+                >
+                  <option value="">(empty = SDK default)</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </label>
+            </fieldset>
+
+            <fieldset className="tg-block">
               <legend>Telegram (interactive notifications)</legend>
               <p className="tg-help">
                 Lets you respond to permissions and questions from Telegram (inline buttons + free text).

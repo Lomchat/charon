@@ -11,6 +11,9 @@ const ALLOWED_KEYS = [
   'telegram.enabled',
   'telegram.bot_token',
   'telegram.chat_id',
+  'claude.default_model',
+  'claude.default_fallback_model',
+  'claude.default_effort',
 ];
 
 export async function GET() {

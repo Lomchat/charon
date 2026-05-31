@@ -153,6 +153,9 @@ class Server:
         name: str | None,
         permission_mode: str,
         claude_session_id: str | None,
+        model: str | None = None,
+        fallback_model: str | None = None,
+        effort: str | None = None,
     ) -> AgentSession:
         s = AgentSession(
             session_id,
@@ -162,6 +165,9 @@ class Server:
             claude_session_id=claude_session_id,
             emit=self._emit,
             on_state_change=self._save_state_now,
+            model=model,
+            fallback_model=fallback_model,
+            effort=effort,
         )
         self.sessions[session_id] = s
         self.rings.setdefault(session_id, deque(maxlen=RING_SIZE))
@@ -202,6 +208,9 @@ class Server:
                     name=row.get("name"),
                     permission_mode=row.get("permission_mode") or "normal",
                     claude_session_id=row.get("claude_session_id"),
+                    model=row.get("model"),
+                    fallback_model=row.get("fallback_model"),
+                    effort=row.get("effort"),
                 )
             except Exception as e:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
@@ -218,6 +227,9 @@ class Server:
             claude_session_id=row.get("claude_session_id"),
             emit=self._emit,
             on_state_change=self._save_state_now,
+            model=row.get("model"),
+            fallback_model=row.get("fallback_model"),
+            effort=row.get("effort"),
         )
         s.status = "sleeping"
         self.sessions[row["session_id"]] = s
@@ -256,6 +268,9 @@ class Server:
                 name=params.get("name"),
                 permission_mode=params.get("permission_mode") or "normal",
                 claude_session_id=params.get("claude_session_id"),
+                model=params.get("model"),
+                fallback_model=params.get("fallback_model"),
+                effort=params.get("effort"),
             )
             return {"session_id": session_id}
 
@@ -334,6 +349,36 @@ class Server:
             mode = params.get("mode") or "normal"
             await s.set_permission_mode(mode)
             return {"ok": True, "mode": s.permission_mode}
+
+        if method == "set_model":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            model = params.get("model")
+            fallback_model = params.get("fallback_model")
+            if model is not None and not isinstance(model, str):
+                raise RpcError(ERR_INVALID_PARAMS, "model must be a string or null")
+            if fallback_model is not None and not isinstance(fallback_model, str):
+                raise RpcError(ERR_INVALID_PARAMS, "fallback_model must be a string or null")
+            await s.set_model(model, fallback_model)
+            return {
+                "ok": True,
+                "model": s.model,
+                "fallback_model": s.fallback_model,
+                "applied_at_next_start": s._client is not None,
+            }
+
+        if method == "set_effort":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            effort = params.get("effort")
+            if effort is not None and not isinstance(effort, str):
+                raise RpcError(ERR_INVALID_PARAMS, "effort must be a string or null")
+            await s.set_effort(effort)
+            return {
+                "ok": True,
+                "effort": s.effort,
+                "applied_at_next_start": s._client is not None,
+            }
 
         if method == "respond_permission":
             sid = self._require_sid(params)

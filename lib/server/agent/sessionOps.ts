@@ -14,9 +14,38 @@ import { sendPushToAll } from '@/lib/server/claude/webPush';
 import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
 } from '@/lib/server/claude/telegram';
-import { getSettingBool } from '@/lib/server/claude/settings';
-import type { AgentEvent } from './types';
+import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
+import type { AgentEvent, EffortLevel } from './types';
 import type { EventListener as AgentEventListener } from './AgentClient';
+
+// Resolve the effective (model, fallback_model, effort) for a new session:
+// per-session opts win, otherwise fall back to the global defaults in
+// claudeSettings, otherwise null (= let the agent pass nothing → SDK default).
+// Empty string in settings is treated as "unset" so an admin can erase a
+// default from the SettingsModal without nuking the row.
+function _resolveClaudeConfig(opts: {
+  model?: string | null;
+  fallbackModel?: string | null;
+  effort?: string | null;
+}): { model: string | null; fallbackModel: string | null; effort: string | null } {
+  const pick = (perSession: string | null | undefined, settingKey: 'claude.default_model' | 'claude.default_fallback_model' | 'claude.default_effort'): string | null => {
+    if (perSession && perSession.length > 0) return perSession;
+    const v = getSetting(settingKey);
+    return v && v.length > 0 ? v : null;
+  };
+  return {
+    model: pick(opts.model, 'claude.default_model'),
+    fallbackModel: pick(opts.fallbackModel, 'claude.default_fallback_model'),
+    effort: pick(opts.effort, 'claude.default_effort'),
+  };
+}
+
+// Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
+// agent/charon_agent/session.py. Kept in sync with `EffortLevel` in types.ts.
+const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+export function isValidEffort(v: string | null | undefined): v is EffortLevel {
+  return typeof v === 'string' && (VALID_EFFORTS as readonly string[]).includes(v);
+}
 
 const newId = () => crypto.randomBytes(8).toString('hex');
 
@@ -72,6 +101,13 @@ export class SessionStream {
   name: string | null = null;
   vpsName: string;
   cwd: string | null = null;
+  // Per-session Claude model / fallback / effort. NULL = fall back to global
+  // default (claudeSettings.claude.default_*) → SDK default. Source of truth
+  // is the DB column; SessionStream caches it in memory for fast access and
+  // because resume needs to read it before any DB roundtrip.
+  model: string | null = null;
+  fallbackModel: string | null = null;
+  effort: EffortLevel | null = null;
 
   private currentAssistant = '';
   private agentListener: AgentEventListener | null = null;
@@ -116,6 +152,9 @@ export class SessionStream {
     cwd?: string | null;
     lastSeenSeq?: number | null;
     lastStopNotifiedSeq?: number | null;
+    model?: string | null;
+    fallbackModel?: string | null;
+    effort?: string | null;
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
@@ -128,6 +167,9 @@ export class SessionStream {
     this.lastSeenSeq = opts.lastSeenSeq ?? null;
     this.lastPersistedSeq = this.lastSeenSeq;
     this.lastStopNotifiedSeq = opts.lastStopNotifiedSeq ?? null;
+    this.model = opts.model ?? null;
+    this.fallbackModel = opts.fallbackModel ?? null;
+    this.effort = isValidEffort(opts.effort) ? opts.effort : null;
   }
 
   /** Wires the listener to the agent (idempotent).
@@ -389,6 +431,36 @@ export class SessionStream {
         } catch {}
         this._broadcast({ type: 'mode_changed', mode: this.permissionMode });
         break;
+      case 'model_changed':
+        // Agent confirmed: store + persist + broadcast. The actual SDK
+        // change happens at the next start (sleep+resume) — applied_at_next_start
+        // in the payload tells the UI whether to label this as deferred.
+        this.model = ev.model ?? null;
+        this.fallbackModel = ev.fallback_model ?? null;
+        try {
+          db.update(claudeSessions).set({
+            model: this.model, fallbackModel: this.fallbackModel,
+          }).where(eq(claudeSessions.id, this.id)).run();
+        } catch {}
+        this._broadcast({
+          type: 'model_changed',
+          model: this.model,
+          fallbackModel: this.fallbackModel,
+          appliedAtNextStart: !!ev.applied_at_next_start,
+        });
+        break;
+      case 'effort_changed':
+        this.effort = isValidEffort(ev.effort) ? ev.effort : null;
+        try {
+          db.update(claudeSessions).set({ effort: this.effort })
+            .where(eq(claudeSessions.id, this.id)).run();
+        } catch {}
+        this._broadcast({
+          type: 'effort_changed',
+          effort: this.effort,
+          appliedAtNextStart: !!ev.applied_at_next_start,
+        });
+        break;
       case 'stop':
         this._flushAssistant();
         try {
@@ -466,6 +538,37 @@ export class SessionStream {
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('set_permission_mode', { session_id: this.id, mode });
     // The mode_changed event will come back and do the DB sync
+  }
+
+  /**
+   * Change the model (and optionally the fallback) for this session.
+   *
+   * Takes effect at the NEXT SDK start (sleep + resume, or auto-resume after
+   * Charon restart). The underlying claude-agent-sdk binds the model at
+   * ClaudeSDKClient construction — there is no runtime swap. Pass null to
+   * clear back to the global default.
+   *
+   * The agent persists the new value to its state.json and emits
+   * `model_changed` (with `applied_at_next_start: true` when a live client
+   * exists). Charon's _dispatchEvent handler does the DB write + broadcast.
+   */
+  async setModel(model: string | null, fallbackModel: string | null = null): Promise<void> {
+    const client = getAgentClientForVpsId(this.vpsId);
+    await client.call('set_model', {
+      session_id: this.id,
+      model: model ?? null,
+      fallback_model: fallbackModel ?? null,
+    });
+  }
+
+  /**
+   * Change the effort level for this session. Same deferred-apply semantics
+   * as setModel — effort is also part of ClaudeAgentOptions. Pass null to
+   * clear back to the global default. Invalid values are dropped agent-side.
+   */
+  async setEffort(effort: EffortLevel | null): Promise<void> {
+    const client = getAgentClientForVpsId(this.vpsId);
+    await client.call('set_effort', { session_id: this.id, effort: effort ?? null });
   }
 
   async respondPermission(permId: string, allow: boolean, always = false): Promise<void> {
@@ -718,6 +821,9 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     // means "no checkpoint yet" — falls back to ring replay.
     lastSeenSeq: row.lastSeenSeq ?? null,
     lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
+    model: row.model ?? null,
+    fallbackModel: row.fallbackModel ?? null,
+    effort: row.effort ?? null,
   });
   streams.set(sessionId, s);
   return s;
@@ -772,11 +878,28 @@ export async function startNewSession(opts: {
   cwd: string;
   name?: string | null;
   permissionMode?: PermissionMode;
+  // Optional Claude config overrides. If null/undefined we fall back to the
+  // global defaults (claudeSettings.claude.default_*); if those are also
+  // empty, the agent passes nothing → SDK uses its own default. Effort is
+  // validated; an invalid string is silently dropped.
+  model?: string | null;
+  fallbackModel?: string | null;
+  effort?: string | null;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
   const sessionId = newId();
+  // Resolve effective config: per-session opts first, then global defaults.
+  // We persist the RESOLVED values to the DB row so they survive a Charon
+  // restart even if the global default changes later. (If we stored null
+  // here and read the default at start time, changing the SettingsModal
+  // default would silently retroactively change sessions — surprising.)
+  const cfg = _resolveClaudeConfig({
+    model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
+  });
+  const effortPersist = isValidEffort(cfg.effort) ? cfg.effort : null;
+
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
     id: sessionId,
@@ -785,6 +908,9 @@ export async function startNewSession(opts: {
     name: opts.name ?? null,
     status: 'starting',
     permissionMode: opts.permissionMode ?? 'normal',
+    model: cfg.model,
+    fallbackModel: cfg.fallbackModel,
+    effort: effortPersist,
     lastUsedAt: Math.floor(Date.now() / 1000),
   }).run();
 
@@ -794,6 +920,9 @@ export async function startNewSession(opts: {
     permissionMode: opts.permissionMode ?? 'normal',
     cwd: opts.cwd,
     claudeSessionId: null,
+    model: cfg.model,
+    fallbackModel: cfg.fallbackModel,
+    effort: effortPersist,
   });
   streams.set(sessionId, stream);
 
@@ -808,6 +937,11 @@ export async function startNewSession(opts: {
       cwd: opts.cwd,
       name: opts.name ?? null,
       permission_mode: opts.permissionMode ?? 'normal',
+      // Pass-through to the agent. Older agents (< 0.5.0) silently ignore
+      // unknown params — the SDK call falls back to its own defaults.
+      model: cfg.model,
+      fallback_model: cfg.fallbackModel,
+      effort: effortPersist,
     });
   } catch (e: any) {
     streams.delete(sessionId);
@@ -860,6 +994,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         cwd: row.cwd,
         lastSeenSeq: row.lastSeenSeq ?? null,
         lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
+        model: row.model ?? null,
+        fallbackModel: row.fallbackModel ?? null,
+        effort: row.effort ?? null,
       });
       streams.set(sessionId, stream);
     } else {
@@ -876,7 +1013,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
       console.warn(`[resume-debug] ${sessionId} resume_session RPC threw (isNotFound=${isNotFound}): ${e?.message ?? e} @${Date.now()}`);
       if (!isNotFound) throw e;
-      // Recreate from scratch (the agent doesn't know this session)
+      // Recreate from scratch (the agent doesn't know this session). We
+      // pass the persisted model/fallback/effort so the resumed SDK client
+      // matches the original config — without this, a freshly restarted
+      // agent would silently revert to SDK defaults for every session.
       try {
         await client.call('start_session', {
           session_id: sessionId,
@@ -884,6 +1024,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           name: row.name,
           permission_mode: row.permissionMode,
           claude_session_id: row.claudeSessionId,
+          model: row.model ?? null,
+          fallback_model: row.fallbackModel ?? null,
+          effort: row.effort ?? null,
         });
         console.warn(`[resume-debug] ${sessionId} fallback start_session OK @${Date.now()}`);
       } catch (startErr: any) {

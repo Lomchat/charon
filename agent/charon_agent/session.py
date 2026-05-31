@@ -138,8 +138,70 @@ def _is_safe_bash(command: str | None) -> bool:
     return True
 
 
+# Keys that we'll drop one-by-one if the installed SDK doesn't know them.
+# Order matters: drop the "newest" knobs first so we retain the most behavior
+# when downgrading. effort is the newest (added in claude-agent-sdk ~0.2.80+),
+# fallback_model is older, model is the oldest of the three.
+_OPTIONAL_KEYS_FALLBACK_ORDER = ("effort", "fallback_model", "model")
+
+
+def _build_options_with_fallback(
+    kwargs: dict[str, Any],
+    emit: EmitCallback,
+) -> Any:
+    """Instantiate ClaudeAgentOptions, dropping optional keys if unsupported.
+
+    Old SDKs raise TypeError("unexpected keyword argument 'effort'") on
+    unknown kwargs. We catch and retry, removing the offending optional key.
+    This lets a single .pyz support a range of SDK versions on different VPSes
+    without forcing a coordinated SDK upgrade.
+    """
+    attempt_kwargs = dict(kwargs)
+    dropped: list[str] = []
+    while True:
+        try:
+            options = ClaudeAgentOptions(**attempt_kwargs)
+            if dropped:
+                # Side-emit so the dashboard surfaces the degraded mode.
+                # We don't have a session_id at this point (the wrapper is
+                # called before the session emits anything else), but the
+                # caller's emit binds session_id automatically via _emit.
+                try:
+                    emit({
+                        "event": "error",
+                        "msg": (
+                            f"SDK on this VPS doesn't support: {dropped} — "
+                            f"falling back to defaults for those fields. "
+                            f"Upgrade claude-agent-sdk on the VPS to use them."
+                        ),
+                    })
+                except Exception:
+                    pass
+            return options
+        except TypeError as e:
+            msg = str(e)
+            # Find which optional key the SDK rejected. We only catch the
+            # known-optional keys; other TypeErrors bubble up so the session
+            # ends in 'error' (correct behavior for a genuinely broken call).
+            for key in _OPTIONAL_KEYS_FALLBACK_ORDER:
+                if key in attempt_kwargs and (
+                    f"'{key}'" in msg or f'"{key}"' in msg
+                ):
+                    attempt_kwargs.pop(key, None)
+                    dropped.append(key)
+                    break
+            else:
+                raise
+
+
 class AgentSession:
     """A Claude session isolated within the agent. Lives independently of clients."""
+
+    # Valid effort levels (mirrors claude_agent_sdk.EffortLevel literal).
+    # If the SDK installed on this VPS is older and doesn't know one of these,
+    # _run will catch the TypeError on ClaudeAgentOptions(**kwargs) and retry
+    # without the offending field — see EFFORT_OPTIONAL_KEYS below.
+    VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
     def __init__(
         self,
@@ -151,6 +213,9 @@ class AgentSession:
         claude_session_id: str | None,
         emit: EmitCallback,
         on_state_change: StateSaveCallback,
+        model: str | None = None,
+        fallback_model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
@@ -159,6 +224,14 @@ class AgentSession:
             "normal", "acceptEdits", "auto", "plan",
         ) else "normal"
         self.claude_session_id = claude_session_id
+        # Model / effort settings (all optional — fall through to SDK defaults
+        # if None). model is a free string (the SDK accepts model IDs like
+        # "claude-opus-4-7-..." / "claude-opus-4-8-..."). fallback_model is
+        # used by the SDK if the primary is rate-limited. effort must be one
+        # of VALID_EFFORTS or it's silently dropped.
+        self.model = model or None
+        self.fallback_model = fallback_model or None
+        self.effort = effort if effort in self.VALID_EFFORTS else None
         self._emit_to_server = emit
         self._on_state_change = on_state_change
 
@@ -267,6 +340,44 @@ class AgentSession:
         self._emit("mode_changed", mode=mode)
         await self._save_state()
 
+    async def set_model(self, model: str | None, fallback_model: str | None = None) -> None:
+        """Update the model for this session.
+
+        Takes effect at the NEXT SDK start (sleep + resume, or next time the
+        client is recreated). The live ClaudeSDKClient cannot swap models
+        mid-flight — the underlying Claude session UUID is bound to a model.
+        The event payload announces this with applied_at_next_start=true so the
+        UI can label the change as deferred.
+        """
+        self.model = model or None
+        if fallback_model is not None:
+            self.fallback_model = fallback_model or None
+        self._emit(
+            "model_changed",
+            model=self.model,
+            fallback_model=self.fallback_model,
+            applied_at_next_start=self._client is not None,
+        )
+        await self._save_state()
+
+    async def set_effort(self, effort: str | None) -> None:
+        """Update the effort level for this session.
+
+        Like model, takes effect at the next SDK start. Effort is part of
+        ClaudeAgentOptions, which the SDK reads at client construction —
+        there is no SDK-side runtime setter.
+        """
+        if effort is not None and effort not in self.VALID_EFFORTS:
+            self._emit("error", msg=f"invalid effort {effort!r} (valid: {self.VALID_EFFORTS})")
+            return
+        self.effort = effort or None
+        self._emit(
+            "effort_changed",
+            effort=self.effort,
+            applied_at_next_start=self._client is not None,
+        )
+        await self._save_state()
+
     def respond_permission(self, perm_id: str, allow: bool) -> None:
         fut = self._pending_perms.pop(perm_id, None)
         if fut is not None and not fut.done():
@@ -290,6 +401,9 @@ class AgentSession:
             "name": self.name,
             "permission_mode": self.permission_mode,
             "status": self.status,
+            "model": self.model,
+            "fallback_model": self.fallback_model,
+            "effort": self.effort,
         }
 
     def to_persist(self) -> dict[str, Any]:
@@ -306,6 +420,9 @@ class AgentSession:
             "name": self.name,
             "permission_mode": self.permission_mode,
             "status": persist_status,
+            "model": self.model,
+            "fallback_model": self.fallback_model,
+            "effort": self.effort,
         }
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -689,7 +806,21 @@ class AgentSession:
             )
             if self.claude_session_id:
                 options_kwargs["resume"] = self.claude_session_id
-            options = ClaudeAgentOptions(**options_kwargs)
+            # Optional model/effort fields. Added with try/except so an old
+            # claude-agent-sdk that doesn't know one of these (TypeError:
+            # unexpected keyword argument) doesn't crash the session — we drop
+            # the unknown field and retry. The dropped field is reported via
+            # stderr so the user knows their SDK is too old for that knob.
+            if self.model:
+                options_kwargs["model"] = self.model
+            if self.fallback_model:
+                options_kwargs["fallback_model"] = self.fallback_model
+            if self.effort:
+                options_kwargs["effort"] = self.effort
+            options = _build_options_with_fallback(
+                options_kwargs,
+                lambda fields: self._emit(fields.pop("event"), **fields),
+            )
         except TypeError as e:
             self.status = "error"
             self._error_msg = f"ClaudeAgentOptions: {e}"

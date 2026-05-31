@@ -263,6 +263,7 @@ happens API-side (`/api/vps-folders/layout` rejects unknown
 | 0010 | adds 5 hot-path indexes: `claude_session_messages(session_id, id)`, `claude_pending_permissions(session_id, status)`, `claude_pending_questions(session_id, status)`, `claude_session_logs(session_id, id)`, `vps_paths(vps_id)`. SQLite doesn't auto-index FKs, so every `WHERE session_id = ?` was a full scan before this. The compound `(session_id, id)` matches the chat window / delta polling / pagination queries (filter by session then range over id). `CREATE INDEX IF NOT EXISTS` for idempotency. Hand-written (drizzle-kit generated noisy redeclarations of existing tables — keeping the schema source-of-truth in TS via the `(t) => [index(...)]` form). |
 | 0011 | `claude_sessions` += `last_seen_seq` (integer, nullable). Checkpoint of the highest agent-event-log `seq` Charon has persisted; used on reconnect via `subscribe({after_seq})` so the agent replays durably-stored events that fell out of the in-memory ring (agent >= 0.4.0). Null = no checkpoint yet → fallback to `replay: 300` ring tail. Hand-written. |
 | 0012 | `claude_sessions` += `last_stop_notified_seq` (integer, nullable). Dedup guard for the "Claude finished" push: the `stop` handler in `sessionOps.ts` previously had NO replay guard (unlike permission/question/exit_plan, which check `isReplaying && replayKnownPendingIds`), so every agent re-subscribe (Charon reboot, SSH reconnect) replayed past `stop` events and re-pushed a duplicate "finished" notification for each session. Now: skip push while `isReplaying`; otherwise only push a stop whose `seq` > this column, then advance + persist it (survives restarts so the dedup is durable). Agents < 0.4.0 (no `seq`) fall back to the `isReplaying` guard alone. Hand-written. |
+| 0014 | `claude_sessions` += `model` / `fallback_model` / `effort` (all text, nullable). Per-session Claude config (agent >= 0.5.0). `model` / `fallback_model` are free strings (e.g. `claude-opus-4-7-...`, `claude-opus-4-8-...`); `effort` is one of `low` / `medium` / `high` / `xhigh` / `max` (mirrors `claude_agent_sdk.EffortLevel`). NULL = inherit the global default from `claudeSettings` (`claude.default_model`, `claude.default_fallback_model`, `claude.default_effort`), which itself can be empty → SDK default. **The resolved value is PERSISTED at session-create time** (not re-read from settings later) so a later change to the global default doesn't retroactively alter existing sessions — surprising behavior we explicitly avoid. Changes via `setModel` / `setEffort` take effect at the NEXT SDK start (sleep + resume): the underlying `ClaudeSDKClient` binds model/effort at construction. Numbered 0014 (not 0013) because 0013 is reserved for the in-flight shells migration in main. Hand-written. |
 
 Typical workflow for changing the schema:
 1. Edit `lib/db/schema.ts`
@@ -397,20 +398,22 @@ Transport: Unix socket (VPS-side), SSH stdin/stdout pipes (hub-side via
 `id`s are allocated by Charon (monotonic integers, scoped to the SSH
 connection). Per-request timeout in `AgentClient.ts`: 60s.
 
-### Methods (14)
+### Methods (16)
 
 | Method | Params | Result |
 |---|---|---|
 | `hello` | `{}` | `{agent_version, agent_pyz_sha, sdk_available, sdk_error, pid, sessions:[SessionInfo]}` |
 | `ping` | `{}` | `{pong:true, ts}` |
 | `list_sessions` | `{}` | `[SessionInfo]` |
-| `start_session` | `{session_id?, cwd, name?, permission_mode?, claude_session_id?}` | `{session_id}` |
+| `start_session` | `{session_id?, cwd, name?, permission_mode?, claude_session_id?, model?, fallback_model?, effort?}` | `{session_id}` — `model` / `fallback_model` are free strings (e.g. `claude-opus-4-8-...`); `effort` ∈ `low\|medium\|high\|xhigh\|max`. All three optional; absent → SDK default. Forwarded to `ClaudeAgentOptions`. Old agents (< 0.5.0) silently ignore the new fields. |
 | `subscribe` | `{session_id, replay?:int, after_seq?:int}` | `{ok, replay_count, status, current_seq}` + replay events. `after_seq` (>= 0.4.0) wins over `replay` if both supplied — durable replay from `event_log.jsonl`. `replay` falls back to the ring tail for legacy clients. `current_seq` lets callers checkpoint even when the replay was empty. |
 | `unsubscribe` | `{session_id}` | `{ok}` |
 | `send_input` | `{session_id, content}` | `{ok}` |
 | `interrupt` | `{session_id}` | `{ok}` — soft, may be ignored by the SDK if a tool is in flight |
 | `force_stop` | `{session_id}` | `{ok}` — forced cancel: status `sleeping` immediately, resume possible (see §14 gotcha 13) |
 | `set_permission_mode` | `{session_id, mode}` | `{ok, mode}` |
+| `set_model` | `{session_id, model: str\|null, fallback_model?: str\|null}` | `{ok, model, fallback_model, applied_at_next_start}` — agent >= 0.5.0. Changes are DEFERRED: the live `ClaudeSDKClient` cannot swap models (bound at construction). `applied_at_next_start: true` iff a client is currently running → takes effect on next sleep+resume. Pass `null` to clear back to the global default. |
+| `set_effort` | `{session_id, effort: 'low'\|'medium'\|'high'\|'xhigh'\|'max'\|null}` | `{ok, effort, applied_at_next_start}` — agent >= 0.5.0. Same deferred-apply semantics as `set_model`. Invalid values are silently dropped agent-side. |
 | `respond_permission` | `{session_id, perm_id, allow}` | `{ok}` |
 | `respond_question` | `{session_id, q_id, answers}` | `{ok}` |
 | `respond_exit_plan` | `{session_id, q_id, decision, feedback?}` | `{ok}` |
@@ -450,6 +453,8 @@ All carry `session_id`. The ring buffer stores up to 2000 per session (was 300 b
 | `todo_update` | `{todos}` |
 | `edit_snapshot` | `{phase:'before'|'after', tool_use_id, file_path, content, size, truncated}` |
 | `mode_changed` | `{mode}` |
+| `model_changed` | `{model: str\|null, fallback_model: str\|null, applied_at_next_start: bool}` — agent >= 0.5.0. Charon persists to `claude_sessions.model` / `.fallback_model`; UI labels the badge as deferred when `applied_at_next_start=true`. |
+| `effort_changed` | `{effort: 'low'\|'medium'\|'high'\|'xhigh'\|'max'\|null, applied_at_next_start: bool}` — agent >= 0.5.0. Persisted to `claude_sessions.effort`. |
 | `stop` | `{subtype}` |
 | `error` | `{msg, fatal?}` |
 | `interrupted` | `{forced?: bool}` — `forced=true` if triggered by `force_stop` |
@@ -588,7 +593,7 @@ auths with Bearer `SYNC_TOKEN`).
 ### Auth & settings
 
 - `POST /api/login/*`, `POST /logout`
-- `GET|POST /api/claude/settings`
+- `GET|POST /api/claude/settings` — `ALLOWED_KEYS` in `app/api/claude/settings/route.ts` gates writes. Includes `claude.default_model`, `claude.default_fallback_model`, `claude.default_effort` (used by `startNewSession` to resolve per-session config when the caller doesn't override — see §14 gotcha 33).
 - `POST /api/claude/telegram/test`
 - `GET /api/claude/push/key`, `POST /api/claude/push/subscribe`, `POST /api/claude/push/unsubscribe`
 
@@ -655,7 +660,7 @@ sidebar list.
 ### Claude sessions
 
 - `GET /api/claude/sessions` (filters `vpsId`, `status`)
-- `POST /api/claude/sessions` — create
+- `POST /api/claude/sessions` — create. Body: `{ vpsId, cwd, name?, permissionMode?, model?, fallbackModel?, effort? }`. The three Claude config fields are optional; empty/null inherits the global default (`claude.default_*` in `claudeSettings`). The resolved values are persisted into the session row at creation (a later change to the global default does not retroactively alter existing sessions — see §14 gotcha 33).
 - `POST /api/claude/sessions/import` — from scan
 - `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supports `?limit=N` (default 200, cap 1000) and `?before=K` (cursor pagination for scroll-up). The limit only counts "chat" roles (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking); `edit_snapshot` and `event` are loaded as attachments by ID range (see §14 gotcha 25). Response: `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` serves as cursor for the next loadMore. **DELETE** = definitive deletion (DB cascade + best-effort agent kill) — no more `?hard=1`, no more soft-kill (see §10).
 - `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — **single multiplexed SSE**: opened ONCE per browser tab, persistent. Emits initial `status` for all sessions + all pendings + live stream filtered by focus. Session focus changes are handled via POST `/focus` without SSE reconnect.
@@ -665,6 +670,8 @@ sidebar list.
 - `POST /api/claude/sessions/[id]/question` — `{id, answers}`
 - `POST /api/claude/sessions/[id]/exit-plan` — `{id, decision, feedback?}`
 - `POST /api/claude/sessions/[id]/mode` — `{mode}`
+- `POST /api/claude/sessions/[id]/model` — `{model: string|null, fallbackModel?: string|null}`. Empty/null clears back to the global default. Routes to agent's `set_model`; takes effect at next sleep+resume (cf. §14 gotcha 33 on deferred apply).
+- `POST /api/claude/sessions/[id]/effort` — `{effort: 'low'|'medium'|'high'|'xhigh'|'max'|null}`. Invalid values rejected 400. Same deferred-apply semantics as `/model`.
 - `POST /api/claude/sessions/[id]/sleep`, `POST .../resume`
 - `POST /api/claude/sessions/[id]/force-stop` — forced cancel when the SDK no longer responds to `interrupt` (status → `sleeping`)
 - `POST /api/claude/sessions/[id]/revert` — undo an edit (`{filePath, content}`)
@@ -722,6 +729,8 @@ Client-side (`useClaudeSessionStream.ts`), the routing:
 | `exit_plan_request` | push into `exitPlanQueue` → `ExitPlanCard` |
 | `interaction_resolved` | removes from the matching queue |
 | `mode_changed` | updates the mode badge |
+| `model_changed` | updates per-session `model`/`fallbackModel` state in `useClaudeSessionStream`; `appliedAtNextStart=true` flips `modelPendingApply` so the header badge shows ⏳ (deferred change). Reset on full refetch. |
+| `effort_changed` | same as `model_changed` but for `effort` / `effortPendingApply`. |
 | `todo_update` | updates the `todos` tab of `ToolPanel` |
 | `edit_snapshot` | stored in `edits` Map (before/after per filePath) for `ToolPanel`/`SplitDiffModal` |
 | `stop` | final flush, ready for the next turn |
@@ -999,6 +1008,14 @@ common code extracted after the maintainability audit:
 
     Server side, `sleepSession` now (a) broadcasts `status='sleeping'` on the global bus right away (so the sidebar + other tabs flip without waiting) and sets the in-memory `stream.status`, and (b) fires `client.call('sleep_session')` **fire-and-forget** (`.catch()` logs) instead of `await`-ing it — the agent's `stop()` blocks up to 5s on `asyncio.wait_for(main_task, timeout=5.0)` (SDK teardown of the in-flight turn), which used to wedge the HTTP response. The DB + broadcast already reflect the truth; the agent stop is best-effort cleanup. (`resume` was already optimistic via `setStatus('starting')` — this generalises the pattern.)
 
+33. **Per-session model / effort = DEFERRED apply** (agent >= 0.5.0). `claude_agent_sdk.ClaudeAgentOptions` reads `model`, `fallback_model`, and `effort` at `ClaudeSDKClient` *construction* — there is no SDK-side runtime setter and you cannot resume an existing `claude_session_id` against a different model (the SDK session UUID is bound to a model server-side). Therefore `set_model` / `set_effort` (`agent/charon_agent/session.py § set_model/set_effort`) update the in-memory + state.json attributes and emit `model_changed` / `effort_changed`, but do NOT touch the running client. The emitted event carries `applied_at_next_start: true` whenever a live client exists; the UI (`useClaudeSessionStream § modelPendingApply/effortPendingApply`, badge in `ClaudeSessionView § ModelEffortBadges`) shows a ⏳ marker until the next sleep+resume. Implications:
+    - Don't try to "hot-swap" the model by recreating the SDK client without a sleep+resume: the `claude_session_id` would change → fork of session → broken history. If a user really wants immediate effect, the right move is sleep + resume (already optimistic, ~instant in the UI).
+    - `resumeSession` MUST re-read `model`/`fallback_model`/`effort` from the DB and pass them to the fallback `start_session(claude_session_id=...)` (cf. `sessionOps.ts § resumeSession`). Without this, the resumed client silently reverts to SDK defaults — every restart would erase the user's per-session config, which is invisible until a `model_changed` SSE shows them as cleared. There is no test for this; reviewers should grep `resumeSession` for the three field passes.
+    - Per-session values are **resolved at create time** from `claudeSettings` globals (`claude.default_model`, `claude.default_fallback_model`, `claude.default_effort`) and PERSISTED into the session row. A later edit of the global default in SettingsModal does NOT retroactively change existing sessions — by design (changing a global to "max" effort and silently spinning up 50× spend on every old session would be a footgun). The `_resolveClaudeConfig` helper in `sessionOps.ts` does the resolution once.
+    - Old agents (< 0.5.0) silently IGNORE `model`/`fallback_model`/`effort` in `start_session` params (Python kwargs that aren't on the older `_create_session` signature would have thrown TypeError, but they go through `params.get(...)` which is forgiving). So mixed-agent fleets degrade gracefully: a 0.4.x VPS just falls back to SDK defaults for those sessions. For `set_model` / `set_effort` RPCs on an old agent the call fails with `method not found` (-32601) — surfaced as an error in the UI; treat as "upgrade the agent". Sidebar shows "agent out of date" because `agentPyzSha` differs.
+    - **Always-defensive option build** (`session.py § _build_options_with_fallback`): even agents that DO know `model`/`effort` may run against an OLDER `claude-agent-sdk` that doesn't accept one of the fields. Catches the `TypeError: unexpected keyword argument 'effort'`, drops the offending field (in order: `effort` first, then `fallback_model`, then `model`), retries, and emits an `error` event documenting the degradation. Without this, a single old SDK on one VPS would kill all sessions on that VPS the moment the user set an effort. Keep the fallback loop — don't "optimize" by assuming a minimum SDK version.
+    - **Valid effort values are duplicated in three places**: `claude_agent_sdk.EffortLevel` (the truth), `agent/charon_agent/session.py § AgentSession.VALID_EFFORTS`, and `lib/server/agent/types.ts § EffortLevel` (re-exported via `lib/types/api.ts § ClaudeEffortLevel`). When SDK adds a new level (e.g. `'extreme'`), update all three or the new value is silently dropped agent-side. The `EFFORT_OPTIONS` arrays in `NewSessionDialog.tsx` / `NewSessionSheet.tsx` / `SettingsModal.tsx` / `ModelEffortBadges` also list them for `<select>` UI — those are display-only, less critical but worth syncing for a complete picture.
+
 ## 15. Quick lookup (non-obvious entry points)
 
 Filenames cover most things; this table is for the entries you'd never grep from a cold start.
@@ -1024,6 +1041,7 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | TabBar layout logic | `app/TabBar.tsx` + `computeTabs`/`keptOpenIds`/`activeVpsId`/`lastSelectedByVpsRef` in `ClaudePanel.tsx` |
 | VPS folders (DnD + DB-persisted collapse) | `vpsFolders` in `lib/db/schema.ts` + `app/api/vps-folders/**` + `DataModal.tsx` |
 | Durable agent event log (rotation, seq, replay) | `agent/charon_agent/event_log.py` + `_emit` in `server.py` + `SessionStream.lastSeenSeq` in `sessionOps.ts` + `_pendingAfterSeq` in `AgentClient.ts` |
+| Per-session model / effort (deferred apply, SDK fallback) | `set_model`/`set_effort` in `agent/charon_agent/session.py` + `_build_options_with_fallback` (drops unsupported keys) + `_resolveClaudeConfig` in `lib/server/agent/sessionOps.ts` + `SessionStream.setModel/setEffort` + `app/api/claude/sessions/[id]/model` + `app/api/claude/sessions/[id]/effort` + `ModelEffortBadges` in `ClaudeSessionView.tsx` + §14 gotcha 33 |
 
 ---
 

@@ -15,6 +15,15 @@ const DEFAULTS = {
   'telegram.enabled': 'false',
   'telegram.bot_token': '',
   'telegram.chat_id': '',
+  // Global defaults for Claude model / fallback / effort. Empty string =
+  // not set → the agent passes nothing → SDK default applies.
+  // New sessions inherit these unless overridden in NewSessionDialog.
+  // Free-form strings (model IDs like 'claude-opus-4-7-...' /
+  // 'claude-opus-4-8-...'). For effort, valid values are 'low', 'medium',
+  // 'high', 'xhigh', 'max' (mirrors claude_agent_sdk.EffortLevel).
+  'claude.default_model': '',
+  'claude.default_fallback_model': '',
+  'claude.default_effort': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 
