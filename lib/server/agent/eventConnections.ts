@@ -28,6 +28,10 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   'status', 'mode_changed', 'ready', 'session_id',
   'permission_request', 'user_question', 'exit_plan_request',
   'interaction_resolved', 'error',
+  // Rare-but-cross-tab events: a user can have the same session open in two
+  // tabs (e.g. desktop + mobile/phone). All three should update the header
+  // badge regardless of which tab is "focused" on the SSE multiplex.
+  'model_changed', 'effort_changed', 'effective_model',
 ]);
 
 function isLowVolume(type: string): boolean {

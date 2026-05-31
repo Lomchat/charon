@@ -202,6 +202,12 @@ export type ClaudeSessionDetailResponse = {
   // Optional for backward-compat with responses cached by older builds.
   maxMessageId?: number;
   streamingText: string;
+  // Model id Anthropic actually used on the last AssistantMessage (agent
+  // >= 0.6.0). Null when no turn has happened since attach OR the agent is
+  // too old to emit `effective_model`. The UI shows it in the badge so the
+  // user has a reliable source of truth — independent of the LLM's
+  // self-identification (which is famously unreliable, training cutoff).
+  effectiveModel?: string | null;
   pendingPermissions: PendingPermissionPayload[];
   pendingQuestions: PendingQuestionPayload[];
   pendingExitPlans: PendingExitPlanPayload[];

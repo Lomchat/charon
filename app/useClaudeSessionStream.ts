@@ -96,6 +96,12 @@ export type ClaudeSessionStreamState = {
   effort: ClaudeEffortLevel | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
+  // Model id Anthropic actually used on the last assistant turn. Updated by
+  // `effective_model` SSE + by applyApiData on mount/refetch. Null when the
+  // agent is < 0.6.0 (no event) or no turn has happened since attach.
+  // Independent of the `model` field above which is the user's CONFIGURED
+  // value. The two can legitimately differ (alias resolution, fallback).
+  effectiveModel: string | null;
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
@@ -187,6 +193,10 @@ export function useClaudeSessionStream(
   // uses this to render a "applies on resume" hint next to the badge.
   const [modelPendingApply, setModelPendingApply] = useState(false);
   const [effortPendingApply, setEffortPendingApply] = useState(false);
+  // Effective model — what Anthropic actually billed for the last turn.
+  // Initialized from r.effectiveModel via applyApiData; updated by the
+  // effective_model SSE on every change. See ClaudeSessionStreamState.
+  const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
@@ -326,6 +336,10 @@ export function useClaudeSessionStream(
     // moot). Clear so the UI doesn't show "applies on resume" forever.
     setModelPendingApply(false);
     setEffortPendingApply(false);
+    // Effective model is in the GET payload (from peekStream().effectiveModel
+    // server-side). Null on first attach (no turn yet) or on old agents. The
+    // SSE will deliver it on the next turn either way.
+    setEffectiveModel(r.effectiveModel ?? null);
     setSessionMeta(r.session);
     // Interaction queues — we inject the sessionId required by the shared
     // type (the API doesn't return it by default).
@@ -962,6 +976,14 @@ export function useClaudeSessionStream(
           setEffortPendingApply(!!ev.appliedAtNextStart);
           break;
         }
+        case 'effective_model':
+          // What Anthropic actually used this turn. Always trustworthy
+          // (extracted from AssistantMessage.model). Display in the badge
+          // when it differs from the configured `model` field.
+          if (typeof ev.model === 'string' && ev.model.length > 0) {
+            setEffectiveModel(ev.model);
+          }
+          break;
         default: break;
       }
     };
@@ -1232,6 +1254,7 @@ export function useClaudeSessionStream(
   return useMemo(() => ({
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
+    effectiveModel,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -1243,6 +1266,7 @@ export function useClaudeSessionStream(
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
+    effectiveModel,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,

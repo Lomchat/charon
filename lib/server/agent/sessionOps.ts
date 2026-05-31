@@ -108,6 +108,12 @@ export class SessionStream {
   model: string | null = null;
   fallbackModel: string | null = null;
   effort: EffortLevel | null = null;
+  // The model Anthropic actually used on the last AssistantMessage. Captured
+  // from the `effective_model` event (agent >= 0.6.0). Transient: not
+  // persisted in DB — re-derived on the next turn. Useful to compare with
+  // the configured `model`: if they differ, the user picked an alias or
+  // fallback_model kicked in.
+  effectiveModel: string | null = null;
 
   private currentAssistant = '';
   private agentListener: AgentEventListener | null = null;
@@ -460,6 +466,19 @@ export class SessionStream {
           effort: this.effort,
           appliedAtNextStart: !!ev.applied_at_next_start,
         });
+        break;
+      case 'effective_model':
+        // Agent emits this on change only. Cache the new value + broadcast.
+        // No DB write — transient runtime info, re-derives on next turn after
+        // agent restart. If the user resumes after an agent restart and the
+        // FIRST turn hasn't happened yet, effectiveModel stays null until
+        // Claude responds — that's fine, the UI just hides the "effective"
+        // chip in that case.
+        if (typeof ev.model === 'string' && ev.model.length > 0
+            && ev.model !== this.effectiveModel) {
+          this.effectiveModel = ev.model;
+          this._broadcast({ type: 'effective_model', model: ev.model });
+        }
         break;
       case 'stop':
         this._flushAssistant();

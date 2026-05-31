@@ -24,6 +24,11 @@ export type BridgeEvent =
   // "cleared back to the global default".
   | { type: 'model_changed'; model: string | null; fallbackModel: string | null; appliedAtNextStart: boolean }
   | { type: 'effort_changed'; effort: EffortLevel | null; appliedAtNextStart: boolean }
+  // effective_model = what Anthropic ACTUALLY billed for the last
+  // AssistantMessage. Differs from `model` (= configured value) when the
+  // user picked an alias, or when fallback_model kicked in. Transient
+  // runtime info — no DB persistence. Emitted on change only.
+  | { type: 'effective_model'; model: string }
   | { type: 'stop'; subtype?: string }
   | { type: 'error'; msg: string; fatal?: boolean };
 

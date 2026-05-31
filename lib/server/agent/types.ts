@@ -83,6 +83,13 @@ export type AgentEvent = (
   // null fields mean "cleared back to default".
   | { event: 'model_changed'; session_id: string; model: string | null; fallback_model: string | null; applied_at_next_start?: boolean }
   | { event: 'effort_changed'; session_id: string; effort: EffortLevel | null; applied_at_next_start?: boolean }
+  // effective_model (agent >= 0.6.0): the model id Anthropic actually used on
+  // the last AssistantMessage. Emitted on CHANGE only (= once per turn at
+  // most). Useful when the configured `model` is an alias ('opus' → real id)
+  // or when fallback_model kicked in. Decouples reality from what the LLM
+  // claims about itself in text (which is unreliable — training cutoff).
+  // Transient: not persisted in DB.
+  | { event: 'effective_model'; session_id: string; model: string }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean }
@@ -107,6 +114,13 @@ export type AgentMethodName =
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'
+  | 'shell_list'
+  | 'shell_start'
+  | 'shell_input'
+  | 'shell_resize'
+  | 'shell_subscribe'
+  | 'shell_unsubscribe'
+  | 'shell_kill'
   | 'respond_permission'
   | 'respond_question'
   | 'respond_exit_plan'

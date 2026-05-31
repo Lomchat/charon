@@ -82,6 +82,7 @@ export default function ClaudeSessionView({
     sessionMeta,
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
+    effectiveModel,
     toolCalls, todos, edits,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -377,6 +378,7 @@ export default function ClaudeSessionView({
           <ModelEffortBadges
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
+            effectiveModel={effectiveModel}
             claudeSessionId={sessionMeta?.claudeSessionId ?? null}
             onSetModel={setModel} onSetEffort={setEffort}
           />
@@ -679,6 +681,7 @@ function fmtElapsed(s: number): string {
 function ModelEffortBadges({
   model, fallbackModel, effort,
   modelPendingApply, effortPendingApply,
+  effectiveModel,
   claudeSessionId,
   onSetModel, onSetEffort,
 }: {
@@ -687,6 +690,13 @@ function ModelEffortBadges({
   effort: ClaudeEffortLevel | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
+  /** Model id Anthropic actually billed for the last AssistantMessage.
+   *  Null when no turn has happened since attach or the agent is < 0.6.0.
+   *  Displayed as a chip after the configured model when it adds info
+   *  (alias resolution, fallback kicked in, or mismatch on a session bound
+   *  to a different model). Source of truth — always trust this over what
+   *  Claude says in its text response. */
+  effectiveModel: string | null;
   /** Set if the SDK has already created an upstream session bound to a
    *  model. When non-null and the user picks a different model, we show a
    *  red-ish warning that the change won't actually swap the running
@@ -750,15 +760,32 @@ function ModelEffortBadges({
   }
 
   // Compact display: "model · effort" with subtle hint when on defaults.
+  // When effectiveModel is known AND adds info (= isn't already exactly what
+  // the configured model says — accounts for alias resolution, fallback
+  // kicked in, OR mismatch from the claude_session_id binding caveat), we
+  // append a small "→ <effective>" chip in a contrasting color. This is
+  // explicitly to counter the unreliable LLM self-id: the user can SEE the
+  // model the API confirmed, no need to ask Claude.
   const modelLabel = model ?? 'inherit';
   const effortLabel = effort ?? 'inherit';
+  const showEffective = !!effectiveModel && effectiveModel !== model;
+  // Mismatch is genuinely interesting (= configured differs from what
+  // Anthropic billed). Could mean: alias resolved (opus → opus-4-8) which
+  // is benign; or session bound to old model so configured swap was ignored
+  // — that's the gotcha §35 footgun and worth a stronger color.
+  const mismatch = !!model && !!effectiveModel && effectiveModel !== model
+    && !(['opus', 'sonnet', 'haiku'].includes(model)); // aliases legitimately resolve to a different id
   const anyPending = modelPendingApply || effortPendingApply;
   const titleParts: string[] = [];
-  titleParts.push(`model: ${model ?? '(global default)'}`);
+  titleParts.push(`configured model: ${model ?? '(global default)'}`);
   if (fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
+  if (effectiveModel) titleParts.push(`effective (API-confirmed): ${effectiveModel}`);
   titleParts.push(`effort: ${effort ?? '(global default)'}`);
+  if (mismatch) titleParts.push(
+    '⚠ effective model differs from configured — likely bound to original model_id on Anthropic side'
+  );
   if (anyPending) titleParts.push('change pending — applies at next sleep+resume');
-  const title = titleParts.join(' · ');
+  const title = titleParts.join('\n');
 
   return (
     <span style={{ position: 'relative', marginLeft: 'auto' }}>
@@ -768,17 +795,34 @@ function ModelEffortBadges({
         title={title}
         style={{
           background: 'transparent',
-          border: `1px solid ${anyPending ? 'var(--gold, #b8964b)' : 'rgba(255,255,255,0.15)'}`,
+          border: `1px solid ${
+            mismatch ? 'var(--crimson, #c94a4a)'
+            : anyPending ? 'var(--gold, #b8964b)'
+            : 'rgba(255,255,255,0.15)'
+          }`,
           padding: '2px 8px',
           borderRadius: 4,
           fontSize: 11,
           fontFamily: 'var(--mono)',
-          color: anyPending ? 'var(--gold, #b8964b)' : 'inherit',
+          color: mismatch ? 'var(--crimson, #c94a4a)' : anyPending ? 'var(--gold, #b8964b)' : 'inherit',
           cursor: 'pointer',
           opacity: model || effort ? 1 : 0.6,
         }}
       >
         {modelLabel} · {effortLabel}
+        {showEffective && (
+          // Effective chip: small, dimmer when it's just an alias resolution,
+          // crimson when it's a genuine mismatch (likely the binding caveat).
+          <span
+            style={{
+              marginLeft: 6,
+              opacity: mismatch ? 1 : 0.7,
+              color: mismatch ? 'var(--crimson, #c94a4a)' : 'inherit',
+            }}
+          >
+            → {effectiveModel}
+          </span>
+        )}
         {anyPending && <span style={{ marginLeft: 6 }}>⏳</span>}
       </button>
       {open && (

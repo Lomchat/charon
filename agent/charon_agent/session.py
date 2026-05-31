@@ -243,6 +243,17 @@ class AgentSession:
         self._pending_perms: dict[str, asyncio.Future] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
+        # The model Anthropic actually used on the last AssistantMessage.
+        # Differs from self.model when:
+        #   - self.model is None (we passed nothing, SDK picked a default)
+        #   - self.model is an alias ('opus' → resolved to claude-opus-4-8)
+        #   - self.fallback_model kicked in (primary rate-limited)
+        # Emitted as `effective_model` event whenever it CHANGES so Charon can
+        # display "configured: opus / effective: claude-opus-4-8" — kills the
+        # confusion where users ask Claude "what model are you" and get a
+        # hallucinated wrong version (LLMs don't reliably know their own
+        # version). Source of truth is the API metadata, not Claude's text.
+        self._effective_model: str | None = None
         self._claude_stderr_lines: list[str] = []
         self._plan_accepted = False
         self._stopped = asyncio.Event()
@@ -731,6 +742,16 @@ class AgentSession:
 
             ev_type = type(ev).__name__
             if ev_type == "AssistantMessage":
+                # Extract the API-confirmed model for this turn. AssistantMessage
+                # has `.model: str` (per SDK >= 0.2.82 dataclass). When it
+                # changes from what we last reported, emit `effective_model`
+                # so Charon can display the truth alongside the configured
+                # model. Old SDKs without `.model` → getattr returns None and
+                # we just skip.
+                msg_model = getattr(ev, "model", None)
+                if isinstance(msg_model, str) and msg_model and msg_model != self._effective_model:
+                    self._effective_model = msg_model
+                    out.append({"event": "effective_model", "model": msg_model})
                 for block in getattr(ev, "content", []) or []:
                     bt = type(block).__name__
                     if bt == "TextBlock":
