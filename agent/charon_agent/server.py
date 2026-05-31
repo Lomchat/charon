@@ -52,6 +52,7 @@ from .protocol import (
 )
 from .event_log import EventLog, cleanup_orphans
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR
+from .shell import AgentShell
 from .state import load_state, save_state
 
 
@@ -72,12 +73,22 @@ class Server:
         self.state_path = state_path
         # Durable event logs live next to state.json, in ~/.charon/events/.
         self.events_dir = state_path.parent / "events"
+        # Persistent PTY shells (>= 0.7.0). Same _emit + rings + subscribers
+        # plumbing as sessions, but the durable log lives in a SEPARATE dir
+        # (`~/.charon/shells/`) so shell IDs can't collide with session IDs
+        # in the filesystem namespace. Cf. shell.py for the rationale on
+        # why shells don't persist across agent restarts.
+        self.shells_dir = state_path.parent / "shells"
+        self.shells: dict[str, AgentShell] = {}
+        self.shell_event_logs: dict[str, EventLog] = {}
         self.sessions: dict[str, AgentSession] = {}
         self.rings: dict[str, deque[dict[str, Any]]] = {}
         # Per-session durable log. Created on first emit (lazy via _emit),
         # cleaned up on kill. Lookups via _event_log(session_id).
         self.event_logs: dict[str, EventLog] = {}
-        # subscribers: session_id → set[Client]
+        # subscribers: session_id → set[Client]   (shared between sessions and
+        # shells; the routing key is the id, and session/shell IDs never
+        # collide in practice — sessions are 32-hex UUIDs, shells are 16-hex).
         self.subscribers: dict[str, set[Client]] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
@@ -116,7 +127,7 @@ class Server:
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     def _emit(self, payload: dict[str, Any]) -> None:
-        """Callback that sessions call to broadcast an event.
+        """Callback that sessions / shells call to broadcast an event.
 
         Order of operations matters here:
         1. Append to durable log FIRST — this attaches `seq` and `ts` to
@@ -129,21 +140,37 @@ class Server:
         The log append is best-effort: a disk failure logs to stderr but
         does not block the broadcast (the ring is still populated, so
         live UI keeps working).
+
+        Shell events (event name starting with `shell_`) are routed to a
+        DEDICATED log dir (`~/.charon/shells/`) so they don't share the
+        sessions namespace on disk. Rings + subscribers are the same Map —
+        IDs are globally unique in practice (sessions: 32-hex UUID, shells:
+        16-hex) so there's no key collision.
         """
         sid = payload.get("session_id")
-        if isinstance(sid, str):
-            # 1. durable log (mutates payload to add seq, ts)
-            try:
-                self._event_log(sid).append(payload)
-            except Exception as e:
-                print(f"[server] event_log.append error sid={sid}: {e}",
-                      file=sys.stderr, flush=True)
-            # 2. ring buffer (fast path for in-memory replay)
-            ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
-            ring.append(payload)
-            # 3. live broadcast
-            for client in list(self.subscribers.get(sid, ())):
-                client.send_json(payload)
+        if not isinstance(sid, str):
+            return
+        # 1. durable log (mutates payload to add seq, ts)
+        event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
+        is_shell = event_name.startswith("shell_")
+        try:
+            if is_shell:
+                log = self.shell_event_logs.get(sid)
+                if log is None:
+                    log = EventLog(sid, self.shells_dir)
+                    self.shell_event_logs[sid] = log
+            else:
+                log = self._event_log(sid)
+            log.append(payload)
+        except Exception as e:
+            print(f"[server] event_log.append error sid={sid}: {e}",
+                  file=sys.stderr, flush=True)
+        # 2. ring buffer (fast path for in-memory replay)
+        ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
+        ring.append(payload)
+        # 3. live broadcast
+        for client in list(self.subscribers.get(sid, ())):
+            client.send_json(payload)
 
     async def _create_session(
         self,
@@ -465,6 +492,138 @@ class Server:
             self.schedule_save()
             return {"ok": True}
 
+        # ── Persistent PTY shells (>= 0.7.0) ─────────────────────────────
+        # Same plumbing as sessions (rings, subscribers, durable event log
+        # via _emit) but a separate set of RPCs and a dedicated log dir
+        # (`~/.charon/shells/`). Shell IDs are the channel key, passed as
+        # either `shell_id` or `session_id` (the latter for protocol reuse
+        # — the routing layer keys by `session_id` anyway).
+        if method == "shell_list":
+            return [sh.to_info() for sh in self.shells.values()]
+
+        if method == "shell_start":
+            shell_id = params.get("shell_id") or uuid.uuid4().hex
+            if not isinstance(shell_id, str) or not shell_id:
+                raise RpcError(ERR_INVALID_PARAMS, "shell_id must be a string")
+            if shell_id in self.shells:
+                raise RpcError(ERR_INVALID_PARAMS, f"shell {shell_id} already exists")
+            cwd = params.get("cwd")
+            name = params.get("name")
+            cols = params.get("cols")
+            rows = params.get("rows")
+            sh = AgentShell(
+                shell_id,
+                cwd=cwd if isinstance(cwd, str) and cwd else None,
+                name=name if isinstance(name, str) and name else None,
+                emit=self._emit,
+            )
+            self.shells[shell_id] = sh
+            self.rings.setdefault(shell_id, deque(maxlen=RING_SIZE))
+            try:
+                await sh.start(
+                    initial_cols=int(cols) if isinstance(cols, (int, float)) else None,
+                    initial_rows=int(rows) if isinstance(rows, (int, float)) else None,
+                )
+            except Exception as e:
+                self.shells.pop(shell_id, None)
+                self.rings.pop(shell_id, None)
+                self.shell_event_logs.pop(shell_id, None)
+                raise RpcError(ERR_INTERNAL, f"shell start failed: {type(e).__name__}: {e}")
+            return {"shell_id": shell_id, "pid": sh.pid, "cols": sh.cols, "rows": sh.rows}
+
+        if method == "shell_input":
+            sid = self._require_shell_sid(params)
+            sh = self._require_shell(sid)
+            data = params.get("data")
+            if not isinstance(data, str):
+                raise RpcError(ERR_INVALID_PARAMS, "data required (str)")
+            # utf-8: the browser sends keystrokes as text (xterm.js); ctrl
+            # codes (\r, \t, \x03, ...) are single bytes < 0x80 → safe.
+            sh.write(data.encode("utf-8"))
+            return {"ok": True}
+
+        if method == "shell_resize":
+            sid = self._require_shell_sid(params)
+            sh = self._require_shell(sid)
+            cols = params.get("cols")
+            rows = params.get("rows")
+            if not isinstance(cols, (int, float)) or not isinstance(rows, (int, float)):
+                raise RpcError(ERR_INVALID_PARAMS, "cols/rows (int) required")
+            sh.resize(int(cols), int(rows))
+            return {"ok": True, "cols": sh.cols, "rows": sh.rows}
+
+        if method == "shell_subscribe":
+            sid = self._require_shell_sid(params)
+            sh = self._require_shell(sid)
+            after_seq_param = params.get("after_seq")
+            after_seq = int(after_seq_param) if isinstance(after_seq_param, (int, float)) else None
+            if sid not in self.subscribers:
+                self.subscribers[sid] = set()
+            self.subscribers[sid].add(client)
+            client.subscribed.add(sid)
+            # Replay from the durable shell log when a cursor is provided.
+            # No `replay` (ring) fallback for shells: shells are 0.7.0+ and
+            # all clients are aware of the new protocol.
+            items: list[dict[str, Any]] = []
+            log = self.shell_event_logs.get(sid)
+            if log is None:
+                log = EventLog(sid, self.shells_dir)
+                self.shell_event_logs[sid] = log
+            if after_seq is not None:
+                try:
+                    items = log.read_since(after_seq)
+                except Exception as e:
+                    print(f"[server] shell log read_since error sid={sid}: {e}",
+                          file=sys.stderr, flush=True)
+                    items = []
+            if items:
+                client.send_json({"event": "replay_begin", "session_id": sid, "count": len(items)})
+                for item in items:
+                    client.send_json(item)
+                client.send_json({"event": "replay_end", "session_id": sid})
+            client.send_json({
+                "event": "shell_status",
+                "session_id": sid,
+                "shell_id": sid,
+                "status": "exited" if sh.exited else "active",
+                "cols": sh.cols,
+                "rows": sh.rows,
+                "pid": sh.pid,
+            })
+            try:
+                current_seq = log.current_seq()
+            except Exception:
+                current_seq = 0
+            return {
+                "ok": True,
+                "replay_count": len(items),
+                "status": "exited" if sh.exited else "active",
+                "current_seq": current_seq,
+            }
+
+        if method == "shell_unsubscribe":
+            sid = self._require_shell_sid(params)
+            self.subscribers.get(sid, set()).discard(client)
+            client.subscribed.discard(sid)
+            return {"ok": True}
+
+        if method == "shell_kill":
+            sid = self._require_shell_sid(params)
+            sh = self.shells.get(sid)
+            if sh is not None:
+                sh.kill()
+            self.shells.pop(sid, None)
+            self.rings.pop(sid, None)
+            self.subscribers.pop(sid, None)
+            log = self.shell_event_logs.pop(sid, None)
+            if log is not None:
+                try:
+                    log.delete()
+                except Exception as e:
+                    print(f"[server] shell_event_log.delete error sid={sid}: {e}",
+                          file=sys.stderr, flush=True)
+            return {"ok": True}
+
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 
     def _require_sid(self, params: dict[str, Any]) -> str:
@@ -473,11 +632,26 @@ class Server:
             raise RpcError(ERR_INVALID_PARAMS, "session_id required")
         return sid
 
+    def _require_shell_sid(self, params: dict[str, Any]) -> str:
+        # Accept either `shell_id` (the natural Charon-side name) or
+        # `session_id` (the protocol's routing key) — they're the same
+        # value, just different semantic labels.
+        sid = params.get("shell_id") or params.get("session_id")
+        if not isinstance(sid, str) or not sid:
+            raise RpcError(ERR_INVALID_PARAMS, "shell_id required")
+        return sid
+
     def _require_session(self, sid: str) -> AgentSession:
         s = self.sessions.get(sid)
         if s is None:
             raise RpcError(ERR_SESSION_NOT_FOUND, f"session {sid} not found")
         return s
+
+    def _require_shell(self, sid: str) -> AgentShell:
+        sh = self.shells.get(sid)
+        if sh is None:
+            raise RpcError(ERR_SESSION_NOT_FOUND, f"shell {sid} not found")
+        return sh
 
     # ── Server lifecycle ─────────────────────────────────────────────────────
     async def serve(self) -> None:
@@ -507,6 +681,18 @@ class Server:
                       file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[boot] event log cleanup failed: {e}",
+                  file=sys.stderr, flush=True)
+        # Shells do NOT survive agent restart (the bash children died with
+        # the previous agent process). Wipe every shell log left over —
+        # Charon will reconcile its DB via `shell_list` (empty) on the
+        # next page SSR. Cf. shell.py module docstring.
+        try:
+            removed_shells = cleanup_orphans(self.shells_dir, set())
+            if removed_shells:
+                print(f"[boot] cleaned up {removed_shells} orphan shell log file(s)",
+                      file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[boot] shell log cleanup failed: {e}",
                   file=sys.stderr, flush=True)
 
         server = await asyncio.start_unix_server(

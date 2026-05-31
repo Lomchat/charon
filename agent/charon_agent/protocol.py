@@ -73,4 +73,14 @@ METHODS = {
     "respond_exit_plan",
     "sleep_session",
     "kill_session",
+    # Persistent PTY shells (agent >= 0.7.0). See agent/charon_agent/shell.py.
+    # All routing through the same _emit pipeline as sessions, with shell_id
+    # as the channel key (in the `session_id` JSON field for protocol reuse).
+    "shell_list",
+    "shell_start",
+    "shell_input",
+    "shell_resize",
+    "shell_subscribe",
+    "shell_unsubscribe",
+    "shell_kill",
 }
