@@ -4,6 +4,11 @@
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
+// Mirrors claude_agent_sdk.EffortLevel literal. Newer SDK versions may add
+// values; if so, also extend this union (the agent silently drops unknown
+// effort values, so adding new ones here without bumping the agent is safe).
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 export type AgentSessionStatus =
   | 'starting'
   | 'active'
@@ -19,6 +24,11 @@ export type AgentSessionInfo = {
   name: string | null;
   permission_mode: PermissionMode;
   status: AgentSessionStatus;
+  // Optional because agents < 0.5.0 don't emit these fields. null/undefined
+  // both mean "use the default" (global setting → SDK default).
+  model?: string | null;
+  fallback_model?: string | null;
+  effort?: EffortLevel | null;
 };
 
 export type AgentHelloResult = {
@@ -66,6 +76,13 @@ export type AgentEvent = (
   | { event: 'todo_update'; session_id: string; todos: any[] }
   | { event: 'edit_snapshot'; session_id: string; phase: 'before' | 'after'; tool_use_id: string; file_path: string; content: string | null; size: number; truncated: boolean }
   | { event: 'mode_changed'; session_id: string; mode: PermissionMode }
+  // model_changed / effort_changed: emitted by agent >= 0.5.0 when set_model
+  // or set_effort is invoked. applied_at_next_start is true when the SDK
+  // client is currently running (= the change takes effect on next sleep/resume),
+  // false when there's no live client (= takes effect on the next start).
+  // null fields mean "cleared back to default".
+  | { event: 'model_changed'; session_id: string; model: string | null; fallback_model: string | null; applied_at_next_start?: boolean }
+  | { event: 'effort_changed'; session_id: string; effort: EffortLevel | null; applied_at_next_start?: boolean }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean }
@@ -88,6 +105,8 @@ export type AgentMethodName =
   | 'interrupt'
   | 'force_stop'
   | 'set_permission_mode'
+  | 'set_model'
+  | 'set_effort'
   | 'respond_permission'
   | 'respond_question'
   | 'respond_exit_plan'

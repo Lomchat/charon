@@ -66,6 +66,8 @@ METHODS = {
     "interrupt",
     "force_stop",
     "set_permission_mode",
+    "set_model",
+    "set_effort",
     "respond_permission",
     "respond_question",
     "respond_exit_plan",

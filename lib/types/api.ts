@@ -222,6 +222,12 @@ export type CreateClaudeSessionBody = {
   cwd: string;
   name?: string | null;
   permissionMode?: PermissionMode;
+  // Per-session Claude config. Pass null/omit to inherit the global defaults
+  // (claudeSettings.claude.default_*). Effort must be a ClaudeEffortLevel or
+  // omitted; invalid values are silently dropped server-side.
+  model?: string | null;
+  fallbackModel?: string | null;
+  effort?: string | null;
 };
 export type CreateClaudeSessionResponse = {
   id: string;
@@ -231,6 +237,9 @@ export type CreateClaudeSessionResponse = {
   cwd: string;
   name: string | null;
   permissionMode: PermissionMode;
+  model: string | null;
+  fallbackModel: string | null;
+  effort: string | null;
 };
 
 export type ImportClaudeSessionBody = {
@@ -274,6 +283,23 @@ export type RespondExitPlanBody = {
 
 export type SetClaudeModeBody = { mode: PermissionMode };
 export type SetClaudeModeResponse = { ok: true; mode: PermissionMode };
+
+// Mirrors EffortLevel in lib/server/agent/types.ts (and claude_agent_sdk).
+// Duplicated here to avoid client bundles pulling a `server-only` module.
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+// POST /api/claude/sessions/[id]/model — change the model for ONE session.
+// Both fields nullable: null/empty clears back to the global default. Takes
+// effect on the next sleep+resume (see /model/route.ts header for why).
+export type SetClaudeSessionModelBody = {
+  model: string | null;
+  fallbackModel?: string | null;
+};
+export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
+
+// POST /api/claude/sessions/[id]/effort
+export type SetClaudeSessionEffortBody = { effort: ClaudeEffortLevel | null };
+export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
 
 export type RevertClaudeEditBody = {
   filePath: string;

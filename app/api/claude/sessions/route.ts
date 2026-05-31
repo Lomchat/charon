@@ -99,15 +99,26 @@ export async function POST(req: Request) {
   const permissionMode: Mode = ALLOWED_MODES.includes(body.permissionMode)
     ? body.permissionMode
     : 'auto';
+  // Normalize the per-session Claude config. Empty strings → null so the
+  // default-resolution path in startNewSession treats them as "inherit
+  // global default". Effort is forwarded as a raw string; sessionOps
+  // validates via isValidEffort and silently drops invalid values
+  // (consistent with the agent-side guard).
+  const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : null;
+  const fallbackModel = typeof body.fallbackModel === 'string' && body.fallbackModel.length > 0
+    ? body.fallbackModel : null;
+  const effort = typeof body.effort === 'string' && body.effort.length > 0 ? body.effort : null;
   try {
     const stream = await startNewSession({
       vpsId, cwd,
       name: body.name ? String(body.name) : null,
       permissionMode,
+      model, fallbackModel, effort,
     });
     return NextResponse.json({
       id: stream.id, status: stream.status, claudeSessionId: stream.claudeSessionId,
       vpsId, cwd, name: stream.name, permissionMode,
+      model: stream.model, fallbackModel: stream.fallbackModel, effort: stream.effort,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });

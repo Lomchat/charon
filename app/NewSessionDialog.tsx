@@ -11,6 +11,28 @@ type Props = {
   onCreated: (id: string) => void;
 };
 
+// Suggestions surfaced in the datalist. Users can still type any model
+// string — the SDK validates at start_session. Kept short so the dropdown
+// stays tidy; edit here when new families ship. Don't bake versioned IDs
+// (claude-opus-4-7-20250929) into the UI; let the global default + the
+// per-session override carry the specific date-stamped string.
+const MODEL_SUGGESTIONS = [
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-7',
+  'claude-haiku-4-5',
+];
+
+const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
+  { value: '', label: 'inherit (global default)' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+];
+
 export default function NewSessionDialog({
   vpsList, vpsPaths, initial, onClose, onCreated,
 }: Props) {
@@ -19,6 +41,18 @@ export default function NewSessionDialog({
   const [name, setName] = useState('');
   // Always created in "auto" (Claude's native classifier) — the user changes it via the switch in the chat
   const permissionMode = 'auto' as const;
+  // Per-session Claude config (empty string = inherit the global default
+  // set in SettingsModal § Claude defaults). We don't pre-fill from the
+  // global default — leaving the field blank is the explicit way to say
+  // "follow whatever the global default is, even if it changes later".
+  const [model, setModel] = useState('');
+  const [fallbackModel, setFallbackModel] = useState('');
+  const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>('');
+  // Fetched on open to display the inherited values as placeholders.
+  // Failure is non-fatal — placeholders just stay generic.
+  const [globalDefaults, setGlobalDefaults] = useState<{
+    model: string; fallbackModel: string; effort: string;
+  } | null>(null);
   const [check, setCheck] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -39,6 +73,17 @@ export default function NewSessionDialog({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Load global defaults to display them as input placeholders. Best-effort.
+  useEffect(() => {
+    api.getClaudeSettings()
+      .then((s) => setGlobalDefaults({
+        model: s['claude.default_model'] ?? '',
+        fallbackModel: s['claude.default_fallback_model'] ?? '',
+        effort: s['claude.default_effort'] ?? '',
+      }))
+      .catch(() => { /* placeholders stay generic — no UI noise */ });
+  }, []);
 
   useEffect(() => {
     if (!vpsId) return;
@@ -82,6 +127,11 @@ export default function NewSessionDialog({
         vpsId, cwd: cwd.trim(),
         name: name.trim() || null,
         permissionMode,
+        // Empty → null (= inherit global default at the server side, which
+        // resolves to the SDK default if no global is set).
+        model: model.trim() || null,
+        fallbackModel: fallbackModel.trim() || null,
+        effort: effort || null,
       });
       onCreated(r.id);
     } catch (e: any) {
@@ -168,6 +218,50 @@ export default function NewSessionDialog({
 
         <label>name (optional)
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ex: auth refactor" />
+        </label>
+
+        {/*
+          Claude config (optional). Leaving fields blank inherits the global
+          default (SettingsModal § Claude defaults), which itself can be
+          blank → SDK default. The placeholder shows what's currently
+          inherited so the user knows what to expect without overriding.
+          Free-text inputs for model/fallback (the SDK validates at start);
+          select for effort (typed literal).
+        */}
+        <label>model (optional)
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={globalDefaults?.model
+              ? `inherit: ${globalDefaults.model}`
+              : 'inherit (SDK default)'}
+            list="claude-model-suggestions"
+            autoComplete="off"
+          />
+        </label>
+        <label>fallback model (optional, used if rate-limited)
+          <input
+            value={fallbackModel}
+            onChange={(e) => setFallbackModel(e.target.value)}
+            placeholder={globalDefaults?.fallbackModel
+              ? `inherit: ${globalDefaults.fallbackModel}`
+              : 'none'}
+            list="claude-model-suggestions"
+            autoComplete="off"
+          />
+        </label>
+        {/* Shared datalist for both model inputs. */}
+        <datalist id="claude-model-suggestions">
+          {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+        </datalist>
+        <label>effort (optional)
+          <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
+            {EFFORT_OPTIONS.map((o) => {
+              const inherited = !o.value && globalDefaults?.effort
+                ? ` — inherits: ${globalDefaults.effort}` : '';
+              return <option key={o.value} value={o.value}>{o.label}{inherited}</option>;
+            })}
+          </select>
         </label>
 
         {err && <div className="modal-err">{err}</div>}

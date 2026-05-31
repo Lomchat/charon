@@ -108,6 +108,20 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // reconnect). A genuinely new finish has a higher seq → notifies once.
   // Null = never notified a finish yet.
   lastStopNotifiedSeq: integer('last_stop_notified_seq'),
+  // Per-session Claude model / fallback / effort. All three NULL by default
+  // → use the global default from claude_settings; if the global default is
+  // also NULL, the agent passes nothing to ClaudeAgentOptions and the SDK
+  // applies its own default.
+  // - model / fallback_model: free strings (model IDs like
+  //   'claude-opus-4-7-...', 'claude-opus-4-8-...'). fallback_model is used
+  //   by the SDK when the primary is rate-limited.
+  // - effort: one of 'low' | 'medium' | 'high' | 'xhigh' | 'max' (mirrors
+  //   claude_agent_sdk.EffortLevel). Invalid values are dropped agent-side.
+  // Changes apply at the NEXT SDK start (sleep+resume) — the underlying
+  // Claude SDK session is bound to a model at construction.
+  model: text('model'),
+  fallbackModel: text('fallback_model'),
+  effort: text('effort'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 });

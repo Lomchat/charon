@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
-import type { SessionListItem } from '@/lib/types/api';
+import type { SessionListItem, ClaudeEffortLevel } from '@/lib/types/api';
 import { api } from '@/lib/api';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
@@ -79,11 +79,12 @@ export default function ClaudeSessionView({
   });
   const {
     messages, currentAssistant, status, permissionMode,
+    model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     toolCalls, todos, edits,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
-    send: streamSend, interrupt, forceStop, setMode,
+    send: streamSend, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, clearError,
@@ -364,6 +365,18 @@ export default function ClaudeSessionView({
             disabled={!['thinking', 'active', 'starting'].includes(status ?? '')}
             title="Force cancel (SDK stuck) — session goes to sleeping, resume possible"
           >force stop</button>
+          {/*
+            Model / effort badges. Compact display + popover for switching.
+            Both changes apply at the next SDK start (sleep+resume) — the
+            badge labels this with "applies on resume" when a switch is
+            pending. null values display as "inherit" so the user knows
+            they're following the global default.
+          */}
+          <ModelEffortBadges
+            model={model} fallbackModel={fallbackModel} effort={effort}
+            modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
+            onSetModel={setModel} onSetEffort={setEffort}
+          />
         </div>
 
         {status === 'reconnecting' && (
@@ -638,4 +651,200 @@ function fmtElapsed(s: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}m${r.toString().padStart(2, '0')}s`;
+}
+
+// Same suggestion list as NewSessionDialog. Duplicated to keep this component
+// self-contained — moving it to a shared constants file would be a one-line
+// change later if a third consumer appears.
+const MODEL_SUGGESTIONS = [
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-7',
+  'claude-haiku-4-5',
+];
+
+/**
+ * Compact header badges + click-to-edit popover for per-session
+ * model + effort. Designed to be near-invisible when set to defaults
+ * (a single neutral chip showing "model: inherit · effort: inherit"),
+ * and to grow only when the user customizes.
+ *
+ * Changes are deferred ("applies on resume") because the underlying
+ * Claude SDK binds model/effort at client construction. We surface that
+ * via the `pending-apply` class so the badge gets a subtle accent until
+ * the next sleep+resume cycle (which clears the flag via applyApiData).
+ */
+function ModelEffortBadges({
+  model, fallbackModel, effort,
+  modelPendingApply, effortPendingApply,
+  onSetModel, onSetEffort,
+}: {
+  model: string | null;
+  fallbackModel: string | null;
+  effort: ClaudeEffortLevel | null;
+  modelPendingApply: boolean;
+  effortPendingApply: boolean;
+  onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
+  onSetEffort: (e: ClaudeEffortLevel | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  // Local edit buffers — only committed on Save so a half-typed model
+  // doesn't fire an RPC per keystroke (the SDK would log an error per
+  // unrecognized intermediate string). Resets on open from current state.
+  const [draftModel, setDraftModel] = useState(model ?? '');
+  const [draftFallback, setDraftFallback] = useState(fallbackModel ?? '');
+  const [draftEffort, setDraftEffort] = useState<'' | ClaudeEffortLevel>(effort ?? '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setDraftModel(model ?? '');
+      setDraftFallback(fallbackModel ?? '');
+      setDraftEffort(effort ?? '');
+    }
+  }, [open, model, fallbackModel, effort]);
+
+  // Close on Escape + click outside.
+  const popRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onClick = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    // Fire on next tick so the click that opened the popover doesn't
+    // immediately close it.
+    const t = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      clearTimeout(t);
+      document.removeEventListener('mousedown', onClick);
+    };
+  }, [open]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      // Always submit BOTH to keep them in sync — even when only one
+      // changed. Server-side dedup in setModel skips the RPC if nothing
+      // moved, so this is free.
+      const nextModel = draftModel.trim() || null;
+      const nextFallback = draftFallback.trim() || null;
+      const nextEffort = (draftEffort as string) === '' ? null : (draftEffort as ClaudeEffortLevel);
+      if (nextModel !== (model ?? null) || nextFallback !== (fallbackModel ?? null)) {
+        await onSetModel(nextModel, nextFallback);
+      }
+      if (nextEffort !== (effort ?? null)) {
+        await onSetEffort(nextEffort);
+      }
+      setOpen(false);
+    } finally { setSaving(false); }
+  }
+
+  // Compact display: "model · effort" with subtle hint when on defaults.
+  const modelLabel = model ?? 'inherit';
+  const effortLabel = effort ?? 'inherit';
+  const anyPending = modelPendingApply || effortPendingApply;
+  const titleParts: string[] = [];
+  titleParts.push(`model: ${model ?? '(global default)'}`);
+  if (fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
+  titleParts.push(`effort: ${effort ?? '(global default)'}`);
+  if (anyPending) titleParts.push('change pending — applies at next sleep+resume');
+  const title = titleParts.join(' · ');
+
+  return (
+    <span style={{ position: 'relative', marginLeft: 'auto' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={title}
+        style={{
+          background: 'transparent',
+          border: `1px solid ${anyPending ? 'var(--gold, #b8964b)' : 'rgba(255,255,255,0.15)'}`,
+          padding: '2px 8px',
+          borderRadius: 4,
+          fontSize: 11,
+          fontFamily: 'var(--mono)',
+          color: anyPending ? 'var(--gold, #b8964b)' : 'inherit',
+          cursor: 'pointer',
+          opacity: model || effort ? 1 : 0.6,
+        }}
+      >
+        {modelLabel} · {effortLabel}
+        {anyPending && <span style={{ marginLeft: 6 }}>⏳</span>}
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            right: 0,
+            background: 'var(--stone, #1f1f1f)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            borderRadius: 6,
+            padding: 12,
+            minWidth: 320,
+            zIndex: 50,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            fontSize: 12,
+            boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
+          }}
+        >
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>
+            Per-session Claude config — applies at next sleep + resume.
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span style={{ fontFamily: 'var(--mono)' }}>model</span>
+            <input
+              value={draftModel}
+              onChange={(e) => setDraftModel(e.target.value)}
+              placeholder="(empty = inherit global default)"
+              list="claude-session-model-suggestions"
+              autoComplete="off"
+              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
+            <input
+              value={draftFallback}
+              onChange={(e) => setDraftFallback(e.target.value)}
+              placeholder="(empty = none)"
+              list="claude-session-model-suggestions"
+              autoComplete="off"
+              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+            />
+          </label>
+          <datalist id="claude-session-model-suggestions">
+            {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+          </datalist>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span style={{ fontFamily: 'var(--mono)' }}>effort</span>
+            <select
+              value={draftEffort}
+              onChange={(e) => setDraftEffort(e.target.value as '' | ClaudeEffortLevel)}
+              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+            >
+              <option value="">(inherit global default)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </label>
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
+            <button type="button" onClick={() => setOpen(false)} disabled={saving}>cancel</button>
+            <button type="button" className="primary" onClick={save} disabled={saving}>
+              {saving ? '…' : 'apply'}
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
 }

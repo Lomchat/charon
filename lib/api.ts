@@ -22,6 +22,9 @@ import type {
   DeleteClaudeSessionResponse, ResumeClaudeSessionResponse,
   RespondPermissionBody, RespondQuestionBody, RespondExitPlanBody,
   SetClaudeModeResponse,
+  SetClaudeSessionModelBody, SetClaudeSessionModelResponse,
+  SetClaudeSessionEffortBody, SetClaudeSessionEffortResponse,
+  ClaudeEffortLevel,
   RevertClaudeEditResponse, SearchClaudeResponse,
   ClaudeSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
   PushSubscribeResponse,
@@ -235,6 +238,15 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/exit-plan`, { id: qid, decision, feedback } as RespondExitPlanBody),
   setClaudeMode: (id: string, mode: PermissionMode) =>
     send<SetClaudeModeResponse>('POST', `/api/claude/sessions/${id}/mode`, { mode }),
+  // Per-session model / effort. Both take effect on next sleep+resume — the
+  // UI should label "applied at next start" until then. Passing null clears
+  // back to the global default (cf. SettingsModal § Claude defaults).
+  setClaudeSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
+    send<SetClaudeSessionModelResponse>('POST', `/api/claude/sessions/${id}/model`,
+      { model, fallbackModel } as SetClaudeSessionModelBody),
+  setClaudeSessionEffort: (id: string, effort: ClaudeEffortLevel | null) =>
+    send<SetClaudeSessionEffortResponse>('POST', `/api/claude/sessions/${id}/effort`,
+      { effort } as SetClaudeSessionEffortBody),
   revertClaudeEdit: (id: string, filePath: string, content: string | null) =>
     send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath, content }),
   searchClaude: (q: string) =>

@@ -9,7 +9,7 @@ import { rebuildStateFromMessages } from './sessionRebuild';
 import type {
   WorkerEvent, WorkerStatus, PermissionMode,
 } from '@/lib/server/claude/types';
-import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
+import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow, ClaudeEffortLevel } from '@/lib/types/api';
 import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
 
 // Compare two interaction-queue snapshots by id sequence. Returns true if
@@ -86,6 +86,16 @@ export type ClaudeSessionStreamState = {
   currentAssistant: string;
   status: WorkerStatus | null;
   permissionMode: PermissionMode;
+  // Per-session Claude model / fallback / effort. null = inherit the global
+  // default (claudeSettings.claude.default_*). Updated by `model_changed` /
+  // `effort_changed` SSE events; mirrored in DB. `pendingApply` flips to
+  // true on a setModel/setEffort call against a live SDK client — the change
+  // is queued and applies on next sleep+resume. UI should label it as deferred.
+  model: string | null;
+  fallbackModel: string | null;
+  effort: ClaudeEffortLevel | null;
+  modelPendingApply: boolean;
+  effortPendingApply: boolean;
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
@@ -115,6 +125,15 @@ export type ClaudeSessionStreamActions = {
   interrupt(): Promise<void>;
   forceStop(): Promise<void>;
   setMode(mode: PermissionMode): Promise<void>;
+  /**
+   * Change the model (and optionally the fallback) for this session.
+   * Takes effect at NEXT SDK start — the SDK binds the model at construction
+   * time and cannot swap mid-flight. The UI should announce this (badge
+   * with "applies on resume"). Pass null to clear back to the global default.
+   */
+  setModel(model: string | null, fallbackModel?: string | null): Promise<void>;
+  /** Change the effort level. Same deferred-apply semantics as setModel. */
+  setEffort(effort: ClaudeEffortLevel | null): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
   /** Permanent deletion. The caller MUST have confirmed on the UI side. */
@@ -156,6 +175,18 @@ export function useClaudeSessionStream(
   const [currentAssistant, setCurrentAssistant] = useState('');
   const [status, setStatus] = useState<WorkerStatus | null>(null);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('normal');
+  // Per-session model / fallback / effort. Initialized from the DB row via
+  // applyApiData; updated by `model_changed` / `effort_changed` SSE events.
+  // null on either field means "inherit the global default".
+  const [model, setModelState] = useState<string | null>(null);
+  const [fallbackModel, setFallbackModelState] = useState<string | null>(null);
+  const [effort, setEffortState] = useState<ClaudeEffortLevel | null>(null);
+  // True while a setModel/setEffort change is queued but not yet applied
+  // (live SDK client exists → takes effect at next sleep+resume). Reset on
+  // the next start (status flips back to 'starting' → 'active'). The UI
+  // uses this to render a "applies on resume" hint next to the badge.
+  const [modelPendingApply, setModelPendingApply] = useState(false);
+  const [effortPendingApply, setEffortPendingApply] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
@@ -277,6 +308,24 @@ export function useClaudeSessionStream(
         r.session?.permissionMode as PermissionMode,
       ) ? (r.session.permissionMode as PermissionMode) : 'normal',
     );
+    // Initialize model / fallback / effort from the DB row. The session row
+    // schema includes these columns (cf. lib/db/schema.ts § claudeSessions);
+    // ClaudeSession (= typeof claudeSessions.$inferSelect) carries them
+    // transitively. Effort is validated to keep TS happy; the DB column is a
+    // free TEXT but server-side writes already filter.
+    const sess = r.session as typeof r.session & { model?: string | null; fallbackModel?: string | null; effort?: string | null };
+    setModelState(sess.model ?? null);
+    setFallbackModelState(sess.fallbackModel ?? null);
+    const validEffortValues: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+    setEffortState(
+      (validEffortValues as readonly string[]).includes(sess.effort ?? '')
+        ? (sess.effort as ClaudeEffortLevel) : null,
+    );
+    // Full refetch = the session was reloaded from DB → any pending-apply
+    // marker from a previous resume cycle is now stale (either applied or
+    // moot). Clear so the UI doesn't show "applies on resume" forever.
+    setModelPendingApply(false);
+    setEffortPendingApply(false);
     setSessionMeta(r.session);
     // Interaction queues — we inject the sessionId required by the shared
     // type (the API doesn't return it by default).
@@ -896,6 +945,23 @@ export function useClaudeSessionStream(
         case 'mode_changed':
           setPermissionMode(ev.mode);
           break;
+        case 'model_changed':
+          setModelState(ev.model ?? null);
+          setFallbackModelState(ev.fallbackModel ?? null);
+          // appliedAtNextStart=true means a live SDK client exists and the
+          // change is queued. The next sleep+resume cycle clears the flag
+          // (applyApiData resets it on full reload).
+          setModelPendingApply(!!ev.appliedAtNextStart);
+          break;
+        case 'effort_changed': {
+          // Defensive cast: the wire type is EffortLevel|null but the
+          // backend's isValidEffort already filtered invalid strings.
+          const e = ev.effort;
+          const valid: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+          setEffortState((valid as readonly (string | null)[]).includes(e) ? e : null);
+          setEffortPendingApply(!!ev.appliedAtNextStart);
+          break;
+        }
         default: break;
       }
     };
@@ -1055,6 +1121,38 @@ export function useClaudeSessionStream(
     }
   }, [sessionId, permissionMode]);
 
+  const setModel = useCallback(async (newModel: string | null, newFallbackModel: string | null = null) => {
+    // Idempotency guard: skip the round-trip if both fields already match.
+    // (Comparing both prevents a stale fallback from leaking when the user
+    // sets only the primary.)
+    if (newModel === model && newFallbackModel === fallbackModel) return;
+    const prevModel = model;
+    const prevFallback = fallbackModel;
+    // Optimistic UI — the model_changed SSE will reconcile + set
+    // modelPendingApply based on whether a live SDK client exists.
+    setModelState(newModel);
+    setFallbackModelState(newFallbackModel);
+    try {
+      await api.setClaudeSessionModel(sessionId, newModel, newFallbackModel);
+    } catch (e) {
+      setModelState(prevModel);
+      setFallbackModelState(prevFallback);
+      setError({ msg: String((e as Error)?.message ?? e) });
+    }
+  }, [sessionId, model, fallbackModel]);
+
+  const setEffort = useCallback(async (newEffort: ClaudeEffortLevel | null) => {
+    if (newEffort === effort) return;
+    const prev = effort;
+    setEffortState(newEffort);
+    try {
+      await api.setClaudeSessionEffort(sessionId, newEffort);
+    } catch (e) {
+      setEffortState(prev);
+      setError({ msg: String((e as Error)?.message ?? e) });
+    }
+  }, [sessionId, effort]);
+
   const doSleep = useCallback(async () => {
     // Optimistic: the server marks the DB row 'sleeping' unconditionally
     // (even if the agent is unreachable — cf. sessionOps.sleepSession), so
@@ -1133,21 +1231,23 @@ export function useClaudeSessionStream(
 
   return useMemo(() => ({
     sessionMeta, messages, currentAssistant, status, permissionMode,
+    model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
-    send, interrupt, forceStop, setMode,
+    send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
+    model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
-    send, interrupt, forceStop, setMode,
+    send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,

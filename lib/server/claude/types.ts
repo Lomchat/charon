@@ -17,8 +17,21 @@ export type BridgeEvent =
   | { type: 'todo_update'; todos: any[] }
   | { type: 'edit_snapshot'; phase: 'before' | 'after'; tool_use_id: string; file_path: string; content: string | null; size: number; truncated: boolean }
   | { type: 'mode_changed'; mode: PermissionMode }
+  // Per-session Claude model / effort changes (agent >= 0.5.0). Both carry
+  // appliedAtNextStart so the UI can label the change as deferred: the SDK
+  // client cannot swap model/effort mid-flight (bound at construction), so
+  // the change takes effect on the next sleep+resume. null values mean
+  // "cleared back to the global default".
+  | { type: 'model_changed'; model: string | null; fallbackModel: string | null; appliedAtNextStart: boolean }
+  | { type: 'effort_changed'; effort: EffortLevel | null; appliedAtNextStart: boolean }
   | { type: 'stop'; subtype?: string }
   | { type: 'error'; msg: string; fatal?: boolean };
+
+// Mirror of claude_agent_sdk.EffortLevel. Re-exported from
+// lib/server/agent/types.ts as the source of truth for the protocol layer;
+// duplicated here as a local alias to avoid a circular import (this file
+// is imported by sessionOps.ts which itself imports from agent/types.ts).
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // Synthetic events that the worker fabricates itself (not received from the bridge).
 export type SyntheticEvent =

@@ -13,12 +13,41 @@ type Props = {
 
 // Mobile bottom-sheet to create a new Claude session.
 // Mirrors the logic of NewSessionDialog in a simpler/mobile-friendly form.
+// Mirror MODEL_SUGGESTIONS / EFFORT_OPTIONS from NewSessionDialog. Kept
+// duplicated (not imported) to keep mobile chunk independent of the desktop
+// dialog, which mobile pages don't otherwise load.
+const MODEL_SUGGESTIONS = [
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-7',
+  'claude-haiku-4-5',
+];
+
+const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
+  { value: '', label: 'inherit (global default)' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+];
+
 export default function NewSessionSheet({
   vpsList, vpsPaths, initial, onClose, onCreated,
 }: Props) {
   const [vpsId, setVpsId] = useState(initial?.vpsId ?? vpsList[0]?.id ?? '');
   const [cwd, setCwd] = useState(initial?.cwd ?? '');
   const [name, setName] = useState('');
+  // Per-session Claude config — empty = inherit global default. Cf.
+  // NewSessionDialog for the same UI rationale (don't pre-fill so changing
+  // the global default later still takes effect).
+  const [model, setModel] = useState('');
+  const [fallbackModel, setFallbackModel] = useState('');
+  const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>('');
+  const [globalDefaults, setGlobalDefaults] = useState<{
+    model: string; fallbackModel: string; effort: string;
+  } | null>(null);
   const [check, setCheck] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -39,6 +68,17 @@ export default function NewSessionSheet({
       .catch((e) => setCheck({ ok: false, error: String(e?.message ?? e) }));
   }, [vpsId]);
 
+  // Best-effort: fetch global defaults to display them as input placeholders.
+  useEffect(() => {
+    api.getClaudeSettings()
+      .then((s) => setGlobalDefaults({
+        model: s['claude.default_model'] ?? '',
+        fallbackModel: s['claude.default_fallback_model'] ?? '',
+        effort: s['claude.default_effort'] ?? '',
+      }))
+      .catch(() => { /* no UI noise */ });
+  }, []);
+
   async function create() {
     if (!vpsId || !cwd.trim()) return;
     setBusy(true); setErr(null);
@@ -47,6 +87,9 @@ export default function NewSessionSheet({
         vpsId, cwd: cwd.trim(),
         name: name.trim() || null,
         permissionMode: 'auto',
+        model: model.trim() || null,
+        fallbackModel: fallbackModel.trim() || null,
+        effort: effort || null,
       });
       onCreated(r.id);
     } catch (e: any) {
@@ -120,6 +163,41 @@ export default function NewSessionSheet({
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. auth refactor"
             />
+          </label>
+
+          {/* Per-session Claude config — cf. NewSessionDialog for rationale. */}
+          <label>
+            <span>model (optional)</span>
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={globalDefaults?.model ? `inherit: ${globalDefaults.model}` : 'inherit'}
+              list="claude-model-suggestions-m"
+              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            />
+          </label>
+          <label>
+            <span>fallback model (optional)</span>
+            <input
+              value={fallbackModel}
+              onChange={(e) => setFallbackModel(e.target.value)}
+              placeholder={globalDefaults?.fallbackModel ? `inherit: ${globalDefaults.fallbackModel}` : 'none'}
+              list="claude-model-suggestions-m"
+              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+            />
+          </label>
+          <datalist id="claude-model-suggestions-m">
+            {MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
+          </datalist>
+          <label>
+            <span>effort (optional)</span>
+            <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
+              {EFFORT_OPTIONS.map((o) => {
+                const inherited = !o.value && globalDefaults?.effort
+                  ? ` — inherits: ${globalDefaults.effort}` : '';
+                return <option key={o.value} value={o.value}>{o.label}{inherited}</option>;
+              })}
+            </select>
           </label>
 
           {err && <div className="m-sheet-err">{err}</div>}
