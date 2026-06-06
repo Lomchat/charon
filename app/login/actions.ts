@@ -6,9 +6,14 @@ import {
   createSession, setSessionKey, SESSION_COOKIE, SESSION_TTL_MS
 } from '@/lib/server/auth';
 import { seedInitialData } from '@/lib/server/seed';
+import { sanitizeNextPath } from '@/lib/nextPath';
 
 export async function loginAction(_prev: { error?: string } | null, formData: FormData) {
   const password = String(formData.get('password') ?? '');
+  // Where to land after login — sanitized to a same-origin path (defaults to
+  // "/"). Lets a mobile user logged-out by inactivity return to /m/... instead
+  // of the desktop UI.
+  const next = sanitizeNextPath(formData.get('next'));
   if (!password) return { error: 'password required' };
 
   if (!checkPassword(password)) return { error: 'invalid password' };
@@ -27,5 +32,5 @@ export async function loginAction(_prev: { error?: string } | null, formData: Fo
     secure: process.env.NODE_ENV === 'production',
     maxAge: Math.floor(SESSION_TTL_MS / 1000),
   });
-  redirect('/');
+  redirect(next);
 }

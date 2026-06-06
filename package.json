@@ -29,9 +29,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 10556",
+    "dev": "node server.js",
     "build": "node scripts/check-protocol-sync.mjs && next build",
-    "start": "next start -H 127.0.0.1 -p 10556",
+    "start": "node server.js",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node ./scripts/migrate.mjs"
@@ -40,6 +40,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
@@ -47,13 +48,13 @@
     "diff": "^9.0.0",
     "drizzle-orm": "^0.39.3",
     "next": "^15.1.6",
-    "node-pty": "^1.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

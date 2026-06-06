@@ -303,6 +303,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     });
   }, []);
 
+  // `mountedShellIds` is the set of shell ids whose <ShellTerminal> stays
+  // MOUNTED (its WebSocket + xterm alive) even while another entity is
+  // selected — so switching sessions and coming back keeps the live shell
+  // and its scrollback instead of tearing down + reconnecting (which is
+  // what made shells feel "non-persistent"). See §14 gotcha 37.
+  //
+  // Lazy on purpose: a shell mounts only once it has been SELECTED at least
+  // once this page-load (not on F5 for every shell in the sidebar) — that
+  // caps the number of live ssh+agent connections to shells the user
+  // actually opened. The GC effect below drops ids whose shell is gone OR
+  // whose tab was closed (× → removed from keptOpenIds).
+  const [mountedShellIds, setMountedShellIds] = useState<Set<string>>(new Set());
+
   // Whenever a new active entity appears (or is selected), pin its tab.
   // Active Claude sessions, live shells, running installs.
   useEffect(() => {
@@ -345,6 +358,37 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       return changed ? next : prev;
     });
   }, [sessions, shells, installs]);
+
+  // Mount a shell terminal the first time it's selected, then keep it
+  // mounted (see `mountedShellIds` above).
+  useEffect(() => {
+    if (!selectedShellId) return;
+    setMountedShellIds((prev) => {
+      if (prev.has(selectedShellId)) return prev;
+      const next = new Set(prev);
+      next.add(selectedShellId);
+      return next;
+    });
+  }, [selectedShellId]);
+
+  // GC mounted shells: drop any whose shell row no longer exists (deleted /
+  // reconciled away) OR whose tab the user closed (no longer in
+  // keptOpenIds). Dropping unmounts <ShellTerminal> → its WebSocket closes
+  // and the ssh+agent client is freed. The agent's bash + durable log live
+  // on, so reopening the shell replays the full scrollback.
+  useEffect(() => {
+    setMountedShellIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        const keep = shells.some((s) => s.id === id) && keptOpenIds.has(id);
+        if (keep) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [shells, keptOpenIds]);
 
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
@@ -559,6 +603,27 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     const cwd = defaultCwdFor(vpsId) ?? null;
     startShell({ vpsId, cwd });
   }
+  /**
+   * Right-click on a tab → resolve the entity in our lists, then dispatch
+   * to the SAME `ctxMenu` state used by the sidebar's right-click. This
+   * is THE shared-menu point: any future change to the menu (new option,
+   * relabeling, color tweak) applies to both entry points automatically
+   * because the rendering happens once at the bottom of ClaudePanel's
+   * JSX (`<SessionContextMenu>` for ctxMenu.kind=session/shell/install).
+   */
+  function onTabContext(t: EntityTab, x: number, y: number) {
+    if (t.kind === 'session') {
+      const s = sessions.find((x) => x.id === t.id);
+      if (s) setCtxMenu({ kind: 'session', session: s, x, y });
+    } else if (t.kind === 'shell') {
+      const sh = shells.find((x) => x.id === t.id);
+      if (sh) setCtxMenu({ kind: 'shell', shell: sh, x, y });
+    } else {
+      const inst = installs.find((x) => x.id === t.id);
+      if (inst) setCtxMenu({ kind: 'install', install: inst, x, y });
+    }
+  }
+
   /** Reason to disable the "+ Claude" button (agent not ready). The
    *  shell button stays enabled — SSH doesn't need the agent. Mirrors
    *  the sidebar's `agentReady`/`noAgentReason` logic. */
@@ -894,6 +959,23 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
+  // The shells whose <ShellTerminal> is kept mounted (union of the lazily-
+  // tracked `mountedShellIds` and the current selection, in case the
+  // selection effect hasn't committed yet), resolved to live rows. Rendered
+  // as a persistent layer below — only the selected one is visible; the
+  // rest stay mounted with display:none so their WS/xterm survive switches.
+  const mountedShellList = useMemo(() => {
+    const ids = new Set(mountedShellIds);
+    if (selectedShellId) ids.add(selectedShellId);
+    const out: ShellListItem[] = [];
+    for (const id of ids) {
+      const sh = shells.find((s) => s.id === id);
+      if (sh) out.push(sh);
+    }
+    return out;
+  }, [mountedShellIds, selectedShellId, shells]);
+  const selectedShellExists = !!selectedShellId && shells.some((s) => s.id === selectedShellId);
+
   return (
     <div className={`claude-root${selectedShellId ? '' : ' has-tools'}`}>
       <header className="claude-head">
@@ -1031,6 +1113,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
         newSessionDisabledReason={newSessionDisabledReasonFor(activeVpsId)}
+        onTabContext={onTabContext}
       />
 
       {/* Main panel routing: 3 mutually exclusive views.
@@ -1067,20 +1150,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             }}
           />
         );
-      })() : selectedShellId ? (() => {
-        const sh = shells.find((s) => s.id === selectedShellId);
-        if (!sh) return <main className="claude-main"><div className="bar-empty">shell not found</div></main>;
-        return (
-          <main className="claude-main shell-main">
-            <ShellTerminal
-              shellId={sh.id}
-              vpsName={sh.vpsName}
-              cwd={sh.cwd}
-              onKilled={() => shellKilled(sh.id)}
-            />
-          </main>
-        );
-      })() : selected ? (
+      })() : selectedShellId ? (
+        // The actual <ShellTerminal>s live in the persistent layer rendered
+        // below (kept mounted across session switches so the live shell +
+        // its scrollback survive). Here we only render the not-found
+        // fallback when the selected shell row no longer exists.
+        selectedShellExists ? null : (
+          <main className="claude-main"><div className="bar-empty">shell not found</div></main>
+        )
+      ) : selected ? (
         // Error boundary: a render error in the chat subtree (hydration
         // mismatch, transient undefined, bad markdown) must NOT permanently
         // freeze the chat. The boundary catches it, shows "reconnecting…",
@@ -1126,6 +1204,34 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <span className="bar-empty">— select or create a session in the sidebar —</span>
         </div>
       </main>
+      )}
+
+      {/* Persistent shell layer: every shell the user has opened this
+          page-load stays mounted here (its WebSocket + xterm alive), so
+          switching to another session and back keeps the live shell and
+          its full scrollback — no reconnect, no flash. The whole layer is
+          display:none unless a shell is the current selection; within it,
+          only the selected shell's slot is visible (the rest are hidden
+          with display:none → ShellTerminal active=false → it stops fitting
+          but keeps streaming). See §14 gotcha 37. */}
+      {mountedShellList.length > 0 && (
+        <main className="claude-main shell-main" style={{ display: selectedShellExists ? 'flex' : 'none' }}>
+          {mountedShellList.map((sh) => (
+            <div
+              key={sh.id}
+              className="shell-slot"
+              style={{ display: selectedShellId === sh.id ? 'flex' : 'none' }}
+            >
+              <ShellTerminal
+                shellId={sh.id}
+                vpsName={sh.vpsName}
+                cwd={sh.cwd}
+                active={selectedShellId === sh.id}
+                onKilled={() => shellKilled(sh.id)}
+              />
+            </div>
+          ))}
+        </main>
       )}
 
       {/* Also render the LoginConsole when selected ALONG with an install/shell —

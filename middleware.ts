@@ -49,7 +49,15 @@ export async function middleware(req: NextRequest) {
         if (isPublic) return NextResponse.next();
         const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || 'localhost';
         const proto = req.headers.get('x-forwarded-proto') || 'https';
-        return NextResponse.redirect(`${proto}://${host}/login`);
+        const loginUrl = new URL(`${proto}://${host}/login`);
+        // Preserve where the user was headed so that after re-login we send
+        // them back there (e.g. a mobile user on /m/... must not be bounced to
+        // the desktop "/" UI). `pathname + search` is inherently same-origin;
+        // the login flow re-validates it through sanitizeNextPath. Skip "/"
+        // (nothing to restore) to keep the login URL clean.
+        const dest = pathname + (req.nextUrl.search || '');
+        if (dest && dest !== '/') loginUrl.searchParams.set('next', dest);
+        return NextResponse.redirect(loginUrl);
       })();
 
   if (valid && sid) {

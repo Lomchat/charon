@@ -40,6 +40,14 @@ export function rebuildStateFromMessages(
     edits: new Map(),
     files: new Set(),
   };
+  // SDK tool-use id (toolu_…) → index in out.toolCalls. Lets us re-pair the
+  // persisted `tool_result` rows back onto their tool call so `result` is
+  // restored — exactly what the live SSE path does. Without it every rebuilt
+  // tool call stays "unresolved": the ThinkingBar then shows a stale tool from
+  // a past turn whenever a new turn starts (it merely thinks, but the bar shows
+  // the previous turn's last Read), and the ToolPanel loses all its results
+  // after any refetch. See CLAUDE.md §14 gotcha 39.
+  const toolIdxBySdkId = new Map<string, number>();
   for (const m of messages) {
     if (m.role === 'edit_snapshot') {
       try {
@@ -79,15 +87,19 @@ export function rebuildStateFromMessages(
       continue;
     }
     if (m.role === 'tool_use') {
-      let parsed: { name?: string; input?: { file_path?: unknown } } | null = null;
+      let parsed: { id?: string; name?: string; input?: { file_path?: unknown } } | null = null;
       try { parsed = JSON.parse(m.content); } catch {}
       if (parsed) {
-        out.toolCalls.push({
+        const idx = out.toolCalls.push({
           id: 'h' + m.id,
           name: parsed.name ?? '',
           input: parsed.input,
           startedAt: m.createdAt,
-        });
+        }) - 1;
+        // Key the pairing map by the SDK tool id carried in the content (the
+        // toolCall's own `id` is 'h'+rowid for React-key uniqueness, not the
+        // SDK id, so it can't be used to match tool_result rows).
+        if (typeof parsed.id === 'string') toolIdxBySdkId.set(parsed.id, idx);
         const fp = parsed.input?.file_path;
         if (fp) out.files.add(String(fp));
       }
@@ -97,7 +109,27 @@ export function rebuildStateFromMessages(
       });
       continue;
     }
-    // tool_result / user / assistant / system / others
+    if (m.role === 'tool_result') {
+      // Re-pair the result onto its tool call (mirror of the live tool_result
+      // handler in useClaudeSessionStream). Keeps `result` populated across a
+      // full refetch so currentTool / ThinkingBar and the ToolPanel stay right.
+      try {
+        const parsed = JSON.parse(m.content);
+        const idx = toolIdxBySdkId.get(parsed.tool_use_id);
+        if (idx !== undefined && out.toolCalls[idx]) {
+          out.toolCalls[idx] = {
+            ...out.toolCalls[idx],
+            result: { content: String(parsed.content ?? ''), isError: !!parsed.is_error },
+          };
+        }
+      } catch {}
+      out.messages.push({
+        id: 'm' + m.id, role: m.role,
+        content: m.content, createdAt: m.createdAt,
+      });
+      continue;
+    }
+    // user / assistant / system / others
     out.messages.push({
       id: 'm' + m.id, role: m.role,
       content: m.content, createdAt: m.createdAt,

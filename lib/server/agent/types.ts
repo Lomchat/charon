@@ -93,6 +93,14 @@ export type AgentEvent = (
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean }
+  // ── Persistent PTY shells (agent >= 0.7.0) ───────────────────────────────
+  // Routed through the same `session_id` channel as Claude sessions (the
+  // agent's _emit pipeline keys by that string); the value here is the
+  // shell_id. `shell_id` is duplicated as an explicit field for clarity.
+  // `shell_output.data` is raw terminal stream (utf-8 with errors='replace').
+  | { event: 'shell_status'; session_id: string; shell_id: string; status: 'active' | 'exited'; cols: number; rows: number; pid: number | null }
+  | { event: 'shell_output'; session_id: string; shell_id: string; data: string }
+  | { event: 'shell_exit'; session_id: string; shell_id: string; code: number | null }
 ) & AgentEventCommonFields;
 
 // ── Names of JSON-RPC methods supported by the agent ───────────────────────
@@ -126,6 +134,19 @@ export type AgentMethodName =
   | 'respond_exit_plan'
   | 'sleep_session'
   | 'kill_session';
+
+// Per-shell info returned by `shell_list` and `shell_start` (agent >= 0.7.0).
+export type AgentShellInfo = {
+  shell_id: string;
+  cwd: string | null;
+  name: string | null;
+  created_at: number;
+  cols: number;
+  rows: number;
+  exited: boolean;
+  exit_code: number | null;
+  pid: number | null;
+};
 
 export type AgentClientStatus =
   | 'idle'           // never connected

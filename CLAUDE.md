@@ -44,8 +44,9 @@ The whole thing offers:
 - A desktop multi-session dashboard (sidebar VPS → sessions → messages)
 - A dedicated mobile UI (`/m/...`)
 - Persistent SSH shells (xterm.js) in addition to Claude sessions — the
-  terminal runs inside a `tmux` session on the VPS, so it survives Charon
-  restarts and a human can `tmux attach` to the same session from the server
+  PTY lives inside the charon-agent's Python process on the VPS and
+  streams over a WebSocket; output is replayed from a durable per-shell
+  event log on Charon reconnect (real scrollback, no tmux indirection)
 - Session survival across Charon restarts (the agent keeps running, Charon
   re-subscribes on reboot with ring buffer replay)
 - Automated VPS bootstrap (install Python + SDK + agent in an SSE stream)
@@ -88,12 +89,12 @@ The whole thing offers:
 │       ├── agent/        # AgentClient, AgentClientPool, sessionOps, autoConnect,
 │       │                 # eventConnections, builtPyzSha, claudeLoginCheck, types
 │       ├── claude/       # bootstrap.ts (install phases), sshExec.ts, types.ts
-│       ├── shell/        # persistent SSH shells (tmux on VPS + node-pty attach)
+│       ├── shell/        # persistent SSH shells (thin coordinator over AgentClient — PTY lives in the agent)
 │       ├── install/installSession.ts  # in-memory install pool
 │       ├── auth.ts, session.ts, crypto.ts
 │       └── seed.ts, migrationV2.ts
 ├── agent/                # Python daemon (zipapp .pyz, ~36KB)
-│   ├── charon_agent/{__main__, server, session, state, protocol, client, __init__}.py
+│   ├── charon_agent/{__main__, server, session, shell, state, protocol, event_log, client, __init__}.py
 │   ├── build.sh → dist/charon-agent.pyz
 │   └── README.md
 ├── drizzle/              # generated SQL migrations + meta/
@@ -101,6 +102,7 @@ The whole thing offers:
 ├── docs/adr-001-charon-agent.md
 ├── data/charon.db        # SQLite WAL
 ├── middleware.ts         # auth gate + /login redirect
+├── server.js             # custom Next server: wraps Next + WebSocket upgrade for shells
 ├── next.config.mjs, tsconfig.json, drizzle.config.ts, package.json
 └── /etc/systemd/system/charon.service  (outside the repo)
 ```
@@ -112,9 +114,9 @@ The whole thing offers:
 ### npm scripts
 
 ```json
-"dev":          "next dev -H 127.0.0.1 -p 10556",
-"build":        "next build",                  // NO --turbopack (see §14)
-"start":        "next start -H 127.0.0.1 -p 10556",
+"dev":          "node server.js",              // custom server (Next + WebSocket for shells)
+"build":        "node scripts/check-protocol-sync.mjs && next build",
+"start":        "node server.js",              // same custom server in prod
 "db:generate":  "drizzle-kit generate",
 "db:migrate":   "node ./scripts/migrate.mjs"
 ```
@@ -130,7 +132,7 @@ The whole thing offers:
 ```
 WorkingDirectory=/srv/charon
 EnvironmentFile=/srv/charon/.env
-ExecStart=/root/.nvm/versions/node/v20.19.5/bin/node /srv/charon/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 10556
+ExecStart=/root/.nvm/versions/node/v20.19.5/bin/node /srv/charon/server.js
 User=root
 Restart=on-failure
 RestartSec=3
@@ -151,7 +153,7 @@ Note that `dev` uses turbopack without breaking — it's only the
 ### Next.js config (`next.config.mjs`)
 
 ```js
-serverExternalPackages: ['better-sqlite3', 'node-pty'],  // native modules — otherwise SSR breaks
+serverExternalPackages: ['better-sqlite3'],  // native module — otherwise SSR breaks
 reactStrictMode: false,
 poweredByHeader: false
 ```
@@ -197,7 +199,7 @@ and `PRAGMA foreign_keys=ON`.
 | `claudeSessionLogs` | autoincrement | per-session audit / debug |
 | `claudeSettings` | `key` PK | key/value settings (telegram token, VAPID, etc.) |
 | `claudePushSubs` | `id` PK, UNIQUE `endpoint` | Web Push endpoints |
-| `shells` | `id` PK, FK `vpsId` | persistent SSH shells. The terminal lives in a `tmux` session `charon-<id>` on the VPS; this row is just the index Charon uses to re-list/re-attach after a restart. `tmuxName`, `cwd`, `name`, `color`. Cascade `vps → shells`. |
+| `shells` | `id` PK, FK `vpsId` | persistent SSH shells. The PTY lives inside the charon-agent's Python process (`agent/charon_agent/shell.py`); this row is the Charon-side index. `cwd`, `name`, `color`, `last_seen_seq` (**vestigial** — was the WebSocket replay cursor; `server.js` now always replays the full durable log via `after_seq:0`, see §14 gotcha 37). Cascade `vps → shells`. |
 
 Cascades: `vps → vpsPaths`, `vps → claudeSessions`, `claudeSessions → messages/permissions/questions/logs` (all CASCADE).
 
@@ -266,8 +268,9 @@ happens API-side (`/api/vps-folders/layout` rejects unknown
 | 0010 | adds 5 hot-path indexes: `claude_session_messages(session_id, id)`, `claude_pending_permissions(session_id, status)`, `claude_pending_questions(session_id, status)`, `claude_session_logs(session_id, id)`, `vps_paths(vps_id)`. SQLite doesn't auto-index FKs, so every `WHERE session_id = ?` was a full scan before this. The compound `(session_id, id)` matches the chat window / delta polling / pagination queries (filter by session then range over id). `CREATE INDEX IF NOT EXISTS` for idempotency. Hand-written (drizzle-kit generated noisy redeclarations of existing tables — keeping the schema source-of-truth in TS via the `(t) => [index(...)]` form). |
 | 0011 | `claude_sessions` += `last_seen_seq` (integer, nullable). Checkpoint of the highest agent-event-log `seq` Charon has persisted; used on reconnect via `subscribe({after_seq})` so the agent replays durably-stored events that fell out of the in-memory ring (agent >= 0.4.0). Null = no checkpoint yet → fallback to `replay: 300` ring tail. Hand-written. |
 | 0012 | `claude_sessions` += `last_stop_notified_seq` (integer, nullable). Dedup guard for the "Claude finished" push: the `stop` handler in `sessionOps.ts` previously had NO replay guard (unlike permission/question/exit_plan, which check `isReplaying && replayKnownPendingIds`), so every agent re-subscribe (Charon reboot, SSH reconnect) replayed past `stop` events and re-pushed a duplicate "finished" notification for each session. Now: skip push while `isReplaying`; otherwise only push a stop whose `seq` > this column, then advance + persist it (survives restarts so the dedup is durable). Agents < 0.4.0 (no `seq`) fall back to the `isReplaying` guard alone. Hand-written. |
-| 0013 | creates the `shells` table (`id`, `vps_id` FK→`vps` CASCADE, `tmux_name`, `cwd`, `name`, `color`, `created_at`) + index `idx_shells_vps_id`. Backs the persistent-shells refactor: SSH shells used to be in-memory only (one ssh child per shell, lost on any Charon restart); the terminal now lives in a remote `tmux` session and this row is the index for re-listing/re-attaching. Hand-written (drizzle-kit emits noisy table redeclarations; schema source-of-truth stays in TS). |
+| 0013 | creates the `shells` table (`id`, `vps_id` FK→`vps` CASCADE, `tmux_name`, `cwd`, `name`, `color`, `created_at`) + index `idx_shells_vps_id`. **Superseded by 0015**: the tmux-based design was replaced with an agent-hosted PTY (real scrollback + WebSocket transport — see §14 gotcha 37). `tmux_name` is dropped in 0015. |
 | 0014 | `claude_sessions` += `model` / `fallback_model` / `effort` (all text, nullable). Per-session Claude config (agent >= 0.5.0). `model` / `fallback_model` are free strings (e.g. `claude-opus-4-7-...`, `claude-opus-4-8-...`); `effort` is one of `low` / `medium` / `high` / `xhigh` / `max` (mirrors `claude_agent_sdk.EffortLevel`). NULL = inherit the global default from `claudeSettings` (`claude.default_model`, `claude.default_fallback_model`, `claude.default_effort`), which itself can be empty → SDK default. **The resolved value is PERSISTED at session-create time** (not re-read from settings later) so a later change to the global default doesn't retroactively alter existing sessions — surprising behavior we explicitly avoid. Changes via `setModel` / `setEffort` take effect at the NEXT SDK start (sleep + resume): the underlying `ClaudeSDKClient` binds model/effort at construction. Hand-written. |
+| 0015 | `shells` += `last_seen_seq` (integer, nullable) AND drops `tmux_name`. Backs the shells refactor from tmux-attach to agent-hosted PTY (agent >= 0.7.0): the PTY now lives inside the charon-agent's Python process, output streams through a per-shell durable event log (`~/.charon/shells/<id>.jsonl`), Charon connects via WebSocket. `last_seen_seq` was originally the replay cursor (mirroring `claude_sessions.last_seen_seq` from 0011) but is now **vestigial** — unlike Claude sessions (SQLite-backed), shells have no Charon-side output store and the browser xterm is wiped on unmount, so `server.js` always replays the FULL log via `after_seq:0` (see §14 gotcha 37). Column kept (no down-migration) but unread. `tmux_name` is gone — no tmux involved anymore. Hand-written. Requires SQLite ≥ 3.35 for `DROP COLUMN`. See §14 gotcha 37. |
 
 Typical workflow for changing the schema:
 1. Edit `lib/db/schema.ts`
@@ -303,6 +306,7 @@ agent in `hello`) to decide whether an update is due.
 ~/.charon/agent.log             # stdout/stderr append-only
 ~/.charon/events/<sid>.jsonl    # durable per-session event log (>= 0.4.0)
 ~/.charon/events/<sid>.jsonl.1  # rotated chunk, oldest first (.1 = previous)
+~/.charon/shells/<id>.jsonl     # durable per-shell event log (>= 0.7.0; wiped on agent boot)
 ~/.charon/venv/                 # venv created by bootstrap (PEP 668 friendly)
 ~/.config/systemd/user/charon-agent.service   # systemd-user unit
                                 # fallback: nohup setsid + crontab @reboot
@@ -634,28 +638,31 @@ auths with Bearer `SYNC_TOKEN`).
 - `GET /api/vps/[id]/login/stream` — SSE TUI
 - `POST /api/vps/[id]/login/input` — stdin
 
-### Persistent SSH shells (tmux-backed)
+### Persistent SSH shells (agent-hosted PTY, WebSocket transport)
 
-The terminal runs inside a `tmux` session named `charon-<id>` on the VPS.
-Charon attaches over `ssh -tt … tmux new-session -A -s charon-<id>` driven by
-**node-pty** (so `TERM` + the window size forward correctly — fixes htop/vim
-"terminal unknown" + gives live resize). The attach is ephemeral and lazily
-(re)spawned; the durable terminal is the tmux session. See
-`lib/server/shell/shellSession.ts`.
+The PTY (bash) runs inside the charon-agent's Python process on the VPS
+(cf. `agent/charon_agent/shell.py`, agent >= 0.7.0); output goes through
+the standard `_emit` pipeline → durable per-shell event log at
+`~/.charon/shells/<id>.jsonl`. The browser connects directly via WebSocket
+(`/api/shells/[id]/ws`) routed by `server.js` (custom Next server).
+`lib/server/shell/shellSession.ts` is a thin coordinator (DB rows +
+lifecycle RPCs only — no live data path). See §14 gotcha 37.
 
-- `GET|POST /api/shells` — list all / (POST unused; create is per-VPS below)
-- `GET|PATCH|DELETE /api/shells/[id]` — PATCH name/color (persisted in DB). **DELETE** = `tmux kill-session` on the VPS + drop the row (the shell really ends).
-- `GET /api/shells/[id]/stream` — SSE (replays the in-memory ring; on a fresh attach the first output is tmux's full-screen redraw)
-- `POST /api/shells/[id]/input` — `{content}` → written to the node-pty attach
-- `POST /api/shells/[id]/resize` — `{cols, rows}` → `pty.resize()` → SIGWINCH through SSH → tmux client resizes. Sent by `ShellTerminal` on open + on every xterm `onResize` (deduped on unchanged dims). Like `/input`, consumed via raw fetch (no `api.ts` wrapper).
-- `POST /api/vps/[id]/shells` — create a shell on this VPS (`{cwd?}`). Inserts the `shells` row, best-effort `tmux` install, spawns the attach.
-- `GET /api/vps/[id]/shells` — list this VPS's shells (DB-backed → survives restart).
+- `GET /api/shells` — list all shells from DB.
+- `GET|PATCH|DELETE /api/shells/[id]` — PATCH name/color (persisted in DB). **DELETE** = `shell_kill` RPC + drop the row.
+- `POST /api/vps/[id]/shells` — create a shell on this VPS (`{cwd?, name?, cols?, rows?}`). Calls the agent's `shell_start` then inserts the `shells` row.
+- `GET /api/vps/[id]/shells` — DB-backed list for this VPS.
+- **`/api/shells/[id]/ws`** — WebSocket (handled by `server.js`, not a Next route handler). Wire protocol: binary frames = raw shell bytes both ways; text frames = JSON control (`{type:'resize',cols,rows}` browser→server, `{type:'status'|'exit'|'replay_begin'|'replay_end',...}` server→browser). Auth: direct SQLite read of the `sessions` table (middleware doesn't run on Upgrade). On open the server sends `shell_subscribe` with **`after_seq:0`** (the FULL durable log, NOT a `last_seen_seq` cursor) and forwards the agent's `replay_begin`/`replay_end` markers; the browser wipes its xterm on `replay_begin` then rebuilds the whole scrollback. This is why a fresh xterm (session switch, F5, reconnect) always shows the complete history — see §14 gotcha 37 (and the reason `shells.last_seen_seq` is now vestigial).
 
-Persistence: on Charon boot, `reconcileShellsOnBoot()` (called from
-`seedInitialData`, i.e. on first page SSR) SSHes each VPS that has shell rows
-and **prunes rows whose tmux session is gone** (inner shell exited / VPS
-rebooted). An SSH-level failure (unreachable) leaves rows untouched. Live
-sessions are re-attached lazily when a browser opens the shell.
+There used to be `POST /api/shells/[id]/input`, `POST /api/shells/[id]/resize`
+and `GET /api/shells/[id]/stream` — those are GONE since the WebSocket
+rewrite (POST per keystroke was the dominant latency source).
+
+Persistence: on Charon boot, `reconcileShellsOnBoot()` calls `shell_list`
+on each VPS via the AgentClient and **prunes DB rows the agent doesn't
+know about** — typically because the agent itself restarted (bash children
+die with the agent process). SSH/agent unreachable → leave rows untouched
+(transient).
 
 ### Agent installs (install sessions, in-memory, max 1 per VPS)
 
@@ -683,7 +690,8 @@ sidebar list.
 - `GET /api/claude/sessions` (filters `vpsId`, `status`)
 - `POST /api/claude/sessions` — create. Body: `{ vpsId, cwd, name?, permissionMode?, model?, fallbackModel?, effort? }`. The three Claude config fields are optional; empty/null inherits the global default (`claude.default_*` in `claudeSettings`). The resolved values are persisted into the session row at creation (a later change to the global default does not retroactively alter existing sessions — see §14 gotcha 35).
 - `POST /api/claude/sessions/import` — from scan
-- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supports `?limit=N` (default 200, cap 1000) and `?before=K` (cursor pagination for scroll-up). The limit only counts "chat" roles (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking); `edit_snapshot` and `event` are loaded as attachments by ID range (see §14 gotcha 25). Response: `{ messages, hasMore, oldestChatId, ... }` — `oldestChatId` serves as cursor for the next loadMore. **DELETE** = definitive deletion (DB cascade + best-effort agent kill) — no more `?hard=1`, no more soft-kill (see §10).
+- `GET|PATCH|DELETE /api/claude/sessions/[id]` — GET supports `?limit=N` (default 200, cap 1000) and `?before=K` (cursor pagination for scroll-up). The limit only counts "chat" roles (user/assistant/tool_use/tool_result/user_question/exit_plan_request/thinking); `edit_snapshot` and `event` are loaded as attachments by ID range (see §14 gotcha 25). Also accepts `?since=K` (delta mode, used by the poll). Response: `{ messages, hasMore, oldestChatId, maxMessageId, ... }` — `oldestChatId` serves as cursor for the next loadMore. **⚠ `edit_snapshot` `content` is STRIPPED from `messages` in every mode** (window / before / since): this is the looping endpoint and the heavy file blobs got the VPS suspended for egress — see §14 gotcha 41. Diff content is fetched lazily via the `/edits` endpoint below. **DELETE** = definitive deletion (DB cascade + best-effort agent kill) — no more `?hard=1`, no more soft-kill (see §10).
+- `GET /api/claude/sessions/[id]/edits` — **lazy diff content** (companion to the strip above). Returns `{ edits: ClaudeEditContent[], truncatedList }` where each entry is the LATEST before/after file content per modified file (groupwise-max on `(file_path, phase)` via JSON1 `json_extract`, ASC so the newest `after`/`tool_use_id` wins). Fetched ONCE per session view (the client's auto-load effect fires only for content-less skeleton entries — see `loadEdits` in `useClaudeSessionStream`), not in any loop. A 16 MB total budget caps a pathological many-file session (over-budget files come back with null content + `truncated:true`). Bandwidth: worst real session was ~59 MB of full snapshots → ~674 KB latest-per-file. See §14 gotcha 41.
 - `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — **single multiplexed SSE**: opened ONCE per browser tab, persistent. Emits initial `status` for all sessions + all pendings + live stream filtered by focus. Session focus changes are handled via POST `/focus` without SSE reconnect.
 - `POST /api/claude/focus` — Body `{ conn, sessionId }`. Changes the focus of an SSE connection. The server starts/stops streaming the high-volume events (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) of the targeted session. Low-volume events (status, perms, questions, exit_plans, interaction_resolved, mode_changed, error, ready, session_id) are always sent to all connections.
 - `POST /api/claude/sessions/[id]/input` — `{content}` or `{type:'interrupt'}`
@@ -753,7 +761,7 @@ Client-side (`useClaudeSessionStream.ts`), the routing:
 | `model_changed` | updates per-session `model`/`fallbackModel` state in `useClaudeSessionStream`; `appliedAtNextStart=true` flips `modelPendingApply` so the header badge shows ⏳ (deferred change). Reset on full refetch. |
 | `effort_changed` | same as `model_changed` but for `effort` / `effortPendingApply`. |
 | `todo_update` | updates the `todos` tab of `ToolPanel` |
-| `edit_snapshot` | stored in `edits` Map (before/after per filePath) for `ToolPanel`/`SplitDiffModal` |
+| `edit_snapshot` | stored in `edits` Map (before/after per filePath) for `ToolPanel`/`SplitDiffModal`. **The live SSE event DOES carry content** (so live edits render immediately); only the session GET strips it. On a full refetch the rebuilt Map entries are content-less skeletons, refilled lazily by `loadEdits` → `/edits` (see §14 gotcha 41). |
 | `stop` | final flush, ready for the next turn |
 | `error` | error banner; detects "import error" → offers bootstrap |
 | `prefill_input` | pre-fills the textarea |
@@ -847,7 +855,8 @@ Most components are self-describing by filename (`app/PermissionPopup.tsx`, `Que
 - **`DataModal.tsx`**: drag-and-drop via `@dnd-kit` for folders + VPSes (intra/cross-folder). Drag-end → atomic `POST /api/vps-folders/layout`.
 - **`SessionContextMenu.tsx`**: for Claude sessions, only "Delete permanently" (no intermediate "kill" since the refactor — see §10). For shells/installs, "Close".
 - **`InstallSessionView.tsx`**: full-screen install log (fills `.claude-main`), SSE on `/api/installs/[id]/stream` (ring buffer replay + live). Replaces the old `BootstrapBanner`.
-- **`LoginConsole.tsx` / `ShellTerminal.tsx`**: xterm.js terminals; both wire their SSE into `useTerminalUrlOverlay` to detect wrapped URLs and offer copy/open (`terminalUrlDetect.ts` regex handles newlines + up to 4 spaces of wrap; 60-char threshold). `ShellTerminal` also POSTs its dimensions to `/api/shells/[id]/resize` on open + on every `onResize` (fit-driven), so the remote tmux client matches the browser. It's shared by desktop (`ClaudePanel`) and mobile (`app/m/shell/MobileShell.tsx`), so both get persistence + resize for free.
+- **`LoginConsole.tsx`**: xterm.js terminal over SSE for the `claude login` flow; wires `useTerminalUrlOverlay` to detect wrapped OAuth URLs and offer copy/open (`terminalUrlDetect.ts`).
+- **`ShellTerminal.tsx`**: xterm.js terminal over **WebSocket** (`/api/shells/[id]/ws` → `server.js` → agent-hosted PTY). Binary frames for shell bytes both ways, text frames for control (resize/status/exit/replay_begin/replay_end). Reconnects with exponential backoff on drop — on every connect the agent replays its FULL durable shell event log (`after_seq:0`) and `ShellTerminal` `term.reset()`s on the forwarded `replay_begin` so the scrollback rebuilds without doubling. xterm scrollback is 10k lines (the raw byte stream means real history actually scrolls, unlike the tmux era). Takes an `active` prop: when false the terminal is mounted-but-hidden (`display:none`, 0×0 → skip `fit()`; re-fit + refocus on becoming active again) — this is what lets `ClaudePanel` keep shells mounted across session switches (see §14 gotcha 37). Shared by desktop (`ClaudePanel`, persistent mount) and mobile (`app/m/shell/MobileShell.tsx`, single-shell, always `active`).
 
 ### Mobile (`app/m/`)
 
@@ -860,7 +869,14 @@ Dedicated `.m-root` layout, fixed, safe-area-insets. Routes:
   is closed on mobile too, and vice versa; a 5s poll syncs folders),
   long-press → contextual bottom sheet (`MobileContextSheet.tsx`),
   `+` button → `NewSessionSheet.tsx`. Per-VPS collapse stays local
-  (localStorage, per device).
+  (localStorage, per device). **A `.m-quicknav` strip sits under the
+  topbar (mobile equivalent of the desktop `TabBar`, which mobile
+  lacks): an always-visible horizontal scroller of chips for every
+  *live* entity across all VPSes — Claude sessions that are
+  active/thinking/starting or awaiting a permission (attention chips
+  hoisted first, orange border), plus non-exited shells — tapping a
+  chip jumps to `/m/chat` or `/m/shell`. Hidden when nothing is
+  active. Computed by the `quickNav` `useMemo` in `MobileSelect.tsx`.**
 - `/m/chat?id=...` (`MobileChat.tsx`): condensed version of
   ClaudePanel (no ToolPanel on the right), identical SSE, overlay
   modals
@@ -899,7 +915,7 @@ common code extracted after the maintainability audit:
 - **`inputDraftStore.ts`** (hook `useInputDraft`): in-memory `Map<sessionId, string>` for textarea drafts, persists across session switches on desktop AND mobile. Cleared on F5 (by design).
 - **`useClaudeSessionStream.ts`**: wraps singleton-SSE subscription + DB refetch/polling + state + actions for one session. State: `messages`, `currentAssistant`, `status`, `permissionMode`, `toolCalls`, `todos`, `edits`, `files`, `permQueue`, `questionQueue`, `exitPlanQueue`, `prefillInput`, `error`, `sessionMeta`, pagination flags. Actions: `send`, `interrupt`, `forceStop`, `setMode`, `doSleep`, `doResume`, `doDelete`, `respondPermission`/`Question`/`ExitPlan`, `refetchHistory`, `clearError`, `clearPrefillInput`, `loadMoreHistory`.
 - **`useCrossSessionInteractionFeed.ts`**: subscribes to `subscribeAll()` from `app/globalEventStream.ts` for all sessions' perm/question/exit_plan/resolved events. Dedup by `id`. Feeds the cross-session `<PermissionPopup>` (desktop) and the "X pending on other sessions" banner (mobile). It does not open another EventSource.
-- **`ClaudeSessionView.tsx`**: chat area of the active session (header sleep/resume/interrupt/force-stop — NO delete button; deletion via sidebar right-click), reconnect/error banners, scroll-reverse chat with ↓/↑ pills, ThinkingBar, input bar + mode switch, QuestionCard/ExitPlanCard/InlinePermissionCard, ToolPanel. Consumes `useClaudeSessionStream`. ClaudePanel instantiates with `key={selectedId}`; module-level cache makes switch instant. Mobile mirror: `app/m/chat/MobileChat.tsx`.
+- **`ClaudeSessionView.tsx`**: chat area of the active session (header sleep/resume/interrupt/force-stop — NO delete button; deletion via sidebar right-click), reconnect/error banners, scroll-reverse chat with ↓/↑ pills, ThinkingBar, input bar + mode switch, QuestionCard/ExitPlanCard/InlinePermissionCard, ToolPanel. Consumes `useClaudeSessionStream`. ClaudePanel instantiates with `key={selectedId}`; module-level cache makes switch instant. **The input bar is an isolated, `memo`-wrapped `<ChatInputBar>` sub-component (bottom of the file) that owns the textarea `input` state via `useInputDraft` — typing re-renders only it, never the message list. `<Message>` is `memo`-wrapped for the same reason. See §14 gotcha 38.** Mobile mirror: `app/m/chat/MobileChat.tsx` (same pattern: isolated `<MobileInputBar>` + `memo(MobileMessage)`).
 
 ---
 
@@ -909,10 +925,19 @@ common code extracted after the maintainability audit:
   `MASTER_PASSWORD` + `MASTER_SALT` at seed time.
 - **Login**: the `/login` page validates the password via scrypt,
   creates a `sessions` row (24h sliding TTL), sets the
-  `charon_session` cookie.
+  `charon_session` cookie, then redirects to the **sanitized `next`
+  path** (defaults to `/`). `app/login/page.tsx` is now a server
+  component that reads `?next=…`, runs it through `sanitizeNextPath`
+  (`lib/nextPath.ts`, open-redirect guard) and hands it to the client
+  `<LoginForm>` as a hidden field; `actions.ts` re-sanitizes before
+  `redirect(next)`. This is what returns a mobile user (logged out by
+  inactivity on `/m/...`) back to mobile instead of the desktop UI
+  (see §14 gotcha 40).
 - **`middleware.ts`**: on every non-`_next`/`favicon`/`/login`/
   `/api/sync` request: validates the cookie. Non-auth API → 401.
-  Otherwise redirect `/login`.
+  Otherwise redirect `/login?next=<pathname+search>` (the originating
+  path, so re-login can restore it; `/` is omitted to keep the URL
+  clean).
 - **`lib/server/auth.ts`**: `createSession`/`getSession`/`touchSession` helpers.
 - **`lib/server/session.ts`**: `requireSession()` (server components),
   `requireApiSession()` (API routes).
@@ -960,7 +985,7 @@ common code extracted after the maintainability audit:
 6. **Agent out of date**: if `vps.agentPyzSha !== getBuiltPyzSha()`, UI offers the update button (`POST /api/vps/[id]/agent/update`). Bump `__version__` in `agent/charon_agent/__init__.py` on protocol changes.
 7. **`claude login` is per-VPS** (no shared OAuth). Goes through `<LoginConsole>` (xterm SSH `-tt`).
 8. **`alwaysAllow` is in-memory hub-side** (per session, per tool) — lost on Charon restart. By design: permanent retention = `permission_mode='auto'`.
-9. **Native modules + Next**: `serverExternalPackages: ['better-sqlite3', 'node-pty']` mandatory in `next.config.mjs`. Otherwise SSR crashes / Next tries to bundle the `.node` binary. Both are compiled against the running Node ABI (see gotcha 33).
+9. **Native modules + Next**: `serverExternalPackages: ['better-sqlite3']` mandatory in `next.config.mjs`. Otherwise SSR crashes / Next tries to bundle the `.node` binary. better-sqlite3 is compiled against the running Node ABI — must be rebuilt on a Node upgrade.
 10. **SQLite WAL** = 3 files (`.db`, `.db-shm`, `.db-wal`), all critical. `PRAGMA foreign_keys=ON` set at boot.
 11. **SSH injection**: every `filePath`/`cwd`/slug interpolated into `sshExec` MUST go through `shQuote()` (`lib/server/claude/sshExec.ts`). POSIX single quotes only — `"$x"` is not enough.
 12. **Module-level signal handlers in `sessionOps.ts`**: SIGTERM/SIGINT guard with `process.env.NEXT_PHASE !== 'phase-production-build'` to avoid `process.exit(0)` during `next build`. Apply the same guard to any new global handler.
@@ -1001,6 +1026,7 @@ common code extracted after the maintainability audit:
     - Both `/api/claude/sessions` and `/api/claude/sessions/[id]` GET are wrapped in try/catch → a transient DB hiccup returns a clean retryable **503** (logged server-side), never an unhandled 500. An unhandled 500 serves an HTML error page, which breaks the client's `res.json()` and can cascade into a stuck UI. DB has `busy_timeout=5000` for the rare multi-process lock.
     - **Error boundary (`app/SessionErrorBoundary.tsx`) wraps `<ClaudeSessionView>` (desktop) and `<MobileChat>` (mobile page).** This is the universal safety net: the entire live-update pipeline (SSE subscription, 5s polling interval, reconnect listener) lives inside `useClaudeSessionStream`, which runs inside the chat subtree. If ANY render in that subtree throws — React 19 hydration mismatch (#418), a transient `undefined` while data is mid-flight, a bad markdown/diff parse — React unmounts the subtree, which fires every `useEffect` cleanup, which kills the polling interval + SSE subscription. Without a boundary that is a PERMANENT freeze (only F5 recovers). The boundary catches the error, shows a "reconnecting…" placeholder, and **remounts the subtree after ~1.5s by bumping an internal key** → all effects re-run → `lastSeenServerIdRef` resets to 0 → `refetchHistory` does a full reload → chat self-heals. It also resets on `resetKey` change (sessionId) so switching sessions never inherits a stale error. Keep this boundary; it is what makes "render bug ⇒ auto-recover" instead of "render bug ⇒ frozen until refresh".
     - **SSE `onerror` policy** (`globalEventStream.ts`): reconnect manually ONLY on `readyState === CLOSED` (browser gave up, e.g. after a 502). On `CONNECTING` (transient blip, truncated stream) DO NOTHING — the browser auto-retries, and the watchdog + polling are the backstops. An earlier version tore down on every error including CONNECTING; combined with resetting `backoffMs` in `onopen`, that produced a pathological open→break→reopen loop every 1000ms during network instability (hammering the server, firing refetch every second). Fix: `backoffMs = 0` lives in `onmessage` (reset on real data) NOT `onopen` (which only means the HTTP response started). Don't move it back.
+    - **Auto-reload on SSE outage recovery** (`globalEventStream.ts § AUTO_RELOAD_THRESHOLD_MS=15s`). After burning many rounds on clever partial-recovery mechanisms, we accepted the user's own diagnosis: "if a refresh fixes it, just simulate the refresh." When `onmessage` fires after >15s of silence (= the hub was truly down for a `systemctl restart charon` build cycle, ~30-60s; or the device was sleeping), we do `window.location.reload()` instead of attempting soft-recover. The cost (lost textarea draft, scroll reset) is exactly what the user is already paying manually. The reliability is total — a clean SSR + hydrate is the one path that ALWAYS works. The 15s threshold > heartbeat 8s + margin avoids false-positives on brief jitter. Don't tune this down without a strong reason; reloading on every tiny blip is its own bad UX.
     - Don't remove the polling because "SSE seems to work now." Polling IS the contract that the chat will not freeze. SSE is just the latency optimisation on top.
 
 25. **`edit_snapshot` and `event` rows drown chat in `claudeSessionMessages`** (4 rows per Edit). The window query at `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` counts ONLY chat roles (`NON_PAGINATED_ROLES = ['edit_snapshot', 'event']`); side-channel rows load as attachments by ID range. Add any new side-channel role to `NON_PAGINATED_ROLES`.
@@ -1029,14 +1055,7 @@ common code extracted after the maintainability audit:
 
     Server side, `sleepSession` now (a) broadcasts `status='sleeping'` on the global bus right away (so the sidebar + other tabs flip without waiting) and sets the in-memory `stream.status`, and (b) fires `client.call('sleep_session')` **fire-and-forget** (`.catch()` logs) instead of `await`-ing it — the agent's `stop()` blocks up to 5s on `asyncio.wait_for(main_task, timeout=5.0)` (SDK teardown of the in-flight turn), which used to wedge the HTTP response. The DB + broadcast already reflect the truth; the agent stop is best-effort cleanup. (`resume` was already optimistic via `setStatus('starting')` — this generalises the pattern.)
 
-33. **Persistent SSH shells = remote tmux + node-pty attach** (`lib/server/shell/shellSession.ts`). The old shells were in-memory only (one piped `ssh` child per shell; lost on any Charon restart) and ran `exec $SHELL -l` with **no `TERM`** → ncurses apps (htop, vim, top, nano, less) died with *"Error opening terminal: unknown"* (NOT "command not found"). The redesign:
-    - The terminal is a `tmux` session `charon-<id>` on the VPS. Charon attaches via `node-pty.spawn('ssh', ['-tt', …, 'exec tmux -u new-session -A -s charon-<id> [-c <cwd>]'])`. node-pty gives the local ssh a **real controlling tty**, so `TERM` propagates and `pty.resize(cols,rows)` forwards `SIGWINCH` through SSH → the tmux client resizes. Inside tmux, `TERM=screen` (tmux's default `default-terminal` — a universally-present terminfo, so htop works; we deliberately don't set `screen-256color`/`tmux-256color` to avoid touching a shared tmux server's global options — colors are 8/16, acceptable; revisit if 256-color is wanted).
-    - **`-tt` is still required**: tmux refuses to attach without a remote PTY. node-pty supplies the *local* controlling tty that makes `-tt` + size-forwarding work.
-    - Persistence: the `shells` DB row (migration 0013) is just the index. The attach is ephemeral and **lazily (re)spawned** on subscribe/input/resize — so after a Charon restart the shell re-lists from DB and re-attaches to the SAME tmux session (full screen state preserved via tmux's redraw). A human can `tmux attach -t charon-<id>` from the server and share the exact terminal.
-    - **Distinguish detach from exit**: when the node-pty attach exits, the handler runs `tmux has-session`; if alive → it was a network drop → re-attach with backoff (while a viewer is present, capped at `MAX_REATTACH`); if gone → the inner shell exited → mark exited + purge row after a grace period. An SSH-level failure (VPS unreachable) is treated as "alive" (don't declare dead on a hiccup).
-    - **Boot reconcile** (`reconcileShellsOnBoot`, called from `seedInitialData` = first page SSR, NOT on API calls): per-VPS `tmux ls`, prune rows whose session is gone. Gotcha-within-gotcha: the prune guard must check `pool.get(id)?.attached` (a live/attaching attach), NOT `pool.has(id)` — because `listShells()` (GET `/api/shells`) hydrates a non-attached instance into the pool just to read `info()`, and a bare `pool.has` would then protect a genuinely-dead shell from pruning forever. On prune, also `pool.delete(id)` so a stale hydrated instance can't `new-session -A`-resurrect a dead session.
-    - **node-pty is a native module**: compiled against the running Node ABI (here `/root/.nvm/.../v20.19.5`). It MUST be rebuilt on a Node upgrade (`npm rebuild node-pty`), same constraint as `better-sqlite3`. Install with the v20 toolchain actually first in `PATH` — `npm`'s `#!/usr/bin/env node` shebang otherwise picks the system node (v16 here) and the build targets the wrong ABI (symptom: `Cannot find module '../build/Debug/pty.node'` at load).
-    - tmux is installed best-effort **inline in the attach command** (`TMUX_ENSURE`: `if ! command -v tmux; then <apt/dnf/yum/apk/pacman, with apt-get update fallback>; fi; exec tmux …`). Inline (not a separate fire-and-forget SSH) so there's no concurrent apt-lock race and cold re-attach after a restart self-heals too. When tmux is present (the common case + every re-attach) it's a single cheap `command -v` then `exec tmux`. No dedicated bootstrap phase.
+33. **Persistent SSH shells (history)** — SUPERSEDED. Two earlier designs lived in this gotcha slot; both are gone now. (a) The original "in-memory-only with piped ssh + `$SHELL -l`" had no `TERM` and no persistence → htop "terminal unknown" + nothing survived a restart. (b) A tmux-backed redesign (migration 0013, node-pty + `ssh -tt … tmux new-session -A`) fixed `TERM` and gave persistence + server-side `tmux attach`, but kept the slowness (POST per keystroke) and broke browser scrollback (tmux only sends the viewport). The current design (agent-hosted PTY + WebSocket) is in gotcha 37 — read that.
 
 34. **False "agent in error" on a healthy VPS** (`lib/server/agent/AgentClient.ts § _handleExit`). The SSH `--connect` proxy is a *transport* tunnel to the agent's Unix socket; the agent daemon runs independently and survives the SSH dropping. The old code wrote `agentStatus='error'` on **every** non-"not found" SSH exit, so a transient drop (network blip, `ServerAliveInterval`×`ServerAliveCountMax`=120s timeout, sshd restart, VPS briefly unreachable) flipped a perfectly healthy agent to `error`. Two amplifiers made it stick visibly: (1) **there is no live SSE push for `agentStatus`** — the browser only reads it at SSR, so the stale `error` persisted until a manual page reload even after Charon reconnected seconds later; (2) the reconnect **backoff caps at 5min**, so the DB genuinely said `error` for minutes. The UI then offered "▸ install agent" (wrong — the agent IS installed).
 
@@ -1055,6 +1074,53 @@ common code extracted after the maintainability audit:
 
 36. **"Can't resume" = in-memory status desync, not a dead session** (`sessionOps.ts § resumeSession`). Symptom: a session shows `sleeping` in the UI, clicking Resume does nothing, and `/resume` keeps returning `{status:'sleeping'}` even though the agent (`list_sessions`) and the DB both say `active`. Root cause: the agent's `resume_session` is a **noop when the session is already running** (`server.py` returns `{ok:true, status, noop:true}` for status ∈ active/thinking/starting WITHOUT emitting a `status` event). Charon's in-memory `SessionStream.status` only ever flipped via that live `status` event, so once it drifted to `sleeping` (e.g. an earlier desync) nothing ever corrected it: the resume RPC was a noop → no event → stuck forever. `reconcileVpsAgentState` didn't save it either, because its realign guard was `agentStatus !== row.status` (DB), and the DB had already been pushed to `active` by the repeated resume calls → guard false → in-memory stream left stale. **Fix:** (a) `resumeSession` now adopts the agent's authoritative status from the `resume_session` RPC response (`resolvedStatus`) and reconciles the in-memory stream + broadcasts via `emitGlobalSession` + persists it — so the noop path self-corrects; (b) the reconcile guard now also fires when `agentStatus !== stream.status` (not just the DB row). **Invariant if you touch resume:** the agent's RPC response — not a future `status` event — is the source of truth for the post-resume status, because a noop emits no event. Don't revert to relying solely on the event. Diagnosis recipe: `printf '{"id":1,"method":"list_sessions"}\n' | ssh root@<ip> '~/.charon/charon-agent.pyz --connect'` — if the agent says `active` while the UI says `sleeping`, it's this class of bug (pure Charon-side, the session is healthy).
 
+37. **Persistent shells = agent-hosted PTY + WebSocket** (current design, agent >= 0.7.0). User complaints about the previous tmux design (gotcha 33): "very slow" (HTTP POST per keystroke + middleware SQLite check) and "no scroll" (tmux only sends the viewport, so xterm's local scrollback stays empty). The redesign moves the PTY to the agent and the transport to WebSocket:
+    - **PTY hosting**: `agent/charon_agent/shell.py § AgentShell` forks bash inside a `pty.fork()`, owns the master FD, drains output via `add_reader` into the existing `_emit` pipeline → durable event log under `~/.charon/shells/<id>.jsonl` (separate dir from sessions to keep the namespaces apart). New RPCs: `shell_list/start/input/resize/subscribe/unsubscribe/kill`. New events: `shell_status/output/exit`. `shell_output.data` is utf-8 with `errors='replace'` (raw binary output is rare; base64 would bloat the log 4/3).
+    - **Transport**: `server.js` at the repo root wraps Next via the programmatic API and adds `WebSocketServer({ noServer: true })` for upgrades on `/api/shells/[id]/ws`. Auth = direct SQLite read of `sessions` (middleware doesn't run on Upgrade). Each WS spawns its OWN `ssh ... charon-agent.pyz --connect` proxy (one ssh + one Python client per WS). This is more "wasteful" than reusing Next's `AgentClient` pool but isolates server.js from TS imports — clean separation, ~150 LOC, zero shared mutable state. ssh + agent clients are cheap (a few KB each). Wire protocol: **binary frames = raw shell bytes both ways** (zero JSON parse on the hot path), text frames = JSON control (`{type:'resize',cols,rows}` browser→server, `{type:'status'|'exit',...}` server→browser).
+    - **Real scrollback**: the agent emits the full byte stream (no screen-painting layer eating history). xterm.js receives every byte and stores it in its local scrollback (10k lines). Mouse wheel scrolls naturally.
+    - **Replay = ALWAYS the full durable log (`after_seq:0`), NOT a `last_seen_seq` cursor.** ⚠ This is the fix for "the shell isn't persistent" (the user could `cd`, switch session, reopen → blank terminal, brand-new shell feel). Root cause: shells are NOT like Claude sessions. For a Claude session SQLite is the source of truth and an incremental `after_seq` cursor is correct (replay only what's new). For a shell the ONLY place the rendered scrollback lives is the browser's xterm — there is no Charon-side DB of shell output — and that xterm is destroyed (`term.dispose()`) on unmount (session switch, F5). An incremental cursor replays "only what's new since last time", which for a freshly-recreated xterm is *nothing* → blank terminal. So on EVERY (re)connect `server.js` sends `shell_subscribe({after_seq: 0})`; the agent replays the whole on-disk log; `server.js` forwards `replay_begin`/`replay_end`; `ShellTerminal` does `term.reset()` on `replay_begin` so an in-place reconnect (same live xterm) rebuilds from scratch instead of doubling its scrollback. `shells.last_seen_seq` is left in the schema but **vestigial** — `server.js` no longer reads or writes it. (Future optional optimization: a "tail" replay capped to ~10k lines would save re-sending up to 30MB the xterm will trim anyway — needs agent support; YAGNI for now.)
+    - **Terminals stay MOUNTED across session switches** (`ClaudePanel.tsx § mountedShellIds` + the "persistent shell layer" below the main routing ternary; shared `ShellTerminal` gained an `active` prop). The full-replay fix above already makes a fresh xterm correct, but tearing down + reconnecting the WS on every switch is still a visible flash + a lost in-flight subscription. So once a shell has been selected, its `<ShellTerminal>` is kept mounted (WS + xterm alive) and merely hidden with `display:none` when another entity is selected; only the selected slot is `active`. A hidden xterm reports 0×0, so `ShellTerminal` skips `fit()` while `active===false` and re-fits + refocuses on the rAF after `active` flips back to true. Mounting is **lazy** (only shells actually opened this page-load, capped further by `keptOpenIds` — closing a tab unmounts + frees the ssh+agent client) so F5 on a fleet with many shells doesn't open one ssh per shell. Mobile (`MobileShell.tsx`) does NOT keep terminals mounted (one shell on screen at a time) but inherits the full-replay correctness for free.
+    - **Does NOT survive agent restart**: the bash child lives in the agent's process. When the agent restarts (`.pyz` update), every shell's bash gets SIGHUP and dies. The agent's boot cleans up `~/.charon/shells/` orphans; `shell_list` returns empty; Charon's `reconcileShellsOnBoot` prunes the DB rows. This is the documented trade-off vs. an external tmux session — agent updates are rare (monthly?) and the loss is bounded (no work-in-progress, just the shell). If you ever want to survive agent restart too, the path is to put bash inside abduco/dtach inside the agent's PTY — adds complexity for a corner case.
+    - **Custom server.js**: `npm run dev` and `npm run start` both run `node server.js`. The systemd unit's `ExecStart` is `node /srv/charon/server.js` (changed from `next start` on this refactor). `next build` still produces `.next/` as before. server.js is plain JS — to access TS state from it you'd need build artifacts; we deliberately avoided that by giving server.js its own minimal data path.
+    - **No node-pty, no tmux on the VPS**: both are gone from the dep tree as part of this refactor. tmux may still be installed on VPSes (from gotcha 33's `TMUX_ENSURE`) but it's no longer used by Charon — feel free to leave it or apt-remove.
+    - **WebSocket protocol invariants** (if you touch the wire format): (1) binary frames are raw shell bytes utf-8 — never wrap them in JSON; (2) text frames are always JSON objects with a `type` field; (3) every (re)connect MUST `shell_subscribe({after_seq:0})` — the full durable log, never an incremental cursor (see the replay bullet above for why a cursor blanks the terminal); `shells.last_seen_seq` is vestigial, don't resurrect it as a cursor; (4) the browser MUST `term.reset()` on the forwarded `replay_begin` so an in-place reconnect rebuilds rather than doubles the scrollback (and the server MUST forward `replay_begin`/`replay_end` as text control frames); (5) on `exit` event close with code 1000 (the client treats 1000 as "shell really ended, don't reconnect"; anything else triggers backoff reconnect).
+    - **Reverse proxy MUST forward `Upgrade: websocket`** — gotcha that bit us in prod: Apache `ProxyPass /` forwards HTTP fine but drops the `Upgrade` header by default, so the browser sees the WS open succeed (apache replies 200) then everything breaks → `ShellTerminal` enters the reconnect-loop ("reconnecting in 1s…"). Fix in the vhost (`/etc/httpd/conf.d/charon.chalco.website-le-ssl.conf`), BEFORE the catch-all ProxyPass: `RewriteEngine On; RewriteCond %{HTTP:Upgrade} websocket [NC]; RewriteCond %{HTTP:Connection} upgrade [NC]; RewriteRule ^/?(.*) "ws://127.0.0.1:10556/$1" [P,L]`. Requires `mod_proxy_wstunnel` + `mod_rewrite` (both standard, already loaded). nginx equivalent (if we ever switch): `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";` on the relevant location.
+
+38. **Typing lag in chat = non-memoized message component + input state colocated with the message list.** Symptom: in a session with many messages, every keystroke in the input box takes hundreds of ms → several seconds to appear (the user's hunch "it's linked to the number of messages" was exactly right). Root cause (React 19, `reactStrictMode: false`, **no React Compiler → no auto-memoization**): the textarea `input` state lived in `ClaudeSessionView` / `MobileChat` — the SAME component that renders the whole `<Message>` list. Each keystroke = `setState` = re-render of that component = re-render of every `<Message>`. `<Message>` renders markdown via `react-markdown` + `remark-gfm` + `rehype-highlight` (highlight.js): an expensive parse + syntax-highlight pass PER message. So one keypress re-parsed + re-highlighted the ENTIRE history → O(N) work per character, N = message count.
+
+    **Fix, two parts — both required:**
+    - (1) `export default memo(Message)` (desktop `app/Message.tsx`) and `const MobileMessage = memo(function MobileMessage…)` (mobile `app/m/chat/MobileChat.tsx`), so a parent re-render skips messages whose props are unchanged. Props (`m` / `attachedResult` / `attached`) come from a `useMemo` in the parent, so their references stay stable → `memo`'s shallow compare bails out.
+    - (2) Move the textarea state OUT of the big component into a small isolated, `memo`-wrapped child — `<ChatInputBar>` (desktop, defined at the bottom of `ClaudeSessionView.tsx`) / `<MobileInputBar>` (mobile, in `MobileChat.tsx`) — each owning its own `useInputDraft` state, the prefill-drain effect, and the `send` callback. A keystroke now re-renders only the ~40-line input bar, never the message list.
+
+    **Invariants if you touch this:**
+    - Keep BOTH the `memo` AND the input isolation. Input-isolation alone wouldn't help if `<Message>` weren't memoized — some OTHER parent re-render (streaming token, status pill, poll) would still re-parse the whole history. `memo` alone still re-runs the parent's (cheap) render but the real win is not touching `<Message>` at all.
+    - Don't pass freshly-built inline objects/arrays/closures as `<Message>` props, or you defeat `memo` (shallow compare sees a new reference every time) — that's why the parent `useMemo`s the per-message props.
+    - Prefill: because the drain effect now lives in the (sometimes unmounted) input bar, the hook must keep `prefillInput` non-null until the bar mounts and calls `clearPrefillInput()`. Don't clear `prefillInput` in the parent or a prefill that arrives while a QuestionCard/permission card is showing (input bar unmounted) is lost.
+    - This is the static-history counterpart to gotcha 17 (which batches the streaming-token re-renders via rAF). 17 = the assistant's live output; 38 = the user's typing. Different code paths, same discipline: never do O(N) work on every tick.
+
+39. **`rebuildStateFromMessages` must re-pair `tool_result` → `toolCall.result`, or the ThinkingBar flashes a stale tool from the previous turn.** Symptom (user-reported): you send a message; Claude's previous turn ended on a `Read foo.py`; the instant the NEW turn starts thinking (before it has run any tool) the "Claude is thinking" bar shows `⚒ Read foo.py` for a few seconds — the previous turn's last tool — even though nothing is running, then corrects itself once the new turn's first real tool arrives. Root cause: the ThinkingBar's `currentTool` is "the most recent tool with no `result`" (`ClaudeSessionView.tsx` / `MobileChat.tsx`), and `app/sessionRebuild.ts` — which rebuilds `toolCalls` on EVERY full refetch (the clean reload on stop / poll / reconnect / tab-return, cf. gotcha 24) — used to push each `tool_use` WITHOUT a `result` and never pair the persisted `tool_result` rows back. So after any refetch every rebuilt tool was "unresolved" → `currentTool` returned the very last `tool_use` of the session. The bar is gated on `status === 'thinking'`, so the stale tool stayed invisible between turns and only surfaced when the next turn flipped status to thinking. The same gap silently wiped the ToolPanel's ✓/✗ result previews after every refetch (live pairing was fine; only the rebuild dropped results). **Fix (two parts):** (1) `sessionRebuild.ts` keeps a `Map<sdkToolId, toolCallIndex>` keyed by `parsed.id` from the tool_use content (NOT the toolCall's own `'h'+rowid` React key) and, on each `tool_result` row, re-attaches `result: {content, isError}` to the matching toolCall — mirroring the live `tool_result` handler in `useClaudeSessionStream.ts:893`. (2) `currentTool` is turn-scoped: it ignores any unresolved tool whose `startedAt < turnStartedAt` (the last user message), so an interrupted/orphaned past-turn tool can never flash as "running" at the start of a new turn. **Invariants:** the rebuild's pairing must stay in sync with the live SSE handler (both populate `result` identically — change one, change the other); keep `turnStartedAt` declared BEFORE `currentTool` in both view files (it's in the `useMemo` deps array → TDZ `ReferenceError` if declared after); the toolCall `id` stays `'h'+rowid` for React-key uniqueness, so the SDK id lives only in the pairing map. `stepCount` was already turn-scoped (it counts tool_use since the last `user` message), which is why the step counter never showed the stale-tool bug — match that scoping for any new ThinkingBar-derived value.
+
+40. **Login preserves the originating path (`?next=`) — a mobile user logged-out by inactivity was bounced to the desktop UI.** Symptom (user-reported): on `/m/...`, the 24h-sliding session expires, middleware redirects to `/login`, the user re-enters the password and lands on `/` (desktop UI) instead of back on `/m/...`. Root cause: the login flow had no memory of where the request came from — `loginAction` hard-coded `redirect('/')`. (`MobileRedirectPrompt` is only a soft, dismissable nudge gated on `localStorage['charon.mobileRedirect.dismissed']`, so it does NOT reliably bounce the user back — preserving `next` is the robust fix.) **Fix (four touch-points):**
+    - `middleware.ts` — the unauthenticated branch now appends the originating path+query as `?next=`: `const dest = pathname + (req.nextUrl.search || ''); if (dest && dest !== '/') loginUrl.searchParams.set('next', dest);`. (Root `/` is left bare so a desktop login stays on `/`.)
+    - `app/login/page.tsx` is now a **server component** (`export const dynamic = 'force-dynamic'`) that `await`s `searchParams` (a Promise in this Next version — see `app/m/chat/page.tsx`), sanitizes `next`, and passes it to `<LoginForm next={safeNext}>`. Server-component read avoids the `useSearchParams()` Suspense-boundary build error.
+    - `app/login/LoginForm.tsx` (`'use client'`, `useActionState(loginAction, null)`) carries `next` across the server-action POST as a hidden field `<input type="hidden" name="next" value={next} />` — it survives a failed attempt because it's a render-time prop.
+    - `app/login/actions.ts` reads `const next = sanitizeNextPath(formData.get('next'))` and ends on `redirect(next)` (after the cookie is set) instead of `redirect('/')`.
+    - **Open-redirect guard `sanitizeNextPath` (`lib/nextPath.ts`)** is run on BOTH read sites (page SSR + action) — defends against `//evil.com`, `/\evil.com`, control chars, `>1024` chars, non-`/`-prefixed targets, and `/login*` loops; anything rejected falls back to `/`. ⚠ It must live in a PLAIN module, NOT a `'use server'` file: Next requires every export of a `'use server'` file to be an async action, so a synchronous helper there fails the build. Verified post-deploy via curl: `/m/select` → `…/login?next=%2Fm%2Fselect`; `?next=%2F%2Fevil.com` → hidden field renders `value="/"`.
+
+41. **`edit_snapshot` content is STRIPPED from the looping session GET — diff content is fetched lazily via `/edits`.** Symptom (real incident): the VPS was **suspended by the host for ~16.5 GB of outbound traffic in one day**. Root cause: `GET /api/claude/sessions/[id]` returns the session's messages, and `edit_snapshot` rows embed the FULL file before+after content (each capped at 256KB agent-side). A busy session accumulates thousands of snapshots of the same handful of files (one Edit = a `before` + an `after` row); the worst session serialized to **~59 MB** (another to ~88 MB). That endpoint is hit in a LOOP — the 5s delta-poll clean-reload, every SSE reconnect, every tab-foreground return, every notification focus (gotcha 24) — so tens of MB × a loop × a day = the suspension. 99%+ of those bytes are redundant historical snapshots the chat NEVER renders (it's a side channel; only the ToolPanel diffs tab + SplitDiffModal use it).
+
+    **Fix — strip on the read path, refill lazily:**
+    - `app/api/claude/sessions/[id]/route.ts § stripEditSnapshotContent` nulls the `content` field of every `edit_snapshot` row (keeps `file_path`/`phase`/`tool_use_id`/`size`/`truncated` + adds `contentStripped:true`) before serializing, in **every mode** (window, `?before`, `?since`). The poll only needs the row to EXIST (it triggers a clean reload); it doesn't need the bytes. This alone kills the egress.
+    - New endpoint `GET /api/claude/sessions/[id]/edits` (`app/api/claude/sessions/[id]/edits/route.ts`) serves the diff content on demand: a JSON1 groupwise-max (`json_extract($.file_path/$.phase)` + `MAX(id)` per group) returns ONLY the LATEST before/after per modified file — ~674 KB for the 59 MB session, fetched ONCE per session view, not in any loop. 16 MB total budget caps a pathological many-file session (over-budget files → null content + `truncated:true`).
+    - Client (`useClaudeSessionStream`): `rebuildStateFromMessages` now yields content-less skeleton edits (before==after==null). An auto-load `useEffect` watches the `edits` Map and calls `loadEdits(unloadedPaths)` → `/edits` to refill them. `mergeEdits` (used by `applyApiData`) is **grow-only on content**: a full reload's null skeleton NEVER clobbers content we already loaded (or that arrived live). `editsLoadInflightRef` guards concurrency; `editsLoadAttemptedRef` (a Set) bounds it to one fetch per file so budget-dropped/empty snapshots don't loop forever.
+    - The **live `edit_snapshot` SSE event is UNCHANGED — it still carries content**, so live edits render instantly; only the GET strips. `ToolPanel`/`MobileChat` `editArr` filters out both-null skeletons so a load-in-flight (sub-second) or budget-dropped file shows no misleading empty/"new file" card.
+
+    **Invariants if you touch this:**
+    - Keep `stripEditSnapshotContent` on ALL GET modes. If you add a new mode/param, strip there too — the whole point is that NOTHING heavy leaves this endpoint.
+    - `mergeEdits` and `loadEdits` must stay grow-only (never null-out loaded content) or a reload mid-view blanks the diffs. Trade-off accepted: a file edited AGAIN while the SSE is down shows its PREVIOUS diff until the next remount (self-heals; the live path keeps it current normally).
+    - `editsLoadAttemptedRef` is what guarantees the auto-load effect TERMINATES. Don't remove it or a session whose snapshots got budget-dropped will refetch `/edits` on every `edits` change forever.
+    - Export (`/api/claude/sessions/[id]/export`) reads the DB directly and KEEPS full content — correct, it's a one-shot download, not a loop. Don't "share" the stripping with it.
+
 ## 15. Quick lookup (non-obvious entry points)
 
 Filenames cover most things; this table is for the entries you'd never grep from a cold start.
@@ -1071,19 +1137,25 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | Singleton browser SSE (focus + reconnect + watchdog) | `app/globalEventStream.ts` |
 | Chat delta polling (safety net) + abort-on-wake | `app/useClaudeSessionStream.ts § pollDelta/applyDelta/forcePoll` + `?since=` in `app/api/claude/sessions/[id]/route.ts` |
 | Auto-recovering error boundary (render error ⇒ remount, not freeze) | `app/SessionErrorBoundary.tsx` (wraps `ClaudeSessionView` + `MobileChat`) |
+| Chat typing-lag fix (memoized messages + isolated input bar) | `memo(Message)` in `app/Message.tsx` + `ChatInputBar` in `app/ClaudeSessionView.tsx` + `MobileInputBar`/`memo(MobileMessage)` in `app/m/chat/MobileChat.tsx` + §14 gotcha 38 |
 | History pagination cursor (backend) | `app/api/claude/sessions/[id]/route.ts § loadMessageWindow` |
+| Diff-content egress fix (strip on session GET + lazy `/edits`) | `stripEditSnapshotContent` in `app/api/claude/sessions/[id]/route.ts` + `app/api/claude/sessions/[id]/edits/route.ts` (groupwise-max) + `mergeEdits`/`loadEdits`/auto-load effect in `app/useClaudeSessionStream.ts` + `editArr` filter in `app/ToolPanel.tsx`/`app/m/chat/MobileChat.tsx` + §14 gotcha 41 |
 | Cross-session interaction feed hook | `app/useCrossSessionInteractionFeed.ts` |
-| Rebuild a session's UI state from DB rows | `app/sessionRebuild.ts` |
+| Rebuild a session's UI state from DB rows (incl. tool_result→result re-pairing) | `app/sessionRebuild.ts` + §14 gotcha 39 |
 | Module-level session cache (desktop + mobile) | `app/sessionCache.ts` |
 | Per-session textarea drafts (memory-only) | `app/inputDraftStore.ts` |
 | Py↔TS protocol alignment check (prebuild) | `scripts/check-protocol-sync.mjs` |
 | TabBar layout logic | `app/TabBar.tsx` + `computeTabs`/`keptOpenIds`/`activeVpsId`/`lastSelectedByVpsRef` in `ClaudePanel.tsx` |
 | VPS folders (DnD + DB-persisted collapse) | `vpsFolders` in `lib/db/schema.ts` + `app/api/vps-folders/**` + `DataModal.tsx` |
 | Durable agent event log (rotation, seq, replay) | `agent/charon_agent/event_log.py` + `_emit` in `server.py` + `SessionStream.lastSeenSeq` in `sessionOps.ts` + `_pendingAfterSeq` in `AgentClient.ts` |
-| Persistent SSH shells (remote tmux + node-pty attach, resize, reconcile) | `lib/server/shell/shellSession.ts` + `app/ShellTerminal.tsx` + `app/api/shells/[id]/resize` + `shells` table in `lib/db/schema.ts` |
+| Persistent SSH shells (agent-hosted PTY + WebSocket) | `agent/charon_agent/shell.py` + `server.js` (WS bridge, full-log `after_seq:0` replay) + `lib/server/shell/shellSession.ts` (DB coordinator) + `app/ShellTerminal.tsx` (xterm + WS + `active` prop) + `shells` table in `lib/db/schema.ts` + §14 gotcha 37 |
+| Shell terminals kept mounted across session switches (persistence UX) | `mountedShellIds` state + "persistent shell layer" (below the main routing ternary) + `.shell-slot` in `app/agent-ui.css` in `app/ClaudePanel.tsx` + `active` prop in `app/ShellTerminal.tsx` + §14 gotcha 37 |
+| Custom Next server (Next + WebSocket upgrade for shells) | `server.js` (root) — wraps `next()` programmatic API + `WebSocketServer({noServer:true})` on `/api/shells/[id]/ws` |
 | Agent-status classification (why "error", transient-drop gating, refresh) | `_handleExit`/`lastClassified`/`ERROR_PERSIST_AFTER_ATTEMPTS` in `lib/server/agent/AgentClient.ts` + `app/api/vps/[id]/agent/refresh` + `ensureAgentRunning` in `bootstrap.ts` + §14 gotcha 34 |
 | Per-session model / effort (deferred apply, SDK fallback) | `set_model`/`set_effort` in `agent/charon_agent/session.py` + `_build_options_with_fallback` (drops unsupported keys) + `_resolveClaudeConfig` in `lib/server/agent/sessionOps.ts` + `SessionStream.setModel/setEffort` + `app/api/claude/sessions/[id]/model` + `app/api/claude/sessions/[id]/effort` + `ModelEffortBadges` in `ClaudeSessionView.tsx` + §14 gotcha 35 |
 | Resume status reconcile (noop path, "can't resume" desync) | `resumeSession` (`resolvedStatus`) + `reconcileVpsAgentState` realign guard in `lib/server/agent/sessionOps.ts` + `resume_session` noop in `agent/charon_agent/server.py` + §14 gotcha 36 |
+| Login `?next=` redirect (open-redirect guard, mobile-bounce fix) | `sanitizeNextPath` in `lib/nextPath.ts` + `middleware.ts` (sets `?next=`) + `app/login/page.tsx` (server component) + `app/login/LoginForm.tsx` (hidden field) + `app/login/actions.ts` (`redirect(next)`) + §14 gotcha 40 |
+| Mobile quick-nav strip (desktop-TabBar equivalent for `/m/select`) | `quickNav` useMemo + `.m-quicknav` render block in `app/m/select/MobileSelect.tsx` + `.m-quicknav`/`.m-quick-chip` in `app/m/mobile.css` |
 
 ---
 

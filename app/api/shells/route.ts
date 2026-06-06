@@ -6,5 +6,5 @@ import { listShells } from '@/lib/server/shell/shellSession';
 export async function GET() {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  return NextResponse.json({ shells: listShells().map((sh) => sh.info()) });
+  return NextResponse.json({ shells: listShells() });
 }

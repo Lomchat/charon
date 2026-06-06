@@ -16,6 +16,7 @@ import type {
   CheckClaudeLoginResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
   ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
+  ClaudeSessionEditsResponse,
   CreateClaudeSessionBody, CreateClaudeSessionResponse,
   ImportClaudeSessionBody, ImportClaudeSessionResponse,
   RenameClaudeSessionBody,
@@ -207,6 +208,13 @@ export const api = {
       undefined, { signal, timeoutMs: 12_000 },
     );
   },
+  // Lazily fetch the latest before/after diff content per modified file. The
+  // main session GET strips edit_snapshot content (it's re-fetched in a 5s
+  // loop — cf. CLAUDE.md §14 gotcha 41); this serves the diff content on
+  // demand, once per session view. Called by useClaudeSessionStream's
+  // auto-load effect when the edits Map has files with stripped content.
+  getClaudeSessionEdits: (id: string) =>
+    send<ClaudeSessionEditsResponse>('GET', `/api/claude/sessions/${id}/edits`),
   createClaudeSession: (data: CreateClaudeSessionBody) =>
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>

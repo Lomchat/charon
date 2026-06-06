@@ -21,6 +21,47 @@ function sameQueueById<T extends { id: string }>(a: T[], b: T[]): boolean {
   return true;
 }
 
+// Merge a freshly-rebuilt edits Map (from a full reload) into the current one
+// WITHOUT losing already-loaded diff content.
+//
+// Since the bandwidth fix (CLAUDE.md §14 gotcha 41) the session GET strips
+// edit_snapshot content, so `rebuildStateFromMessages` produces edits whose
+// before/after are null — a skeleton listing WHICH files changed, with no
+// content. The actual content is fetched separately (loadEdits → /edits) or
+// arrives live (edit_snapshot SSE, which DOES carry content). A full reload
+// (poll clean-reload, reconnect, tab return) must therefore NOT clobber the
+// content we already have with the reload's null skeleton.
+//
+// Rules:
+//   - For each file in the rebuilt skeleton: if we already hold loaded content
+//     (before or after non-null), keep it (refresh only the `truncated` flag);
+//     otherwise take the skeleton entry (loadEdits will fill it).
+//   - Preserve files we loaded earlier that fell outside the current window
+//     (the window only carries snapshots near the last 200 chat messages).
+//
+// Trade-off: a file edited AGAIN while the SSE is down shows its PREVIOUS diff
+// until the next mount (the reload skeleton can't tell us the content changed,
+// and we keep the old content rather than blank it). Acceptable — the live SSE
+// path keeps it current in the common case, and it self-heals on remount.
+function mergeEdits(
+  prev: Map<string, EditSnapshot>,
+  rebuilt: Map<string, EditSnapshot>,
+): Map<string, EditSnapshot> {
+  const next = new Map<string, EditSnapshot>();
+  for (const [k, v] of rebuilt) {
+    const old = prev.get(k);
+    if (old && (old.before != null || old.after != null)) {
+      next.set(k, { ...old, truncated: old.truncated || v.truncated });
+    } else {
+      next.set(k, v);
+    }
+  }
+  for (const [k, v] of prev) {
+    if (!next.has(k)) next.set(k, v);
+  }
+  return next;
+}
+
 // useClaudeSessionStream
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook that encapsulates all the SSE + state + actions logic for a Claude
@@ -215,23 +256,10 @@ export function useClaudeSessionStream(
   const oldestChatIdRef = useRef<number | null>(null);
   const loadMoreInflightRef = useRef(false);
 
-  // Server reachability. true after consecutive request failures (the hub
-  // is down — typically a build+restart in progress); cleared on the first
-  // success. The view shows a "reconnecting to server…" banner while true,
-  // so the user knows to WAIT for auto-recovery instead of refreshing.
-  // cf. CLAUDE.md §14 gotcha 24.
-  const [serverUnreachable, setServerUnreachable] = useState(false);
-  const consecutiveFailuresRef = useRef(0);
-  const markServerOk = useCallback(() => {
-    consecutiveFailuresRef.current = 0;
-    setServerUnreachable((v) => (v ? false : v));
-  }, []);
-  const markServerFail = useCallback(() => {
-    consecutiveFailuresRef.current += 1;
-    // 2 consecutive failures (~10s of polling) before we declare it down,
-    // to avoid flashing the banner on a single transient blip.
-    if (consecutiveFailuresRef.current >= 2) setServerUnreachable((v) => (v ? v : true));
-  }, []);
+  // (banner-state work removed — replaced by auto-reload-on-recovery in
+  // globalEventStream.ts. When the SSE silence > AUTO_RELOAD_THRESHOLD_MS
+  // and then recovers, the page hard-reloads — exactly what the user does
+  // manually with F5. cf. CLAUDE.md §14 gotcha 24.)
 
   // streamKey: bump to force re-creation of the SSE (used after
   // doResume — the session restarted and we want a fresh SSE).
@@ -275,6 +303,15 @@ export function useClaudeSessionStream(
   // a request that hung while the device was asleep and start fresh.
   const pollAbortRef = useRef<AbortController | null>(null);
 
+  // ── Lazy edit-content loading state (CLAUDE.md §14 gotcha 41) ────────────
+  // The session GET strips edit_snapshot content; the diff content is fetched
+  // separately, on demand, by loadEdits → GET /edits. These guard that fetch.
+  const editsLoadInflightRef = useRef(false);
+  // file_paths we already attempted to load but couldn't fill (budget-dropped
+  // server-side, or a genuinely empty snapshot) — so the auto-load effect
+  // doesn't retry them forever.
+  const editsLoadAttemptedRef = useRef<Set<string>>(new Set());
+
   // ── Apply an API payload to local state ────────────────────────────────
   // Full refresh path — used by refetchHistory (initial mount, switch,
   // explicit resync). Replaces local state entirely. For incremental
@@ -311,7 +348,10 @@ export function useClaudeSessionStream(
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
     setTodos(rebuilt.todos);
-    setEdits(rebuilt.edits);
+    // Merge (not replace): the rebuilt edits carry no content (the GET strips
+    // edit_snapshot content — CLAUDE.md §14 gotcha 41). Keep already-loaded
+    // diff content; the auto-load effect refills any stripped skeletons.
+    setEdits((prev) => mergeEdits(prev, rebuilt.edits));
     setFiles(rebuilt.files);
     setPermissionMode(
       (['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(
@@ -629,6 +669,56 @@ export function useClaudeSessionStream(
       }
     }
   }, [sessionId, cache, applyApiData]);
+
+  // ── Lazy edit-content loader (CLAUDE.md §14 gotcha 41) ──────────────────
+  // Fetches the latest before/after content per file from the dedicated
+  // /edits endpoint and fills the (content-stripped) skeleton entries for
+  // `targetPaths`. Only fills entries that are currently unloaded so it never
+  // clobbers live edit_snapshot SSE content. Marks any file it couldn't fill
+  // as "attempted" so the auto-load effect terminates.
+  const loadEdits = useCallback(async (targetPaths: string[]) => {
+    if (editsLoadInflightRef.current) return;
+    if (targetPaths.length === 0) return;
+    editsLoadInflightRef.current = true;
+    try {
+      const r = await api.getClaudeSessionEdits(sessionId);
+      const byPath = new Map(r.edits.map((e) => [e.filePath, e] as const));
+      setEdits((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        for (const path of targetPaths) {
+          const cur = next.get(path);
+          // Skip if gone, or already loaded/filled live in the meantime.
+          if (!cur || cur.before != null || cur.after != null) continue;
+          const got = byPath.get(path);
+          if (got && (got.before != null || got.after != null)) {
+            next.set(path, {
+              ...cur,
+              before: got.before,
+              after: got.after,
+              truncated: cur.truncated || got.truncated,
+              toolUseId: got.toolUseId || cur.toolUseId,
+            });
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      // Anything we asked for but couldn't fill (absent from the response or
+      // budget-dropped → null content) is marked attempted, so we don't loop.
+      for (const path of targetPaths) {
+        const got = byPath.get(path);
+        if (!got || (got.before == null && got.after == null)) {
+          editsLoadAttemptedRef.current.add(path);
+        }
+      }
+    } catch {
+      // Transient (network / 503). Leave `attempted` untouched so the next
+      // edits change retries. Silent — the diffs tab is non-critical UI.
+    } finally {
+      editsLoadInflightRef.current = false;
+    }
+  }, [sessionId]);
 
   // ── Delta poll (safety-net loop) ───────────────────────────────────────
   // Independent of the SSE: fetches `GET ?since=<lastSeenServerId>` and
@@ -1050,6 +1140,24 @@ export function useClaudeSessionStream(
     const id = setInterval(safetyTick, 5_000);
     return () => clearInterval(id);
   }, [safetyTick]);
+
+  // ── Auto-load stripped diff content (CLAUDE.md §14 gotcha 41) ────────────
+  // The session GET strips edit_snapshot content, so a full reload leaves the
+  // edits Map with content-less skeleton entries (before == after == null).
+  // Whenever such entries appear, fetch their content from /edits. The
+  // `attempted` set bounds this to one fetch per file (no infinite retry on
+  // budget-dropped / empty snapshots). Live edit_snapshot SSE events already
+  // carry content, so they never enter this path.
+  useEffect(() => {
+    const unloaded: string[] = [];
+    for (const [k, v] of edits) {
+      if (v.before == null && v.after == null && !editsLoadAttemptedRef.current.has(k)) {
+        unloaded.push(k);
+      }
+    }
+    if (unloaded.length === 0) return;
+    loadEdits(unloaded);
+  }, [edits, loadEdits]);
 
   // Immediate catch-up poll on tab focus / network online — don't wait
   // 5s after the user obviously expects the latest state. Use forcePoll

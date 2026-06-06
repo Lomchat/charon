@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -103,27 +103,15 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     return filter(cross.perms).length + filter(cross.questions).length + filter(cross.exitPlans).length;
   }, [cross, sessionId]);
 
-  // Purely mobile UI state (textarea + menus + scroll).
-  // `input` is wired to `inputDraftStore` so the draft survives
-  // /m/chat ↔ /m/select navigations as well as session switches via
-  // `?id=…` (the mobile page has no `key`, so we rely on the hook's
-  // in-render reconciliation). F5 wipes everything (in-memory Map).
-  const [input, setInput] = useInputDraft(sessionId);
+  // Purely mobile UI state (menus + scroll). NOTE: the textarea `input` state,
+  // its auto-resize, the prefill_input draining and `send` all moved into
+  // <MobileInputBar> (isolated, bottom of this file) so a keystroke only
+  // re-renders that small component — never this one, and therefore never the
+  // message list. See CLAUDE.md §11 / §14.
   const [showMenu, setShowMenu] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
-
-  // Drain prefill_input: the hook exposes text the agent wants us to
-  // type (prefill_input SSE event). We copy it into the textarea then
-  // clear so we don't re-play it if the session reopens.
-  useEffect(() => {
-    if (prefillInput !== null) {
-      setInput(prefillInput);
-      clearPrefillInput();
-    }
-  }, [prefillInput, clearPrefillInput]);
 
   // ── Scroll: flex-direction: column-reverse ──────────────────────────────
   // The chat body is rendered in column-reverse, so:
@@ -207,15 +195,6 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   }, [hasMore, isLoadingMore, loadMoreHistory]);
 
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
-
-  // Textarea auto-resize: we follow scrollHeight with a max of ~30vh.
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    const max = window.innerHeight * 0.3;
-    ta.style.height = Math.min(ta.scrollHeight, max) + 'px';
-  }, [input]);
 
   const vps = useMemo(() => vpsList.find((v) => v.id === sessionMeta?.vpsId) ?? null, [vpsList, sessionMeta]);
 
@@ -313,19 +292,25 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
     return '';
   }, [oldestPending, messages, edits]);
 
-  const currentTool = useMemo(() => {
-    for (let i = toolCalls.length - 1; i >= 0; i--) {
-      if (!toolCalls[i].result) return toolCalls[i];
-    }
-    return null;
-  }, [toolCalls]);
-
   const turnStartedAt = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'user') return messages[i].createdAt;
     }
     return null;
   }, [messages]);
+
+  // See ClaudeSessionView: only surface a current-turn unresolved tool, so a
+  // stale tool from a past turn never flashes in the ThinkingBar.
+  // See CLAUDE.md §14 gotcha 39.
+  const currentTool = useMemo(() => {
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      const c = toolCalls[i];
+      if (c.result) continue;
+      if (turnStartedAt !== null && c.startedAt < turnStartedAt) return null;
+      return c;
+    }
+    return null;
+  }, [toolCalls, turnStartedAt]);
 
   const stepCount = useMemo(() => {
     let count = 0;
@@ -338,14 +323,8 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
 
   // ── Mobile UI actions (thin wrappers around the hook's actions) ─────────
   // The wrappers only handle mobile UI state (closing the menu after the
-  // action, emptying the textarea after send). The business logic lives in
-  // useClaudeSessionStream.
-  async function send() {
-    const content = input.trim();
-    if (!content) return;
-    setInput('');
-    await stream.send(content);
-  }
+  // action). `send` lives in <MobileInputBar> (it needs the input state).
+  // The business logic lives in useClaudeSessionStream.
   async function interrupt() {
     setShowMenu(false);
     await stream.interrupt();
@@ -562,50 +541,14 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           )}
         </div>
       ) : (
-        <>
-          <div className="m-mode-switch" role="radiogroup" aria-label="permission mode">
-            <button
-              type="button"
-              className={`m-mode-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
-              onClick={() => stream.setMode('normal')}
-            >▷ normal</button>
-            <button
-              type="button"
-              className={`m-mode-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
-              onClick={() => stream.setMode('acceptEdits')}
-            >▶▶ edits</button>
-            <button
-              type="button"
-              className={`m-mode-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
-              onClick={() => stream.setMode('auto')}
-            >▶▶ accept all</button>
-            <button
-              type="button"
-              className={`m-mode-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
-              onClick={() => stream.setMode('plan')}
-            >⏸ plan</button>
-          </div>
-          <footer className="m-input-bar">
-            <textarea
-              ref={taRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="message to Claude…"
-              rows={2}
-              onKeyDown={(e) => {
-                // No submit on Enter on mobile — always native line break.
-                // Ctrl/Cmd+Enter sends for connected hardware keyboards.
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <button className="m-send" onClick={send} disabled={!input.trim()} aria-label="send">
-              ▶
-            </button>
-          </footer>
-        </>
+        <MobileInputBar
+          sessionId={sessionId}
+          permissionMode={permissionMode}
+          onSetMode={stream.setMode}
+          onSend={stream.send}
+          prefillInput={prefillInput}
+          clearPrefillInput={clearPrefillInput}
+        />
       )}
 
       {drawerOpen && (
@@ -698,9 +641,109 @@ function MenuItem({ onClick, label, danger }: { onClick: () => void; label: stri
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Input bar (isolated)
+// ──────────────────────────────────────────────────────────────────────────
+// Owns the textarea `input` state + auto-resize + prefill draining + send, so
+// typing only re-renders THIS component, never the parent MobileChat and thus
+// never the message list. Mirrors the desktop <ChatInputBar>. See CLAUDE.md §11.
+const MobileInputBar = memo(function MobileInputBar({
+  sessionId, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
+}: {
+  sessionId: string;
+  permissionMode: PermissionMode;
+  onSetMode: (mode: PermissionMode) => void;
+  onSend: (content: string) => Promise<void>;
+  prefillInput: string | null;
+  clearPrefillInput: () => void;
+}) {
+  // Wired to inputDraftStore so the draft survives /m/chat ↔ /m/select
+  // navigation and ?id= session switches (the mobile page has no `key`, so the
+  // hook reconciles in-render). F5 wipes everything (in-memory Map).
+  const [input, setInput] = useInputDraft(sessionId);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Drain prefill_input. If this bar is unmounted when a prefill arrives, the
+  // hook keeps prefillInput non-null (clearPrefillInput only runs here) so it
+  // self-applies when the bar remounts.
+  useEffect(() => {
+    if (prefillInput !== null) {
+      setInput(prefillInput);
+      clearPrefillInput();
+    }
+  }, [prefillInput, clearPrefillInput, setInput]);
+
+  // Textarea auto-resize: follow scrollHeight with a max of ~30vh.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    const max = window.innerHeight * 0.3;
+    ta.style.height = Math.min(ta.scrollHeight, max) + 'px';
+  }, [input]);
+
+  const send = useCallback(async () => {
+    const content = input.trim();
+    if (!content) return;
+    setInput('');
+    await onSend(content);
+  }, [input, onSend, setInput]);
+
+  return (
+    <>
+      <div className="m-mode-switch" role="radiogroup" aria-label="permission mode">
+        <button
+          type="button"
+          className={`m-mode-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
+          onClick={() => onSetMode('normal')}
+        >▷ normal</button>
+        <button
+          type="button"
+          className={`m-mode-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
+          onClick={() => onSetMode('acceptEdits')}
+        >▶▶ edits</button>
+        <button
+          type="button"
+          className={`m-mode-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
+          onClick={() => onSetMode('auto')}
+        >▶▶ accept all</button>
+        <button
+          type="button"
+          className={`m-mode-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
+          onClick={() => onSetMode('plan')}
+        >⏸ plan</button>
+      </div>
+      <footer className="m-input-bar">
+        <textarea
+          ref={taRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="message to Claude…"
+          rows={2}
+          onKeyDown={(e) => {
+            // No submit on Enter on mobile — always native line break.
+            // Ctrl/Cmd+Enter sends for connected hardware keyboards.
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+        <button className="m-send" onClick={send} disabled={!input.trim()} aria-label="send">
+          ▶
+        </button>
+      </footer>
+    </>
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // Messages
 // ──────────────────────────────────────────────────────────────────────────
-function MobileMessage({ m, attached }: { m: Msg; attached?: Msg }) {
+// Memoized like the desktop <Message> (same reason): one bubble per history
+// item, re-rendered on every parent render. Without memo, a parent re-render
+// re-parses markdown + re-runs syntax highlighting for the whole history.
+// Props come from a useMemo so refs stay stable until the message changes.
+const MobileMessage = memo(function MobileMessage({ m, attached }: { m: Msg; attached?: Msg }) {
   if (m.role === 'tool_use') return <ToolUseBubble m={m} attached={attached} />;
   if (m.role === 'tool_result') return <ToolResultBubble m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -733,7 +776,7 @@ function MobileMessage({ m, attached }: { m: Msg; attached?: Msg }) {
       )}
     </div>
   );
-}
+});
 
 function ThinkingBubble({ m }: { m: Msg }) {
   const [open, setOpen] = useState(false);
@@ -1022,7 +1065,12 @@ function Drawer({
   onRevert: (filePath: string, content: string | null) => Promise<void>;
 }) {
   const [tab, setTab] = useState<DrawerTab>(edits.size > 0 ? 'diffs' : todos.length > 0 ? 'todos' : 'calls');
-  const editArr = useMemo(() => Array.from(edits.values()), [edits]);
+  // Hide content-less skeleton entries (edit_snapshot content is stripped by
+  // the GET and refilled lazily — CLAUDE.md §14 gotcha 41).
+  const editArr = useMemo(
+    () => Array.from(edits.values()).filter((e) => e.before != null || e.after != null),
+    [edits],
+  );
 
   return (
     <>

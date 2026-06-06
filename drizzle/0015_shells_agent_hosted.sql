@@ -1,0 +1,21 @@
+-- Migration 0014: shells become agent-hosted PTYs (no more tmux).
+--
+-- Context: the SSH shells now run inside the charon-agent's Python process
+-- on each VPS (cf. agent/charon_agent/shell.py, agent >= 0.7.0). Output
+-- streams through the agent's durable event log (~/.charon/shells/<id>.jsonl)
+-- and Charon connects with a WebSocket per shell. Consequences for the
+-- schema:
+--
+--   - tmux_name is no longer used (no tmux session). Drop it.
+--   - last_seen_seq is the cursor into the agent's durable shell event log,
+--     used on WS reconnect to replay exactly what Charon missed. Mirrors
+--     claude_sessions.last_seen_seq added in migration 0011 (same shape,
+--     different stream).
+--
+-- SQLite supports DROP COLUMN since 3.35 (March 2021); the Charon host runs
+-- a recent version (3.40+). If the deployment ever lands on an ancient
+-- SQLite, the alternative is the classic create-new-table / copy / drop
+-- dance; the simpler ALTER works for us.
+ALTER TABLE `shells` ADD COLUMN `last_seen_seq` integer;
+--> statement-breakpoint
+ALTER TABLE `shells` DROP COLUMN `tmux_name`;

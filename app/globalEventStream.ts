@@ -135,6 +135,12 @@ const STALE_MS = 20_000;            // no event for 20s → assume dead. Lower
                                     // missed beat does NOT trigger a
                                     // reconnect.
 const WATCHDOG_TICK_MS = 4_000;     // check liveness every 4s
+// Threshold for "the SSE was really down, not just a network blip". Set
+// > heartbeat interval (8s) + a generous safety margin, so a single missed
+// beat or a transient ~10s blip does NOT trigger an auto-reload. 15s
+// reliably detects a real `systemctl restart charon` (~30-60s with build)
+// or a device sleep, without false-positives on jitter.
+const AUTO_RELOAD_THRESHOLD_MS = 15_000;
 
 function getConnId(): string {
   if (!connId) connId = genConnId();
@@ -272,8 +278,13 @@ function openStream(): void {
   const url = buildUrl();
   es = new EventSource(url);
   es.onmessage = (e) => {
-    // Track liveness on EVERY incoming event (heartbeat or real).
-    lastActivityTs = Date.now();
+    const now = Date.now();
+    // Track liveness on EVERY incoming event (heartbeat or real). We also
+    // use lastActivityTs to detect an outage we just recovered from — see
+    // the auto-reload below.
+    const prevTs = lastActivityTs;
+    const silenceMs = prevTs > 0 ? now - prevTs : 0;
+    lastActivityTs = now;
     // Reset the backoff HERE (on real data), not on `onopen`. A connection
     // that opens then immediately breaks (proxy cutting the stream, server
     // restarting mid-response) should keep backing off — resetting on
@@ -282,6 +293,35 @@ function openStream(): void {
     // heartbeat immediately on connect, so a healthy stream resets the
     // backoff within milliseconds anyway.
     backoffMs = 0;
+
+    // ─── Auto-reload on outage recovery ──────────────────────────────────
+    // The user's repeated complaint (CLAUDE.md §14 gotcha 24) was always:
+    // "the chat doesn't update after a server restart — I have to F5".
+    // Their own suggestion: "if a refresh fixes it, just simulate the
+    // refresh." We tried every clever partial recovery (polling deltas,
+    // clean refetch, error boundary, etc.) and they all had subtle holes.
+    // This is the LITERAL implementation of the user's request: when the
+    // SSE has been SILENT for longer than the heartbeat interval (8s) plus
+    // a generous margin — i.e. the hub was actually down (build+restart
+    // ~30-60s, or device sleep) — and the stream JUST recovered (this
+    // event is the first activity), do `window.location.reload()`.
+    //
+    // Why not soft-recover (polling/refetch)? Because we've burned 8
+    // rounds proving that something always breaks the soft path. A hard
+    // reload is the ONE thing that ALWAYS works (it's literally what the
+    // user is doing by hand every time). The cost — losing the textarea
+    // draft and resetting scroll — is the same cost they're already
+    // paying manually, plus the page just re-SSRs cleanly with all the
+    // post-restart state.
+    if (silenceMs > AUTO_RELOAD_THRESHOLD_MS && typeof window !== 'undefined') {
+      // eslint-disable-next-line no-console
+      console.info(`[charon] SSE silent ${Math.round(silenceMs / 1000)}s → recovered → hard reload (matches manual F5)`);
+      // Use a microtask to let the runtime finish the current callback
+      // cleanly before navigating.
+      setTimeout(() => { try { window.location.reload(); } catch {} }, 0);
+      return;
+    }
+
     let ev: GlobalEvent | HeartbeatEvent;
     try { ev = JSON.parse(e.data); } catch { return; }
     // Heartbeat: server-only liveness ping, not forwarded to listeners.

@@ -95,6 +95,45 @@
 .m-topbar .m-act-btn.danger { color: var(--crimson); border-color: var(--crimson-deep); }
 .m-topbar .m-act-btn svg { width: 18px; height: 18px; }
 
+/* ── Quick-nav strip (active sessions/shells) ───────────────────────────────
+   Mobile equivalent of the desktop TabBar: an always-visible (non-scrolling-
+   away) horizontal scroller under the topbar listing every live entity so the
+   user can jump straight to what's running. Hidden when nothing is active. */
+.m-quicknav {
+  flex-shrink: 0;
+  display: flex; gap: 6px; align-items: center;
+  padding: 8px 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  background: var(--stone-2);
+  border-bottom: 1px solid var(--gold-deep);
+}
+.m-quicknav::-webkit-scrollbar { display: none; }
+.m-quick-chip {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 170px;
+  padding: 7px 11px;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment);
+  font-family: var(--mono); font-size: 12px;
+}
+.m-quick-chip:active { background: var(--stone); border-color: var(--gold); }
+.m-quick-chip.attention {
+  border-color: #f0a060;
+  box-shadow: 0 0 0 1px rgba(240, 160, 96, 0.3);
+}
+.m-quick-chip .m-quick-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+}
+.m-quick-chip .m-quick-label {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-quick-chip.shell .m-quick-label::before { content: '⌨ '; color: var(--teal); }
+
 /* ── /m/select ──────────────────────────────────────────────────────────── */
 .m-select-body {
   flex: 1; min-height: 0;

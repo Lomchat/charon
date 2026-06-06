@@ -216,6 +216,13 @@ type Props = {
   // "+ shell" button is always enabled — SSH shells don't need the agent.
   // Null/undefined = enabled.
   newSessionDisabledReason?: string | null;
+  // Right-click on a tab → ClaudePanel resolves the entity (session /
+  // shell / install) and opens the SAME `SessionContextMenu` as the
+  // sidebar's right-click. The menu's state + rendering lives in
+  // ClaudePanel, so there is zero duplication of menu logic between
+  // the sidebar and the tab bar (single source of truth: ClaudePanel's
+  // `ctxMenu` state machine).
+  onTabContext: (tab: EntityTab, x: number, y: number) => void;
 };
 
 export default function TabBar({
@@ -223,6 +230,7 @@ export default function TabBar({
   selectedSessionId, selectedShellId, selectedInstallId,
   onVpsClick, onEntitySelect, onEntityClose,
   onNewSession, onNewShell, newSessionDisabledReason,
+  onTabContext,
 }: Props) {
   // Render nothing when no VPS has any open entity (keeps the layout slim).
   const isEmpty = useMemo(() => vpsTabs.length === 0, [vpsTabs]);
@@ -271,6 +279,10 @@ export default function TabBar({
               className={`tab tab-${t.state}${isSelected ? ' selected' : ''}`}
               role="tab"
               aria-selected={isSelected}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onTabContext(t, e.clientX, e.clientY);
+              }}
             >
               <button
                 type="button"

@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -16,7 +16,7 @@ type Props = {
   attachedResult?: Msg;
 };
 
-export default function Message({ m, streaming = false, attachedResult }: Props) {
+function Message({ m, streaming = false, attachedResult }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -53,6 +53,15 @@ export default function Message({ m, streaming = false, attachedResult }: Props)
     </div>
   );
 }
+
+// Memoized on purpose. The chat renders one <Message> per history item, and
+// any parent re-render (streaming token, status change — and, before the input
+// was isolated, every keystroke) would otherwise re-run this for ALL messages,
+// re-parsing markdown + re-running syntax highlighting → O(N) work that made
+// long sessions lag by seconds. Props (m / attachedResult) come from a useMemo
+// in the parent, so their references stay stable until the message actually
+// changes, letting memo's shallow compare skip the re-render. See CLAUDE.md §11.
+export default memo(Message);
 
 function ThinkingBubble({ m }: { m: Msg }) {
   const [open, setOpen] = useState(false);

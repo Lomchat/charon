@@ -186,7 +186,7 @@ After=default.target
 
 [Service]
 ExecStart=/bin/sh -c 'PY=%h/.charon/venv/bin/python; [ -x "$PY" ] || PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
-Restart=on-failure
+Restart=always
 RestartSec=2
 StandardOutput=append:%h/.charon/agent.log
 StandardError=append:%h/.charon/agent.log

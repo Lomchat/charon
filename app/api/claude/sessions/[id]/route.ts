@@ -65,6 +65,34 @@ async function relocateJsonl(
 // handled correctly with range loading.
 const NON_PAGINATED_ROLES: string[] = ['edit_snapshot', 'event'];
 
+// Strips the heavy `content` (full file before/after, capped at 256KB EACH by
+// the agent) out of edit_snapshot rows before they go over the wire.
+//
+// This endpoint is re-fetched in a LOOP — the 5s delta poll's clean reload,
+// every SSE reconnect, every tab-foreground return, every notification focus
+// (cf. CLAUDE.md §14 gotcha 24). A large session accumulates thousands of
+// snapshots (one Edit = a before + an after row, ~hundreds of KB), so a single
+// full GET could weigh tens of MB, and the loop multiplied that into ~16.5 GB
+// of egress in a day — enough to get the VPS suspended for excessive outbound
+// traffic. 99%+ of those bytes are redundant historical snapshots of the same
+// handful of files.
+//
+// The chat NEVER renders edit_snapshot content (it's a side channel); only the
+// ToolPanel diffs tab does, and that content is now served lazily by
+// GET /api/claude/sessions/[id]/edits (latest-per-file, once per session view).
+// Here we keep the lightweight metadata (file_path, phase, tool_use_id, size,
+// truncated) so the client can still rebuild the edits-Map skeleton and know
+// which files changed; only `content` is nulled. cf. CLAUDE.md §14 gotcha 41.
+function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMessage[] {
+  return rows.map((m) => {
+    if (m.role !== 'edit_snapshot') return m;
+    let parsed: { content?: unknown } | null = null;
+    try { parsed = JSON.parse(m.content); } catch { return m; }
+    if (!parsed || parsed.content == null) return m;
+    return { ...m, content: JSON.stringify({ ...parsed, content: null, contentStripped: true }) };
+  });
+}
+
 /**
  * Loads a window of chat messages (role != edit_snapshot/event) with
  * cursor-based pagination, then adds the edit_snapshot/event that fall in
@@ -140,8 +168,11 @@ function loadMessageWindow(
 //
 // Note: edit_snapshot and event DO NOT COUNT toward the limit (chat-window
 // mode). They are loaded as attachments by ID range (cf. loadMessageWindow).
-// In ?since mode they are returned unconditionally — the client needs them
-// for ToolPanel diffs / todos.
+// In ?since mode they are returned unconditionally so the poll detects new
+// edits/todos. In BOTH modes the edit_snapshot `content` is STRIPPED before
+// sending (see stripEditSnapshotContent) — the poll only needs the row to
+// exist (it triggers a clean reload), and diff content is fetched lazily via
+// GET /api/claude/sessions/[id]/edits. cf. CLAUDE.md §14 gotcha 41.
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -179,6 +210,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     hasMore = win.hasMore;
     oldestChatId = win.oldestChatId;
   }
+  // Drop the heavy edit_snapshot file content from EVERY path (window, delta,
+  // before-cursor) — this is the looping endpoint and the bandwidth fix. The
+  // client refills diff content lazily via the dedicated /edits endpoint.
+  // cf. CLAUDE.md §14 gotcha 41.
+  messages = stripEditSnapshotContent(messages);
   const stream = peekStream(id);
 
   // True max message id for this session (ALL roles, including

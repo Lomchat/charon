@@ -16,3 +16,6 @@ docker/known_hosts
 __pycache__/
 *.pyc
 *.pyo
+
+# Claude Code local working dir (worktrees, settings) — not committed
+.claude/

@@ -22,7 +22,13 @@ type Tab = 'diffs' | 'todos' | 'calls';
 
 export default function ToolPanel({ sessionId, toolCalls, todos, edits, onRevert }: Props) {
   const [tab, setTab] = useState<Tab>('diffs');
-  const editArr = useMemo(() => Array.from(edits.values()), [edits]);
+  // Hide content-less skeleton entries (edit_snapshot content is stripped by
+  // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
+  // has no diff to show; it appears once loadEdits fills its content.
+  const editArr = useMemo(
+    () => Array.from(edits.values()).filter((e) => e.before != null || e.after != null),
+    [edits],
+  );
 
   return (
     <aside className="tool-panel">

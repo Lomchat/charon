@@ -184,23 +184,28 @@ export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   index('idx_claude_session_logs_session_id_id').on(t.sessionId, t.id),
 ]);
 
-// Persistent SSH shells. Unlike the pre-tmux design (in-memory only, lost on
-// Charon restart), the actual terminal now lives in a `tmux` session on the
-// VPS named `charon-<id>`. This table is just the index Charon uses to list
-// and re-attach to those sessions after a restart — the durable state is the
-// tmux session itself (which a human can also `tmux attach -t charon-<id>`).
-// Rows are pruned at boot for tmux sessions that no longer exist on the VPS
-// (cf. reconcileShellsOnBoot in lib/server/shell/shellSession.ts) and deleted
-// when the shell is explicitly closed (tmux kill-session + DELETE).
+// Persistent SSH shells, hosted by the charon-agent's Python process on
+// each VPS. The PTY (bash) lives inside the agent — see
+// agent/charon_agent/shell.py for the rationale and persistence semantics.
+// This table is the Charon-side index: one row per shell, used to
+// re-list/re-attach (over WebSocket via server.js) after a Charon restart
+// and to materialise the sidebar entry.
+// Rows are pruned at boot when `shell_list` shows the agent doesn't know
+// about them (typically: agent was restarted, bash children died with it).
+// `last_seen_seq` is the cursor into the agent's per-shell durable event
+// log (`~/.charon/shells/<id>.jsonl`); the WS bridge uses it on reconnect
+// to replay exactly what Charon missed.
 export const shells = sqliteTable('shells', {
   id: text('id').primaryKey(),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
-  // tmux session name on the VPS. Always `charon-<id>` (kept explicit so the
-  // mapping survives any future change to the id→name scheme).
-  tmuxName: text('tmux_name').notNull(),
   cwd: text('cwd'),
   name: text('name'),
   color: text('color'),
+  // Highest `seq` of a `shell_output`/`shell_status`/`shell_exit` event
+  // Charon has forwarded to a viewer (or persisted as the cursor). Null
+  // until the first event lands; on reconnect the WS bridge passes this
+  // to `shell_subscribe({after_seq: lastSeenSeq})` for durable replay.
+  lastSeenSeq: integer('last_seen_seq'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // GET /api/vps/[id]/shells + boot reconcile filter by vpsId.

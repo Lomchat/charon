@@ -77,12 +77,18 @@ export class AgentClient {
   // The session_ids we've explicitly "subscribed" to, so we can
   // re-subscribe after a reconnect.
   private subscribed = new Set<string>();
+  // Same idea for shell_ids — parallel set so we can fire the right RPC
+  // (`shell_subscribe` vs. `subscribe`) on reconnect. Kept separate from
+  // `subscribed` because the RPC name + replay log are different.
+  private subscribedShells = new Set<string>();
   // Per-session checkpoint cursor for durable replay. Updated by
   // SessionStream via setAfterSeq(sid, seq) as events are persisted.
   // Looked up by _fireSubscribe on the next subscribe RPC (which is
   // typically issued by the resubscribe-after-reconnect path).
   // `null` means "no checkpoint yet — fall back to ring replay".
   private _pendingAfterSeq = new Map<string, number | null>();
+  // Parallel cursor map for shells (same semantics, separate namespace).
+  private _pendingShellAfterSeq = new Map<string, number | null>();
   private statusListeners = new Set<(s: AgentClientStatus) => void>();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -238,6 +244,66 @@ export class AgentClient {
     }
   }
 
+  // ── Shell-side subscriptions (agent >= 0.7.0) ─────────────────────────────
+  // Same pattern as `subscribe`/`unsubscribe` for Claude sessions, but the
+  // RPC is `shell_subscribe` / `shell_unsubscribe` (the agent's shell event
+  // log lives in a separate dir). Listeners share the same `subscribers`
+  // map — shell_ids and session_ids don't collide in practice (16-hex vs
+  // 32-hex), and the routing layer keys by id only.
+  subscribeShell(shellId: string, listener: EventListener, opts?: { afterSeq?: number }): void {
+    if (!this.subscribers.has(shellId)) {
+      this.subscribers.set(shellId, new Set());
+    }
+    this.subscribers.get(shellId)!.add(listener);
+    if (!this.subscribedShells.has(shellId)) {
+      this.subscribedShells.add(shellId);
+      if (this.status === 'connected') {
+        this._fireShellSubscribe(shellId, opts);
+      } else {
+        this._pendingShellAfterSeq.set(shellId, opts?.afterSeq ?? null);
+      }
+    } else if (opts?.afterSeq !== undefined) {
+      // The shell is already subscribed but the caller wants to bump the
+      // cursor (e.g. a fresh ws connection just re-asserted the latest seq).
+      this._pendingShellAfterSeq.set(shellId, opts.afterSeq);
+    }
+  }
+
+  unsubscribeShell(shellId: string, listener: EventListener): void {
+    const set = this.subscribers.get(shellId);
+    if (!set) return;
+    set.delete(listener);
+    if (set.size === 0) {
+      this.subscribers.delete(shellId);
+      this.subscribedShells.delete(shellId);
+      if (this.status === 'connected') {
+        this.call('shell_unsubscribe', { shell_id: shellId }).catch(() => {});
+      }
+    }
+  }
+
+  /** Update the durable-replay cursor for a shell. Called as Charon persists
+   *  shell_output events; the latest value is what `_fireShellSubscribe`
+   *  will pass to the agent on the next (re)subscribe. */
+  setShellAfterSeq(shellId: string, afterSeq: number | null): void {
+    this._pendingShellAfterSeq.set(shellId, afterSeq);
+  }
+
+  private _fireShellSubscribe(shellId: string, opts?: { afterSeq?: number }): void {
+    const afterSeq = opts?.afterSeq ?? this._pendingShellAfterSeq.get(shellId) ?? null;
+    const params: Record<string, unknown> = { shell_id: shellId };
+    if (typeof afterSeq === 'number') params.after_seq = afterSeq;
+    this.call('shell_subscribe', params).catch((e) => {
+      // Shell gone on the agent (typically: agent restarted, the bash child
+      // died with it). Drop the subscription so we don't keep retrying — the
+      // browser will see no events and the WS handler will close.
+      if (/not found/i.test(e?.message ?? '') || e?.code === -32000) {
+        this.subscribedShells.delete(shellId);
+      }
+      console.warn(`[agent ${this.vps.name}] shell_subscribe failed: ${e?.message ?? e}`);
+    });
+  }
+
   onStatus(cb: (s: AgentClientStatus) => void): () => void {
     this.statusListeners.add(cb);
     return () => this.statusListeners.delete(cb);
@@ -334,6 +400,9 @@ export class AgentClient {
         // replay (ring tail, backward compat for old agents).
         for (const sid of this.subscribed) {
           this._fireSubscribe(sid);
+        }
+        for (const shellId of this.subscribedShells) {
+          this._fireShellSubscribe(shellId);
         }
         // Resolve readys
         if (this.readyResolve) {

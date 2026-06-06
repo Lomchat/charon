@@ -756,6 +756,17 @@
   padding: 0;
   background: #0a0a0a;
 }
+/* One slot per kept-mounted shell inside the persistent shell layer. Only
+   the selected slot is visible (display toggled inline in ClaudePanel —
+   flex when selected, none otherwise); the others stay mounted but hidden
+   so their WebSocket + xterm survive a session switch. `display` is owned
+   by the inline style, so it's intentionally not set here. See §14 gotcha 37. */
+.shell-slot {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+}
 .shell-terminal-pane {
   display: flex;
   flex-direction: column;

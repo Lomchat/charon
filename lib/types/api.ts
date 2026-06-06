@@ -86,12 +86,13 @@ export type LocalAgentStatus = {
 // ── Shells ───────────────────────────────────────────────────────────────────
 
 export type ShellsListResponse = { shells: ShellInfo[] };
-export type StartShellBody = { cwd?: string | null };
+// startShell accepts initial dimensions so the agent's PTY is the right size
+// from the first byte (the WS then forwards subsequent resizes).
+export type StartShellBody = { cwd?: string | null; name?: string | null; cols?: number; rows?: number };
 export type UpdateShellBody = { name?: string | null; color?: string | null };
-// POST /api/shells/[id]/resize — like /input, consumed via raw fetch from the
-// terminal component (no api.ts wrapper). Forwards xterm dimensions to the
-// node-pty attach (→ remote tmux client resize).
-export type ResizeShellBody = { cols: number; rows: number };
+// Input/output/resize for shells flow over WebSocket (/api/shells/[id]/ws),
+// not HTTP — see app/ShellTerminal.tsx + server.js. No api.ts wrapper for
+// the data plane (the terminal opens its own WebSocket directly).
 
 // ── Installs (agent install sessions) ────────────────────────────────────────
 // In-memory only, shell pattern. No POST body (the VPS id is enough).
@@ -221,6 +222,28 @@ export type ClaudeSessionMessageWindow = {
   messages: ClaudeSessionMessage[];
   hasMore: boolean;
   oldestChatId: number | null;
+};
+
+// GET /api/claude/sessions/[id]/edits — lazy diff-content fetch.
+//
+// The main session GET strips edit_snapshot `content` because it is re-fetched
+// in a 5s loop (a large session's full snapshots = tens of MB per fetch, which
+// got the VPS suspended for egress — cf. CLAUDE.md §14 gotcha 41). This
+// endpoint serves the LATEST before/after content per modified file, once per
+// session view, so the ToolPanel diffs tab still works. `before == null` means
+// a new file (Write); `after == null` means a deletion / budget-dropped file.
+export type ClaudeEditContent = {
+  filePath: string;
+  toolUseId: string;
+  before: string | null;
+  after: string | null;
+  truncated: boolean;
+};
+export type ClaudeSessionEditsResponse = {
+  edits: ClaudeEditContent[];
+  // True if total content exceeded the server budget and some files' content
+  // was omitted (before/after null, truncated true).
+  truncatedList: boolean;
 };
 
 export type CreateClaudeSessionBody = {

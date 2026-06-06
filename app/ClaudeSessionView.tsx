@@ -1,7 +1,8 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import type { SessionListItem, ClaudeEffortLevel } from '@/lib/types/api';
+import type { PermissionMode } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
@@ -93,11 +94,11 @@ export default function ClaudeSessionView({
     clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
 
-  // ── Local UI state (textarea, scroll, error details) ──────────────────────
-  // `input` is wired to `inputDraftStore` so the draft survives session
-  // switches (component remount via `key={selectedId}`) — cf.
-  // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
-  const [input, setInput] = useInputDraft(sessionId);
+  // ── Local UI state (scroll, error details) ────────────────────────────────
+  // NOTE: the textarea `input` state now lives inside <ChatInputBar> (isolated
+  // at the bottom of this file). Keeping it out of this component is what stops
+  // a keystroke from re-rendering the whole session view — and therefore the
+  // (expensive) message list. See CLAUDE.md §11 / §14.
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
 
@@ -106,14 +107,6 @@ export default function ClaudeSessionView({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [newCount, setNewCount] = useState(0);
   const lastMessageCountRef = useRef(0);
-
-  // Drain prefill_input: copy into the textarea then clear.
-  useEffect(() => {
-    if (prefillInput !== null) {
-      setInput(prefillInput);
-      clearPrefillInput();
-    }
-  }, [prefillInput, clearPrefillInput]);
 
   // Import-error detection → parent callback to open an install session.
   // The "No module named claude_agent_sdk" error message comes from the
@@ -218,19 +211,28 @@ export default function ClaudeSessionView({
     return '';
   }, [oldestPending, messages, edits]);
 
-  const currentTool = useMemo(() => {
-    for (let i = toolCalls.length - 1; i >= 0; i--) {
-      if (!toolCalls[i].result) return toolCalls[i];
-    }
-    return null;
-  }, [toolCalls]);
-
   const turnStartedAt = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === 'user') return messages[i].createdAt;
     }
     return null;
   }, [messages]);
+
+  // Tool shown in the ThinkingBar = the most recent UNRESOLVED tool, but only
+  // if it belongs to the CURRENT turn. The turn guard (startedAt >= the last
+  // user message) stops a tool left unresolved by a past turn — an interrupted
+  // turn, or the transient gap before a refetch re-pairs results — from
+  // flashing as "running" the instant a new turn merely starts thinking.
+  // See CLAUDE.md §14 gotcha 39.
+  const currentTool = useMemo(() => {
+    for (let i = toolCalls.length - 1; i >= 0; i--) {
+      const c = toolCalls[i];
+      if (c.result) continue;
+      if (turnStartedAt !== null && c.startedAt < turnStartedAt) return null;
+      return c;
+    }
+    return null;
+  }, [toolCalls, turnStartedAt]);
 
   // ── Scroll mechanics (column-reverse, |scrollTop| ≈ 0 = visual bottom) ───
   // In column-reverse:
@@ -328,13 +330,6 @@ export default function ClaudeSessionView({
   }, [messages.length]);
 
   // ── Action wrappers (just handle local UI around the hook) ────────────────
-  const send = useCallback(async () => {
-    const content = input.trim();
-    if (!content) return;
-    setInput('');
-    await streamSend(content);
-  }, [input, streamSend]);
-
   // The "pause" button in the header used to be a false friend: it called
   // `kill` which put the session in a non-resumable `'killed'` state. The
   // rework removed this middle state. Permanent deletion now happens via
@@ -526,59 +521,14 @@ export default function ClaudeSessionView({
             )}
           </div>
         ) : (
-          <footer className="claude-input-bar">
-            <div className="mode-switch" role="radiogroup" aria-label="permission mode">
-              <button
-                type="button" role="radio"
-                aria-checked={permissionMode === 'normal'}
-                className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
-                onClick={() => setMode('normal')}
-                title="normal — asks permission for every tool"
-              >
-                <span className="m-glyph">▷</span><span className="m-label">normal</span>
-              </button>
-              <button
-                type="button" role="radio"
-                aria-checked={permissionMode === 'acceptEdits'}
-                className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
-                onClick={() => setMode('acceptEdits')}
-                title="accept edits — auto-accepts file edits, asks for the rest"
-              >
-                <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
-              </button>
-              <button
-                type="button" role="radio"
-                aria-checked={permissionMode === 'auto'}
-                className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
-                onClick={() => setMode('auto')}
-                title="accept all — accepts everything without asking (DANGER)"
-              >
-                <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
-              </button>
-              <button
-                type="button" role="radio"
-                aria-checked={permissionMode === 'plan'}
-                className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
-                onClick={() => setMode('plan')}
-                title="plan mode — proposes a plan without running tools"
-              >
-                <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
-              </button>
-            </div>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="message to Claude (Enter sends, Shift/Ctrl+Enter for newline)"
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return;
-                if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
-                e.preventDefault();
-                send();
-              }}
-              rows={3}
-            />
-            <button className="send" onClick={send} disabled={!input.trim()}>send</button>
-          </footer>
+          <ChatInputBar
+            sessionId={sessionId}
+            permissionMode={permissionMode}
+            onSetMode={setMode}
+            onSend={streamSend}
+            prefillInput={prefillInput}
+            clearPrefillInput={clearPrefillInput}
+          />
         )}
       </main>
 
@@ -594,6 +544,105 @@ export default function ClaudeSessionView({
 }
 
 // ── View-specific sub-components ────────────────────────────────────────────
+
+// Isolated input bar. It owns the textarea `input` state (via useInputDraft)
+// so that typing only re-renders THIS small component — never the parent
+// ClaudeSessionView, and therefore never the message list. Before this
+// isolation, every keystroke re-rendered the whole session view; combined with
+// the (now memoized) <Message>, that meant re-parsing markdown + re-running
+// syntax highlighting for the entire history on each keypress, which is why
+// long sessions lagged by seconds. Memoized too, so a parent re-render
+// (new message, status change) doesn't needlessly re-render it either.
+// See CLAUDE.md §11 / §14.
+const ChatInputBar = memo(function ChatInputBar({
+  sessionId, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
+}: {
+  sessionId: string;
+  permissionMode: PermissionMode;
+  onSetMode: (mode: PermissionMode) => void;
+  onSend: (content: string) => Promise<void>;
+  prefillInput: string | null;
+  clearPrefillInput: () => void;
+}) {
+  // `input` is wired to `inputDraftStore` so the draft survives session
+  // switches (this component remounts via the parent's key={selectedId}) — cf.
+  // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
+  const [input, setInput] = useInputDraft(sessionId);
+
+  // Drain prefill_input: copy into the textarea then clear. If this bar is
+  // unmounted when a prefill arrives (pending interaction / sleeping session),
+  // the hook keeps prefillInput non-null (clearPrefillInput only runs here), so
+  // it self-applies the moment the bar remounts.
+  useEffect(() => {
+    if (prefillInput !== null) {
+      setInput(prefillInput);
+      clearPrefillInput();
+    }
+  }, [prefillInput, clearPrefillInput, setInput]);
+
+  const send = useCallback(async () => {
+    const content = input.trim();
+    if (!content) return;
+    setInput('');
+    await onSend(content);
+  }, [input, onSend, setInput]);
+
+  return (
+    <footer className="claude-input-bar">
+      <div className="mode-switch" role="radiogroup" aria-label="permission mode">
+        <button
+          type="button" role="radio"
+          aria-checked={permissionMode === 'normal'}
+          className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
+          onClick={() => onSetMode('normal')}
+          title="normal — asks permission for every tool"
+        >
+          <span className="m-glyph">▷</span><span className="m-label">normal</span>
+        </button>
+        <button
+          type="button" role="radio"
+          aria-checked={permissionMode === 'acceptEdits'}
+          className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
+          onClick={() => onSetMode('acceptEdits')}
+          title="accept edits — auto-accepts file edits, asks for the rest"
+        >
+          <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
+        </button>
+        <button
+          type="button" role="radio"
+          aria-checked={permissionMode === 'auto'}
+          className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
+          onClick={() => onSetMode('auto')}
+          title="accept all — accepts everything without asking (DANGER)"
+        >
+          <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
+        </button>
+        <button
+          type="button" role="radio"
+          aria-checked={permissionMode === 'plan'}
+          className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
+          onClick={() => onSetMode('plan')}
+          title="plan mode — proposes a plan without running tools"
+        >
+          <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
+        </button>
+      </div>
+      <textarea
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        placeholder="message to Claude (Enter sends, Shift/Ctrl+Enter for newline)"
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return;
+          if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+          e.preventDefault();
+          send();
+        }}
+        rows={3}
+      />
+      <button className="send" onClick={send} disabled={!input.trim()}>send</button>
+    </footer>
+  );
+});
 
 function InlinePermissionCard({ perm, onRespond }: {
   perm: PermissionRequest;
