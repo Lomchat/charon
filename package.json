@@ -59,7 +59,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/diff": "^7.0.2",
-    "@types/node": "^22.10.6",
+    "@types/node": "^25.9.2",
     "@types/react": "^19.0.6",
     "@types/react-dom": "^19.0.3",
     "@types/web-push": "^3.6.4",
