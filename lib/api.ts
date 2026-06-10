@@ -121,13 +121,18 @@ export const api = {
   closeInstall: (id: string) =>
     send<OkResponse>('DELETE', `/api/installs/${id}`),
 
-  // ── SSH shells (ephemeral, multiple per VPS) ───────────────────────────────
+  // ── SSH shells (persistent, multiple per VPS) ──────────────────────────────
   listShells: () =>
     send<ShellsListResponse>('GET', '/api/shells'),
   listVpsShells: (vpsId: string) =>
     send<ShellsListResponse>('GET', `/api/vps/${vpsId}/shells`),
-  startShell: (vpsId: string, cwd?: string | null) =>
-    send<ShellInfo>('POST', `/api/vps/${vpsId}/shells`, { cwd: cwd ?? null } as StartShellBody),
+  // `opts.cwd` blank/omitted → the shell opens in the SSH user's home; `name`
+  // is the optional sidebar label (settable later via the context menu too).
+  startShell: (vpsId: string, opts?: { cwd?: string | null; name?: string | null }) =>
+    send<ShellInfo>('POST', `/api/vps/${vpsId}/shells`, {
+      cwd: opts?.cwd ?? null,
+      name: opts?.name ?? null,
+    } as StartShellBody),
   updateShell: (shellId: string, data: UpdateShellBody) =>
     send<ShellInfo>('PATCH', `/api/shells/${shellId}`, data),
   killShell: (shellId: string) =>

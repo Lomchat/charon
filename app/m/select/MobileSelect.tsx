@@ -6,6 +6,7 @@ import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 import type { RowColor } from '../../SessionContextMenu';
 import NewSessionSheet from '../NewSessionSheet';
+import NewShellSheet from '../NewShellSheet';
 import MobileContextSheet from '../MobileContextSheet';
 import { useLongPress } from '../useLongPress';
 import { prefetchAll } from '../chatCache';
@@ -79,6 +80,8 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
   // via PATCH /api/vps-folders/[id], cf. CLAUDE.md §4 vps_folders).
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [newSheet, setNewSheet] = useState<null | { vpsId?: string; cwd?: string }>(null);
+  // "new shell" now opens a small sheet (name + path) like the session sheet.
+  const [newShellSheet, setNewShellSheet] = useState<null | { vpsId?: string; cwd?: string | null }>(null);
   const [ctxMenu, setCtxMenu] = useState<
     | { kind: 'session'; session: SessionListItem }
     | { kind: 'shell'; shell: ShellListItem }
@@ -272,13 +275,10 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     } catch (e: any) { alert('kill shell: ' + (e?.message ?? e)); }
   }
 
-  async function startNewShell(vpsId: string, cwd: string | null) {
-    try {
-      const sh = await api.startShell(vpsId, cwd ?? null);
-      router.push(`/m/shell?id=${encodeURIComponent(sh.id)}`);
-    } catch (e: any) {
-      alert('shell: ' + (e?.message ?? e));
-    }
+  // Opens the "new shell" sheet (name + path) pre-filled from the click
+  // context. Actual creation happens inside <NewShellSheet>.
+  function startNewShell(vpsId: string, cwd: string | null) {
+    setNewShellSheet({ vpsId, cwd });
   }
 
   // Render a VPS card — extracted so it can be rendered from the folder
@@ -528,6 +528,16 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
           initial={newSheet}
           onClose={() => setNewSheet(null)}
           onCreated={(id) => { setNewSheet(null); router.push(`/m/chat?id=${encodeURIComponent(id)}`); }}
+        />
+      )}
+
+      {newShellSheet && (
+        <NewShellSheet
+          vpsList={vpsList}
+          vpsPaths={vpsPaths}
+          initial={newShellSheet}
+          onClose={() => setNewShellSheet(null)}
+          onCreated={(sh) => { setNewShellSheet(null); router.push(`/m/shell?id=${encodeURIComponent(sh.id)}`); }}
         />
       )}
 

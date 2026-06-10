@@ -9,6 +9,7 @@ import TabBar, { computeTabs, type EntityTab } from './TabBar';
 import ShellTerminal from './ShellTerminal';
 import InstallSessionView from './InstallSessionView';
 import NewSessionDialog from './NewSessionDialog';
+import NewShellDialog from './NewShellDialog';
 import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
 import PermissionPopup from './PermissionPopup';
@@ -303,16 +304,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     dismiss: dismissInstallNotif,
   } = useInstallNotifications();
 
-  async function startShell(opts: { vpsId: string; cwd?: string | null }) {
-    try {
-      const sh = await api.startShell(opts.vpsId, opts.cwd ?? null);
-      setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
-      setSelectedShellId(sh.id);
-      setSelectedId(null);  // mutually exclusive with a Claude session
-      setSelectedInstallId(null);
-    } catch (e: any) {
-      setError({ msg: 'shell: ' + (e?.message ?? e) });
-    }
+  // Adopt an already-created shell into the sidebar/tab state + select it.
+  // The actual creation now happens inside <NewShellDialog> (so it can show
+  // inline busy/error like the session dialog); this just wires the result in.
+  function applyCreatedShell(sh: ShellListItem) {
+    setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
+    setSelectedShellId(sh.id);
+    setSelectedId(null);  // mutually exclusive with a Claude session
+    setSelectedInstallId(null);
   }
   function selectShell(id: string) {
     setSelectedShellId(id);
@@ -487,6 +486,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, [shells, keptOpenIds]);
 
   const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
+  // "+ shell" now opens a small dialog (name + path) instead of creating
+  // immediately — mirrors the Claude-session flow. Same `{vpsId, cwd}` shape,
+  // pre-filled from the click context (path button, active tab cwd…).
+  const [newShellDialog, setNewShellDialog] = useState<null | { vpsId?: string; cwd?: string | null }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -692,12 +695,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     const cwd = defaultCwdFor(vpsId);
     setNewDialog({ vpsId, cwd });
   }
-  /** "+ shell" button on the right of row 2 — start an ephemeral SSH
-   *  shell in the same cwd as the last tab. No dialog (mirrors the
-   *  sidebar's behavior). */
+  /** "+ shell" button on the right of row 2 — open the NewShellDialog
+   *  pre-filled with the active VPS and the same cwd as the last tab
+   *  (mirrors the "+ Claude" flow). */
   function onTabBarNewShell(vpsId: string) {
     const cwd = defaultCwdFor(vpsId) ?? null;
-    startShell({ vpsId, cwd });
+    setNewShellDialog({ vpsId, cwd });
   }
   /**
    * Right-click on a tab → resolve the entity in our lists, then dispatch
@@ -1168,7 +1171,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onSelectShell={selectShell}
         onSelectInstall={selectInstall}
         onNew={(opts) => setNewDialog(opts)}
-        onNewShell={startShell}
+        onNewShell={(opts) => setNewShellDialog(opts)}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
         onContext={(s, x, y) => setCtxMenu({ kind: 'session', session: s, x, y })}
@@ -1357,6 +1360,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           initial={newDialog}
           onClose={() => setNewDialog(null)}
           onCreated={(id) => { setNewDialog(null); setSelectedId(id); refreshSessions(); }}
+        />
+      )}
+
+      {newShellDialog && (
+        <NewShellDialog
+          vpsList={vpsList}
+          vpsPaths={vpsPaths}
+          initial={newShellDialog}
+          onClose={() => setNewShellDialog(null)}
+          onCreated={(sh) => { setNewShellDialog(null); applyCreatedShell(sh); }}
         />
       )}
 
