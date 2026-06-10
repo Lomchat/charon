@@ -67,8 +67,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
   const searchParams = useSearchParams();
   const queryParamSession = searchParams?.get('session') ?? null;
+  // `?shell=` deep-link (shell-idle push/telegram notification, parity with
+  // `?session=`). When present it takes precedence over the session default so
+  // a notification tap lands on the shell, not the first chat.
+  const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
-  const [selectedId, setSelectedId] = useState<string | null>(queryParamSession ?? initialSessions[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    queryParamShell ? null : (queryParamSession ?? initialSessions[0]?.id ?? null),
+  );
 
   // If the ?session= param changes (notification click or navigation), switch
   useEffect(() => {
@@ -131,8 +137,35 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, [loginVps]);
   // Ephemeral SSH shells. Live list (polled on mount, updated locally).
   const [shells, setShells] = useState<ShellListItem[]>([]);
-  // If non-null, a shell is displayed in the main panel (instead of the chat)
-  const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
+  // If non-null, a shell is displayed in the main panel (instead of the chat).
+  // Initialized from `?shell=` so a shell-idle notification tap opens it.
+  const [selectedShellId, setSelectedShellId] = useState<string | null>(queryParamShell);
+
+  // React to `?shell=` changes (a second notification tap while the tab is
+  // already open). Mirrors the `?session=` reaction above; selecting a shell
+  // clears the session/install selection (mutually exclusive views).
+  useEffect(() => {
+    if (queryParamShell && queryParamShell !== selectedShellId) {
+      setSelectedShellId(queryParamShell);
+      setSelectedId(null);
+      setSelectedInstallId(null);
+    }
+  }, [queryParamShell]); // eslint-disable-line
+
+  // Sync selectedShellId → URL (?shell=...) without spamming history.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (selectedShellId) {
+      if (url.searchParams.get('shell') !== selectedShellId) {
+        url.searchParams.set('shell', selectedShellId);
+        window.history.replaceState(null, '', url);
+      }
+    } else if (url.searchParams.has('shell')) {
+      url.searchParams.delete('shell');
+      window.history.replaceState(null, '', url);
+    }
+  }, [selectedShellId]);
   // Agent install sessions. In-memory only (shell pattern). One install
   // per VPS max (cf. installSession.ts § startInstall).
   const [installs, setInstalls] = useState<InstallInfo[]>([]);
@@ -200,6 +233,39 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     });
     return () => unsub();
   }, [builtPyzSha]);
+
+  // Live shell activity status (agent >= 0.9.0). The agent emits a
+  // `shell_status` busy/active event whenever a PTY starts/stops streaming
+  // output; shellNotify fans it onto the global SSE bus with sessionId =
+  // shellId (classed LOW_VOLUME so it reaches EVERY tab regardless of focus —
+  // shells are not the SSE's focused session). We mirror it onto the local
+  // `shells` list so the tab/dot paints "thinking" (blue) while busy, exactly
+  // like a Claude session — and flips the row dead on 'exited'. The `changed`
+  // guard avoids a needless re-render when nothing actually moved.
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'shell_status') return;
+      const shellId = ev.sessionId;
+      if (!shellId) return;
+      const status = ev.status; // 'active' | 'busy' | 'exited'
+      setShells((prev) => {
+        let changed = false;
+        const next = prev.map((sh) => {
+          if (sh.id !== shellId) return sh;
+          if (status === 'exited') {
+            if (sh.exited) return sh;
+            changed = true;
+            return { ...sh, exited: true, liveStatus: undefined };
+          }
+          if (!sh.exited && sh.liveStatus === status) return sh;
+          changed = true;
+          return { ...sh, exited: false, liveStatus: status };
+        });
+        return changed ? next : prev;
+      });
+    });
+    return () => unsub();
+  }, []);
 
   // Install notifications (tab-local queue, populated by the global bus)
   const {

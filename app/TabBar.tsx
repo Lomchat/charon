@@ -156,7 +156,10 @@ export function computeTabs({
       const label = sh.name?.trim() || `shell · ${cwdLabel}`;
       entities.push({
         kind: 'shell', id: sh.id, vpsId: v.id, label,
-        state: isLive ? 'active' : 'sleeping',
+        // Live 'busy' (PTY streaming output) reuses the Claude 'thinking'
+        // tab state → blue/amber-pulse border, exactly like a session that's
+        // thinking (agent >= 0.9.0). See §14 gotcha 42.
+        state: !isLive ? 'sleeping' : (sh.liveStatus === 'busy' ? 'thinking' : 'active'),
         closable: !isLive,
       });
     }

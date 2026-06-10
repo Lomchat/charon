@@ -366,6 +366,20 @@ export function markInteractionResolvedInTelegram(_kind: 'permission' | 'questio
   }
 }
 
+// ── Generic plain-text notification ─────────────────────────────────────────
+// Fire-and-forget plain text (no buttons, no MarkdownV2 escaping headaches).
+// Used by the shell-idle "finished something" notification. No-op + swallow
+// if Telegram isn't configured, so callers don't need to guard.
+export async function sendPlainToTelegram(text: string): Promise<void> {
+  const cfg = configured();
+  if (!cfg) return;
+  try {
+    await tgCall('sendMessage', { chat_id: cfg.chatId, text, disable_web_page_preview: true });
+  } catch (e: any) {
+    console.warn('[telegram] sendPlain:', e?.message ?? e);
+  }
+}
+
 // ── Configuration test (sent from the Settings UI) ──────────────────────────
 export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }> {
   try {

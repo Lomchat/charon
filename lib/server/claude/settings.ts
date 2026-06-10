@@ -11,6 +11,10 @@ const DEFAULTS = {
   'session.max_active': '10',
   'retention.killed_days': '30',
   'notif.global_enabled': 'true',
+  // When a persistent shell goes active→idle after a "consequential" output
+  // burst (see agent shell.py idle heuristic), Charon sends a push/telegram
+  // "shell finished" notification. Gated by this flag AND notif.global_enabled.
+  'shell.notify_idle': 'true',
   'vapid.subject': process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
   'telegram.enabled': 'false',
   'telegram.bot_token': '',
@@ -24,6 +28,17 @@ const DEFAULTS = {
   'claude.default_model': '',
   'claude.default_fallback_model': '',
   'claude.default_effort': '',
+  // Optional hub-side Anthropic API key (x-api-key). ONLY used to auto-sync
+  // the model list from GET /v1/models — NOT for inference (sessions run via
+  // the per-VPS Claude Code OAuth, untouched). Empty = no auto-sync; the
+  // picker falls back to the curated seed in knownModels.ts + the custom-id
+  // escape hatch. See lib/server/claude/modelSync.ts.
+  'claude.api_key': '',
+  // Internal cache written by modelSync (not user-editable via settings POST):
+  // JSON array of the live model list, + the unix-ms timestamp of the last
+  // successful sync (drives the 24h TTL).
+  'claude.models_cache': '',
+  'claude.models_cache_at': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 

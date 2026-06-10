@@ -98,9 +98,17 @@ export type AgentEvent = (
   // agent's _emit pipeline keys by that string); the value here is the
   // shell_id. `shell_id` is duplicated as an explicit field for clarity.
   // `shell_output.data` is raw terminal stream (utf-8 with errors='replace').
-  | { event: 'shell_status'; session_id: string; shell_id: string; status: 'active' | 'exited'; cols: number; rows: number; pid: number | null }
+  // status: 'active' = idle/at-prompt, 'busy' = streaming output (drives the
+  // UI's blue "thinking" tab, agent >= 0.9.0), 'exited' = bash ended.
+  | { event: 'shell_status'; session_id: string; shell_id: string; status: 'active' | 'busy' | 'exited'; cols: number; rows: number; pid: number | null }
   | { event: 'shell_output'; session_id: string; shell_id: string; data: string }
   | { event: 'shell_exit'; session_id: string; shell_id: string; code: number | null }
+  // shell_idle (agent >= 0.8.0): heuristic "the shell finished something"
+  // signal — emitted once when an output burst goes quiet (see shell.py).
+  // TRANSIENT: not persisted in the agent's durable log (no seq), delivered
+  // to shell_subscribe subscribers AND global shell_watch watchers. Charon's
+  // notify consumer turns it into a push/telegram notification.
+  | { event: 'shell_idle'; session_id: string; shell_id: string; idle_seconds: number; burst_seconds: number; burst_bytes: number }
 ) & AgentEventCommonFields;
 
 // ── Names of JSON-RPC methods supported by the agent ───────────────────────
@@ -129,6 +137,8 @@ export type AgentMethodName =
   | 'shell_subscribe'
   | 'shell_unsubscribe'
   | 'shell_kill'
+  | 'shell_watch'
+  | 'shell_unwatch'
   | 'respond_permission'
   | 'respond_question'
   | 'respond_exit_plan'

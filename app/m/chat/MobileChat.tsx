@@ -26,6 +26,8 @@ import type {
 import { useClaudeSessionStream, type StreamCache } from '../../useClaudeSessionStream';
 import { useCrossSessionInteractionFeed } from '../../useCrossSessionInteractionFeed';
 import { useInputDraft } from '../../inputDraftStore';
+import { computeQuickNavGroups, QuickNavChip, type QuickNavItem } from '../quickNav';
+import type { SessionListItem, ShellInfo } from '@/lib/types/api';
 
 type SessionMeta = {
   id: string;
@@ -110,6 +112,12 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   // message list. See CLAUDE.md §11 / §14.
   const [showMenu, setShowMenu] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // "All active sessions" overlay (3rd header button) — mobile equivalent of
+  // the desktop TabBar. Data is fetched lazily (only while the sheet is open)
+  // since MobileChat otherwise only knows about the current session.
+  const [showSessions, setShowSessions] = useState(false);
+  const [navSessions, setNavSessions] = useState<SessionListItem[]>([]);
+  const [navShells, setNavShells] = useState<ShellInfo[]>([]);
 
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
 
@@ -197,6 +205,32 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
 
   const vps = useMemo(() => vpsList.find((v) => v.id === sessionMeta?.vpsId) ?? null, [vpsList, sessionMeta]);
+
+  // Poll the cross-session list ONLY while the overlay is open. Grouped by VPS
+  // with the same logic as the /m/select strip (shared in ../quickNav).
+  useEffect(() => {
+    if (!showSessions) return;
+    let alive = true;
+    const load = async () => {
+      try { const r = await api.listClaudeSessions(); if (alive) setNavSessions(r.sessions); } catch {}
+      try { const r = await api.listShells(); if (alive) setNavShells(r?.shells ?? []); } catch {}
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [showSessions]);
+  const navGroups = useMemo(
+    () => computeQuickNavGroups(navSessions, navShells, vpsList),
+    [navSessions, navShells, vpsList],
+  );
+  const navTo = useCallback((item: QuickNavItem) => {
+    setShowSessions(false);
+    if (item.kind === 'session') {
+      if (item.id !== sessionId) router.push(`/m/chat?id=${encodeURIComponent(item.id)}`);
+    } else {
+      router.push(`/m/shell?id=${encodeURIComponent(item.id)}`);
+    }
+  }, [router, sessionId]);
 
   // [SSE + state + refetch are handled by useClaudeSessionStream (shared
   // desktop/mobile hook, cf. ../../useClaudeSessionStream.ts). Before the
@@ -364,6 +398,12 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
         <div className="m-actions">
           <button
             className="m-act-btn"
+            onClick={() => { setShowMenu(false); setShowSessions((v) => !v); }}
+            aria-label="all active sessions"
+            title="all active sessions"
+          >⧉</button>
+          <button
+            className="m-act-btn"
             onClick={() => setDrawerOpen(true)}
             aria-label="tools"
             title="diffs / todos / tools"
@@ -387,6 +427,37 @@ export default function MobileChat({ sessionId, vpsList }: Props) {
           />
         )}
       </header>
+
+      {showSessions && (
+        <>
+          <div className="m-sessions-bg" onClick={() => setShowSessions(false)} />
+          <div className="m-sessions-sheet" role="dialog" aria-modal="true" aria-label="all active sessions">
+            <div className="m-sessions-head">
+              <span>active sessions</span>
+              <button className="m-sessions-close" onClick={() => setShowSessions(false)} aria-label="close">✕</button>
+            </div>
+            {navGroups.length === 0 ? (
+              <div className="m-sessions-empty">nothing active right now</div>
+            ) : (
+              navGroups.map((g) => (
+                <div key={g.vpsId} className={`m-quicknav-row${g.hasAttention ? ' attention' : ''}`}>
+                  <span className="m-quicknav-vps" title={g.vpsName}>{g.vpsName}</span>
+                  <div className="m-quicknav-chips">
+                    {g.items.map((it) => (
+                      <QuickNavChip
+                        key={`${it.kind}-${it.id}`}
+                        item={it}
+                        active={it.kind === 'session' && it.id === sessionId}
+                        onClick={() => navTo(it)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
 
       {otherSessionsPending > 0 && (
         <button

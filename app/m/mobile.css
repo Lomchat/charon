@@ -96,20 +96,44 @@
 .m-topbar .m-act-btn svg { width: 18px; height: 18px; }
 
 /* ── Quick-nav strip (active sessions/shells) ───────────────────────────────
-   Mobile equivalent of the desktop TabBar: an always-visible (non-scrolling-
-   away) horizontal scroller under the topbar listing every live entity so the
-   user can jump straight to what's running. Hidden when nothing is active. */
+   Mobile equivalent of the desktop TabBar. Under the topbar, one ROW PER VPS
+   (a fixed VPS label + a horizontal scroller of that VPS's live entities) so
+   the user can jump straight to what's running. Hidden when nothing is active.
+   The same rows are reused inside the chat's "all sessions" overlay. */
 .m-quicknav {
   flex-shrink: 0;
-  display: flex; gap: 6px; align-items: center;
-  padding: 8px 10px;
-  overflow-x: auto;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 7px 10px;
+  max-height: 32vh;
+  overflow-y: auto;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
   background: var(--stone-2);
   border-bottom: 1px solid var(--gold-deep);
 }
 .m-quicknav::-webkit-scrollbar { display: none; }
+/* One row = [VPS label] [scrollable chips]. */
+.m-quicknav-row {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
+.m-quicknav-vps {
+  flex-shrink: 0;
+  width: 70px;
+  font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--parchment-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-quicknav-row.attention .m-quicknav-vps { color: #f0a060; }
+.m-quicknav-chips {
+  display: flex; gap: 6px; align-items: center;
+  flex: 1; min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.m-quicknav-chips::-webkit-scrollbar { display: none; }
 .m-quick-chip {
   flex-shrink: 0;
   display: inline-flex; align-items: center; gap: 6px;
@@ -133,6 +157,56 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .m-quick-chip.shell .m-quick-label::before { content: '⌨ '; color: var(--teal); }
+/* `.current` = the session you're already viewing (chat overlay only). */
+.m-quick-chip.current {
+  border-color: var(--gold);
+  background: var(--stone);
+  box-shadow: inset 0 0 0 1px var(--gold);
+}
+
+/* ── /m/chat "all active sessions" overlay ──────────────────────────────────
+   Opened by the 3rd header button (⧉). A fixed backdrop + a sheet pinned just
+   below the topbar; reuses the .m-quicknav-row / .m-quick-chip grouping so the
+   layout matches the /m/select strip (one row per VPS). */
+.m-sessions-bg {
+  position: fixed; inset: 0;
+  background: rgba(8, 9, 13, 0.55);
+  z-index: 60;
+}
+.m-sessions-sheet {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 56px);
+  left: 8px; right: 8px;
+  z-index: 61;
+  max-height: 70vh; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px;
+  background: var(--stone-2);
+  border: 1px solid var(--gold-deep);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.m-sessions-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--parchment-soft);
+}
+.m-sessions-close {
+  flex-shrink: 0;
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none;
+  color: var(--parchment-soft); font-size: 16px;
+}
+.m-sessions-close:active { color: var(--parchment); }
+.m-sessions-empty {
+  padding: 24px 12px; text-align: center;
+  color: var(--parchment-soft); font-style: italic; font-size: 13px;
+}
 
 /* ── /m/select ──────────────────────────────────────────────────────────── */
 .m-select-body {

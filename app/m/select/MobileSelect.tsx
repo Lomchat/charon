@@ -9,6 +9,7 @@ import NewSessionSheet from '../NewSessionSheet';
 import MobileContextSheet from '../MobileContextSheet';
 import { useLongPress } from '../useLongPress';
 import { prefetchAll } from '../chatCache';
+import { computeQuickNavGroups, QuickNavChip, ACTIVE_STATUSES, DOT_CLASS } from '../quickNav';
 
 type SessionListItem = ClaudeSession & {
   liveStatus?: WorkerStatus;
@@ -29,16 +30,8 @@ type ShellListItem = {
   exitCode: number | null;
 };
 
-const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
-const DOT_CLASS: Record<string, string> = {
-  active: 'dot-green',
-  starting: 'dot-amber',
-  thinking: 'dot-amber-pulse',
-  sleeping: 'dot-gray',
-  killed: 'dot-gray',
-  error: 'dot-red',
-  waiting: 'dot-orange-pulse',
-};
+// ACTIVE_STATUSES / DOT_CLASS now live in ../quickNav (shared with the chat
+// overlay) — imported above.
 const COLLAPSED_KEY = 'm.hub.claude.collapsedVps';
 
 type Props = {
@@ -204,53 +197,15 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
     return sorted;
   }, [vpsFolders, vpsList]);
 
-  // Quick-nav strip — mobile equivalent of the desktop TabBar (§14 has no
-  // tabs on mobile). Lists every "live" entity across all VPSes so the user
-  // can jump straight to whatever is running without scrolling the folder
-  // tree: Claude sessions that are active/thinking/starting OR awaiting a
-  // permission, plus non-exited shells. Attention (pending permission) items
-  // are hoisted to the front.
-  const quickNav = useMemo(() => {
-    const vpsName = new Map(vpsList.map((v) => [v.id, v.name] as const));
-
-    const sessionItems = sessions
-      .filter((s) => {
-        const base = s.liveStatus ?? s.status;
-        return ACTIVE_STATUSES.has(base) || (s.pendingPermissions ?? 0) > 0;
-      })
-      .map((s) => {
-        const base = s.liveStatus ?? s.status;
-        const attention = (s.pendingPermissions ?? 0) > 0;
-        const effective = attention && base === 'active' ? 'waiting' : base;
-        const preview = (s.firstUserMessage ?? '').replace(/\s+/g, ' ').trim();
-        const label =
-          s.name?.trim()
-          || (preview ? preview.slice(0, 26) : s.cwd.split('/').filter(Boolean).slice(-1)[0] || s.cwd);
-        return {
-          kind: 'session' as const,
-          id: s.id,
-          label,
-          dotClass: DOT_CLASS[effective] ?? 'dot-gray',
-          attention,
-          title: `${vpsName.get(s.vpsId) ?? ''} · ${s.cwd}`.trim(),
-        };
-      });
-    // Pending-permission sessions first; the rest keep the list's recency order.
-    sessionItems.sort((a, b) => Number(b.attention) - Number(a.attention));
-
-    const shellItems = shells
-      .filter((sh) => !sh.exited)
-      .map((sh) => ({
-        kind: 'shell' as const,
-        id: sh.id,
-        label: sh.name?.trim() || (sh.cwd ? sh.cwd.split('/').filter(Boolean).slice(-1)[0] || sh.cwd : '~'),
-        dotClass: 'dot-cyan',
-        attention: false,
-        title: `${vpsName.get(sh.vpsId) ?? ''} · shell · ${sh.cwd ?? '~'}`.trim(),
-      }));
-
-    return [...sessionItems, ...shellItems];
-  }, [sessions, shells, vpsList]);
+  // Quick-nav strip — mobile equivalent of the desktop TabBar (mobile has no
+  // tabs). Lists every "live" entity across all VPSes so the user can jump
+  // straight to whatever is running without scrolling the folder tree. Now
+  // grouped one row per VPS (clearer than a single flat scroller). Grouping +
+  // labelling logic is shared with the chat overlay in ../quickNav.
+  const quickNavGroups = useMemo(
+    () => computeQuickNavGroups(sessions, shells, vpsList),
+    [sessions, shells, vpsList],
+  );
 
   function openSession(id: string) {
     router.push(`/m/chat?id=${encodeURIComponent(id)}`);
@@ -490,19 +445,21 @@ export default function MobileSelect({ vpsList, vpsFolders: initialFolders, vpsP
         <a className="m-logout" href="/logout">↗</a>
       </header>
 
-      {quickNav.length > 0 && (
+      {quickNavGroups.length > 0 && (
         <nav className="m-quicknav" aria-label="active sessions and shells">
-          {quickNav.map((it) => (
-            <button
-              key={`${it.kind}-${it.id}`}
-              type="button"
-              className={`m-quick-chip ${it.kind}${it.attention ? ' attention' : ''}`}
-              onClick={() => (it.kind === 'session' ? openSession(it.id) : openShell(it.id))}
-              title={it.title}
-            >
-              <span className={`m-quick-dot ${it.dotClass}`} />
-              <span className="m-quick-label">{it.label}</span>
-            </button>
+          {quickNavGroups.map((g) => (
+            <div key={g.vpsId} className={`m-quicknav-row${g.hasAttention ? ' attention' : ''}`}>
+              <span className="m-quicknav-vps" title={g.vpsName}>{g.vpsName}</span>
+              <div className="m-quicknav-chips">
+                {g.items.map((it) => (
+                  <QuickNavChip
+                    key={`${it.kind}-${it.id}`}
+                    item={it}
+                    onClick={() => (it.kind === 'session' ? openSession(it.id) : openShell(it.id))}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
       )}

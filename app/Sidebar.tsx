@@ -58,6 +58,11 @@ export type ShellListItem = {
   startedAt: number;
   exited: boolean;
   exitCode: number | null;
+  // Live activity (agent >= 0.9.0): 'busy' while the PTY streams output →
+  // amber-pulse dot, like a "thinking" Claude session. Fed by the global SSE
+  // bus in ClaudePanel; undefined = idle/at-prompt. Structurally mirrors
+  // ShellInfo so the two stay assignable.
+  liveStatus?: 'active' | 'busy';
 };
 
 type Props = {
@@ -786,7 +791,7 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
     >
       <span className="row-color-stripe" />
       <div className="row-head">
-        <span className={`dot ${sh.exited ? 'dot-gray' : 'dot-cyan'}`} />
+        <span className={`dot ${sh.exited ? 'dot-gray' : (sh.liveStatus === 'busy' ? 'dot-amber-pulse' : 'dot-cyan')}`} />
         <span className="label">{headline}</span>
         {sh.exited && <span className="shell-exit-tag">ended</span>}
       </div>

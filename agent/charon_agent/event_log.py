@@ -207,6 +207,51 @@ class EventLog:
         out.sort(key=lambda e: e.get("seq", 0))
         return out
 
+    def read_tail(self, max_output_bytes: int) -> list[dict[str, Any]]:
+        """Return the SUFFIX of the log whose cumulative output size is
+        <= `max_output_bytes`, ordered ascending (chronological).
+
+        This is the "show the bottom fast" path for shells (agent >= 0.9.0).
+        Replaying the entire durable log on every reopen made a long-running
+        shell take several seconds to scroll to the bottom AND re-streamed up
+        to 30 MB VPS→hub on each reconnect. Replaying only the tail (the last
+        ~N bytes of `data`) renders the latest screen near-instantly with
+        bounded egress.
+
+        Budget is measured against the `data` field length (shell_output
+        payloads); non-output events (shell_status) inside the window are kept
+        as-is. We slice on WHOLE event boundaries — never mid-event — so UTF-8
+        and JSON stay intact. Trade-off (accepted by design): the first
+        retained chunk may start mid-ANSI-state, so colors/cursor can be
+        briefly off until the program repaints (interactive TUIs repaint on
+        the next refresh anyway); scrollback older than the cap is gone.
+
+        Reads files newest-first and stops as soon as the budget is met, so a
+        512 KB tail of a 30 MB log only touches the active file in the common
+        case.
+        """
+        self._ensure_loaded()
+        if max_output_bytes <= 0:
+            return []
+        collected: list[dict[str, Any]] = []
+        total = 0
+        # newest file → oldest file
+        for fp in reversed(self._iter_files_oldest_first()):
+            evts = list(_read_jsonl(fp))
+            # newest event → oldest within the file
+            for evt in reversed(evts):
+                collected.append(evt)
+                d = evt.get("data")
+                if isinstance(d, str):
+                    total += len(d)
+                if total >= max_output_bytes:
+                    collected.reverse()
+                    collected.sort(key=lambda e: e.get("seq", 0))
+                    return collected
+        collected.reverse()
+        collected.sort(key=lambda e: e.get("seq", 0))
+        return collected
+
     def _iter_files_oldest_first(self) -> list[Path]:
         """Returns rotated files in oldest-first order, then current."""
         rotated: list[Path] = []

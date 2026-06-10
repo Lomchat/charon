@@ -317,6 +317,14 @@ export type SetClaudeModeResponse = { ok: true; mode: PermissionMode };
 // Duplicated here to avoid client bundles pulling a `server-only` module.
 export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
+// Canonical fallback effort list, in increasing order. Used by the client
+// EffortPicker when no live capability data is available (no API key, alias,
+// or custom model id) and server-side as the baseline for `isKnownEffort`.
+// The LIVE per-model list comes from the catalog's `capabilities.effort` tree
+// (see lib/server/claude/modelSync.ts) — a model may support fewer (Sonnet
+// 4.6 has no `xhigh`; Haiku 4.5 has none) or, in future, a brand-new level.
+export const CANONICAL_EFFORTS: ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 // POST /api/claude/sessions/[id]/model — change the model for ONE session.
 // Both fields nullable: null/empty clears back to the global default. Takes
 // effect on the next sleep+resume (see /model/route.ts header for why).
@@ -339,8 +347,24 @@ export type KnownClaudeModel = {
   label: string;
   group: ClaudeModelGroup;
   hint?: string;
+  // Effort levels this model supports, from the live catalog's
+  // `capabilities.effort` tree. Undefined = no live data (alias / no API key /
+  // custom id) → the picker falls back to CANONICAL_EFFORTS. An empty array =
+  // the catalog says this model has NO effort control (e.g. Haiku 4.5).
+  efforts?: string[];
 };
-export type ClaudeModelsResponse = { models: KnownClaudeModel[] };
+// `efforts` (top level) = the global union across all models (∪ canonical),
+// used by selects with no model in scope (the SettingsModal global default).
+export type ClaudeModelsResponse = { models: KnownClaudeModel[]; efforts: string[] };
+// POST /api/claude/models/refresh — forced live sync from GET /v1/models.
+export type ClaudeModelsRefreshResponse = {
+  ok: boolean;
+  count?: number;
+  syncedAt?: number;
+  error?: string;
+  models: KnownClaudeModel[];
+  efforts: string[];
+};
 
 export type RevertClaudeEditBody = {
   filePath: string;

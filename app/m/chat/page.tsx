@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { asc } from 'drizzle-orm';
 import { db, vps as vpsTable, vpsPaths as vpsPathsTable } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
 import MobileChat from './MobileChat';
@@ -13,7 +14,9 @@ export default async function MobileChatPage({ searchParams }: { searchParams: S
   const { id } = await searchParams;
   if (!id) redirect('/m/select');
 
-  const vpsRows = db.select().from(vpsTable).all();
+  // Ordered by position so the chat's "all active sessions" overlay groups
+  // VPSes in the same order as the sidebar / select screen.
+  const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
   const pathRows = db.select().from(vpsPathsTable).all();
 
   // Auto-recovering boundary: a render error in the chat must not freeze

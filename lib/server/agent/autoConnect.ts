@@ -4,6 +4,8 @@ import { db, claudeSessions, vps as vpsTable, claudeSessionLogs } from '@/lib/db
 import { getAgentClient } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
 import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
+import { ensureShellIdleWatch } from './shellNotify';
+import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
 import type { Vps } from '@/lib/db/schema';
 
 const g = globalThis as unknown as { _agentBooted?: boolean };
@@ -28,6 +30,10 @@ const g = globalThis as unknown as { _agentBooted?: boolean };
 export function autoConnectAgentsIfNeeded(): void {
   if (g._agentBooted) return;
   g._agentBooted = true;
+  // Hub-global, key-gated, 24h-throttled refresh of the Claude model catalog
+  // from GET /v1/models (no-op without `claude.api_key`). Not per-VPS — the
+  // model list is an Anthropic-side concept. Cf. lib/server/claude/modelSync.ts.
+  refreshModelsIfStale();
   setImmediate(() => {
     let vpses: Vps[] = [];
     try {
@@ -44,6 +50,10 @@ export function autoConnectAgentsIfNeeded(): void {
           const hello = client.hello;
           if (!hello) return;
           reconcileVpsAgentState(v.id, hello.sessions).catch(() => {});
+          // Register the global shell-idle watcher (idempotent per client) so
+          // a shell going quiet after a consequential output burst pushes a
+          // "finished" notification. Cheap, output-free — see shellNotify.ts.
+          ensureShellIdleWatch(client);
           // Auto-check `claude login` if we've never checked or if the
           // last check is too old (TTL 24h). Re-query the row to get an
           // up-to-date `claudeLoggedInCheckedAt` (otherwise the closure
@@ -58,6 +68,7 @@ export function autoConnectAgentsIfNeeded(): void {
         // hook (can happen in dev HMR — otherwise unlikely at cold boot).
         if (client.status === 'connected' && client.hello) {
           reconcileVpsAgentState(v.id, client.hello.sessions).catch(() => {});
+          ensureShellIdleWatch(client);
           try {
             const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
             if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});

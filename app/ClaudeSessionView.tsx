@@ -13,6 +13,7 @@ import type {
 } from './sessionTypes';
 import { useClaudeSessionStream, type StreamCache } from './useClaudeSessionStream';
 import ModelPicker from './ModelPicker';
+import EffortPicker from './EffortPicker';
 import {
   getCached, fetchAndCache, invalidate as invalidateCache,
   extendWithOlder as extendCacheWithOlder,
@@ -937,18 +938,15 @@ function ModelEffortBadges({
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>effort</span>
-            <select
+            {/* Options derived from the model being set (draft, else current)
+               via the live catalog. See EffortPicker. */}
+            <EffortPicker
               value={draftEffort}
-              onChange={(e) => setDraftEffort(e.target.value as '' | ClaudeEffortLevel)}
+              onChange={(v) => setDraftEffort(v as '' | ClaudeEffortLevel)}
+              modelId={draftModel || model || ''}
+              inheritPlaceholder="global default"
               style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
-            >
-              <option value="">(inherit global default)</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-              <option value="max">max</option>
-            </select>
+            />
           </label>
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
             <button type="button" onClick={() => setOpen(false)} disabled={saving}>cancel</button>

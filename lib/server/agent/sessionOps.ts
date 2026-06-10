@@ -92,6 +92,23 @@ function emitGlobalSession(ev: GlobalSessionEvent): void {
   }
 }
 
+/**
+ * Fan a persistent SHELL's live lifecycle status onto the global SSE bus so
+ * every browser tab can color the shell's tab/dot — blue "thinking" while it
+ * streams output (status='busy'), neutral when idle/at-prompt ('active'),
+ * gray when bash ended ('exited'). `sessionId` is the shell id (shells are
+ * 16-hex, sessions 32-hex → no collision in the shared bus keyspace).
+ *
+ * Source: the persistent AgentClient's output-free `shell_watch` → shellNotify.
+ * Classed LOW_VOLUME in eventConnections.ts so it reaches ALL connections
+ * regardless of focus (shells are not the SSE's "focused session"). This is
+ * intentionally NOT on the per-WS shell output path (that would re-egress
+ * bytes; cf. §14 gotcha 41) — it's a tiny lifecycle ping.
+ */
+export function emitGlobalShellStatus(shellId: string, status: 'active' | 'busy' | 'exited'): void {
+  emitGlobalSession({ type: 'shell_status', status, sessionId: shellId });
+}
+
 export class SessionStream {
   readonly id: string;
   readonly vpsId: string;

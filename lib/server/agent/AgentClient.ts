@@ -89,6 +89,16 @@ export class AgentClient {
   private _pendingAfterSeq = new Map<string, number | null>();
   // Parallel cursor map for shells (same semantics, separate namespace).
   private _pendingShellAfterSeq = new Map<string, number | null>();
+  // Global shell LIFECYCLE watchers (agent >= 0.8.0). Distinct from the
+  // per-shell output `subscribers` above: a watcher receives shell_status /
+  // shell_exit / shell_idle for ALL shells on this VPS WITHOUT the
+  // high-volume shell_output byte stream. This is what backs the idle
+  // "shell finished something" push/telegram notification — Charon's
+  // persistent AgentClient pool registers ONE watcher per VPS and never
+  // subscribes to output (avoids the double-egress that got a VPS suspended,
+  // see §14 gotcha 41). Re-asserted via the `shell_watch` RPC on every
+  // (re)connect when non-empty.
+  private shellWatchListeners = new Set<EventListener>();
   private statusListeners = new Set<(s: AgentClientStatus) => void>();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -304,6 +314,46 @@ export class AgentClient {
     });
   }
 
+  // ── Global shell lifecycle watch (agent >= 0.8.0) ─────────────────────────
+  /**
+   * Register a listener for shell LIFECYCLE events (shell_status / shell_exit
+   * / shell_idle) across ALL shells on this VPS, without subscribing to the
+   * high-volume shell_output byte stream. Returns an unwatch function.
+   *
+   * Idempotent at the RPC level: the first listener fires `shell_watch`; the
+   * RPC is also re-fired automatically on every (re)connect while at least
+   * one listener remains. Against an agent < 0.8.0 the RPC fails with
+   * method-not-found (-32601) — we swallow it so a mixed fleet degrades
+   * gracefully (no idle notifications from old agents, everything else works).
+   */
+  watchShells(listener: EventListener): () => void {
+    this.shellWatchListeners.add(listener);
+    // Fire the RPC the first time we have a watcher and we're connected.
+    // (On reconnect the hello path re-fires it for the whole set.)
+    if (this.status === 'connected') {
+      this._fireShellWatch();
+    }
+    return () => this.unwatchShells(listener);
+  }
+
+  unwatchShells(listener: EventListener): void {
+    if (!this.shellWatchListeners.delete(listener)) return;
+    if (this.shellWatchListeners.size === 0 && this.status === 'connected') {
+      this.call('shell_unwatch', {}).catch(() => {});
+    }
+  }
+
+  private _fireShellWatch(): void {
+    this.call('shell_watch', {}).catch((e) => {
+      // Old agent (< 0.8.0) → method not found. Don't spam: log once at debug
+      // level. The watcher stays registered so a later agent upgrade + reconnect
+      // re-fires the RPC and starts delivering idle events.
+      if (e?.code !== -32601) {
+        console.warn(`[agent ${this.vps.name}] shell_watch failed: ${e?.message ?? e}`);
+      }
+    });
+  }
+
   onStatus(cb: (s: AgentClientStatus) => void): () => void {
     this.statusListeners.add(cb);
     return () => this.statusListeners.delete(cb);
@@ -404,6 +454,11 @@ export class AgentClient {
         for (const shellId of this.subscribedShells) {
           this._fireShellSubscribe(shellId);
         }
+        // Re-assert the global shell lifecycle watch (idle notifications).
+        // Cheap, output-free; safe to re-fire on every reconnect.
+        if (this.shellWatchListeners.size > 0) {
+          this._fireShellWatch();
+        }
         // Resolve readys
         if (this.readyResolve) {
           this.readyResolve();
@@ -454,6 +509,22 @@ export class AgentClient {
     if (typeof msg.event === 'string') {
       const sid = msg.session_id;
       if (typeof sid !== 'string') return;
+      // Global shell lifecycle watchers (agent >= 0.8.0): the agent fans
+      // shell_status / shell_exit / shell_idle out to BOTH the per-shell
+      // output subscribers AND the global watch set. Deliver them to our
+      // watch listeners regardless of whether this client also holds a
+      // per-shell subscription — the persistent pool client typically does
+      // NOT subscribe to shell output (that happens in server.js's per-WS
+      // proxies), it only watches lifecycle for idle notifications.
+      const evName = msg.event as string;
+      if (
+        this.shellWatchListeners.size > 0 &&
+        (evName === 'shell_status' || evName === 'shell_exit' || evName === 'shell_idle')
+      ) {
+        for (const cb of this.shellWatchListeners) {
+          try { cb(msg as AgentEvent); } catch {}
+        }
+      }
       const subs = this.subscribers.get(sid);
       if (!subs) return;
       for (const cb of subs) {

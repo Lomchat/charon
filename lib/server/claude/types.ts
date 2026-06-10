@@ -43,7 +43,15 @@ export type SyntheticEvent =
   | { type: 'status'; status: WorkerStatus }
   | { type: 'user_echo'; content: string; createdAt: number }
   | { type: 'history_begin' }
-  | { type: 'history_end' };
+  | { type: 'history_end' }
+  // Shell lifecycle status fanned onto the global SSE bus (sessionId = shellId).
+  // 'busy' = streaming output → the UI's blue "thinking" tab; 'active' =
+  // idle/at-prompt; 'exited' = bash ended. Fed by the persistent AgentClient's
+  // shell_watch via shellNotify → emitGlobalShellStatus (agent >= 0.9.0).
+  // Classed LOW_VOLUME in eventConnections so it reaches every tab (shells are
+  // not focus-tracked on the SSE). Not a real Claude-session event — it just
+  // reuses the GlobalSessionEvent pipe with the shell id as sessionId.
+  | { type: 'shell_status'; status: 'active' | 'busy' | 'exited' };
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 

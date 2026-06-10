@@ -90,6 +90,13 @@ class Server:
         # shells; the routing key is the id, and session/shell IDs never
         # collide in practice — sessions are 32-hex UUIDs, shells are 16-hex).
         self.subscribers: dict[str, set[Client]] = {}
+        # shell_watchers: clients that asked for shell LIFECYCLE events
+        # (shell_status / shell_exit / shell_idle) across ALL shells, WITHOUT
+        # the high-volume shell_output byte stream. Charon's notification
+        # consumer uses this to learn when a shell "finished something" while
+        # the heavy output keeps flowing only to the WS subscribers (avoids
+        # doubling egress — see CLAUDE.md §14 on the shell idle-notify path).
+        self.shell_watchers: set[Client] = set()
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -150,26 +157,47 @@ class Server:
         sid = payload.get("session_id")
         if not isinstance(sid, str):
             return
-        # 1. durable log (mutates payload to add seq, ts)
         event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
         is_shell = event_name.startswith("shell_")
-        try:
-            if is_shell:
-                log = self.shell_event_logs.get(sid)
-                if log is None:
-                    log = EventLog(sid, self.shells_dir)
-                    self.shell_event_logs[sid] = log
-            else:
-                log = self._event_log(sid)
-            log.append(payload)
-        except Exception as e:
-            print(f"[server] event_log.append error sid={sid}: {e}",
-                  file=sys.stderr, flush=True)
-        # 2. ring buffer (fast path for in-memory replay)
-        ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
-        ring.append(payload)
-        # 3. live broadcast
-        for client in list(self.subscribers.get(sid, ())):
+        # TRANSIENT shell events are broadcast live (+ fanned to watchers) but
+        # NEVER logged or ringed, so a replay (full-log after_seq:0 OR the
+        # tail_bytes replay, cf. gotcha 37) never resurfaces a stale one:
+        #   · shell_idle   — a "finished something" hint; replaying it would
+        #                    re-fire a bogus "finished" notification.
+        #   · shell_status — the live busy/active UI hint (blue-tab parity with
+        #                    Claude "thinking", gotcha 42). The CURRENT status is
+        #                    recomputed fresh on every shell_subscribe, so it
+        #                    needn't survive in the log; and since these carry no
+        #                    `data`, read_tail (which budgets on `data` length)
+        #                    would otherwise collect EVERY past toggle in the
+        #                    tail window and replay them as stale status frames.
+        # shell_exit STAYS durable (a reconnect must learn the shell is dead).
+        transient = event_name in ("shell_idle", "shell_status")
+        if not transient:
+            # 1. durable log (mutates payload to add seq, ts)
+            try:
+                if is_shell:
+                    log = self.shell_event_logs.get(sid)
+                    if log is None:
+                        log = EventLog(sid, self.shells_dir)
+                        self.shell_event_logs[sid] = log
+                else:
+                    log = self._event_log(sid)
+                log.append(payload)
+            except Exception as e:
+                print(f"[server] event_log.append error sid={sid}: {e}",
+                      file=sys.stderr, flush=True)
+            # 2. ring buffer (fast path for in-memory replay)
+            ring = self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
+            ring.append(payload)
+        # 3. live broadcast. Shell LIFECYCLE events (everything except the
+        #    high-volume shell_output) also fan out to global shell watchers
+        #    — lightweight subscribers (Charon's notify consumer) that want
+        #    lifecycle signals WITHOUT the output stream.
+        targets = self.subscribers.get(sid, ())
+        if is_shell and event_name != "shell_output" and self.shell_watchers:
+            targets = set(targets) | self.shell_watchers
+        for client in list(targets):
             client.send_json(payload)
 
     async def _create_session(
@@ -557,19 +585,39 @@ class Server:
             sh = self._require_shell(sid)
             after_seq_param = params.get("after_seq")
             after_seq = int(after_seq_param) if isinstance(after_seq_param, (int, float)) else None
+            tail_bytes_param = params.get("tail_bytes")
+            tail_bytes = (
+                int(tail_bytes_param)
+                if isinstance(tail_bytes_param, (int, float)) and tail_bytes_param > 0
+                else None
+            )
             if sid not in self.subscribers:
                 self.subscribers[sid] = set()
             self.subscribers[sid].add(client)
             client.subscribed.add(sid)
-            # Replay from the durable shell log when a cursor is provided.
-            # No `replay` (ring) fallback for shells: shells are 0.7.0+ and
-            # all clients are aware of the new protocol.
+            # Replay from the durable shell log. No `replay` (ring) fallback
+            # for shells: shells are 0.7.0+ and all clients speak the new
+            # protocol.
+            #   - `tail_bytes` (>= 0.9.0): replay only the suffix of the log
+            #     (the last ~N bytes of output) so a reopened shell shows the
+            #     latest screen near-instantly with bounded VPS→hub egress.
+            #     Wins over `after_seq` when both are sent (server.js sends
+            #     after_seq:0 + tail_bytes). Old agents ignore tail_bytes and
+            #     fall through to the full read_since(0) — no regression.
+            #   - `after_seq`: full (0) or incremental durable replay.
             items: list[dict[str, Any]] = []
             log = self.shell_event_logs.get(sid)
             if log is None:
                 log = EventLog(sid, self.shells_dir)
                 self.shell_event_logs[sid] = log
-            if after_seq is not None:
+            if tail_bytes is not None:
+                try:
+                    items = log.read_tail(tail_bytes)
+                except Exception as e:
+                    print(f"[server] shell log read_tail error sid={sid}: {e}",
+                          file=sys.stderr, flush=True)
+                    items = []
+            elif after_seq is not None:
                 try:
                     items = log.read_since(after_seq)
                 except Exception as e:
@@ -605,6 +653,21 @@ class Server:
             sid = self._require_shell_sid(params)
             self.subscribers.get(sid, set()).discard(client)
             client.subscribed.discard(sid)
+            return {"ok": True}
+
+        if method == "shell_watch":
+            # Global, output-free lifecycle watch over ALL shells (current +
+            # future). Used by Charon's persistent AgentClient for idle
+            # notifications. Takes no params. Returns a snapshot of live
+            # shells so the watcher can map ids → names without a separate
+            # shell_list round-trip. Lifecycle events (shell_status /
+            # shell_exit / shell_idle) are delivered via _emit's watcher
+            # fan-out; shell_output is NOT (that stays on the WS subscribers).
+            self.shell_watchers.add(client)
+            return {"ok": True, "shells": [sh.to_info() for sh in self.shells.values()]}
+
+        if method == "shell_unwatch":
+            self.shell_watchers.discard(client)
             return {"ok": True}
 
         if method == "shell_kill":
@@ -756,6 +819,8 @@ class Server:
             for sid in list(client.subscribed):
                 self.subscribers.get(sid, set()).discard(client)
             client.subscribed.clear()
+            # Drop any global shell-lifecycle watch held by this client.
+            self.shell_watchers.discard(client)
             try:
                 writer.close()
                 await writer.wait_closed()

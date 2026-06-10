@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath } from '@/lib/db/schema';
 import ModelPicker from './ModelPicker';
+import EffortPicker from './EffortPicker';
 
 type Props = {
   vpsList: Vps[];
@@ -11,15 +12,6 @@ type Props = {
   onClose: () => void;
   onCreated: (id: string) => void;
 };
-
-const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
-  { value: '', label: 'inherit (global default)' },
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
-  { value: 'xhigh', label: 'xhigh' },
-  { value: 'max', label: 'max' },
-];
 
 export default function NewSessionDialog({
   vpsList, vpsPaths, initial, onClose, onCreated,
@@ -35,7 +27,7 @@ export default function NewSessionDialog({
   // "follow whatever the global default is, even if it changes later".
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
-  const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>('');
+  const [effort, setEffort] = useState('');
   // Fetched on open to display the inherited values as placeholders.
   // Failure is non-fatal — placeholders just stay generic.
   const [globalDefaults, setGlobalDefaults] = useState<{
@@ -232,13 +224,14 @@ export default function NewSessionDialog({
           />
         </label>
         <label>effort (optional)
-          <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
-            {EFFORT_OPTIONS.map((o) => {
-              const inherited = !o.value && globalDefaults?.effort
-                ? ` — inherits: ${globalDefaults.effort}` : '';
-              return <option key={o.value} value={o.value}>{o.label}{inherited}</option>;
-            })}
-          </select>
+          {/* Options derived from the selected model's live capabilities
+             (catalog), falling back to the canonical list. See EffortPicker. */}
+          <EffortPicker
+            value={effort}
+            onChange={setEffort}
+            modelId={model}
+            inheritPlaceholder={globalDefaults?.effort || undefined}
+          />
         </label>
 
         {err && <div className="modal-err">{err}</div>}

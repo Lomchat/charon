@@ -25,7 +25,7 @@ import type {
   SetClaudeModeResponse,
   SetClaudeSessionModelBody, SetClaudeSessionModelResponse,
   SetClaudeSessionEffortBody, SetClaudeSessionEffortResponse,
-  ClaudeEffortLevel, ClaudeModelsResponse,
+  ClaudeEffortLevel, ClaudeModelsResponse, ClaudeModelsRefreshResponse,
   RevertClaudeEditResponse, SearchClaudeResponse,
   ClaudeSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
   PushSubscribeResponse,
@@ -260,6 +260,8 @@ export const api = {
   // the module-level cache in app/modelsCache.ts.
   getClaudeModels: () =>
     send<ClaudeModelsResponse>('GET', '/api/claude/models'),
+  refreshClaudeModels: () =>
+    send<ClaudeModelsRefreshResponse>('POST', '/api/claude/models/refresh'),
   revertClaudeEdit: (id: string, filePath: string, content: string | null) =>
     send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath, content }),
   searchClaude: (q: string) =>

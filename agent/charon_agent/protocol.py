@@ -83,4 +83,9 @@ METHODS = {
     "shell_subscribe",
     "shell_unsubscribe",
     "shell_kill",
+    # Global, output-free shell lifecycle watch (agent >= 0.8.0). Charon uses
+    # it to receive shell_idle ("finished something") + shell_status/exit for
+    # ALL shells without subscribing to the high-volume output byte stream.
+    "shell_watch",
+    "shell_unwatch",
 }

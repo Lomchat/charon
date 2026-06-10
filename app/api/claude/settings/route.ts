@@ -7,6 +7,7 @@ const ALLOWED_KEYS = [
   'session.max_active',
   'retention.killed_days',
   'notif.global_enabled',
+  'shell.notify_idle',
   'vapid.subject',
   'telegram.enabled',
   'telegram.bot_token',
@@ -14,6 +15,10 @@ const ALLOWED_KEYS = [
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',
+  // Optional hub-side Anthropic API key, used only to auto-sync the model
+  // list from GET /v1/models (see modelSync.ts). models_cache/_at are written
+  // by the sync, never accepted from a settings POST.
+  'claude.api_key',
 ];
 
 export async function GET() {
@@ -22,6 +27,10 @@ export async function GET() {
   const all = getAllSettings();
   // Do not expose the private VAPID
   delete all['vapid.private'];
+  // The cached model catalog can be several KB of JSON — not needed by the UI
+  // (the picker fetches the merged list from /api/claude/models). Keep the
+  // lightweight `claude.models_cache_at` timestamp for the "last sync" label.
+  delete all['claude.models_cache'];
   return NextResponse.json(all);
 }
 

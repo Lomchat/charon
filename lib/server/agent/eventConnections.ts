@@ -32,6 +32,11 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // tabs (e.g. desktop + mobile/phone). All three should update the header
   // badge regardless of which tab is "focused" on the SSE multiplex.
   'model_changed', 'effort_changed', 'effective_model',
+  // Shell live lifecycle status (sessionId = shellId, agent >= 0.9.0). Shells
+  // are NOT the SSE's "focused session", so this must broadcast to every tab
+  // to color the shell tabs/dots (blue "thinking" while busy). See
+  // sessionOps.ts § emitGlobalShellStatus.
+  'shell_status',
 ]);
 
 function isLowVolume(type: string): boolean {

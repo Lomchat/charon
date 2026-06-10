@@ -47,6 +47,9 @@ export type KnownModel = {
   group: ClaudeModelGroup;
   /** Short freeform description (context window, tradeoffs). Optional. */
   hint?: string;
+  /** Effort levels supported, from the live catalog (modelSync). Undefined on
+   *  seed entries until enriched by a sync; empty = effort unsupported. */
+  efforts?: string[];
 };
 
 export const KNOWN_MODELS: KnownModel[] = [

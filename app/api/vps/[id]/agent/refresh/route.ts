@@ -4,6 +4,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
+import { ensureShellIdleWatch } from '@/lib/server/agent/shellNotify';
 import { ensureAgentRunning } from '@/lib/server/claude/bootstrap';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 
@@ -43,13 +44,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  const ok = (client: AgentClient) =>
-    NextResponse.json({
+  const ok = (client: AgentClient) => {
+    // This recreated client object lost autoConnect's onStatus hook; re-arm the
+    // shell-idle watcher so idle notifications survive a manual refresh.
+    ensureShellIdleWatch(client);
+    return NextResponse.json({
       ok: true,
       agentStatus: 'ok' as const,
       agentVersion: client.hello?.agent_version ?? null,
       agentPyzSha: client.hello?.agent_pyz_sha ?? null,
     });
+  };
 
   // Phase 1: bare reconnect (daemon untouched).
   let client = await tryConnect(v, 12_000);

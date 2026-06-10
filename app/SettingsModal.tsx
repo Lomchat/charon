@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import ModelPicker from './ModelPicker';
+import EffortPicker from './EffortPicker';
+import { invalidateModels } from './modelsCache';
 
 type Props = {
   onClose: () => void;
@@ -27,6 +29,27 @@ export default function SettingsModal({ onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  async function refreshModelList() {
+    if (!s) return;
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      // Persist the API key first so the server has it for the sync.
+      await api.updateClaudeSettings(s);
+      const r = await api.refreshClaudeModels();
+      if (r.ok) {
+        invalidateModels(); // drop the client cache → pickers refetch the new list
+        setSyncMsg({ ok: true, msg: `synced ✓ — ${r.count ?? 0} models from /v1/models` });
+      } else {
+        setSyncMsg({ ok: false, msg: r.error || 'sync failed' });
+      }
+    } catch (e: any) {
+      setSyncMsg({ ok: false, msg: e?.message ?? String(e) });
+    } finally { setSyncing(false); }
+  }
 
   async function testTelegram() {
     if (!s) return;
@@ -93,6 +116,14 @@ export default function SettingsModal({ onClose }: Props) {
                 label="global push notifications"
               />
             </div>
+            <div className="switch-row">
+              <span>notify when a shell goes idle</span>
+              <Toggle
+                checked={(s['shell.notify_idle'] ?? 'true') === 'true'}
+                onChange={(v) => set('shell.notify_idle', v ? 'true' : 'false')}
+                label="notify when a shell goes idle"
+              />
+            </div>
             <label>VAPID subject (mailto for push)
               <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:you@example.com" />
             </label>
@@ -105,11 +136,36 @@ export default function SettingsModal({ onClose }: Props) {
                 unaffected (they carry their own model/effort, set at creation
                 time). Leave a field blank to use the SDK default.
                 <br />
-                Model is a free string (e.g. <code>claude-opus-4-7</code>,
-                <code> claude-opus-4-8</code>). The SDK on the VPS validates it
-                at session start. Effort is one of <code>low</code> · <code>medium</code> ·
+                The model dropdown is picked from a curated baseline plus, if
+                you set an Anthropic API key below, the live
+                <code> /v1/models</code> catalog (auto-synced every 24h) — so
+                new models appear on their own. You can also pick
+                <em> ✎ enter a model id…</em> in the dropdown for one not yet
+                listed. Effort is one of <code>low</code> · <code>medium</code> ·
                 <code> high</code> · <code>xhigh</code> · <code>max</code>.
               </p>
+              <label>Anthropic API key (optional — auto-updates the model list)
+                <input
+                  value={s['claude.api_key'] ?? ''}
+                  onChange={(e) => set('claude.api_key', e.target.value)}
+                  placeholder="sk-ant-… (used ONLY for GET /v1/models, never for inference)"
+                  type="password"
+                  autoComplete="off"
+                />
+              </label>
+              <div className="tg-test-row">
+                <button type="button" onClick={refreshModelList} disabled={syncing || !s['claude.api_key']}>
+                  {syncing ? 'syncing…' : '↻ refresh model list'}
+                </button>
+                {s['claude.models_cache_at'] && (
+                  <span className="tg-help" style={{ marginLeft: 8 }}>
+                    last sync: {new Date(Number(s['claude.models_cache_at'])).toLocaleString()}
+                  </span>
+                )}
+                {syncMsg && (
+                  <span className={`tg-result ${syncMsg.ok ? 'ok' : 'err'}`}>{syncMsg.msg}</span>
+                )}
+              </div>
               <label>default model
                 <ModelPicker
                   value={s['claude.default_model'] ?? ''}
@@ -125,17 +181,13 @@ export default function SettingsModal({ onClose }: Props) {
                 />
               </label>
               <label>default effort
-                <select
+                {/* No model in scope (global default) → EffortPicker shows the
+                   union of all catalog levels, falling back to canonical. */}
+                <EffortPicker
                   value={s['claude.default_effort'] ?? ''}
-                  onChange={(e) => set('claude.default_effort', e.target.value)}
-                >
-                  <option value="">(empty = SDK default)</option>
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
-                  <option value="xhigh">xhigh</option>
-                  <option value="max">max</option>
-                </select>
+                  onChange={(v) => set('claude.default_effort', v)}
+                  inheritPlaceholder="SDK default"
+                />
               </label>
             </fieldset>
 

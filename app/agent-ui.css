@@ -853,6 +853,37 @@
 .shell-xterm .xterm-viewport,
 .shell-xterm .xterm-screen { background: transparent !important; }
 
+/* "restoring…" overlay shown while the durable shell log is replaying on
+   (re)connect (D1 tail replay). Masks the brief tail-paint so the user lands
+   at the bottom (live prompt) instead of watching the scrollback fill from
+   the top. Cleared on `replay_end` (or a safety watchdog). See gotcha 37. */
+.shell-restoring {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(14, 14, 14, 0.82);
+  color: var(--parchment, #ddd);
+  font-family: var(--mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.shell-restoring .spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(122, 196, 196, 0.3);
+  border-top-color: #7ac4c4;
+  border-radius: 50%;
+  animation: charon-shell-spin 0.7s linear infinite;
+}
+@keyframes charon-shell-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Shell row in the sidebar (cyan color to distinguish from claude sessions) */
 .dot.dot-cyan {
   background: #7ac4c4;

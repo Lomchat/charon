@@ -48,6 +48,14 @@ export type ShellInfo = {
   // pruned by `reconcileShellsOnBoot`.
   exited: boolean;
   exitCode: number | null;
+  // Live activity status fed by the agent's `shell_status` busy/active
+  // events (agent >= 0.9.0) over the global SSE bus — NOT persisted in DB
+  // (the row only knows the shell EXISTS, not whether it's streaming). The
+  // DB-backed producers below leave it undefined; ClaudePanel fills it from
+  // the bus. undefined = unknown → treat as idle/at-prompt. 'busy' = the PTY
+  // is streaming output → the UI paints the tab/dot like a "thinking" Claude
+  // session (blue). See §14 gotcha 42.
+  liveStatus?: 'active' | 'busy';
 };
 
 function vpsNameOf(vpsId: string): string {

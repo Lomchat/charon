@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsPath } from '@/lib/db/schema';
 import ModelPicker from '../ModelPicker';
+import EffortPicker from '../EffortPicker';
 
 type Props = {
   vpsList: Vps[];
@@ -14,15 +15,6 @@ type Props = {
 
 // Mobile bottom-sheet to create a new Claude session.
 // Mirrors the logic of NewSessionDialog in a simpler/mobile-friendly form.
-const EFFORT_OPTIONS: { value: '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'; label: string }[] = [
-  { value: '', label: 'inherit (global default)' },
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
-  { value: 'xhigh', label: 'xhigh' },
-  { value: 'max', label: 'max' },
-];
-
 export default function NewSessionSheet({
   vpsList, vpsPaths, initial, onClose, onCreated,
 }: Props) {
@@ -34,7 +26,7 @@ export default function NewSessionSheet({
   // the global default later still takes effect).
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
-  const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>('');
+  const [effort, setEffort] = useState('');
   const [globalDefaults, setGlobalDefaults] = useState<{
     model: string; fallbackModel: string; effort: string;
   } | null>(null);
@@ -174,13 +166,12 @@ export default function NewSessionSheet({
           </label>
           <label>
             <span>effort (optional)</span>
-            <select value={effort} onChange={(e) => setEffort(e.target.value as typeof effort)}>
-              {EFFORT_OPTIONS.map((o) => {
-                const inherited = !o.value && globalDefaults?.effort
-                  ? ` — inherits: ${globalDefaults.effort}` : '';
-                return <option key={o.value} value={o.value}>{o.label}{inherited}</option>;
-              })}
-            </select>
+            <EffortPicker
+              value={effort}
+              onChange={setEffort}
+              modelId={model}
+              inheritPlaceholder={globalDefaults?.effort || undefined}
+            />
           </label>
 
           {err && <div className="m-sheet-err">{err}</div>}

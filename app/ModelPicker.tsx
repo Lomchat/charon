@@ -50,13 +50,17 @@ type Props = {
  * Until the fetch resolves, we render a 6-item baseline so the dropdown is
  * never empty (= no flash, no layout shift).
  *
- * Free-text was the original UX. It led to a class of bugs where users
- * typed model IDs that didn't exist (e.g. `claude-opus-4-7` after 4.8
- * shipped); the SDK silently fell back to a default and the user
- * concluded "the feature doesn't work" (cf. the report that led to this
- * component). A closed list trades the (rare) "I want a model not in the
- * list" case for "the picker always actually does what it says". For the
- * power-user escape hatch, edit knownModels.ts and redeploy.
+ * The list itself is now dynamic: the server unions the curated seed with
+ * Anthropic's live `GET /v1/models` catalog when a hub-side API key is set
+ * (see lib/server/claude/modelSync.ts), so a new model shows up here on its
+ * own within 24h — no code edit, no redeploy.
+ *
+ * Free-text was the ORIGINAL UX and was removed because users typed
+ * non-existent IDs and got silent SDK fallback. We bring it back as an
+ * explicit "✎ enter a model id…" option (not the default free-form input):
+ * the user has to deliberately choose it, which sidesteps the accidental
+ * typo path while restoring the "I need a model the list doesn't have yet"
+ * escape hatch (e.g. a model released in the last 24h with no API key set).
  */
 export default function ModelPicker({
   value, onChange, inheritPlaceholder, noInherit, className, id,
@@ -107,7 +111,17 @@ export default function ModelPicker({
       id={id}
       className={className}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => {
+        if (e.target.value === '__custom__') {
+          // Explicit escape hatch. prompt() keeps the shared component a pure
+          // <select> (no per-call-site layout change). Trim + ignore empty so
+          // a cancelled prompt leaves the current value untouched.
+          const v = (window.prompt('Enter a model id (e.g. claude-opus-4-9):', value) || '').trim();
+          if (v) onChange(v);
+          return;
+        }
+        onChange(e.target.value);
+      }}
       disabled={!loaded && models === FALLBACK_MODELS && false /* keep enabled — fallback is plenty */}
     >
       {!noInherit && (
@@ -130,6 +144,7 @@ export default function ModelPicker({
           </optgroup>
         );
       })}
+      <option value="__custom__">✎ enter a model id…</option>
     </select>
   );
 }

@@ -49,6 +49,12 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
   // the whole connect/setup effect.
   const activeRef = useRef(active);
   const refitRef = useRef<(() => void) | null>(null);
+  // D1: while the agent is replaying the durable shell log on (re)connect we
+  // show a "restoring…" overlay so the user doesn't watch the tail scroll up
+  // from the top. Cleared on `replay_end` (or a safety watchdog if that
+  // marker never arrives — e.g. an old agent or a mid-replay drop).
+  const restoreWatchdogRef = useRef<number | null>(null);
+  const [restoring, setRestoring] = useState(false);
   const [exited, setExited] = useState(false);
   const [connection, setConnection] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const { ingest: urlIngest, dismiss: urlDismiss, visibleUrl } = useTerminalUrlOverlay();
@@ -113,14 +119,29 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
       };
       term.onResize(() => pushResize());
 
-      // Called by the `active` effect when this terminal becomes visible
-      // again after a session switch: the slot regained real dimensions,
-      // so re-fit (which fires onResize → pushResize to sync the PTY) and
-      // refocus. Stored in a ref so the `active` effect doesn't need to
-      // re-run this whole setup effect.
-      refitRef.current = () => {
+      // Re-fit + RE-ASSERT our window size to the agent (force-resend even
+      // if our own grid didn't change). Stored in a ref so the `active`
+      // effect can trigger it without re-running this whole setup effect.
+      //
+      // The force-resend (lastSize='') is the fix for the cross-device
+      // shrink bug: there is ONE shared PTY per shell, and a SECOND client
+      // (e.g. the same shell opened on a phone) resizes it to ITS own, often
+      // much smaller, dimensions. Our xterm grid is unchanged, so
+      // term.onResize never fires and the normal dedup in pushResize would
+      // swallow a re-send — leaving this terminal rendering at the other
+      // device's narrow width ("writings tiny on the left") until a full
+      // reconnect. Clearing lastSize lets us reclaim the PTY size whenever we
+      // regain focus/visibility (last-active-wins). The agent's resize() does
+      // NOT emit a shell_status event, so this can never ping-pong with the
+      // other client — each side only re-asserts on its OWN user-focus
+      // transition. See §14 gotcha 37 (shared single-size PTY).
+      const reassertSize = () => {
         try { fit.fit(); } catch {}
+        lastSize = '';
         pushResize();
+      };
+      refitRef.current = () => {
+        reassertSize();
         try { term.focus(); } catch {}
       };
 
@@ -161,16 +182,34 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
             let m: any;
             try { m = JSON.parse(ev.data); } catch { return; }
             if (m?.type === 'replay_begin') {
-              // The server is about to replay the FULL durable log
-              // (after_seq:0). Wipe the xterm first so an in-place
-              // reconnect rebuilds the whole scrollback from scratch
-              // instead of doubling it. See CLAUDE.md §14 gotcha 37.
+              // The server is about to replay the durable log (tail_bytes on
+              // agent >= 0.9.0, else the full log). Wipe the xterm first so an
+              // in-place reconnect rebuilds the scrollback from scratch
+              // instead of doubling it. See CLAUDE.md §14 gotcha 37. Raise the
+              // "restoring…" overlay so the user doesn't watch the tail paint.
               try { term.reset(); } catch {}
+              setRestoring(true);
+              if (restoreWatchdogRef.current) clearTimeout(restoreWatchdogRef.current);
+              // Safety net: if `replay_end` never arrives (old agent, dropped
+              // mid-replay), reveal anyway after 4s so the overlay can't stick.
+              restoreWatchdogRef.current = window.setTimeout(() => {
+                restoreWatchdogRef.current = null;
+                setRestoring(false);
+                try { term.scrollToBottom(); } catch {}
+              }, 4000) as unknown as number;
               return;
             }
             if (m?.type === 'replay_end') {
-              // Nothing to do — the replayed bytes already painted the
-              // scrollback. Marker kept for symmetry / future use.
+              // Replay done. Drop the overlay and jump straight to the bottom
+              // (the live prompt) — the whole point of D1: a reopened shell
+              // shows the bottom instantly instead of scrolling up from the
+              // top of the replayed tail.
+              if (restoreWatchdogRef.current) {
+                clearTimeout(restoreWatchdogRef.current);
+                restoreWatchdogRef.current = null;
+              }
+              setRestoring(false);
+              try { term.scrollToBottom(); } catch {}
               return;
             }
             if (m?.type === 'exit') {
@@ -214,8 +253,24 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
       connect();
 
       const onWinResize = () => { if (activeRef.current) { try { fit.fit(); } catch {} } };
+      // Reclaim the shared PTY's size when this terminal regains focus or
+      // visibility (the user came back to this device / window / tab after
+      // another client shrank it). Gated on `active` so a hidden background
+      // slot never fights for the PTY, and on the document being visible. No
+      // term.focus() here on purpose: a bare visibility change must not steal
+      // focus or pop the mobile soft keyboard — only an explicit session
+      // switch (the `active` effect, via refitRef) refocuses.
+      const onReclaim = () => {
+        if (activeRef.current && document.visibilityState === 'visible') reassertSize();
+      };
       window.addEventListener('resize', onWinResize);
-      (term as any)._charonCleanup = () => window.removeEventListener('resize', onWinResize);
+      window.addEventListener('focus', onReclaim);
+      document.addEventListener('visibilitychange', onReclaim);
+      (term as any)._charonCleanup = () => {
+        window.removeEventListener('resize', onWinResize);
+        window.removeEventListener('focus', onReclaim);
+        document.removeEventListener('visibilitychange', onReclaim);
+      };
     })();
 
     return () => {
@@ -224,6 +279,10 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (restoreWatchdogRef.current) {
+        clearTimeout(restoreWatchdogRef.current);
+        restoreWatchdogRef.current = null;
       }
       const ws = wsRef.current;
       if (ws) {
@@ -273,6 +332,11 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
       </header>
       <div className="shell-xterm-wrap">
         <div ref={containerRef} className="shell-xterm" />
+        {restoring && (
+          <div className="shell-restoring" aria-hidden>
+            <span className="spin" /> restoring…
+          </div>
+        )}
         {visibleUrl && (
           <TerminalUrlOverlay url={visibleUrl} onDismiss={urlDismiss} />
         )}

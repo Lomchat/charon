@@ -93,6 +93,12 @@ const SSH_OPTS = [
 const REMOTE_PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
 const REMOTE_AGENT_PATH = '~/.charon/charon-agent.pyz';
 
+// How many bytes of trailing shell OUTPUT to replay on (re)connect (agent
+// >= 0.9.0 `tail_bytes`). 512 KB comfortably fills xterm's 10k-line
+// scrollback while making a reopen near-instant (vs. re-streaming the whole
+// multi-MB log) and slashing VPS→hub egress. See CLAUDE.md §14 gotcha 37.
+const SHELL_REPLAY_TAIL_BYTES = 512 * 1024;
+
 function handleShellWs(ws, shellId) {
   const shellRow = STMT_SHELL.get(shellId);
   if (!shellRow) { try { ws.close(1008, 'shell not found'); } catch {} return; }
@@ -118,13 +124,20 @@ function handleShellWs(ws, shellId) {
     } catch {}
   };
 
-  // Always replay the FULL durable log (after_seq:0). The browser wipes its
-  // xterm on the `replay_begin` we forward below, then rebuilds the entire
-  // scrollback, so a fresh xterm (session switch, F5) AND an in-place
-  // reconnect both end up showing the complete history with no duplication.
+  // Replay the TAIL of the durable log (agent >= 0.9.0). Reopening a busy
+  // shell used to re-stream the WHOLE log (tens of MB) → the user watched it
+  // scroll for seconds before reaching the bottom, AND it re-egressed all
+  // those bytes VPS→hub on every (re)connect. `tail_bytes` asks the agent for
+  // only the last ~512 KB of OUTPUT (enough to fill xterm's 10k-line
+  // scrollback), so a reopen is near-instant. We STILL send `after_seq: 0`:
+  // older agents (< 0.9.0) ignore the unknown `tail_bytes` param and fall
+  // back to the full-log replay (prior behavior — correct, just slower). The
+  // browser wipes its xterm on the `replay_begin` we forward below, then
+  // rebuilds the scrollback, so a fresh xterm (session switch, F5) AND an
+  // in-place reconnect both end up showing the tail with no duplication.
   // (Contrast with Claude sessions, where SQLite is the source of truth and
   // an incremental after_seq cursor is correct.) See CLAUDE.md §14 gotcha 37.
-  sendRpc('shell_subscribe', { shell_id: shellId, after_seq: 0 });
+  sendRpc('shell_subscribe', { shell_id: shellId, after_seq: 0, tail_bytes: SHELL_REPLAY_TAIL_BYTES });
 
   ssh.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString('utf8');
@@ -147,6 +160,13 @@ function handleShellWs(ws, shellId) {
         } else if (msg.event === 'shell_exit') {
           try { ws.send(JSON.stringify({ type: 'exit', code: msg.code })); } catch {}
           try { ws.close(1000, 'shell exited'); } catch {}
+        } else if (msg.event === 'shell_idle') {
+          // Transient "the shell finished something" signal (agent >= 0.8.0).
+          // The push/telegram notification is sent server-side via the
+          // persistent AgentClient's shell_watch (see shellNotify.ts); here we
+          // just forward it to the browser as a control frame for an optional
+          // in-terminal hint. Never replayed (the agent doesn't log it).
+          try { ws.send(JSON.stringify({ type: 'idle', idleSeconds: msg.idle_seconds, burstSeconds: msg.burst_seconds, burstBytes: msg.burst_bytes })); } catch {}
         } else if (msg.event === 'replay_begin') {
           // Tell the browser to wipe its xterm before the full-history
           // replay so an in-place reconnect doesn't double the scrollback.
