@@ -76,8 +76,9 @@ class Server:
         # Persistent PTY shells (>= 0.7.0). Same _emit + rings + subscribers
         # plumbing as sessions, but the durable log lives in a SEPARATE dir
         # (`~/.charon/shells/`) so shell IDs can't collide with session IDs
-        # in the filesystem namespace. Cf. shell.py for the rationale on
-        # why shells don't persist across agent restarts.
+        # in the filesystem namespace. Since 0.10.0 the PTY + bash live in a
+        # DETACHED holder process (holder.py) that survives agent restarts;
+        # boot re-attaches via the `*.sock` files in that same dir.
         self.shells_dir = state_path.parent / "shells"
         self.shells: dict[str, AgentShell] = {}
         self.shell_event_logs: dict[str, EventLog] = {}
@@ -544,6 +545,7 @@ class Server:
                 cwd=cwd if isinstance(cwd, str) and cwd else None,
                 name=name if isinstance(name, str) and name else None,
                 emit=self._emit,
+                shells_dir=self.shells_dir,
             )
             self.shells[shell_id] = sh
             self.rings.setdefault(shell_id, deque(maxlen=RING_SIZE))
@@ -565,9 +567,9 @@ class Server:
             data = params.get("data")
             if not isinstance(data, str):
                 raise RpcError(ERR_INVALID_PARAMS, "data required (str)")
-            # utf-8: the browser sends keystrokes as text (xterm.js); ctrl
-            # codes (\r, \t, \x03, ...) are single bytes < 0x80 → safe.
-            sh.write(data.encode("utf-8"))
+            # Text straight through: the holder client re-encodes into its
+            # line-JSON protocol; ctrl codes (\r, \t, \x03, …) survive as-is.
+            sh.write(data)
             return {"ok": True}
 
         if method == "shell_resize":
@@ -745,14 +747,50 @@ class Server:
         except Exception as e:
             print(f"[boot] event log cleanup failed: {e}",
                   file=sys.stderr, flush=True)
-        # Shells do NOT survive agent restart (the bash children died with
-        # the previous agent process). Wipe every shell log left over —
-        # Charon will reconcile its DB via `shell_list` (empty) on the
-        # next page SSR. Cf. shell.py module docstring.
+        # Shells DO survive agent restart since 0.10.0: bash lives in a
+        # detached holder process (holder.py). Re-attach to every live
+        # holder socket; only shells with NO live holder (stale sock from a
+        # crash, or bash exited while we were down) get their logs wiped.
+        live_shell_ids: set[str] = set()
         try:
-            removed_shells = cleanup_orphans(self.shells_dir, set())
+            if self.shells_dir.exists():
+                for sock in sorted(self.shells_dir.glob("*.sock")):
+                    sid = sock.stem
+                    sh = AgentShell(
+                        sid, cwd=None, name=None,
+                        emit=self._emit, shells_dir=self.shells_dir,
+                    )
+                    try:
+                        await sh.attach()
+                        self.shells[sid] = sh
+                        self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
+                        live_shell_ids.add(sid)
+                        print(f"[boot] re-attached shell {sid} "
+                              f"(bash pid={sh.pid}, holder pid={sh.holder_pid})",
+                              file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[boot] stale shell sock {sid}: {e}",
+                              file=sys.stderr, flush=True)
+                        try:
+                            sock.unlink()
+                        except OSError:
+                            pass
+        except Exception as e:
+            print(f"[boot] shell re-attach failed: {e}", file=sys.stderr, flush=True)
+        try:
+            removed_shells = cleanup_orphans(self.shells_dir, live_shell_ids)
+            # cleanup_orphans only sweeps `.jsonl*`; also drop spool files
+            # left by holders that died while we were away.
+            if self.shells_dir.exists():
+                for entry in self.shells_dir.glob("*.spool"):
+                    if entry.stem not in live_shell_ids:
+                        try:
+                            entry.unlink()
+                            removed_shells += 1
+                        except OSError:
+                            pass
             if removed_shells:
-                print(f"[boot] cleaned up {removed_shells} orphan shell log file(s)",
+                print(f"[boot] cleaned up {removed_shells} orphan shell file(s)",
                       file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[boot] shell log cleanup failed: {e}",

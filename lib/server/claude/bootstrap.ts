@@ -188,6 +188,7 @@ After=default.target
 ExecStart=/bin/sh -c 'PY=%h/.charon/venv/bin/python; [ -x "$PY" ] || PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
 Restart=always
 RestartSec=2
+KillMode=process
 StandardOutput=append:%h/.charon/agent.log
 StandardError=append:%h/.charon/agent.log
 
@@ -248,8 +249,11 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
   const cronLine = `@reboot sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 &`;
   const cronLineB64 = Buffer.from(cronLine, 'utf8').toString('base64');
   const fallbackScript = [
-    // Kill any running instance (if we're replacing the binary)
-    "pkill -f 'charon-agent.pyz' || true",
+    // Kill any running DAEMON instance (if we're replacing the binary).
+    // The `$` anchor is load-bearing: the cmdline of a shell HOLDER is
+    // `… charon-agent.pyz --shell-holder <id> …` and must NOT match —
+    // holders are exactly the processes that survive an agent restart.
+    "pkill -f 'charon-agent.pyz$' || true",
     // Launch the daemon in the background, detached. The final `&` is
     // followed by a newline (join('\n')), so no broken `&;`.
     `nohup setsid sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 < /dev/null &`,
@@ -325,8 +329,18 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // IMPORTANT: join with '\n' to preserve shell syntax (if/then/else/fi).
     // The previous bug joined with a space, producing illegal bash like
     // "export FOO=bar || true if systemctl..." that silently failed.
+    //
+    // The unit file is REWRITTEN on every update (cheap, idempotent): this
+    // is how existing fleets pick up unit-level changes — critically
+    // `KillMode=process` (0.10.0), without which systemd's control-group
+    // sweep kills the detached shell HOLDERS on restart and shells lose
+    // their agent-restart survival.
+    const unitB64ForUpdate = Buffer.from(SYSTEMD_UNIT, 'utf8').toString('base64');
     const restartCmd = [
       'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
+      'mkdir -p ~/.config/systemd/user 2>/dev/null || true',
+      `echo '${unitB64ForUpdate}' | base64 -d > ~/.config/systemd/user/charon-agent.service 2>/dev/null || true`,
+      'systemctl --user daemon-reload 2>/dev/null || true',
       'if systemctl --user restart charon-agent.service 2>/dev/null; then',
       '  sleep 1',
       '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then',
@@ -334,8 +348,9 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       '    exit 0',
       '  fi',
       'fi',
-      '# Nohup fallback: kill any running instance and relaunch detached',
-      'pkill -f charon-agent.pyz 2>/dev/null || true',
+      '# Nohup fallback: kill the running daemon (NOT the shell holders —',
+      '# their cmdline continues past .pyz, hence the $ anchor) and relaunch',
+      "pkill -f 'charon-agent.pyz$' 2>/dev/null || true",
       'sleep 0.5',
       'if [ -x "$HOME/.charon/venv/bin/python" ]; then',
       '  PY="$HOME/.charon/venv/bin/python"',

@@ -11,12 +11,13 @@
  *     IS the session id, validated against expires_at; same logic as the
  *     middleware, inlined here because middleware doesn't run on upgrades).
  *   - Per WS connection: spawn its own `ssh ... charon-agent.pyz --connect`
- *     line-delimited JSON-RPC pipe to the agent. Send `shell_subscribe`
- *     with the persisted `last_seen_seq` cursor — the agent's durable log
- *     replays exactly what Charon missed (full scrollback survives Charon
- *     restarts). Multiple WS tabs to the same shell = multiple ssh + agent
- *     clients, each independently subscribed. Cheap (one ssh + ~50KB RAM
- *     per Python connection on the agent side) and isolation-friendly.
+ *     line-delimited JSON-RPC pipe to the agent — but all connections to a
+ *     given VPS share one SSH ControlMaster (see sshShared.js), so opening
+ *     a WS after the persistent AgentClient is up costs ~0 handshakes.
+ *     `shell_subscribe` replays the durable-log TAIL (after_seq:0 +
+ *     tail_bytes) on every (re)connect. Multiple WS tabs to the same shell
+ *     = multiple agent clients, each independently subscribed. Cheap
+ *     (~50KB RAM per Python connection agent-side) and isolation-friendly.
  *   - Wire protocol on the WS:
  *       Server → Browser:
  *         · binary frame  = raw shell output bytes (utf-8)
@@ -53,14 +54,21 @@ db.pragma('busy_timeout = 5000');
 const STMT_SESSION = db.prepare('SELECT expires_at FROM sessions WHERE id = ?');
 const STMT_SHELL = db.prepare('SELECT id, vps_id FROM shells WHERE id = ?');
 const STMT_VPS = db.prepare('SELECT id, ip, ssh_user, ssh_port FROM vps WHERE id = ?');
-// NOTE: `shells.last_seen_seq` is no longer used as a replay cursor (it is
-// left in the schema but vestigial). For shells the browser's xterm is the
-// ONLY place the rendered scrollback lives — there is no Charon-side DB of
-// the output — so on every (re)connect we replay the FULL durable log
-// (after_seq:0) and the browser rebuilds its whole scrollback. An
-// incremental cursor would replay "only what's new since last time", which
-// for a freshly-recreated xterm (session switch, F5, reconnect) is nothing
-// → blank terminal. See CLAUDE.md §14 gotcha 37.
+// Phantom-shell retirement: when the agent answers `shell_subscribe` with
+// "shell not found", the shell is gone for good (bash exited / VPS rebooted)
+// but a stale DB row would keep the sidebar entry alive and the browser
+// reconnect-looping. Prune it right here — server.js already owns a SQLite
+// handle — and tell the browser via a terminal {type:'gone'} control frame.
+const STMT_DELETE_SHELL = db.prepare('DELETE FROM shells WHERE id = ?');
+// NOTE: there is deliberately NO replay cursor for shells (the vestigial
+// `shells.last_seen_seq` column was dropped in migration 0016). The
+// browser's xterm is the ONLY place the rendered scrollback lives — there
+// is no Charon-side DB of the output — so on every (re)connect we replay
+// the durable-log TAIL (after_seq:0 + tail_bytes) and the browser rebuilds
+// its scrollback from scratch. An incremental cursor would replay "only
+// what's new since last time", which for a freshly-recreated xterm
+// (session switch, F5, reconnect) is nothing → blank terminal. See
+// CLAUDE.md §14 gotcha 37.
 
 function parseCookie(header, name) {
   if (!header) return null;
@@ -75,23 +83,13 @@ function sessionValid(id) {
   return row.expires_at >= Math.floor(Date.now() / 1000);
 }
 
-// SSH options mirror lib/server/agent/AgentClient.ts SSH_OPTS — keep in sync
-// if you change one. ServerAlive is a bit aggressive (3 × 20s) so dead
-// connections surface fast and the browser can reconnect.
-const SSH_OPTS = [
-  '-o', 'BatchMode=yes',
-  '-o', 'ConnectTimeout=10',
-  '-o', 'StrictHostKeyChecking=accept-new',
-  '-o', 'PasswordAuthentication=no',
-  '-o', 'KbdInteractiveAuthentication=no',
-  '-o', 'ServerAliveInterval=20',
-  '-o', 'ServerAliveCountMax=3',
-  '-T',
-];
-// Pick the newest Python ≥ 3.10 (the agent uses PEP 604 syntax). Mirrors
-// AgentClient.ts's PY constant.
-const REMOTE_PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
-const REMOTE_AGENT_PATH = '~/.charon/charon-agent.pyz';
+// SSH plumbing shared with lib/server/agent/AgentClient.ts — single source
+// of truth (options, remote python lookup, ControlMaster mux). The per-VPS
+// ControlMaster socket means a WS open piggybacks on the persistent
+// AgentClient's already-open TCP+handshake (~0ms instead of 200-2000ms).
+// ServerAlive here is snappier (3 × 20s) than the AgentClient's (4 × 30s)
+// so dead WS links surface fast and the browser can reconnect.
+const { buildAgentSshArgs } = require('./lib/server/agent/sshShared.js');
 
 // How many bytes of trailing shell OUTPUT to replay on (re)connect (agent
 // >= 0.9.0 `tail_bytes`). 512 KB comfortably fills xterm's 10k-line
@@ -101,27 +99,36 @@ const SHELL_REPLAY_TAIL_BYTES = 512 * 1024;
 
 function handleShellWs(ws, shellId) {
   const shellRow = STMT_SHELL.get(shellId);
-  if (!shellRow) { try { ws.close(1008, 'shell not found'); } catch {} return; }
+  if (!shellRow) {
+    // No DB row: the shell was already retired (or never existed). `gone` +
+    // a CLEAN close (1000) — the browser treats 1000 as terminal, anything
+    // else as "transient, reconnect with backoff" (which for a dead shell
+    // means looping forever).
+    try { ws.send(JSON.stringify({ type: 'gone' })); } catch {}
+    try { ws.close(1000, 'shell not found'); } catch {}
+    return;
+  }
   const vpsRow = STMT_VPS.get(shellRow.vps_id);
   if (!vpsRow) { try { ws.close(1011, 'vps not found'); } catch {} return; }
 
-  const sshArgs = [
-    ...SSH_OPTS,
-    '-p', String(vpsRow.ssh_port),
-    `${vpsRow.ssh_user}@${vpsRow.ip}`,
-    `exec ${REMOTE_PY} ${REMOTE_AGENT_PATH} --connect`,
-  ];
+  const sshArgs = buildAgentSshArgs(
+    { ip: vpsRow.ip, sshUser: vpsRow.ssh_user, sshPort: vpsRow.ssh_port },
+    { serverAliveInterval: 20, serverAliveCountMax: 3 },
+  );
   const ssh = spawn('ssh', sshArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
 
   let nextRpcId = 1;
   let stdoutBuf = '';
   let alive = true;
+  let subscribeRpcId = 0;
 
   const sendRpc = (method, params) => {
-    if (!alive) return;
+    if (!alive) return 0;
+    const id = nextRpcId++;
     try {
-      ssh.stdin.write(JSON.stringify({ id: nextRpcId++, method, params }) + '\n');
+      ssh.stdin.write(JSON.stringify({ id, method, params }) + '\n');
     } catch {}
+    return id;
   };
 
   // Replay the TAIL of the durable log (agent >= 0.9.0). Reopening a busy
@@ -137,7 +144,7 @@ function handleShellWs(ws, shellId) {
   // in-place reconnect both end up showing the tail with no duplication.
   // (Contrast with Claude sessions, where SQLite is the source of truth and
   // an incremental after_seq cursor is correct.) See CLAUDE.md §14 gotcha 37.
-  sendRpc('shell_subscribe', { shell_id: shellId, after_seq: 0, tail_bytes: SHELL_REPLAY_TAIL_BYTES });
+  subscribeRpcId = sendRpc('shell_subscribe', { shell_id: shellId, after_seq: 0, tail_bytes: SHELL_REPLAY_TAIL_BYTES });
 
   ssh.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString('utf8');
@@ -148,8 +155,20 @@ function handleShellWs(ws, shellId) {
       if (!line.trim()) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
-      // Events have no `id`; RPC responses have one and we ignore them
-      // (subscribe/input/resize are fire-and-forget from our POV).
+      // RPC responses: only the initial shell_subscribe matters — an error
+      // there means the agent does NOT know this shell (it died while no
+      // one was reconciling: VPS reboot, bash exit, holder killed). Retire
+      // the phantom DB row and end cleanly so the browser shows "ended"
+      // instead of reconnect-looping. input/resize responses stay ignored.
+      if (typeof msg.id === 'number') {
+        if (msg.id === subscribeRpcId && msg.error) {
+          console.warn(`[charon ws] shell ${shellId} unknown to agent (${msg.error.message ?? msg.error.code}) — pruning`);
+          try { STMT_DELETE_SHELL.run(shellId); } catch {}
+          try { ws.send(JSON.stringify({ type: 'gone' })); } catch {}
+          try { ws.close(1000, 'shell gone'); } catch {}
+        }
+        continue;
+      }
       if (typeof msg.event === 'string') {
         if (msg.event === 'shell_output') {
           // Binary frame = raw bytes (utf-8). No JSON parse cost on the

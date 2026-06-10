@@ -37,6 +37,9 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // to color the shell tabs/dots (blue "thinking" while busy). See
   // sessionOps.ts § emitGlobalShellStatus.
   'shell_status',
+  // Live VPS agent-status flips (sessionId = vpsId) — sidebar badges on every
+  // tab. See sessionOps.ts § emitGlobalVpsStatus.
+  'vps_status',
 ]);
 
 function isLowVolume(type: string): boolean {

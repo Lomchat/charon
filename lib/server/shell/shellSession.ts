@@ -6,12 +6,13 @@ import type { Shell } from '@/lib/db/schema';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { AgentShellInfo } from '@/lib/server/agent/types';
 
-// ── Persistent SSH shells, hosted by the charon-agent on the VPS ────────────
+// ── Persistent SSH shells, hosted by a detached holder on the VPS ───────────
 //
-// The PTY (bash) runs inside the agent's Python process; the agent owns the
-// master FD and streams output via the standard `_emit` pipeline (durable
-// per-shell event log under ~/.charon/shells/ + live broadcast). This file
-// is a THIN coordinator on the Charon side:
+// The PTY (bash) runs in a DETACHED holder process (agent >= 0.10.0, cf.
+// agent/charon_agent/holder.py); the agent is a client of the holder and
+// streams output via the standard `_emit` pipeline (durable per-shell event
+// log under ~/.charon/shells/ + live broadcast). This file is a THIN
+// coordinator on the Charon side:
 //
 //   - DB row CRUD (`shells` table) — the index of known shells per VPS.
 //   - Lifecycle RPC: `shell_start`, `shell_kill`.
@@ -20,17 +21,18 @@ import type { AgentShellInfo } from '@/lib/server/agent/types';
 //
 // The live data path (input bytes from the browser, output bytes to the
 // browser, resize) is HANDLED ELSEWHERE: server.js opens a WebSocket per
-// shell, subscribes to the AgentClient via `subscribeShell`, and pipes
-// bytes both ways. The WS handler also owns the `last_seen_seq` cursor
-// updates (persisted into the `shells` table for replay across Charon
-// restarts).
+// shell with its own ssh proxy and pipes bytes both ways, replaying the
+// durable-log TAIL on every (re)connect (after_seq:0 + tail_bytes — no
+// cursor; the vestigial `shells.last_seen_seq` was dropped in 0016).
 //
-// Persistence semantics:
-//   - Survives Charon restart ✓  (bash on the agent stays alive; on reconnect
-//     the WS replays from the durable shell event log via `after_seq`).
-//   - Does NOT survive AGENT restart ✗ (bash dies with the agent process).
-//     The agent wipes its `~/.charon/shells/` event logs on boot; `shell_list`
-//     returns empty; our reconcile prunes the orphan DB rows.
+// Persistence semantics (agent >= 0.10.0):
+//   - Survives Charon restart ✓ (bash keeps running; the WS replays the tail).
+//   - Survives AGENT restart ✓ (bash lives in the holder; the new agent
+//     re-attaches via ~/.charon/shells/<id>.sock and ingests the offline
+//     spool — no scrollback hole).
+//   - Does NOT survive a VPS reboot ✗ — that's what the prune paths are for:
+//     reconcileShellsOnBoot here, the shell_watch snapshot reconcile in
+//     shellNotify.ts, and server.js's failed-subscribe prune.
 
 export type ShellInfo = {
   id: string;

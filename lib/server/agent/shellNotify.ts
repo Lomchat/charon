@@ -63,6 +63,31 @@ export function ensureShellIdleWatch(client: AgentClient): void {
       console.warn('[shellNotify] watch:', e?.message ?? e);
     }
   });
+  // Reconcile the `shells` DB rows against the live snapshot the agent
+  // returns with every (re)armed shell_watch — i.e. on every agent
+  // (re)connect, not just at Charon boot (reconcileShellsOnBoot). This is
+  // what retires phantom rows when shells died while nobody was looking
+  // (VPS reboot, bash exited, holder killed): without it the browser
+  // reconnect-loops forever on a WS to a shell the agent doesn't know.
+  // With the 0.10.0 holder, agent restarts no longer kill shells, so this
+  // fires rarely — but when it does, it's the difference between a clean
+  // "ended" tab and an infinite "reconnecting…".
+  client.onShellSnapshot((live) => {
+    try {
+      const liveIds = new Set(live.map((s) => s.shell_id));
+      const rows = db.select().from(shellsTable)
+        .where(eq(shellsTable.vpsId, client.vps.id)).all();
+      for (const row of rows) {
+        if (!liveIds.has(row.id)) {
+          db.delete(shellsTable).where(eq(shellsTable.id, row.id)).run();
+          emitGlobalShellStatus(row.id, 'exited');
+          console.warn(`[shellNotify] pruned phantom shell ${row.id} (${client.vps.name})`);
+        }
+      }
+    } catch (e: any) {
+      console.warn('[shellNotify] snapshot reconcile:', e?.message ?? e);
+    }
+  });
 }
 
 function handleShellIdle(ev: Extract<AgentEvent, { event: 'shell_idle' }>): void {

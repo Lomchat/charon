@@ -267,6 +267,36 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, []);
 
+  // Live VPS agent status (F1). AgentClient pushes a `vps_status` event
+  // (sessionId = vpsId) on every persisted flip of `vps.agentStatus` —
+  // hello success ('ok' + version/sha) or a classified failure
+  // ('error'/'missing', gated to skip transient SSH drops). Mirroring it
+  // here keeps the sidebar badge + action buttons ("install" vs "refresh"
+  // vs "update") truthful without an F5 — previously the status was only
+  // read at SSR (cf. CLAUDE.md §14 gotcha 34, amplifier #1).
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'vps_status') return;
+      const vpsId = ev.sessionId;
+      if (!vpsId) return;
+      setVpsList((prev) => {
+        let changed = false;
+        const next = prev.map((v) => {
+          if (v.id !== vpsId) return v;
+          const agentVersion = ev.agentVersion !== undefined ? ev.agentVersion : v.agentVersion;
+          const agentPyzSha = ev.agentPyzSha !== undefined ? ev.agentPyzSha : v.agentPyzSha;
+          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha) {
+            return v;
+          }
+          changed = true;
+          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha } as Vps;
+        });
+        return changed ? next : prev;
+      });
+    });
+    return () => unsub();
+  }, []);
+
   // Install notifications (tab-local queue, populated by the global bus)
   const {
     notifications: installNotifications,

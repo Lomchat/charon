@@ -184,28 +184,25 @@ export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   index('idx_claude_session_logs_session_id_id').on(t.sessionId, t.id),
 ]);
 
-// Persistent SSH shells, hosted by the charon-agent's Python process on
-// each VPS. The PTY (bash) lives inside the agent — see
-// agent/charon_agent/shell.py for the rationale and persistence semantics.
-// This table is the Charon-side index: one row per shell, used to
-// re-list/re-attach (over WebSocket via server.js) after a Charon restart
-// and to materialise the sidebar entry.
-// Rows are pruned at boot when `shell_list` shows the agent doesn't know
-// about them (typically: agent was restarted, bash children died with it).
-// `last_seen_seq` is the cursor into the agent's per-shell durable event
-// log (`~/.charon/shells/<id>.jsonl`); the WS bridge uses it on reconnect
-// to replay exactly what Charon missed.
+// Persistent SSH shells. The PTY (bash) lives in a DETACHED holder process
+// on the VPS (agent/charon_agent/holder.py, agent >= 0.10.0) so it survives
+// both Charon AND agent restarts; the agent re-attaches to holders at boot.
+// This table is the Charon-side index: one row per shell, used to re-list
+// (over WebSocket via server.js) and to materialise the sidebar entry.
+// Rows are pruned when the agent doesn't know the shell anymore (VPS
+// reboot, bash exited): at Charon boot (reconcileShellsOnBoot), on every
+// agent (re)connect (shellNotify's shell_watch snapshot reconcile), and on
+// a failed shell_subscribe (server.js prunes + tells the browser 'gone').
+// No replay cursor here: shell scrollback lives only in the browser xterm,
+// so every WS (re)connect replays the durable-log TAIL from scratch
+// (`after_seq:0 + tail_bytes` — see CLAUDE.md §14 gotcha 37). The old
+// vestigial `last_seen_seq` column was dropped in migration 0016.
 export const shells = sqliteTable('shells', {
   id: text('id').primaryKey(),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
   cwd: text('cwd'),
   name: text('name'),
   color: text('color'),
-  // Highest `seq` of a `shell_output`/`shell_status`/`shell_exit` event
-  // Charon has forwarded to a viewer (or persisted as the cursor). Null
-  // until the first event lands; on reconnect the WS bridge passes this
-  // to `shell_subscribe({after_seq: lastSeenSeq})` for durable replay.
-  lastSeenSeq: integer('last_seen_seq'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // GET /api/vps/[id]/shells + boot reconcile filter by vpsId.

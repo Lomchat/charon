@@ -17,6 +17,7 @@ import {
 import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel } from './types';
 import type { EventListener as AgentEventListener } from './AgentClient';
+import { setVpsStatusEmitter } from './AgentClient';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -108,6 +109,29 @@ function emitGlobalSession(ev: GlobalSessionEvent): void {
 export function emitGlobalShellStatus(shellId: string, status: 'active' | 'busy' | 'exited'): void {
   emitGlobalSession({ type: 'shell_status', status, sessionId: shellId });
 }
+
+/**
+ * Live agentStatus push (sessionId = vpsId): the sidebar badge / action
+ * buttons follow `vps.agentStatus` flips without waiting for the next SSR.
+ * AgentClient owns the DB persists but cannot import this bus (import cycle
+ * AgentClient ← AgentClientPool ← here), so it exposes an injection point —
+ * wired once at module load. Same gating as the persist: transient SSH drops
+ * never reach the browser (cf. ERROR_PERSIST_AFTER_ATTEMPTS in AgentClient).
+ */
+export function emitGlobalVpsStatus(
+  vpsId: string,
+  agentStatus: 'ok' | 'missing' | 'error',
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+): void {
+  emitGlobalSession({
+    type: 'vps_status',
+    agentStatus,
+    agentVersion: extra?.agentVersion,
+    agentPyzSha: extra?.agentPyzSha,
+    sessionId: vpsId,
+  });
+}
+setVpsStatusEmitter(emitGlobalVpsStatus);
 
 export class SessionStream {
   readonly id: string;

@@ -17,23 +17,25 @@ type Props = {
 };
 
 /**
- * Full-screen xterm.js terminal connected to an agent-hosted PTY over a
- * WebSocket (`/api/shells/[id]/ws`). The PTY itself lives inside the
- * charon-agent on the VPS (cf. agent/charon_agent/shell.py); the
- * server.js bridge subscribes to the agent's durable shell event log
- * (with `after_seq` cursor persisted in DB) and pipes bytes both ways.
+ * Full-screen xterm.js terminal connected to a holder-hosted PTY over a
+ * WebSocket (`/api/shells/[id]/ws`). The PTY itself lives in a detached
+ * holder process on the VPS (cf. agent/charon_agent/holder.py, agent >=
+ * 0.10.0 — it survives agent restarts); the server.js bridge subscribes to
+ * the agent's durable shell event log and pipes bytes both ways.
  *
  * Wire protocol on the WS:
  *   Server → Browser:
  *     · binary frame  = raw shell output bytes (utf-8) → term.write
- *     · text frame    = JSON control: {type:'status'|'exit', ...}
+ *     · text frame    = JSON control: {type:'status'|'exit'|'gone'|'idle'
+ *                       |'replay_begin'|'replay_end', ...}
  *   Browser → Server:
  *     · binary frame  = raw input bytes (keystrokes)
  *     · text frame    = JSON: {type:'resize', cols, rows}
  *
- * Reconnect: on close (non-1000), reconnect with exponential backoff. The
- * agent replays missed events via the durable log + `last_seen_seq` so
- * the user sees seamless continuation (no manual page refresh needed).
+ * Reconnect: on close (non-1000), reconnect with exponential backoff. Every
+ * (re)connect replays the durable-log TAIL (after_seq:0 + tail_bytes) and
+ * the terminal resets on `replay_begin`, so the user sees the latest screen
+ * with no duplication. 1000 = terminal (shell ended / 'gone') → no reconnect.
  */
 export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -215,6 +217,13 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
             if (m?.type === 'exit') {
               setExited(true);
               writeMeta(`\r\n[charon] shell exited (code=${m.code ?? '?'})\r\n`);
+            } else if (m?.type === 'gone') {
+              // The shell no longer exists anywhere (agent doesn't know it,
+              // DB row pruned server-side). Terminal state — the server
+              // closes with 1000 right after, so no reconnect loop.
+              setExited(true);
+              setRestoring(false);
+              writeMeta(`\r\n[charon] this shell no longer exists (it ended while disconnected) — close the tab\r\n`);
             } else if (m?.type === 'status' && m.status === 'exited') {
               setExited(true);
             }
@@ -240,8 +249,8 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
             setExited(true);
             return;
           }
-          // Anything else: backoff + reconnect. The agent replays missed
-          // events via the durable log + last_seen_seq cursor.
+          // Anything else: backoff + reconnect. The agent replays the
+          // durable-log tail on the next subscribe (after_seq:0 + tail_bytes).
           setConnection('closed');
           reconnectAttemptsRef.current++;
           const delay = Math.min(500 * 2 ** (reconnectAttemptsRef.current - 1), 8000);

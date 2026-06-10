@@ -51,7 +51,12 @@ export type SyntheticEvent =
   // Classed LOW_VOLUME in eventConnections so it reaches every tab (shells are
   // not focus-tracked on the SSE). Not a real Claude-session event — it just
   // reuses the GlobalSessionEvent pipe with the shell id as sessionId.
-  | { type: 'shell_status'; status: 'active' | 'busy' | 'exited' };
+  | { type: 'shell_status'; status: 'active' | 'busy' | 'exited' }
+  // Live agentStatus push (sessionId = vpsId). Mirrors every DB persist of
+  // `vps.agentStatus` inside AgentClient (hello success / classified exit) so
+  // the sidebar badge + action buttons follow reality without an F5. Same
+  // bus-reuse trick as shell_status; LOW_VOLUME → broadcast to every tab.
+  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null };
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 

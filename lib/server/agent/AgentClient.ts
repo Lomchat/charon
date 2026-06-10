@@ -10,21 +10,12 @@ import {
   AgentHelloResult,
   AgentRpcError,
   AgentSessionInfo,
+  AgentShellInfo,
 } from './types';
-
-// Path of the pyz on the VPS side (cf. installer)
-const REMOTE_AGENT_PATH = '~/.charon/charon-agent.pyz';
-
-const SSH_OPTS = [
-  '-o', 'BatchMode=yes',
-  '-o', 'ConnectTimeout=10',
-  '-o', 'StrictHostKeyChecking=accept-new',
-  '-o', 'PasswordAuthentication=no',
-  '-o', 'KbdInteractiveAuthentication=no',
-  '-o', 'ServerAliveInterval=30',
-  '-o', 'ServerAliveCountMax=4',
-  '-T',
-];
+// Shared SSH plumbing (options, remote python lookup, ControlMaster mux).
+// Single source of truth with server.js's per-WS shell proxies — see the
+// module header in sshShared.js.
+import { buildAgentSshArgs } from './sshShared.js';
 
 // Progressive backoff on reconnection. Capped at 5min.
 const RECONNECT_BACKOFFS_MS = [1_000, 3_000, 8_000, 20_000, 60_000, 120_000, 300_000];
@@ -45,6 +36,30 @@ type Pending = {
   method: string;
   timer?: NodeJS.Timeout;
 };
+
+// ── Live agentStatus push (F1) ───────────────────────────────────────────────
+// The browser used to learn `vps.agentStatus` only at SSR, so a status flip
+// (agent unreachable / back up) stuck until F5. AgentClient is where the DB
+// persists happen, so it is where the push must originate — but it cannot
+// import the global SSE bus from sessionOps directly (import cycle:
+// AgentClient ← AgentClientPool ← sessionOps). sessionOps injects the emitter
+// at its module init instead.
+export type VpsStatusEmitter = (
+  vpsId: string,
+  agentStatus: 'ok' | 'missing' | 'error',
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+) => void;
+let vpsStatusEmitter: VpsStatusEmitter | null = null;
+export function setVpsStatusEmitter(fn: VpsStatusEmitter): void {
+  vpsStatusEmitter = fn;
+}
+function emitVpsStatus(
+  vpsId: string,
+  agentStatus: 'ok' | 'missing' | 'error',
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+): void {
+  try { vpsStatusEmitter?.(vpsId, agentStatus, extra); } catch {}
+}
 
 export type EventListener = (ev: AgentEvent) => void;
 
@@ -77,18 +92,16 @@ export class AgentClient {
   // The session_ids we've explicitly "subscribed" to, so we can
   // re-subscribe after a reconnect.
   private subscribed = new Set<string>();
-  // Same idea for shell_ids — parallel set so we can fire the right RPC
-  // (`shell_subscribe` vs. `subscribe`) on reconnect. Kept separate from
-  // `subscribed` because the RPC name + replay log are different.
-  private subscribedShells = new Set<string>();
   // Per-session checkpoint cursor for durable replay. Updated by
   // SessionStream via setAfterSeq(sid, seq) as events are persisted.
   // Looked up by _fireSubscribe on the next subscribe RPC (which is
   // typically issued by the resubscribe-after-reconnect path).
   // `null` means "no checkpoint yet — fall back to ring replay".
+  // NOTE there is deliberately NO shell equivalent: the live shell data
+  // path (shell_subscribe + output) belongs to server.js's per-WS proxies,
+  // which always replay the durable-log tail from scratch. This client only
+  // does the output-free lifecycle watch (watchShells below).
   private _pendingAfterSeq = new Map<string, number | null>();
-  // Parallel cursor map for shells (same semantics, separate namespace).
-  private _pendingShellAfterSeq = new Map<string, number | null>();
   // Global shell LIFECYCLE watchers (agent >= 0.8.0). Distinct from the
   // per-shell output `subscribers` above: a watcher receives shell_status /
   // shell_exit / shell_idle for ALL shells on this VPS WITHOUT the
@@ -99,6 +112,12 @@ export class AgentClient {
   // see §14 gotcha 41). Re-asserted via the `shell_watch` RPC on every
   // (re)connect when non-empty.
   private shellWatchListeners = new Set<EventListener>();
+  // Snapshot listeners for the `shell_watch` RPC result: the agent returns
+  // the list of LIVE shells when the watch is (re)armed — i.e. on every
+  // (re)connect. shellNotify uses it to prune DB rows for shells the agent
+  // no longer knows (VPS reboot, bash exited while Charon was away), which
+  // is what stops a browser from reconnect-looping on a phantom shell.
+  private shellSnapshotListeners = new Set<(shells: AgentShellInfo[]) => void>();
   private statusListeners = new Set<(s: AgentClientStatus) => void>();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -254,67 +273,11 @@ export class AgentClient {
     }
   }
 
-  // ── Shell-side subscriptions (agent >= 0.7.0) ─────────────────────────────
-  // Same pattern as `subscribe`/`unsubscribe` for Claude sessions, but the
-  // RPC is `shell_subscribe` / `shell_unsubscribe` (the agent's shell event
-  // log lives in a separate dir). Listeners share the same `subscribers`
-  // map — shell_ids and session_ids don't collide in practice (16-hex vs
-  // 32-hex), and the routing layer keys by id only.
-  subscribeShell(shellId: string, listener: EventListener, opts?: { afterSeq?: number }): void {
-    if (!this.subscribers.has(shellId)) {
-      this.subscribers.set(shellId, new Set());
-    }
-    this.subscribers.get(shellId)!.add(listener);
-    if (!this.subscribedShells.has(shellId)) {
-      this.subscribedShells.add(shellId);
-      if (this.status === 'connected') {
-        this._fireShellSubscribe(shellId, opts);
-      } else {
-        this._pendingShellAfterSeq.set(shellId, opts?.afterSeq ?? null);
-      }
-    } else if (opts?.afterSeq !== undefined) {
-      // The shell is already subscribed but the caller wants to bump the
-      // cursor (e.g. a fresh ws connection just re-asserted the latest seq).
-      this._pendingShellAfterSeq.set(shellId, opts.afterSeq);
-    }
-  }
-
-  unsubscribeShell(shellId: string, listener: EventListener): void {
-    const set = this.subscribers.get(shellId);
-    if (!set) return;
-    set.delete(listener);
-    if (set.size === 0) {
-      this.subscribers.delete(shellId);
-      this.subscribedShells.delete(shellId);
-      if (this.status === 'connected') {
-        this.call('shell_unsubscribe', { shell_id: shellId }).catch(() => {});
-      }
-    }
-  }
-
-  /** Update the durable-replay cursor for a shell. Called as Charon persists
-   *  shell_output events; the latest value is what `_fireShellSubscribe`
-   *  will pass to the agent on the next (re)subscribe. */
-  setShellAfterSeq(shellId: string, afterSeq: number | null): void {
-    this._pendingShellAfterSeq.set(shellId, afterSeq);
-  }
-
-  private _fireShellSubscribe(shellId: string, opts?: { afterSeq?: number }): void {
-    const afterSeq = opts?.afterSeq ?? this._pendingShellAfterSeq.get(shellId) ?? null;
-    const params: Record<string, unknown> = { shell_id: shellId };
-    if (typeof afterSeq === 'number') params.after_seq = afterSeq;
-    this.call('shell_subscribe', params).catch((e) => {
-      // Shell gone on the agent (typically: agent restarted, the bash child
-      // died with it). Drop the subscription so we don't keep retrying — the
-      // browser will see no events and the WS handler will close.
-      if (/not found/i.test(e?.message ?? '') || e?.code === -32000) {
-        this.subscribedShells.delete(shellId);
-      }
-      console.warn(`[agent ${this.vps.name}] shell_subscribe failed: ${e?.message ?? e}`);
-    });
-  }
-
   // ── Global shell lifecycle watch (agent >= 0.8.0) ─────────────────────────
+  // (The old per-shell `subscribeShell`/`setShellAfterSeq` plumbing was dead
+  // code — the live shell data path lives in server.js's per-WS proxies —
+  // and was removed together with the vestigial `shells.last_seen_seq`
+  // column, migration 0016.)
   /**
    * Register a listener for shell LIFECYCLE events (shell_status / shell_exit
    * / shell_idle) across ALL shells on this VPS, without subscribing to the
@@ -343,15 +306,31 @@ export class AgentClient {
     }
   }
 
+  /** Listen for the live-shells snapshot returned by every (re)armed
+   *  `shell_watch` RPC — i.e. on every (re)connect. Used to reconcile the
+   *  `shells` DB rows against the agent's reality without an extra
+   *  `shell_list` round-trip. Returns an unsubscribe function. */
+  onShellSnapshot(cb: (shells: AgentShellInfo[]) => void): () => void {
+    this.shellSnapshotListeners.add(cb);
+    return () => this.shellSnapshotListeners.delete(cb);
+  }
+
   private _fireShellWatch(): void {
-    this.call('shell_watch', {}).catch((e) => {
-      // Old agent (< 0.8.0) → method not found. Don't spam: log once at debug
-      // level. The watcher stays registered so a later agent upgrade + reconnect
-      // re-fires the RPC and starts delivering idle events.
-      if (e?.code !== -32601) {
-        console.warn(`[agent ${this.vps.name}] shell_watch failed: ${e?.message ?? e}`);
-      }
-    });
+    this.call<{ ok: boolean; shells?: AgentShellInfo[] }>('shell_watch', {})
+      .then((res) => {
+        const shells = Array.isArray(res?.shells) ? res.shells : [];
+        for (const cb of this.shellSnapshotListeners) {
+          try { cb(shells); } catch {}
+        }
+      })
+      .catch((e) => {
+        // Old agent (< 0.8.0) → method not found. Don't spam: log once at debug
+        // level. The watcher stays registered so a later agent upgrade + reconnect
+        // re-fires the RPC and starts delivering idle events.
+        if (e?.code !== -32601) {
+          console.warn(`[agent ${this.vps.name}] shell_watch failed: ${e?.message ?? e}`);
+        }
+      });
   }
 
   onStatus(cb: (s: AgentClientStatus) => void): () => void {
@@ -395,17 +374,7 @@ export class AgentClient {
     this.stderrBuf = '';
 
     const keyPath = getSetting('ssh.private_key_path');
-    const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
-    // Explicitly select the best python ≥ 3.10 available.
-    // The pyz shebang is `python3` which on RHEL/CentOS is still 3.9 — not OK.
-    const PY = '$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3)';
-    const args = [
-      ...SSH_OPTS,
-      ...keyArgs,
-      '-p', String(this.vps.sshPort),
-      `${this.vps.sshUser}@${this.vps.ip}`,
-      `exec ${PY} ${REMOTE_AGENT_PATH} --connect`,
-    ];
+    const args = buildAgentSshArgs(this.vps, { keyPath });
 
     const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
@@ -442,6 +411,12 @@ export class AgentClient {
             agentLastSeenAt: Math.floor(Date.now() / 1000),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
+        // Live push so open tabs flip the sidebar badge without an F5
+        // (mirrors the DB persist above — keep the two in lockstep).
+        emitVpsStatus(this.vps.id, 'ok', {
+          agentVersion: hello.agent_version,
+          agentPyzSha: hello.agent_pyz_sha ?? null,
+        });
         // Re-subscribe to everything. This is the critical path for
         // "Charon was down, agent kept emitting events" — we want the
         // agent to replay from the durable log, NOT from the in-memory
@@ -450,9 +425,6 @@ export class AgentClient {
         // replay (ring tail, backward compat for old agents).
         for (const sid of this.subscribed) {
           this._fireSubscribe(sid);
-        }
-        for (const shellId of this.subscribedShells) {
-          this._fireShellSubscribe(shellId);
         }
         // Re-assert the global shell lifecycle watch (idle notifications).
         // Cheap, output-free; safe to re-fire on every reconnect.
@@ -560,6 +532,8 @@ export class AgentClient {
         db.update(vpsTable).set({
           agentStatus: this.lastClassified,
         }).where(eq(vpsTable.id, this.vps.id)).run();
+        // Live push (same gating as the persist: transient drops stay silent).
+        emitVpsStatus(this.vps.id, this.lastClassified);
       }
     } catch {}
 

@@ -1,37 +1,44 @@
-"""Persistent PTY shells hosted by the agent.
+"""Persistent PTY shells — agent-side CLIENT of a detached holder process.
 
-A shell is a bash process inside a PTY. The agent owns the master file
-descriptor and streams output through the same `_emit` pipeline used by
-Claude sessions: every `shell_output` event gets a durable log entry
-(via `EventLog`, in a dedicated `~/.charon/shells/` subdir to keep the
-namespace separate from sessions) AND a live broadcast to subscribers.
-Input goes the other way: Charon calls `shell_input` with bytes; we
-write them to the master FD.
+Since 0.10.0 the PTY + bash live in a separate, detached *holder*
+process (`holder.py`, spawned as `charon-agent.pyz --shell-holder <id>`
+with `start_new_session=True`). This module is the agent-side client:
+it spawns/attaches to the holder over `~/.charon/shells/<id>.sock`,
+relays bytes both ways, and keeps the SAME outward surface as before
+(`_emit` events `shell_output`/`shell_status`/`shell_exit`/`shell_idle`,
+attributes `pid`/`cols`/`rows`/`exited`/…), so `server.py` and the whole
+Charon side are unchanged apart from boot-time re-attachment.
 
-Persistence semantics
----------------------
-- **Survives Charon restart** ✓: the agent keeps the PTY open, the bash
-  child keeps running. On reconnect Charon re-subscribes with
-  `after_seq` and the event log replays exactly what it missed → the
-  user sees full scrollback up to the cursor.
-- **Does NOT survive agent restart** ✗: the master FD is local to the
-  agent process; bash gets SIGHUP when the agent exits. This is the
-  documented trade-off vs. an external tmux session. Agent restarts
-  are rare (only on `.pyz` updates). On agent boot we clean up the
-  orphan shell event logs (cf. `Server._restore_existing`).
+Persistence semantics (0.10.0)
+------------------------------
+- **Survives Charon restart** ✓ (unchanged): the agent keeps running,
+  the durable event log replays what Charon missed.
+- **Survives AGENT restart** ✓ (NEW): bash belongs to the holder, which
+  outlives the agent. On boot the agent scans `~/.charon/shells/*.sock`
+  and calls `attach()` on each. Output produced while the agent was down
+  was spooled by the holder and is replayed into the durable event log
+  on attach — no scrollback hole.
+- Requires `KillMode=process` in the systemd unit (bootstrap.ts writes
+  it; the agent-update path rewrites the unit) — otherwise systemd's
+  default control-group sweep kills the holders on service restart.
+- Does NOT survive a VPS reboot (nothing does without a process).
+
+Idle / busy detection stays HERE (not in the holder): the heuristics
+feed `_emit`, which only the agent can do, and keeping the holder dumb
+(pure byte relay + spool) is what makes it safe to leave running across
+.pyz updates. During the post-attach spool replay both heuristics are
+suppressed (`_replaying_spool`) so a reattach can't fire a phantom
+"finished something" notification or a stale busy tab.
 """
 from __future__ import annotations
 
 import asyncio
-import errno
-import fcntl
+import json
 import os
-import pty
-import signal
-import struct
+import subprocess
 import sys
-import termios
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 
@@ -63,30 +70,21 @@ SHELL_MONITOR_INTERVAL = 1.0    # how often the monitor task re-checks
 # "thinking" tab, mirroring Claude sessions. It must feel responsive, so it
 # clears after a SHORT quiet gap (not the 6 s notification window). We flip to
 # `busy` when output flows that is not just an echo of recent typing, and back
-# to `active` once output settles. See `_on_readable` / `_monitor_idle`.
+# to `active` once output settles. See `_handle_output` / `_monitor_idle`.
 SHELL_BUSY_SETTLE_SECONDS = 1.5  # quiet gap before clearing the "busy" status
 SHELL_BUSY_INPUT_GUARD = 1.0     # output within this window of a keystroke = echo (don't flag busy)
 
-
-def _set_winsize(fd: int, cols: int, rows: int) -> None:
-    """ioctl(TIOCSWINSZ) on the master FD → kernel updates the PTY size +
-    sends SIGWINCH to the foreground process group. Best-effort: a closed
-    FD or an EBADF after cleanup is silently ignored."""
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
-    except OSError:
-        pass
+# How long to wait for a freshly-spawned holder's socket to accept.
+HOLDER_SPAWN_TIMEOUT_S = 5.0
+# Reader limit for the holder socket: one output line can carry up to 64 KB
+# of PTY text, ×3 for replacement chars, ×~2 for JSON escapes. 2 MB is lavish.
+HOLDER_READER_LIMIT = 2 << 20
 
 
 class AgentShell:
-    """A PTY-hosted bash session. Single writer (the asyncio loop).
-
-    Owns: the master FD + the bash child PID + a `cols/rows` cache for
-    later resize requests that arrive before the FD is open.
-    Emits: `shell_output` (every read), `shell_exit` (on cleanup).
-    Does NOT touch state.json (shells are intentionally not persisted
-    across agent restarts — see module docstring).
-    """
+    """Agent-side proxy for one holder-hosted bash. Single writer (the
+    asyncio loop). Emits the same events as the pre-0.10.0 in-process
+    implementation; see module docstring."""
 
     def __init__(
         self,
@@ -95,26 +93,32 @@ class AgentShell:
         cwd: Optional[str],
         name: Optional[str],
         emit: Callable[[dict[str, Any]], None],
+        shells_dir: Path,
     ) -> None:
         self.shell_id = shell_id
         self.cwd = cwd
         self.name = name
         self.emit = emit
-        self.pid: Optional[int] = None
-        self.master_fd: Optional[int] = None
+        self.shells_dir = shells_dir
+        self.sock_path = shells_dir / f"{shell_id}.sock"
+        self.pid: Optional[int] = None          # bash pid (from holder hello)
+        self.holder_pid: Optional[int] = None
         self.exited = False
         self.exit_code: Optional[int] = None
-        self.created_at = time.time()
+        self.created_at = time.time()           # overwritten by hello on attach
         self.cols = 120
         self.rows = 32
-        self._read_registered = False
-        # ── idle detection state (see module constants) ──
-        self._last_output_ts = 0.0   # time.time() of the last non-empty read
-        self._last_input_ts = 0.0    # time.time() of the last keystroke write
-        self._active_burst = False   # True while output is "flowing"
-        self._burst_start_ts = 0.0   # when the current burst started
-        self._burst_bytes = 0        # bytes accumulated in the current burst
-        self._busy_emitted = False   # True after we told Charon status=busy (thinking tab)
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._read_task: Optional[asyncio.Task] = None
+        # ── idle/busy detection state (see module constants) ──
+        self._last_output_ts = 0.0
+        self._last_input_ts = 0.0
+        self._active_burst = False
+        self._burst_start_ts = 0.0
+        self._burst_bytes = 0
+        self._busy_emitted = False
+        self._replaying_spool = False
         self._monitor_task: Optional[asyncio.Task] = None
 
     # ── public ───────────────────────────────────────────────────────────
@@ -132,60 +136,154 @@ class AgentShell:
             "pid": self.pid,
         }
 
-    async def start(self, initial_cols: Optional[int] = None, initial_rows: Optional[int] = None) -> None:
-        """Fork bash inside a fresh PTY. Wires the master FD into the
-        asyncio loop's reader set so output flows automatically."""
+    async def start(self, initial_cols: Optional[int] = None,
+                    initial_rows: Optional[int] = None) -> None:
+        """Spawn a fresh detached holder (which forks bash), then connect."""
         if initial_cols and initial_cols > 0:
             self.cols = max(2, min(500, int(initial_cols)))
         if initial_rows and initial_rows > 0:
             self.rows = max(2, min(300, int(initial_rows)))
-        pid, master_fd = pty.fork()
-        if pid == 0:
-            # ── Child ──
-            # pty.fork sets up the slave as the controlling terminal; we just
-            # have to chdir / set the env / exec bash. Any exception here is
-            # fatal for the child only — _exit() avoids running parent atexit
-            # handlers (which could deadlock the loop in shared state).
-            try:
-                if self.cwd and os.path.isdir(self.cwd):
-                    os.chdir(self.cwd)
-            except OSError:
-                pass
-            env = dict(os.environ)
-            # xterm-256color is a universally-present, fully-featured terminfo
-            # — htop/vim/nano/less all work with no extra setup. node-pty (no
-            # longer in the path) used the same name; xterm.js on the browser
-            # speaks it too.
-            env['TERM'] = 'xterm-256color'
-            try:
-                os.execvpe('bash', ['bash', '-l'], env)
-            except OSError as e:
-                # Fall back to /bin/sh if bash isn't on PATH (minimal images).
-                try:
-                    os.execvpe('sh', ['sh', '-l'], env)
-                except OSError as e2:
-                    sys.stderr.write(f"[shell {self.shell_id}] exec failed: {e} / {e2}\n")
-                    os._exit(127)
-        # ── Parent ──
-        self.pid = pid
-        self.master_fd = master_fd
-        # Seed the input clock so the login banner / first prompt (printed
-        # immediately, with no keystroke yet) isn't mistaken for a program
-        # "busy" burst by the input-echo guard in _on_readable.
+        self._spawn_holder()
+        await self._connect(timeout=HOLDER_SPAWN_TIMEOUT_S)
+        self._post_connect()
+
+    async def attach(self) -> None:
+        """Connect to an ALREADY-RUNNING holder (agent boot after restart).
+        Raises if the socket is stale — caller unlinks it and moves on."""
+        await self._connect(timeout=2.0)
+        self._post_connect()
+
+    def write(self, data: str) -> None:
+        """Forward keystrokes to bash (via the holder). No-ops when dead."""
+        if self.exited:
+            return
         self._last_input_ts = time.time()
-        _set_winsize(master_fd, self.cols, self.rows)
-        # Non-blocking so the reader callback never wedges the loop.
-        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._send({"input": data})
+
+    def resize(self, cols: int, rows: int) -> None:
+        cols = max(2, min(500, int(cols)))
+        rows = max(2, min(300, int(rows)))
+        self.cols = cols
+        self.rows = rows
+        self._send({"resize": [cols, rows]})
+
+    def kill(self) -> None:
+        """User-initiated end: the holder SIGHUPs bash, reaps it, removes
+        its socket + spool and exits; we hear back via {"exit": …}."""
+        if self.exited:
+            return
+        if self._writer is None:
+            # Holder unreachable (never attached / already gone).
+            self._handle_exit(None)
+            return
+        self._send({"kill": True})
+
+    # ── internals ────────────────────────────────────────────────────────
+
+    def _holder_argv(self) -> list[str]:
+        """Command line for the detached holder. Runs the same .pyz with the
+        same interpreter; falls back to `-m charon_agent` in dev (no pyz)."""
+        pyz = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+        if pyz and os.path.isfile(pyz):
+            base = [sys.executable, pyz]
+        else:
+            base = [sys.executable, "-m", "charon_agent"]
+        argv = base + [
+            "--shell-holder", self.shell_id,
+            "--cols", str(self.cols),
+            "--rows", str(self.rows),
+        ]
+        if self.cwd:
+            argv += ["--cwd", self.cwd]
+        if self.name:
+            argv += ["--name", self.name]
+        return argv
+
+    def _spawn_holder(self) -> None:
+        env = dict(os.environ)
+        pkg_parent = str(Path(__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = pkg_parent + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+        )
+        # Holder stdout/stderr → the shared agent log (O_APPEND, so the
+        # systemd-appended agent writes interleave safely).
+        log_path = self.shells_dir.parent / "agent.log"
+        try:
+            log_fh = open(log_path, "ab")
+        except OSError:
+            log_fh = subprocess.DEVNULL  # type: ignore[assignment]
+        try:
+            subprocess.Popen(
+                self._holder_argv(),
+                stdin=subprocess.DEVNULL,
+                stdout=log_fh,
+                stderr=log_fh,
+                env=env,
+                close_fds=True,
+                # Own session: the holder survives the agent's death and is
+                # immune to our signals. (systemd-side survival additionally
+                # needs KillMode=process in the unit — cf. bootstrap.ts.)
+                start_new_session=True,
+            )
+        finally:
+            if log_fh is not subprocess.DEVNULL:
+                try:
+                    log_fh.close()  # type: ignore[union-attr]
+                except OSError:
+                    pass
+
+    async def _connect(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                reader, writer = await asyncio.open_unix_connection(
+                    str(self.sock_path), limit=HOLDER_READER_LIMIT
+                )
+                break
+            except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
+                last_err = e
+                await asyncio.sleep(0.05)
+        else:
+            raise RuntimeError(
+                f"holder for shell {self.shell_id} not reachable: {last_err}"
+            )
+        # First line MUST be the hello.
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        if not line:
+            writer.close()
+            raise RuntimeError(f"holder for shell {self.shell_id} closed before hello")
+        try:
+            hello = json.loads(line).get("hello") or {}
+        except (json.JSONDecodeError, AttributeError):
+            writer.close()
+            raise RuntimeError(f"holder for shell {self.shell_id} sent garbage hello")
+        self.pid = hello.get("pid")
+        self.holder_pid = hello.get("holder_pid")
+        if isinstance(hello.get("cwd"), str):
+            self.cwd = hello["cwd"]
+        if isinstance(hello.get("name"), str):
+            self.name = hello["name"]
+        if isinstance(hello.get("created_at"), (int, float)):
+            self.created_at = float(hello["created_at"])
+        if isinstance(hello.get("cols"), int):
+            self.cols = hello["cols"]
+        if isinstance(hello.get("rows"), int):
+            self.rows = hello["rows"]
+        self._reader = reader
+        self._writer = writer
+        # The holder streams its offline spool (if any) right after hello,
+        # closed by {"spool_end": true}. Suppress busy/idle heuristics until
+        # then — replayed history is not live activity.
+        self._replaying_spool = True
+        # Seed the input clock so the first prompt / spool tail can't trip
+        # the busy input-guard.
+        self._last_input_ts = time.time()
+
+    def _post_connect(self) -> None:
         loop = asyncio.get_event_loop()
-        loop.add_reader(master_fd, self._on_readable)
-        self._read_registered = True
-        # Background idle watcher: detects active→idle transitions and emits
-        # `shell_idle` (see _monitor_idle). One task per shell — shells are
-        # few, so the overhead is negligible; cancelled in _cleanup.
+        self._read_task = loop.create_task(self._read_loop())
         self._monitor_task = loop.create_task(self._monitor_idle())
-        # Tell subscribers the shell is up (`shell_status` carries dims +
-        # pid; useful for the Charon UI / debugging).
         self.emit({
             "event": "shell_status",
             "session_id": self.shell_id,  # routing key for _emit
@@ -196,95 +294,62 @@ class AgentShell:
             "pid": self.pid,
         })
 
-    def write(self, data: bytes) -> None:
-        """Forward bytes to the bash stdin (via the PTY master). Silently
-        no-ops on a dead shell."""
-        if self.exited or self.master_fd is None:
-            return
-        # Record input intent regardless of write success — the idle monitor
-        # uses this to avoid firing "finished" while the user is typing.
-        self._last_input_ts = time.time()
+    async def _read_loop(self) -> None:
+        assert self._reader is not None
         try:
-            os.write(self.master_fd, data)
-        except OSError:
-            pass
+            while True:
+                line = await self._reader.readline()
+                if not line:
+                    # Holder gone (crash / kill -9). Its death closed the PTY
+                    # master → bash got SIGHUP → the shell is dead either way.
+                    self._handle_exit(None)
+                    return
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if "output" in msg and isinstance(msg["output"], str):
+                    self._handle_output(msg["output"])
+                elif "spool_end" in msg:
+                    self._replaying_spool = False
+                elif "exit" in msg:
+                    code = msg["exit"]
+                    self._handle_exit(code if isinstance(code, int) else None)
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            sys.stderr.write(f"[shell {self.shell_id}] read loop error: {e}\n")
+            self._handle_exit(None)
 
-    def resize(self, cols: int, rows: int) -> None:
-        """Set the PTY window size — propagates SIGWINCH to bash and
-        anything in its foreground process group (htop, vim, …)."""
-        cols = max(2, min(500, int(cols)))
-        rows = max(2, min(300, int(rows)))
-        self.cols = cols
-        self.rows = rows
-        if self.master_fd is not None:
-            _set_winsize(self.master_fd, cols, rows)
-
-    def kill(self) -> None:
-        """User-initiated end. SIGHUP the bash child (it'll cascade to its
-        descendants thanks to the PTY) then close the master."""
-        if self.pid and not self.exited:
-            try:
-                os.kill(self.pid, signal.SIGHUP)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                pass
-        self._cleanup(None)
-
-    # ── internals ────────────────────────────────────────────────────────
-
-    def _on_readable(self) -> None:
-        """add_reader callback. Drains as much as is available in one
-        syscall (up to 64 KB) and emits a single `shell_output` event.
-        Larger drains reduce per-byte overhead vs. one event per char."""
-        if self.master_fd is None:
-            return
-        try:
-            data = os.read(self.master_fd, 65536)
-        except BlockingIOError:
-            return
-        except OSError as e:
-            # EIO on a master FD = the child closed the slave (exited or
-            # was killed). EBADF would be a programming bug (post-close).
-            if e.errno in (errno.EIO, errno.EBADF):
-                self._cleanup(None)
-            return
-        if not data:
-            # 0 bytes on a readable FD = EOF, same as EIO above.
-            self._cleanup(None)
-            return
-        # ── idle-detection bookkeeping ──
-        # Start a new burst on the idle→active edge; accumulate otherwise.
+    def _handle_output(self, text: str) -> None:
         now = time.time()
-        if not self._active_burst:
-            self._active_burst = True
-            self._burst_start_ts = now
-            self._burst_bytes = 0
-        self._burst_bytes += len(data)
-        self._last_output_ts = now
-        # ── busy/active status (agent >= 0.9.0) ──
-        # Flip to "busy" (the UI's blue/thinking tab) when output flows that is
-        # NOT just an echo of very recent typing. Emitted once per active span;
-        # the monitor clears it back to "active" after SHELL_BUSY_SETTLE_SECONDS
-        # of quiet. The input guard keeps normal prompt typing from flickering
-        # the tab. Note this fans out to shell watchers (Charon) but NOT as
-        # shell_output, so it's a cheap lifecycle signal.
-        if not self._busy_emitted and (now - self._last_input_ts) > SHELL_BUSY_INPUT_GUARD:
-            self._busy_emitted = True
-            self.emit({
-                "event": "shell_status",
-                "session_id": self.shell_id,
-                "shell_id": self.shell_id,
-                "status": "busy",
-                "cols": self.cols,
-                "rows": self.rows,
-                "pid": self.pid,
-            })
-        # utf-8 with `replace` loses fidelity on raw binary output (e.g.
-        # `cat /bin/ls`) but keeps the wire JSON-safe without base64's 4/3
-        # bloat. Acceptable for an interactive shell terminal where binary
-        # piping to stdout is exceptional.
-        text = data.decode('utf-8', errors='replace')
+        if not self._replaying_spool:
+            # ── idle-detection bookkeeping ──
+            if not self._active_burst:
+                self._active_burst = True
+                self._burst_start_ts = now
+                self._burst_bytes = 0
+            self._burst_bytes += len(text)
+            self._last_output_ts = now
+            # ── busy/active status (agent >= 0.9.0) ──
+            # Flip to "busy" (the UI's blue/thinking tab) when output flows
+            # that is NOT just an echo of very recent typing. Emitted once per
+            # active span; the monitor clears it back to "active" after
+            # SHELL_BUSY_SETTLE_SECONDS of quiet.
+            if not self._busy_emitted and (now - self._last_input_ts) > SHELL_BUSY_INPUT_GUARD:
+                self._busy_emitted = True
+                self.emit({
+                    "event": "shell_status",
+                    "session_id": self.shell_id,
+                    "shell_id": self.shell_id,
+                    "status": "busy",
+                    "cols": self.cols,
+                    "rows": self.rows,
+                    "pid": self.pid,
+                })
         self.emit({
             "event": "shell_output",
             "session_id": self.shell_id,
@@ -293,22 +358,17 @@ class AgentShell:
         })
 
     async def _monitor_idle(self) -> None:
-        """Fire `shell_idle` once per burst when output goes quiet.
-
-        Runs until the shell exits (or the task is cancelled in _cleanup).
-        See the module-level constants for the gating heuristic. The event
-        is broadcast-only (the server's _emit does NOT log/ring it — it's a
-        transient hint, replaying stale "finished" pings on reconnect would
-        be wrong).
-        """
+        """Fire `shell_idle` once per burst when output goes quiet, and clear
+        the transient busy status. Identical heuristic to pre-0.10.0; see the
+        module-level constants. Runs until the shell exits."""
         try:
             while not self.exited:
                 await asyncio.sleep(SHELL_MONITOR_INTERVAL)
+                if self._replaying_spool:
+                    continue
                 now = time.time()
                 quiet = now - self._last_output_ts
                 # (1) Clear the "busy"/thinking status after a SHORT quiet gap.
-                # This is the responsive UI indicator (blue tab), independent
-                # of the longer "finished something" notification below.
                 if self._busy_emitted and quiet >= SHELL_BUSY_SETTLE_SECONDS:
                     self._busy_emitted = False
                     self.emit({
@@ -320,14 +380,11 @@ class AgentShell:
                         "rows": self.rows,
                         "pid": self.pid,
                     })
-                # (2) "Finished something" notification on the longer idle
-                # window (unchanged heuristic).
+                # (2) "Finished something" notification on the longer window.
                 if not self._active_burst:
                     continue
                 if quiet < SHELL_IDLE_SECONDS:
-                    continue  # still flowing (or too soon) — keep waiting
-                # active → idle transition: evaluate the gate once, then
-                # disarm (the next read re-arms a fresh burst).
+                    continue
                 self._active_burst = False
                 burst_seconds = self._last_output_ts - self._burst_start_ts
                 burst_bytes = self._burst_bytes
@@ -350,42 +407,40 @@ class AgentShell:
         except Exception as e:  # never let the monitor kill the loop
             sys.stderr.write(f"[shell {self.shell_id}] idle monitor error: {e}\n")
 
-    def _cleanup(self, exit_code: Optional[int]) -> None:
-        """Idempotent teardown: remove the reader, close the FD, reap the
-        zombie, emit `shell_exit`."""
+    def _send(self, obj: dict[str, Any]) -> None:
+        w = self._writer
+        if w is None:
+            return
+        try:
+            w.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
+            asyncio.get_event_loop().create_task(self._drain(w))
+        except Exception:
+            pass
+
+    async def _drain(self, w: asyncio.StreamWriter) -> None:
+        try:
+            await w.drain()
+        except Exception:
+            pass
+
+    def _handle_exit(self, exit_code: Optional[int]) -> None:
+        """Idempotent: mark dead, stop tasks, emit shell_exit."""
         if self.exited:
             return
         self.exited = True
+        self.exit_code = exit_code
         if self._monitor_task is not None:
             try:
                 self._monitor_task.cancel()
             except Exception:
                 pass
             self._monitor_task = None
-        # If we didn't get an explicit code, ask the kernel.
-        if exit_code is None and self.pid:
+        if self._writer is not None:
             try:
-                _, status = os.waitpid(self.pid, os.WNOHANG)
-                if os.WIFEXITED(status):
-                    exit_code = os.WEXITSTATUS(status)
-                elif os.WIFSIGNALED(status):
-                    exit_code = -os.WTERMSIG(status)
-            except OSError:
-                pass
-        self.exit_code = exit_code
-        loop = asyncio.get_event_loop()
-        if self._read_registered and self.master_fd is not None:
-            try:
-                loop.remove_reader(self.master_fd)
+                self._writer.close()
             except Exception:
                 pass
-            self._read_registered = False
-        if self.master_fd is not None:
-            try:
-                os.close(self.master_fd)
-            except OSError:
-                pass
-            self.master_fd = None
+            self._writer = None
         self.emit({
             "event": "shell_exit",
             "session_id": self.shell_id,

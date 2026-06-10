@@ -44,9 +44,11 @@ The whole thing offers:
 - A desktop multi-session dashboard (sidebar VPS → sessions → messages)
 - A dedicated mobile UI (`/m/...`)
 - Persistent SSH shells (xterm.js) in addition to Claude sessions — the
-  PTY lives inside the charon-agent's Python process on the VPS and
-  streams over a WebSocket; output is replayed from a durable per-shell
-  event log on Charon reconnect (real scrollback, no tmux indirection)
+  PTY lives in a DETACHED per-shell holder process on the VPS (agent >=
+  0.10.0, `holder.py`) so shells survive BOTH Charon restarts AND agent
+  restarts/updates; the agent re-attaches to holders at boot and streams
+  over a WebSocket; output is replayed from a durable per-shell event log
+  (real scrollback, no tmux indirection)
 - Session survival across Charon restarts (the agent keeps running, Charon
   re-subscribes on reboot with ring buffer replay)
 - Automated VPS bootstrap (install Python + SDK + agent in an SSE stream)
@@ -87,14 +89,15 @@ The whole thing offers:
 │   ├── db/{schema.ts, index.ts}  # Drizzle + better-sqlite3 (WAL, FK ON)
 │   └── server/
 │       ├── agent/        # AgentClient, AgentClientPool, sessionOps, autoConnect,
-│       │                 # eventConnections, builtPyzSha, claudeLoginCheck, types
+│       │                 # eventConnections, builtPyzSha, claudeLoginCheck, types,
+│       │                 # sshShared.js (CJS — ssh args + ControlMaster, shared w/ server.js)
 │       ├── claude/       # bootstrap.ts (install phases), sshExec.ts, types.ts
 │       ├── shell/        # persistent SSH shells (thin coordinator over AgentClient — PTY lives in the agent)
 │       ├── install/installSession.ts  # in-memory install pool
 │       ├── auth.ts, session.ts, crypto.ts
 │       └── seed.ts, migrationV2.ts
 ├── agent/                # Python daemon (zipapp .pyz, ~36KB)
-│   ├── charon_agent/{__main__, server, session, shell, state, protocol, event_log, client, __init__}.py
+│   ├── charon_agent/{__main__, server, session, shell, holder, state, protocol, event_log, client, __init__}.py
 │   ├── build.sh → dist/charon-agent.pyz
 │   └── README.md
 ├── drizzle/              # generated SQL migrations + meta/
@@ -199,7 +202,7 @@ and `PRAGMA foreign_keys=ON`.
 | `claudeSessionLogs` | autoincrement | per-session audit / debug |
 | `claudeSettings` | `key` PK | key/value settings (telegram token, VAPID, etc.) |
 | `claudePushSubs` | `id` PK, UNIQUE `endpoint` | Web Push endpoints |
-| `shells` | `id` PK, FK `vpsId` | persistent SSH shells. The PTY lives inside the charon-agent's Python process (`agent/charon_agent/shell.py`); this row is the Charon-side index. `cwd`, `name`, `color`, `last_seen_seq` (**vestigial** — was the WebSocket replay cursor; `server.js` now always replays the full durable log via `after_seq:0`, see §14 gotcha 37). Cascade `vps → shells`. |
+| `shells` | `id` PK, FK `vpsId` | persistent SSH shells. The PTY lives in a DETACHED holder process on the VPS (`agent/charon_agent/holder.py`, agent >= 0.10.0 — survives agent restarts); this row is the Charon-side index. `cwd`, `name`, `color`. The vestigial `last_seen_seq` was dropped by migration 0016 (shells replay the durable-log tail from scratch, never a cursor — §14 gotcha 37). Rows are pruned wherever the agent reports the shell gone: boot reconcile, shell_watch snapshot, failed shell_subscribe (§14 gotcha 44). Cascade `vps → shells`. |
 
 Cascades: `vps → vpsPaths`, `vps → claudeSessions`, `claudeSessions → messages/permissions/questions/logs` (all CASCADE).
 
@@ -271,6 +274,7 @@ happens API-side (`/api/vps-folders/layout` rejects unknown
 | 0013 | creates the `shells` table (`id`, `vps_id` FK→`vps` CASCADE, `tmux_name`, `cwd`, `name`, `color`, `created_at`) + index `idx_shells_vps_id`. **Superseded by 0015**: the tmux-based design was replaced with an agent-hosted PTY (real scrollback + WebSocket transport — see §14 gotcha 37). `tmux_name` is dropped in 0015. |
 | 0014 | `claude_sessions` += `model` / `fallback_model` / `effort` (all text, nullable). Per-session Claude config (agent >= 0.5.0). `model` / `fallback_model` are free strings (e.g. `claude-opus-4-7-...`, `claude-opus-4-8-...`); `effort` is one of `low` / `medium` / `high` / `xhigh` / `max` (mirrors `claude_agent_sdk.EffortLevel`). NULL = inherit the global default from `claudeSettings` (`claude.default_model`, `claude.default_fallback_model`, `claude.default_effort`), which itself can be empty → SDK default. **The resolved value is PERSISTED at session-create time** (not re-read from settings later) so a later change to the global default doesn't retroactively alter existing sessions — surprising behavior we explicitly avoid. Changes via `setModel` / `setEffort` take effect at the NEXT SDK start (sleep + resume): the underlying `ClaudeSDKClient` binds model/effort at construction. Hand-written. |
 | 0015 | `shells` += `last_seen_seq` (integer, nullable) AND drops `tmux_name`. Backs the shells refactor from tmux-attach to agent-hosted PTY (agent >= 0.7.0): the PTY now lives inside the charon-agent's Python process, output streams through a per-shell durable event log (`~/.charon/shells/<id>.jsonl`), Charon connects via WebSocket. `last_seen_seq` was originally the replay cursor (mirroring `claude_sessions.last_seen_seq` from 0011) but is now **vestigial** — unlike Claude sessions (SQLite-backed), shells have no Charon-side output store and the browser xterm is wiped on unmount, so `server.js` always replays the FULL log via `after_seq:0` (see §14 gotcha 37). Column kept (no down-migration) but unread. `tmux_name` is gone — no tmux involved anymore. Hand-written. Requires SQLite ≥ 3.35 for `DROP COLUMN`. See §14 gotcha 37. |
+| 0016 | `shells` -= `last_seen_seq` (DROP COLUMN). The column added by 0015 was already documented as vestigial — the WS bridge replays the durable-log tail (`after_seq:0 + tail_bytes`) and never reads/writes a cursor. Dropped together with the dead `subscribeShell`/`setShellAfterSeq` plumbing in `AgentClient.ts`. Hand-written; requires SQLite ≥ 3.35 (same floor as 0015). |
 
 Typical workflow for changing the schema:
 1. Edit `lib/db/schema.ts`
@@ -306,9 +310,12 @@ agent in `hello`) to decide whether an update is due.
 ~/.charon/agent.log             # stdout/stderr append-only
 ~/.charon/events/<sid>.jsonl    # durable per-session event log (>= 0.4.0)
 ~/.charon/events/<sid>.jsonl.1  # rotated chunk, oldest first (.1 = previous)
-~/.charon/shells/<id>.jsonl     # durable per-shell event log (>= 0.7.0; wiped on agent boot)
+~/.charon/shells/<id>.jsonl     # durable per-shell event log (>= 0.7.0; since 0.10.0 only wiped when no live holder)
+~/.charon/shells/<id>.sock      # holder control socket (>= 0.10.0; one per live shell)
+~/.charon/shells/<id>.spool     # offline output spool (>= 0.10.0; exists only while the agent is down)
 ~/.charon/venv/                 # venv created by bootstrap (PEP 668 friendly)
-~/.config/systemd/user/charon-agent.service   # systemd-user unit
+~/.config/systemd/user/charon-agent.service   # systemd-user unit (KillMode=process since 0.10.0 —
+                                # the cgroup sweep must NOT kill the shell holders, gotcha 44)
                                 # fallback: nohup setsid + crontab @reboot
 ```
 
@@ -326,8 +333,13 @@ VPS prerequisites:
    - `killed` sessions → ignored
    - `sleeping` sessions → loaded into memory but **not** restarted
    - active sessions → restore (instantiate `ClaudeSDKClient(resume=claude_session_id)`)
-4. `accept` loop: each connection = 1 task, reads line-delimited JSON
-5. SIGINT/SIGTERM: save state, stop sessions (mark `sleeping`), unlink socket
+4. Re-attach shell holders: scan `~/.charon/shells/*.sock`, `attach()` to
+   each live holder (>= 0.10.0); stale socks unlinked, logs/spools of dead
+   shells wiped
+5. `accept` loop: each connection = 1 task, reads line-delimited JSON
+6. SIGINT/SIGTERM: save state, stop sessions (mark `sleeping`), unlink
+   socket. Shell holders are NOT touched — they keep bash alive and spool
+   output until the next agent attaches
 
 ### `--connect` mode (the stdio↔socket proxy)
 
@@ -362,6 +374,19 @@ failed (perms). Charon uses `2` to offer a setup to the user.
   `SDK event → protocol event` (`AssistantMessage` →
   `assistant_text`/`thinking`/`tool_use`, `UserMessage.ToolResultBlock`
   → `tool_result`, `ResultMessage` → `stop`).
+- **`shell.py`** (rewritten in 0.10.0): `AgentShell` is the agent-side
+  CLIENT of a detached holder — spawn (`start`) or reconnect (`attach`,
+  at boot) over `~/.charon/shells/<id>.sock`, relay input/resize/kill,
+  re-emit output through `_emit`, and run the busy/idle heuristics
+  (suppressed during the post-attach spool replay so a reattach can't
+  fire phantom notifications).
+- **`holder.py`** (>= 0.10.0): the detached per-shell process that OWNS
+  the PTY + bash (`charon-agent.pyz --shell-holder <id>`, spawned with
+  `start_new_session=True`). Survives agent restarts and `.pyz` updates;
+  spools output to `<id>.spool` (8 MB cap, newest wins) while no agent is
+  attached and replays it on attach — no scrollback hole. Line-JSON
+  protocol over the per-shell unix socket (`hello`/`output`/`spool_end`/
+  `exit` up, `input`/`resize`/`kill` down). See §14 gotcha 44.
 - **`state.py`**: tolerant load (defaults on missing fields), atomic
   save (`tempfile + fsync + os.replace`).
 - **`event_log.py`** (>= 0.4.0): durable per-session event log at
@@ -429,7 +454,7 @@ connection). Per-request timeout in `AgentClient.ts`: 60s.
 | `sleep_session` | `{session_id}` | `{ok}` — stops, keeps `claude_session_id` |
 | `kill_session` | `{session_id}` | `{ok}` — stops + removes from state.json |
 
-**Shell RPCs** (agent >= 0.7.0, not counted in the 16 above): `shell_list`, `shell_start {cwd?, name?, cols?, rows?}`, `shell_input {shell_id, data}`, `shell_resize {shell_id, cols, rows}`, `shell_subscribe {shell_id, after_seq?, tail_bytes?}`, `shell_unsubscribe {shell_id}`, `shell_kill {shell_id}`. `shell_subscribe`'s **`tail_bytes`** (agent >= 0.9.0) replays only the SUFFIX of the durable log whose cumulative `data` size ≤ N (the "show the bottom instantly" path — `server.js` sends `after_seq:0 + tail_bytes:512KB`; `tail_bytes` wins when both present; old agents ignore it and fall through to the full `read_since(0)`). See §14 gotcha 37. Plus (agent >= 0.8.0) the global, output-free lifecycle watch used by the idle-notify AND live-status paths: `shell_watch {}` → `{ok, shells:[ShellInfo]}` (registers the connection to receive `shell_status`/`shell_exit`/`shell_idle` for ALL shells, NOT `shell_output`) and `shell_unwatch {}` → `{ok}`. The TS mirror (`AgentMethodName`) and Python `METHODS` must both list these — `scripts/check-protocol-sync.mjs` enforces it at build time.
+**Shell RPCs** (agent >= 0.7.0, not counted in the 16 above): `shell_list`, `shell_start {cwd?, name?, cols?, rows?}`, `shell_input {shell_id, data}`, `shell_resize {shell_id, cols, rows}`, `shell_subscribe {shell_id, after_seq?, tail_bytes?}`, `shell_unsubscribe {shell_id}`, `shell_kill {shell_id}`. `shell_subscribe`'s **`tail_bytes`** (agent >= 0.9.0) replays only the SUFFIX of the durable log whose cumulative `data` size ≤ N (the "show the bottom instantly" path — `server.js` sends `after_seq:0 + tail_bytes:512KB`; `tail_bytes` wins when both present; old agents ignore it and fall through to the full `read_since(0)`). See §14 gotcha 37. Plus (agent >= 0.8.0) the global, output-free lifecycle watch used by the idle-notify AND live-status paths: `shell_watch {}` → `{ok, shells:[ShellInfo]}` (registers the connection to receive `shell_status`/`shell_exit`/`shell_idle` for ALL shells, NOT `shell_output`) and `shell_unwatch {}` → `{ok}`. The TS mirror (`AgentMethodName`) and Python `METHODS` must both list these — `scripts/check-protocol-sync.mjs` enforces it at build time. A `shell_subscribe` ERROR (-32000 "shell not found") is MEANINGFUL since 0.10.0+B1: `server.js` reacts by pruning the phantom `shells` DB row, sending the browser a terminal `{type:'gone'}` control frame and closing 1000 (no reconnect loop) — see §14 gotcha 44.
 
 ### Error codes
 
@@ -651,30 +676,34 @@ auths with Bearer `SYNC_TOKEN`).
 - `GET /api/vps/[id]/login/stream` — SSE TUI
 - `POST /api/vps/[id]/login/input` — stdin
 
-### Persistent SSH shells (agent-hosted PTY, WebSocket transport)
+### Persistent SSH shells (holder-hosted PTY, WebSocket transport)
 
-The PTY (bash) runs inside the charon-agent's Python process on the VPS
-(cf. `agent/charon_agent/shell.py`, agent >= 0.7.0); output goes through
-the standard `_emit` pipeline → durable per-shell event log at
+The PTY (bash) runs in a DETACHED holder process on the VPS
+(`agent/charon_agent/holder.py`, agent >= 0.10.0 — survives agent
+restarts; the agent is the holder's client, cf. `shell.py`); output goes
+through the standard `_emit` pipeline → durable per-shell event log at
 `~/.charon/shells/<id>.jsonl`. The browser connects directly via WebSocket
 (`/api/shells/[id]/ws`) routed by `server.js` (custom Next server).
 `lib/server/shell/shellSession.ts` is a thin coordinator (DB rows +
-lifecycle RPCs only — no live data path). See §14 gotcha 37.
+lifecycle RPCs only — no live data path). See §14 gotchas 37 & 44.
 
 - `GET /api/shells` — list all shells from DB.
 - `GET|PATCH|DELETE /api/shells/[id]` — PATCH name/color (persisted in DB). **DELETE** = `shell_kill` RPC + drop the row.
 - `POST /api/vps/[id]/shells` — create a shell on this VPS (`{cwd?, name?, cols?, rows?}`). Calls the agent's `shell_start` then inserts the `shells` row.
 - `GET /api/vps/[id]/shells` — DB-backed list for this VPS.
-- **`/api/shells/[id]/ws`** — WebSocket (handled by `server.js`, not a Next route handler). Wire protocol: binary frames = raw shell bytes both ways; text frames = JSON control (`{type:'resize',cols,rows}` browser→server, `{type:'status'|'exit'|'idle'|'replay_begin'|'replay_end',...}` server→browser). Auth: direct SQLite read of the `sessions` table (middleware doesn't run on Upgrade). On open the server sends `shell_subscribe` with **`after_seq:0 + tail_bytes:512KB`** (the TAIL of the durable log — enough to fill xterm's 10k-line scrollback — NOT a `last_seen_seq` cursor; agent >= 0.9.0, see §14 gotcha 37 for why a cursor blanks the terminal and why a tail beats the full log) and forwards the agent's `replay_begin`/`replay_end` markers; the browser `term.reset()`s on `replay_begin`, shows a brief "restoring…" overlay, then rebuilds the scrollback and scrolls to the bottom. This is why a fresh xterm (session switch, F5, reconnect) shows the latest screen instantly — see §14 gotcha 37 (and the reason `shells.last_seen_seq` is now vestigial).
+- **`/api/shells/[id]/ws`** — WebSocket (handled by `server.js`, not a Next route handler). Wire protocol: binary frames = raw shell bytes both ways; text frames = JSON control (`{type:'resize',cols,rows}` browser→server, `{type:'status'|'exit'|'gone'|'idle'|'replay_begin'|'replay_end',...}` server→browser; `gone` = the shell no longer exists anywhere, terminal — sent with close 1000 so the browser never reconnect-loops, see §14 gotcha 44). Auth: direct SQLite read of the `sessions` table (middleware doesn't run on Upgrade). On open the server sends `shell_subscribe` with **`after_seq:0 + tail_bytes:512KB`** (the TAIL of the durable log — enough to fill xterm's 10k-line scrollback — NOT a `last_seen_seq` cursor; agent >= 0.9.0, see §14 gotcha 37 for why a cursor blanks the terminal and why a tail beats the full log) and forwards the agent's `replay_begin`/`replay_end` markers; the browser `term.reset()`s on `replay_begin`, shows a brief "restoring…" overlay, then rebuilds the scrollback and scrolls to the bottom. This is why a fresh xterm (session switch, F5, reconnect) shows the latest screen instantly — see §14 gotcha 37 (and the reason `shells.last_seen_seq` is now vestigial).
 
 There used to be `POST /api/shells/[id]/input`, `POST /api/shells/[id]/resize`
 and `GET /api/shells/[id]/stream` — those are GONE since the WebSocket
 rewrite (POST per keystroke was the dominant latency source).
 
-Persistence: on Charon boot, `reconcileShellsOnBoot()` calls `shell_list`
-on each VPS via the AgentClient and **prunes DB rows the agent doesn't
-know about** — typically because the agent itself restarted (bash children
-die with the agent process). SSH/agent unreachable → leave rows untouched
+Persistence: shells survive BOTH Charon restarts and agent restarts
+(holder design, agent >= 0.10.0) — only a VPS reboot / bash exit kills
+them. Phantom `shells` rows are pruned at THREE points: (1) Charon boot —
+`reconcileShellsOnBoot()` calls `shell_list` per VPS; (2) every agent
+(re)connect — `shellNotify.ts` reconciles against the `shell_watch`
+snapshot; (3) a failed `shell_subscribe` — `server.js` prunes + sends the
+browser `{type:'gone'}`. SSH/agent unreachable → rows left untouched
 (transient).
 
 ### Agent installs (install sessions, in-memory, max 1 per VPS)
@@ -779,6 +808,8 @@ Client-side (`useClaudeSessionStream.ts`), the routing:
 | `error` | error banner; detects "import error" → offers bootstrap |
 | `prefill_input` | pre-fills the textarea |
 | `replay_begin/end` | agent-side replay markers consumed by `sessionOps.ts`; not sent to the browser SSE |
+| `vps_status` | (`sessionId` = vpsId) live `agentStatus` flip — `ClaudePanel`'s `subscribeAll` handler patches the local vps row (badge + action buttons self-heal without F5). Emitted by `AgentClient` on every persisted status change (F1, §14 gotcha 34). |
+| `shell_status` | (`sessionId` = shellId) live busy/active/exited — updates `shells[].liveStatus` (blue "thinking" tab). See §14 gotcha 42. |
 
 Note: `permission_request`/`user_question`/`exit_plan_request`/
 `interaction_resolved` arrive through the same singleton SSE, but are
@@ -1021,7 +1052,7 @@ common code extracted after the maintainability audit:
 13. **SDK `interrupt` does NOT cancel in-flight tools** — `receive_response()` stays blocked. Use `force_stop` instead (forced cancel, status → `sleeping`, resume possible). Agent ≥ v0.3.0.
 14. **Charon-side SSE is live-only — NO ring buffer.** On mount / reconnect / foreground return the client MUST refetch via GET `/api/claude/sessions/[id]` (DB is source of truth). If you add a new view, **GET first** — SSE alone misses history.
 15. **One multiplexed SSE per browser**: singleton on `/api/claude/events` (`app/globalEventStream.ts`), focus via POST `/focus`. No per-session EventSource (HTTP/1.1 caps at 6 conns/origin; close/reopen on switch = 50-150ms latency). New hooks: subscribe via `subscribeSession(sid, cb)` / `subscribeAll(cb)`, don't open another EventSource.
-16. **Low-volume vs high-volume events** (`eventConnections.ts § LOW_VOLUME_EVENTS`): low-volume (status, mode_changed, ready, session_id, perm/question/exit_plan requests, interaction_resolved, error) → broadcast to all conns. High-volume (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) → focus conn only. Classify every new event explicitly.
+16. **Low-volume vs high-volume events** (`eventConnections.ts § LOW_VOLUME_EVENTS`): low-volume (status, mode_changed, ready, session_id, perm/question/exit_plan requests, interaction_resolved, error, model/effort/effective_model, shell_status, vps_status) → broadcast to all conns. High-volume (assistant_text, tool_use, tool_result, edit_snapshot, todo_update, thinking, user_echo, stop, prefill_input, reconnecting) → focus conn only. Classify every new event explicitly.
 17. **Per-token re-render = laggy streaming**. `assistant_text` arrives 100+/sec; `setState` per token re-renders 100×/sec. `useClaudeSessionStream` batches via `requestAnimationFrame` (60Hz). Do the same for any new streaming source.
 18. **Pessimistic acks on interactions**: `respondPermission` / `respondQuestion` / `respondExitPlan` wait for POST OK before clearing the queue card (optimistic version caused phantom cards on POST failure). Keep the pattern.
 19. **`cmd &;` is a bash syntax error**. Joining shell commands with `'; '` and one ends with `&` produces `cmd & ; next` → parser fails. Use `\n` as separator when any item can end with `&`. Bit by `bootstrap.ts § installAgentService` (nohup fallback).
@@ -1086,7 +1117,7 @@ common code extracted after the maintainability audit:
 
 33. **Persistent SSH shells (history)** — SUPERSEDED. Two earlier designs lived in this gotcha slot; both are gone now. (a) The original "in-memory-only with piped ssh + `$SHELL -l`" had no `TERM` and no persistence → htop "terminal unknown" + nothing survived a restart. (b) A tmux-backed redesign (migration 0013, node-pty + `ssh -tt … tmux new-session -A`) fixed `TERM` and gave persistence + server-side `tmux attach`, but kept the slowness (POST per keystroke) and broke browser scrollback (tmux only sends the viewport). The current design (agent-hosted PTY + WebSocket) is in gotcha 37 — read that.
 
-34. **False "agent in error" on a healthy VPS** (`lib/server/agent/AgentClient.ts § _handleExit`). The SSH `--connect` proxy is a *transport* tunnel to the agent's Unix socket; the agent daemon runs independently and survives the SSH dropping. The old code wrote `agentStatus='error'` on **every** non-"not found" SSH exit, so a transient drop (network blip, `ServerAliveInterval`×`ServerAliveCountMax`=120s timeout, sshd restart, VPS briefly unreachable) flipped a perfectly healthy agent to `error`. Two amplifiers made it stick visibly: (1) **there is no live SSE push for `agentStatus`** — the browser only reads it at SSR, so the stale `error` persisted until a manual page reload even after Charon reconnected seconds later; (2) the reconnect **backoff caps at 5min**, so the DB genuinely said `error` for minutes. The UI then offered "▸ install agent" (wrong — the agent IS installed).
+34. **False "agent in error" on a healthy VPS** (`lib/server/agent/AgentClient.ts § _handleExit`). The SSH `--connect` proxy is a *transport* tunnel to the agent's Unix socket; the agent daemon runs independently and survives the SSH dropping. The old code wrote `agentStatus='error'` on **every** non-"not found" SSH exit, so a transient drop (network blip, `ServerAliveInterval`×`ServerAliveCountMax`=120s timeout, sshd restart, VPS briefly unreachable) flipped a perfectly healthy agent to `error`. Two amplifiers made it stick visibly: (1) **there WAS no live SSE push for `agentStatus`** — the browser only read it at SSR, so the stale `error` persisted until a manual page reload even after Charon reconnected seconds later (FIXED since the F1 `vps_status` push: AgentClient emits a LOW_VOLUME `vps_status` global event — `sessionId = vpsId` — on every persisted status flip, and `ClaudePanel`'s `subscribeAll` handler patches the local vps row, so badges self-heal live); (2) the reconnect **backoff caps at 5min**, so the DB genuinely said `error` for minutes. The UI then offered "▸ install agent" (wrong — the agent IS installed).
 
     **Fixes:**
     - `_handleExit` now records the classification in `AgentClient.lastClassified` (`'ok'|'missing'|'error'`) but only **persists** `error` once `reconnectAttempts >= ERROR_PERSIST_AFTER_ATTEMPTS` (3 ≈ ~12s of genuinely-failed reconnects). `missing` (pyz absent: stderr "not found" / exit 127) stays definitive and is persisted immediately. So a quick reconnect never surfaces as `error`. Don't lower the threshold to 0 or you reintroduce the flapping.
@@ -1112,7 +1143,7 @@ common code extracted after the maintainability audit:
       - *Why a tail, not the whole log* (the "show the bottom instantly" fix — D1, user-reported): replaying the ENTIRE on-disk log made reopening a long-running shell take several seconds to scroll to the bottom AND re-streamed up to 30 MB VPS→hub on every reconnect. So `server.js` now sends `shell_subscribe({after_seq:0, tail_bytes:512KB})`; the agent's `event_log.read_tail()` walks the log newest-file→oldest, collecting whole events until ~512 KB of `data` is gathered, and replays just that suffix (chronologically). 512 KB comfortably fills xterm's 10k-line scrollback, so the user sees the latest screen near-instantly. The browser shows a brief "restoring…" spinner overlay (`ShellTerminal § restoring` + `.shell-restoring` CSS) between `replay_begin` and `replay_end` (with a 4s watchdog), then `scrollToBottom()`. Trade-off (accepted): scrollback older than the tail cap is gone, and the first retained chunk can start mid-ANSI-state (TUIs repaint on next refresh). Old agents (< 0.9.0) ignore `tail_bytes` and fall through to the full `read_since(0)` — correct, just slower (no regression).
     - **Terminals stay MOUNTED across session switches** (`ClaudePanel.tsx § mountedShellIds` + the "persistent shell layer" below the main routing ternary; shared `ShellTerminal` gained an `active` prop). The full-replay fix above already makes a fresh xterm correct, but tearing down + reconnecting the WS on every switch is still a visible flash + a lost in-flight subscription. So once a shell has been selected, its `<ShellTerminal>` is kept mounted (WS + xterm alive) and merely hidden with `display:none` when another entity is selected; only the selected slot is `active`. A hidden xterm reports 0×0, so `ShellTerminal` skips `fit()` while `active===false` and re-fits + refocuses on the rAF after `active` flips back to true. Mounting is **lazy** (only shells actually opened this page-load, capped further by `keptOpenIds` — closing a tab unmounts + frees the ssh+agent client) so F5 on a fleet with many shells doesn't open one ssh per shell. Mobile (`MobileShell.tsx`) does NOT keep terminals mounted (one shell on screen at a time) but inherits the full-replay correctness for free.
     - **ONE PTY = ONE size → cross-device "tiny on the left" bug** (`ShellTerminal.tsx § reassertSize`/`onReclaim`). There is a single shared PTY per shell. Every WS client sends `{type:'resize',cols,rows}` (fit to its own viewport) → the agent `ioctl(TIOCSWINSZ)` and **last resize wins**. So opening the same shell on a phone resizes the ONE PTY to the phone's small dims; the desktop's xterm grid is unchanged but the program now wraps/repaints at the narrow width → desktop renders "writings tiny on the left". It used to persist until a full reconnect — which is exactly why a `systemctl restart` "fixed" it: the desktop's WS drops, `ws.onopen` resets `lastSize=''` and re-pushes the desktop dims. The normal path can't self-heal because the desktop grid never changed → `term.onResize` never fires → `pushResize`'s `lastSize` dedup swallows any re-send. **Fix (code-only, no agent change):** `reassertSize()` (fit + `lastSize=''` + `pushResize`, force-resend) is wired to `window`'s `focus` and `document`'s `visibilitychange`→visible (gated on `active` + visible), so returning to a device reclaims the PTY size — **last-active-wins**. ⚠ This can't ping-pong **because the agent's `resize()` does NOT emit a `shell_status` event** (verified in `shell.py`): the other client never hears the resize, so each side re-asserts ONLY on its own user-focus transition. Do NOT make `ShellTerminal` react to an incoming `status`-frame's cols/rows (it's deliberately ignored) or you reintroduce a continuous war. Fundamental limit: two simultaneously-foreground viewers of different sizes can't both render correctly at once (line-wrapping is baked into the byte stream at the PTY width); temporal last-active-wins is the best achievable without a per-client reflow layer.
-    - **Does NOT survive agent restart**: the bash child lives in the agent's process. When the agent restarts (`.pyz` update), every shell's bash gets SIGHUP and dies. The agent's boot cleans up `~/.charon/shells/` orphans; `shell_list` returns empty; Charon's `reconcileShellsOnBoot` prunes the DB rows. This is the documented trade-off vs. an external tmux session — agent updates are rare (monthly?) and the loss is bounded (no work-in-progress, just the shell). If you ever want to survive agent restart too, the path is to put bash inside abduco/dtach inside the agent's PTY — adds complexity for a corner case.
+    - **~~Does NOT survive agent restart~~ → SUPERSEDED by the holder design (agent >= 0.10.0, gotcha 44)**: bash no longer lives in the agent's process — it lives in a detached per-shell HOLDER that survives agent restarts and `.pyz` updates. The historical trade-off documented here (bash dies with the agent, boot wipes `~/.charon/shells/`) applied to agents 0.7.0–0.9.0 only. What remains true: a VPS reboot still kills everything, and the prune paths (boot reconcile + shell_watch snapshot + failed-subscribe `gone`) retire the DB rows when that happens.
     - **Custom server.js**: `npm run dev` and `npm run start` both run `node server.js`. The systemd unit's `ExecStart` is `node /srv/charon/server.js` (changed from `next start` on this refactor). `next build` still produces `.next/` as before. server.js is plain JS — to access TS state from it you'd need build artifacts; we deliberately avoided that by giving server.js its own minimal data path.
     - **No node-pty, no tmux on the VPS**: both are gone from the dep tree as part of this refactor. tmux may still be installed on VPSes (from gotcha 33's `TMUX_ENSURE`) but it's no longer used by Charon — feel free to leave it or apt-remove.
     - **WebSocket protocol invariants** (if you touch the wire format): (1) binary frames are raw shell bytes utf-8 — never wrap them in JSON; (2) text frames are always JSON objects with a `type` field; (3) every (re)connect MUST `shell_subscribe({after_seq:0, tail_bytes:N})` — anchored at the log start, never an incremental cursor (see the replay bullet above for why a cursor blanks the terminal); `tail_bytes` bounds the replay to the latest ~N bytes (D1 "show the bottom fast"); `shells.last_seen_seq` is vestigial, don't resurrect it as a cursor; (4) the browser MUST `term.reset()` on the forwarded `replay_begin` so an in-place reconnect rebuilds rather than doubles the scrollback (and the server MUST forward `replay_begin`/`replay_end` as text control frames); (5) on `exit` event close with code 1000 (the client treats 1000 as "shell really ended, don't reconnect"; anything else triggers backoff reconnect).
@@ -1182,6 +1213,20 @@ common code extracted after the maintainability audit:
 
     **Invariants:** the key is for the catalog read ONLY — sessions run through per-VPS OAuth, never this key. `claude.models_cache` is internal (not in settings `ALLOWED_KEYS`; a settings POST can't write it) and stripped from the settings GET (KB-sized). After a manual sync, `SettingsModal` calls `invalidateModels()` (`app/modelsCache.ts`) so the open tab's pickers refetch without a reload.
 
+44. **Shells survive agent restarts: the detached holder design (agent >= 0.10.0).** User incident: working ON charon from a session hosted on the same VPS restarts the host agent → every shell's bash got SIGHUP'd → the browser reconnect-looped forever on a phantom shell (its DB row only got pruned at Charon boot, which never happened). Two structural fixes landed together — the holder (shells genuinely survive) and the phantom-prune paths (when they really die, every surface converges).
+
+    **Holder (`agent/charon_agent/holder.py`)**: the PTY + bash live in a per-shell DETACHED process spawned by the agent as `charon-agent.pyz --shell-holder <id>` with `start_new_session=True`. The agent is merely a CLIENT (`shell.py § AgentShell`) over `~/.charon/shells/<id>.sock` (line-JSON: `hello`/`output`/`spool_end`/`exit` up; `input`/`resize`/`kill` down). At boot the agent scans `*.sock`, `attach()`es to live holders, unlinks stale socks and only wipes logs of shells with NO live holder. While no agent is attached the holder SPOOLS output to `<id>.spool` (8 MB cap, newest wins) and replays it on attach with the PTY reader paused (strict ordering: spool before live) → the offline output lands in the durable event log, zero scrollback hole. Busy/idle heuristics stay AGENT-side and are suppressed during the spool replay (`_replaying_spool`) so a reattach can't fire a phantom "finished" push or a stale busy tab.
+
+    **Footguns (each bit us by design review — don't regress):**
+    - **`KillMode=process` in the systemd-user unit is LOAD-BEARING.** `setsid`/`start_new_session` does NOT escape the unit's cgroup; with the default `KillMode=control-group`, `systemctl --user restart charon-agent` slaughters the holders too. `bootstrap.ts § SYSTEMD_UNIT` writes it, and `updateVpsAgent` REWRITES the unit + `daemon-reload` on every agent update so existing fleets pick it up. If a fleet VPS still loses shells on update, check the unit on disk first.
+    - **`pkill -f 'charon-agent.pyz$'` — the `$` anchor is load-bearing** (two sites in `bootstrap.ts`: nohup fallback + update restart). A holder's cmdline continues past `.pyz` (`--shell-holder <id>`), so the anchor spares it; the unanchored pattern would kill every holder on each nohup-fallback update.
+    - **The holder must never lazy-import** — it runs from the zipapp, and a later `.pyz` redeploy REPLACES the file; a post-swap import would load mismatched code. Everything is imported at module top.
+    - **server.js ↔ agent version skew is graceful**: an old agent (< 0.10.0) keeps the in-process PTY semantics; an old holder keeps running across new-agent attaches (protocol has a `proto` field for future bumps).
+
+    **Phantom-shell retirement (B1) — three independent prune paths, all needed:** (1) Charon boot: `reconcileShellsOnBoot()`; (2) every agent (re)connect: `AgentClient.onShellSnapshot` (the `shell_watch` RPC returns the live-shells snapshot) → `shellNotify.ts` deletes rows the agent doesn't know + `emitGlobalShellStatus(id,'exited')`; (3) live failure: `server.js` sees the `shell_subscribe` RPC error (-32000), prunes the row itself (it owns a SQLite handle), sends the browser `{type:'gone'}` and closes **1000** — `ShellTerminal` treats 1000 as terminal ("ended" badge), anything else as transient (backoff reconnect). The pre-B1 behavior — close 1008/1011 with the row still in DB — is exactly the infinite "reconnecting…" loop the user hit. If you add a new shell-death detection point, follow the same recipe: prune the row, `gone`, close 1000.
+
+    **SSH ControlMaster mux (P1) + shared module (M1):** `lib/server/agent/sshShared.js` (plain CJS, `allowJs`) is the single source of truth for the agent ssh argv — consumed by `AgentClient.ts` AND `server.js` (the old duplicated SSH_OPTS/"keep in sync" comments are gone). It adds per-VPS `ControlMaster=auto` + `ControlPath=$TMPDIR/charon-agent-mux-<hash>.sock` + `ControlPersist=120`: all connections to one VPS share a single TCP+handshake (a WS open after the persistent AgentClient is up costs ~0 RTT). The master is a detached ssh daemon, so one client dying doesn't kill the other channels; a stale control socket degrades to a direct connection (warning, never an outage).
+
 ## 15. Quick lookup (non-obvious entry points)
 
 Filenames cover most things; this table is for the entries you'd never grep from a cold start.
@@ -1209,7 +1254,11 @@ Filenames cover most things; this table is for the entries you'd never grep from
 | TabBar layout logic | `app/TabBar.tsx` + `computeTabs`/`keptOpenIds`/`activeVpsId`/`lastSelectedByVpsRef` in `ClaudePanel.tsx` |
 | VPS folders (DnD + DB-persisted collapse) | `vpsFolders` in `lib/db/schema.ts` + `app/api/vps-folders/**` + `DataModal.tsx` |
 | Durable agent event log (rotation, seq, replay) | `agent/charon_agent/event_log.py` + `_emit` in `server.py` + `SessionStream.lastSeenSeq` in `sessionOps.ts` + `_pendingAfterSeq` in `AgentClient.ts` |
-| Persistent SSH shells (agent-hosted PTY + WebSocket) | `agent/charon_agent/shell.py` + `server.js` (WS bridge, `after_seq:0 + tail_bytes` replay) + `lib/server/shell/shellSession.ts` (DB coordinator) + `app/ShellTerminal.tsx` (xterm + WS + `active` prop) + `shells` table in `lib/db/schema.ts` + §14 gotcha 37 |
+| Persistent SSH shells (holder-hosted PTY + WebSocket) | `agent/charon_agent/holder.py` (detached PTY owner) + `agent/charon_agent/shell.py` (agent-side client, spawn/attach) + `server.js` (WS bridge, `after_seq:0 + tail_bytes` replay) + `lib/server/shell/shellSession.ts` (DB coordinator) + `app/ShellTerminal.tsx` (xterm + WS + `active` prop) + `shells` table in `lib/db/schema.ts` + §14 gotchas 37 & 44 |
+| Shells surviving agent restarts (holder, KillMode, spool) | `agent/charon_agent/holder.py` + `attach()`/`_spawn_holder` in `shell.py` + boot re-attach in `server.py § serve` + `KillMode=process` & anchored `pkill 'charon-agent.pyz$'` in `lib/server/claude/bootstrap.ts` + §14 gotcha 44 |
+| Phantom-shell prune (no more reconnect loop) | `STMT_DELETE_SHELL` + `{type:'gone'}` in `server.js` + `onShellSnapshot` in `lib/server/agent/AgentClient.ts` + snapshot reconcile in `lib/server/agent/shellNotify.ts` + `gone` handler in `app/ShellTerminal.tsx` + §14 gotcha 44 |
+| Shared ssh argv + per-VPS ControlMaster mux | `lib/server/agent/sshShared.js` (consumed by `AgentClient.ts` AND `server.js`) + §14 gotcha 44 |
+| Live agentStatus badge (no F5) | `setVpsStatusEmitter`/`emitVpsStatus` in `lib/server/agent/AgentClient.ts` + `emitGlobalVpsStatus` in `lib/server/agent/sessionOps.ts` + `vps_status` in `LOW_VOLUME_EVENTS` + `subscribeAll` vps_status handler in `app/ClaudePanel.tsx` + §14 gotcha 34 |
 | Shell "show the bottom fast" tail replay (D1) | `read_tail()` in `agent/charon_agent/event_log.py` + `tail_bytes` branch of `shell_subscribe` in `agent/charon_agent/server.py` + `SHELL_REPLAY_TAIL_BYTES` in `server.js` + `restoring`/`.shell-restoring` overlay in `app/ShellTerminal.tsx`/`app/agent-ui.css` + §14 gotcha 37 |
 | Shell terminals kept mounted across session switches (persistence UX) | `mountedShellIds` state + "persistent shell layer" (below the main routing ternary) + `.shell-slot` in `app/agent-ui.css` in `app/ClaudePanel.tsx` + `active` prop in `app/ShellTerminal.tsx` + §14 gotcha 37 |
 | Shell "finished something" idle notifications (heuristic + output-free global watch) | `_monitor_idle`/`SHELL_IDLE_*` constants in `agent/charon_agent/shell.py` + `shell_watch`/`shell_watchers` fan-out in `agent/charon_agent/server.py` + `watchShells`/`_fireShellWatch`/`shellWatchListeners` in `lib/server/agent/AgentClient.ts` + `lib/server/agent/shellNotify.ts` (`ensureShellIdleWatch`/`handleShellIdle`, armed by `autoConnect.ts` + `agent/refresh`) + `shell.notify_idle` setting + `{type:'idle'}` forward in `server.js` + §14 gotcha 42 |
