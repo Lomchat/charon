@@ -1,0 +1,15 @@
+/* ── V2 separation — filled header band + spacing between VPSes ───────────── */
+.sep-band .dl-folder-body { padding: 4px 0 8px; display: flex; flex-direction: column; gap: 14px; }
+
+/* the header is a solid band with a left accent edge → strong start marker */
+.sep-band .dl-group-head {
+  padding: 8px 10px 8px 12px;
+  background: linear-gradient(90deg, rgba(138,180,228,0.14), rgba(138,180,228,0.04));
+  border-left: 3px solid var(--gold);
+  border-bottom: 1px solid var(--gold-deep);
+}
+/* tint the accent edge by agent state for an at-a-glance health read */
+.sep-band .dl-vps-block:has(.dl-vps-dot.agent-error) .dl-group-head { border-left-color: var(--crimson); }
+.sep-band .dl-vps-block:has(.dl-vps-dot.agent-missing) .dl-group-head { border-left-color: var(--parchment-soft); }
+
+.sep-band .dl-vps-body { padding-top: 2px; }

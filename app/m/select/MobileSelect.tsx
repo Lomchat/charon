@@ -638,7 +638,7 @@ function ShellRow({ sh, onTap, onLongPress }: { sh: ShellListItem; onTap: () => 
       onClick={() => { if (!lp.consume()) onTap(); }}
     >
       <div className="m-row-head">
-        <span className={`m-row-dot ${sh.exited ? 'dot-gray' : 'dot-cyan'}`} />
+        <span className={`m-row-dot ${sh.exited ? 'dot-gray' : 'dot-green'}`} />
         <span className="m-row-label">{headline}</span>
       </div>
       <div className="m-row-meta">

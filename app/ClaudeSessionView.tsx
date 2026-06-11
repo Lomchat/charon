@@ -945,7 +945,7 @@ function ModelEffortBadges({
               onChange={(v) => setDraftEffort(v as '' | ClaudeEffortLevel)}
               modelId={draftModel || model || ''}
               inheritPlaceholder="global default"
-              style={{ fontFamily: 'var(--mono)', fontSize: 12, padding: '4px 6px' }}
+              className="model-picker-popover"
             />
           </label>
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>

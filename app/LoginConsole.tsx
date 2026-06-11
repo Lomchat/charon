@@ -94,6 +94,14 @@ export default function LoginConsole({ vps, onClose }: Props) {
       fitRef.current = fit;
       term.focus();
 
+      // Ctrl+V must paste (e.g. the OAuth code): same fix as
+      // ShellTerminal — xterm otherwise sends a literal ^V to the PTY
+      // and blocks the browser's native paste event.
+      term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey && (ev.key === 'v' || ev.key === 'V')) return false;
+        return true;
+      });
+
       // User stdin → POST to the remote PTY
       term.onData((data: string) => {
         fetch(`/api/vps/${vps.id}/login/input`, {

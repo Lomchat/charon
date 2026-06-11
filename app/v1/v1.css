@@ -1,0 +1,20 @@
+/* ── V1 separation — each VPS is a bordered, slightly raised panel ────────── */
+.sep-box .dl-folder-body { padding: 8px 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+
+.sep-box .dl-vps-block {
+  border: 1px solid var(--gold-deep);
+  border-radius: 10px;
+  background: rgba(28,31,41,0.45);
+  overflow: hidden;
+}
+/* header sits on a faintly darker strip so the panel reads as a unit */
+.sep-box .dl-group-head {
+  padding: 9px 10px 9px 12px;
+  background: rgba(0,0,0,0.18);
+  border-bottom: 1px solid var(--gold-deep);
+}
+.sep-box .dl-vps-body { padding: 8px 0 10px; }
+/* cards inside a panel: trim their own outer margin so they sit flush */
+.sep-box .dl-vps-body .dl-card { width: calc(100% - 16px); margin: 6px 8px 0; }
+.sep-box .dl-vps-body .dl-agent-bar { margin: 6px 8px 0; }
+.sep-box .dl-vps-body > :first-child { margin-top: 0; }

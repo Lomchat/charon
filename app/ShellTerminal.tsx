@@ -147,6 +147,33 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
         try { term.focus(); } catch {}
       };
 
+      // Ctrl+V must paste: by default xterm maps it to a literal ^V (C0
+      // SYN) sent to the PTY and preventDefaults the keydown, so the
+      // browser's native paste never fires. Returning false makes xterm
+      // ignore the combo entirely → the native `paste` event fires on
+      // xterm's hidden textarea, which xterm handles (bracketed paste).
+      // Trade-off: the shell never receives a raw ^V (vim visual-block
+      // users: use Ctrl+Q). Cmd+V (mac) already worked natively.
+      term.attachCustomKeyEventHandler((ev: KeyboardEvent) => {
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey && (ev.key === 'v' || ev.key === 'V')) return false;
+        // Ctrl+C copies the selection instead of sending ^C — but ONLY
+        // when something is selected, otherwise it must stay the SIGINT
+        // interrupt (else a running process can never be killed). We act
+        // on keydown only so the keypress/keyup don't double-fire; xterm
+        // would otherwise map ^C to the PTY and preventDefault the
+        // browser's native copy, so we copy explicitly and return false.
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey && (ev.key === 'c' || ev.key === 'C')
+            && ev.type === 'keydown' && term.hasSelection()) {
+          const sel = term.getSelection();
+          if (sel) {
+            try { navigator.clipboard?.writeText(sel); } catch {}
+            term.clearSelection();
+            return false;
+          }
+        }
+        return true;
+      });
+
       // Keystrokes → binary frame (no JSON parse on the hot path).
       term.onData((data: string) => {
         const ws = wsRef.current;

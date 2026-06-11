@@ -108,7 +108,7 @@ export function computeQuickNavGroups(
       kind: 'shell',
       id: sh.id,
       label: sh.name?.trim() || (sh.cwd ? lastSegment(sh.cwd) : '~'),
-      dotClass: sh.liveStatus === 'busy' ? 'dot-amber-pulse' : 'dot-cyan',
+      dotClass: sh.liveStatus === 'busy' ? 'dot-amber-pulse' : 'dot-green',
       attention: false,
       title: `${vpsName.get(sh.vpsId) ?? ''} · shell · ${sh.cwd ?? '~'}`.trim(),
     });

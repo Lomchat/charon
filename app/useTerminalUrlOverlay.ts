@@ -20,6 +20,11 @@ import { extractWrappedUrls } from './terminalUrlDetect';
 
 const MAX_BUFFER = 64_000;
 
+// URLs never worth an overlay: long links that programs print routinely
+// (they trip the length threshold but the user never needs to copy them
+// from a wrapped terminal line — e.g. Claude Code citing its docs).
+const IGNORED_URL_PREFIXES = ['https://code.claude.com/docs/'];
+
 export function useTerminalUrlOverlay() {
   const bufRef = useRef<string>('');
   const [currentUrl, setCurrentUrl] = useState<string | null>(null);
@@ -29,7 +34,9 @@ export function useTerminalUrlOverlay() {
     // Append + cap. We keep the tail because a URL is never > 64 KB,
     // but we avoid keeping the full history of a long shell.
     bufRef.current = (bufRef.current + text).slice(-MAX_BUFFER);
-    const urls = extractWrappedUrls(bufRef.current);
+    const urls = extractWrappedUrls(bufRef.current).filter(
+      (u) => !IGNORED_URL_PREFIXES.some((p) => u.startsWith(p)),
+    );
     if (urls.length === 0) return;
     const latest = urls[urls.length - 1];
     setCurrentUrl((prev) => (prev === latest ? prev : latest));
