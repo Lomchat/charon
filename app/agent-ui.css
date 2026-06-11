@@ -1129,3 +1129,74 @@
 }
 .dv-folder-select:hover { border-color: var(--gold); }
 .dv-folder-select:focus { border-color: var(--gold); background: rgba(0,0,0,0.4); }
+
+/* ── DataModal: rounded "sidebar" restyle (bigger modal + rounded panels) ────
+   Brings the VPS modal in line with the V1 sidebar: rounded folder/VPS
+   panels, banded headers, pill buttons. Appended last so it overrides the
+   square v2 styles above without touching them. */
+.data-modal-v2 .data-head { padding-bottom: 14px; margin-bottom: 16px; }
+.data-modal-v2 .data-add-vps-btn {
+  border-radius: 8px; padding: 7px 14px;
+  background: rgba(0,0,0,0.25);
+}
+.data-modal-v2 .data-add-vps-btn:hover { background: rgba(138,180,228,0.14); }
+
+.data-folder-list { gap: 16px; }
+.data-folder-card {
+  border-radius: 12px; overflow: hidden;
+  border-color: var(--gold-deep);
+  background: rgba(28,31,41,0.45);
+}
+.data-folder-head {
+  background: rgba(138,180,228,0.07);
+  padding: 11px 14px;
+}
+.data-folder-static .data-folder-head { background: rgba(216,117,127,0.06); }
+.data-folder-count { border-radius: 9px; }
+.data-folder-empty { border-radius: 8px; }
+
+.data-vps-list { gap: 14px; }
+.data-vps-card {
+  border-radius: 10px; overflow: hidden;
+  background: rgba(28,31,41,0.55);
+}
+.data-vps-card.agent-error { border-color: var(--crimson-deep); }
+.data-vps-head {
+  background: rgba(0,0,0,0.18);
+  padding: 10px 12px;
+}
+.dv-agent { border-radius: 8px; }
+.dv-actions { gap: 6px; }
+.dv-btn { border-radius: 7px; padding: 5px 11px; }
+.dv-btn.danger { padding: 5px 9px; }
+.dv-folder-select { border-radius: 7px; padding: 5px 8px; max-width: 150px; }
+.dv-path-label { border-radius: 6px; }
+.dv-path-del { border-radius: 6px; }
+.dv-add-path input { border-radius: 6px; padding: 5px 9px; }
+.dv-add-btn { border-radius: 7px; padding: 5px 13px; }
+.dv-card-drag-overlay, .dv-folder-drag-overlay { border-radius: 10px; }
+
+/* Scroll fix: the rounded panels use overflow:hidden (for the corners), so
+   in the fixed-height flex column they must NOT flex-shrink — otherwise the
+   cards get crushed and clipped instead of the list scrolling. */
+.data-folder-list, .data-vps-list { min-height: 0; }
+.data-folder-card, .data-vps-card { flex-shrink: 0; }
+
+/* Folder collapse in the DataModal (caret toggle; collapsed = head only) */
+.data-folder-caret {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--parchment-soft); font-size: 10px; line-height: 1;
+  width: 14px; flex-shrink: 0; padding: 0;
+}
+.data-folder-caret:hover { color: var(--gold-bright); }
+/* when collapsed there's no body → round all four corners of the head */
+.data-folder-card.is-collapsed .data-folder-head { border-bottom: none; }
+
+/* VPS card collapse in the DataModal (caret toggle; collapsed = header only) */
+.data-vps-caret {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--parchment-soft); font-size: 10px; line-height: 1;
+  width: 14px; flex-shrink: 0; padding: 0;
+}
+.data-vps-caret:hover { color: var(--gold-bright); }
+.data-vps-card.is-collapsed .data-vps-head { border-bottom: none; }

@@ -75,6 +75,17 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
   const [pathInputs, setPathInputs] = useState<Record<string, { path: string; label: string }>>({});
   // Current drag-and-drop ID (for DragOverlay)
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  // Folders collapsed in THIS modal (local, UI-only — does not touch the
+  // sidebar's DB `collapsed`). A collapsed folder hides its VPS list but
+  // stays draggable (the drag handle remains).
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const toggleFolderCollapsed = useCallback((id: string) => {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
 
   // Handler for the "install" button: closes the modal and delegates. If no
   // callback is provided (legacy or test case), silent no-op.
@@ -491,6 +502,8 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
                   allFolders={sortedFolders}
                   paths={paths}
                   pathInputs={pathInputs}
+                  collapsed={collapsedFolders.has(folder.id)}
+                  onToggleCollapsed={() => toggleFolderCollapsed(folder.id)}
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
                   onBootstrap={handleBootstrap}
@@ -515,6 +528,8 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
                 allFolders={sortedFolders}
                 paths={paths}
                 pathInputs={pathInputs}
+                collapsed={collapsedFolders.has(defaultFolder.id)}
+                onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onBootstrap={handleBootstrap}
                 onLogin={(v) => setLoginVps(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
@@ -554,7 +569,7 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
 // tombent sur le header / l'espace vide du dossier (pas sur une carte VPS).
 // ─────────────────────────────────────────────────────────────
 function SortableFolder({
-  folder, vps, allFolders, paths, pathInputs,
+  folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onRename, onDelete,
   onBootstrap, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
@@ -564,6 +579,8 @@ function SortableFolder({
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInputs: Record<string, { path: string; label: string }>;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
   onBootstrap: (v: Vps) => void;
@@ -595,11 +612,17 @@ function SortableFolder({
     <section
       ref={setNodeRef}
       style={style}
-      className={`data-folder-card${isDragging ? ' is-dragging' : ''}`}
+      className={`data-folder-card${isDragging ? ' is-dragging' : ''}${collapsed ? ' is-collapsed' : ''}`}
       {...attributes}
     >
       <header className="data-folder-head">
         <span className="data-folder-drag-handle" {...listeners} title="drag to reorder folders">⋮⋮</span>
+        <button
+          className="data-folder-caret"
+          onClick={onToggleCollapsed}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={collapsed ? 'expand folder' : 'collapse folder'}
+        >{collapsed ? '▸' : '▾'}</button>
         <span className="data-folder-glyph">▤</span>
         <FolderRenameInput initial={folder.name} onSubmit={onRename} />
         <span className="data-folder-count">{vps.length} VPS</span>
@@ -607,33 +630,35 @@ function SortableFolder({
           <button className="dv-btn danger" onClick={onDelete} title="delete this folder">✕</button>
         )}
       </header>
-      <div ref={setDroppableNodeRef} className="data-folder-body">
-        <SortableContext
-          items={vps.map((v) => vpsDragId(v.id))}
-          strategy={verticalListSortingStrategy}
-        >
-          {vps.length === 0 && (
-            <div className="data-folder-empty">empty — drag a VPS here</div>
-          )}
-          {vps.map((v) => (
-            <SortableVpsCard
-              key={v.id}
-              v={v}
-              allFolders={allFolders}
-              paths={paths}
-              pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
-              onBootstrap={() => onBootstrap(v)}
-              onLogin={() => onLogin(v)}
-              onDelete={() => onDeleteVps(v.id, v.name)}
-              onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
-              onAddPath={() => onAddPath(v.id)}
-              onDeletePath={onDeletePath}
-              onUpdatePathLabel={onUpdatePathLabel}
-              onSetPathInput={(field, value) => onSetPathInput(v.id, field, value)}
-            />
-          ))}
-        </SortableContext>
-      </div>
+      {!collapsed && (
+        <div ref={setDroppableNodeRef} className="data-folder-body">
+          <SortableContext
+            items={vps.map((v) => vpsDragId(v.id))}
+            strategy={verticalListSortingStrategy}
+          >
+            {vps.length === 0 && (
+              <div className="data-folder-empty">empty — drag a VPS here</div>
+            )}
+            {vps.map((v) => (
+              <SortableVpsCard
+                key={v.id}
+                v={v}
+                allFolders={allFolders}
+                paths={paths}
+                pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
+                onBootstrap={() => onBootstrap(v)}
+                onLogin={() => onLogin(v)}
+                onDelete={() => onDeleteVps(v.id, v.name)}
+                onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
+                onAddPath={() => onAddPath(v.id)}
+                onDeletePath={onDeletePath}
+                onUpdatePathLabel={onUpdatePathLabel}
+                onSetPathInput={(field, value) => onSetPathInput(v.id, field, value)}
+              />
+            ))}
+          </SortableContext>
+        </div>
+      )}
     </section>
   );
 }
@@ -682,7 +707,7 @@ function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (
 // live there.
 // ─────────────────────────────────────────────────────────────
 function StaticFolder({
-  folder, vps, allFolders, paths, pathInputs,
+  folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onBootstrap, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
@@ -691,6 +716,8 @@ function StaticFolder({
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInputs: Record<string, { path: string; label: string }>;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   onBootstrap: (v: Vps) => void;
   onLogin: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
@@ -703,14 +730,20 @@ function StaticFolder({
   // The body is droppable so we can drop VPSes into it at drag-end.
   const { setNodeRef: setBodyRef } = useDroppable({ id: folderDropZoneId(folder.id) });
   return (
-    <section className="data-folder-card data-folder-static">
+    <section className={`data-folder-card data-folder-static${collapsed ? ' is-collapsed' : ''}`}>
       <header className="data-folder-head">
+        <button
+          className="data-folder-caret"
+          onClick={onToggleCollapsed}
+          title={collapsed ? 'expand folder' : 'collapse folder'}
+        >{collapsed ? '▸' : '▾'}</button>
         {/* No drag handle here: this folder is locked in last position */}
         <span className="data-folder-lock" title="folder locked in last position">🔒</span>
         <span className="data-folder-glyph">▤</span>
         <span className="data-folder-name-static">{folder.name}</span>
         <span className="data-folder-count">{vps.length} VPS</span>
       </header>
+      {!collapsed && (
       <div ref={setBodyRef} className="data-folder-body">
         <SortableContext
           items={vps.map((v) => vpsDragId(v.id))}
@@ -738,6 +771,7 @@ function StaticFolder({
           ))}
         </SortableContext>
       </div>
+      )}
     </section>
   );
 }
@@ -773,6 +807,9 @@ function SortableVpsCard({
     transition,
     opacity: isDragging ? 0.4 : 1,
   };
+  // Collapse the card to just its header (hide the paths list). Local UI
+  // state — stays draggable while collapsed (the handle remains).
+  const [collapsed, setCollapsed] = useState(false);
   const status = (v as any).agentStatus ?? 'unknown';
   const version = (v as any).agentVersion as string | undefined;
   const meta = AGENT_BADGE[status] ?? AGENT_BADGE.unknown;
@@ -780,9 +817,15 @@ function SortableVpsCard({
     .sort((a, b) => (a.label ?? a.path).localeCompare(b.label ?? b.path));
 
   return (
-    <section ref={setNodeRef} style={style} className={`data-vps-card agent-${status}${isDragging ? ' is-dragging' : ''}`} {...attributes}>
+    <section ref={setNodeRef} style={style} className={`data-vps-card agent-${status}${isDragging ? ' is-dragging' : ''}${collapsed ? ' is-collapsed' : ''}`} {...attributes}>
       <header className="data-vps-head">
         <span className="data-vps-drag-handle" {...listeners} title="drag to reorder or move to another folder">⋮⋮</span>
+        <button
+          className="data-vps-caret"
+          onClick={() => setCollapsed((c) => !c)}
+          onPointerDown={(e) => e.stopPropagation()}
+          title={collapsed ? 'expand VPS' : 'collapse VPS'}
+        >{collapsed ? '▸' : '▾'}</button>
         <span className="dv-glyph">▣</span>
         <span className="dv-name">{v.name}</span>
         <span className="dv-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
@@ -808,6 +851,7 @@ function SortableVpsCard({
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>
         </div>
       </header>
+      {!collapsed && (
       <div className="data-vps-paths">
         {vpsPathsRows.length === 0 && (
           <div className="dv-empty">no paths registered for this VPS</div>
@@ -855,6 +899,7 @@ function SortableVpsCard({
           >add</button>
         </div>
       </div>
+      )}
     </section>
   );
 }

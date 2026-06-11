@@ -534,8 +534,10 @@ Notable component behaviors:
   `agentStatus==='ok'` (shell works without). Per-VPS agent action bar:
   missing/unknown → "install"; error → "↻ refresh" (+ reinstall);
   ok+outdated → "update"; ok+not-signed-in → "claude login". The ＋ buttons
-  still open `NewSessionDialog`/`NewShellDialog` (the unified 3-step wizard
-  is not wired in prod yet).
+  open **`NewSessionWizard`** (unified 3-step modal: VPS → path → name,
+  `kind` fixed by the button; agents get an optional model/effort advanced
+  section). It replaced the old `NewSessionDialog`/`NewShellDialog` (deleted).
+  Mobile keeps its own `m/NewSessionSheet`/`NewShellSheet`.
 - **`TabBar.tsx`**: 2 rows (VPSes with open entities / entities of the
   active VPS); status colors; local × on non-active tabs; "+ Claude"/
   "+ SSH" use `defaultCwdFor(vpsId)`; helper `computeTabs(...)`.

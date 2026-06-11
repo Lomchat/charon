@@ -8,8 +8,7 @@ import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } f
 import TabBar, { computeTabs, type EntityTab } from './TabBar';
 import ShellTerminal from './ShellTerminal';
 import InstallSessionView from './InstallSessionView';
-import NewSessionDialog from './NewSessionDialog';
-import NewShellDialog from './NewShellDialog';
+import NewSessionWizard from './NewSessionWizard';
 import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
 import PermissionPopup from './PermissionPopup';
@@ -485,11 +484,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     });
   }, [shells, keptOpenIds]);
 
-  const [newDialog, setNewDialog] = useState<null | { vpsId?: string; cwd?: string }>(null);
-  // "+ shell" now opens a small dialog (name + path) instead of creating
-  // immediately — mirrors the Claude-session flow. Same `{vpsId, cwd}` shape,
-  // pre-filled from the click context (path button, active tab cwd…).
-  const [newShellDialog, setNewShellDialog] = useState<null | { vpsId?: string; cwd?: string | null }>(null);
+  // Unified "new session" wizard (VPS → path → name). `kind` is fixed by the
+  // button that opened it (＋Agent vs ＋Shell). Replaces the old
+  // NewSessionDialog / NewShellDialog.
+  const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -693,14 +691,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    *  pre-filled with the active VPS and the same cwd as the last tab. */
   function onTabBarNewSession(vpsId: string) {
     const cwd = defaultCwdFor(vpsId);
-    setNewDialog({ vpsId, cwd });
+    setWizard({ kind: 'agent', vpsId, cwd });
   }
   /** "+ shell" button on the right of row 2 — open the NewShellDialog
    *  pre-filled with the active VPS and the same cwd as the last tab
    *  (mirrors the "+ Claude" flow). */
   function onTabBarNewShell(vpsId: string) {
     const cwd = defaultCwdFor(vpsId) ?? null;
-    setNewShellDialog({ vpsId, cwd });
+    setWizard({ kind: 'shell', vpsId, cwd });
   }
   /**
    * Right-click on a tab → resolve the entity in our lists, then dispatch
@@ -1170,8 +1168,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onSelect={selectClaude}
         onSelectShell={selectShell}
         onSelectInstall={selectInstall}
-        onNew={(opts) => setNewDialog(opts)}
-        onNewShell={(opts) => setNewShellDialog(opts)}
+        onNew={(opts) => setWizard({ kind: 'agent', ...opts })}
+        onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
         onContext={(s, x, y) => setCtxMenu({ kind: 'session', session: s, x, y })}
@@ -1353,23 +1351,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onDismiss={dismissInstallNotif}
       />
 
-      {newDialog && (
-        <NewSessionDialog
+      {wizard && (
+        <NewSessionWizard
+          kind={wizard.kind}
           vpsList={vpsList}
+          vpsFolders={vpsFolders}
           vpsPaths={vpsPaths}
-          initial={newDialog}
-          onClose={() => setNewDialog(null)}
-          onCreated={(id) => { setNewDialog(null); setSelectedId(id); refreshSessions(); }}
-        />
-      )}
-
-      {newShellDialog && (
-        <NewShellDialog
-          vpsList={vpsList}
-          vpsPaths={vpsPaths}
-          initial={newShellDialog}
-          onClose={() => setNewShellDialog(null)}
-          onCreated={(sh) => { setNewShellDialog(null); applyCreatedShell(sh); }}
+          initialVpsId={wizard.vpsId}
+          initialCwd={wizard.cwd}
+          onClose={() => setWizard(null)}
+          onCreatedSession={(id) => { setWizard(null); selectClaude(id); refreshSessions(); }}
+          onCreatedShell={(sh) => { setWizard(null); applyCreatedShell(sh); }}
         />
       )}
 
