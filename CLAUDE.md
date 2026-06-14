@@ -537,7 +537,8 @@ Notable component behaviors:
   open **`NewSessionWizard`** (unified 3-step modal: VPS → path → name,
   `kind` fixed by the button; agents get an optional model/effort advanced
   section). It replaced the old `NewSessionDialog`/`NewShellDialog` (deleted).
-  Mobile keeps its own `m/NewSessionSheet`/`NewShellSheet`.
+  Mobile mirrors it with `m/NewWizardSheet` (3-step bottom sheet) — the old
+  `m/NewSessionSheet`/`NewShellSheet` are deleted too.
 - **`TabBar.tsx`**: 2 rows (VPSes with open entities / entities of the
   active VPS); status colors; local × on non-active tabs; "+ Claude"/
   "+ SSH" use `defaultCwdFor(vpsId)`; helper `computeTabs(...)`.
@@ -550,9 +551,14 @@ Notable component behaviors:
   scrollback; `active` prop (mounted-but-hidden, skip `fit()`);
   `reassertSize` on focus/visibility (§14.37). Shared with mobile.
 
-**Mobile (`app/m/`)**: `/m/select` (sessions grouped folder→VPS, same
-DB-persisted folder collapse; long-press sheet; `.m-quicknav` chips
-strip, logic in `app/m/quickNav.tsx § computeQuickNavGroups`), `/m/chat`
+**Mobile (`app/m/`)**: `/m/select` mirrors the desktop V1 sidebar —
+boxed VPS per folder, shows a VPS only if it has a visible session/shell
+(folders with none hidden), IP under name, per-VPS + global ＋Agent/
+＋Shell, a **"show paused" switch** (localStorage `m.hub.claude.showPaused`,
+default ON; same hide-sleeping rule), DB-persisted folder collapse +
+local per-VPS collapse, long-press context sheet, `.m-quicknav` chips
+strip (logic in `app/m/quickNav.tsx § computeQuickNavGroups`). Creation =
+`m/NewWizardSheet`. `/m/chat`
 (condensed panel; ⧉ opens a `.m-sessions-sheet` overlay reusing
 `computeQuickNavGroups`, polls 5s while open), `/m/shell` (fullscreen
 xterm, always `active`).

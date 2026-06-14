@@ -1449,3 +1449,128 @@
   color: var(--gold-bright);
   background: linear-gradient(180deg, var(--stone-2), var(--stone));
 }
+
+/* ══ V1 mobile redesign: boxed VPS, add buttons, paused switch, wizard ══════ */
+/* rounded panels */
+.m-folder-section { border-radius: 12px; overflow: hidden; }
+.m-folder-head { border-top-left-radius: 12px; border-top-right-radius: 12px; }
+.m-vps-card { border-radius: 10px; overflow: hidden; }
+.m-vps-card .m-vps-head { padding: 11px 12px; }
+.m-vps-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-vps-card .m-vps-caret { width: 16px; flex-shrink: 0; }
+.m-vps-card .m-vps-body { padding: 8px 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.m-session-row { border-radius: 9px; margin-top: 0; }
+
+/* toolbar: global add buttons + paused switch */
+.m-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--gold-deep);
+  background: var(--stone);
+}
+.m-add { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px;
+  background: rgba(0,0,0,0.3); border: 1px solid var(--gold-deep); }
+.m-add.full { display: flex; flex: 1; }
+.m-add.full .m-add-btn { flex: 1; }
+.m-add-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: none; background: transparent; cursor: pointer; border-radius: 6px;
+  color: var(--parchment-soft); font-family: var(--body); font-weight: 500; font-size: 13px;
+  padding: 9px 12px; -webkit-tap-highlight-color: transparent;
+}
+.m-add-btn svg { width: 16px; height: 16px; display: block; }
+.m-add-btn:disabled { opacity: 0.4; }
+.m-add-btn.agent { color: var(--gold-bright); }
+.m-add-btn.shell { color: var(--teal); }
+.m-add-btn:active:not(:disabled) { background: rgba(138,180,228,0.16); }
+/* per-VPS add buttons are icon-only and tighter */
+.m-vps-head .m-add { flex-shrink: 0; }
+.m-vps-head .m-add-btn { padding: 7px 9px; }
+
+.m-switch { display: flex; align-items: center; gap: 7px; flex-shrink: 0; -webkit-tap-highlight-color: transparent; }
+.m-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.m-switch-track { position: relative; width: 34px; height: 20px; border-radius: 10px; flex-shrink: 0;
+  background: var(--shadow); border: 1px solid var(--gold-deep); transition: background .14s, border-color .14s; }
+.m-switch-thumb { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--parchment-soft); transition: transform .14s, background .14s; }
+.m-switch input:checked + .m-switch-track { background: rgba(138,180,228,0.25); border-color: var(--gold); }
+.m-switch input:checked + .m-switch-track .m-switch-thumb { transform: translateX(14px); background: var(--gold-bright); }
+.m-switch-label { font-family: var(--body); font-size: 12px; color: var(--parchment-soft); white-space: nowrap; }
+
+/* session/shell cards: glyph + status pill */
+.m-session-row.is-paused { opacity: 0.6; }
+.m-session-row .m-row-glyph { display: inline-flex; width: 15px; flex-shrink: 0; color: var(--gold); }
+.m-session-row .m-row-glyph svg { width: 15px; height: 15px; }
+.m-session-row .m-row-glyph.shell { color: var(--teal); }
+.m-session-row .m-row-state {
+  flex-shrink: 0; font-family: var(--display); font-size: 8px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--parchment-soft);
+  padding: 2px 6px; border-radius: 9px; border: 1px solid var(--gold-deep);
+}
+.m-session-row .m-row-state.active { color: #a0c87b; border-color: rgba(160,200,123,0.4); }
+.m-session-row .m-row-state.thinking, .m-session-row .m-row-state.starting { color: var(--gold-bright); }
+.m-session-row .m-row-state.waiting { color: #f0a060; border-color: rgba(240,160,96,0.5); }
+/* the explicit glyph replaces the old ⌨/(exited) pseudo-elements */
+.m-session-row.shell .m-row-label::before { content: none; }
+.m-session-row.shell.exited .m-row-label::after { content: none; }
+
+/* ── 3-step wizard sheet ─────────────────────────────────────────────────── */
+.m-wiz-kind { display: inline-flex; align-items: center; gap: 8px; }
+.m-wiz-kind svg { width: 17px; height: 17px; }
+.m-wiz.kind-shell .m-wiz-kind { color: var(--teal); }
+
+.m-wiz-steps { display: flex; align-items: center; gap: 4px; padding: 10px 16px 4px; flex-wrap: wrap; }
+.m-wiz-crumb { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 7px;
+  background: transparent; border: 1px solid transparent; color: var(--parchment-soft);
+  font-family: var(--body); font-size: 12px; -webkit-tap-highlight-color: transparent; }
+.m-wiz-crumb:disabled { opacity: 0.4; }
+.m-wiz-crumb-n { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  border-radius: 50%; flex-shrink: 0; background: rgba(255,255,255,0.07); border: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 10px; }
+.m-wiz-crumb-label { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-wiz-crumb.active { background: rgba(138,180,228,0.12); border-color: var(--gold); color: var(--gold-bright); }
+.m-wiz-crumb.active .m-wiz-crumb-n { background: rgba(138,180,228,0.2); border-color: var(--gold); color: var(--gold-bright); }
+.m-wiz-crumb.done .m-wiz-crumb-n { color: #a0c87b; border-color: rgba(160,200,123,0.5); }
+.m-wiz-sep { color: var(--gold-deep); flex-shrink: 0; }
+
+.m-wiz-label { font-family: var(--display); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--parchment-soft); margin: 4px 0 8px 2px; }
+.m-wiz-folder { margin-bottom: 12px; }
+.m-wiz-folder-name { font-family: var(--mono); font-size: 11px; color: var(--gold); margin: 0 0 6px 2px; opacity: 0.85; }
+.m-wiz-pick {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 12px; border-radius: 9px; margin-bottom: 6px;
+  background: var(--shadow); border: 1px solid var(--gold-deep); color: var(--parchment);
+  -webkit-tap-highlight-color: transparent;
+}
+.m-wiz-pick:active:not(:disabled) { background: var(--stone-2); border-color: var(--gold); }
+.m-wiz-pick:disabled { opacity: 0.45; }
+.m-wiz-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: var(--parchment-soft); }
+.m-wiz-dot.agent-ok { background: #a0c87b; }
+.m-wiz-dot.agent-error { background: var(--crimson); }
+.m-wiz-glyph { width: 15px; text-align: center; color: var(--gold); font-family: var(--mono); flex-shrink: 0; }
+.m-wiz-pick-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-wiz-pick-name { font-family: var(--display); font-size: 14px; color: var(--gold-bright); }
+.m-wiz-pick-sub { font-family: var(--body); font-size: 11px; color: var(--parchment-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-wiz-pick-sub.mono { font-family: var(--mono); }
+.m-wiz-go { color: var(--parchment-soft); font-size: 18px; flex-shrink: 0; }
+
+.m-wiz-custom { display: flex; gap: 8px; margin-top: 8px; }
+.m-wiz-custom input { flex: 1; padding: 11px; border-radius: 8px;
+  background: var(--shadow); border: 1px solid var(--gold-deep); color: var(--parchment);
+  font-family: var(--mono); font-size: 13px; outline: none; }
+.m-wiz-custom input:focus { border-color: var(--gold); }
+.m-wiz-use { flex-shrink: 0; padding: 0 14px; border-radius: 8px;
+  background: rgba(138,180,228,0.16); border: 1px solid var(--gold); color: var(--gold-bright);
+  font-family: var(--display); font-size: 12px; }
+
+.m-wiz-adv { margin: 4px 0 14px; }
+.m-wiz-adv-toggle { background: transparent; border: none; color: var(--parchment-soft);
+  font-family: var(--body); font-size: 13px; padding: 4px 0; }
+.m-wiz-summary { display: flex; align-items: center; gap: 8px; margin: 6px 0 14px;
+  padding: 11px 12px; border-radius: 8px; background: rgba(0,0,0,0.25); border-left: 3px solid var(--gold);
+  font-family: var(--body); font-size: 12.5px; color: var(--parchment); }
+.m-wiz-summary svg { width: 16px; height: 16px; color: var(--gold-bright); flex-shrink: 0; }
+.m-wiz.kind-shell .m-wiz-summary { border-left-color: var(--teal); }
+.m-wiz.kind-shell .m-wiz-summary svg { color: var(--teal); }
