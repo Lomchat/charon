@@ -6,4 +6,4 @@
 # the `install_sdk` phase of `lib/server/claude/bootstrap.ts`. You only need
 # to install them locally if you want to run the agent without Charon (e.g.
 # for development against a local socket).
-claude-agent-sdk>=0.1.0
+claude-agent-sdk>=0.2.106
