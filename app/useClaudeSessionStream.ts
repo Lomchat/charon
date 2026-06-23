@@ -295,7 +295,7 @@ export function useClaudeSessionStream(
   // ── Polling delta state ────────────────────────────────────────────────
   // Highest DB message id we have ever seen for this session. Used as the
   // cursor for the `?since=<id>` delta poll. Updated by applyApiData
-  // (initial / full refetch) and by applyDelta (incremental). Polling at
+  // (initial load + every clean refetch). Polling at
   // 5s is the safety net: even if the SSE silently dies, even if React 19
   // tears down our subscribers via hydration recovery, even if onerror is
   // never fired — the polling loop independently catches up. Together with
@@ -334,8 +334,9 @@ export function useClaudeSessionStream(
 
   // ── Apply an API payload to local state ────────────────────────────────
   // Full refresh path — used by refetchHistory (initial mount, switch,
-  // explicit resync). Replaces local state entirely. For incremental
-  // updates (polling), see applyDelta below.
+  // explicit resync) AND by the polling loop, which does a clean refetch
+  // whenever the cheap `?since=` probe reports new rows (see pollDelta).
+  // Replaces local state entirely.
   const applyApiData = useCallback((r: ClaudeSessionDetailResponse) => {
     if (!r?.session) return;
     const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus);
@@ -437,228 +438,6 @@ export function useClaudeSessionStream(
     // from "full refetch" to "delta poll" (even if maxId is still 0 for an
     // empty session).
     initialLoadDoneRef.current = true;
-  }, []);
-
-  // ── Apply a polling DELTA to local state ───────────────────────────────
-  // ⚠ CURRENTLY UNUSED (kept for reference / possible future re-enable).
-  // The polling loop no longer merges deltas incrementally — it does a
-  // CLEAN full `refetchHistory()` whenever the cheap `?since=` probe reports
-  // new rows (see `pollDelta`). Incremental merging here proved fragile
-  // (duplicate React keys, partial tool pairs → render throw → error-
-  // boundary remount loop). The full reload is what "hitting refresh" does
-  // and is corruption-proof. If you re-enable this, fix the dedup first.
-  // cf. CLAUDE.md §14 gotcha 24.
-  //
-  // Only handles messages with id > lastSeenServerIdRef. Crucial properties:
-  //   - Idempotent: if a row was already added locally by an SSE event,
-  //     we detect the duplicate by (role,content) match and upgrade the
-  //     synthetic local id ('a...'/'tu...'/etc.) to the DB-derived id
-  //     ('m<dbid>'). No visible duplicate.
-  //   - No flicker: we only setState when something actually changes.
-  //   - Append-only for messages and toolCalls. Edits/todos/files are
-  //     merged.
-  //   - Live state (status, mode, streaming text, pendings) is updated
-  //     too, since pollDelta is also our way of catching status drift if
-  //     the SSE missed an event.
-  // Returns true if the delta contained anything new (used for
-  // observability / future "did poll catch anything" stats).
-  const applyDelta = useCallback((r: ClaudeSessionDetailResponse): boolean => {
-    if (!r?.session) return false;
-    // Cheap live-state updates (no-op if unchanged).
-    setSessionMeta((prev) => (prev?.id === r.session.id ? r.session : (prev ?? r.session)));
-    const newStatus = (r.liveStatus ?? r.session.status) as WorkerStatus;
-    setStatus((prev) => (prev === newStatus ? prev : newStatus));
-    const newMode = (['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(
-      r.session?.permissionMode as PermissionMode,
-    ) ? (r.session.permissionMode as PermissionMode) : 'normal';
-    setPermissionMode((prev) => (prev === newMode ? prev : newMode));
-    // Streaming text from the server — only adopt it if local is empty
-    // (we're between flushes) or if server's is longer (we missed deltas).
-    // This avoids "regression flicker" where the server's snapshot is a
-    // few tokens behind the SSE we just received locally.
-    const serverStreamingText = String(r.streamingText ?? '');
-    if (serverStreamingText.length > assistantBufRef.current.length) {
-      assistantBufRef.current = serverStreamingText;
-      setCurrentAssistant(serverStreamingText);
-    } else if (serverStreamingText.length === 0 && assistantBufRef.current.length > 0) {
-      // Server has flushed (streamingText empty, the assistant_text is
-      // now a persisted message). If our local buffer is still non-empty
-      // AND the persisted message will be in the delta (we'll see it
-      // below as a new row matching our buf), the buffer is safe to clear.
-      // BUT only if the corresponding row is in the delta — if it isn't,
-      // we'd lose the streaming preview. We detect the match below and
-      // clear at the end of applyDelta (see `clearBufAfterMerge`).
-    }
-    // Pendings: replace if the count or contents differ.
-    const sid = r.session.id;
-    const newPerms = ((r.pendingPermissions ?? []) as Omit<PermissionRequest, 'sessionId'>[])
-      .map((p) => ({ ...p, sessionId: sid }));
-    setPermQueue((prev) => sameQueueById(prev, newPerms) ? prev : newPerms);
-    const newQs = ((r.pendingQuestions ?? []) as Omit<PendingQuestion, 'sessionId'>[])
-      .map((q) => ({ ...q, sessionId: sid }));
-    setQuestionQueue((prev) => sameQueueById(prev, newQs) ? prev : newQs);
-    const newExits = ((r.pendingExitPlans ?? []) as Omit<PendingExitPlan, 'sessionId'>[])
-      .map((e) => ({ ...e, sessionId: sid }));
-    setExitPlanQueue((prev) => sameQueueById(prev, newExits) ? prev : newExits);
-
-    const rows = (r.messages ?? []) as { id: number }[];
-    if (rows.length === 0) return false;
-
-    // Advance the cursor BEFORE applying so the next poll won't re-fetch
-    // the same rows even if a setState below throws.
-    let maxId = lastSeenServerIdRef.current;
-    for (const m of rows) {
-      if (typeof m.id === 'number' && m.id > maxId) maxId = m.id;
-    }
-    lastSeenServerIdRef.current = maxId;
-
-    const rebuilt = rebuildStateFromMessages(r.messages, newStatus);
-    let anythingChanged = false;
-
-    // ── Phantom-buffer detection ─────────────────────────────────────
-    // Scenario: the SSE dropped mid-stream, `stop` never reached us, so
-    // `flushAssistantBuf` never ran. `assistantBufRef.current` still holds
-    // the partial response and `setCurrentAssistant` is rendering it.
-    // Meanwhile the server has long since persisted the final assistant
-    // message (visible in this delta) AND cleared its streamingText.
-    // Without the clear below, we'd display the finalized DB message AND
-    // the in-flight buffer in parallel — a "phantom" duplicate.
-    //
-    // Trigger: server has no in-flight stream (`serverStreamingText` empty)
-    // AND a new assistant row in this delta starts with our buf as a
-    // prefix (exact match if SSE dropped at a clean boundary; prefix
-    // match if SSE delivered the buf's tokens but missed the tail before
-    // dropping). We use prefix to catch both shapes — a false positive
-    // here would just clear a buf that's about to be flushed anyway by
-    // the next SSE event.
-    let shouldClearBufAfterMerge = false;
-    if (serverStreamingText.length === 0 && assistantBufRef.current.length > 0) {
-      const buf = assistantBufRef.current;
-      for (const m of rebuilt.messages) {
-        if (m.role === 'assistant' && typeof m.content === 'string' &&
-            (m.content === buf || m.content.startsWith(buf))) {
-          shouldClearBufAfterMerge = true;
-          break;
-        }
-      }
-    }
-
-    // ── messages: append new, dedup against SSE-added local copies ────
-    setMessages((prev) => {
-      const existingIds = new Set(prev.map((m) => String(m.id)));
-      // Local SSE-added messages may shortly afterward also appear in the
-      // delta as DB rows. We dedup by (role,content). For text-heavy
-      // assistant messages the content match is exact (we flushed
-      // exactly what was in the SSE buffer). For tool_use/tool_result
-      // the JSON.stringify is also deterministic.
-      const localContentToId = new Map<string, string>();
-      for (const m of prev) {
-        const idStr = String(m.id);
-        if (!idStr.startsWith('m')) {
-          localContentToId.set(`${m.role}|${m.content}`, idStr);
-        }
-      }
-      const newMsgs: typeof rebuilt.messages = [];
-      const idsToRename = new Map<string, string>();
-      for (const m of rebuilt.messages) {
-        const idStr = String(m.id);
-        if (existingIds.has(idStr)) continue; // already in via earlier delta or initial load
-        const localHash = `${m.role}|${m.content}`;
-        const localId = localContentToId.get(localHash);
-        if (localId) {
-          // SSE got there first — upgrade the local id to the DB-backed one.
-          idsToRename.set(localId, idStr);
-          localContentToId.delete(localHash); // each local msg matches one DB row
-          continue;
-        }
-        newMsgs.push(m);
-      }
-      if (newMsgs.length === 0 && idsToRename.size === 0) return prev;
-      anythingChanged = true;
-      let result = idsToRename.size > 0
-        ? prev.map((m) => {
-            const newId = idsToRename.get(String(m.id));
-            return newId ? { ...m, id: newId } : m;
-          })
-        : prev;
-      if (newMsgs.length > 0) result = [...result, ...newMsgs];
-      return result;
-    });
-
-    // ── toolCalls: append new ────────────────────────────────────────
-    if (rebuilt.toolCalls.length > 0) {
-      setToolCalls((prev) => {
-        const existingIds = new Set(prev.map((c) => c.id));
-        const additions = rebuilt.toolCalls.filter((c) => !existingIds.has(c.id));
-        if (additions.length === 0) return prev;
-        anythingChanged = true;
-        return [...prev, ...additions];
-      });
-    }
-
-    // ── todos: replace if there were any todo_update events in the delta ──
-    // rebuildStateFromMessages only sets `todos` if it saw a todo_update;
-    // an empty array means "no update in this batch" — keep the current.
-    if (rebuilt.todos.length > 0) {
-      setTodos((prev) => {
-        if (prev.length === rebuilt.todos.length &&
-            prev.every((t, i) => t.content === rebuilt.todos[i].content && t.status === rebuilt.todos[i].status)) {
-          return prev;
-        }
-        anythingChanged = true;
-        return rebuilt.todos;
-      });
-    }
-
-    // ── edits: merge, but never overwrite a live edit with an older one ──
-    if (rebuilt.edits.size > 0) {
-      setEdits((prev) => {
-        const next = new Map(prev);
-        let changed = false;
-        for (const [k, v] of rebuilt.edits) {
-          const cur = next.get(k);
-          if (!cur) { next.set(k, v); changed = true; continue; }
-          // Merge before/after: take whichever the existing entry is missing.
-          let updated = cur;
-          if (cur.before == null && v.before != null) {
-            updated = { ...updated, before: v.before, truncated: updated.truncated || v.truncated };
-          }
-          if (cur.after == null && v.after != null) {
-            updated = { ...updated, after: v.after, truncated: updated.truncated || v.truncated };
-          }
-          if (updated !== cur) {
-            next.set(k, updated);
-            changed = true;
-          }
-        }
-        if (changed) anythingChanged = true;
-        return changed ? next : prev;
-      });
-    }
-
-    if (rebuilt.files.size > 0) {
-      setFiles((prev) => {
-        const next = new Set(prev);
-        let changed = false;
-        for (const f of rebuilt.files) {
-          if (!next.has(f)) { next.add(f); changed = true; }
-        }
-        if (changed) anythingChanged = true;
-        return changed ? next : prev;
-      });
-    }
-
-    // Clear the phantom streaming preview if we detected a matching
-    // persisted message above. We do this AFTER the setMessages so the
-    // new assistant row is visible in the same render cycle as the buf
-    // disappearing (no flash of "nothing while we waited for the row").
-    if (shouldClearBufAfterMerge) {
-      assistantBufRef.current = '';
-      setCurrentAssistant('');
-      anythingChanged = true;
-    }
-
-    return anythingChanged;
   }, []);
 
   // refetchHistory: used at mount, on every SSE reconnect and on tab
@@ -1165,9 +944,8 @@ export function useClaudeSessionStream(
   // id > lastSeenServerId. Independent of the SSE — if everything else
   // fails (SSE dead, subscribeReconnect listeners torn down, React
   // hydration error wreaking havoc), this loop alone keeps the chat in
-  // sync within 5s. The poll is cheap (typically returns 0 messages) and
-  // setState calls are guarded inside applyDelta to only fire when state
-  // actually changes — no spurious re-renders.
+  // sync within 5s. The poll is cheap (typically returns 0 messages); a
+  // full clean refetch only runs when the `?since=` probe reports new rows.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     // First tick fires immediately after mount (not 5s later) so resync
@@ -1249,8 +1027,8 @@ export function useClaudeSessionStream(
     // 'thinking' immediately, instead of waiting for the user_echo / status
     // SSE to round-trip through the remote VPS agent. The token lets the
     // user_echo handler suppress the (now-redundant) echo; the 5s delta poll
-    // later upgrades the synthetic 'u…' id to the DB-backed 'm<id>' via
-    // applyDelta's (role,content) dedup.
+    // later replaces this optimistic bubble with the DB-backed row on its
+    // next clean refetch (rebuildStateFromMessages re-derives ids from the DB).
     //
     // On failure we intentionally keep the bubble + token: the dominant
     // failure (the agent RPC throwing) happens AFTER the server has already
