@@ -29,7 +29,7 @@ async function open(page, path = '/') {
 }
 
 // 1) Desktop dashboard — sidebar (VPS → Claude sessions + shells = dual use) + Claude chat + permission card
-await shot({ viewport: { width: 1512, height: 920 } }, async (page) => {
+await shot({ viewport: { width: 1920, height: 1040 } }, async (page) => {
   await open(page);
   await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await page.getByText('refactor auth middleware', { exact: false }).first().click();
@@ -38,7 +38,7 @@ await shot({ viewport: { width: 1512, height: 920 } }, async (page) => {
 }, 'dashboard.png');
 
 // 2) Claude chat close-up — the discussion view
-await shot({ viewport: { width: 1200, height: 980 } }, async (page) => {
+await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
   await open(page);
   await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await page.getByText('refactor auth middleware', { exact: false }).first().click();
@@ -47,7 +47,7 @@ await shot({ viewport: { width: 1200, height: 980 } }, async (page) => {
 }, 'claude-chat.png');
 
 // 3) Shell — a real live terminal on the isolated demo agent
-await shot({ viewport: { width: 1512, height: 920 } }, async (page) => {
+await shot({ viewport: { width: 1920, height: 1040 } }, async (page) => {
   await open(page);
   await page.getByText('sandbox shell', { exact: false }).first().waitFor({ timeout: 12000 });
   await page.getByText('sandbox shell', { exact: false }).first().click();
