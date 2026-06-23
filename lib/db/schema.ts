@@ -108,6 +108,16 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // reconnect). A genuinely new finish has a higher seq → notifies once.
   // Null = never notified a finish yet.
   lastStopNotifiedSeq: integer('last_stop_notified_seq'),
+  // Durable "finished but you haven't opened it yet" marker (0/1). Set to 1
+  // when a turn ends (`stop`) and nobody is currently viewing the session, so
+  // the sidebar can paint a green "finished — unread" glow that SURVIVES
+  // reloads and is shared across devices (DB is the source of truth, not a
+  // per-device localStorage flag). Cleared back to 0 when the user opens /
+  // focuses the session (POST /api/claude/focus → markSessionRead), live across
+  // tabs via the `session_unread` SSE event. Independent of
+  // lastStopNotifiedSeq (which dedups PUSH notifications) — this one is a
+  // passive in-app cue, only for Claude sessions. cf. CLAUDE.md §14.47.
+  unreadStop: integer('unread_stop').notNull().default(0),
   // Per-session Claude model / fallback / effort. All three NULL by default
   // → use the global default from claude_settings; if the global default is
   // also NULL, the agent passes nothing to ClaudeAgentOptions and the SDK

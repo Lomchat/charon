@@ -78,9 +78,9 @@ function reloadForExpiredSession(): void {
 // useClaudeSessionStream
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook that encapsulates all the SSE + state + actions logic for a Claude
-// session viewed from the browser. Used by MobileChat (single-session)
-// and ClaudePanel/ClaudeSessionView (multi-session, the parent component
-// creates one instance per sessionId via `key={selectedId}`).
+// session viewed from the browser. Used by the unified responsive `/`
+// (ClaudePanel → ClaudeSessionView), which creates one instance per
+// sessionId via `key={selectedId}`.
 //
 // What this hook does:
 //   - Subscribes to events for this session via `globalEventStream` (single
@@ -118,16 +118,16 @@ export type StreamCache = {
 
 export type UseClaudeSessionStreamOptions = {
   /**
-   * Module-level cache (instant load on mount). Mobile passes the existing
-   * chatCache, desktop will pass the shared sessionCache once extracted.
+   * Module-level cache (instant load on mount). Callers pass the shared
+   * `sessionCache` (app/sessionCache.ts).
    * If absent: direct refetch on each mount.
    */
   cache?: StreamCache;
 
   /**
    * Callback called when the user kills the session. The hook doesn't
-   * navigate by itself; the caller decides (mobile → router.push, desktop →
-   * deselect + refresh).
+   * navigate by itself; the caller decides (ClaudePanel → deselect +
+   * refresh).
    */
   onKilled?: () => void;
 };
@@ -222,7 +222,7 @@ export function useClaudeSessionStream(
 ): ClaudeSessionStreamState & ClaudeSessionStreamActions {
   const { cache, onKilled } = options;
   // Ref for onKilled: callers typically pass an inline arrow (cf.
-  // ClaudePanel + MobileChat), so the `options.onKilled` ref changes on each
+  // ClaudePanel/ClaudeSessionView), so the `options.onKilled` ref changes on each
   // render. The SSE handler is created in a useEffect with eslint-disable
   // exhaustive-deps — without this pinning, the callback embedded in the
   // `status==='killed'` switch would become stale right after the 1st render.
@@ -1132,7 +1132,7 @@ export function useClaudeSessionStream(
   }, [sessionId]);
 
   // Permanent deletion (DB cascade on the server side). The `onKilled` callback
-  // is kept as-is for post-deletion navigation (mobile: back to /m/select).
+  // is kept as-is for post-deletion navigation (back to the session list).
   // No confirm() here — it's up to the caller to ask for confirmation before
   // calling the action.
   const doDelete = useCallback(async () => {

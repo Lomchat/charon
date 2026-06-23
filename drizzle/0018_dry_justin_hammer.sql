@@ -1,0 +1,1 @@
+ALTER TABLE `claude_sessions` ADD `unread_stop` integer DEFAULT 0 NOT NULL;

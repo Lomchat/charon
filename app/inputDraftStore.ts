@@ -6,14 +6,12 @@ import { useCallback, useRef, useState } from 'react';
 //
 // Persistence is deliberately ephemeral:
 //   - Module-level Map → survives component re-mounts triggered by
-//     `<ClaudeSessionView key={selectedId}>` (desktop session switch) and
-//     route changes /m/select ↔ /m/chat?id=... on mobile.
+//     `<ClaudeSessionView key={selectedId}>` (session switch).
 //   - No localStorage / sessionStorage → an F5 wipes everything. This is the
 //     expected behavior (per user request): we keep the draft while
 //     navigating between sessions, no more.
 //
-// Consumed by `app/ClaudeSessionView.tsx` (desktop) and
-// `app/m/chat/MobileChat.tsx` (mobile) via the `useInputDraft` hook.
+// Consumed by `app/ClaudeSessionView.tsx` via the `useInputDraft` hook.
 
 const drafts = new Map<string, string>();
 
@@ -38,9 +36,9 @@ export function clearDraft(sessionId: string): void {
  *
  * - Lazy initialization from the store → no flash of empty input on mount.
  * - In-render reconciliation when `sessionId` changes on the same component
- *   (mobile case: `/m/chat?id=A` → `/m/chat?id=B` doesn't remount the page,
- *    so we must resync via a ref vs prop comparison, the "derived state from
- *    props" pattern without useEffect — no flash, no loop).
+ *   instance without a keyed remount (defensive: if a parent ever swaps the
+ *   prop in place, we resync via a ref vs prop comparison — the "derived state
+ *   from props" pattern without useEffect — no flash, no loop).
  * - Each mutation writes to the store, which makes usage transparent:
  *   call-sites do `setInput(value)` as before.
  */

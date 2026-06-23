@@ -62,14 +62,62 @@ function configured(): { token: string; chatId: string } | null {
   return { token, chatId };
 }
 
-async function tgCall<T = any>(method: string, body: any, tokenOverride?: string): Promise<T> {
+// Build an absolute deep-link from a relative path (e.g. `/?session=<id>`)
+// using the configured public base URL (`app.public_url`). Returns null when
+// no base URL is set (→ callers append no link). The hub binds to HOST:PORT
+// locally and can't infer its own public origin, hence the explicit setting.
+function deepLink(path: string): string | null {
+  const base = (getSetting('app.public_url') ?? '').trim().replace(/\/+$/, '');
+  return base ? `${base}${path}` : null;
+}
+
+// undici's `fetch` throws a terse TypeError('fetch failed') on ANY network-
+// level failure; the ACTIONABLE reason (DNS, timeout, ECONNRESET / stale
+// keep-alive socket "other side closed", IPv6 unreachable…) lives in `.cause`
+// (and `.cause.errors` for Happy-Eyeballs aggregates). Flatten it so the
+// Settings "test" surfaces something better than a bare "fetch failed".
+function describeFetchError(e: any): string {
+  const parts: string[] = [];
+  const top = e?.message ? String(e.message) : String(e);
+  if (top) parts.push(top);
+  const c = e?.cause;
+  if (c) {
+    if (c.code) parts.push(String(c.code));
+    if (c.message && c.message !== top) parts.push(String(c.message));
+    if (Array.isArray(c.errors)) {
+      for (const sub of c.errors) {
+        const m = `${sub?.code ?? ''} ${sub?.message ?? ''}`.trim();
+        if (m) parts.push(m);
+      }
+    }
+  }
+  return Array.from(new Set(parts.filter(Boolean))).join(' — ');
+}
+
+// Default per-call timeout so a hung connection can't freeze the request.
+// getUpdates long-polls (timeout:20) and passes a LARGER budget explicitly —
+// keep this above any long-poll value used below.
+const TG_CALL_TIMEOUT_MS = 15_000;
+
+async function tgCall<T = any>(
+  method: string, body: any, tokenOverride?: string, timeoutMs: number = TG_CALL_TIMEOUT_MS,
+): Promise<T> {
   const token = tokenOverride ?? (configured()?.token);
   if (!token) throw new Error('telegram not configured');
-  const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (e: any) {
+    if (e?.name === 'TimeoutError') {
+      throw new Error(`tg ${method}: timed out after ${timeoutMs}ms reaching api.telegram.org`);
+    }
+    throw new Error(`tg ${method}: ${describeFetchError(e)}`);
+  }
   const data = await res.json();
   if (!data.ok) throw new Error(`tg ${method}: ${data.description ?? 'unknown'}`);
   return data.result as T;
@@ -104,10 +152,14 @@ export async function sendPermissionToTelegram(
   if (!cfg) return;
   const name = sessionLabel(sessionId);
   const summary = typeof input === 'object' ? JSON.stringify(input).slice(0, 300) : String(input).slice(0, 300);
+  const link = deepLink(`/?session=${sessionId}`);
   const text =
     `🔒 *Permission* — _${escapeMd(name)}_\n` +
     `tool: \`${escapeMd(tool)}\`\n` +
-    `\`\`\`\n${summary.slice(0, 600)}\n\`\`\``;
+    `\`\`\`\n${summary.slice(0, 600)}\n\`\`\`` +
+    // MarkdownV2 inline link: inside (...) only ')' and '\' need escaping —
+    // our hex-id URLs contain neither, so no escaping required.
+    (link ? `\n[↗ open in Charon](${link})` : '');
   const keyboard: TgInlineKeyboard = [
     [
       { text: '✓ Allow', callback_data: `p|a|${permId}` },
@@ -120,6 +172,7 @@ export async function sendPermissionToTelegram(
       chat_id: cfg.chatId,
       text,
       parse_mode: 'MarkdownV2',
+      disable_web_page_preview: true,
       reply_markup: { inline_keyboard: keyboard },
     });
     const key = `${res.chat.id}:${res.message_id}`;
@@ -154,11 +207,13 @@ async function sendOneQuestionStep(
   const name = sessionLabel(sessionId);
   const header = q.header ? ` *_${escapeMd(q.header)}_*\n` : '';
   const progress = questions.length > 1 ? `  \\(${qIdx + 1}/${questions.length}\\)` : '';
+  const link = deepLink(`/?session=${sessionId}`);
   const text =
     `❓ *Question*${progress} — _${escapeMd(name)}_\n` +
     header +
     `${escapeMd(q.question)}\n\n` +
-    `_${q.multiSelect ? 'multiple choices possible' : 'pick an option'} or type your reply_`;
+    `_${q.multiSelect ? 'multiple choices possible' : 'pick an option'} or type your reply_` +
+    (link ? `\n\n[↗ open in Charon](${link})` : '');
   const keyboard: TgInlineKeyboard = [];
   q.options.forEach((opt, oi) => {
     const label = opt.label.length > 60 ? opt.label.slice(0, 57) + '…' : opt.label;
@@ -169,6 +224,7 @@ async function sendOneQuestionStep(
       chat_id: cfg.chatId,
       text,
       parse_mode: 'MarkdownV2',
+      disable_web_page_preview: true,
       reply_markup: { inline_keyboard: keyboard },
     });
     const key = `${res.chat.id}:${res.message_id}`;
@@ -208,7 +264,7 @@ async function pollLoop(): Promise<void> {
         offset: state.lastUpdateId + 1,
         timeout: 20,
         allowed_updates: ['message', 'callback_query'],
-      }, cfg.token);
+      }, cfg.token, 30_000); // budget must exceed the 20s long-poll above
       for (const u of updates) {
         state.lastUpdateId = Math.max(state.lastUpdateId, u.update_id);
         try {
@@ -370,11 +426,17 @@ export function markInteractionResolvedInTelegram(_kind: 'permission' | 'questio
 // Fire-and-forget plain text (no buttons, no MarkdownV2 escaping headaches).
 // Used by the shell-idle "finished something" notification. No-op + swallow
 // if Telegram isn't configured, so callers don't need to guard.
-export async function sendPlainToTelegram(text: string): Promise<void> {
+// `linkPath` (optional, e.g. `/?session=<id>` or `/?shell=<id>`) is turned
+// into an absolute deep-link via `app.public_url` and appended on its own
+// line; Telegram auto-links the raw URL (plain text, no parse_mode). No link
+// when `app.public_url` is unset.
+export async function sendPlainToTelegram(text: string, linkPath?: string): Promise<void> {
   const cfg = configured();
   if (!cfg) return;
+  const link = linkPath ? deepLink(linkPath) : null;
+  const body = link ? `${text}\n${link}` : text;
   try {
-    await tgCall('sendMessage', { chat_id: cfg.chatId, text, disable_web_page_preview: true });
+    await tgCall('sendMessage', { chat_id: cfg.chatId, text: body, disable_web_page_preview: true });
   } catch (e: any) {
     console.warn('[telegram] sendPlain:', e?.message ?? e);
   }
@@ -382,15 +444,23 @@ export async function sendPlainToTelegram(text: string): Promise<void> {
 
 // ── Configuration test (sent from the Settings UI) ──────────────────────────
 export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const cfg = configured();
-    if (!cfg) return { ok: false, error: 'telegram.enabled=false or bot_token/chat_id missing' };
-    await tgCall('sendMessage', {
-      chat_id: cfg.chatId,
-      text: '✓ Charon hub — Telegram connection OK. Questions and permissions will arrive here.',
-    });
-    return { ok: true };
-  } catch (e: any) {
-    return { ok: false, error: e?.message ?? String(e) };
+  const cfg = configured();
+  if (!cfg) return { ok: false, error: 'telegram.enabled=false or bot_token/chat_id missing' };
+  // One quick retry: undici can reuse a stale keep-alive socket left by the
+  // getUpdates poll loop and throw a one-off "fetch failed" that succeeds on a
+  // fresh connection. The retry absorbs exactly that transient blip.
+  let lastErr = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await tgCall('sendMessage', {
+        chat_id: cfg.chatId,
+        text: '✓ Charon hub — Telegram connection OK. Questions and permissions will arrive here.',
+      });
+      return { ok: true };
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e);
+      if (attempt < 2) await sleep(800);
+    }
   }
+  return { ok: false, error: lastErr };
 }

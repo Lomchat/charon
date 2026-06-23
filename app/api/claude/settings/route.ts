@@ -12,6 +12,7 @@ const ALLOWED_KEYS = [
   'telegram.enabled',
   'telegram.bot_token',
   'telegram.chat_id',
+  'app.public_url',
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',

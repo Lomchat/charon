@@ -1,5 +1,5 @@
 import 'server-only';
-import { subscribeGlobalSessionEvents, type GlobalSessionEvent } from './sessionOps';
+import { subscribeGlobalSessionEvents, setSessionFocusChecker, type GlobalSessionEvent } from './sessionOps';
 
 // eventConnections
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +40,11 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // Live VPS agent-status flips (sessionId = vpsId) — sidebar badges on every
   // tab. See sessionOps.ts § emitGlobalVpsStatus.
   'vps_status',
+  // Per-session "finished, unread" marker flips (sessionId = session id). Must
+  // reach EVERY tab regardless of SSE focus: the whole point is to light up a
+  // BACKGROUND (non-focused) session's sidebar card the moment it finishes.
+  // See sessionOps.ts § markSessionRead / stop handler (CLAUDE.md §14.47).
+  'session_unread',
 ]);
 
 function isLowVolume(type: string): boolean {
@@ -55,6 +60,33 @@ type ConnState = {
 const gReg = globalThis as unknown as { _eventConnections?: Map<string, ConnState> };
 if (!gReg._eventConnections) gReg._eventConnections = new Map();
 const connections: Map<string, ConnState> = gReg._eventConnections;
+
+// "Recently viewed" grace for the finished-unread marker (CLAUDE.md §14.47).
+// `focusCountFor` is instantaneous: the moment a user navigates away from a
+// session its focus count drops to 0. But an agent's turn frequently finishes a
+// second or two AFTER the user switches (or steps back to the session list), so
+// the `stop` would land with nobody "focused" and wrongly flip the session the
+// user was just reading to green "unread". We therefore remember the last time
+// each session had/lost focus and treat a finish within RECENT_VIEW_GRACE_MS as
+// "still being viewed". Covers the switch-away race + brief SSE-reconnect gaps.
+const RECENT_VIEW_GRACE_MS = 12_000;
+const gView = globalThis as unknown as { _lastViewAt?: Map<string, number> };
+if (!gView._lastViewAt) gView._lastViewAt = new Map();
+const lastViewAt: Map<string, number> = gView._lastViewAt;
+
+function touchView(sessionId: string | null | undefined): void {
+  if (sessionId) lastViewAt.set(sessionId, Date.now());
+}
+
+/**
+ * "Is this session being viewed, or was it within the last few seconds?" Used
+ * by the stop handler to decide whether to light the finished-unread marker.
+ */
+export function wasRecentlyViewed(sessionId: string): boolean {
+  if (focusCountFor(sessionId) > 0) return true;
+  const t = lastViewAt.get(sessionId);
+  return t != null && Date.now() - t < RECENT_VIEW_GRACE_MS;
+}
 
 /**
  * Register an SSE connection. Wires the connection to the global bus and
@@ -86,6 +118,9 @@ export function registerConnection(opts: {
   return () => {
     const c = connections.get(opts.connId);
     if (!c) return;
+    // Tab closed / SSE dropped while focused → remember we were just viewing it,
+    // so a finish during the gap doesn't immediately mark it unread (§14.47).
+    touchView(c.focus);
     if (c.unsubBus) c.unsubBus();
     connections.delete(opts.connId);
   };
@@ -99,7 +134,12 @@ export function registerConnection(opts: {
 export function setConnectionFocus(connId: string, sessionId: string | null): boolean {
   const conn = connections.get(connId);
   if (!conn) return false;
+  // Stamp BOTH the session being left and the one being entered as "viewed just
+  // now", so the recently-viewed grace covers a turn that finishes immediately
+  // after a switch (the user was reading it a moment ago). cf. CLAUDE.md §14.47.
+  touchView(conn.focus);
   conn.focus = sessionId;
+  touchView(sessionId);
   return true;
 }
 
@@ -112,3 +152,12 @@ export function focusCountFor(sessionId: string): number {
   for (const c of connections.values()) if (c.focus === sessionId) n++;
   return n;
 }
+
+// Wire the "is this session currently being viewed (or was, a few seconds
+// ago)?" check into sessionOps so its `stop` handler can decide whether to
+// light the "finished, unread" marker (a finish the user is already watching —
+// or just navigated away from — shouldn't mark itself unread). Reverse of the
+// setVpsStatusEmitter injection — keeps the dependency one-directional at
+// module-eval time while letting sessionOps query focus at runtime. The grace
+// window (wasRecentlyViewed) is what fixes the switch-away race. cf. §14.47.
+setSessionFocusChecker((sessionId) => wasRecentlyViewed(sessionId));

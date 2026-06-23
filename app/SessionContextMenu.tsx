@@ -57,15 +57,22 @@ export default function SessionContextMenu({
   onRename, onColor, onEditCwd, onSleep, onKill, onDelete, onClose,
 }: Props) {
   useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
+    // Ignore events in the first moments after open: on touch, the long-press
+    // that opened this menu emits a trailing synthesized mousedown on the card
+    // (outside the menu) that would otherwise self-close it. §11.
+    const openedAt = Date.now();
+    const onDoc = (e: MouseEvent | TouchEvent) => {
+      if (Date.now() - openedAt < 350) return;
       const tgt = e.target as HTMLElement;
       if (!tgt.closest('.session-ctx-menu')) onClose();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', onDoc);
+    document.addEventListener('touchstart', onDoc);
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('touchstart', onDoc);
       document.removeEventListener('keydown', onKey);
     };
   }, [onClose]);

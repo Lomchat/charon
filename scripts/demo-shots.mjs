@@ -63,15 +63,19 @@ await shot({ viewport: { width: 1920, height: 1040 } }, async (page) => {
   await sleep(1200);
 }, 'shell.png');
 
-// 4) Mobile — condensed select + chat
+// 4) Mobile — the single responsive UI at a phone width. The sidebar / session
+//    list is an off-canvas drawer opened with the ☰ header button; the chat is
+//    full-screen once a session is picked (selecting closes the drawer).
 await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true }, async (page) => {
-  await open(page, '/m/select');
+  await open(page, '/');
+  await page.getByLabel('open navigation').click({ timeout: 12000 }).catch(() => {});
   await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(1500);
 }, 'mobile-select.png');
 
 await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true }, async (page) => {
-  await open(page, '/m/select');
+  await open(page, '/');
+  await page.getByLabel('open navigation').click({ timeout: 12000 }).catch(() => {});
   await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await page.getByText('refactor auth middleware', { exact: false }).first().click();
   await sleep(2200);

@@ -27,7 +27,8 @@ import { prefetchAll as sessionCachePrefetchAll } from './sessionCache';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
-  IconServers, IconVolumeMute, IconVolumeUp,
+  IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
+  IconMenu, IconPanelRight,
 } from './icons';
 
 type Props = {
@@ -172,6 +173,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // If non-null, an install session occupies the main panel.
   const [selectedInstallId, setSelectedInstallId] = useState<string | null>(null);
 
+  // Responsive drawers (§11): under the CSS breakpoints (≤1100px the ToolPanel
+  // becomes a right drawer, ≤820px the Sidebar becomes a left drawer) these
+  // toggle `.nav-open` / `.tools-open` on `.claude-root`. No effect on desktop
+  // (the toggle buttons + drawer positioning are CSS-gated by media query).
+  const [navOpen, setNavOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); }, []);
+
   // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
     let cancelled = false;
@@ -297,6 +306,48 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, []);
 
+  // Live "finished, unread" marker (CLAUDE.md §14.47). When a BACKGROUND
+  // session finishes its turn, sessionOps flips claudeSessions.unreadStop and
+  // fans a `session_unread` event on the bus (LOW_VOLUME → every tab, even ones
+  // not focused on that session). Mirror it onto the local sessions list so the
+  // sidebar's green "finished" glow appears / clears without waiting for the
+  // 15s list refresh. Cross-device: the same event also fires on POST /focus
+  // (the "read" signal) from any device.
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'session_unread') return;
+      const id = ev.sessionId;
+      if (!id) return;
+      const next = ev.unread ? 1 : 0;
+      setSessions((prev) => {
+        let changed = false;
+        const out = prev.map((s) => {
+          if (s.id !== id) return s;
+          if ((s.unreadStop ?? 0) === next) return s;
+          changed = true;
+          return { ...s, unreadStop: next };
+        });
+        return changed ? out : prev;
+      });
+    });
+    return () => unsub();
+  }, []);
+
+  // Opening a session marks it read locally the instant you select it. The
+  // authoritative cross-device clear is server-side (POST /focus →
+  // markSessionRead, fired by useClaudeSessionStream); this just prevents a
+  // flash of the green marker on the very card you just opened. Keyed on
+  // selectedId so it covers EVERY open path (sidebar, tab bar, deep link,
+  // push-notification click).
+  useEffect(() => {
+    if (!selectedId) return;
+    setSessions((prev) => {
+      const s = prev.find((x) => x.id === selectedId);
+      if (!s || !s.unreadStop) return prev;
+      return prev.map((x) => x.id === selectedId ? { ...x, unreadStop: 0 } : x);
+    });
+  }, [selectedId]);
+
   // Install notifications (tab-local queue, populated by the global bus)
   const {
     notifications: installNotifications,
@@ -316,6 +367,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setSelectedShellId(id);
     setSelectedId(null);
     setSelectedInstallId(null);
+    closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
   function shellKilled(id: string) {
     setShells((prev) => prev.filter((s) => s.id !== id));
@@ -326,11 +378,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setSelectedId(id);
     setSelectedShellId(null);
     setSelectedInstallId(null);
+    closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
   function selectInstall(id: string) {
     setSelectedInstallId(id);
     setSelectedId(null);
     setSelectedShellId(null);
+    closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
   function installClosed(id: string) {
     setInstalls((prev) => prev.filter((i) => i.id !== id));
@@ -494,6 +548,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [dataOpen, setDataOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  // Telegram notifications = an INDEPENDENT channel from browser push. The
+  // header toggle drives the `telegram.enabled` server setting (gated inside
+  // sendPlainToTelegram→configured()); it has nothing to do with `pushOn`
+  // (this browser's Web Push subscription) or `notif.global_enabled` (the
+  // browser/push master). `tgConfigured` = token + chat_id are set.
+  const [tgEnabled, setTgEnabled] = useState(false);
+  const [tgConfigured, setTgConfigured] = useState(false);
+  const [tgBusy, setTgBusy] = useState(false);
   // Set of VPSes whose agent is being updated (UI loading)
   const [updatingAgentVpsIds, setUpdatingAgentVpsIds] = useState<Set<string>>(new Set());
   // Set of VPSes whose agent connection is being refreshed (UI loading)
@@ -935,6 +997,33 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     } finally { setPushBusy(false); }
   }
 
+  // Load the Telegram on/off + configured state for the header toggle. Re-runs
+  // when the Settings modal closes so editing token/chat_id there refreshes the
+  // button (it doubles as the initial mount load — settingsOpen starts false).
+  useEffect(() => {
+    if (settingsOpen) return;
+    let alive = true;
+    api.getClaudeSettings().then((s) => {
+      if (!alive) return;
+      setTgEnabled(s['telegram.enabled'] === 'true');
+      setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [settingsOpen]);
+
+  async function toggleTelegram() {
+    // Not set up yet → send the user to Settings to enter token + chat_id.
+    if (!tgConfigured) { setSettingsOpen(true); return; }
+    setTgBusy(true);
+    const next = !tgEnabled;
+    setTgEnabled(next); // optimistic
+    try {
+      await api.updateClaudeSettings({ 'telegram.enabled': next ? 'true' : 'false' });
+    } catch {
+      setTgEnabled(!next); // revert on failure
+    } finally { setTgBusy(false); }
+  }
+
   // Note: before the refactor, applyApiPendings synced permQueue/
   // questionQueue/exitPlanQueue from the API on every refetch. Today
   // useCrossSessionInteractionFeed keeps these queues up to date via an
@@ -1074,8 +1163,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const selectedShellExists = !!selectedShellId && shells.some((s) => s.id === selectedShellId);
 
   return (
-    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}`}>
+    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}`}>
+      {/* Backdrop behind any open drawer (mobile only; CSS-gated). Tap to close. */}
+      <div className="drawer-backdrop" onClick={closeDrawers} aria-hidden />
       <header className="claude-head">
+        {/* ☰ opens the sidebar drawer; CSS reveals it only ≤820px (.m-only). */}
+        <button
+          className="head-btn m-only nav-toggle"
+          onClick={() => { setNavOpen(true); setToolsOpen(false); }}
+          title="menu" aria-label="open navigation"
+        >
+          <IconMenu />
+        </button>
         <svg className="brand-logo" viewBox="12 32 236 196" aria-hidden>
           <path d="M 18 120 Q 32 114 46 120 T 74 120 T 100 120" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
           <path d="M 22 140 Q 36 134 50 140 T 78 140 T 100 140" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"/>
@@ -1091,6 +1190,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         </svg>
         <h1>CHARON</h1>
         <div className="head-right">
+          {/* Opens the ToolPanel (diffs/todos/calls) drawer; CSS reveals it
+              only ≤1100px, and only meaningful when a Claude session is open. */}
+          {selectedId && (
+            <button
+              className="head-btn m-only tools-toggle"
+              onClick={() => { setToolsOpen(true); setNavOpen(false); }}
+              title="diffs, todos & tool calls" aria-label="open tool panel"
+            >
+              <IconPanelRight />
+            </button>
+          )}
           {selected && selectedVps && (
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
           )}
@@ -1144,6 +1254,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             aria-pressed={notifSoundEnabled}
           >
             {notifSoundEnabled ? <IconVolumeUp /> : <IconVolumeMute />}
+          </button>
+          <button
+            className={`head-btn toggle-btn ${tgEnabled && tgConfigured ? 'is-on' : 'is-off'}`}
+            onClick={toggleTelegram}
+            disabled={tgBusy}
+            title={!tgConfigured
+              ? 'Telegram notifications: not configured — click to set bot token & chat_id'
+              : tgEnabled
+                ? 'Telegram notifications: ON — click to turn off'
+                : 'Telegram notifications: OFF — click to turn on'}
+            aria-label={tgEnabled && tgConfigured ? 'Telegram notifications on, click to turn off' : 'Telegram notifications off, click to turn on'}
+            aria-pressed={tgEnabled && tgConfigured}
+          >
+            <IconTelegram />
           </button>
           <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data">
             <IconServers />

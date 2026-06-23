@@ -127,6 +127,13 @@
       "when": 1782208151140,
       "tag": "0017_normal_puff_adder",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1782211934501,
+      "tag": "0018_dry_justin_hammer",
+      "breakpoints": true
     }
   ]
 }

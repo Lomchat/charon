@@ -4,6 +4,7 @@ import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import { colorToCss } from './SessionContextMenu';
+import { useLongPress } from './useLongPress';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -490,26 +491,12 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
 
           {/* Install session row (running / finished, reopenable). */}
           {vpsInstall && (
-            <button
-              type="button"
-              data-tab-id={vpsInstall.id}
-              className={`cs-install-row ${vpsInstall.status}${vpsInstall.id === selectedInstallId ? ' selected' : ''}`}
-              onClick={() => onSelectInstall(vpsInstall.id)}
-              onContextMenu={(e) => {
-                if (!onContextInstall) return;
-                e.preventDefault();
-                onContextInstall(vpsInstall, e.clientX, e.clientY);
-              }}
-              title={`agent installation · ${vpsInstall.status}`}
-            >
-              <span className="cs-install-dot" />
-              <span className="cs-install-label">⚙ installation</span>
-              <span className="cs-install-tag">
-                {vpsInstall.status === 'running'
-                  ? (vpsInstall.currentPhase ?? 'init')
-                  : vpsInstall.status === 'success' ? 'OK' : 'failed'}
-              </span>
-            </button>
+            <InstallRow
+              install={vpsInstall}
+              selected={vpsInstall.id === selectedInstallId}
+              onSelect={onSelectInstall}
+              onContext={onContextInstall}
+            />
           )}
 
           {vpsSessions.map((s) => (
@@ -541,6 +528,34 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   );
 }
 
+function InstallRow({ install, selected, onSelect, onContext }: {
+  install: InstallInfo;
+  selected: boolean;
+  onSelect: (id: string) => void;
+  onContext?: (install: InstallInfo, x: number, y: number) => void;
+}) {
+  const lp = useLongPress((c) => { onContext?.(install, c.x, c.y); });
+  return (
+    <button
+      type="button"
+      data-tab-id={install.id}
+      className={`cs-install-row ${install.status}${selected ? ' selected' : ''}`}
+      onClick={() => { if (lp.consume()) return; onSelect(install.id); }}
+      onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(install, e.clientX, e.clientY); }}
+      {...lp.handlers}
+      title={`agent installation · ${install.status}`}
+    >
+      <span className="cs-install-dot" />
+      <span className="cs-install-label">⚙ installation</span>
+      <span className="cs-install-tag">
+        {install.status === 'running'
+          ? (install.currentPhase ?? 'init')
+          : install.status === 'success' ? 'OK' : 'failed'}
+      </span>
+    </button>
+  );
+}
+
 const DOT_CLASS: Record<string, string> = {
   active: 'dot-green',
   starting: 'dot-amber',
@@ -569,6 +584,9 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
 }) {
+  // Touch long-press → context menu (mobile has no right-click). Must run
+  // before the `editing` early-return to keep hook order stable. §11.
+  const lp = useLongPress((c) => { onContext?.(s, c.x, c.y); });
   const baseStatus = s.liveStatus ?? s.status;
   const effective = (s.pendingPermissions ?? 0) > 0 && baseStatus === 'active' ? 'waiting' : baseStatus;
   const dotClass = DOT_CLASS[effective] ?? 'dot-gray';
@@ -586,14 +604,23 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
   const age = formatAge(s.createdAt);
   const showPreview = !!preview && preview !== headline && !headline.startsWith(preview.slice(0, 30));
   const needsAttention = (s.pendingPermissions ?? 0) > 0;
+  // "Finished, unread": the session ended a turn while you weren't looking and
+  // you haven't opened it since (DB: unread_stop). Suppressed on the selected
+  // card (you're reading it), when it already needs attention (a pending
+  // question is the more urgent, orange cue), and while the session is actively
+  // WORKING (thinking/starting) — a turn in progress isn't "finished, unread"
+  // even if the DB marker hasn't been cleared yet. cf. CLAUDE.md §14.47.
+  const working = baseStatus === 'thinking' || baseStatus === 'starting';
+  const unread = !!s.unreadStop && !selected && !needsAttention && !working;
   const colorToken = (s as any).color as string | null | undefined;
   return (
     <button
       type="button"
       data-tab-id={s.id}
-      className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}`}
-      onClick={() => onSelect(s.id)}
+      className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}`}
+      onClick={() => { if (lp.consume()) return; onSelect(s.id); }}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
+      {...lp.handlers}
       title={`${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
       suppressHydrationWarning
       style={colorToken ? { ['--c' as any]: colorToCss(colorToken) } : undefined}
@@ -603,6 +630,9 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
         <span className={`dot ${dotClass}`} />
         <span className="cs-card-glyph"><IconRobot /></span>
         <span className="cs-card-name">{headline}</span>
+        {unread && (
+          <span className="cs-unread" title="finished — unread (open to clear)">✓</span>
+        )}
         {!!s.pendingPermissions && (
           <span className="cs-perm" title={`${s.pendingPermissions} pending permission(s)`}>🔒{s.pendingPermissions}</span>
         )}
@@ -626,6 +656,7 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
   onSelect: (id: string) => void;
   onContext?: (sh: ShellListItem, x: number, y: number) => void;
 }) {
+  const lp = useLongPress((c) => { onContext?.(sh, c.x, c.y); });
   const age = formatAge(Math.floor(sh.startedAt / 1000));
   const cwdShort = sh.cwd ? cwdTail(sh.cwd, 30) : '~';
   const headline = sh.name ?? `shell · ${sh.cwd ? cwdTail(sh.cwd, 16) : '~'}`;
@@ -635,8 +666,9 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
       type="button"
       data-tab-id={sh.id}
       className={`cs-card shell${selected ? ' selected' : ''}${sh.exited ? ' is-sleeping' : ''}`}
-      onClick={() => onSelect(sh.id)}
+      onClick={() => { if (lp.consume()) return; onSelect(sh.id); }}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(sh, e.clientX, e.clientY); }}
+      {...lp.handlers}
       title={`SSH shell${sh.cwd ? ` · ${sh.cwd}` : ''}\nStarted ${age}${sh.exited ? '\n(ended)' : ''}`}
       style={sh.color ? { ['--c' as any]: colorToCss(sh.color) } : undefined}
     >

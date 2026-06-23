@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
 import { setConnectionFocus } from '@/lib/server/agent/eventConnections';
+import { markSessionRead } from '@/lib/server/agent/sessionOps';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,16 @@ export async function POST(req: Request) {
   }
 
   const ok = setConnectionFocus(conn, sessionId ?? null);
-  // If false: the connection does not exist (SSE not yet opened or already
-  // closed). Not a fatal error — the client can retry.
+
+  // Opening/focusing a session counts as "reading" it: clear the durable
+  // "finished, unread" marker (CLAUDE.md §14.47) and mirror it live to every
+  // tab/device. Done regardless of `ok` (the focus filter and the unread flag
+  // are independent) and no-op when the session wasn't unread.
+  if (typeof sessionId === 'string' && sessionId.length > 0) {
+    try { markSessionRead(sessionId); } catch {}
+  }
+
+  // If `ok` is false: the connection does not exist (SSE not yet opened or
+  // already closed). Not a fatal error — the client can retry.
   return NextResponse.json({ ok });
 }

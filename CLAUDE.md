@@ -25,7 +25,8 @@ Charon is a **Next.js hub** (App Router, React 19, SQLite) driving
 Charon reaches it through **one multiplexed SSH per VPS**
 (`exec charon-agent.pyz --connect` = stdio↔socket proxy).
 
-Features: desktop multi-session dashboard, mobile UI (`/m/...`),
+Features: a single responsive multi-session dashboard at `/` (desktop
+3-col → tablet/phone off-canvas drawers; no separate mobile tree),
 persistent SSH shells (xterm.js; PTY in a DETACHED holder — survives
 Charon AND agent restarts), session survival across Charon restarts
 (re-subscribe + durable replay), automated VPS bootstrap (SSE phases),
@@ -42,12 +43,14 @@ Browser ◄─SSE/POST─► Charon (Next.js, AgentClientPool, SQLite)
 
 ```
 /srv/charon
-├── app/                  # Next.js App Router: api/ (§8), m/ (mobile), login/,
+├── app/                  # Next.js App Router: api/ (§8), login/,
 │   │                     # ClaudePanel, ClaudeSessionView, useClaudeSessionStream,
 │   │                     # TabBar, Sidebar, ToolPanel, Message, DataModal,
 │   │                     # globalEventStream (singleton SSE), sessionRebuild/Cache,
+│   │                     # useLongPress, SessionContextMenu, NewSessionWizard,
 │   │                     # *Modal/*Popup/*Card, LoginConsole, ShellTerminal,
-│   │                     # globals.css, claude.css, agent-ui.css, m/mobile.css
+│   │                     # globals.css, claude.css, agent-ui.css
+│   │                     # (m/ = legacy redirect stubs → `/`, §11)
 ├── lib/
 │   ├── api.ts            # typed fetch wrappers (pairs in lib/types/api.ts)
 │   ├── db/{schema.ts, index.ts}   # Drizzle + better-sqlite3 (WAL, FK ON)
@@ -87,6 +90,11 @@ Browser ◄─SSE/POST─► Charon (Next.js, AgentClientPool, SQLite)
   `/_next/static/*`). Dev keeps turbopack.
 - `.next` polluted (no `BUILD_ID`, `turbopack-*.js` chunks):
   `systemctl stop charon && rm -rf .next && npm run build && systemctl start charon`.
+- **Build needs Node ≥18; the interactive shell's `node` is v16** (`/usr/bin/node`)
+  while the service runs Node 20 via nvm (`/root/.nvm/versions/node/v20.19.5`).
+  Bare `npm run build` then dies "Node.js version required" — and `… | tail`
+  HIDES it (pipe exit = `tail`'s). Prefix PATH with the nvm bin and check the
+  real exit code: `export PATH="/root/.nvm/versions/node/v20.19.5/bin:$PATH"`.
 
 Systemd unit: `WorkingDirectory=/srv/charon`, `EnvironmentFile=.env`,
 `ExecStart=node /srv/charon/server.js`, `Restart=on-failure`. Logs:
@@ -128,7 +136,7 @@ SQLite WAL at `data/charon.db`, `better-sqlite3` (sync) + `drizzle-orm`.
 | `vpsFolders` | sidebar folders. `id='default'` protected (no delete, always last, §14.19-area rules below) |
 | `vps` | remote VPSes (detail below) |
 | `vpsPaths` | known cwds per VPS |
-| `claudeSessions` | Claude sessions: status, mode, cwd, name, color, `claudeSessionId`, `lastSeenSeq`, `lastStopNotifiedSeq`, `model`/`fallbackModel`/`effort`, `sleepRequested` (durable sleep intent, §14.46) |
+| `claudeSessions` | Claude sessions: status, mode, cwd, name, color, `claudeSessionId`, `lastSeenSeq`, `lastStopNotifiedSeq`, `model`/`fallbackModel`/`effort`, `sleepRequested` (durable sleep intent, §14.46), `unreadStop` (durable "finished, unread" marker, §14.47) |
 | `claudeSessionMessages` | history (role, content, createdAt) |
 | `claudePendingPermissions` / `claudePendingQuestions` | pending gates; questions `kind` = `question` \| `exit_plan` |
 | `claudeSessionLogs` | per-session audit |
@@ -151,7 +159,7 @@ API-side), `agentStatus('unknown'|'ok'|'missing'|'error')`,
 **Default-folder rule**: `id='default'` ("No folder") is always LAST,
 not draggable, its `position` updates are ignored server-side; new
 folders get `position = max+1`. Enforced in `DataModal.tsx`
-(StaticFolder), `Sidebar.tsx` (comparator), `m/select/MobileSelect.tsx`.
+(StaticFolder) and `Sidebar.tsx` (comparator).
 
 ### Migrations (`drizzle/`)
 
@@ -170,7 +178,9 @@ vestigial `shells.last_seen_seq` (tail replay, never a cursor, §14.37) ·
 ADD COLUMN: `db:generate`'s output was polluted by drizzle/meta snapshot
 drift (re-emitted CREATE TABLE shells + already-applied ADD COLUMNs); the
 regenerated 0017 snapshot is a full baseline that realigns future
-generates. Always check the .sql (§17)**.
+generates. Always check the .sql (§17)**. · 0018 `unread_stop`
+(durable "finished, unread" marker, §14.47 — clean single ADD COLUMN,
+no snapshot drift).
 
 Workflow: edit `lib/db/schema.ts` → `npm run db:generate` → **check the
 .sql** → `npm run db:migrate` → commit .sql AND `drizzle/meta/`.
@@ -336,7 +346,23 @@ On reconnect: `hello` → sha compare → update vps row + re-subscribe
   DB (tool_use_id, text hash…) are filtered.
 - Persistence: `assistant_text` accumulated, flushed on
   `stop`/`tool_use`/`permission_request`; other events inserted directly.
-- Notifications (push + Telegram) on perm/question/exit_plan/stop.
+- Notifications — TWO INDEPENDENT channels (separate header toggles in
+  `ClaudePanel`):
+  • **Web Push** (browser): gated by `notif.global_enabled` (server master,
+    Settings) + this browser's push subscription (bell button). Fires on
+    perm/question/exit_plan/stop + shell-idle.
+  • **Telegram**: gated ONLY by `telegram.enabled` (header paper-plane button
+    → `configured()`), NOT by `notif.global_enabled` — fully independent.
+    Fires on perm + question (interactive: inline buttons + free-text reply),
+    stop (plain "finished" text, isNewFinish seq-dedup) and shell-idle — NOT
+    exit_plan. Telegram sends self-gate inside `sendPlainToTelegram`/
+    `configured()`, so never wrap them in a `notif.global_enabled` check.
+    EVERY Telegram message appends a deep-link to the session/shell
+    (`telegram.ts § deepLink` → `app.public_url` + `/?session=` or
+    `/?shell=`); empty `app.public_url` ⇒ no link (the hub can't infer its
+    own public origin). Pass the relative path as `sendPlainToTelegram`'s
+    2nd arg; it's inlined in the perm+question MarkdownV2 with
+    `disable_web_page_preview`.
 - `alwaysAllow`: in-memory per-session set (§14.8).
 - Key fns: `startNewSession`, `resumeSession`, `sleepSession`,
   `deleteSession`, `importExistingSession`, `reconcileVpsAgentState`.
@@ -387,8 +413,9 @@ All under `/api/`, auth via middleware (except `/api/sync`, Bearer
 - `GET|POST /api/claude/settings` — writes gated by `ALLOWED_KEYS`.
   Notable: `claude.default_model/_fallback_model/_effort` (§14.35),
   `claude.api_key` (catalog sync ONLY, §14.43), `shell.notify_idle`,
-  `notif.global_enabled`. Internal (not writable, stripped from GET):
-  `claude.models_cache(_at)`.
+  `notif.global_enabled`, `telegram.enabled/bot_token/chat_id`,
+  `app.public_url` (hub's public base URL → Telegram deep-links, §7).
+  Internal (not writable, stripped from GET): `claude.models_cache(_at)`.
 - `POST /api/claude/telegram/test`; `GET /api/claude/push/key`,
   `POST /api/claude/push/subscribe|unsubscribe`
 - `GET /api/claude/models` — `mergeModels(seed, cached-live)` + kicks
@@ -495,7 +522,10 @@ question/exit_plan requests → queues → Popup/Card;
 `edit_snapshot` → `edits` Map (live event KEEPS content; GET strips —
 §14.41); `stop` → flush; `error` → banner; `prefill_input`;
 `vps_status` (`sessionId`=vpsId) → live agent badge (§14.34);
-`shell_status` (`sessionId`=shellId) → `shells[].liveStatus` (§14.42).
+`shell_status` (`sessionId`=shellId) → `shells[].liveStatus` (§14.42);
+`session_unread` (`sessionId`=session id, LOW_VOLUME → every tab) →
+`sessions[].unreadStop` green "finished" card glow, handled in
+`ClaudePanel` (Sidebar cards) not this hook (§14.47).
 
 Interactions feed two independent client queues from the same SSE:
 `useClaudeSessionStream` (focused inline cards) and
@@ -526,14 +556,27 @@ scan → row `sleeping` + `claudeSessionId`; Resume does
 
 ## 11. Frontend
 
-Desktop 3-col layout (`claude.css`): Sidebar 280px | chat | ToolPanel
-340px, header on top.
+**ONE responsive page at `/`** (`claude.css`) — no separate mobile tree
+(the old `/m/*` are now redirect stubs → `/`, §14.48). A single CSS-grid
+layout collapses across three breakpoints on `.claude-root`:
+- **>1100px**: 3 columns — Sidebar 280px | chat | ToolPanel 340px, header
+  on top.
+- **≤1100px**: 2 columns — Sidebar + chat; ToolPanel becomes a RIGHT
+  off-canvas drawer (`position:fixed` + `translateX`, toggled by
+  `.tools-open`).
+- **≤820px (phones)**: 1 column — chat full-bleed; Sidebar becomes a LEFT
+  off-canvas drawer (`.nav-open`), opened by the header ☰ (`aria-label="open
+  navigation"`); the redundant `.tab-row-vps` TabBar row is hidden.
+Drawers share a `.claude-scrim` backdrop; both classes live on
+`.claude-root` and are toggled by ClaudePanel state.
 
-**`ClaudePanel.tsx`** = desktop shell/orchestrator: `selectedId` /
-`selectedShellId` / `selectedInstallId` (mutually exclusive), sidebar
-data, modals, cross-session feed, push/SW integration, `mountedShellIds`
-(persistent shell layer, §14.37). Per-session chat state lives in
-`useClaudeSessionStream`, consumed by
+**`ClaudePanel.tsx`** = the single responsive shell/orchestrator:
+`selectedId` / `selectedShellId` / `selectedInstallId` (mutually
+exclusive), `navOpen`/`toolsOpen` drawer state, sidebar data, modals,
+cross-session feed, push/SW integration, `mountedShellIds` (persistent
+shell layer, §14.37). URL-synced `?session=`/`?shell=` deep links
+(`useSearchParams` → select on mount; Telegram/Push links land here).
+Per-session chat state lives in `useClaudeSessionStream`, consumed by
 `<ClaudeSessionView key={selectedId}>`.
 
 Notable component behaviors:
@@ -552,11 +595,13 @@ Notable component behaviors:
   open **`NewSessionWizard`** (unified 3-step modal: VPS → path → name,
   `kind` fixed by the button; agents get an optional model/effort advanced
   section). It replaced the old `NewSessionDialog`/`NewShellDialog` (deleted).
-  Mobile mirrors it with `m/NewWizardSheet` (3-step bottom sheet) — the old
-  `m/NewSessionSheet`/`NewShellSheet` are deleted too.
+  Session/shell/install cards open a context menu on right-click
+  (`onContextMenu`) AND touch long-press (`useLongPress.ts`, touch-only so
+  desktop is untouched) → `SessionContextMenu` (clamped to viewport).
 - **`TabBar.tsx`**: 2 rows (VPSes with open entities / entities of the
   active VPS); status colors; local × on non-active tabs; "+ Claude"/
-  "+ SSH" use `defaultCwdFor(vpsId)`; helper `computeTabs(...)`.
+  "+ SSH" use `defaultCwdFor(vpsId)`; helper `computeTabs(...)`. The VPS
+  row (`.tab-row-vps`) is hidden ≤820px (redundant with the Sidebar drawer).
 - **`DataModal.tsx`**: @dnd-kit DnD → atomic `POST /api/vps-folders/layout`.
 - **`SessionContextMenu.tsx`**: sessions → "Delete permanently" only.
 - **`LoginConsole.tsx`**: xterm over SSE for `claude login`, OAuth-URL
@@ -564,28 +609,24 @@ Notable component behaviors:
 - **`ShellTerminal.tsx`**: xterm over WS, reconnect backoff; tail replay
   → `term.reset()` on `replay_begin` + "restoring…" overlay; 10k-line
   scrollback; `active` prop (mounted-but-hidden, skip `fit()`);
-  `reassertSize` on focus/visibility (§14.37). Shared with mobile.
+  `reassertSize` on focus/visibility (§14.37).
 
-**Mobile (`app/m/`)**: `/m/select` mirrors the desktop V1 sidebar —
-boxed VPS per folder, shows a VPS only if it has a visible session/shell
-(folders with none hidden), IP under name, per-VPS + global ＋Agent/
-＋Shell, a **"show paused" switch** (localStorage `m.hub.claude.showPaused`,
-default ON; same hide-sleeping rule), DB-persisted folder collapse +
-local per-VPS collapse, long-press context sheet, `.m-quicknav` chips
-strip (logic in `app/m/quickNav.tsx § computeQuickNavGroups`). Creation =
-`m/NewWizardSheet`. `/m/chat`
-(condensed panel; ⧉ opens a `.m-sessions-sheet` overlay reusing
-`computeQuickNavGroups`, polls 5s while open), `/m/shell` (fullscreen
-xterm, always `active`).
+**Phones** get the SAME components (Sidebar/ClaudeSessionView/ShellTerminal)
+re-flowed by the breakpoints above — there is no `/m/select|chat|shell`
+fork anymore. The Sidebar drawer IS the session list; selecting a card
+closes the drawer (`navOpen=false`); the chat goes full-bleed. Old
+`/m/*` URLs (stale bookmarks / push payloads) 307-redirect to `/` (chat →
+`?session=`, shell → `?shell=`); see `app/m/*/page.tsx` stubs.
 
 **`lib/api.ts`**: typed fetch wrappers; request/response pairs in
 `lib/types/api.ts` — add both when adding a route.
 
-**Shared desktop ↔ mobile**: `sessionTypes.ts`, `sessionRebuild.ts`,
-`sessionCache.ts`, `inputDraftStore.ts`, `useClaudeSessionStream.ts`,
-`useCrossSessionInteractionFeed.ts`, `ClaudeSessionView.tsx` (isolated
-`memo` `<ChatInputBar>` + `memo(Message)` — §14.38; mobile mirror
-`MobileChat.tsx` with `MobileInputBar`/`memo(MobileMessage)`).
+**Chat-view internals** (`ClaudeSessionView.tsx`): isolated `memo`
+`<ChatInputBar>` (owns `useInputDraft`) + `memo(Message)` — both
+load-bearing for typing/streaming perf (§14.38). Shared session plumbing:
+`sessionTypes.ts`, `sessionRebuild.ts`, `sessionCache.ts`,
+`inputDraftStore.ts`, `useClaudeSessionStream.ts`,
+`useCrossSessionInteractionFeed.ts`.
 
 ---
 
@@ -693,7 +734,7 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
       wedges the inflight guards; on wake `forcePoll()` aborts the hung
       poll. `scheduleReconnect` bails when `navigator.onLine===false`.
     - Session GETs try/catch → clean retryable 503, never an HTML 500.
-    - **`SessionErrorBoundary`** wraps ClaudeSessionView + MobileChat:
+    - **`SessionErrorBoundary`** wraps ClaudeSessionView:
       a render throw otherwise kills the polling interval permanently.
       Catches → remounts after ~1.5s; escalates to
       `window.location.reload()` at ≥4 errors/8s.
@@ -800,10 +841,10 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
       "reconnecting…".
     - `npm run dev|start` both run `server.js`; no node-pty, no tmux.
 38. **Typing lag = non-memoized messages + input state colocated with
-    the list** (no React Compiler). Fix is BOTH: `memo(Message)` /
-    `memo(MobileMessage)` (markdown+highlight is expensive per message)
-    AND the textarea isolated in `memo`-wrapped `<ChatInputBar>` /
-    `<MobileInputBar>` owning `useInputDraft`. Don't pass fresh inline
+    the list** (no React Compiler). Fix is BOTH: `memo(Message)`
+    (markdown+highlight is expensive per message) AND the textarea
+    isolated in a `memo`-wrapped `<ChatInputBar>` owning `useInputDraft`.
+    Don't pass fresh inline
     objects as `<Message>` props (defeats memo — parent useMemos them).
     Keep `prefillInput` non-null until the input bar mounts and calls
     `clearPrefillInput()`. Counterpart of #17 (streaming): never O(N)
@@ -843,8 +884,9 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
     - **Transport**: NEVER re-stream `shell_output` through Next (the
       #41 egress trap). The persistent AgentClient registers ONE
       `shell_watch` per VPS (fan-out of everything EXCEPT shell_output);
-      `shellNotify.ts` gates on `notif.global_enabled` +
-      `shell.notify_idle` and pushes; it also `emitGlobalShellStatus` →
+      `shellNotify.ts` gates on `shell.notify_idle` (shell master), then
+      PER-CHANNEL: push iff `notif.global_enabled`, Telegram iff
+      `telegram.enabled` (independent — §7); it also `emitGlobalShellStatus` →
       global SSE → `liveStatus` (blue tab). `server.js` separately
       forwards `{type:'idle'}` to the browser.
     - **`shell_idle` + busy/active are TRANSIENT** (no seq, not logged)
@@ -934,6 +976,83 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
     active), then `continue`s. Cleared on the agent's `status='sleeping'`
     confirmation and on `resumeSession` (user wants it running). Converges:
     once asleep it leaves hello → reconcile no longer touches it.
+47. **Durable "finished, unread" marker (`claudeSessions.unreadStop`).**
+    Lights a GREEN "done" glow (+ ✓ badge) on a session's sidebar/select
+    card the moment its turn finishes, persisting cross-device until the
+    chat is opened. Distinct from the ORANGE `attention` (pending
+    permission/question) cue — green = "ready to read", orange = "needs
+    you". Claude sessions ONLY (never shells). NO agent/protocol change:
+    `session_unread {unread}` is a Charon-internal SYNTHETIC global SSE
+    event (`SyntheticEvent` in `claude/types.ts`), NOT a JSON-RPC event.
+    - **Set**: the `stop` handler (sessionOps) flips `unreadStop=1` +
+      broadcasts `session_unread` on a genuinely-new finish (`isNewFinish`,
+      reusing the `lastStopNotifiedSeq` seq-dedup) UNLESS the session is
+      being viewed. "Being viewed" = `sessionFocusChecker` (injected by
+      eventConnections, mirrors `setVpsStatusEmitter` to dodge the import
+      cycle) → **`wasRecentlyViewed(id)` = `focusCountFor(id) > 0` OR
+      viewed within `RECENT_VIEW_GRACE_MS` (12s)**. The grace is
+      LOAD-BEARING: `focusCountFor` is instantaneous, but an agent's turn
+      routinely finishes a beat AFTER the user switches away / steps back to
+      the list, so a bare focus check greened the session they were just
+      reading (and the 15s `refreshSessions` full-replace kept resurrecting
+      it). `setConnectionFocus` stamps `lastViewAt` for both the session left
+      and the one entered; the SSE-close handler stamps too. Unlike the
+      stop-push it does NOT require `!isReplaying`: a finish first learned via
+      replay (Charon was down) is a real unread finish; the seq-dedup stops
+      re-marking.
+    - **Clear (authoritative, cross-device)**: TWO triggers, both call
+      `markSessionRead` (flips `unreadStop=0` + emits `session_unread
+      {unread:false}`, only when actually unread → cheap, no bus spam).
+      (1) `POST /api/claude/focus` — you opened/focused it. Tied to FOCUS,
+      not the session GET — prefetch (`sessionCachePrefetchAll`) hits GET
+      `[id]` and would wrongly clear every marker. (2) the sessionOps
+      `status` handler on `status → thinking` — a NEW TURN began, so the
+      session is being worked again and is no longer "finished, unread"
+      (e.g. you sent input from another tab). A working session must never
+      be green (§14.47 working-guard below). The 'thinking' clear sits in
+      the non-replay path (after the `isReplaying` break), so a replayed
+      historical thinking never wipes a live marker.
+    - **Working-status guard (a working session is never green)**: the
+      card surface ALSO suppresses the green locally while
+      `baseStatus ∈ {thinking, starting}` (`Sidebar` SessionRow
+      `unread = … && !working`). This
+      is the client-side counterpart of the status→thinking server clear:
+      the clear is authoritative + cross-device but its `session_unread`
+      may land a tick after the `status` event, so the guard kills any
+      green flicker on an in-flight turn. Keep BOTH (defense in depth).
+    - **`session_unread` is LOW_VOLUME** (`eventConnections.ts`) — MUST
+      reach every tab, not just the focused conn: the whole point is to
+      light a BACKGROUND session's card. Classify it there or background
+      finishes never surface.
+    - **Client**: `ClaudePanel` `subscribeAll` patches
+      `sessions[].unreadStop` live + an optimistic clear keyed on
+      `selectedId` (no green flash on the card you just opened); the
+      `Sidebar` SessionRow reads `unreadStop`. The list GET returns the
+      column (full `db.select()`), so a cold load self-heals.
+48. **Single responsive UI — the `/m/*` fork is RETIRED.** There used to
+    be a parallel mobile tree (`app/m/{select,chat,shell}` + `mobile.css`
+    + `MobileSelect`/`MobileChat`/`MobileShell`/`quickNav`/`NewWizardSheet`,
+    a near-duplicate of the desktop components) — it "marche assez mal" and
+    drifted from `/`. Now `/` is the ONE UI, re-flowed by CSS breakpoints
+    (§11): >1100px 3-col, ≤1100px ToolPanel right-drawer, ≤820px Sidebar
+    left-drawer. Footguns when touching this:
+    - **Phones run the SAME components** — fix a bug once in
+      `Sidebar`/`ClaudeSessionView`/`ShellTerminal`, not twice. Don't
+      reintroduce a width-forked component; use a breakpoint + drawer.
+    - **`app/m/*/page.tsx` are redirect STUBS, not real pages** (307 → `/`,
+      mapping `?id=` → `?session=`/`?shell=`). They exist ONLY for stale
+      bookmarks + old push/Telegram deep-links that still point at
+      `/m/chat?id=`. New code must deep-link to `/?session=`/`/?shell=`
+      (see `NotificationClickHandler`, `telegram.ts § deepLink`). Safe to
+      delete once no old payloads remain in the wild.
+    - **Touch long-press = `useLongPress.ts` (touch-only)** — it does NOT
+      hook `onContextMenu`, so desktop right-click is untouched. A
+      long-press emits a trailing synthetic click/mousedown: `consume()`
+      swallows the card's onClick, and `SessionContextMenu` has a 350ms
+      open-guard so the same gesture doesn't instantly self-close it.
+    - **No `mobile.css`** — all responsive rules live in `claude.css`
+      `@media` blocks. No `m.hub.*` localStorage keys either (the desktop
+      `hub.claude.*` keys are the only ones now).
 
 ---
 
@@ -958,10 +1077,13 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
 | Model catalog sync / effort options | `lib/server/claude/modelSync.ts` + `knownModels.ts` + `app/EffortPicker.tsx` |
 | Resume noop reconcile | `resumeSession § resolvedStatus` (sessionOps) + noop in `server.py` |
 | Login `?next=` + open-redirect guard | `lib/nextPath.ts § sanitizeNextPath` + `middleware.ts` + `app/login/*` |
-| Mobile quick-nav (shared select strip + chat overlay) | `app/m/quickNav.tsx § computeQuickNavGroups` |
+| Responsive layout / drawers (3-col → tablet → phone) | `app/claude.css` (breakpoints + `.nav-open`/`.tools-open`) + `app/ClaudePanel.tsx` (`navOpen`/`toolsOpen`) |
+| Touch long-press context menu | `app/useLongPress.ts` + `Sidebar.tsx` (Session/Shell/InstallRow) + `SessionContextMenu.tsx` |
+| Legacy `/m/*` redirect stubs | `app/m/{,select/,chat/,shell/}page.tsx` → `/` (§14.48) |
 | Boot-arm agents (cold start) | `instrumentation.ts` + `seedInitialData()` in `events/route.ts`/`focus/route.ts` (§14.45) |
 | Restart resilience (SSE auth probe, focus self-heal, poll status reconcile) | `app/globalEventStream.ts § postFocus/maybeProbeAuth` + `useClaudeSessionStream § pollDelta` + `app/api/auth/check` (§14.45) |
 | Durable sleep intent | `sleepRequested` in `sessionOps § sleepSession/reconcileVpsAgentState` (§14.46) |
+| Finished-unread marker | `unreadStop` + `markSessionRead`/`sessionFocusChecker`/stop handler (sessionOps) + `session_unread` LOW_VOLUME (eventConnections) + `ClaudePanel`/`Sidebar` (§14.47) |
 
 ---
 

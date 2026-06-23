@@ -2,17 +2,13 @@
 import { api } from '@/lib/api';
 import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
 
-// Module-level cache shared between desktop + mobile.
-// - Mobile: `/m/select` prefetches all sessions on mount → `/m/chat`
-//   reads from the cache and renders instantly.
-// - Desktop: ClaudePanel prefetches the sidebar sessions → switching
-//   between sessions is instant via `<ClaudeSessionView key={id}>`
-//   (re-mount but the hook reads the cache on mount).
+// Module-level cache for session detail/messages. ClaudePanel prefetches the
+// sidebar sessions on mount → switching between sessions is instant via
+// `<ClaudeSessionView key={id}>` (re-mount, but the hook reads the cache on
+// mount).
 //
-// Before this module, `app/m/chatCache.ts` only served mobile. Promoted to
-// `app/sessionCache.ts` to be reusable on the desktop side without cross-import
-// between app/m/ and app/. The old mobile file re-exports from here to
-// preserve existing imports (backward compatibility).
+// Originally `app/m/chatCache.ts` (mobile-only); promoted here and renamed when
+// the UI was unified into the single responsive `/` (CLAUDE.md §11).
 
 type CacheEntry = {
   data: ClaudeSessionDetailResponse;

@@ -7,8 +7,8 @@
 // registers the `onStatus('connected') → reconcileVpsAgentState` self-healing
 // hook that re-attaches the SessionStreams — is only reachable via
 // `seedInitialData()`. Before this hook, seed was called ONLY from
-// SSR/server-action surfaces (app/page.tsx, app/m/select/page.tsx,
-// app/login/actions.ts). So after `systemctl restart charon`, a browser tab
+// SSR/server-action surfaces (app/page.tsx, app/login/actions.ts). So after
+// `systemctl restart charon`, a browser tab
 // that survives the restart reconnects its singleton SSE + 5s poll WITHOUT
 // ever triggering an SSR render → the AgentClientPool + SessionStream maps stay
 // empty → no live agent event ever arrives ("frozen until F5"; F5 = full page

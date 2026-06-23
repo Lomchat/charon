@@ -109,11 +109,11 @@ export default function SettingsModal({ onClose }: Props) {
               <input value={s['retention.killed_days'] ?? ''} onChange={(e) => set('retention.killed_days', e.target.value)} inputMode="numeric" />
             </label>
             <div className="switch-row">
-              <span>global push notifications</span>
+              <span>browser push notifications</span>
               <Toggle
                 checked={(s['notif.global_enabled'] ?? 'true') === 'true'}
                 onChange={(v) => set('notif.global_enabled', v ? 'true' : 'false')}
-                label="global push notifications"
+                label="browser push notifications"
               />
             </div>
             <div className="switch-row">
@@ -206,10 +206,13 @@ export default function SettingsModal({ onClose }: Props) {
                 />
               </div>
               <label>bot token
-                <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="password" />
+                <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
               </label>
               <label>chat_id
                 <input value={s['telegram.chat_id'] ?? ''} onChange={(e) => set('telegram.chat_id', e.target.value)} placeholder="123456789" inputMode="numeric" />
+              </label>
+              <label>public URL of this hub (for the “open in Charon” links)
+                <input value={s['app.public_url'] ?? ''} onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com" type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
               </label>
               <div className="tg-test-row">
                 <button type="button" onClick={testTelegram} disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>

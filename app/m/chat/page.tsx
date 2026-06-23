@@ -1,30 +1,10 @@
 import { redirect } from 'next/navigation';
-import { asc } from 'drizzle-orm';
-import { db, vps as vpsTable, vpsPaths as vpsPathsTable } from '@/lib/db';
-import { requireSession } from '@/lib/server/session';
-import MobileChat from './MobileChat';
-import SessionErrorBoundary from '../../SessionErrorBoundary';
 
-export const dynamic = 'force-dynamic';
-
+// Legacy mobile chat route → unified responsive `/?session=<id>` (CLAUDE.md
+// §11). The old route used `?id=`; the unified panel deep-links via `?session=`.
 type SearchParams = Promise<{ id?: string }>;
 
-export default async function MobileChatPage({ searchParams }: { searchParams: SearchParams }) {
-  await requireSession();
+export default async function MobileChatRedirect({ searchParams }: { searchParams: SearchParams }) {
   const { id } = await searchParams;
-  if (!id) redirect('/m/select');
-
-  // Ordered by position so the chat's "all active sessions" overlay groups
-  // VPSes in the same order as the sidebar / select screen.
-  const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
-  const pathRows = db.select().from(vpsPathsTable).all();
-
-  // Auto-recovering boundary: a render error in the chat must not freeze
-  // it permanently (the polling/SSE effects live inside MobileChat — they
-  // die on unmount). The boundary remounts after ~1.5s. cf. CLAUDE.md §14.
-  return (
-    <SessionErrorBoundary resetKey={id}>
-      <MobileChat sessionId={id} vpsList={vpsRows} vpsPaths={pathRows} />
-    </SessionErrorBoundary>
-  );
+  redirect(id ? `/?session=${encodeURIComponent(id)}` : '/');
 }

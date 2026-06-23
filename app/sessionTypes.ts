@@ -1,10 +1,12 @@
-// Types shared between the desktop view (ClaudePanel + components) and the
-// mobile view (MobileChat). Before this file, each view redeclared the same
-// types locally (Msg, ToolCallEntry, Todo, EditSnapshot, PermissionRequest,
-// PendingQuestion, PendingExitPlan) with a "copied from..." comment.
+// Types for the chat view (ClaudePanel + ClaudeSessionView +
+// useClaudeSessionStream). Before this file, the desktop and the old separate
+// mobile view each redeclared the same types locally (Msg, ToolCallEntry,
+// Todo, EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
+// with a "copied from..." comment; the mobile view has since been folded into
+// the responsive `/` (CLAUDE.md §11).
 //
-// Choice: `sessionId: string` required everywhere. On mobile (single-session)
-// we fill with the current sessionId — negligible memory cost, and it
+// Choice: `sessionId: string` required everywhere. The single-session hook
+// fills it with the current sessionId — negligible memory cost, and it
 // simplifies the `useClaudeSessionStream` hook which doesn't have to branch
 // on two different shapes.
 

@@ -1,12 +1,25 @@
 import './globals.css';
 import './agent-ui.css';
-import type { Metadata } from 'next';
-import MobileRedirectPrompt from './MobileRedirectPrompt';
+import type { Metadata, Viewport } from 'next';
 import NotificationClickHandler from './NotificationClickHandler';
 
 export const metadata: Metadata = {
   title: 'Charon',
   description: 'Hub for Claude Code sessions over SSH'
+};
+
+// Viewport for the single responsive UI. Without this, phones render the page
+// in a ~980px virtual viewport zoomed out → the whole UI is tiny and unusable
+// (this was the #1 cause of "mobile works badly"). Must ship WITH the
+// responsive CSS in claude.css — device-width alone would overflow the fixed
+// 3-col grid. §11.
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  themeColor: '#181b24',
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -22,7 +35,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         {children}
-        <MobileRedirectPrompt />
         <NotificationClickHandler />
       </body>
     </html>

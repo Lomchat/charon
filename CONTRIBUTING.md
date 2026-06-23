@@ -19,9 +19,10 @@ box with a key in `authorized_keys` is enough.
 
 ## Repo map
 
-- `app/` — Next.js App Router : UI components and API routes.
+- `app/` — Next.js App Router : UI components and API routes. The UI is a
+  single responsive page at `/` (desktop 3-col → tablet/phone drawers); there
+  is no separate mobile tree anymore.
   - `app/api/**/route.ts` — every API endpoint.
-  - `app/m/` — mobile UI.
 - `lib/` — server-side logic (DB, auth, crypto, agent client pool, bootstrap).
 - `agent/charon_agent/` — Python daemon that runs on each VPS.
 - `drizzle/` — generated SQL migrations + the migration journal.
@@ -70,10 +71,10 @@ you'll know immediately if you forgot one side.
 
 ### Modify the UI
 
-State mostly lives in `app/ClaudePanel.tsx` (desktop) and
-`app/m/chat/MobileChat.tsx` (mobile). Both consume a shared session hook,
-`useClaudeSessionStream`, that handles the SSE stream and exposes session
-state + actions. Look at it before plumbing yet another `useEffect` —
+State mostly lives in `app/ClaudePanel.tsx` (the single responsive shell) and
+`app/ClaudeSessionView.tsx` (the chat view). Both consume a shared session
+hook, `useClaudeSessionStream`, that handles the SSE stream and exposes
+session state + actions. Look at it before plumbing yet another `useEffect` —
 chances are the hook already exposes what you need.
 
 ## Coding conventions

@@ -13,6 +13,7 @@ import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/claude/webPush';
 import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
+  sendPlainToTelegram,
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel } from './types';
@@ -132,6 +133,40 @@ export function emitGlobalVpsStatus(
   });
 }
 setVpsStatusEmitter(emitGlobalVpsStatus);
+
+// ── "Finished, unread" marker (CLAUDE.md §14.47) ────────────────────────────
+// To decide whether a finishing turn should light the sidebar marker, we need
+// to know if the user is currently VIEWING the session — OR was within the last
+// few seconds (an agent often finishes a beat after you switch away; that turn
+// shouldn't green a session you were just reading). That truth lives in
+// eventConnections (wasRecentlyViewed = focusCountFor + a recency grace), which
+// already imports THIS module — so to dodge a hard import cycle we reuse the
+// setVpsStatusEmitter injection trick: eventConnections wires this slot at its
+// module load. Null until then → default "not focused" (safe: no SSE open ⇒
+// nobody's watching).
+let sessionFocusChecker: ((sessionId: string) => boolean) | null = null;
+export function setSessionFocusChecker(fn: (sessionId: string) => boolean): void {
+  sessionFocusChecker = fn;
+}
+
+/**
+ * Clear a session's durable "finished, unread" marker
+ * (claudeSessions.unreadStop → 0) and mirror it live to every tab via the
+ * `session_unread` bus event. Called when the user opens/focuses the session
+ * (POST /api/claude/focus). Idempotent + cheap: only writes/emits when the row
+ * was actually unread, so re-focusing or switching between already-read
+ * sessions never spams the bus.
+ */
+export function markSessionRead(sessionId: string): void {
+  try {
+    const res = db.update(claudeSessions).set({ unreadStop: 0 })
+      .where(and(eq(claudeSessions.id, sessionId), eq(claudeSessions.unreadStop, 1)))
+      .run();
+    if (((res as { changes?: number }).changes ?? 0) > 0) {
+      emitGlobalSession({ type: 'session_unread', unread: false, sessionId });
+    }
+  } catch {}
+}
 
 export class SessionStream {
   readonly id: string;
@@ -355,12 +390,20 @@ export class SessionStream {
         // `replay_end` (cf. agent/server.py § subscribe), so we just trust
         // that one to be the source of truth.
         if (this.isReplaying) {
-          console.warn(`[resume-debug] ${this.id} agent→status=${ev.status} SKIPPED (replay) @${Date.now()}`);
           break;
         }
-        console.warn(`[resume-debug] ${this.id} agent→status=${ev.status} (prev=${this.status}) @${Date.now()}`);
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
+        // A new turn beginning (status → thinking) means the session is being
+        // actively worked again, so it is no longer "finished, unread": clear
+        // the green marker authoritatively (DB + session_unread bus). This is
+        // the cross-device counterpart of the client display guard that hides
+        // green while a session is working. markSessionRead is a no-op when the
+        // row wasn't unread, so the extra write is free on a normal turn start.
+        // cf. CLAUDE.md §14.47.
+        if (ev.status === 'thinking') {
+          markSessionRead(this.id);
+        }
         try {
           // A confirmed 'sleeping' from the agent fulfills any pending sleep
           // intent (sleepRequested) — clear it so a later legitimate 'active'
@@ -559,6 +602,34 @@ export class SessionStream {
               body: 'Claude finished its response',
               tag: `stop-${this.id}`,
             });
+            // Mirror the "finished" notification to Telegram (plain text, no
+            // buttons — stop isn't interactive). Telegram is an INDEPENDENT
+            // channel: gated ONLY by telegram.enabled (checked inside
+            // sendPlainToTelegram→configured()), NOT by notif.global_enabled
+            // (that's the browser/push master). The isNewFinish seq-dedup
+            // already prevents reconnect/replay storms. No-op if Telegram is
+            // off/unconfigured. (CLAUDE.md §7)
+            sendPlainToTelegram(
+              `✓ ${this.vpsName} · ${this._label()}\nClaude finished its response`,
+              `/?session=${this.id}`,
+            ).catch(() => {});
+          }
+          // Passive in-app "finished, unread" marker (CLAUDE.md §14.47). Light
+          // it on a genuinely-new finish UNLESS the user is currently viewing
+          // the session. Unlike the push above we do NOT require !isReplaying:
+          // a finish first learned about via replay (Charon was down when the
+          // agent finished) is a real unread finish, and a silent DB flag has
+          // no notification-storm concern. The seq dedup in `isNewFinish` + the
+          // advance below keep later reconnect-replays from re-marking it.
+          if (isNewFinish) {
+            const beingViewed = sessionFocusChecker?.(this.id) ?? false;
+            if (!beingViewed) {
+              try {
+                db.update(claudeSessions).set({ unreadStop: 1 })
+                  .where(eq(claudeSessions.id, this.id)).run();
+              } catch {}
+              this._broadcast({ type: 'session_unread', unread: true });
+            }
           }
           if (stopSeq != null && (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq)) {
             this.lastStopNotifiedSeq = stopSeq;
@@ -831,14 +902,11 @@ export class SessionStream {
   private _maybePush(payload: { title: string; body: string; tag?: string }): void {
     if (!getSettingBool('notif.global_enabled')) return;
     // `url` is the openWindow fallback used by the service worker when no
-    // Charon tab is already open. Desktop hub is `/` — the ClaudePanel
-    // picks up `?session=…` via useSearchParams and switches selectedId.
-    // When a tab IS already open, the SW prefers focus+postMessage; the
-    // root layout handler (`NotificationClickHandler`) then routes via
-    // Next router to `/m/chat?id=…` or `/?session=…` depending on whether
-    // the current pathname is mobile or desktop. Mobile users with no
-    // Charon tab open fall back to `/?session=…` then go through the
-    // MobileRedirectPrompt — acceptable since it's an edge case.
+    // Charon tab is already open. The hub is a single responsive app at `/`
+    // — the ClaudePanel picks up `?session=…` via useSearchParams and
+    // switches selectedId. When a tab IS already open, the SW prefers
+    // focus+postMessage; the root layout handler (`NotificationClickHandler`)
+    // then routes via Next router to `/?session=…`.
     sendPushToAll({
       ...payload,
       sessionId: this.id,
@@ -1041,10 +1109,8 @@ const _resumeInflight = new Map<string, Promise<SessionStream>>();
 export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const existing = _resumeInflight.get(sessionId);
   if (existing) {
-    console.warn(`[resume-debug] ${sessionId} resumeSession() called — dedup (existing inflight) @${Date.now()}`);
     return existing;
   }
-  console.warn(`[resume-debug] ${sessionId} resumeSession() called @${Date.now()}`);
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
@@ -1056,7 +1122,6 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
 
     let stream = streams.get(sessionId);
     if (!stream) {
-      console.warn(`[resume-debug] ${sessionId} creating stream from DB row (db.status=${row.status}) @${Date.now()}`);
       stream = new SessionStream({
         id: row.id, vpsId: row.vpsId, vpsName: vps.name,
         name: row.name, status: row.status as WorkerStatus,
@@ -1071,7 +1136,6 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
       });
       streams.set(sessionId, stream);
     } else {
-      console.warn(`[resume-debug] ${sessionId} reusing existing stream (stream.status=${stream.status}, db.status=${row.status}) @${Date.now()}`);
     }
 
     const client = getAgentClientForVpsId(row.vpsId);
@@ -1088,14 +1152,12 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     let resolvedStatus: WorkerStatus = 'starting';
     try {
       const rpcRes = await client.call('resume_session', { session_id: sessionId });
-      console.warn(`[resume-debug] ${sessionId} resume_session RPC OK: ${JSON.stringify(rpcRes)} @${Date.now()}`);
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
         resolvedStatus = agentStatus;
       }
     } catch (e: any) {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
-      console.warn(`[resume-debug] ${sessionId} resume_session RPC threw (isNotFound=${isNotFound}): ${e?.message ?? e} @${Date.now()}`);
       if (!isNotFound) throw e;
       // Recreate from scratch (the agent doesn't know this session). We
       // pass the persisted model/fallback/effort so the resumed SDK client
@@ -1112,14 +1174,12 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
         });
-        console.warn(`[resume-debug] ${sessionId} fallback start_session OK @${Date.now()}`);
       } catch (startErr: any) {
         // If another concurrent call just created it (race between
         // two resume paths), the agent replies "already exists". In that
         // case we treat it as a success: the session is properly on the agent.
         const msg = startErr?.message ?? '';
         if (!/already exists/i.test(msg)) throw startErr;
-        console.warn(`[resume-debug] ${sessionId} fallback start_session: already exists → treated as OK @${Date.now()}`);
       }
     }
     stream.attach();
@@ -1140,7 +1200,6 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // wants this session running again). cf. CLAUDE.md §14.46.
     db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0 })
       .where(eq(claudeSessions.id, sessionId)).run();
-    console.warn(`[resume-debug] ${sessionId} resumeSession() returning (stream.status=${stream.status}, DB set to '${resolvedStatus}') @${Date.now()}`);
     return stream;
   })();
   _resumeInflight.set(sessionId, p);

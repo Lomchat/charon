@@ -1,15 +1,10 @@
 import { redirect } from 'next/navigation';
-import { requireSession } from '@/lib/server/session';
-import MobileShell from './MobileShell';
 
-export const dynamic = 'force-dynamic';
-
+// Legacy mobile shell route → unified responsive `/?shell=<id>` (CLAUDE.md
+// §11). The old route used `?id=`; the unified panel deep-links via `?shell=`.
 type SearchParams = Promise<{ id?: string }>;
 
-export default async function MobileShellPage({ searchParams }: { searchParams: SearchParams }) {
-  await requireSession();
+export default async function MobileShellRedirect({ searchParams }: { searchParams: SearchParams }) {
   const { id } = await searchParams;
-  if (!id) redirect('/m/select');
-
-  return <MobileShell shellId={id} />;
+  redirect(id ? `/?shell=${encodeURIComponent(id)}` : '/');
 }

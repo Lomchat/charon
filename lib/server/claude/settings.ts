@@ -19,6 +19,11 @@ const DEFAULTS = {
   'telegram.enabled': 'false',
   'telegram.bot_token': '',
   'telegram.chat_id': '',
+  // Public base URL of this hub (e.g. https://charon.example.com), used to
+  // build absolute deep-links in Telegram messages (the hub only binds to
+  // HOST:PORT locally and has no idea of its public origin). Empty = no link
+  // appended. Trailing slash is tolerated (stripped when building links).
+  'app.public_url': '',
   // Global defaults for Claude model / fallback / effort. Empty string =
   // not set → the agent passes nothing → SDK default applies.
   // New sessions inherit these unless overridden in NewSessionDialog.

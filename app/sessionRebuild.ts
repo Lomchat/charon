@@ -1,9 +1,11 @@
 // Reconstruction of a session state from messages persisted in the DB
 // (used at mount, session switch, tab return).
 //
-// Shared between `app/ClaudePanel.tsx` and `app/m/chat/MobileChat.tsx` — before
-// this file, the same function was duplicated identically with a comment
-// "copied from ClaudePanel.rebuildStateFromMessages" on the mobile side.
+// Used by the chat view (ClaudeSessionView via useClaudeSessionStream). It was
+// once duplicated identically on the old separate mobile view (since folded
+// into the responsive `/`, CLAUDE.md §11) with a "copied from
+// ClaudePanel.rebuildStateFromMessages" comment; extracting it here killed
+// that fork.
 
 import type {
   Msg, ToolCallEntry, Todo, EditSnapshot,

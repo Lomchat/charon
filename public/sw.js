@@ -59,17 +59,15 @@ self.addEventListener('notificationclick', (event) => {
         all[0];
       try { await target.focus(); } catch {}
       // The root layout (`NotificationClickHandler`) receives this and
-      // routes via Next router — desktop → `/?session=…`,
-      // mobile → `/m/chat?id=…`. We pass the fallback URL too so the
-      // handler can use it as last resort if pathname detection fails.
+      // routes via Next router → `/?session=…` (single responsive UI). We
+      // pass the fallback URL too as a last resort.
       try {
         target.postMessage({ type: 'open-session', sessionId, url: fallbackUrl });
       } catch {}
       return;
     }
     // No Charon tab is open — open one. The page will switch to the
-    // right session on mount via ?session=… (desktop). Mobile users
-    // hitting this branch (rare) get the MobileRedirectPrompt.
+    // right session on mount via ?session=… .
     try { await self.clients.openWindow(fallbackUrl); } catch {}
   })());
 });

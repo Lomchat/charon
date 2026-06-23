@@ -56,7 +56,16 @@ export type SyntheticEvent =
   // `vps.agentStatus` inside AgentClient (hello success / classified exit) so
   // the sidebar badge + action buttons follow reality without an F5. Same
   // bus-reuse trick as shell_status; LOW_VOLUME → broadcast to every tab.
-  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null };
+  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null }
+  // Per-session "finished, unread" marker fanned onto the global SSE bus
+  // (sessionId = the Claude session id). unread=true when a turn finished
+  // (`stop`) while nobody was viewing the session; unread=false when the user
+  // opens/focuses it (POST /focus → markSessionRead). Lets the sidebar's green
+  // "finished" glow appear live across tabs/devices and clear on read. Source
+  // of truth is claudeSessions.unreadStop; this event is just the live mirror.
+  // Classed LOW_VOLUME in eventConnections so it reaches every tab regardless
+  // of SSE focus. cf. CLAUDE.md §14.47.
+  | { type: 'session_unread'; unread: boolean };
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 
