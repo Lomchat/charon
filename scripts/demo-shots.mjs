@@ -1,10 +1,10 @@
 // Screenshot capture for the README. Demo hub must be up on :10999 (demo.db).
-// 100% fictitious data. Output → docs/screenshots/.
+// 100% fictitious data. Output → docs/img/.
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
 
 const BASE = 'http://127.0.0.1:10999';
-const OUT = 'docs/screenshots';
+const OUT = 'docs/img';
 mkdirSync(OUT, { recursive: true });
 const COOKIE = {
   name: 'charon_session', value: 'demo-session-screenshot',

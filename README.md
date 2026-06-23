@@ -23,7 +23,7 @@ daemon (`charon-agent`) on each VPS, so they keep running when your laptop
 sleeps, your network drops, or you restart the hub. Charon is just the control
 plane.
 
-![Charon desktop dashboard — sidebar of VPS with Claude sessions and shells, a streaming session and a permission request](./docs/screenshots/dashboard.png)
+![Charon desktop dashboard — sidebar of VPS with Claude sessions and shells, a streaming session and a permission request](./docs/img/dashboard.png)
 
 ```
 ┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 per VPS)  ┌──────────────────────┐
@@ -40,8 +40,8 @@ plane.
 
 ### 1 · Claude sessions — a real discussion UI
 
-<img src="./docs/screenshots/claude-chat.png" alt="Claude session view: streamed answer, paired tool calls, and a permission card" width="48%"></img>
-<img src="./docs/screenshots/mobile-chat.png" alt="Mobile session view with a permission request" width="22%"></img>
+<img src="./docs/img/claude-chat.png" alt="Claude session view: streamed answer, paired tool calls, and a permission card" width="48%"></img>
+<img src="./docs/img/mobile-chat.png" alt="Mobile session view with a permission request" width="22%"></img>
 
 Each session is an independent `ClaudeSDKClient` running **on the VPS**, not on
 your machine:
@@ -62,7 +62,7 @@ your machine:
 
 ### 2 · Persistent SSH shells
 
-![A persistent shell terminal running on a remote VPS, next to the Claude sessions in the sidebar](./docs/screenshots/shell.png)
+![A persistent shell terminal running on a remote VPS, next to the Claude sessions in the sidebar](./docs/img/shell.png)
 
 Real **xterm.js** terminals, multiple per VPS, right next to your Claude
 sessions:
