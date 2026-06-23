@@ -30,6 +30,12 @@ const g = globalThis as unknown as { _agentBooted?: boolean };
 export function autoConnectAgentsIfNeeded(): void {
   if (g._agentBooted) return;
   g._agentBooted = true;
+  // Opt-out for local dev / CI / demos (CHARON_DISABLE_AUTOCONNECT=1): skip the
+  // boot-time fan-out that connects to every VPS agent + arms the
+  // reconcile/auto-resume hook. On-demand connections (opening a shell, a
+  // lifecycle action via getAgentClientForVpsId) still work. Leave UNSET in
+  // production — setting it means sessions won't live-update until a tab acts.
+  if (process.env.CHARON_DISABLE_AUTOCONNECT === '1') return;
   // Hub-global, key-gated, 24h-throttled refresh of the Claude model catalog
   // from GET /v1/models (no-op without `claude.api_key`). Not per-VPS — the
   // model list is an Anthropic-side concept. Cf. lib/server/claude/modelSync.ts.

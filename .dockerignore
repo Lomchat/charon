@@ -7,7 +7,10 @@ data/*
 .env
 .env.*
 !.env.example
-docker
+# Keep docker/entrypoint.sh in the build context (the Dockerfile COPYs it);
+# only exclude the local-only artifacts (cf. .gitignore).
+docker/dummy-key
+docker/known_hosts
 Dockerfile
 docker-compose.yml
 README.md
