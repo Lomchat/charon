@@ -34,6 +34,7 @@
     "start": "node server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
     "test:watch": "vitest",
     "test:py": "python3 -m unittest discover -s agent/tests -v",
     "db:generate": "drizzle-kit generate",

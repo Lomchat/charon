@@ -292,7 +292,35 @@ class Server:
         self.rings.setdefault(row["session_id"], deque(maxlen=RING_SIZE))
 
     # ── JSON-RPC dispatch ───────────────────────────────────────────────────
+    # `dispatch` is a thin router: it groups methods by domain and delegates
+    # to a per-domain async handler. The handlers operate on the same self.*
+    # state and contain the moved-over branches verbatim — no behaviour change
+    # (same params, return shapes, error codes, and event emission). The set
+    # of methods is unchanged (cf. protocol.METHODS).
+    _META_METHODS = frozenset({"hello", "ping", "list_sessions"})
+    _SESSION_METHODS = frozenset({
+        "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
+        "set_permission_mode", "set_model", "set_effort", "respond_permission",
+        "respond_question", "respond_exit_plan", "resume_session",
+        "sleep_session", "force_stop", "kill_session",
+    })
+    _SHELL_METHODS = frozenset({
+        "shell_list", "shell_start", "shell_input", "shell_resize",
+        "shell_subscribe", "shell_unsubscribe", "shell_watch", "shell_unwatch",
+        "shell_kill",
+    })
+
     async def dispatch(self, method: str, params: dict[str, Any], client: "Client") -> Any:
+        if method in self._META_METHODS:
+            return await self._handle_meta_rpc(method, params, client)
+        if method in self._SESSION_METHODS:
+            return await self._handle_session_rpc(method, params, client)
+        if method in self._SHELL_METHODS:
+            return await self._handle_shell_rpc(method, params, client)
+        raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+    # ── Meta / lifecycle handlers ────────────────────────────────────────────
+    async def _handle_meta_rpc(self, method: str, params: dict[str, Any], client: "Client") -> Any:
         if method == "hello":
             return {
                 "agent_version": __version__,
@@ -309,6 +337,10 @@ class Server:
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]
 
+        raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+    # ── Session handlers ─────────────────────────────────────────────────────
+    async def _handle_session_rpc(self, method: str, params: dict[str, Any], client: "Client") -> Any:
         if method == "start_session":
             session_id = params.get("session_id") or uuid.uuid4().hex
             cwd = params.get("cwd")
@@ -521,12 +553,15 @@ class Server:
             self.schedule_save()
             return {"ok": True}
 
-        # ── Persistent PTY shells (>= 0.7.0) ─────────────────────────────
-        # Same plumbing as sessions (rings, subscribers, durable event log
-        # via _emit) but a separate set of RPCs and a dedicated log dir
-        # (`~/.charon/shells/`). Shell IDs are the channel key, passed as
-        # either `shell_id` or `session_id` (the latter for protocol reuse
-        # — the routing layer keys by `session_id` anyway).
+        raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
+
+    # ── Persistent PTY shells (>= 0.7.0) ─────────────────────────────────────
+    # Same plumbing as sessions (rings, subscribers, durable event log via
+    # _emit) but a separate set of RPCs and a dedicated log dir
+    # (`~/.charon/shells/`). Shell IDs are the channel key, passed as either
+    # `shell_id` or `session_id` (the latter for protocol reuse — the routing
+    # layer keys by `session_id` anyway).
+    async def _handle_shell_rpc(self, method: str, params: dict[str, Any], client: "Client") -> Any:
         if method == "shell_list":
             return [sh.to_info() for sh in self.shells.values()]
 
