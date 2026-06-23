@@ -1,5 +1,5 @@
 'use server';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import {
   checkPassword, deriveMasterKey,
@@ -7,6 +7,12 @@ import {
 } from '@/lib/server/auth';
 import { seedInitialData } from '@/lib/server/seed';
 import { sanitizeNextPath } from '@/lib/nextPath';
+import {
+  check as rateLimitCheck,
+  recordFailure as rateLimitFailure,
+  recordSuccess as rateLimitSuccess,
+  keyFromHeaders,
+} from '@/lib/server/loginRateLimit';
 
 export async function loginAction(_prev: { error?: string } | null, formData: FormData) {
   const password = String(formData.get('password') ?? '');
@@ -16,7 +22,21 @@ export async function loginAction(_prev: { error?: string } | null, formData: Fo
   const next = sanitizeNextPath(formData.get('next'));
   if (!password) return { error: 'password required' };
 
-  if (!checkPassword(password)) return { error: 'invalid password' };
+  // Brute-force throttle: ONE MASTER_PASSWORD guards the whole fleet, so gate
+  // the attempt on a per-IP (or global-fallback) in-memory limiter before
+  // touching the password at all.
+  const rlKey = keyFromHeaders(await headers());
+  const gate = rateLimitCheck(rlKey);
+  if (!gate.allowed) {
+    const secs = Math.ceil(gate.retryAfterMs / 1000);
+    return { error: `too many attempts, retry in ${secs}s` };
+  }
+
+  if (!checkPassword(password)) {
+    rateLimitFailure(rlKey);
+    return { error: 'invalid password' };
+  }
+  rateLimitSuccess(rlKey);
 
   // Idempotent seed at first login
   seedInitialData();
