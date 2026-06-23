@@ -88,11 +88,21 @@ msg('tool_use', JSON.stringify({ type: 'tool_use', id: 't3', name: 'Edit', input
 msg('tool_result', JSON.stringify({ type: 'tool_result', tool_use_id: 't3', content: 'Applied edit to src/middleware/auth.ts', is_error: false }), 574);
 msg('assistant', "Done with the store swap. Now the rate limiter — I'll add a small in-memory sliding-window keyed by IP and wire it before the login handler. I need to run the test suite to make sure nothing regressed.", 540);
 
-// A pending permission to showcase the approval flow on the open session
+// A pending permission to showcase the approval flow — on the OTHER (thinking)
+// session, not the open one, so the hero session shows its prompt input bar
+// (a pending interaction replaces the input bar with the permission card) while
+// this still surfaces as a cross-session permission popup.
 db.prepare(`INSERT INTO claude_pending_permissions (id,session_id,tool_name,tool_input,status,created_at)
             VALUES (?,?,?,?, 'pending', ?)`)
-  .run('perm-1', 's_auth', 'Bash',
+  .run('perm-1', 's_tests', 'Bash',
        JSON.stringify({ command: 'npm test -- auth', description: 'Run the auth test suite' }), now - 20);
+
+// Mark the one-shot v2 migration as DONE so it does NOT flip our seeded
+// 'active' sessions to 'sleeping' on the demo hub's boot (migrationV2.ts) —
+// otherwise the hero session renders the "inactive, click to reconnect" CTA
+// instead of the live conversation + prompt input bar.
+db.prepare(`INSERT OR REPLACE INTO claude_settings (key, value) VALUES (?, ?)`)
+  .run('migration.v2_agent_done', String(now));
 
 console.log('demo seed OK · cookie session id =', SESSION_ID);
 db.close();

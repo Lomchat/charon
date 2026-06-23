@@ -73,11 +73,12 @@ await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: tr
   await sleep(1500);
 }, 'mobile-select.png');
 
+// Deep-link straight into the chat (the unified panel reads ?session=<id>) so
+// we capture the actual mobile conversation + prompt bar, not the drawer — and
+// it dodges the cross-session permission popup that can overlay the list.
 await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true }, async (page) => {
-  await open(page, '/');
-  await page.getByLabel('open navigation').click({ timeout: 12000 }).catch(() => {});
-  await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
-  await page.getByText('refactor auth middleware', { exact: false }).first().click();
+  await open(page, '/?session=s_auth');
+  await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(2200);
 }, 'mobile-chat.png');
 
