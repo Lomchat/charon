@@ -22,3 +22,4 @@ __pycache__/
 
 # Internal/private dev docs (not for the public repo)
 todo.md
+CLAUDE.md
