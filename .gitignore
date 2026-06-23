@@ -19,3 +19,6 @@ __pycache__/
 
 # Claude Code local working dir (worktrees, settings) — not committed
 .claude/
+
+# Internal/private dev docs (not for the public repo)
+todo.md
