@@ -63,6 +63,7 @@ Browser ◄─SSE/POST─► Charon (Next.js, AgentClientPool, SQLite)
 ├── drizzle/              # SQL migrations + meta/ (commit BOTH)
 ├── scripts/{migrate.mjs, check-protocol-sync.mjs}
 ├── data/charon.db, middleware.ts (auth gate)
+├── instrumentation.ts    # Next boot hook: register()→seedInitialData() (§14.45)
 ├── server.js             # custom Next server: Next + WS upgrade for shells
 └── /etc/systemd/system/charon.service   (outside the repo)
 ```
@@ -94,6 +95,11 @@ Systemd unit: `WorkingDirectory=/srv/charon`, `EnvironmentFile=.env`,
 `next.config.mjs`: `serverExternalPackages: ['better-sqlite3']`
 (mandatory, §14.9), `reactStrictMode: false`, security headers (§13).
 
+**Agent boot is armed at process start**, not by SSR: `instrumentation.ts`
+`register()` (runs once on `app.prepare()`, nodejs runtime only) calls
+`seedInitialData()` → `autoConnectAgentsIfNeeded()`. The SSE route also
+seeds defensively (§14.45). seed is idempotent.
+
 ### `.env` keys
 
 | Key | Role |
@@ -122,7 +128,7 @@ SQLite WAL at `data/charon.db`, `better-sqlite3` (sync) + `drizzle-orm`.
 | `vpsFolders` | sidebar folders. `id='default'` protected (no delete, always last, §14.19-area rules below) |
 | `vps` | remote VPSes (detail below) |
 | `vpsPaths` | known cwds per VPS |
-| `claudeSessions` | Claude sessions: status, mode, cwd, name, color, `claudeSessionId`, `lastSeenSeq`, `lastStopNotifiedSeq`, `model`/`fallbackModel`/`effort` |
+| `claudeSessions` | Claude sessions: status, mode, cwd, name, color, `claudeSessionId`, `lastSeenSeq`, `lastStopNotifiedSeq`, `model`/`fallbackModel`/`effort`, `sleepRequested` (durable sleep intent, §14.46) |
 | `claudeSessionMessages` | history (role, content, createdAt) |
 | `claudePendingPermissions` / `claudePendingQuestions` | pending gates; questions `kind` = `question` \| `exit_plan` |
 | `claudeSessionLogs` | per-session audit |
@@ -159,7 +165,12 @@ default folder · 0010 hot-path indexes (SQLite doesn't auto-index FKs) ·
 `last_stop_notified_seq` (stop-push dedup across replays) · 0013 shells
 table (tmux, superseded) · 0014 per-session model/fallback/effort
 (§14.35) · 0015 shells: drop tmux_name (needs SQLite ≥3.35) · 0016 drop
-vestigial `shells.last_seen_seq` (tail replay, never a cursor, §14.37).
+vestigial `shells.last_seen_seq` (tail replay, never a cursor, §14.37) ·
+**0017 `sleep_requested` (§14.46) — its .sql was HAND-REDUCED to the single
+ADD COLUMN: `db:generate`'s output was polluted by drizzle/meta snapshot
+drift (re-emitted CREATE TABLE shells + already-applied ADD COLUMNs); the
+regenerated 0017 snapshot is a full baseline that realigns future
+generates. Always check the .sql (§17)**.
 
 Workflow: edit `lib/db/schema.ts` → `npm run db:generate` → **check the
 .sql** → `npm run db:migrate` → commit .sql AND `drizzle/meta/`.
@@ -370,6 +381,9 @@ All under `/api/`, auth via middleware (except `/api/sync`, Bearer
 
 ### Auth & settings
 - `POST /api/login/*`, `POST /logout`
+- `GET /api/auth/check` — tiny authed liveness probe (200 `{ok}` / 401 via
+  middleware). The browser SSE uses it to tell "server down" (502/503,
+  self-heals) from "session expired" (401 → reload to /login). §14.45.
 - `GET|POST /api/claude/settings` — writes gated by `ALLOWED_KEYS`.
   Notable: `claude.default_model/_fallback_model/_effort` (§14.35),
   `claude.api_key` (catalog sync ONLY, §14.43), `shell.notify_idle`,
@@ -443,9 +457,10 @@ All under `/api/`, auth via middleware (except `/api/sync`, Bearer
   per session view (§14.41).
 - `GET /api/claude/events?conn=<uuid>[&focus=<sid>]` — THE single
   multiplexed SSE per tab. Initial statuses + pendings + live filtered
-  by focus.
+  by focus. **Calls `seedInitialData()` at the top (idempotent) — the
+  guaranteed cold-start re-arm for a surviving tab, §14.45.**
 - `POST /api/claude/focus` — `{conn, sessionId}`: switch which session
-  gets high-volume events, no SSE reconnect.
+  gets high-volume events, no SSE reconnect. Also seeds (§14.45).
 - `POST /api/claude/sessions/[id]/input` (`{content}` or
   `{type:'interrupt'}`), `/permission` (`{id, allow, always?}`),
   `/question`, `/exit-plan`, `/mode`, `/model` (`{model, fallbackModel?}`,
@@ -876,6 +891,49 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
     - `lib/server/agent/sshShared.js` (plain CJS): single source of the
       agent ssh argv for AgentClient.ts AND server.js, with per-VPS
       ControlMaster mux (stale control socket degrades to direct).
+45. **"Restart casse tout" — cold-start gating + status reconcile (the
+    big one).** Root cause: `autoConnectAgentsIfNeeded()` (opens SSH
+    AgentClients + arms the `onStatus('connected')→reconcileVpsAgentState`
+    hook) was reachable ONLY via `seedInitialData()`, itself called ONLY
+    from SSR/server-action sites. A tab surviving `systemctl restart
+    charon` reconnects its SSE + 5s poll with NO SSR → empty
+    AgentClientPool/SessionStream maps → SSE heartbeats (looks connected)
+    but ZERO live agent events → "frozen until F5" (F5 = SSR = seed).
+    Defense in depth, all shipped:
+    - **Boot-arm**: `instrumentation.ts register()`→seed at boot (nodejs;
+      fires under the custom server). Also restores background push w/o a
+      browser open.
+    - **Hot-path re-arm**: `GET /api/claude/events` (+`/focus`) call
+      `seedInitialData()` (idempotent) — the endpoint every tab hits post
+      -restart. peekStream stays hydrate-free; seed attaches the streams.
+    - **Poll reconciles STATUS**: `pollDelta` reads `r.liveStatus ??
+      r.session.status` + `setStatus` EVERY tick (was: reacted only to
+      new message rows → a missed thinking→active/sleeping w/ no trailing
+      row left the pill stuck). Guarded by `lastOptimisticStatusTsRef`
+      (4s) vs optimistic send/sleep/resume. (RC2)
+    - **Focus self-heal**: reconnect re-POST `/focus` + `setFocus` read
+      `{ok}` and RETRY on ok:false (capped) — fire-and-forget muted
+      high-volume streaming on the native reconnect. (RC5)
+    - **Auth probe (all Apache errors)**: EventSource hides the HTTP
+      status. After N failed reconnects probe `GET /api/auth/check`:
+      401→`location.reload()` (→/login, loop-guarded); else keep backing
+      off (502/503 self-heals via §14.24). pollDelta also reloads on
+      `→ 401`.
+    - **False-sleep fix**: autoConnect's opportunistic resume only writes
+      'sleeping' if the AgentClient is NOT 'connected' (was: on any resume
+      RPC timeout while SSH settled → false-paused a LIVE session); else
+      reconcile (hello=truth) is the authority. (RC3)
+46. **Durable sleep intent (`claudeSessions.sleepRequested`).** A user
+    sleep whose `sleep_session` RPC never reached the agent (agent down
+    at sleep time) would be RESURRECTED: the agent restores the session
+    'active' from state.json, reconcile sees active≠sleeping and flips
+    the DB back up. Fix: `sleepSession`/`forceStopSession` set
+    `sleepRequested=1`; `reconcileVpsAgentState` step 1, on
+    `sleepRequested && agentStatus∈{active,thinking,starting}`, re-fires
+    `sleep_session` and KEEPS 'sleeping' (instead of realigning to
+    active), then `continue`s. Cleared on the agent's `status='sleeping'`
+    confirmation and on `resumeSession` (user wants it running). Converges:
+    once asleep it leaves hello → reconcile no longer touches it.
 
 ---
 
@@ -901,6 +959,9 @@ validates the cookie on everything except `_next`/`favicon`/`/login`/
 | Resume noop reconcile | `resumeSession § resolvedStatus` (sessionOps) + noop in `server.py` |
 | Login `?next=` + open-redirect guard | `lib/nextPath.ts § sanitizeNextPath` + `middleware.ts` + `app/login/*` |
 | Mobile quick-nav (shared select strip + chat overlay) | `app/m/quickNav.tsx § computeQuickNavGroups` |
+| Boot-arm agents (cold start) | `instrumentation.ts` + `seedInitialData()` in `events/route.ts`/`focus/route.ts` (§14.45) |
+| Restart resilience (SSE auth probe, focus self-heal, poll status reconcile) | `app/globalEventStream.ts § postFocus/maybeProbeAuth` + `useClaudeSessionStream § pollDelta` + `app/api/auth/check` (§14.45) |
+| Durable sleep intent | `sleepRequested` in `sessionOps § sleepSession/reconcileVpsAgentState` (§14.46) |
 
 ---
 

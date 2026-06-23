@@ -62,6 +62,19 @@ function mergeEdits(
   return next;
 }
 
+// Session-expired (401) handling (CLAUDE.md §14.45, P8). After a long outage
+// the 24h sliding session cookie may have lapsed; every API call then 401s
+// silently (the SSE can't even surface it). We hard-reload ONCE → middleware
+// redirects cleanly to /login?next=… . Module-level guard so concurrent 401s
+// (multiple session hooks + the SSE auth probe) don't trigger a reload storm.
+let _authReloadDone = false;
+function reloadForExpiredSession(): void {
+  if (_authReloadDone) return;
+  if (typeof window === 'undefined') return;
+  _authReloadDone = true;
+  try { window.location.reload(); } catch {}
+}
+
 // useClaudeSessionStream
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook that encapsulates all the SSE + state + actions logic for a Claude
@@ -302,6 +315,13 @@ export function useClaudeSessionStream(
   // AbortController of the in-flight poll, so wake-up handlers can cancel
   // a request that hung while the device was asleep and start fresh.
   const pollAbortRef = useRef<AbortController | null>(null);
+  // Timestamp (ms) of the last LOCAL optimistic status change (send→thinking,
+  // doSleep→sleeping, doResume→starting). The delta poll reconciles the status
+  // pill from the server's authoritative liveStatus on every tick (CLAUDE.md
+  // §14.45, RC2), but must NOT clobber a just-set optimistic status during the
+  // brief window before the server reflects it — that would flicker. We skip
+  // poll-driven status reconciliation within this guard window.
+  const lastOptimisticStatusTsRef = useRef<number>(0);
 
   // ── Lazy edit-content loading state (CLAUDE.md §14 gotcha 41) ────────────
   // The session GET strips edit_snapshot content; the diff content is fetched
@@ -756,6 +776,20 @@ export function useClaudeSessionStream(
     pollAbortRef.current = ac;
     try {
       const r = await api.pollClaudeSessionSince(sessionId, since, ac.signal) as ClaudeSessionDetailResponse;
+      // ── Reconcile the status pill from the server's authoritative liveStatus
+      // on EVERY tick (CLAUDE.md §14.45, RC2). The quiet poll used to read ONLY
+      // `r.messages` and ignored `liveStatus`/`session.status`, so a pure
+      // status transition the SSE missed (thinking→active/sleeping with no
+      // trailing message row) left the pill — and the ThinkingBar — stuck on
+      // 'thinking' until the next FULL-refetch trigger (reconnect / visibility
+      // / focus). `liveStatus` is the in-memory stream status (agent ground
+      // truth) or, before reconcile re-attaches the stream, the DB row. We skip
+      // 'killed' (handled via the 404 path below) and skip briefly after a
+      // local optimistic change to avoid flicker against an in-flight action.
+      const live = (r?.liveStatus ?? r?.session?.status) as WorkerStatus | undefined;
+      if (live && live !== 'killed' && (Date.now() - lastOptimisticStatusTsRef.current) > 4000) {
+        setStatus((prev) => (prev === live ? prev : live));
+      }
       const n = r?.messages?.length ?? 0;
       if (n > 0) {
         // Something new on the server. Rather than incrementally merge the
@@ -782,6 +816,10 @@ export function useClaudeSessionStream(
       const msg = String((e as Error)?.message ?? e);
       if (msg.includes('→ 404')) {
         onKilledRef.current?.();
+      } else if (msg.includes('→ 401')) {
+        // Session expired (24h TTL lapsed during a long outage). Every request
+        // now 401s; reload once → /login. cf. CLAUDE.md §14.45 (P8).
+        reloadForExpiredSession();
       }
     } finally {
       if (pollAbortRef.current === ac) pollAbortRef.current = null;
@@ -1226,6 +1264,7 @@ export function useClaudeSessionStream(
       content: trimmed, createdAt: Math.floor(Date.now() / 1000),
     }]);
     setStatus('thinking');
+    lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try { await api.sendClaudeInput(sessionId, trimmed); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
@@ -1290,6 +1329,7 @@ export function useClaudeSessionStream(
     // for the agent's SDK teardown (session.py stop() awaits the in-flight
     // turn before the RPC returns).
     setStatus('sleeping');
+    lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try {
       await api.sleepClaudeSession(sessionId);
     } catch (e) {
@@ -1300,6 +1340,7 @@ export function useClaudeSessionStream(
   const doResume = useCallback(async () => {
     setError(null);
     setStatus('starting');
+    lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try {
       await api.resumeClaudeSession(sessionId);
       // Bump streamKey → useEffect closes the old SSE, reloads history,

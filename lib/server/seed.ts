@@ -8,19 +8,22 @@ let initialized = false;
 export function seedInitialData() {
   if (initialized) return;
   initialized = true;
-  // One-shot data migration : legacy sessions left in 'active' state from the
-  // pre-v2 architecture (one SSH-spawned bridge process per session, before
-  // the charon-agent daemon) → 'sleeping'. The user re-sees them in the
-  // sidebar with a resume button → recreated on the agent on demand. No-op
-  // on fresh databases.
-  migrationV2IfNeeded();
-  // For each VPS: connect the AgentClient (background, non-blocking).
-  // Then attempt a resume for sessions still 'active' (= active on the agent).
-  autoConnectAgentsIfNeeded();
-  // Prune persistent-shell rows whose remote tmux session is gone (best-effort,
-  // per-VPS, non-blocking). Live tmux sessions are re-attached lazily when a
-  // browser opens the shell — cf. lib/server/shell/shellSession.ts.
-  reconcileShellsOnBoot().catch(() => {});
+  // Each step is INDEPENDENTLY guarded. Since §14.45 this is the GUARANTEED
+  // agent-arming path (instrumentation.ts + the SSE route both call it), so a
+  // throw in one step — e.g. a SQLITE_BUSY in migrationV2 during a restart
+  // storm (WAL contention with the agent writes / the just-started Telegram
+  // poll) — must NOT abort autoConnectAgentsIfNeeded() and strand the process
+  // agentless for good (the exact "frozen until F5" this guarantees against);
+  // `initialized` is already latched, so there'd be no in-process retry.
+  // One-shot data migration: pre-v2 'active' sessions → 'sleeping' (no-op on
+  // fresh / already-migrated DBs).
+  try { migrationV2IfNeeded(); } catch (e) { console.error('[seed] migrationV2 failed', e); }
+  // For each VPS: connect the AgentClient (background, non-blocking) + arm the
+  // onStatus('connected')→reconcile self-healing hook. THE load-bearing step.
+  try { autoConnectAgentsIfNeeded(); } catch (e) { console.error('[seed] autoConnect failed', e); }
+  // Prune persistent-shell rows whose remote shell is gone (best-effort,
+  // per-VPS, non-blocking).
+  try { reconcileShellsOnBoot().catch(() => {}); } catch (e) { console.error('[seed] shell reconcile failed', e); }
   // Poll Telegram (no-op if not configured, idempotent).
-  startTelegramBot();
+  try { startTelegramBot(); } catch (e) { console.error('[seed] telegram failed', e); }
 }

@@ -122,6 +122,13 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   model: text('model'),
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
+  // Durable "the user asked this session to sleep" intent (0/1). Set by
+  // sleepSession / forceStopSession; cleared when the agent confirms 'sleeping'
+  // or on resume. Guards against reconcileVpsAgentState RESURRECTING a session
+  // whose sleep RPC never reached the agent (agent was down at sleep time, then
+  // restored the session as 'active' from state.json → reconcile would
+  // otherwise flip the DB back to 'active'). cf. CLAUDE.md §14.46.
+  sleepRequested: integer('sleep_requested').notNull().default(0),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 });

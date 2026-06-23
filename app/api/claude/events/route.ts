@@ -3,6 +3,7 @@ import {
   db, claudeSessions, claudePendingPermissions, claudePendingQuestions,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
+import { seedInitialData } from '@/lib/server/seed';
 import { registerConnection } from '@/lib/server/agent/eventConnections';
 import { peekStream } from '@/lib/server/agent/sessionOps';
 import type { GlobalSessionEvent } from '@/lib/server/agent/sessionOps';
@@ -26,6 +27,15 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
+
+  // Cold-start safety net (CLAUDE.md §14.45). A browser tab that survives a
+  // `systemctl restart charon` reconnects its singleton SSE HERE without any
+  // SSR render, so without this call the AgentClientPool + SessionStream maps
+  // would stay empty (no SSH proxy, no attached stream) and no live agent
+  // event would ever arrive on the reconnected SSE — "frozen until F5". This
+  // is the ONE endpoint every live tab is guaranteed to hit after a restart.
+  // seedInitialData is idempotent (guarded), so this is ~free after boot.
+  try { seedInitialData(); } catch {}
 
   const url = new URL(req.url);
   const connId = url.searchParams.get('conn');

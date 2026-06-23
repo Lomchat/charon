@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
+import { seedInitialData } from '@/lib/server/seed';
 import { setConnectionFocus } from '@/lib/server/agent/eventConnections';
 
 export const runtime = 'nodejs';
@@ -17,6 +18,10 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
+  // Same cold-start safety net as GET /api/claude/events (CLAUDE.md §14.45):
+  // covers the rare ordering where a focus POST lands before the SSE GET after
+  // a restart. Idempotent.
+  try { seedInitialData(); } catch {}
 
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }

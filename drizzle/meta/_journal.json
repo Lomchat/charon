@@ -120,6 +120,13 @@
       "when": 1779700500001,
       "tag": "0016_shells_drop_last_seen_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1782208151140,
+      "tag": "0017_normal_puff_adder",
+      "breakpoints": true
     }
   ]
 }

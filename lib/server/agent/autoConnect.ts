@@ -1,7 +1,7 @@
 import 'server-only';
 import { eq, inArray } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudeSessionLogs } from '@/lib/db';
-import { getAgentClient } from './AgentClientPool';
+import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
 import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
 import { ensureShellIdleWatch } from './shellNotify';
@@ -84,9 +84,9 @@ export function autoConnectAgentsIfNeeded(): void {
     // waiting for a status event. Extended from 'active' only to
     // 'active'/'thinking'/'starting' (bug observed: after SIGTERM during
     // a query, the session stayed 'thinking' in DB and was ignored here).
-    let active: { id: string }[] = [];
+    let active: { id: string; vpsId: string }[] = [];
     try {
-      active = db.select({ id: claudeSessions.id })
+      active = db.select({ id: claudeSessions.id, vpsId: claudeSessions.vpsId })
         .from(claudeSessions)
         .where(inArray(claudeSessions.status, ['active', 'thinking', 'starting']))
         .all();
@@ -108,10 +108,23 @@ export function autoConnectAgentsIfNeeded(): void {
               sessionId: s.id, level: 'warn', event: 'auto_resume',
               detail: JSON.stringify({ err: e?.message ?? String(e) }),
             }).run();
-            // If the agent is down, degrade to 'sleeping' so the UI
-            // shows a manual resume button.
-            db.update(claudeSessions).set({ status: 'sleeping' })
-              .where(eq(claudeSessions.id, s.id)).run();
+            // FALSE-SLEEP FIX (CLAUDE.md §14.45, RC3). Only degrade to
+            // 'sleeping' if the agent is GENUINELY UNREACHABLE. This
+            // opportunistic resume fires from a `setImmediate` at boot, often
+            // BEFORE the per-VPS SSH has finished connecting — so a slow
+            // connect makes resumeSession reject on its 30s ready() / 60s RPC
+            // timeout even though the session is still LIVE on the agent.
+            // Writing 'sleeping' there falsely paused a running session ("on
+            // dit sleeping, l'agent bosse"). When the agent IS connected, the
+            // onStatus('connected') → reconcileVpsAgentState hook reads
+            // hello.sessions (ground truth), attaches the stream and sets the
+            // real status — so we must NOT overwrite with a guessed 'sleeping'.
+            let connected = false;
+            try { connected = getAgentClientForVpsId(s.vpsId).status === 'connected'; } catch {}
+            if (!connected) {
+              db.update(claudeSessions).set({ status: 'sleeping' })
+                .where(eq(claudeSessions.id, s.id)).run();
+            }
           } catch {}
         });
     }

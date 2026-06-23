@@ -362,9 +362,20 @@ export class SessionStream {
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
         try {
-          db.update(claudeSessions).set({ status: ev.status })
+          // A confirmed 'sleeping' from the agent fulfills any pending sleep
+          // intent (sleepRequested) — clear it so a later legitimate 'active'
+          // isn't suppressed by reconcileVpsAgentState. cf. CLAUDE.md §14.46.
+          const upd: { status: string; sleepRequested?: number } =
+            ev.status === 'sleeping' ? { status: ev.status, sleepRequested: 0 } : { status: ev.status };
+          db.update(claudeSessions).set(upd)
             .where(eq(claudeSessions.id, this.id)).run();
-        } catch {}
+        } catch (e) {
+          // P7 (CLAUDE.md §14.45): surface instead of swallowing. _trackSeq
+          // still advances the durable cursor, but the agent's post-replay
+          // status frame + reconcileVpsAgentState re-assert the truth on the
+          // next (re)connect, so one failed write is recovered, not lost.
+          console.error(`[sessionOps] ${this.id} status db.update('${ev.status}') failed:`, (e as Error)?.message ?? e);
+        }
         break;
       case 'ready':
         this._broadcast({ type: 'ready' });
@@ -1125,7 +1136,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // sleepSession's optimistic broadcast pattern. See CLAUDE.md §14 gotcha 36.
     stream.status = resolvedStatus;
     emitGlobalSession({ type: 'status', status: resolvedStatus, sessionId });
-    db.update(claudeSessions).set({ status: resolvedStatus })
+    // Resuming clears any durable sleep intent (the user/reconcile explicitly
+    // wants this session running again). cf. CLAUDE.md §14.46.
+    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0 })
       .where(eq(claudeSessions.id, sessionId)).run();
     console.warn(`[resume-debug] ${sessionId} resumeSession() returning (stream.status=${stream.status}, DB set to '${resolvedStatus}') @${Date.now()}`);
     return stream;
@@ -1141,7 +1154,12 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
 export async function sleepSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) return;
-  db.update(claudeSessions).set({ status: 'sleeping' })
+  // Record the DURABLE sleep intent alongside the status (cf. CLAUDE.md §14.46):
+  // if the agent is down right now, this fire-and-forget sleep_session RPC may
+  // never land; the agent would later restore the session as 'active' and
+  // reconcileVpsAgentState would resurrect it. The flag lets reconcile honor
+  // the user's intent and re-fire the sleep instead.
+  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1 })
     .where(eq(claudeSessions.id, sessionId)).run();
   // Optimistic broadcast: flip the status to 'sleeping' for ALL SSE clients
   // (sidebar badges + other tabs) right away. The acting tab already updated
@@ -1169,7 +1187,8 @@ export async function sleepSession(sessionId: string): Promise<void> {
 export async function forceStopSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) return;
-  db.update(claudeSessions).set({ status: 'sleeping' })
+  // Durable stop intent — same rationale as sleepSession (CLAUDE.md §14.46).
+  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1 })
     .where(eq(claudeSessions.id, sessionId)).run();
   const stream = streams.get(sessionId);
   if (stream) {
@@ -1286,6 +1305,28 @@ export async function reconcileVpsAgentState(
     // agent says 'killed' (unlikely here since it would have removed it
     // from sessions).
     const agentStatus = info.status;
+    // Durable sleep intent (CLAUDE.md §14.46, RC8): the user asked this session
+    // to sleep but the RPC may never have reached the agent (agent was down at
+    // sleep time, then restored the session as 'active' from state.json). Don't
+    // resurrect it — re-fire the sleep and keep it 'sleeping' instead of
+    // realigning the DB back up to the agent's 'active'.
+    if (row.sleepRequested &&
+        (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting')) {
+      try {
+        getAgentClientForVpsId(vpsId).call('sleep_session', { session_id: sid }).catch(() => {});
+      } catch {}
+      if (stream.status !== 'sleeping') {
+        stream.status = 'sleeping';
+        emitGlobalSession({ type: 'status', sessionId: sid, status: 'sleeping' } as GlobalSessionEvent);
+      }
+      if (row.status !== 'sleeping') {
+        try {
+          db.update(claudeSessions).set({ status: 'sleeping' })
+            .where(eq(claudeSessions.id, sid)).run();
+        } catch {}
+      }
+      continue;
+    }
     // Realign when the agent's status diverges from EITHER the DB row OR the
     // in-memory stream. Checking the in-memory stream too matters: a prior
     // desync can leave the stream stuck (e.g. 'sleeping') while the DB has

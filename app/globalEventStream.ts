@@ -142,6 +142,76 @@ const WATCHDOG_TICK_MS = 4_000;     // check liveness every 4s
 // or a device sleep, without false-positives on jitter.
 const AUTO_RELOAD_THRESHOLD_MS = 15_000;
 
+// ── Self-healing focus re-POST (CLAUDE.md §14.45, RC5) ──────────────────────
+// High-volume events (assistant_text, tool_*, thinking) are routed server-side
+// ONLY to the conn whose focus matches the session. On the browser's NATIVE
+// SSE auto-reconnect the conn is re-registered with the STALE ?focus= baked
+// into the URL, so the focus MUST be re-POSTed — and that POST can legitimately
+// return {ok:false} when it races the conn (re)registration. The old
+// fire-and-forget POST then left the active session's live streaming muted with
+// no recovery. We read {ok} and retry on ok:false / network error.
+const FOCUS_POST_MAX_RETRIES = 5;
+const FOCUS_POST_RETRY_MS = 600;
+
+// ── Auth probe on a never-recovering reconnect (CLAUDE.md §14.45, P8) ───────
+// The EventSource API can't expose the HTTP status of a failed reconnect, so a
+// 401 (session expired after a long outage) looks identical to a 502/503
+// (server restarting). The 502/503 case self-heals (backoff + onmessage
+// auto-reload); the 401 case loops forever silently → the user's "connected but
+// dead, must F5" symptom. After a few consecutive failures we probe
+// /api/auth/check (which surfaces the real status) and hard-reload on 401.
+const AUTH_PROBE_AFTER_FAILURES = 3;
+const AUTH_PROBE_MIN_INTERVAL_MS = 10_000;
+let consecutiveFailures = 0;
+let lastAuthProbeTs = 0;
+let authReloadDone = false;
+
+function reloadForAuth(): void {
+  if (authReloadDone) return;
+  if (typeof window === 'undefined') return;
+  authReloadDone = true;
+  // eslint-disable-next-line no-console
+  if (typeof console !== 'undefined') console.info('[charon] SSE: session expired (401) → reload to /login');
+  try { window.location.reload(); } catch {}
+}
+
+function maybeProbeAuth(): void {
+  if (typeof window === 'undefined') return;
+  if (consecutiveFailures < AUTH_PROBE_AFTER_FAILURES) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  const now = Date.now();
+  if (now - lastAuthProbeTs < AUTH_PROBE_MIN_INTERVAL_MS) return;
+  lastAuthProbeTs = now;
+  fetch('/api/auth/check', { cache: 'no-store' })
+    .then((r) => { if (r.status === 401) reloadForAuth(); })
+    .catch(() => { /* network error → server down, keep backing off */ });
+}
+
+// POST /focus with self-healing retry. Stops early if the focus changed under
+// us (a newer setFocus/postFocus owns the retry then) or after N attempts.
+function postFocus(sessionId: string | null, attempt = 0): void {
+  if (typeof window === 'undefined') return;
+  // Bail BEFORE issuing the POST if the desired focus changed under us — a
+  // stale retry chain (setFocus(A) failed → scheduled; user switched to B)
+  // would otherwise POST {sessionId:A} and clobber the server's focus back to
+  // the previous session, muting B's high-volume stream. cf. CLAUDE.md §14.45.
+  if (currentFocus !== sessionId) return;
+  const id = getConnId();
+  const retry = () => {
+    if (currentFocus !== sessionId) return;          // superseded — drop
+    if (attempt >= FOCUS_POST_MAX_RETRIES) return;
+    setTimeout(() => postFocus(sessionId, attempt + 1), FOCUS_POST_RETRY_MS);
+  };
+  fetch('/api/claude/focus', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ conn: id, sessionId }),
+  })
+    .then((r) => r.json().catch(() => ({ ok: false })))
+    .then((j) => { if (!(j && j.ok)) retry(); })
+    .catch(retry);
+}
+
 function getConnId(): string {
   if (!connId) connId = genConnId();
   return connId;
@@ -223,6 +293,8 @@ function startWatchdog(): void {
       // silently dead. The browser still thinks the connection is OPEN, so
       // it won't reconnect on its own. We force it.
       lastActivityTs = 0; // avoid triggering twice
+      consecutiveFailures++;
+      maybeProbeAuth();
       scheduleReconnect(`stale ${Math.round(age / 1000)}s`);
     }
   }, WATCHDOG_TICK_MS);
@@ -285,6 +357,9 @@ function openStream(): void {
     const prevTs = lastActivityTs;
     const silenceMs = prevTs > 0 ? now - prevTs : 0;
     lastActivityTs = now;
+    // Real data flowed → the connection is healthy. Reset the failure streak
+    // that drives the auth probe (CLAUDE.md §14.45, P8).
+    consecutiveFailures = 0;
     // Reset the backoff HERE (on real data), not on `onopen`. A connection
     // that opens then immediately breaks (proxy cutting the stream, server
     // restarting mid-response) should keep backing off — resetting on
@@ -365,14 +440,10 @@ function openStream(): void {
     //    that the SSE didn't relay (it is live-only on the Charon side —
     //    no ring buffer, cf. CLAUDE.md §14 gotcha 14). Without this
     //    refetch, the UI stays frozen on the last pre-drop state.
-    const id = getConnId();
-    if (currentFocus) {
-      fetch('/api/claude/focus', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ conn: id, sessionId: currentFocus }),
-      }).catch(() => {});
-    }
+    // Self-healing re-POST: reads {ok} and retries on ok:false (conn not yet
+    // re-registered after the native reconnect) so high-volume streaming for
+    // the focused session resumes reliably. cf. CLAUDE.md §14.45 (RC5).
+    if (currentFocus) postFocus(currentFocus);
     for (const cb of reconnectListeners) {
       try { cb(); } catch {}
     }
@@ -398,6 +469,11 @@ function openStream(): void {
     //     keeps the chat fresh regardless of SSE state.
     if (!es) return;
     if (es.readyState === 2 /* CLOSED */) {
+      // Count the failure and, after a few in a row, probe /api/auth/check to
+      // tell "server down" (recovers on its own) from "session expired" (loops
+      // forever until we reload to /login). cf. CLAUDE.md §14.45 (P8).
+      consecutiveFailures++;
+      maybeProbeAuth();
       scheduleReconnect('onerror & CLOSED');
       teardownStream();
     }
@@ -474,13 +550,23 @@ export async function setFocus(sessionId: string | null): Promise<void> {
   ensureStream();
   if (currentFocus === sessionId) return;
   currentFocus = sessionId;
-  // POST /focus — we coalesce but still attempt in case of retry.
+  // POST /focus — read {ok} and self-heal on ok:false (the conn may not be
+  // registered yet if setFocus raced ensureStream). cf. CLAUDE.md §14.45 (RC5).
   const id = getConnId();
   const post = fetch('/api/claude/focus', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ conn: id, sessionId }),
-  }).then(() => {}).catch(() => {});
+  })
+    .then((r) => r.json().catch(() => ({ ok: false })))
+    .then((j) => {
+      if (currentFocus === sessionId && !(j && j.ok)) {
+        setTimeout(() => postFocus(sessionId, 1), FOCUS_POST_RETRY_MS);
+      }
+    })
+    .catch(() => {
+      if (currentFocus === sessionId) setTimeout(() => postFocus(sessionId, 1), FOCUS_POST_RETRY_MS);
+    });
   pendingFocusPost = post;
   await post;
   if (pendingFocusPost === post) pendingFocusPost = null;
