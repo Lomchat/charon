@@ -45,6 +45,15 @@ jobs:
         # errors with bundler chatter.
         run: npm run typecheck
 
+      - name: Unit tests (TypeScript)
+        # vitest — server/runtime logic (event-log replay dedup, permission
+        # isolation, login rate-limit, …). Pure modules, no Next lifecycle.
+        run: npm test
+
+      - name: Agent tests (Python)
+        # stdlib unittest — durable event log, state load/save, protocol.
+        run: npm run test:py
+
       - name: Test migrations on a temp DB
         # Verifies a fresh DB can apply every migration in order without
         # error (catches duplicate column adds, broken FK, etc.).
