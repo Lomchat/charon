@@ -658,7 +658,28 @@ export class SessionStream {
     this._broadcast({ type: 'user_echo', content, createdAt: now });
     this.status = 'thinking';
     this._broadcast({ type: 'status', status: 'thinking' });
-    await client.call('send_input', { session_id: this.id, content });
+    try {
+      await client.call('send_input', { session_id: this.id, content });
+    } catch (e) {
+      // Auto-recover from a status DESYNC: the agent refuses input on a
+      // non-running session — session.py raises "not running (status=sleeping)"
+      // (or session dead / not found, -32000/-32001) when the session slept
+      // behind the UI's back (other tab/device, idle, post-restart desync)
+      // while it still looked usable here. Rather than 500-ing, RESUME and
+      // retry ONCE so the message just lands. A genuine failure (cwd gone,
+      // agent unreachable) still throws → the UI flips to the "resume" CTA.
+      // cf. CLAUDE.md §14.49.
+      const msg = String((e as { message?: unknown })?.message ?? e);
+      if (!/not running|not found|dead|-3200[01]/i.test(msg)) throw e;
+      try {
+        await resumeSession(this.id);   // starts/resumes the SDK session (re-reads model/effort, §14.35)
+        await client.call('send_input', { session_id: this.id, content });
+      } catch (resumeErr) {
+        this.status = 'sleeping';
+        this._broadcast({ type: 'status', status: 'sleeping' });
+        throw resumeErr;
+      }
+    }
   }
 
   async sendInterrupt(): Promise<void> {
