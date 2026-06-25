@@ -84,7 +84,7 @@ export default function ClaudeSessionView({
     sessionMeta,
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel,
+    effectiveModel, liveUsage,
     toolCalls, todos, edits,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -489,7 +489,7 @@ export default function ClaudeSessionView({
         </div>
 
         {status === 'thinking' && (
-          <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} />
+          <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} tokens={liveUsage?.output ?? null} />
         )}
 
         {/* Input area — replaced by resume CTA if disconnected, or
@@ -668,11 +668,12 @@ function InlinePermissionCard({ perm, onRespond }: {
 }
 
 function ThinkingBar({
-  currentTool, stepCount, startedAt,
+  currentTool, stepCount, startedAt, tokens,
 }: {
   currentTool: ToolCallEntry | null;
   stepCount: number;
   startedAt: number | null;
+  tokens: number | null;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -696,6 +697,7 @@ function ThinkingBar({
       <span className="t-meta">
         {stepCount > 0 && <><span className="sep">·</span> step {stepCount}</>}
         {elapsed != null && <><span className="sep">·</span> {fmtElapsed(elapsed)}</>}
+        {tokens != null && tokens > 0 && <><span className="sep">·</span> ↑ {fmtTokens(tokens)} tokens</>}
       </span>
     </div>
   );
@@ -706,6 +708,12 @@ function fmtElapsed(s: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}m${r.toString().padStart(2, '0')}s`;
+}
+
+// 14200 → "14.2k", 850 → "850" (mirrors Claude Code's terminal counter).
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k';
 }
 
 /**

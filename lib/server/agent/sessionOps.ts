@@ -575,6 +575,22 @@ export class SessionStream {
           this._broadcast({ type: 'effective_model', model: ev.model });
         }
         break;
+      case 'usage':
+        // Transient LIVE token counter for the current turn (§14.50). The agent
+        // emits it broadcast-only (no durable log, no seq), throttled. No DB
+        // write — just fan it out to the focused SSE conn (it's high-volume →
+        // focused-only via eventConnections) so the ThinkingBar can show a
+        // growing "↑ N tokens". Never replayed (not in the durable log).
+        this._broadcast({
+          type: 'usage',
+          output_tokens: ev.output_tokens,
+          input_tokens: ev.input_tokens,
+          cache_read_tokens: ev.cache_read_tokens,
+          final: ev.final,
+          duration_ms: ev.duration_ms,
+          cost_usd: ev.cost_usd,
+        });
+        break;
       case 'stop':
         this._flushAssistant();
         try {

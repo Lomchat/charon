@@ -29,6 +29,10 @@ export type BridgeEvent =
   // user picked an alias, or when fallback_model kicked in. Transient
   // runtime info — no DB persistence. Emitted on change only.
   | { type: 'effective_model'; model: string }
+  // usage = live token counter for the current turn (§14.50). Transient
+  // (broadcast-only, high-volume → focused conn). `final:true` = turn totals
+  // (duration_ms, cost_usd from the ResultMessage).
+  | { type: 'usage'; output_tokens: number; input_tokens?: number; cache_read_tokens?: number; final?: boolean; duration_ms?: number; cost_usd?: number | null }
   | { type: 'stop'; subtype?: string }
   | { type: 'error'; msg: string; fatal?: boolean };
 

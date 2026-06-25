@@ -90,6 +90,10 @@ export type AgentEvent = (
   // claims about itself in text (which is unreliable — training cutoff).
   // Transient: not persisted in DB.
   | { event: 'effective_model'; session_id: string; model: string }
+  // usage (agent >= 0.11.0): live token counter for the CURRENT turn, emitted
+  // broadcast-only (transient, no seq) and throttled (~0.6s). `final:true`
+  // carries the turn totals (duration_ms, cost_usd) from the ResultMessage. §14.50.
+  | { event: 'usage'; session_id: string; output_tokens: number; input_tokens?: number; cache_read_tokens?: number; final?: boolean; duration_ms?: number; cost_usd?: number | null }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   | { event: 'stop'; session_id: string; subtype?: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean }

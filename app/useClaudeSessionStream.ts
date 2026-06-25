@@ -156,6 +156,11 @@ export type ClaudeSessionStreamState = {
   // Independent of the `model` field above which is the user's CONFIGURED
   // value. The two can legitimately differ (alias resolution, fallback).
   effectiveModel: string | null;
+  // Live token usage for the CURRENT turn (§14.50): the growing output-token
+  // counter shown in the ThinkingBar ("↑ 14.2k tokens"). Updated by the
+  // transient `usage` SSE event; reset to null on a new send. `final` carries
+  // the turn totals (durationMs/costUsd) on the ResultMessage.
+  liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null } | null;
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
@@ -251,6 +256,7 @@ export function useClaudeSessionStream(
   // Initialized from r.effectiveModel via applyApiData; updated by the
   // effective_model SSE on every change. See ClaudeSessionStreamState.
   const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
+  const [liveUsage, setLiveUsage] = useState<ClaudeSessionStreamState['liveUsage']>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
@@ -891,6 +897,17 @@ export function useClaudeSessionStream(
             setEffectiveModel(ev.model);
           }
           break;
+        case 'usage':
+          // Live token counter for the current turn (§14.50). Transient,
+          // throttled agent-side. Drives the ThinkingBar's "↑ N tokens".
+          setLiveUsage({
+            output: ev.output_tokens,
+            input: ev.input_tokens,
+            final: ev.final,
+            durationMs: ev.duration_ms,
+            costUsd: ev.cost_usd,
+          });
+          break;
         default: break;
       }
     };
@@ -1043,6 +1060,7 @@ export function useClaudeSessionStream(
     }]);
     setStatus('thinking');
     lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
+    setLiveUsage(null);  // new turn → reset the live token counter (§14.50)
     try { await api.sendClaudeInput(sessionId, trimmed); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
@@ -1181,7 +1199,7 @@ export function useClaudeSessionStream(
   return useMemo(() => ({
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel,
+    effectiveModel, liveUsage,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -1193,7 +1211,7 @@ export function useClaudeSessionStream(
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel,
+    effectiveModel, liveUsage,
     toolCalls, todos, edits, files,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,

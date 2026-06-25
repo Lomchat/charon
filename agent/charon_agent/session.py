@@ -16,6 +16,7 @@ import asyncio
 import json
 import re
 import sys
+import time
 import traceback
 from typing import Any, Awaitable, Callable
 
@@ -254,6 +255,14 @@ class AgentSession:
         # hallucinated wrong version (LLMs don't reliably know their own
         # version). Source of truth is the API metadata, not Claude's text.
         self._effective_model: str | None = None
+        # Live token-usage accounting for the CURRENT turn (CLAUDE.md §14.50).
+        # Reset at each turn start; fed by the raw Anthropic stream events
+        # (StreamEvent) when include_partial_messages is on.
+        self._usage_in = 0              # input tokens (sum of message_start)
+        self._usage_cache = 0           # cache-read input tokens
+        self._usage_committed_out = 0   # output tokens of FINISHED messages this turn
+        self._usage_cur_out = 0         # output tokens of the in-flight message
+        self._usage_last_emit = 0.0     # monotonic ts of the last throttled live emit
         self._claude_stderr_lines: list[str] = []
         self._plan_accepted = False
         self._stopped = asyncio.Event()
@@ -794,8 +803,47 @@ class AgentSession:
                             "content": content if isinstance(content, str) else json.dumps(content),
                             "is_error": bool(getattr(block, "is_error", False)),
                         })
+            elif ev_type == "StreamEvent":
+                # Raw Anthropic stream events (include_partial_messages=True) carry
+                # the LIVE token counter: message_start → input tokens; message_delta
+                # → the running output_tokens of the in-flight message. We sum across
+                # the turn's messages and emit a THROTTLED, TRANSIENT `usage` event so
+                # the UI can show "thinking… 3m48s · ↑14.2k tokens" (§14.50). Text is
+                # still emitted from the full AssistantMessage — we use partials only
+                # for usage, so streaming behaviour is unchanged.
+                raw = getattr(ev, "event", None)
+                if isinstance(raw, dict):
+                    rtype = raw.get("type")
+                    if rtype == "message_start":
+                        u = (raw.get("message") or {}).get("usage") or {}
+                        self._usage_in += int(u.get("input_tokens") or 0)
+                        self._usage_cache += int(u.get("cache_read_input_tokens") or 0)
+                    elif rtype == "message_delta":
+                        u = raw.get("usage") or {}
+                        self._usage_cur_out = int(u.get("output_tokens") or self._usage_cur_out)
+                        now = time.monotonic()
+                        if now - self._usage_last_emit >= 0.6:
+                            self._usage_last_emit = now
+                            out.append({"event": "usage",
+                                        "output_tokens": self._usage_committed_out + self._usage_cur_out,
+                                        "input_tokens": self._usage_in})
+                    elif rtype == "message_stop":
+                        self._usage_committed_out += self._usage_cur_out
+                        self._usage_cur_out = 0
+                        out.append({"event": "usage",
+                                    "output_tokens": self._usage_committed_out,
+                                    "input_tokens": self._usage_in})
             elif ev_type == "ResultMessage":
                 subtype = getattr(ev, "subtype", "")
+                u = getattr(ev, "usage", None) or {}
+                out.append({
+                    "event": "usage", "final": True,
+                    "output_tokens": int(u.get("output_tokens") or (self._usage_committed_out + self._usage_cur_out)),
+                    "input_tokens": int(u.get("input_tokens") or self._usage_in),
+                    "cache_read_tokens": int(u.get("cache_read_input_tokens") or self._usage_cache),
+                    "duration_ms": int(getattr(ev, "duration_ms", 0) or 0),
+                    "cost_usd": getattr(ev, "total_cost_usd", None),
+                })
                 out.append({"event": "stop", "subtype": subtype or ""})
             elif ev_type == "SystemMessage":
                 pass  # already handled above
@@ -838,6 +886,12 @@ class AgentSession:
                 options_kwargs["fallback_model"] = self.fallback_model
             if self.effort:
                 options_kwargs["effort"] = self.effort
+            # Live token usage (§14.50): receive the raw Anthropic stream events
+            # (StreamEvent) so we can surface a growing token counter. Dropped by
+            # _build_options_with_fallback on an SDK too old to know the kwarg →
+            # graceful degradation (no live counter, final ResultMessage usage
+            # still works).
+            options_kwargs["include_partial_messages"] = True
             options = _build_options_with_fallback(
                 options_kwargs,
                 lambda fields: self._emit(fields.pop("event"), **fields),
@@ -865,6 +919,10 @@ class AgentSession:
                     if msg.get("type") != "user_message":
                         continue
                     content = msg.get("content") or ""
+                    # Reset the per-turn token counters (§14.50).
+                    self._usage_in = self._usage_cache = 0
+                    self._usage_committed_out = self._usage_cur_out = 0
+                    self._usage_last_emit = 0.0
                     self.status = "thinking"
                     self._emit("status", status="thinking")
                     try:
