@@ -143,7 +143,9 @@ def _is_safe_bash(command: str | None) -> bool:
 # Order matters: drop the "newest" knobs first so we retain the most behavior
 # when downgrading. effort is the newest (added in claude-agent-sdk ~0.2.80+),
 # fallback_model is older, model is the oldest of the three.
-_OPTIONAL_KEYS_FALLBACK_ORDER = ("effort", "fallback_model", "model")
+# include_partial_messages drops FIRST (least important — only the live token
+# counter, §14.50): an SDK too old to know it must still start the session.
+_OPTIONAL_KEYS_FALLBACK_ORDER = ("include_partial_messages", "effort", "fallback_model", "model")
 
 
 def _build_options_with_fallback(
@@ -815,11 +817,17 @@ class AgentSession:
                 if isinstance(raw, dict):
                     rtype = raw.get("type")
                     if rtype == "message_start":
-                        u = (raw.get("message") or {}).get("usage") or {}
-                        self._usage_in += int(u.get("input_tokens") or 0)
-                        self._usage_cache += int(u.get("cache_read_input_tokens") or 0)
+                        mo = raw.get("message")
+                        u = mo.get("usage") if isinstance(mo, dict) else None
+                        u = u if isinstance(u, dict) else {}
+                        # input_tokens is the FULL context of THIS API call and grows
+                        # across a multi-message (tool-using) turn → take the LATEST,
+                        # never sum (summing N-counts the same context).
+                        self._usage_in = int(u.get("input_tokens") or 0)
+                        self._usage_cache = int(u.get("cache_read_input_tokens") or 0)
                     elif rtype == "message_delta":
-                        u = raw.get("usage") or {}
+                        u = raw.get("usage")
+                        u = u if isinstance(u, dict) else {}
                         self._usage_cur_out = int(u.get("output_tokens") or self._usage_cur_out)
                         now = time.monotonic()
                         if now - self._usage_last_emit >= 0.6:
@@ -835,12 +843,18 @@ class AgentSession:
                                     "input_tokens": self._usage_in})
             elif ev_type == "ResultMessage":
                 subtype = getattr(ev, "subtype", "")
-                u = getattr(ev, "usage", None) or {}
+                ru = getattr(ev, "usage", None)
+                ru = ru if isinstance(ru, dict) else {}
+                # Explicit None checks (not `or`): a genuine 0 (e.g. cache_read=0)
+                # must NOT fall back to the partial-stream estimate.
+                def _u(key: str, fallback: int) -> int:
+                    v = ru.get(key)
+                    return int(v) if isinstance(v, (int, float)) else fallback
                 out.append({
                     "event": "usage", "final": True,
-                    "output_tokens": int(u.get("output_tokens") or (self._usage_committed_out + self._usage_cur_out)),
-                    "input_tokens": int(u.get("input_tokens") or self._usage_in),
-                    "cache_read_tokens": int(u.get("cache_read_input_tokens") or self._usage_cache),
+                    "output_tokens": _u("output_tokens", self._usage_committed_out + self._usage_cur_out),
+                    "input_tokens": _u("input_tokens", self._usage_in),
+                    "cache_read_tokens": _u("cache_read_input_tokens", self._usage_cache),
                     "duration_ms": int(getattr(ev, "duration_ms", 0) or 0),
                     "cost_usd": getattr(ev, "total_cost_usd", None),
                 })
