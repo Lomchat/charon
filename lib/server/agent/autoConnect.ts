@@ -6,9 +6,48 @@ import { reconcileVpsAgentState, resumeSession } from './sessionOps';
 import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
 import { ensureShellIdleWatch } from './shellNotify';
 import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
+import type { AgentClient } from './AgentClient';
 import type { Vps } from '@/lib/db/schema';
 
 const g = globalThis as unknown as { _agentBooted?: boolean };
+
+// Clients whose self-healing hooks are already wired. Keyed by instance so a
+// recreated client (dropAgentClient → getAgentClient) re-arms exactly once.
+const _armedClients = new WeakSet<AgentClient>();
+
+/**
+ * Wire the self-healing `onStatus('connected')` hook on an AgentClient (and
+ * fire it once if already connected). On every (re)connection this reconciles
+ * the agent's live sessions with the DB + re-attaches the SessionStreams,
+ * arms the shell-idle watch, and refreshes the claude-login status.
+ *
+ * Idempotent per client INSTANCE. CRITICAL after `dropAgentClient` (agent
+ * update/refresh/creds-change): the pool builds a FRESH client with an empty
+ * subscribers map and NO hook — and `autoConnectAgentsIfNeeded` won't re-run
+ * (it's guarded by `_agentBooted`). Without re-arming here, every running
+ * session on that VPS would go silent until the next full Charon restart.
+ * cf. CLAUDE.md §14.51.
+ */
+export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
+  if (_armedClients.has(client)) return;
+  _armedClients.add(client);
+  const runReconcile = () => {
+    const hello = client.hello;
+    if (!hello) return;
+    reconcileVpsAgentState(vpsId, hello.sessions).catch(() => {});
+    ensureShellIdleWatch(client);
+    try {
+      const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
+      if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
+    } catch {}
+  };
+  client.onStatus((status) => {
+    if (status === 'connected') runReconcile();
+  });
+  // Already connected when we armed (recreated client that connected fast, or
+  // dev HMR) → reconcile now, the hook won't fire retroactively.
+  if (client.status === 'connected' && client.hello) runReconcile();
+}
 
 /**
  * On Charon boot: for each VPS in DB, start the connection to its agent
@@ -50,36 +89,10 @@ export function autoConnectAgentsIfNeeded(): void {
     for (const v of vpses) {
       try {
         const client = getAgentClient(v);
-        // Self-healing hook: on every (re)connection of the SSH, reconcile.
-        client.onStatus((status) => {
-          if (status !== 'connected') return;
-          const hello = client.hello;
-          if (!hello) return;
-          reconcileVpsAgentState(v.id, hello.sessions).catch(() => {});
-          // Register the global shell-idle watcher (idempotent per client) so
-          // a shell going quiet after a consequential output burst pushes a
-          // "finished" notification. Cheap, output-free — see shellNotify.ts.
-          ensureShellIdleWatch(client);
-          // Auto-check `claude login` if we've never checked or if the
-          // last check is too old (TTL 24h). Re-query the row to get an
-          // up-to-date `claudeLoggedInCheckedAt` (otherwise the closure
-          // `v` is stale and we'd re-check on every SSH reconnect).
-          // Cf. `claudeLoginCheck.ts` for the logic.
-          try {
-            const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
-            if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
-          } catch {}
-        });
-        // Case where the client is already connected when we register the
-        // hook (can happen in dev HMR — otherwise unlikely at cold boot).
-        if (client.status === 'connected' && client.hello) {
-          reconcileVpsAgentState(v.id, client.hello.sessions).catch(() => {});
-          ensureShellIdleWatch(client);
-          try {
-            const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, v.id)).all();
-            if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
-          } catch {}
-        }
+        // Self-healing hook: on every (re)connection of the SSH, reconcile +
+        // re-attach streams + arm the shell-idle watch + refresh login status.
+        // Single source of truth (also re-armed after dropAgentClient). §14.51.
+        armAgentClientHooks(client, v.id);
       } catch {}
     }
 

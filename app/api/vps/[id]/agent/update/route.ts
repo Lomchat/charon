@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { updateVpsAgent } from '@/lib/server/claude/bootstrap';
-import { dropAgentClient } from '@/lib/server/agent/AgentClientPool';
+import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
+import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
 
 export const runtime = 'nodejs';
@@ -39,6 +40,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     console.error(`[agent/update ${v.id}] failed:`, result.detail);
     return NextResponse.json({ ok: false, error: result.detail }, { status: 500 });
   }
+
+  // Recreate the AgentClient NOW and re-arm the self-healing hooks: the
+  // dropAgentClient() above purged the old client (empty subscribers, no
+  // reconcile hook) and autoConnect won't re-run (already booted). Without
+  // this, every running session on this VPS goes silent after an update — the
+  // agent processes turns but the new client has no subscribers, so events are
+  // dropped, the DB status sticks and the chat freezes until a full Charon
+  // restart. Arming reconnects + re-attaches the streams to the live client.
+  // cf. CLAUDE.md §14.51.
+  try {
+    const client = getAgentClient(v);
+    armAgentClientHooks(client, v.id);
+  } catch {}
 
   // Persist the new version + sha (AgentClient will repersist it too
   // on the next hello, but this avoids the window where the UI still

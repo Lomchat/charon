@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { dropAgentClient } from '@/lib/server/agent/AgentClientPool';
+import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
+import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 
 const ALLOWED = ['name', 'ip', 'sshUser', 'sshPort', 'defaultPath'] as const;
 
@@ -35,6 +36,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (credsChanged) await dropAgentClient(id).catch(() => {});
   db.update(vps).set(update).where(eq(vps.id, id)).run();
   const [row] = db.select().from(vps).where(eq(vps.id, id)).all();
+  // Recreate the client with the new creds + re-arm the self-healing hooks so
+  // the VPS's running sessions re-attach to the live client (the dropped one
+  // left their streams stranded; autoConnect won't re-run). cf. CLAUDE.md §14.51.
+  if (credsChanged && row) {
+    try { armAgentClientHooks(getAgentClient(row), id); } catch {}
+  }
   return NextResponse.json(row);
 }
 

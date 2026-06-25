@@ -17,7 +17,7 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel } from './types';
-import type { EventListener as AgentEventListener } from './AgentClient';
+import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
@@ -194,6 +194,16 @@ export class SessionStream {
   private currentAssistant = '';
   private agentListener: AgentEventListener | null = null;
   private attached = false;
+  // The AgentClient instance this stream is currently subscribed to. The pool
+  // RECREATES the client (a fresh instance with an EMPTY subscribers map) on
+  // agent update/refresh/creds-change (dropAgentClient → getAgentClient). A
+  // plain `attached` boolean can't distinguish a live registration from one
+  // stranded on the dead old client — so we ALSO pin the client identity and
+  // re-subscribe whenever it changes. Without this, every running session on a
+  // VPS goes silent after an agent update: the agent processes turns but its
+  // events are dropped by the new client (no subscriber), the UI freezes and
+  // the DB status sticks. cf. CLAUDE.md §14.51.
+  private attachedClient: AgentClient | null = null;
   private alwaysAllow = new Set<string>();
   // True while we're processing events replayed by the agent (between
   // replay_begin and replay_end). During this window, we dedupe each event
@@ -259,10 +269,18 @@ export class SessionStream {
    *  its durable log (agent >= 0.4.0). For older agents this is a no-op:
    *  the client falls back to ring replay. */
   attach(): void {
-    if (this.attached) return;
-    this.attached = true;
     const client = getAgentClientForVpsId(this.vpsId);
-    this.agentListener = (ev) => this._onAgentEvent(ev);
+    // Already correctly subscribed to the CURRENT client → nothing to do.
+    if (this.attached && this.attachedClient === client) return;
+    // Either never attached, or attached to a now-dead client (the pool
+    // recreated it on agent update/refresh — its subscribers map is empty and
+    // our old listener went down with it). (Re)subscribe to the live client.
+    // Reuse the SAME listener reference so re-subscribing to the same client is
+    // deduped by the AgentClient's Set; a fresh closure would double-fire.
+    // cf. CLAUDE.md §14.51.
+    if (!this.agentListener) this.agentListener = (ev) => this._onAgentEvent(ev);
+    this.attached = true;
+    this.attachedClient = client;
     client.subscribe(this.id, this.agentListener,
       this.lastSeenSeq != null ? { afterSeq: this.lastSeenSeq } : undefined,
     );
@@ -315,9 +333,12 @@ export class SessionStream {
     if (!this.attached) return;
     this.attached = false;
     try {
-      const client = getAgentClientForVpsId(this.vpsId);
+      // Unsubscribe from the client we ACTUALLY registered with, not just the
+      // current pool entry (they differ if the client was recreated).
+      const client = this.attachedClient ?? getAgentClientForVpsId(this.vpsId);
       if (this.agentListener) client.unsubscribe(this.id, this.agentListener);
     } catch {}
+    this.attachedClient = null;
     this.agentListener = null;
     // Cancel the pending seq-persist timer — no more events are coming.
     // We don't bother flushing one last time: the seq will be irrelevant
@@ -341,7 +362,11 @@ export class SessionStream {
    * startNewSession, resumeSession). No longer tied to an HTTP
    * subscriber: the SSE listens to the global bus. */
   ensureAttached(): void {
-    if (!this.attached) this.attach();
+    // Call attach() UNCONDITIONALLY: it is idempotent for the current client
+    // and re-subscribes if the pool swapped the client out from under us (agent
+    // update/refresh). The old `if (!this.attached)` guard would skip a stream
+    // stranded on the dead old client — exactly the post-update freeze. §14.51.
+    this.attach();
   }
 
   /**

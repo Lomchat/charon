@@ -4,7 +4,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
-import { ensureShellIdleWatch } from '@/lib/server/agent/shellNotify';
+import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { ensureAgentRunning } from '@/lib/server/claude/bootstrap';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 
@@ -45,9 +45,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   const ok = (client: AgentClient) => {
-    // This recreated client object lost autoConnect's onStatus hook; re-arm the
-    // shell-idle watcher so idle notifications survive a manual refresh.
-    ensureShellIdleWatch(client);
+    // This recreated client object lost autoConnect's onStatus hook. Re-arm the
+    // FULL self-healing set (reconcile + re-attach the running sessions' streams
+    // + shell-idle watch + login refresh) — not just the shell watcher — so a
+    // manual refresh also un-freezes any session stranded on the dead client.
+    // cf. CLAUDE.md §14.51.
+    armAgentClientHooks(client, v.id);
     return NextResponse.json({
       ok: true,
       agentStatus: 'ok' as const,
