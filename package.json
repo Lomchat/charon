@@ -51,7 +51,7 @@
     "better-sqlite3": "^11.8.1",
     "diff": "^9.0.0",
     "drizzle-orm": "^0.45.2",
-    "next": "^15.1.6",
+    "next": "^16.2.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
