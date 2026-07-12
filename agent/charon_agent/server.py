@@ -51,7 +51,7 @@ from .protocol import (
     RpcError,
 )
 from .event_log import EventLog, cleanup_orphans
-from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR
+from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .shell import AgentShell
 from .state import load_state, save_state
 
@@ -327,6 +327,7 @@ class Server:
                 "agent_pyz_sha": _PYZ_SHA,
                 "sdk_available": SDK_AVAILABLE,
                 "sdk_error": SDK_IMPORT_ERROR,
+                "sdk_version": SDK_VERSION,
                 "pid": os.getpid(),
                 "sessions": [s.to_info() for s in self.sessions.values()],
             }

@@ -2,6 +2,7 @@ import 'server-only';
 import { migrationV2IfNeeded } from './migrationV2';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
 import { startTelegramBot } from './claude/telegram';
+import { armSdkAutoUpdate } from './claude/sdkWatch';
 import { reconcileShellsOnBoot } from './shell/shellSession';
 
 let initialized = false;
@@ -26,4 +27,7 @@ export function seedInitialData() {
   try { reconcileShellsOnBoot().catch(() => {}); } catch (e) { console.error('[seed] shell reconcile failed', e); }
   // Poll Telegram (no-op if not configured, idempotent).
   try { startTelegramBot(); } catch (e) { console.error('[seed] telegram failed', e); }
+  // SDK freshness tick: PyPI latest + idle auto-update + notifications
+  // (globalThis-guarded singleton, idempotent).
+  try { armSdkAutoUpdate(); } catch (e) { console.error('[seed] sdk watch failed', e); }
 }

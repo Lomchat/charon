@@ -63,6 +63,9 @@ export type UpdateVpsAgentResponse = {
   error?: string;
   newVersion?: string | null;
   newPyzSha?: string | null;
+  // claude-agent-sdk version confirmed in the venv by the unified update
+  // (null when the SDK sub-step failed — the pyz update may still be ok).
+  sdkVersion?: string | null;
   builtPyzSha: string;
   detail: string;
 };

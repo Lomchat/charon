@@ -39,6 +39,10 @@ export type AgentHelloResult = {
   agent_pyz_sha?: string;
   sdk_available: boolean;
   sdk_error: string | null;
+  // Installed `claude-agent-sdk` version in the VPS venv (>= 0.12.0 agents).
+  // Absent on older agents — persist ONLY when !== undefined so an old
+  // agent's hello never null-clobbers a value written by the update flow.
+  sdk_version?: string | null;
   pid: number;
   sessions: AgentSessionInfo[];
 };

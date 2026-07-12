@@ -5,6 +5,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { asc, desc } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getSdkLatestVersion, refreshSdkLatestIfStale } from '@/lib/server/claude/sdkSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,10 @@ export default async function CharonPage() {
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
   const builtPyzSha = getBuiltPyzSha();
+  // Latest claude-agent-sdk on PyPI (settings cache) → sidebar SDK-outdated
+  // badges. Kick a background refresh when stale (12h TTL, fire-and-forget).
+  const sdkLatestVersion = getSdkLatestVersion();
+  refreshSdkLatestIfStale();
 
   return (
     <ClaudePanel
@@ -32,6 +37,7 @@ export default async function CharonPage() {
       vpsPaths={pathRows}
       initialSessions={sessionRows}
       builtPyzSha={builtPyzSha}
+      sdkLatestVersion={sdkLatestVersion}
     />
   );
 }

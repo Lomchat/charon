@@ -28,12 +28,23 @@ try:
     )
     SDK_AVAILABLE = True
     SDK_IMPORT_ERROR: str | None = None
+    # Installed SDK version, reported via `hello` so the hub can flag outdated
+    # fleets (compared against the PyPI latest). Best-effort: never fatal.
+    try:
+        import claude_agent_sdk as _sdk_mod
+        SDK_VERSION: str | None = getattr(_sdk_mod, "__version__", None)
+        if not SDK_VERSION:
+            from importlib.metadata import version as _pkg_version
+            SDK_VERSION = _pkg_version("claude-agent-sdk")
+    except Exception:  # pragma: no cover
+        SDK_VERSION = None
 except ImportError as e:  # pragma: no cover - depends on the remote env
     ClaudeAgentOptions = None  # type: ignore
     ClaudeSDKClient = None  # type: ignore
     HookMatcher = None  # type: ignore
     SDK_AVAILABLE = False
     SDK_IMPORT_ERROR = str(e)
+    SDK_VERSION = None
 
 
 EmitCallback = Callable[[dict[str, Any]], None]

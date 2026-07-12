@@ -122,13 +122,14 @@ export function emitGlobalShellStatus(shellId: string, status: 'active' | 'busy'
 export function emitGlobalVpsStatus(
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
 ): void {
   emitGlobalSession({
     type: 'vps_status',
     agentStatus,
     agentVersion: extra?.agentVersion,
     agentPyzSha: extra?.agentPyzSha,
+    sdkVersion: extra?.sdkVersion,
     sessionId: vpsId,
   });
 }
@@ -166,6 +167,18 @@ export function markSessionRead(sessionId: string): void {
       emitGlobalSession({ type: 'session_unread', unread: false, sessionId });
     }
   } catch {}
+}
+
+/**
+ * Announce that the SET of Claude sessions changed (created / imported /
+ * deleted) so every connected browser refetches GET /api/claude/sessions and
+ * updates its sidebar + tab bar live — across tabs AND devices (a session
+ * started on a phone shows up on the desktop without the 15s poll or an F5).
+ * Charon-internal synthetic event, classed LOW_VOLUME in eventConnections so it
+ * reaches every connection regardless of SSE focus. cf. CLAUDE.md §14.52.
+ */
+export function emitGlobalSessionListChanged(sessionId: string): void {
+  emitGlobalSession({ type: 'session_list_changed', sessionId });
 }
 
 export class SessionStream {
@@ -1071,6 +1084,8 @@ export async function importExistingSession(opts: {
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? 'normal',
   }).run();
+  // Live-announce the imported session (appears on every tab/device). §14.52.
+  emitGlobalSessionListChanged(sessionId);
   return sessionId;
 }
 
@@ -1151,6 +1166,9 @@ export async function startNewSession(opts: {
     throw e;
   }
   stream.attach();
+  // Live-announce the new session so every other tab/device refetches its
+  // sidebar instead of waiting for the 15s poll. cf. CLAUDE.md §14.52.
+  emitGlobalSessionListChanged(sessionId);
   return stream;
 }
 
@@ -1363,6 +1381,8 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
   db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
   db.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
+  // Live-announce the removal so every other tab/device drops the card. §14.52.
+  emitGlobalSessionListChanged(sessionId);
   try {
     const client = getAgentClientForVpsId(row.vpsId);
     await client.call('kill_session', { session_id: sessionId });

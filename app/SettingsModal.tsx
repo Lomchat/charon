@@ -124,6 +124,14 @@ export default function SettingsModal({ onClose }: Props) {
                 label="notify when a shell goes idle"
               />
             </div>
+            <div className="switch-row">
+              <span>auto-update claude SDK (when a VPS is idle)</span>
+              <Toggle
+                checked={(s['sdk.auto_update'] ?? 'true') === 'true'}
+                onChange={(v) => set('sdk.auto_update', v ? 'true' : 'false')}
+                label="auto-update claude SDK when a VPS is idle"
+              />
+            </div>
             <label>VAPID subject (mailto for push)
               <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:you@example.com" />
             </label>

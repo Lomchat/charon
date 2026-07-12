@@ -302,16 +302,160 @@ export async function pingAgent(vps: Vps, session?: SshSession): Promise<{ ok: b
   return { ok: true, version, pyzSha, detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}` };
 }
 
-// ── Update agent: deploy the pyz + restart the service + verify ────────────
-// Distinct from the full bootstrap: we assume the venv + SDK + systemd unit
-// already exist. We just want to swap the .pyz and restart. If the systemd
-// restart fails (nohup fallback was used at bootstrap), we fall back on
-// pkill+nohup.
+// ── Ensure the latest claude-agent-sdk in the VPS venv ─────────────────────
+// The SHARED core of the bootstrap `install_sdk` phase and of the unified
+// update flow (updateVpsAgent / auto-update tick). Creates/heals the venv
+// (PEP 668, ensurepip retry — full commentary inline below) then
+// `pip install --upgrade claude-agent-sdk` and import-checks it. The command
+// is idempotent and safe on a VPS whose agent is RUNNING (pip swaps
+// site-packages atomically enough; the process keeps its in-memory copy
+// until the restart that follows in every calling flow). On a VPS without a
+// venv (legacy install with the SDK in the system python — e.g. chalco), this
+// NORMALIZES it: the venv gets created here and the systemd ExecStart, which
+// prefers the venv python, picks it up at the next restart.
+//
+// Success is measured ONLY by the `[install_sdk] OK version=X.Y.Z` marker
+// printed by the post-install import check (the same marker the bootstrap
+// phase greps). Never throws; ssh transport failures are reported apart so
+// the bootstrap generator can keep its distinct error path.
+export type EnsureSdkResult = {
+  ok: boolean;
+  sdkVersion?: string;
+  // Human tail of the failing output (pip/venv error) when ok=false.
+  error?: string;
+  // Set when the failure is the SSH transport itself (detectSshFailure) —
+  // the command may not have run at all.
+  sshError?: string | null;
+};
+
+// NOTE: keep this in sync with the bootstrap phase expectations — the
+// `[install_sdk]` log prefix and OK marker are load-bearing (grepped here
+// AND surfaced in the install SSE console).
+const INSTALL_SDK_CMD = [
+  `set -o pipefail`,
+  `BASE=$(${PY_CHAIN} || command -v python3)`,
+  `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi`,
+  `echo "[install_sdk] base python = $BASE"`,
+  // Major.minor of the python in use (e.g. "3.12"). Used to request
+  // the right versioned package from apt/dnf.
+  `PY_VER=$("$BASE" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' 2>/dev/null || echo "")`,
+  `echo "[install_sdk] python version = $PY_VER"`,
+  // ── venv health check ──────────────────────────────────────────
+  // The naive check `[ ! -x ${VENV_PY} ]` is NOT enough: on
+  // Debian/Ubuntu when the `python$VER-venv` OS package is missing,
+  // `python -m venv` partially creates the directory (the bin/python
+  // symlink IS dropped) but `ensurepip` fails, leaving pip
+  // uninstalled. So bin/python exists & is executable, but
+  // `python -m pip` crashes with "No module named pip". Subsequent
+  // runs would skip the auto-install entirely (binary exists → block
+  // skipped) and fail straight away on `pip install`.
+  //
+  // Real test: does `python -m pip --version` work in the venv? If
+  // not, the venv is broken — we wipe it, install the OS package,
+  // and recreate from scratch.
+  `VENV_OK=0`,
+  `if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+  `  VENV_OK=1`,
+  `  echo "[install_sdk] venv healthy (pip available)"`,
+  `fi`,
+  `if [ "$VENV_OK" != "1" ]; then`,
+  `  if [ -d ${VENV_DIR} ]; then`,
+  `    echo "[install_sdk] venv broken or missing pip — wipe and recreate"`,
+  `    rm -rf ${VENV_DIR}`,
+  `  fi`,
+  `  echo "[install_sdk] creating venv ${VENV_DIR}"`,
+  // Capture the venv log so we can grep on it if it fails.
+  // `|| true` to not kill the script via pipefail/set-e.
+  `  VENV_LOG=$("$BASE" -m venv ${VENV_DIR} 2>&1 || true)`,
+  `  echo "$VENV_LOG" | tail -20`,
+  // Re-check health: pip must work, not just bin/python exist.
+  `  VENV_HEALTHY=0`,
+  `  if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then VENV_HEALTHY=1; fi`,
+  // Auto-install the OS venv package if it's still broken AND the
+  // symptom matches ("ensurepip is not available" OR pip missing
+  // after bin/python exists — both point to the same root cause).
+  `  if [ "$VENV_HEALTHY" != "1" ] && \\`,
+  `     ( echo "$VENV_LOG" | grep -qE 'ensurepip is not available|No module named ensurepip' \\`,
+  `       || ( [ -x ${VENV_PY} ] && ! ${VENV_PY} -m pip --version >/dev/null 2>&1 ) ); then`,
+  `    echo "[install_sdk] venv module missing — auto-install OS package (python$PY_VER-venv or python3-venv)"`,
+  `    if command -v apt-get >/dev/null 2>&1; then`,
+  `      export DEBIAN_FRONTEND=noninteractive`,
+  `      (apt-get update -y >/dev/null 2>&1 || sudo -n apt-get update -y >/dev/null 2>&1 || true)`,
+  // Try python$VER-venv first (versioned, more accurate on
+  // Ubuntu 24.04 which ships python3.12 separate from the python3
+  // meta), then python3-venv (meta). Without/with sudo -n. tail -15
+  // per attempt.
+  `      (apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
+  `        || sudo -n apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
+  `        || apt-get install -y python3-venv 2>&1 \\`,
+  `        || sudo -n apt-get install -y python3-venv 2>&1) | tail -15`,
+  `    elif command -v dnf >/dev/null 2>&1; then`,
+  // On Fedora/RHEL the venv module is in the python3 package itself.
+  // But we cover the case where a side-by-side version (python3.11)
+  // was installed without its sub-package. Best-effort.
+  `      (dnf install -y "python$PY_VER" 2>&1 || sudo -n dnf install -y "python$PY_VER" 2>&1) | tail -15`,
+  `    else`,
+  `      echo "[install_sdk] no apt/dnf package manager detected — manual install required"`,
+  `    fi`,
+  // After installing the OS package, wipe any broken half-venv and
+  // recreate from scratch. A partial venv left over from the
+  // ensurepip failure won't self-heal — we need a fresh one.
+  `    echo "[install_sdk] wipe partial venv and retry creation"`,
+  `    rm -rf ${VENV_DIR}`,
+  `    "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || true`,
+  `  fi`,
+  // Final health gate: bin/python AND pip must both work.
+  `  if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+  `    echo "[install_sdk] venv creation failed — install python$PY_VER-venv (apt) or python3-venv manually"`,
+  `    exit 11`,
+  `  fi`,
+  `fi`,
+  // Upgrade pip inside the venv to avoid warnings/edge-cases.
+  `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10`,
+  // Install the SDK. No `| tail` this time — we want the exit code
+  // AND pipefail takes care of the rest anyway.
+  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40`,
+  // Post-import check: the ONLY real proof that it works.
+  `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
+].join('\n');
+
+// 300s: pip alone is usually <1min, but the command can escalate to an
+// apt-get update + install python$VER-venv when the venv module is missing.
+const INSTALL_SDK_TIMEOUT_MS = 300_000;
+
+export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<EnsureSdkResult> {
+  const own = session ?? openSshSession(vps);
+  try {
+    const r = await sshExec(vps, INSTALL_SDK_CMD, { timeoutMs: INSTALL_SDK_TIMEOUT_MS, session: own });
+    const sshErr = detectSshFailure(r);
+    if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
+    const out = r.stdout + r.stderr;
+    const m = out.match(/\[install_sdk\] OK version=(\S+)/);
+    if (!r.ok || !m) return { ok: false, error: (out.slice(-600) || `exit ${r.code}`).trim() };
+    return { ok: true, sdkVersion: m[1] };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    if (!session) await closeSshSession(own);
+  }
+}
+
+// ── Update agent: deploy the pyz + upgrade the SDK + restart + verify ──────
+// Distinct from the full bootstrap: we assume the systemd unit already
+// exists. ONE unified flow (the sidebar's single "update" button + the SDK
+// auto-update tick): swap the .pyz, `pip install -U claude-agent-sdk` in the
+// venv (ensureSdkLatest — also creates the venv on legacy hosts), then
+// restart so the daemon loads both. If the systemd restart fails (nohup
+// fallback was used at bootstrap), we fall back on pkill+nohup.
 export type UpdateAgentResult = {
   ok: boolean;
   oldVersion?: string;
   newVersion?: string;
   newPyzSha?: string;
+  // claude-agent-sdk version confirmed in the venv by ensureSdkLatest.
+  // Absent when the SDK step failed (see detail) — the update still
+  // proceeds (old SDK keeps working; the badge stays lit for a retry).
+  sdkVersion?: string;
   detail: string;
 };
 
@@ -324,6 +468,15 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // Step 1: deploy
     const dep = await installAgentPyz(vps, session);
     if (!dep.ok) return { ok: false, detail: `deploy: ${dep.detail}` };
+
+    // Step 1.5: upgrade the claude-agent-sdk in the venv BEFORE the restart
+    // (the restart below is what loads it — one restart covers pyz + SDK).
+    // A pure SSH failure aborts (the restart would be doomed anyway); a
+    // pip/venv failure does NOT: the old SDK keeps working, we proceed and
+    // surface the problem in `detail` (badge stays lit → user can retry).
+    const sdk = await ensureSdkLatest(vps, session);
+    if (!sdk.ok && sdk.sshError) return { ok: false, detail: `sdk: ${sdk.sshError}` };
+    const sdkNote = sdk.ok ? `sdk ${sdk.sdkVersion}` : `sdk upgrade failed: ${(sdk.error ?? '').slice(-200)}`;
 
     // Step 2: restart. Try systemd-user then nohup fallback.
     // IMPORTANT: join with '\n' to preserve shell syntax (if/then/else/fi).
@@ -382,7 +535,13 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     if (!ping.ok) {
       return { ok: false, detail: `ping after restart: ${ping.detail}` };
     }
-    return { ok: true, newVersion: ping.version, newPyzSha: ping.pyzSha, detail: ping.detail };
+    return {
+      ok: true,
+      newVersion: ping.version,
+      newPyzSha: ping.pyzSha,
+      ...(sdk.ok && sdk.sdkVersion ? { sdkVersion: sdk.sdkVersion } : {}),
+      detail: `${ping.detail} · ${sdkNote}`,
+    };
   } finally {
     await closeSshSession(session);
   }
@@ -512,136 +671,23 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     // and guarantees a consistent python across install / verify / ping / systemd.
     if (!v.ok) {
       yield { phase: 'install_sdk', status: 'running', detail: `venv ${VENV_DIR} + pip install claude-agent-sdk` };
-      // pipefail: bubble up pip's exit code even when we pipe to tail
-      // (without it, the pipeline returns 0 even when pip explodes →
-      // bootstrap thought it worked and looped).
-      //
-      // Multi-line via '\n' (not '; ') to avoid the `&;` gotcha (cf. §14
-      // gotcha 19) AND to be able to use readable `if/then/elif/else/fi`.
-      //
-      // ── venv auto-recovery (Debian/Ubuntu) ────────────────────────────
-      // `python -m venv` can fail with "ensurepip is not available" /
-      // "No module named ensurepip": that happens when python is installed
-      // but the OS package providing the venv module (typically
-      // python3.12-venv on Ubuntu 24.04, python3.11-venv on Debian 12,
-      // etc.) is missing. The `install_python` phase above already covers
-      // this via `apt-get install python3-venv`, BUT it only runs when
-      // `verify` returns `no_py`. If python is already there but the venv
-      // module is missing, we arrive here with `no_sdk` and the venv breaks.
-      //
-      // So: try the venv, look at the error message, and if it's the
-      // ensurepip missing one, install `python$VER-venv` (then
-      // `python3-venv` as fallback) best-effort, then retry. The old
-      // fallback `--without-pip` + `ensurepip --upgrade` does NOT work
-      // in this case: `ensurepip --upgrade` depends exactly on the module
-      // that's missing.
-      const sdkCmd = [
-        `set -o pipefail`,
-        `BASE=$(${PY_CHAIN} || command -v python3)`,
-        `if [ -z "$BASE" ]; then echo "NO_PY"; exit 10; fi`,
-        `echo "[install_sdk] base python = $BASE"`,
-        // Major.minor of the python in use (e.g. "3.12"). Used to request
-        // the right versioned package from apt/dnf.
-        `PY_VER=$("$BASE" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' 2>/dev/null || echo "")`,
-        `echo "[install_sdk] python version = $PY_VER"`,
-        // ── venv health check ──────────────────────────────────────────
-        // The naive check `[ ! -x ${VENV_PY} ]` is NOT enough: on
-        // Debian/Ubuntu when the `python$VER-venv` OS package is missing,
-        // `python -m venv` partially creates the directory (the bin/python
-        // symlink IS dropped) but `ensurepip` fails, leaving pip
-        // uninstalled. So bin/python exists & is executable, but
-        // `python -m pip` crashes with "No module named pip". Subsequent
-        // runs would skip the auto-install entirely (binary exists → block
-        // skipped) and fail straight away on `pip install`.
-        //
-        // Real test: does `python -m pip --version` work in the venv? If
-        // not, the venv is broken — we wipe it, install the OS package,
-        // and recreate from scratch.
-        `VENV_OK=0`,
-        `if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
-        `  VENV_OK=1`,
-        `  echo "[install_sdk] venv healthy (pip available)"`,
-        `fi`,
-        `if [ "$VENV_OK" != "1" ]; then`,
-        `  if [ -d ${VENV_DIR} ]; then`,
-        `    echo "[install_sdk] venv broken or missing pip — wipe and recreate"`,
-        `    rm -rf ${VENV_DIR}`,
-        `  fi`,
-        `  echo "[install_sdk] creating venv ${VENV_DIR}"`,
-        // Capture the venv log so we can grep on it if it fails.
-        // `|| true` to not kill the script via pipefail/set-e.
-        `  VENV_LOG=$("$BASE" -m venv ${VENV_DIR} 2>&1 || true)`,
-        `  echo "$VENV_LOG" | tail -20`,
-        // Re-check health: pip must work, not just bin/python exist.
-        `  VENV_HEALTHY=0`,
-        `  if [ -x ${VENV_PY} ] && ${VENV_PY} -m pip --version >/dev/null 2>&1; then VENV_HEALTHY=1; fi`,
-        // Auto-install the OS venv package if it's still broken AND the
-        // symptom matches ("ensurepip is not available" OR pip missing
-        // after bin/python exists — both point to the same root cause).
-        `  if [ "$VENV_HEALTHY" != "1" ] && \\`,
-        `     ( echo "$VENV_LOG" | grep -qE 'ensurepip is not available|No module named ensurepip' \\`,
-        `       || ( [ -x ${VENV_PY} ] && ! ${VENV_PY} -m pip --version >/dev/null 2>&1 ) ); then`,
-        `    echo "[install_sdk] venv module missing — auto-install OS package (python$PY_VER-venv or python3-venv)"`,
-        `    if command -v apt-get >/dev/null 2>&1; then`,
-        `      export DEBIAN_FRONTEND=noninteractive`,
-        `      (apt-get update -y >/dev/null 2>&1 || sudo -n apt-get update -y >/dev/null 2>&1 || true)`,
-        // Try python$VER-venv first (versioned, more accurate on
-        // Ubuntu 24.04 which ships python3.12 separate from the python3
-        // meta), then python3-venv (meta). Without/with sudo -n. tail -15
-        // per attempt.
-        `      (apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
-        `        || sudo -n apt-get install -y "python$PY_VER-venv" 2>&1 \\`,
-        `        || apt-get install -y python3-venv 2>&1 \\`,
-        `        || sudo -n apt-get install -y python3-venv 2>&1) | tail -15`,
-        `    elif command -v dnf >/dev/null 2>&1; then`,
-        // On Fedora/RHEL the venv module is in the python3 package itself.
-        // But we cover the case where a side-by-side version (python3.11)
-        // was installed without its sub-package. Best-effort.
-        `      (dnf install -y "python$PY_VER" 2>&1 || sudo -n dnf install -y "python$PY_VER" 2>&1) | tail -15`,
-        `    else`,
-        `      echo "[install_sdk] no apt/dnf package manager detected — manual install required"`,
-        `    fi`,
-        // After installing the OS package, wipe any broken half-venv and
-        // recreate from scratch. A partial venv left over from the
-        // ensurepip failure won't self-heal — we need a fresh one.
-        `    echo "[install_sdk] wipe partial venv and retry creation"`,
-        `    rm -rf ${VENV_DIR}`,
-        `    "$BASE" -m venv ${VENV_DIR} 2>&1 | tail -20 || true`,
-        `  fi`,
-        // Final health gate: bin/python AND pip must both work.
-        `  if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
-        `    echo "[install_sdk] venv creation failed — install python$PY_VER-venv (apt) or python3-venv manually"`,
-        `    exit 11`,
-        `  fi`,
-        `fi`,
-        // Upgrade pip inside the venv to avoid warnings/edge-cases.
-        `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10`,
-        // Install the SDK. No `| tail` this time — we want the exit code
-        // AND pipefail takes care of the rest anyway.
-        `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40`,
-        // Post-import check: the ONLY real proof that it works.
-        `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
-      ].join('\n');
-      // 300s: we can now trigger an apt-get update + apt-get install
-      // python$VER-venv on top of the pip install if the venv module was
-      // missing.
-      const sdkR = await sshExec(vps, sdkCmd, { timeoutMs: 300_000, session });
-      const sdkSsh = detectSshFailure(sdkR);
-      if (sdkSsh) {
-        yield { phase: 'install_sdk', status: 'error', detail: sdkSsh };
-        yield { phase: 'done', status: 'error', detail: `SSH dropped during install_sdk: ${sdkSsh}` };
+      // The heavy lifting (venv create/heal incl. the PEP 668 / ensurepip
+      // auto-recovery, `pip install --upgrade claude-agent-sdk`, post-import
+      // check) lives in ensureSdkLatest / INSTALL_SDK_CMD above — SHARED
+      // with the unified agent-update flow (updateVpsAgent + the SDK
+      // auto-update tick). Success = its `[install_sdk] OK version=` marker.
+      const sdkRes = await ensureSdkLatest(vps, session);
+      if (sdkRes.sshError) {
+        yield { phase: 'install_sdk', status: 'error', detail: sdkRes.sshError };
+        yield { phase: 'done', status: 'error', detail: `SSH dropped during install_sdk: ${sdkRes.sshError}` };
         return;
       }
-      const out = (sdkR.stdout + sdkR.stderr);
-      const importedOk = /\[install_sdk\] OK version=/.test(out);
-      if (!sdkR.ok || !importedOk) {
-        yield { phase: 'install_sdk', status: 'error', detail: out.slice(-600) || `exit ${sdkR.code}` };
+      if (!sdkRes.ok) {
+        yield { phase: 'install_sdk', status: 'error', detail: sdkRes.error ?? 'claude-agent-sdk install failed' };
         yield { phase: 'done', status: 'error', detail: 'claude-agent-sdk install failed' };
         return;
       }
-      // Get the version we just installed to show in the UI
-      const vMatch = out.match(/\[install_sdk\] OK version=(\S+)/);
-      yield { phase: 'install_sdk', status: 'ok', detail: vMatch ? `claude-agent-sdk ${vMatch[1]} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
+      yield { phase: 'install_sdk', status: 'ok', detail: sdkRes.sdkVersion ? `claude-agent-sdk ${sdkRes.sdkVersion} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
 
       v = await tryVerify(vps, session);
       if (v.reason === 'ssh') {

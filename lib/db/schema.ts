@@ -57,6 +57,12 @@ export const vps = sqliteTable('vps', {
   // manual bump of __version__. Compared to the sha of the .pyz embedded in
   // the dashboard.
   agentPyzSha: text('agent_pyz_sha'),
+  // Version of the `claude-agent-sdk` python package installed in the VPS's
+  // venv, as reported by the agent's `hello` (>= 0.12.0). Compared to the
+  // PyPI latest (settings `sdk.latest_version`, cf. sdkSync.ts) to flag
+  // outdated fleets. NULL = unknown (old agent / never connected). Old
+  // agents' hellos must NOT null-clobber this (cf. AgentClient.ts).
+  sdkVersion: text('sdk_version'),
   agentLastSeenAt: integer('agent_last_seen_at'),
   // State of `claude login` on this VPS. 1 = logged in (oauth.refresh_token
   // present), 0 = not logged in, NULL = never checked. Used to hide the

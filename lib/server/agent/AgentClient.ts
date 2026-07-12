@@ -47,7 +47,7 @@ type Pending = {
 export type VpsStatusEmitter = (
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
 ) => void;
 let vpsStatusEmitter: VpsStatusEmitter | null = null;
 export function setVpsStatusEmitter(fn: VpsStatusEmitter): void {
@@ -56,7 +56,7 @@ export function setVpsStatusEmitter(fn: VpsStatusEmitter): void {
 function emitVpsStatus(
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null },
+  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
 ): void {
   try { vpsStatusEmitter?.(vpsId, agentStatus, extra); } catch {}
 }
@@ -402,13 +402,17 @@ export class AgentClient {
         this.lastConnectError = null;
         this.lastClassified = 'ok';
         this._setStatus('connected');
-        // Persist the ping side-effect: timestamp + version
+        // Persist the ping side-effect: timestamp + version.
+        // sdk_version: ONLY when the hello carries the key — an old agent
+        // (<0.12.0) must not null-clobber a value persisted by the update
+        // flow (ensureSdkLatest) or a previous new-agent hello.
         try {
           db.update(vpsTable).set({
             agentStatus: 'ok',
             agentVersion: hello.agent_version,
             agentPyzSha: hello.agent_pyz_sha ?? null,
             agentLastSeenAt: Math.floor(Date.now() / 1000),
+            ...(hello.sdk_version !== undefined ? { sdkVersion: hello.sdk_version } : {}),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
         // Live push so open tabs flip the sidebar badge without an F5
@@ -416,6 +420,7 @@ export class AgentClient {
         emitVpsStatus(this.vps.id, 'ok', {
           agentVersion: hello.agent_version,
           agentPyzSha: hello.agent_pyz_sha ?? null,
+          ...(hello.sdk_version !== undefined ? { sdkVersion: hello.sdk_version } : {}),
         });
         // Re-subscribe to everything. This is the critical path for
         // "Charon was down, agent kept emitting events" — we want the

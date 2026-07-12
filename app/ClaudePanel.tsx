@@ -37,6 +37,9 @@ type Props = {
   vpsPaths: VpsPath[];
   initialSessions: ClaudeSession[];
   builtPyzSha: string | null;
+  // Latest claude-agent-sdk on PyPI (settings cache, null = never synced).
+  // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
+  sdkLatestVersion: string | null;
 };
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
@@ -61,7 +64,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 // SessionState/emptyState removed in the refactor: per-session state now
 // lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, sdkLatestVersion }: Props) {
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
@@ -294,11 +297,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           if (v.id !== vpsId) return v;
           const agentVersion = ev.agentVersion !== undefined ? ev.agentVersion : v.agentVersion;
           const agentPyzSha = ev.agentPyzSha !== undefined ? ev.agentPyzSha : v.agentPyzSha;
-          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha) {
+          // sdkVersion: patch ONLY when the event carries the key — an event
+          // from an old agent's hello must not wipe a known SDK version
+          // (mirrors the DB no-clobber guard in AgentClient.ts).
+          const sdkVersion = ev.sdkVersion !== undefined ? ev.sdkVersion : v.sdkVersion;
+          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion) {
             return v;
           }
           changed = true;
-          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha } as Vps;
+          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion } as Vps;
         });
         return changed ? next : prev;
       });
@@ -598,7 +605,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setUpdatingAgentVpsIds((prev) => new Set(prev).add(vps.id));
     try {
       const r = await api.updateVpsAgent(vps.id);
-      // Patch the local row to reflect the new version/sha — prevents the
+      // Patch the local row to reflect the new version/sha/SDK — prevents the
       // "outdated" badge from staying displayed until the next hello.
       setVpsList((prev) => prev.map((v) =>
         v.id === vps.id
@@ -606,6 +613,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               ...v,
               agentVersion: r?.newVersion ?? v.agentVersion,
               agentPyzSha: r?.newPyzSha ?? v.agentPyzSha,
+              sdkVersion: r?.sdkVersion ?? v.sdkVersion,
               agentStatus: 'ok',
             } as Vps)
           : v
@@ -843,6 +851,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     refreshSessions();
     const t = setInterval(refreshSessions, 15_000);
     return () => clearInterval(t);
+  }, [refreshSessions]);
+
+  // Live "the session list changed" signal (CLAUDE.md §14.52). When a session
+  // is created / imported / deleted on ANY tab or device, sessionOps fans a
+  // `session_list_changed` event on the bus (LOW_VOLUME → reaches every tab,
+  // even unfocused ones). Refetch the list immediately so the sidebar + tab bar
+  // reflect it without waiting for the 15s poll — this is what makes a session
+  // started on a phone appear on the desktop without an F5. The poll stays as a
+  // backstop in case an event is missed (SSE drop).
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'session_list_changed') return;
+      refreshSessions();
+    });
+    return () => unsub();
   }, [refreshSessions]);
 
   // ── Notification when a session takes a pending while we're elsewhere
@@ -1317,6 +1340,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           }
         }}
         builtPyzSha={builtPyzSha}
+        sdkLatestVersion={sdkLatestVersion}
         updatingAgentVpsIds={updatingAgentVpsIds}
         refreshingAgentVpsIds={refreshingAgentVpsIds}
       />

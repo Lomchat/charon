@@ -97,7 +97,13 @@ export const api = {
   testVps: (id: string) =>
     send<TestVpsResponse>('POST', `/api/vps/${id}/test`),
   updateVpsAgent: (id: string) =>
-    send<UpdateVpsAgentResponse>('POST', `/api/vps/${id}/agent/update`),
+    // The unified update now includes `pip install -U claude-agent-sdk` in
+    // the VPS venv (1-3 min on a slow box, wheel download included) on top
+    // of the pyz redeploy + restart — way past the default 30s timeout.
+    // NOTE: a reverse-proxy ProxyTimeout shorter than this can still 502
+    // the response; the flow completes server-side and the badge self-heals
+    // via the next vps_status hello.
+    send<UpdateVpsAgentResponse>('POST', `/api/vps/${id}/agent/update`, undefined, { timeoutMs: 360_000 }),
   refreshVpsAgent: (id: string) =>
     // Can take up to ~40s in the worst case (reconnect → start daemon →
     // reconnect), so override the default 30s client timeout.

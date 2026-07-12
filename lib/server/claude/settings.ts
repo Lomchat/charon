@@ -44,6 +44,20 @@ const DEFAULTS = {
   // successful sync (drives the 24h TTL).
   'claude.models_cache': '',
   'claude.models_cache_at': '',
+  // Auto-update the `claude-agent-sdk` python package on fleet VPSes when a
+  // newer PyPI version is known AND the VPS is idle (no active session, no
+  // pending interaction). ON by default — the SDK bundles the Claude Code CLI
+  // that actually runs the sessions, and a stale one causes real bugs (model
+  // attribution, missing features). User-editable (SettingsModal toggle).
+  // cf. lib/server/claude/sdkWatch.ts / sdkSync.ts.
+  'sdk.auto_update': 'true',
+  // Internal, written by sdkSync only (not in the settings POST allowlist):
+  // latest claude-agent-sdk version on PyPI + unix-ms of the last successful
+  // check (12h TTL), + the last version we sent a "new SDK version" Telegram/
+  // push notification for (dedup across ticks/restarts).
+  'sdk.latest_version': '',
+  'sdk.latest_version_at': '',
+  'sdk.last_notified_version': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 

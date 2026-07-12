@@ -1,0 +1,1 @@
+ALTER TABLE `vps` ADD `sdk_version` text;

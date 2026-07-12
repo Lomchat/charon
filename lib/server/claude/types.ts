@@ -60,7 +60,7 @@ export type SyntheticEvent =
   // `vps.agentStatus` inside AgentClient (hello success / classified exit) so
   // the sidebar badge + action buttons follow reality without an F5. Same
   // bus-reuse trick as shell_status; LOW_VOLUME → broadcast to every tab.
-  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null }
+  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null }
   // Per-session "finished, unread" marker fanned onto the global SSE bus
   // (sessionId = the Claude session id). unread=true when a turn finished
   // (`stop`) while nobody was viewing the session; unread=false when the user
@@ -69,7 +69,15 @@ export type SyntheticEvent =
   // of truth is claudeSessions.unreadStop; this event is just the live mirror.
   // Classed LOW_VOLUME in eventConnections so it reaches every tab regardless
   // of SSE focus. cf. CLAUDE.md §14.47.
-  | { type: 'session_unread'; unread: boolean };
+  | { type: 'session_unread'; unread: boolean }
+  // The set of Claude sessions changed (one was created, imported or deleted).
+  // A pure "refetch the list" signal so the sidebar/tab bar update live across
+  // tabs AND devices — e.g. a session started on a phone appears on the desktop
+  // without waiting for the 15s poll (or an F5). `sessionId` is the affected
+  // session id (informational only; the client just refetches GET
+  // /api/claude/sessions). Charon-internal synthetic event (no JSON-RPC / pyz
+  // change), classed LOW_VOLUME so it reaches every tab. cf. CLAUDE.md §14.52.
+  | { type: 'session_list_changed' };
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 

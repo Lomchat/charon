@@ -5,6 +5,7 @@ import type { SessionListItem, InstallInfo } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
+import { isVersionOutdated } from '@/lib/version';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -91,6 +92,9 @@ type Props = {
   onToggleFolderCollapsed?: (folderId: string, collapsed: boolean) => void;
   // SHA of the .pyz embedded in the dashboard (used to detect agent out-of-date)
   builtPyzSha?: string | null;
+  // Latest claude-agent-sdk on PyPI (settings cache) — compared to each VPS's
+  // reported vps.sdkVersion for the "SDK out of date" badge / update bar.
+  sdkLatestVersion?: string | null;
   // VPSes for which an update is in progress (UI loading)
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
@@ -112,7 +116,7 @@ export default function Sidebar({
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
-  builtPyzSha, updatingAgentVpsIds, refreshingAgentVpsIds,
+  builtPyzSha, sdkLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
 }: Props) {
 
   // Collapsed VPS sections (persisted in localStorage) — per-VPS, per-device.
@@ -247,6 +251,16 @@ export default function Sidebar({
     return agentStatus === 'ok' && !!builtPyzSha && (agentPyzSha == null || agentPyzSha !== builtPyzSha);
   }
 
+  // "SDK out of date" — the claude-agent-sdk python package on the VPS is
+  // older than the PyPI latest. Requires BOTH versions known (an old agent
+  // that doesn't report sdk_version never flags on this path — its pyz is
+  // outdated anyway, which lights the same update bar).
+  function sdkOutdatedOf(v: Vps): boolean {
+    const agentStatus = (v as any).agentStatus ?? 'unknown';
+    const sdkVersion = (v as any).sdkVersion as string | null | undefined;
+    return agentStatus === 'ok' && isVersionOutdated(sdkVersion, sdkLatestVersion);
+  }
+
   const totalSleeping = sessions.filter((s) => (s.liveStatus ?? s.status) === 'sleeping').length;
 
   return (
@@ -337,6 +351,8 @@ export default function Sidebar({
                   isCollapsed: collapsed.has(x.vps.id),
                   onToggle: () => toggleCollapsed(x.vps.id),
                   agentOutOfDate: agentOutOfDateOf(x.vps),
+                  sdkOutdated: sdkOutdatedOf(x.vps),
+                  sdkLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
                   onSelect, onSelectShell, onSelectInstall,
                   onNew, onNewShell, onScan,
@@ -362,6 +378,9 @@ type VpsRenderOpts = {
   isCollapsed: boolean;
   onToggle: () => void;
   agentOutOfDate: boolean;
+  // The VPS's claude-agent-sdk is older than the PyPI latest (both known).
+  sdkOutdated: boolean;
+  sdkLatestVersion?: string | null;
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
@@ -388,6 +407,7 @@ type VpsRenderOpts = {
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
     vpsSessions, vpsShells, vpsInstall, isCollapsed, onToggle, agentOutOfDate,
+    sdkOutdated, sdkLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
     onSelect, onSelectShell, onSelectInstall,
     onNew, onNewShell, onScan,
@@ -400,11 +420,18 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const agentStatus = (v as any).agentStatus ?? 'unknown';
   const agentVersion = (v as any).agentVersion as string | undefined;
   const agentPyzSha = (v as any).agentPyzSha as string | undefined;
+  const sdkVersion = (v as any).sdkVersion as string | null | undefined;
   const agentReady = agentStatus === 'ok';
   const agentUpdating = !!updatingAgentVpsIds?.has(v.id);
   const agentRefreshing = !!refreshingAgentVpsIds?.has(v.id);
   const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
-  const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}${agentOutOfDate ? ' — update available' : ''}`;
+  // ONE update surface for both staleness kinds (pyz and/or SDK) — the update
+  // button repairs both in a single flow (redeploy pyz + pip install -U).
+  const outdated = agentOutOfDate || sdkOutdated;
+  const sdkTip = sdkVersion
+    ? (sdkOutdated && sdkLatestVersion ? ` — SDK ${sdkVersion} → ${sdkLatestVersion}` : ` — SDK ${sdkVersion}`)
+    : '';
+  const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${agentOutOfDate ? ' — agent update available' : ''}`;
   const noAgentReason = agentStatus === 'missing'
     ? 'install the agent first'
     : agentStatus === 'error'
@@ -418,12 +445,24 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
         <button className="cs-caret btn" onClick={onToggle} title={isCollapsed ? 'expand' : 'collapse'}>
           {isCollapsed ? '▸' : '▾'}
         </button>
-        <span className={`cs-vps-dot agent-${agentStatus}${agentOutOfDate ? ' outdated' : ''}`} title={agentTip}>
+        <span className={`cs-vps-dot agent-${agentStatus}${outdated ? ' outdated' : ''}`} title={agentTip}>
           {agentMeta.glyph}
         </span>
         <span className="cs-vps-id">
           <span className="cs-vps-name">{v.name}</span>
           <span className="cs-vps-ip">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
+          {/* Agent version — always visible under root@… (mobile + web), so the
+              fleet's agent versions are legible at a glance. Amber when an
+              update is available (mirrors the dot's `outdated` color); the
+              tooltip carries the full status. Updates live via the `vps_status`
+              bus event (ClaudePanel patches v.agentVersion). */}
+          <span className={`cs-vps-ver${outdated ? ' outdated' : ''}`} title={agentTip}>
+            {agentVersion
+              ? `agent v${agentVersion}${sdkVersion ? ` · sdk ${sdkVersion}` : ''}`
+              : agentStatus === 'missing'
+                ? 'agent not installed'
+                : 'agent —'}
+          </span>
         </span>
         <button
           className="cs-icon-btn"
@@ -471,9 +510,15 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 <button className="cs-agent-btn" disabled={agentRefreshing} onClick={() => onInstallAgent(v)}>reinstall</button>
               )}
             </div>
-          ) : agentOutOfDate ? (
+          ) : outdated ? (
             <div className="cs-agent-bar update">
-              <span className="cs-agent-meta">{agentVersion ? `v${agentVersion} · ` : ''}update available</span>
+              <span className="cs-agent-meta">
+                {sdkOutdated && !agentOutOfDate
+                  ? `SDK ${sdkVersion} → ${sdkLatestVersion}`
+                  : sdkOutdated
+                    ? `${agentVersion ? `v${agentVersion} · ` : ''}agent + SDK update`
+                    : `${agentVersion ? `v${agentVersion} · ` : ''}update available`}
+              </span>
               {onUpdateAgent && (
                 <button className="cs-agent-btn update" disabled={agentUpdating} onClick={() => onUpdateAgent(v)}>
                   {agentUpdating ? '⟳ updating…' : '⇪ update'}

@@ -20,6 +20,10 @@ const ALLOWED_KEYS = [
   // list from GET /v1/models (see modelSync.ts). models_cache/_at are written
   // by the sync, never accepted from a settings POST.
   'claude.api_key',
+  // Fleet-wide claude-agent-sdk auto-update (idle VPSes only, cf. sdkWatch).
+  // sdk.latest_version(_at) / sdk.last_notified_version are written by the
+  // sync/tick, never accepted from a settings POST.
+  'sdk.auto_update',
 ];
 
 export async function GET() {
