@@ -437,7 +437,7 @@ export default function ClaudeSessionView({
             ) : (
               <>
                 {currentAssistant && (
-                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0 }} streaming />
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming />
                 )}
                 {[...renderable].reverse().map(({ msg, attached }) => (
                   <Message key={msg.id} m={msg} attachedResult={attached} />

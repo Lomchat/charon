@@ -1473,6 +1473,16 @@
   color: var(--parchment-soft); opacity: 0.55;
   margin-left: auto;
 }
+/* Per-message model attribution chip (assistant bubbles): the API-confirmed
+   model id that produced THIS message ("who is speaking"), next to the role
+   tag. Deliberately dim + tiny — informative, not decorative. Ellipsizes
+   instead of pushing the timestamp out on narrow phones. */
+.bubble .bubble-h .model-chip {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em;
+  color: var(--parchment-soft); opacity: 0.55;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; flex-shrink: 1;
+}
 .bubble .tag {
   display: inline-block;
   font-family: var(--display); font-size: 9px;

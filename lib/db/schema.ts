@@ -138,6 +138,15 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   model: text('model'),
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
+  // The model id Anthropic ACTUALLY used on the last assistant turn, captured
+  // from the agent's `effective_model` event (AssistantMessage.model — API
+  // truth, not the configured value above: aliases resolve, fallback_model can
+  // kick in, the SDK may pick a default). Persisted so it survives Charon
+  // restarts (the agent only re-emits on CHANGE) — hydrates
+  // SessionStream.effectiveModel, which stamps each flushed assistant message
+  // row (claude_session_messages.model). NULL until the first turn on an
+  // agent >= 0.6.0.
+  effectiveModel: text('effective_model'),
   // Durable "the user asked this session to sleep" intent (0/1). Set by
   // sleepSession / forceStopSession; cleared when the agent confirms 'sleeping'
   // or on resume. Guards against reconcileVpsAgentState RESURRECTING a session
@@ -154,6 +163,14 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
   role: text('role').notNull(),
   content: text('content').notNull(),
+  // For role='assistant' rows only: the model id Anthropic actually served
+  // this message with (stamped at flush time from the stream's
+  // effectiveModel — see sessionOps._flushAssistant). Lets the UI label every
+  // assistant bubble with the true model ("who is speaking"), immune to the
+  // model's own hallucinated self-identification. NULL on other roles, on
+  // rows persisted before this column existed, and until the agent (>= 0.6.0)
+  // has reported an effective model.
+  model: text('model'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // Hot path: window query (session_id + id range), delta polling

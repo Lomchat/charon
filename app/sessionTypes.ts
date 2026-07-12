@@ -15,6 +15,12 @@ export type Msg = {
   role: string;
   content: string;
   createdAt: number;
+  // role='assistant' only: the model id Anthropic ACTUALLY served this message
+  // with (claude_session_messages.model, stamped server-side from the agent's
+  // effective_model event). Rendered as a small chip in the bubble header —
+  // API truth, immune to the model's own (unreliable) self-identification.
+  // Null/undefined on other roles and on rows persisted before the feature.
+  model?: string | null;
 };
 
 export type ToolCallEntry = {

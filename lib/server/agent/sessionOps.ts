@@ -198,10 +198,13 @@ export class SessionStream {
   fallbackModel: string | null = null;
   effort: EffortLevel | null = null;
   // The model Anthropic actually used on the last AssistantMessage. Captured
-  // from the `effective_model` event (agent >= 0.6.0). Transient: not
-  // persisted in DB — re-derived on the next turn. Useful to compare with
-  // the configured `model`: if they differ, the user picked an alias or
-  // fallback_model kicked in.
+  // from the `effective_model` event (agent >= 0.6.0), persisted in
+  // claude_sessions.effective_model (the agent only re-emits on CHANGE, so a
+  // Charon restart would otherwise lose it until the next model switch) and
+  // hydrated back in getOrCreateStream. Stamped onto every flushed assistant
+  // message row (claude_session_messages.model) so each bubble can display
+  // the true speaking model. Distinct from the configured `model` above:
+  // aliases resolve, fallback_model can kick in, SDK may pick a default.
   effectiveModel: string | null = null;
 
   private currentAssistant = '';
@@ -260,6 +263,7 @@ export class SessionStream {
     model?: string | null;
     fallbackModel?: string | null;
     effort?: string | null;
+    effectiveModel?: string | null;
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
@@ -275,6 +279,7 @@ export class SessionStream {
     this.model = opts.model ?? null;
     this.fallbackModel = opts.fallbackModel ?? null;
     this.effort = isValidEffort(opts.effort) ? opts.effort : null;
+    this.effectiveModel = opts.effectiveModel ?? null;
   }
 
   /** Wires the listener to the agent (idempotent).
@@ -601,15 +606,24 @@ export class SessionStream {
         });
         break;
       case 'effective_model':
-        // Agent emits this on change only. Cache the new value + broadcast.
-        // No DB write — transient runtime info, re-derives on next turn after
-        // agent restart. If the user resumes after an agent restart and the
-        // FIRST turn hasn't happened yet, effectiveModel stays null until
-        // Claude responds — that's fine, the UI just hides the "effective"
-        // chip in that case.
+        // Agent emits this on change only. Cache + persist + broadcast. The
+        // DB write makes it survive Charon restarts (getOrCreateStream
+        // hydrates it back), which matters because every flushed assistant
+        // row is stamped with this value (per-message model attribution) and
+        // the agent will NOT re-emit after a hub restart unless the model
+        // actually changes. Replayed occurrences are fine: they arrive in
+        // order, so the last one wins — same end state as live.
         if (typeof ev.model === 'string' && ev.model.length > 0
             && ev.model !== this.effectiveModel) {
+          // Stamp any text buffered BEFORE the switch with the OLD model: a
+          // mid-turn model change (fallback kicking in) must not retroactively
+          // relabel text the previous model produced.
+          this._flushAssistant();
           this.effectiveModel = ev.model;
+          try {
+            db.update(claudeSessions).set({ effectiveModel: ev.model })
+              .where(eq(claudeSessions.id, this.id)).run();
+          } catch {}
           this._broadcast({ type: 'effective_model', model: ev.model });
         }
         break;
@@ -874,7 +888,9 @@ export class SessionStream {
             finalContent.startsWith(lastRows[0].content) &&
             finalContent.length > lastRows[0].content.length) {
           db.update(claudeSessionMessages)
-            .set({ content: finalContent })
+            // Re-stamp the model too: the partial may predate the model column
+            // (or a SIGTERM flush that raced the effective_model event).
+            .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
             .where(eq(claudeSessionMessages.id, lastRows[0].id))
             .run();
           this.replayKnownAssistantContents.delete(lastRows[0].content);
@@ -884,7 +900,10 @@ export class SessionStream {
       } catch {}
     }
 
-    this._persist('assistant', finalContent);
+    // Stamp the row with the model that actually produced this text (per-
+    // message attribution — the effective_model handler flushes BEFORE
+    // switching, so buffered text never gets relabeled by a newer model).
+    this._persist('assistant', finalContent, { model: this.effectiveModel });
     if (this.isReplaying) this.replayKnownAssistantContents.add(finalContent);
   }
 
@@ -943,11 +962,13 @@ export class SessionStream {
     } catch {}
   }
 
-  private _persist(role: string, content: any): void {
+  private _persist(role: string, content: any, extra?: { model?: string | null }): void {
     try {
       db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
         content: typeof content === 'string' ? content : JSON.stringify(content),
+        // Only assistant rows carry a model stamp (see _flushAssistant).
+        ...(extra?.model ? { model: extra.model } : {}),
       }).run();
     } catch (e: any) {
       this._log('warn', 'sdk_error', { msg: 'persist failed', err: e?.message ?? String(e) });
@@ -1038,6 +1059,10 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     model: row.model ?? null,
     fallbackModel: row.fallbackModel ?? null,
     effort: row.effort ?? null,
+    // Last API-confirmed model — needed right after a Charon restart so the
+    // very next assistant flush is stamped correctly (the agent won't re-emit
+    // `effective_model` unless it changes).
+    effectiveModel: row.effectiveModel ?? null,
   });
   streams.set(sessionId, s);
   return s;
@@ -1212,6 +1237,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
         model: row.model ?? null,
         fallbackModel: row.fallbackModel ?? null,
+        effectiveModel: row.effectiveModel ?? null,
         effort: row.effort ?? null,
       });
       streams.set(sessionId, stream);

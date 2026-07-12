@@ -33,6 +33,15 @@ function Message({ m, streaming = false, attachedResult }: Props) {
     >
       <header className="bubble-h">
         <span className="tag">{m.role}</span>
+        {/* Per-message model attribution (assistant only): the id Anthropic
+            actually served this message with — API truth from
+            AssistantMessage.model, NOT the model's own self-identification.
+            Absent on messages persisted before the feature / old agents. */}
+        {isAssistant && m.model && (
+          <span className="model-chip" title={`API-confirmed model for this message: ${m.model}`}>
+            {m.model}
+          </span>
+        )}
         {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
       </header>
       <div className="content md">

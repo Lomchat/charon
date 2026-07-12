@@ -255,12 +255,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // to show "where we are" without replaying the deltas.
     streamingText: stream?.getStreamingText() ?? '',
     // Model Anthropic actually used on the last AssistantMessage (agent >= 0.6.0).
-    // Null when (a) no turn has happened yet since last attach, or (b) the
-    // agent on this VPS is < 0.6.0 (doesn't emit `effective_model`). The
-    // session detail GET is what the UI calls on mount/reconnect — surfacing
-    // this here means the ModelEffortBadges can show "effective: claude-opus-4-8"
-    // even right after a tab reload (without waiting for the next turn).
-    effectiveModel: stream?.effectiveModel ?? null,
+    // In-memory stream value first, then the DURABLE claude_sessions.effective_model
+    // (stamped by the effective_model handler) — the GET must not lose the value
+    // just because the stream isn't hydrated (peekStream is hydrate-free, §14.45).
+    // Null when no turn ever happened or the agent never reported one.
+    effectiveModel: stream?.effectiveModel ?? row.effectiveModel ?? null,
     pendingPermissions: pendingPerms.map((p) => {
       let input: any = {};
       try { input = JSON.parse(p.toolInput); } catch {}

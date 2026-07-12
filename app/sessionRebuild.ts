@@ -19,6 +19,8 @@ export type PersistedMessage = {
   role: string;
   content: string;
   createdAt: number;
+  // Assistant rows: API-confirmed model that produced the message (nullable).
+  model?: string | null;
 };
 
 export type RebuiltSessionState = {
@@ -135,6 +137,9 @@ export function rebuildStateFromMessages(
     out.messages.push({
       id: 'm' + m.id, role: m.role,
       content: m.content, createdAt: m.createdAt,
+      // Carry the per-message model stamp through (assistant rows; null
+      // elsewhere) so the bubble header chip survives every refetch.
+      model: m.model ?? null,
     });
   }
   return out;

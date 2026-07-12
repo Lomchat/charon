@@ -451,18 +451,24 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
         <span className="cs-vps-id">
           <span className="cs-vps-name">{v.name}</span>
           <span className="cs-vps-ip">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
-          {/* Agent version — always visible under root@… (mobile + web), so the
-              fleet's agent versions are legible at a glance. Amber when an
-              update is available (mirrors the dot's `outdated` color); the
+          {/* Agent + SDK versions — always visible under root@… (mobile + web),
+              so the fleet's versions are legible at a glance. TWO stacked lines
+              (the single `agent … · sdk …` line got ellipsis-cropped in the
+              280px sidebar): each line goes amber for ITS OWN staleness; the
               tooltip carries the full status. Updates live via the `vps_status`
-              bus event (ClaudePanel patches v.agentVersion). */}
-          <span className={`cs-vps-ver${outdated ? ' outdated' : ''}`} title={agentTip}>
+              bus event (ClaudePanel patches v.agentVersion / v.sdkVersion). */}
+          <span className={`cs-vps-ver${agentOutOfDate ? ' outdated' : ''}`} title={agentTip}>
             {agentVersion
-              ? `agent v${agentVersion}${sdkVersion ? ` · sdk ${sdkVersion}` : ''}`
+              ? `agent v${agentVersion}`
               : agentStatus === 'missing'
                 ? 'agent not installed'
                 : 'agent —'}
           </span>
+          {sdkVersion && (
+            <span className={`cs-vps-ver${sdkOutdated ? ' outdated' : ''}`} title={agentTip}>
+              {`sdk ${sdkVersion}`}
+            </span>
+          )}
         </span>
         <button
           className="cs-icon-btn"

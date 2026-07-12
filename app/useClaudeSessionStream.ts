@@ -289,6 +289,10 @@ export function useClaudeSessionStream(
   // setCurrentAssistant = subtree re-render. At 100 tokens/sec, it lags.
   // With RAF, we cap at 60Hz, the browser rate-limits on its own.
   const assistantFlushRafRef = useRef<number | null>(null);
+  // Ref mirror of `effectiveModel` (state) so flushAssistantBuf — called from
+  // SSE handlers whose closure would see a stale state value — can stamp the
+  // finalized assistant bubble with the model that actually produced it.
+  const effectiveModelRef = useRef<string | null>(null);
 
   // Tokens for optimistically-rendered user messages. `send` pushes the
   // trimmed content before the POST so the bubble + 'thinking' pill appear
@@ -407,6 +411,7 @@ export function useClaudeSessionStream(
     // server-side). Null on first attach (no turn yet) or on old agents. The
     // SSE will deliver it on the next turn either way.
     setEffectiveModel(r.effectiveModel ?? null);
+    effectiveModelRef.current = r.effectiveModel ?? null;
     setSessionMeta(r.session);
     // Interaction queues — we inject the sessionId required by the shared
     // type (the API doesn't return it by default).
@@ -726,6 +731,10 @@ export function useClaudeSessionStream(
       setMessages((prev) => [...prev, {
         id: 'a' + Date.now() + Math.random(), role: 'assistant',
         content: finalContent, createdAt: Math.floor(Date.now() / 1000),
+        // Per-message model attribution (mirror of the server-side stamp in
+        // sessionOps._flushAssistant — the next refetch replaces this bubble
+        // with the DB row carrying the authoritative value).
+        model: effectiveModelRef.current,
       }]);
       setCurrentAssistant('');
     };
@@ -894,6 +903,13 @@ export function useClaudeSessionStream(
           // (extracted from AssistantMessage.model). Display in the badge
           // when it differs from the configured `model` field.
           if (typeof ev.model === 'string' && ev.model.length > 0) {
+            // Mirror the server: text buffered BEFORE a mid-turn model switch
+            // (fallback kicking in) was produced by the PREVIOUS model —
+            // finalize it under the old label before adopting the new one.
+            if (effectiveModelRef.current && effectiveModelRef.current !== ev.model) {
+              flushAssistantBuf();
+            }
+            effectiveModelRef.current = ev.model;
             setEffectiveModel(ev.model);
           }
           break;
