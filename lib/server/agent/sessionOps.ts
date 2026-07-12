@@ -563,6 +563,28 @@ export class SessionStream {
         this._persist('event', { type: 'todo_update', todos: ev.todos });
         this._broadcast({ type: 'todo_update', todos: ev.todos });
         break;
+      case 'bg_task': {
+        // Background-task lifecycle (agent >= 0.13.0): started / updated /
+        // finished, from the SDK's Task*Message stream. Persist as an 'event'
+        // row so rebuildStateFromMessages reconstructs the BgTasks registry
+        // after any refetch, and broadcast for the live path. Not rendered as
+        // a chat bubble (the assistant's own follow-up text tells the story);
+        // high-volume routing (focused conn) like the rest of the turn stream.
+        const payload = {
+          type: 'bg_task' as const,
+          kind: ev.kind,
+          taskId: ev.task_id,
+          ...(ev.description !== undefined ? { description: ev.description } : {}),
+          ...(ev.tool_use_id !== undefined ? { toolUseId: ev.tool_use_id } : {}),
+          ...(ev.task_type !== undefined ? { taskType: ev.task_type } : {}),
+          ...(ev.status !== undefined ? { status: ev.status } : {}),
+          ...(ev.output_file !== undefined ? { outputFile: ev.output_file } : {}),
+          ...(ev.summary !== undefined ? { summary: ev.summary } : {}),
+        };
+        this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
       case 'edit_snapshot':
         this._persist('edit_snapshot', { type: 'edit_snapshot', phase: ev.phase, tool_use_id: ev.tool_use_id, file_path: ev.file_path, content: ev.content, size: ev.size, truncated: ev.truncated });
         this._broadcast({ type: 'edit_snapshot', phase: ev.phase, tool_use_id: ev.tool_use_id, file_path: ev.file_path, content: ev.content, size: ev.size, truncated: ev.truncated });

@@ -797,8 +797,35 @@ class AgentSession:
                             todos = tinput.get("todos") if isinstance(tinput, dict) else None
                             if todos is not None:
                                 out.append({"event": "todo_update", "todos": todos})
+            elif ev_type in ("TaskStartedMessage", "TaskUpdatedMessage", "TaskNotificationMessage"):
+                # First-class background-task lifecycle messages (SDK ≥ 0.2.11x):
+                # started (Bash run_in_background / background subagent spawned),
+                # updated (status change), notification (finished — the CLI
+                # re-invokes the model right after; the continuous reader
+                # streams that turn live). Forward a normalized `bg_task`
+                # event keyed by task_id; the hub persists it and the UI keeps
+                # a per-session registry (BgTasks bar above the input).
+                kind = {
+                    "TaskStartedMessage": "started",
+                    "TaskUpdatedMessage": "updated",
+                    "TaskNotificationMessage": "finished",
+                }[ev_type]
+                payload: dict[str, Any] = {"kind": kind}
+                for key in ("task_id", "description", "tool_use_id",
+                            "task_type", "status", "output_file", "summary"):
+                    v = getattr(ev, key, None)
+                    if v is not None:
+                        payload[key] = v
+                if payload.get("task_id"):
+                    out.append({"event": "bg_task", **payload})
             elif ev_type == "UserMessage":
-                for block in getattr(ev, "content", []) or []:
+                content_attr = getattr(ev, "content", None)
+                if isinstance(content_attr, str):
+                    # Plain-string user content (synthetic CLI injections,
+                    # system reminders) — nothing to forward; iterating a str
+                    # would yield characters, so normalize to an empty list.
+                    content_attr = []
+                for block in content_attr or []:
                     bt = type(block).__name__
                     if bt == "ToolResultBlock":
                         content = getattr(block, "content", "")
@@ -876,6 +903,27 @@ class AgentSession:
             out.append({"event": "error", "msg": f"translate: {e}"})
         return out
 
+    def _begin_turn(self) -> None:
+        """Mark the start of a turn — from USER INPUT or a SPONTANEOUS CLI
+        re-invoke (a background task completed and the harness woke the model
+        with a <task-notification>). Resets the per-turn usage counters
+        (§14.50) and flips to 'thinking'. Idempotent while already thinking:
+        steering input sent mid-turn must not reset the counters or re-emit."""
+        if self.status == "thinking":
+            return
+        self._usage_in = self._usage_cache = 0
+        self._usage_committed_out = self._usage_cur_out = 0
+        self._usage_last_emit = 0.0
+        self.status = "thinking"
+        self._emit("status", status="thinking")
+
+    def _end_turn(self) -> None:
+        """Turn finished (ResultMessage seen). Back to idle 'active'."""
+        if self.status != "thinking":
+            return
+        self.status = "active"
+        self._emit("status", status="active")
+
     # ── Main loop ────────────────────────────────────────────────────────────
     async def _run(self) -> None:
         # SDK mode:
@@ -936,31 +984,88 @@ class AgentSession:
                 self._emit("mode_changed", mode=self.permission_mode)
                 self._emit("status", status="active")
                 self._ready_evt.set()
-                while True:
-                    msg = await self._stdin_queue.get()
-                    if msg is None:
-                        # Stop requested
-                        break
-                    if msg.get("type") != "user_message":
-                        continue
-                    content = msg.get("content") or ""
-                    # Reset the per-turn token counters (§14.50).
-                    self._usage_in = self._usage_cache = 0
-                    self._usage_committed_out = self._usage_cur_out = 0
-                    self._usage_last_emit = 0.0
-                    self.status = "thinking"
-                    self._emit("status", status="thinking")
+
+                # ── Continuous stream reader ─────────────────────────────────
+                # The CLI can start a turn WITHOUT user input: when a
+                # background task (Bash run_in_background / subagent) finishes,
+                # the harness re-invokes the model with a <task-notification>.
+                # The old loop only read the stream inside receive_response()
+                # during a user query, so those spontaneous messages sat
+                # UNREAD in the transport until the next user input flushed
+                # them all at once ("send a message to see what the agent
+                # wanted to tell you"). The reader below owns the stream 100%
+                # of the time; query() only ever SENDS. Turn boundaries:
+                #   - any Assistant/Stream/User message while 'active'
+                #     → _begin_turn (spontaneous turn starts)
+                #   - ResultMessage → _translate emits usage-final + stop,
+                #     then _end_turn flips back to 'active'
+                async def _read_stream() -> None:
                     try:
-                        await client.query(content)
-                        async for ev in client.receive_response():
+                        async for ev in client.receive_messages():
+                            ev_type = type(ev).__name__
+                            if ev_type in ("AssistantMessage", "StreamEvent",
+                                           "UserMessage", "TaskNotificationMessage"):
+                                # (SystemMessage excluded: the init frame at
+                                # connect must not fake a turn start.
+                                # TaskNotificationMessage included: a finished
+                                # background task re-invokes the model — flip
+                                # to 'thinking' as early as possible.)
+                                self._begin_turn()
                             for out in self._translate(ev):
                                 self._emit_to_server({
                                     "session_id": self.session_id, **out
                                 })
+                            if ev_type == "ResultMessage":
+                                self._end_turn()
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as e:
-                        self._emit("error", msg=self._format_err("query", e))
-                    self.status = "active"
-                    self._emit("status", status="active")
+                        self._emit("error", msg=self._format_err("stream", e))
+                        # Unblock the stdin loop so the session winds down
+                        # instead of sitting deaf forever.
+                        await self._stdin_queue.put(None)
+
+                # Very old SDKs (< receive_messages) fall back to the legacy
+                # per-query consumption — background re-invokes stay deferred
+                # there (upgrade the SDK, cf. CLAUDE.md §14.53).
+                use_reader = hasattr(client, "receive_messages")
+                reader_task = (
+                    asyncio.create_task(
+                        _read_stream(), name=f"reader-{self.session_id}"
+                    ) if use_reader else None
+                )
+
+                try:
+                    while True:
+                        msg = await self._stdin_queue.get()
+                        if msg is None:
+                            # Stop requested (or the reader died)
+                            break
+                        if msg.get("type") != "user_message":
+                            continue
+                        content = msg.get("content") or ""
+                        self._begin_turn()
+                        try:
+                            await client.query(content)
+                            if not use_reader:
+                                async for ev in client.receive_response():
+                                    for out in self._translate(ev):
+                                        self._emit_to_server({
+                                            "session_id": self.session_id, **out
+                                        })
+                                self._end_turn()
+                        except Exception as e:
+                            self._emit("error", msg=self._format_err("query", e))
+                            # No turn will stream after a failed send — don't
+                            # leave the pill stuck on 'thinking'.
+                            self._end_turn()
+                finally:
+                    if reader_task is not None:
+                        reader_task.cancel()
+                        try:
+                            await reader_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
         except Exception as e:
             self.status = "error"
             self._error_msg = self._format_err("client", e)

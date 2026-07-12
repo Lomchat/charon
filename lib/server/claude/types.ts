@@ -26,9 +26,20 @@ export type BridgeEvent =
   | { type: 'effort_changed'; effort: EffortLevel | null; appliedAtNextStart: boolean }
   // effective_model = what Anthropic ACTUALLY billed for the last
   // AssistantMessage. Differs from `model` (= configured value) when the
-  // user picked an alias, or when fallback_model kicked in. Transient
-  // runtime info — no DB persistence. Emitted on change only.
+  // user picked an alias, or when fallback_model kicked in. Emitted on
+  // change only; persisted (claude_sessions.effective_model + per-row
+  // claude_session_messages.model stamp, migration 0020).
   | { type: 'effective_model'; model: string }
+  // bg_task = background-task lifecycle (agent >= 0.13.0, SDK Task*Message):
+  // started / updated / finished. Drives the BgTasks bar above the chat
+  // input. Persisted as a role='event' row; high-volume routing (focused conn).
+  | {
+      type: 'bg_task';
+      kind: 'started' | 'updated' | 'finished';
+      taskId: string;
+      description?: string; toolUseId?: string; taskType?: string;
+      status?: string; outputFile?: string; summary?: string;
+    }
   // usage = live token counter for the current turn (§14.50). Transient
   // (broadcast-only, high-volume → focused conn). `final:true` = turn totals
   // (duration_ms, cost_usd from the ResultMessage).

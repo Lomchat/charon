@@ -6,6 +6,7 @@ import type { PermissionMode } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
+import BgTasksBar from './BgTasksBar';
 import QuestionCard from './QuestionCard';
 import ExitPlanCard from './ExitPlanCard';
 import type {
@@ -85,7 +86,7 @@ export default function ClaudeSessionView({
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits,
+    toolCalls, todos, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
@@ -491,6 +492,11 @@ export default function ClaudeSessionView({
         {status === 'thinking' && (
           <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} tokens={liveUsage?.output ?? null} />
         )}
+
+        {/* Background tasks (Bash run_in_background / bg subagents): slim
+            status line above the input, click → details modal. Renders null
+            when the session has no live/recent background work. */}
+        <BgTasksBar tasks={bgTasks} />
 
         {/* Input area — replaced by resume CTA if disconnected, or
             QuestionCard/ExitPlanCard/PermissionCard if pending. */}

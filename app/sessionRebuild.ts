@@ -11,6 +11,10 @@ import type {
   Msg, ToolCallEntry, Todo, EditSnapshot,
 } from './sessionTypes';
 import type { WorkerStatus } from '@/lib/server/claude/types';
+import {
+  applyBgTaskEvent, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
+  type BgTask, type BgLaunchCandidate,
+} from './bgTasks';
 
 // Shape of a message as it comes from the `GET /api/claude/sessions/[id]` API.
 // Deliberately permissive (the `role` values in the DB are free-form strings).
@@ -30,6 +34,9 @@ export type RebuiltSessionState = {
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
   files: Set<string>;
+  // Background tasks (Bash run_in_background / bg subagents) rebuilt from the
+  // persisted bg_task 'event' rows — drives the BgTasks bar. cf. app/bgTasks.ts.
+  bgTasks: BgTask[];
 };
 
 export function rebuildStateFromMessages(
@@ -43,7 +50,12 @@ export function rebuildStateFromMessages(
     todos: [],
     edits: new Map(),
     files: new Set(),
+    bgTasks: [],
   };
+  // Background-task registry, rebuilt from bg_task 'event' rows; the Bash
+  // launch tool_use (run_in_background) contributes the command string.
+  const bgMap = new Map<string, BgTask>();
+  const bgLaunches = new Map<string, BgLaunchCandidate>();
   // SDK tool-use id (toolu_…) → index in out.toolCalls. Lets us re-pair the
   // persisted `tool_result` rows back onto their tool call so `result` is
   // restored — exactly what the live SSE path does. Without it every rebuilt
@@ -74,6 +86,7 @@ export function rebuildStateFromMessages(
       try {
         const ev = JSON.parse(m.content);
         if (ev.type === 'todo_update') out.todos = (ev.todos ?? []);
+        if (ev.type === 'bg_task') applyBgTaskEvent(bgMap, ev, m.createdAt, bgLaunches);
         if (ev.type === 'thinking') {
           out.messages.push({
             id: 'm' + m.id, role: 'thinking',
@@ -106,6 +119,15 @@ export function rebuildStateFromMessages(
         if (typeof parsed.id === 'string') toolIdxBySdkId.set(parsed.id, idx);
         const fp = parsed.input?.file_path;
         if (fp) out.files.add(String(fp));
+        // Background launch → keep the command for the bg_task 'started'
+        // correlation (tool_use_id). cf. app/bgTasks.ts.
+        if (typeof parsed.id === 'string' && isBgLaunchToolUse(parsed.name, parsed.input)) {
+          const inp: any = parsed.input;
+          bgLaunches.set(parsed.id, {
+            command: typeof inp?.command === 'string' ? inp.command : null,
+            description: typeof inp?.description === 'string' ? inp.description : null,
+          });
+        }
       }
       out.messages.push({
         id: 'm' + m.id, role: m.role,
@@ -142,5 +164,11 @@ export function rebuildStateFromMessages(
       model: m.model ?? null,
     });
   }
+  // A non-running session cannot notify anymore: its CLI process (and the
+  // background children) are gone — running tasks are stale, not running.
+  if (status === 'sleeping' || status === 'error' || status === 'killed') {
+    markRunningBgTasksStale(bgMap);
+  }
+  out.bgTasks = bgTasksToArray(bgMap);
   return out;
 }

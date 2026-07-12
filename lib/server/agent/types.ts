@@ -92,8 +92,25 @@ export type AgentEvent = (
   // most). Useful when the configured `model` is an alias ('opus' → real id)
   // or when fallback_model kicked in. Decouples reality from what the LLM
   // claims about itself in text (which is unreliable — training cutoff).
-  // Transient: not persisted in DB.
+  // Persisted: claude_sessions.effective_model + stamped per assistant row
+  // (claude_session_messages.model, migration 0020).
   | { event: 'effective_model'; session_id: string; model: string }
+  // bg_task (agent >= 0.13.0): normalized background-task lifecycle, from the
+  // SDK's first-class TaskStartedMessage / TaskUpdatedMessage /
+  // TaskNotificationMessage (SDK ≥ 0.2.11x). kind: 'started' (Bash
+  // run_in_background / background subagent spawned — tool_use_id links to
+  // the launching tool call), 'updated' (status change), 'finished' (task
+  // completed; the CLI re-invokes the model right after and the agent's
+  // continuous reader streams that turn live). The hub persists each as a
+  // role='event' row {type:'bg_task'} and the client keeps a per-session
+  // registry (BgTasks bar). Durable (has seq) → replayed.
+  | {
+      event: 'bg_task'; session_id: string;
+      kind: 'started' | 'updated' | 'finished';
+      task_id: string;
+      description?: string; tool_use_id?: string; task_type?: string;
+      status?: string; output_file?: string; summary?: string;
+    }
   // usage (agent >= 0.11.0): live token counter for the CURRENT turn, emitted
   // broadcast-only (transient, no seq) and throttled (~0.6s). `final:true`
   // carries the turn totals (duration_ms, cost_usd) from the ResultMessage. §14.50.

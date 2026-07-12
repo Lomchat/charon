@@ -6,6 +6,10 @@ import type {
   PermissionRequest, PendingQuestion, PendingExitPlan,
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
+import {
+  applyBgTaskEvent, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
+  type BgTask, type BgLaunchCandidate,
+} from './bgTasks';
 import type {
   WorkerEvent, WorkerStatus, PermissionMode,
 } from '@/lib/server/claude/types';
@@ -165,6 +169,10 @@ export type ClaudeSessionStreamState = {
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
   files: Set<string>;
+  // Background tasks (Bash run_in_background / bg subagents) — fed by the
+  // bg_task SSE events + rebuilt from history on every refetch. Drives the
+  // BgTasksBar above the chat input. cf. app/bgTasks.ts.
+  bgTasks: BgTask[];
   // Pending interaction queues
   permQueue: PermissionRequest[];
   questionQueue: PendingQuestion[];
@@ -261,6 +269,7 @@ export function useClaudeSessionStream(
   const [todos, setTodos] = useState<Todo[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
   const [files, setFiles] = useState<Set<string>>(new Set());
+  const [bgTasks, setBgTasks] = useState<BgTask[]>([]);
   const [permQueue, setPermQueue] = useState<PermissionRequest[]>([]);
   const [questionQueue, setQuestionQueue] = useState<PendingQuestion[]>([]);
   const [exitPlanQueue, setExitPlanQueue] = useState<PendingExitPlan[]>([]);
@@ -293,6 +302,12 @@ export function useClaudeSessionStream(
   // SSE handlers whose closure would see a stale state value — can stamp the
   // finalized assistant bubble with the model that actually produced it.
   const effectiveModelRef = useRef<string | null>(null);
+  // Background-task registry (cf. app/bgTasks.ts): the ref map is the working
+  // copy patched by SSE events; `bgTasks` state is its sorted-array projection
+  // (what the BgTasksBar renders). Launch candidates map the Bash
+  // run_in_background tool_use id → command string for the 'started' event.
+  const bgTasksRef = useRef<Map<string, BgTask>>(new Map());
+  const bgLaunchesRef = useRef<Map<string, BgLaunchCandidate>>(new Map());
 
   // Tokens for optimistically-rendered user messages. `send` pushes the
   // trimmed content before the POST so the bubble + 'thinking' pill appear
@@ -379,6 +394,11 @@ export function useClaudeSessionStream(
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
     setTodos(rebuilt.todos);
+    // Background-task registry: replace wholesale (the rebuild IS the source
+    // of truth — bg_task rows are persisted). Keep the live ref map in sync
+    // so subsequent SSE events patch on top of the rebuilt state.
+    bgTasksRef.current = new Map(rebuilt.bgTasks.map((t) => [t.taskId, { ...t }]));
+    setBgTasks(rebuilt.bgTasks);
     // Merge (not replace): the rebuilt edits carry no content (the GET strips
     // edit_snapshot content — CLAUDE.md §14 gotcha 41). Keep already-loaded
     // diff content; the auto-load effect refills any stripped skeletons.
@@ -763,6 +783,12 @@ export function useClaudeSessionStream(
             break;
           }
           setStatus(ev.status);
+          // The CLI process died with the session: its background children
+          // can never notify again — mark running tasks stale.
+          if ((ev.status === 'sleeping' || ev.status === 'error')
+              && markRunningBgTasksStale(bgTasksRef.current)) {
+            setBgTasks(bgTasksToArray(bgTasksRef.current));
+          }
           break;
         case 'user_echo': {
           // If we already rendered this message optimistically in `send`,
@@ -787,6 +813,14 @@ export function useClaudeSessionStream(
         case 'tool_use': {
           flushAssistantBuf();
           const filePath = (ev.input && ev.input.file_path) ? String(ev.input.file_path) : null;
+          // Background launch → remember the command for the upcoming
+          // bg_task 'started' event (correlated by tool_use_id).
+          if (isBgLaunchToolUse(ev.name, ev.input)) {
+            bgLaunchesRef.current.set(ev.id, {
+              command: typeof ev.input?.command === 'string' ? ev.input.command : null,
+              description: typeof ev.input?.description === 'string' ? ev.input.description : null,
+            });
+          }
           setMessages((prev) => [...prev, {
             id: 'tu' + ev.id + Math.random(), role: 'tool_use',
             content: JSON.stringify({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input }),
@@ -817,6 +851,13 @@ export function useClaudeSessionStream(
           break;
         case 'stop':
           flushAssistantBuf();
+          break;
+        case 'bg_task':
+          // Background-task lifecycle (started / updated / finished) — patch
+          // the registry and re-project the sorted array for the bar.
+          if (applyBgTaskEvent(bgTasksRef.current, ev, Math.floor(Date.now() / 1000), bgLaunchesRef.current)) {
+            setBgTasks(bgTasksToArray(bgTasksRef.current));
+          }
           break;
         case 'error':
           setError({ msg: ev.msg });
@@ -1216,7 +1257,7 @@ export function useClaudeSessionStream(
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits, files,
+    toolCalls, todos, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
@@ -1228,7 +1269,7 @@ export function useClaudeSessionStream(
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits, files,
+    toolCalls, todos, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
