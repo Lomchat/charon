@@ -3116,7 +3116,24 @@
   /* viewport-fit=cover lets content reach the notch — pad the header back in. */
   .claude-head { padding-top: max(10px, env(safe-area-inset-top)); }
 
-  .claude-bar           { padding: 8px 12px; }
+  /* Header bar on phones: it used to overflow (fixed single row → the
+     model badge + buttons were cut off and unreachable). Let it WRAP:
+     the session name takes its own full-width line (ellipsized), the
+     action buttons + model badge flow onto the next line(s). */
+  .claude-bar {
+    padding: 8px 12px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .claude-bar .bar-name {
+    flex: 1 1 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .claude-bar button { padding: 5px 9px; letter-spacing: 0.12em; }
+  /* The badge group loses its margin-left:auto push (inline style) once
+     wrapped — cap its width so the model id ellipsizes instead of
+     overflowing the row. */
+  .claude-bar .me-badges { margin-left: 0 !important; max-width: 100%; }
   .claude-chat          { padding: 14px 12px; }
   .thinking-bar         { padding: 8px 12px; }
   .claude-pending-zone  { padding-left: 10px; padding-right: 10px; }

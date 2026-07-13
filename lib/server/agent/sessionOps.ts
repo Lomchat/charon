@@ -17,6 +17,7 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel } from './types';
+import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
 
@@ -1369,6 +1370,54 @@ export async function sleepSession(sessionId: string): Promise<void> {
   } catch (e) {
     console.warn(`[sessionOps] sleep ${sessionId}: agent unreachable, DB marked anyway`);
   }
+}
+
+/**
+ * Restart the SDK session IN PLACE: awaited sleep, then a normal resume.
+ * THE way to apply a deferred model/effort change immediately (§14.35 —
+ * the SDK binds both at client construction, so `set_model`/`set_effort`
+ * only take effect at the next start). The "apply now" ↻ button next to
+ * the pending badge calls this.
+ *
+ * Deliberately different from sleepSession(): that one fires the agent RPC
+ * fire-and-forget (UI snappiness). Here we MUST await it — the agent's
+ * `sleep_session` handler returns only after the SDK teardown completes,
+ * and resume_session on a still-running session is a NOOP (§14.36): an
+ * unawaited sleep would make the restart silently apply nothing.
+ *
+ * An already-stopped/unknown session agent-side (-32000/-32001) is fine:
+ * we proceed straight to resume (which also handles the start_session
+ * fallback and re-reads model/fallback/effort from DB).
+ */
+export async function restartSession(sessionId: string): Promise<SessionStream> {
+  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  if (!row) throw new Error(`session ${sessionId} not found`);
+
+  const wasRunning = ['active', 'thinking', 'starting'].includes(row.status);
+  if (wasRunning) {
+    const client = getAgentClientForVpsId(row.vpsId);
+    try {
+      await client.call('sleep_session', { session_id: sessionId });
+    } catch (e) {
+      if (e instanceof AgentRpcError && (e.code === -32000 || e.code === -32001)) {
+        // Session already gone agent-side — nothing to stop, resume will
+        // relaunch it via start_session(claude_session_id=…).
+      } else {
+        throw e; // agent unreachable / timeout → surface to the caller
+      }
+    }
+    // Bookkeeping between the two phases (mirrors sleepSession minus
+    // sleepRequested — the user wants it RUNNING; setting the durable
+    // sleep intent here could race reconcile into re-sleeping it).
+    try {
+      db.update(claudeSessions).set({ status: 'sleeping' })
+        .where(eq(claudeSessions.id, sessionId)).run();
+    } catch {}
+    const stream = streams.get(sessionId);
+    if (stream) stream.status = 'sleeping';
+  }
+
+  return resumeSession(sessionId);
 }
 
 export async function forceStopSession(sessionId: string): Promise<void> {

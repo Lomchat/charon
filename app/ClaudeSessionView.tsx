@@ -91,7 +91,7 @@ export default function ClaudeSessionView({
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send: streamSend, interrupt, forceStop, setMode, setModel, setEffort,
-    doSleep, doResume,
+    doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
@@ -378,6 +378,7 @@ export default function ClaudeSessionView({
             effectiveModel={effectiveModel}
             claudeSessionId={sessionMeta?.claudeSessionId ?? null}
             onSetModel={setModel} onSetEffort={setEffort}
+            onApplyNow={doRestart}
           />
         </div>
 
@@ -747,7 +748,7 @@ function ModelEffortBadges({
   modelPendingApply, effortPendingApply,
   effectiveModel,
   claudeSessionId,
-  onSetModel, onSetEffort,
+  onSetModel, onSetEffort, onApplyNow,
 }: {
   model: string | null;
   fallbackModel: string | null;
@@ -768,6 +769,9 @@ function ModelEffortBadges({
   claudeSessionId: string | null;
   onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
   onSetEffort: (e: ClaudeEffortLevel | null) => Promise<void>;
+  /** In-place SDK restart (awaited sleep + resume) — shown as a ↻ "apply
+   *  now" button when a model/effort change is pending (§14.35). */
+  onApplyNow?: () => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
   // Local edit buffers — only committed on Save so a half-typed model
@@ -777,6 +781,9 @@ function ModelEffortBadges({
   const [draftFallback, setDraftFallback] = useState(fallbackModel ?? '');
   const [draftEffort, setDraftEffort] = useState<'' | ClaudeEffortLevel>(effort ?? '');
   const [saving, setSaving] = useState(false);
+  // "apply now" (↻) in flight — the restart takes a few seconds (SDK
+  // teardown drains the in-flight turn, then the fresh client boots).
+  const [applying, setApplying] = useState(false);
   useEffect(() => {
     if (open) {
       setDraftModel(model ?? '');
@@ -852,9 +859,10 @@ function ModelEffortBadges({
   const title = titleParts.join('\n');
 
   return (
-    <span style={{ position: 'relative', marginLeft: 'auto' }}>
+    <span className="me-badges" style={{ position: 'relative', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
       <button
         type="button"
+        className="me-badge-main"
         onClick={() => setOpen((v) => !v)}
         title={title}
         style={{
@@ -871,6 +879,11 @@ function ModelEffortBadges({
           color: mismatch ? 'var(--crimson, #c94a4a)' : anyPending ? 'var(--gold, #b8964b)' : 'inherit',
           cursor: 'pointer',
           opacity: model || effort ? 1 : 0.6,
+          minWidth: 0,
+          maxWidth: '100%',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
         }}
       >
         {modelLabel} · {effortLabel}
@@ -889,6 +902,36 @@ function ModelEffortBadges({
         )}
         {anyPending && <span style={{ marginLeft: 6 }}>⏳</span>}
       </button>
+      {/* "Apply now": in-place SDK restart (sleep + resume) so the pending
+          model/effort takes effect immediately instead of at the next manual
+          cycle. Only rendered while something is actually pending. */}
+      {anyPending && onApplyNow && (
+        <button
+          type="button"
+          disabled={applying}
+          onClick={async () => {
+            if (applying) return;
+            setApplying(true);
+            try { await onApplyNow(); } finally { setApplying(false); }
+          }}
+          title="apply now — restarts the SDK session (sleep + resume, a few seconds)"
+          aria-label="apply pending model/effort now"
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--gold, #b8964b)',
+            color: 'var(--gold, #b8964b)',
+            padding: '2px 7px',
+            borderRadius: 4,
+            fontSize: 12,
+            lineHeight: '15px',
+            cursor: applying ? 'wait' : 'pointer',
+            flexShrink: 0,
+            animation: applying ? 'cpulse 1.2s infinite ease-in-out' : undefined,
+          }}
+        >
+          ↻
+        </button>
+      )}
       {open && (
         <div
           ref={popRef}
@@ -901,6 +944,9 @@ function ModelEffortBadges({
             borderRadius: 6,
             padding: 12,
             minWidth: 320,
+            // Phones: never wider than the viewport (the popover is
+            // right-anchored inside the header bar).
+            maxWidth: 'calc(100vw - 24px)',
             zIndex: 50,
             display: 'flex',
             flexDirection: 'column',

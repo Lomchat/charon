@@ -209,6 +209,9 @@ export type ClaudeSessionStreamActions = {
   setEffort(effort: ClaudeEffortLevel | null): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
+  // In-place SDK restart (awaited sleep+resume) — applies deferred
+  // model/effort immediately (§14.35).
+  doRestart(): Promise<void>;
   /** Permanent deletion. The caller MUST have confirmed on the UI side. */
   doDelete(): Promise<void>;
   respondPermission(permId: string, allow: boolean, always?: boolean): Promise<void>;
@@ -1206,6 +1209,27 @@ export function useClaudeSessionStream(
     }
   }, [sessionId]);
 
+  // In-place SDK restart (awaited sleep + resume server-side) — the "apply
+  // now" ↻ button next to the pending model/effort badge. The POST returns
+  // once the fresh SDK client is up, so the deferred config is applied by
+  // the time we clear the ⏳ flags (the refetch after streamKey confirms).
+  const doRestart = useCallback(async () => {
+    setError(null);
+    setStatus('starting');
+    lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
+    try {
+      await api.restartClaudeSession(sessionId);
+      setModelPendingApply(false);
+      setEffortPendingApply(false);
+      setStreamKey((k) => k + 1);
+    } catch (e) {
+      // Sleep may have landed while resume failed → 'sleeping' is the safe
+      // assumption; the 5s poll reconciles the real status either way.
+      setStatus('sleeping');
+      setError({ msg: String((e as Error)?.message ?? e) });
+    }
+  }, [sessionId]);
+
   // Permanent deletion (DB cascade on the server side). The `onKilled` callback
   // is kept as-is for post-deletion navigation (back to the session list).
   // No confirm() here — it's up to the caller to ask for confirmation before
@@ -1262,7 +1286,7 @@ export function useClaudeSessionStream(
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode, setModel, setEffort,
-    doSleep, doResume, doDelete,
+    doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   }), [
@@ -1274,7 +1298,7 @@ export function useClaudeSessionStream(
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode, setModel, setEffort,
-    doSleep, doResume, doDelete,
+    doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
   ]);

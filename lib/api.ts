@@ -242,6 +242,12 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/sleep`),
   resumeClaudeSession: (id: string) =>
     send<ResumeClaudeSessionResponse>('POST', `/api/claude/sessions/${id}/resume`),
+  // In-place SDK restart (awaited sleep + resume) — applies a deferred
+  // model/effort change immediately (§14.35). The agent drains the in-flight
+  // turn before answering the sleep (≤~5s) and the resume awaits the fresh
+  // client's ready — give it a generous timeout.
+  restartClaudeSession: (id: string) =>
+    send<ResumeClaudeSessionResponse>('POST', `/api/claude/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
   sendClaudeInput: (id: string, content: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { content }),
   interruptClaude: (id: string) =>
