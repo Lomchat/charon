@@ -1,6 +1,6 @@
 import 'server-only';
-import { and, eq, inArray } from 'drizzle-orm';
-import { db, vps as vpsTable, claudeSessions, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
+import { and, asc, eq, gt, inArray, like } from 'drizzle-orm';
+import { db, vps as vpsTable, claudeSessions, claudeSessionMessages, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { isVersionOutdated } from '@/lib/version';
 import { getSetting, setSetting, getSettingBool } from './settings';
@@ -56,17 +56,65 @@ export function armSdkAutoUpdate(): void {
   console.log('[sdkWatch] armed (first check in ~2min, then every 6h)');
 }
 
-/** True if the VPS has anything a restart would disturb: a running/starting
- *  session or an unanswered permission/question. Cheap indexed probes. */
+// A VPS whose sessions merely EXIST must still auto-update: the update flow
+// sleeps + resumes running sessions transparently (runAgentUpdateFlow, §14.51/
+// §14.53). The original gate treated any status='active' session (= alive but
+// idle at the prompt) as busy — on a fleet of always-on sessions that meant
+// "never idle, never auto-updated". Busy now means something is ACTUALLY
+// happening that a restart would break:
+//   1. a turn in flight (thinking) or a session booting (starting);
+//   2. an unanswered permission/question (the restart would orphan it);
+//   3. a RUNNING background task (its process dies with the CLI, §14.54);
+//   4. recent activity — any message row in the last QUIET_WINDOW_S: the
+//      user is actively working this VPS, don't restart under their feet
+//      even between turns.
+const QUIET_WINDOW_S = 30 * 60;
+// Ignore "running" bg tasks whose start is older than this — a lost
+// 'finished' event would otherwise wedge the VPS as forever-busy.
+const BG_TASK_MAX_AGE_S = 24 * 60 * 60;
+
+/** True if any bg task of this session looks currently RUNNING (per the
+ *  persisted bg_task event rows, same semantics as app/bgTasks.ts). */
+function hasRunningBgTask(sessionId: string, nowS: number): boolean {
+  const rows = db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt })
+    .from(claudeSessionMessages)
+    .where(and(
+      eq(claudeSessionMessages.sessionId, sessionId),
+      eq(claudeSessionMessages.role, 'event'),
+      like(claudeSessionMessages.content, '%"bg_task"%'),
+    ))
+    .orderBy(asc(claudeSessionMessages.id))
+    .all();
+  const running = new Map<string, number>(); // taskId → startedAt
+  for (const r of rows) {
+    try {
+      const ev = JSON.parse(r.content);
+      if (ev?.type !== 'bg_task' || !ev.taskId) continue;
+      if (ev.kind === 'finished'
+          || (ev.kind === 'updated' && /kill|fail|complet|cancel|abort|done|success/i.test(ev.status ?? ''))) {
+        running.delete(ev.taskId);
+      } else {
+        if (!running.has(ev.taskId)) running.set(ev.taskId, r.createdAt);
+      }
+    } catch {}
+  }
+  for (const startedAt of running.values()) {
+    if (nowS - startedAt < BG_TASK_MAX_AGE_S) return true;
+  }
+  return false;
+}
+
 function isVpsBusy(vpsId: string): boolean {
-  const active = db.select({ id: claudeSessions.id })
+  // 1. Turn in flight / session booting.
+  const working = db.select({ id: claudeSessions.id })
     .from(claudeSessions)
     .where(and(
       eq(claudeSessions.vpsId, vpsId),
-      inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+      inArray(claudeSessions.status, ['thinking', 'starting']),
     ))
     .limit(1).all();
-  if (active.length > 0) return true;
+  if (working.length > 0) return true;
+  // 2. Unanswered permission / question.
   const perm = db.select({ sid: claudePendingPermissions.sessionId })
     .from(claudePendingPermissions)
     .innerJoin(claudeSessions, eq(claudePendingPermissions.sessionId, claudeSessions.id))
@@ -78,7 +126,33 @@ function isVpsBusy(vpsId: string): boolean {
     .innerJoin(claudeSessions, eq(claudePendingQuestions.sessionId, claudeSessions.id))
     .where(and(eq(claudeSessions.vpsId, vpsId), eq(claudePendingQuestions.status, 'pending')))
     .limit(1).all();
-  return q.length > 0;
+  if (q.length > 0) return true;
+  // 3./4. probes only concern LIVE sessions (a sleeping session's bg tasks
+  // are already dead and its history is inert).
+  const live = db.select({ id: claudeSessions.id })
+    .from(claudeSessions)
+    .where(and(
+      eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.status, 'active'),
+    ))
+    .all();
+  if (live.length === 0) return false;
+  const ids = live.map((r) => r.id);
+  const nowS = Math.floor(Date.now() / 1000);
+  // 4. Recent activity across the VPS's live sessions.
+  const recent = db.select({ id: claudeSessionMessages.id })
+    .from(claudeSessionMessages)
+    .where(and(
+      inArray(claudeSessionMessages.sessionId, ids),
+      gt(claudeSessionMessages.createdAt, nowS - QUIET_WINDOW_S),
+    ))
+    .limit(1).all();
+  if (recent.length > 0) return true;
+  // 3. Running background task on any live session.
+  for (const sid of ids) {
+    if (hasRunningBgTask(sid, nowS)) return true;
+  }
+  return false;
 }
 
 async function tick(): Promise<void> {
@@ -134,7 +208,14 @@ async function tick(): Promise<void> {
     const failed: string[] = [];
     for (const v of outdated) {
       const key = `${v.id}@${latest}`;
-      if (state.attempted.has(key)) continue; // already tried this version this process — badge + button remain
+      if (state.attempted.has(key)) {
+        // Already attempted this exact version in this process (success or
+        // failure) — no hammering; a NEW version or a Charon restart
+        // re-enables. Logged so the tick output accounts for every
+        // outdated VPS (a silent skip reads as a bug in the journal).
+        console.log(`[sdkWatch] ${v.name}: ${latest} already attempted this process — skipped (badge/button remain)`);
+        continue;
+      }
       if (isVpsBusy(v.id)) {
         console.log(`[sdkWatch] ${v.name}: busy, skipped (retry next tick)`);
         skippedBusy.push(v.name);
@@ -151,6 +232,16 @@ async function tick(): Promise<void> {
         // (pyz fine, pip step failed — non-fatal in updateVpsAgent).
         failed.push(`${v.name}: ${(res.detail || 'sdk step failed').slice(-160)}`);
         console.warn(`[sdkWatch] ${v.name}: auto-update failed — ${res.detail}`);
+        // TRANSIENT network failures (this hub's outbound SSH flaps
+        // regularly) get another shot next tick — otherwise a single
+        // timeout would freeze the VPS on the old SDK until the NEXT
+        // version or a Charon restart. Genuine failures (pip broken,
+        // disk full…) stay deduped: badge + manual button remain.
+        if (/timed out|timeout|connection (refused|reset|lost|closed)|ssh:|no route|unreachable/i
+            .test(res.detail ?? '')) {
+          state.attempted.delete(key);
+          console.log(`[sdkWatch] ${v.name}: failure looks transient (network) — will retry next tick`);
+        }
       }
     }
 
