@@ -23,13 +23,13 @@ import { sendPushToAll } from './webPush';
  * permission/question on any of the VPS's sessions. Busy VPSes are skipped
  * and re-checked next tick; actual attempts (ok or failed) are deduped in
  * memory per (vpsId, version) so a persistently failing VPS isn't hammered
- * every 6h — lost on Charon restart, which is an acceptable retry.
+ * every tick — lost on Charon restart, which is an acceptable retry.
  *
  * Armed from seedInitialData() (same boot path as startTelegramBot), with a
  * globalThis singleton guard so HMR / repeated seeds never double-arm.
  */
 
-const TICK_MS = 6 * 60 * 60 * 1000; // 6h
+const TICK_MS = 30 * 60 * 1000; // 30min — cheap probes (SQLite + one PyPI CDN hit)
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000; // ~2min after boot (let agents hello first)
 
 type SdkWatchState = {
@@ -53,7 +53,7 @@ export function armSdkAutoUpdate(): void {
   state.firstRun.unref?.();
   state.timer = setInterval(() => { void tick(); }, TICK_MS);
   state.timer.unref?.();
-  console.log('[sdkWatch] armed (first check in ~2min, then every 6h)');
+  console.log(`[sdkWatch] armed (first check in ~2min, then every ${Math.round(TICK_MS / 60000)}min)`);
 }
 
 // A VPS whose sessions merely EXIST must still auto-update: the update flow
@@ -246,7 +246,7 @@ async function tick(): Promise<void> {
     }
 
     // Batch summary — only when something was actually attempted (a busy-only
-    // tick every 6h would just be noise; those VPSes stay badge-lit anyway).
+    // tick every 30min would just be noise; those VPSes stay badge-lit anyway).
     if (updated.length > 0 || failed.length > 0) {
       const parts: string[] = [`SDK auto-update (latest ${latest}):`];
       if (updated.length) parts.push(`✓ updated: ${updated.join(', ')}`);
