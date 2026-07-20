@@ -142,6 +142,9 @@ export function getModelsAndEfforts(): { models: KnownModel[]; efforts: string[]
  *  level isn't 400'd the moment it appears. (The agent is the final gate; it
  *  drops a level its SDK doesn't know, see §14 gotcha 35.) */
 export function isKnownEffort(v: string): boolean {
+  // ultracode is a Charon pseudo-effort (not a catalog level) — accept it
+  // explicitly (§14.56).
+  if (v === 'ultracode') return true;
   if ((CANONICAL_EFFORTS as string[]).includes(v)) return true;
   return getCatalogEffortUnion(getMergedModels()).includes(v);
 }

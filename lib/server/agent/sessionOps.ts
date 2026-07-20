@@ -45,7 +45,7 @@ function _resolveClaudeConfig(opts: {
 
 // Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
 // agent/charon_agent/session.py. Kept in sync with `EffortLevel` in types.ts.
-const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
 export function isValidEffort(v: string | null | undefined): v is EffortLevel {
   return typeof v === 'string' && (VALID_EFFORTS as readonly string[]).includes(v);
 }
@@ -581,9 +581,28 @@ export class SessionStream {
           ...(ev.status !== undefined ? { status: ev.status } : {}),
           ...(ev.output_file !== undefined ? { outputFile: ev.output_file } : {}),
           ...(ev.summary !== undefined ? { summary: ev.summary } : {}),
+          ...(ev.workflow_name !== undefined ? { workflowName: ev.workflow_name } : {}),
         };
         this._persist('event', payload);
         this._broadcast(payload);
+        break;
+      }
+      case 'bg_task_progress': {
+        // Transient per-task progress (§14.54): a running task's live usage +,
+        // for a Workflow run, the per-sub-agent fan-out. NO DB write (would
+        // bloat history like the old edit_snapshot egress incident, §14.41) —
+        // broadcast-only to the focused SSE conn (high-volume), mirroring
+        // `usage`. Never replayed; the client patches the live registry.
+        this._broadcast({
+          type: 'bg_task_progress',
+          taskId: ev.task_id,
+          ...(ev.description !== undefined ? { description: ev.description } : {}),
+          ...(ev.last_tool_name !== undefined ? { lastToolName: ev.last_tool_name } : {}),
+          ...(ev.workflow_name !== undefined ? { workflowName: ev.workflow_name } : {}),
+          ...(ev.usage !== undefined ? { usage: ev.usage } : {}),
+          ...(ev.agents !== undefined ? { agents: ev.agents } : {}),
+          ...(ev.phases !== undefined ? { phases: ev.phases } : {}),
+        });
         break;
       }
       case 'edit_snapshot':

@@ -2,6 +2,7 @@ import './globals.css';
 import './agent-ui.css';
 import type { Metadata, Viewport } from 'next';
 import NotificationClickHandler from './NotificationClickHandler';
+import ChunkReloadGuard from './ChunkReloadGuard';
 
 export const metadata: Metadata = {
   title: 'Charon',
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         {children}
+        <ChunkReloadGuard />
         <NotificationClickHandler />
       </body>
     </html>

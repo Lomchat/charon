@@ -1,6 +1,20 @@
 // Events exchanged between the Python bridge and the SessionWorker (and to the
 // SSE clients). We keep a wide TS union + guard helpers.
 
+// One sub-agent inside a running Workflow-tool task (from the SDK's raw
+// TaskProgressMessage.workflow_progress[]). Carried by bg_task_progress. §14.54.
+export type BgAgentProgress = {
+  index?: number | null;
+  label?: string | null;
+  state?: string | null;        // 'start' | 'done' | …
+  model?: string | null;
+  phaseTitle?: string | null;
+  tokens?: number | null;
+  toolCalls?: number | null;
+  durationMs?: number | null;
+  resultPreview?: string | null;
+};
+
 export type BridgeEvent =
   | { type: 'ready' }
   | { type: 'session_id'; id: string }
@@ -39,6 +53,18 @@ export type BridgeEvent =
       taskId: string;
       description?: string; toolUseId?: string; taskType?: string;
       status?: string; outputFile?: string; summary?: string;
+      workflowName?: string;
+    }
+  // bg_task_progress = transient (broadcast-only, focused conn) per-task
+  // progress. `agents[]` = a Workflow run's per-sub-agent fan-out. Never
+  // persisted; the client patches the live BgTasks registry in place. §14.54.
+  | {
+      type: 'bg_task_progress';
+      taskId: string;
+      description?: string; lastToolName?: string; workflowName?: string;
+      usage?: { tokens?: number | null; tool_uses?: number | null; duration_ms?: number | null };
+      agents?: BgAgentProgress[];
+      phases?: Array<{ index?: number | null; title?: string | null }>;
     }
   // usage = live token counter for the current turn (§14.50). Transient
   // (broadcast-only, high-volume → focused conn). `final:true` = turn totals
@@ -51,7 +77,7 @@ export type BridgeEvent =
 // lib/server/agent/types.ts as the source of truth for the protocol layer;
 // duplicated here as a local alias to avoid a circular import (this file
 // is imported by sessionOps.ts which itself imports from agent/types.ts).
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
 // Synthetic events that the worker fabricates itself (not received from the bridge).
 export type SyntheticEvent =

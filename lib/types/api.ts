@@ -318,7 +318,12 @@ export type SetClaudeModeResponse = { ok: true; mode: PermissionMode };
 
 // Mirrors EffortLevel in lib/server/agent/types.ts (and claude_agent_sdk).
 // Duplicated here to avoid client bundles pulling a `server-only` module.
-export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+// 'ultracode' = Charon pseudo-effort: xhigh + dynamic-workflow orchestration
+// (the Workflow tool on by default). NOT a model `capabilities.effort` level —
+// it's applied agent-side via options.settings (§14.56), so it's intentionally
+// absent from CANONICAL_EFFORTS (the model-capability baseline) and appended
+// explicitly by the picker / isKnownEffort.
+export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
 // Canonical fallback effort list, in increasing order. Used by the client
 // EffortPicker when no live capability data is available (no API key, alias,

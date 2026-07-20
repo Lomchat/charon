@@ -7,7 +7,7 @@ import type {
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
 import {
-  applyBgTaskEvent, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
+  applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
   type BgTask, type BgLaunchCandidate,
 } from './bgTasks';
 import type {
@@ -420,7 +420,7 @@ export function useClaudeSessionStream(
     const sess = r.session as typeof r.session & { model?: string | null; fallbackModel?: string | null; effort?: string | null };
     setModelState(sess.model ?? null);
     setFallbackModelState(sess.fallbackModel ?? null);
-    const validEffortValues: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+    const validEffortValues: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
     setEffortState(
       (validEffortValues as readonly string[]).includes(sess.effort ?? '')
         ? (sess.effort as ClaudeEffortLevel) : null,
@@ -862,6 +862,14 @@ export function useClaudeSessionStream(
             setBgTasks(bgTasksToArray(bgTasksRef.current));
           }
           break;
+        case 'bg_task_progress':
+          // Transient live progress (§14.54): usage + a Workflow run's
+          // per-sub-agent fan-out. Not persisted (absent after a refetch of a
+          // finished task) — patch the live registry in place.
+          if (applyBgTaskProgress(bgTasksRef.current, ev, Math.floor(Date.now() / 1000))) {
+            setBgTasks(bgTasksToArray(bgTasksRef.current));
+          }
+          break;
         case 'error':
           setError({ msg: ev.msg });
           break;
@@ -937,7 +945,7 @@ export function useClaudeSessionStream(
           // Defensive cast: the wire type is EffortLevel|null but the
           // backend's isValidEffort already filtered invalid strings.
           const e = ev.effort;
-          const valid: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+          const valid: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
           setEffortState((valid as readonly (string | null)[]).includes(e) ? e : null);
           setEffortPendingApply(!!ev.appliedAtNextStart);
           break;

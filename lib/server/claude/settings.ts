@@ -58,6 +58,9 @@ const DEFAULTS = {
   'sdk.latest_version': '',
   'sdk.latest_version_at': '',
   'sdk.last_notified_version': '',
+  // Last locally-built pyz sha we sent a "new agent" notification for — dedup
+  // for the pyz auto-update axis (sdkWatch.ts), parallel to last_notified_version.
+  'agent.last_notified_pyz_sha': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 

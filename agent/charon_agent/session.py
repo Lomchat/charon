@@ -150,13 +150,31 @@ def _is_safe_bash(command: str | None) -> bool:
     return True
 
 
+# Cap for a SINGLE NDJSON message the SDK frames off the CLI's stdout. The SDK
+# default is 1 MiB (_DEFAULT_MAX_BUFFER_SIZE in the SDK's subprocess_cli.py); a
+# single large tool_result (Read of a big file, a verbose Bash/grep/diff, a
+# WebFetch, build logs…) is serialized as ONE line and blows past 1 MiB, making
+# receive_messages() raise "JSON message exceeded maximum buffer size of
+# 1048576 bytes" — which kills the stream reader mid-turn (§14.55). 32 MiB
+# covers realistic tool output while still bounding memory (the buffer only
+# grows to the current pending line's size). Rebuild the pyz to change it.
+_MAX_BUFFER_SIZE = 32 * 1024 * 1024
+
 # Keys that we'll drop one-by-one if the installed SDK doesn't know them.
-# Order matters: drop the "newest" knobs first so we retain the most behavior
-# when downgrading. effort is the newest (added in claude-agent-sdk ~0.2.80+),
-# fallback_model is older, model is the oldest of the three.
-# include_partial_messages drops FIRST (least important — only the live token
-# counter, §14.50): an SDK too old to know it must still start the session.
-_OPTIONAL_KEYS_FALLBACK_ORDER = ("include_partial_messages", "effort", "fallback_model", "model")
+# Order matters: drop the "newest"/least-important knobs first so we retain the
+# most behavior when downgrading. effort is the newest (added in
+# claude-agent-sdk ~0.2.80+), fallback_model is older, model is the oldest of
+# the three. include_partial_messages drops FIRST (least important — only the
+# live token counter, §14.50): an SDK too old to know it must still start the
+# session. max_buffer_size (§14.55) is next: dropping it reverts to the SDK's
+# 1 MiB stdout cap (the bug), but an SDK too old to accept the kwarg has no
+# other choice.
+_OPTIONAL_KEYS_FALLBACK_ORDER = (
+    "include_partial_messages", "max_buffer_size", "effort", "fallback_model", "model",
+    # `settings` carries the ultracode flags (§14.56); an SDK too old to accept
+    # the kwarg just starts without ultracode.
+    "settings",
+)
 
 
 def _build_options_with_fallback(
@@ -215,7 +233,9 @@ class AgentSession:
     # If the SDK installed on this VPS is older and doesn't know one of these,
     # _run will catch the TypeError on ClaudeAgentOptions(**kwargs) and retry
     # without the offending field — see EFFORT_OPTIONAL_KEYS below.
-    VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+    # "ultracode" is a Charon pseudo-effort (xhigh + workflow orchestration),
+    # applied via options.settings rather than the SDK effort kwarg (§14.56).
+    VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultracode")
 
     def __init__(
         self,
@@ -799,12 +819,14 @@ class AgentSession:
                                 out.append({"event": "todo_update", "todos": todos})
             elif ev_type in ("TaskStartedMessage", "TaskUpdatedMessage", "TaskNotificationMessage"):
                 # First-class background-task lifecycle messages (SDK ≥ 0.2.11x):
-                # started (Bash run_in_background / background subagent spawned),
-                # updated (status change), notification (finished — the CLI
-                # re-invokes the model right after; the continuous reader
-                # streams that turn live). Forward a normalized `bg_task`
-                # event keyed by task_id; the hub persists it and the UI keeps
-                # a per-session registry (BgTasks bar above the input).
+                # started (Bash run_in_background / background subagent / a
+                # Workflow-tool run — task_type 'local_workflow'), updated
+                # (status change; a workflow completes HERE as status
+                # 'completed' with NO accompanying notification), notification
+                # (finished — the CLI re-invokes the model right after; the
+                # continuous reader streams that turn live). Forward a
+                # normalized `bg_task` event keyed by task_id; the hub persists
+                # it and the UI keeps a per-session registry (BgTasks bar).
                 kind = {
                     "TaskStartedMessage": "started",
                     "TaskUpdatedMessage": "updated",
@@ -816,8 +838,77 @@ class AgentSession:
                     v = getattr(ev, key, None)
                     if v is not None:
                         payload[key] = v
+                # workflow_name lives only in the raw SystemMessage `data` (not a
+                # typed field) — surface it so the UI can badge a Workflow run
+                # distinctly from a plain background bash task.
+                _data = getattr(ev, "data", None)
+                if isinstance(_data, dict) and _data.get("workflow_name"):
+                    payload["workflow_name"] = _data["workflow_name"]
                 if payload.get("task_id"):
                     out.append({"event": "bg_task", **payload})
+            elif ev_type == "TaskProgressMessage" or (
+                ev_type == "SystemMessage"
+                and getattr(ev, "subtype", None) == "task_progress"
+            ):
+                # High-frequency progress for a running background task (§14.54).
+                # For a Workflow run the raw `data.workflow_progress[]` carries
+                # the per-AGENT fan-out (label/state/model/tokens/resultPreview)
+                # — the richest live view. Emitted as a TRANSIENT
+                # `bg_task_progress` (server.py transient set: no seq, not
+                # logged, not replayed — like `usage`) so it never bloats the
+                # durable history; the live UI patches the per-task registry in
+                # place. (SystemMessage fallback: an SDK that doesn't parse the
+                # typed TaskProgressMessage still delivers subtype=task_progress.)
+                _data = getattr(ev, "data", None)
+                _data = _data if isinstance(_data, dict) else {}
+                tid = getattr(ev, "task_id", None) or _data.get("task_id")
+                if tid:
+                    prog: dict[str, Any] = {"event": "bg_task_progress", "task_id": tid}
+                    desc = getattr(ev, "description", None) or _data.get("description")
+                    if desc:
+                        prog["description"] = desc
+                    ltn = getattr(ev, "last_tool_name", None) or _data.get("last_tool_name")
+                    if ltn:
+                        prog["last_tool_name"] = ltn
+                    u = getattr(ev, "usage", None)
+                    if not isinstance(u, dict):
+                        u = _data.get("usage")
+                    if isinstance(u, dict):
+                        prog["usage"] = {
+                            "tokens": u.get("total_tokens"),
+                            "tool_uses": u.get("tool_uses"),
+                            "duration_ms": u.get("duration_ms"),
+                        }
+                    if _data.get("workflow_name"):
+                        prog["workflow_name"] = _data["workflow_name"]
+                    wf = _data.get("workflow_progress")
+                    if isinstance(wf, list):
+                        agents, phases = [], []
+                        for item in wf:
+                            if not isinstance(item, dict):
+                                continue
+                            it = item.get("type")
+                            if it == "workflow_agent":
+                                rp = item.get("resultPreview")
+                                agents.append({
+                                    "index": item.get("index"),
+                                    "label": item.get("label"),
+                                    "state": item.get("state"),
+                                    "model": item.get("model"),
+                                    "phaseTitle": item.get("phaseTitle"),
+                                    "tokens": item.get("tokens"),
+                                    "toolCalls": item.get("toolCalls"),
+                                    "durationMs": item.get("durationMs"),
+                                    "resultPreview": rp[:600] if isinstance(rp, str) else None,
+                                })
+                            elif it == "workflow_phase":
+                                phases.append({"index": item.get("index"),
+                                               "title": item.get("title")})
+                        if agents:
+                            prog["agents"] = agents
+                        if phases:
+                            prog["phases"] = phases
+                    out.append(prog)
             elif ev_type == "UserMessage":
                 content_attr = getattr(ev, "content", None)
                 if isinstance(content_attr, str):
@@ -957,7 +1048,19 @@ class AgentSession:
                 options_kwargs["model"] = self.model
             if self.fallback_model:
                 options_kwargs["fallback_model"] = self.fallback_model
-            if self.effort:
+            if self.effort == "ultracode":
+                # "ultracode" is NOT an SDK EffortLevel — it's xhigh effort +
+                # STANDING dynamic-workflow orchestration (the Workflow tool on
+                # by default). It's enabled via the CLI `ultracode` settings key
+                # (apply_flag_settings), passed here as inline --settings JSON
+                # (merged on top of project settings). We deliberately DON'T set
+                # the `effort` kwarg — the setting pins xhigh itself. Requires an
+                # xhigh-capable model + the Workflows feature on the account;
+                # if unavailable the CLI just runs without it. §14.35 / §14.56.
+                options_kwargs["settings"] = json.dumps(
+                    {"enableWorkflows": True, "ultracode": True}
+                )
+            elif self.effort:
                 options_kwargs["effort"] = self.effort
             # Live token usage (§14.50): receive the raw Anthropic stream events
             # (StreamEvent) so we can surface a growing token counter. Dropped by
@@ -965,6 +1068,11 @@ class AgentSession:
             # graceful degradation (no live counter, final ResultMessage usage
             # still works).
             options_kwargs["include_partial_messages"] = True
+            # Raise the CLI-stdout NDJSON framing cap well above the SDK's 1 MiB
+            # default so a single big tool_result doesn't overflow the buffer and
+            # kill the stream reader mid-turn (§14.55). Dropped by
+            # _build_options_with_fallback on an SDK too old to accept the kwarg.
+            options_kwargs["max_buffer_size"] = _MAX_BUFFER_SIZE
             options = _build_options_with_fallback(
                 options_kwargs,
                 lambda fields: self._emit(fields.pop("event"), **fields),

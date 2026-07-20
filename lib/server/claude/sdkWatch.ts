@@ -5,6 +5,7 @@ import type { Vps } from '@/lib/db/schema';
 import { isVersionOutdated } from '@/lib/version';
 import { getSetting, setSetting, getSettingBool } from './settings';
 import { getSdkLatestVersion, refreshSdkLatest } from './sdkSync';
+import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
 import { runAgentUpdateFlow } from './agentUpdate';
 import { sendPlainToTelegram } from './telegram';
 import { sendPushToAll } from './webPush';
@@ -13,11 +14,14 @@ import { sendPushToAll } from './webPush';
  * Fleet-wide `claude-agent-sdk` auto-update tick.
  *
  * Every TICK_MS (+ a first run shortly after boot): refresh the PyPI latest,
- * find VPSes whose venv SDK is behind (vps.sdkVersion from hello ≥0.12.0 —
- * a pyz-outdated agent alone does NOT trigger the auto path), notify once per
- * new version (Telegram + push), then — if `sdk.auto_update` (default ON) —
- * run the unified update flow (pyz + pip -U + restart + session resume,
- * agentUpdate.ts) on each outdated VPS that is IDLE, in SERIES.
+ * then enroll VPSes outdated on EITHER axis — venv SDK behind PyPI latest
+ * (vps.sdkVersion, hello ≥0.12.0) OR the deployed pyz sha ≠ the locally-built
+ * one (vps.agentPyzSha, same check as the sidebar "update agent" button, §14.6
+ * — so a pyz rebuild now auto-propagates fleet-wide, and <0.12.0 agents are
+ * reachable via this axis). Notify once per new SDK version / new pyz sha
+ * (Telegram + push), then — if `sdk.auto_update` (default ON) — run the unified
+ * update flow (pyz + pip -U + restart + resume, agentUpdate.ts) on each
+ * outdated VPS that is IDLE, in SERIES. One flow fixes both axes.
  *
  * Idle gate: no session in active/thinking/starting AND no pending
  * permission/question on any of the VPS's sessions. Busy VPSes are skipped
@@ -167,37 +171,57 @@ async function tick(): Promise<void> {
     const r = await refreshSdkLatest();
     if (!r.ok) console.warn('[sdkWatch] pypi refresh failed:', r.error);
     const latest = getSdkLatestVersion();
-    if (!latest) return; // never synced successfully → nothing to compare against
-
-    // Outdated = agent ok AND it reported its venv SDK version AND that
-    // version < latest. NULL sdkVersion (agent <0.12.0) is invisible here —
-    // the pyz badge/manual button handles those.
+    const builtSha = getBuiltPyzSha();
+    // Two independent staleness axes, ONE update flow (runAgentUpdateFlow
+    // deploys the pyz AND pip-upgrades the SDK in a single pass, so a VPS
+    // behind on either — or both — is fixed by one run):
+    //   · SDK:  venv claude-agent-sdk < PyPI latest (needs vps.sdkVersion,
+    //           hello ≥0.12.0 — NULL sdkVersion is invisible to this axis).
+    //   · pyz:  deployed agent sha ≠ the sha Charon has built locally (same
+    //           check as the sidebar "update agent" button, §14.6). This axis
+    //           DOES see <0.12.0 agents (they still report a pyz sha) → a pyz
+    //           rebuild auto-propagates fleet-wide.
+    if (!latest && !builtSha) return; // no way to compare on either axis
     const fleet: Vps[] = db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all();
+    const sdkOld = (v: Vps) => !!latest && !!v.sdkVersion && isVersionOutdated(v.sdkVersion, latest);
+    const pyzOld = (v: Vps) => !!builtSha && !!v.agentPyzSha && v.agentPyzSha !== builtSha;
+    const reason = (v: Vps) => [
+      sdkOld(v) ? `sdk ${v.sdkVersion}→${latest}` : null,
+      pyzOld(v) ? `pyz ${(v.agentPyzSha ?? '').slice(0, 7)}→${(builtSha ?? '').slice(0, 7)}` : null,
+    ].filter(Boolean).join(', ');
     const outdated = fleet
-      .filter((v) => v.sdkVersion && isVersionOutdated(v.sdkVersion, latest))
+      .filter((v) => sdkOld(v) || pyzOld(v))
       .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
-    console.log(`[sdkWatch] tick: latest=${latest}, fleet ok=${fleet.length}, sdk-outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
+    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, pyz=${builtSha ? builtSha.slice(0, 7) : '-'}, fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
     if (outdated.length === 0) return;
 
-    // --- New-version notification (once per version, cross-restart durable) ---
-    if (latest !== (getSetting('sdk.last_notified_version') || '')) {
+    // --- Notification (once per NEW sdk version AND/OR new pyz sha, durable
+    // across restarts via two independent dedup keys) ---
+    const sdkIsNew = !!latest && latest !== (getSetting('sdk.last_notified_version') || '') && outdated.some(sdkOld);
+    const pyzIsNew = !!builtSha && builtSha !== (getSetting('agent.last_notified_pyz_sha') || '') && outdated.some(pyzOld);
+    if (sdkIsNew || pyzIsNew) {
       const auto = getSettingBool('sdk.auto_update');
-      const lines = outdated.map((v) => `• ${v.name} (${v.sdkVersion})`).join('\n');
+      const head = [
+        sdkIsNew ? `claude-agent-sdk ${latest}` : null,
+        pyzIsNew ? `agent pyz ${builtSha!.slice(0, 7)}` : null,
+      ].filter(Boolean).join(' + ');
+      const lines = outdated.map((v) => `• ${v.name} (${reason(v)})`).join('\n');
       const text =
-        `claude-agent-sdk ${latest} is out — ${outdated.length} VPS behind:\n${lines}\n` +
+        `${head} out — ${outdated.length} VPS behind:\n${lines}\n` +
         (auto ? 'Auto-update will run when each VPS is idle.' : 'Auto-update is OFF — use the update button in the sidebar.');
       // Telegram self-gates on telegram.enabled (§7 — never wrap it).
       sendPlainToTelegram(text, '/').catch(() => {});
       // webPush does NOT self-gate → gate at the call-site (shellNotify model).
       if (getSettingBool('notif.global_enabled')) {
         sendPushToAll({
-          title: `claude-agent-sdk ${latest} available`,
+          title: `${head} available`,
           body: `${outdated.length} VPS behind: ${outdated.map((v) => v.name).join(', ')}`,
           url: '/',
           tag: 'sdk-latest',
         }).catch(() => {});
       }
-      setSetting('sdk.last_notified_version', latest);
+      if (sdkIsNew) setSetting('sdk.last_notified_version', latest!);
+      if (pyzIsNew) setSetting('agent.last_notified_pyz_sha', builtSha!);
     }
 
     if (!getSettingBool('sdk.auto_update')) return;
@@ -207,13 +231,15 @@ async function tick(): Promise<void> {
     const skippedBusy: string[] = [];
     const failed: string[] = [];
     for (const v of outdated) {
-      const key = `${v.id}@${latest}`;
+      // Key spans BOTH axes so a new SDK version OR a fresh local pyz build
+      // re-enables a previously-attempted VPS (in-memory; a restart also does).
+      const key = `${v.id}@${latest ?? '-'}/${builtSha ?? '-'}`;
       if (state.attempted.has(key)) {
-        // Already attempted this exact version in this process (success or
-        // failure) — no hammering; a NEW version or a Charon restart
-        // re-enables. Logged so the tick output accounts for every
+        // Already attempted this exact target in this process (success or
+        // failure) — no hammering; a NEW sdk version / pyz build or a Charon
+        // restart re-enables. Logged so the tick output accounts for every
         // outdated VPS (a silent skip reads as a bug in the journal).
-        console.log(`[sdkWatch] ${v.name}: ${latest} already attempted this process — skipped (badge/button remain)`);
+        console.log(`[sdkWatch] ${v.name}: this target already attempted this process — skipped (badge/button remain)`);
         continue;
       }
       if (isVpsBusy(v.id)) {
@@ -222,15 +248,21 @@ async function tick(): Promise<void> {
         continue;
       }
       state.attempted.set(key, Date.now());
-      console.log(`[sdkWatch] ${v.name}: idle, auto-updating (sdk ${v.sdkVersion} → ${latest})`);
+      console.log(`[sdkWatch] ${v.name}: idle, auto-updating (${reason(v)})`);
       const res = await runAgentUpdateFlow(v);
-      if (res.ok && res.sdkVersion) {
-        updated.push(`${v.name} → ${res.sdkVersion}`);
-        console.log(`[sdkWatch] ${v.name}: updated (sdk ${res.sdkVersion}, resumed ${res.resumedSessionIds.length})`);
+      if (res.ok) {
+        // ok = pyz deployed + restart + ping OK. sdkVersion/newPyzSha reflect
+        // the post-update venv/binary (pip -U is non-fatal, so sdkVersion may
+        // be absent if only that sub-step failed while the pyz still updated).
+        const done = [
+          res.sdkVersion ? `sdk ${res.sdkVersion}` : null,
+          res.newPyzSha ? `pyz ${res.newPyzSha.slice(0, 7)}` : null,
+        ].filter(Boolean).join(', ');
+        updated.push(`${v.name} (${done || 'ok'})`);
+        console.log(`[sdkWatch] ${v.name}: updated (${done || 'ok'}, resumed ${res.resumedSessionIds.length})`);
       } else {
-        // ok:false (deploy/restart failed) or ok:true without sdkVersion
-        // (pyz fine, pip step failed — non-fatal in updateVpsAgent).
-        failed.push(`${v.name}: ${(res.detail || 'sdk step failed').slice(-160)}`);
+        // ok:false = deploy/restart/ping failed (the pyz did NOT swap).
+        failed.push(`${v.name}: ${(res.detail || 'update failed').slice(-160)}`);
         console.warn(`[sdkWatch] ${v.name}: auto-update failed — ${res.detail}`);
         // TRANSIENT network failures (this hub's outbound SSH flaps
         // regularly) get another shot next tick — otherwise a single
@@ -248,7 +280,7 @@ async function tick(): Promise<void> {
     // Batch summary — only when something was actually attempted (a busy-only
     // tick every 30min would just be noise; those VPSes stay badge-lit anyway).
     if (updated.length > 0 || failed.length > 0) {
-      const parts: string[] = [`SDK auto-update (latest ${latest}):`];
+      const parts: string[] = [`Agent auto-update (sdk ${latest ?? '-'}, pyz ${builtSha ? builtSha.slice(0, 7) : '-'}):`];
       if (updated.length) parts.push(`✓ updated: ${updated.join(', ')}`);
       if (skippedBusy.length) parts.push(`⏸ busy, retry later: ${skippedBusy.join(', ')}`);
       if (failed.length) parts.push(`✗ failed:\n${failed.map((f) => `• ${f}`).join('\n')}`);

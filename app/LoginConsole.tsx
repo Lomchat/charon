@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import { useTerminalUrlOverlay } from './useTerminalUrlOverlay';
 import TerminalUrlOverlay from './TerminalUrlOverlay';
+import { reloadOnceForChunkError } from './chunkReload';
 
 type Props = {
   vps: Vps;
@@ -145,7 +146,10 @@ export default function LoginConsole({ vps, onClose }: Props) {
       window.addEventListener('resize', onResize);
       // Local cleanup for this subscriber
       (term as any)._charonCleanup = () => window.removeEventListener('resize', onResize);
-    })();
+    })().catch(() => {
+      // Stale-chunk xterm load after a deploy (§14.57) → reload onto fresh build.
+      if (!cancelled) reloadOnceForChunkError('login-console-import');
+    });
 
     return () => {
       cancelled = true;

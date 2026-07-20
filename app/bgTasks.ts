@@ -26,7 +26,7 @@ export type BgTask = {
   // non-bash tasks (background subagents) or if the launch wasn't observed.
   command: string | null;
   toolUseId: string | null;
-  taskType: string | null; // e.g. 'local_bash', agent tasks…
+  taskType: string | null; // e.g. 'local_bash', 'local_workflow', agent tasks…
   status: BgTaskStatus;
   startedAt: number; // epoch seconds
   endedAt: number | null;
@@ -34,7 +34,29 @@ export type BgTask = {
   // Completion summary from the notification ("Background command "…"
   // completed (exit code 0)").
   summary: string | null;
+  // Workflow-tool runs (taskType 'local_workflow'): the script name.
+  workflowName: string | null;
+  // Live progress from TRANSIENT bg_task_progress (not persisted → null after a
+  // refetch). `agents` = a Workflow run's per-sub-agent fan-out (§14.54).
+  usage: BgTaskUsage | null;
+  lastToolName: string | null;
+  agents: BgAgent[] | null;
 };
+
+// One sub-agent inside a running Workflow-tool task.
+export type BgAgent = {
+  index: number | null;
+  label: string | null;
+  state: string | null; // 'start' | 'done' | …
+  model: string | null;
+  phaseTitle: string | null;
+  tokens: number | null;
+  toolCalls: number | null;
+  durationMs: number | null;
+  resultPreview: string | null;
+};
+
+export type BgTaskUsage = { tokens: number | null; toolUses: number | null; durationMs: number | null };
 
 // Wire/persisted shape (WorkerEvent 'bg_task' / role='event' row payload).
 export type BgTaskEventLike = {
@@ -46,6 +68,22 @@ export type BgTaskEventLike = {
   status?: string;
   outputFile?: string;
   summary?: string;
+  workflowName?: string;
+};
+
+// Transient bg_task_progress payload (broadcast-only; never persisted).
+export type BgTaskProgressEventLike = {
+  taskId: string;
+  description?: string;
+  lastToolName?: string;
+  workflowName?: string;
+  usage?: { tokens?: number | null; tool_uses?: number | null; duration_ms?: number | null };
+  agents?: Array<{
+    index?: number | null; label?: string | null; state?: string | null;
+    model?: string | null; phaseTitle?: string | null; tokens?: number | null;
+    toolCalls?: number | null; durationMs?: number | null; resultPreview?: string | null;
+  }>;
+  phases?: Array<{ index?: number | null; title?: string | null }>;
 };
 
 // Launch candidates: Bash tool_use with run_in_background, keyed by the SDK
@@ -88,12 +126,17 @@ export function applyBgTaskEvent(
       endedAt: null,
       outputFile: ev.outputFile ?? null,
       summary: null,
+      workflowName: ev.workflowName ?? null,
+      usage: null,
+      lastToolName: null,
+      agents: null,
     };
     map.set(ev.taskId, t);
   }
   if (ev.description) t.description = ev.description;
   if (ev.toolUseId) t.toolUseId = ev.toolUseId;
   if (ev.taskType) t.taskType = ev.taskType;
+  if (ev.workflowName) t.workflowName = ev.workflowName;
   if (ev.outputFile) t.outputFile = ev.outputFile;
   if (ev.summary) t.summary = ev.summary;
   if (t.toolUseId && !t.command && launchCandidates) {
@@ -114,6 +157,47 @@ export function applyBgTaskEvent(
   } else if (ev.kind === 'started') {
     if (!TERMINAL.has(t.status)) t.status = 'running';
     t.startedAt = at;
+  }
+  return true;
+}
+
+/** Apply one TRANSIENT bg_task_progress event: live usage + (for a Workflow
+ *  run) the per-sub-agent fan-out. Never touches status (progress must not
+ *  resurrect a terminal task); materializes a running entry if the 'started'
+ *  was missed. Returns true if anything changed. */
+export function applyBgTaskProgress(
+  map: Map<string, BgTask>,
+  ev: BgTaskProgressEventLike,
+  at: number,
+): boolean {
+  if (!ev || !ev.taskId) return false;
+  let t = map.get(ev.taskId);
+  if (!t) {
+    t = {
+      taskId: ev.taskId, description: ev.description ?? null, command: null,
+      toolUseId: null, taskType: null, status: 'running', startedAt: at,
+      endedAt: null, outputFile: null, summary: null,
+      workflowName: ev.workflowName ?? null, usage: null, lastToolName: null, agents: null,
+    };
+    map.set(ev.taskId, t);
+  }
+  if (ev.description) t.description = ev.description;
+  if (ev.workflowName) t.workflowName = ev.workflowName;
+  if (ev.lastToolName) t.lastToolName = ev.lastToolName;
+  if (ev.usage) {
+    t.usage = {
+      tokens: ev.usage.tokens ?? null,
+      toolUses: ev.usage.tool_uses ?? null,
+      durationMs: ev.usage.duration_ms ?? null,
+    };
+  }
+  if (Array.isArray(ev.agents)) {
+    t.agents = ev.agents.map((a) => ({
+      index: a.index ?? null, label: a.label ?? null, state: a.state ?? null,
+      model: a.model ?? null, phaseTitle: a.phaseTitle ?? null, tokens: a.tokens ?? null,
+      toolCalls: a.toolCalls ?? null, durationMs: a.durationMs ?? null,
+      resultPreview: a.resultPreview ?? null,
+    }));
   }
   return true;
 }

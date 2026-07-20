@@ -7,7 +7,9 @@ export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 // Mirrors claude_agent_sdk.EffortLevel literal. Newer SDK versions may add
 // values; if so, also extend this union (the agent silently drops unknown
 // effort values, so adding new ones here without bumping the agent is safe).
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+// 'ultracode' = Charon pseudo-effort (xhigh + dynamic-workflow orchestration),
+// applied agent-side via options.settings, not the SDK effort kwarg (§14.56).
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
 export type AgentSessionStatus =
   | 'starting'
@@ -110,6 +112,25 @@ export type AgentEvent = (
       task_id: string;
       description?: string; tool_use_id?: string; task_type?: string;
       status?: string; output_file?: string; summary?: string;
+      // Workflow-tool runs (task_type 'local_workflow') carry the script name.
+      workflow_name?: string;
+    }
+  // bg_task_progress (agent >= 0.13.1): high-frequency progress for a running
+  // background task. TRANSIENT (broadcast-only, no seq, not replayed — like
+  // usage). For a Workflow run, `agents[]` is the per-sub-agent fan-out
+  // (label/state/model/tokens/resultPreview) from the raw workflow_progress[].
+  // §14.54.
+  | {
+      event: 'bg_task_progress'; session_id: string;
+      task_id: string;
+      description?: string; last_tool_name?: string; workflow_name?: string;
+      usage?: { tokens?: number | null; tool_uses?: number | null; duration_ms?: number | null };
+      agents?: Array<{
+        index?: number | null; label?: string | null; state?: string | null;
+        model?: string | null; phaseTitle?: string | null; tokens?: number | null;
+        toolCalls?: number | null; durationMs?: number | null; resultPreview?: string | null;
+      }>;
+      phases?: Array<{ index?: number | null; title?: string | null }>;
     }
   // usage (agent >= 0.11.0): live token counter for the CURRENT turn, emitted
   // broadcast-only (transient, no seq) and throttled (~0.6s). `final:true`

@@ -2,6 +2,22 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 
+// Per-sub-agent state glyphs for a Workflow run's fan-out (bg_task_progress).
+const AGENT_STATE: Record<string, { glyph: string; cls: string }> = {
+  start: { glyph: '◐', cls: 'running' },
+  running: { glyph: '◐', cls: 'running' },
+  done: { glyph: '✓', cls: 'completed' },
+  error: { glyph: '✗', cls: 'failed' },
+  failed: { glyph: '✗', cls: 'failed' },
+};
+
+function agentsDone(t: BgTask): number {
+  return (t.agents ?? []).filter((a) => (a.state ?? '').toLowerCase() === 'done').length;
+}
+function isWorkflow(t: BgTask): boolean {
+  return t.taskType === 'local_workflow' || !!t.workflowName;
+}
+
 // ── BgTasksBar ───────────────────────────────────────────────────────────────
 // Slim status line above the chat input: shows the session's BACKGROUND tasks
 // (Bash run_in_background / background subagents) — how many are running and
@@ -33,7 +49,7 @@ function fmtElapsed(fromS: number, toS: number): string {
 }
 
 function taskTitle(t: BgTask): string {
-  return t.description || t.command || t.taskId;
+  return t.description || t.workflowName || t.command || t.taskId;
 }
 
 function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
@@ -83,7 +99,9 @@ function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
         <span className="bgtasks-headline">{headline}</span>
         {newest && (
           <span className="bgtasks-snippet">
+            {isWorkflow(newest) && <span className="bgtask-badge workflow" aria-hidden>⚙</span>}
             {taskTitle(newest)}
+            {newest.agents && newest.agents.length > 0 && ` · ${agentsDone(newest)}/${newest.agents.length} agents`}
             {newest.status === 'running' && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
           </span>
         )}
@@ -108,16 +126,39 @@ function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
                   <div key={t.taskId} className={`bgtask-row ${meta.cls}`}>
                     <div className="bgtask-head">
                       <span className={`bgtask-status ${meta.cls}`} title={meta.label}>{meta.glyph} {meta.label}</span>
+                      {isWorkflow(t) && (
+                        <span className="bgtask-badge workflow" title={t.workflowName ? `workflow: ${t.workflowName}` : 'Workflow tool run'}>
+                          ⚙ workflow{t.workflowName ? ` · ${t.workflowName}` : ''}
+                        </span>
+                      )}
                       <span className="bgtask-id" title={`task id: ${t.taskId}${t.taskType ? ` · type: ${t.taskType}` : ''}`}>{t.taskId}</span>
                       <span className="bgtask-time">
                         {t.status === 'running'
                           ? `running for ${fmtElapsed(t.startedAt, nowS)}`
                           : `${fmtElapsed(t.startedAt, end)} · ended ${new Date(end * 1000).toLocaleTimeString()}`}
+                        {t.usage && (t.usage.tokens ?? 0) > 0 && <span className="bgtask-usage"> · ↑{t.usage.tokens} tok</span>}
                       </span>
                     </div>
                     {t.description && <div className="bgtask-desc">{t.description}</div>}
                     {t.command && <pre className="bgtask-cmd">{t.command}</pre>}
                     {t.summary && <div className="bgtask-summary">{t.summary}</div>}
+                    {t.agents && t.agents.length > 0 && (
+                      <div className="bgtask-agents">
+                        {t.agents.map((a, i) => {
+                          const st = AGENT_STATE[(a.state ?? '').toLowerCase()] ?? { glyph: '◦', cls: 'stale' };
+                          return (
+                            <div key={a.label ?? i} className={`bgagent ${st.cls}`}>
+                              <span className={`bgagent-state ${st.cls}`} aria-hidden>{st.glyph}</span>
+                              <span className="bgagent-label">{a.label || `agent ${(a.index ?? i) + 1}`}</span>
+                              {a.phaseTitle && <span className="bgagent-phase">{a.phaseTitle}</span>}
+                              {a.model && <span className="bgagent-model">{a.model}</span>}
+                              {typeof a.tokens === 'number' && a.tokens > 0 && <span className="bgagent-tok">↑{a.tokens}</span>}
+                              {a.resultPreview && <span className="bgagent-result" title={a.resultPreview}>{a.resultPreview}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     {t.outputFile && (
                       <div className="bgtask-output" title="output file on the VPS — ask the agent to read/tail it for live output">
                         ⎿ {t.outputFile}

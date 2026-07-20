@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTerminalUrlOverlay } from './useTerminalUrlOverlay';
 import TerminalUrlOverlay from './TerminalUrlOverlay';
+import { reloadOnceForChunkError } from './chunkReload';
 
 type Props = {
   shellId: string;
@@ -307,7 +308,11 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
         window.removeEventListener('focus', onReclaim);
         document.removeEventListener('visibilitychange', onReclaim);
       };
-    })();
+    })().catch((err) => {
+      // A stale-chunk failure loading xterm after a deploy (§14.57): reload onto
+      // the fresh build instead of leaving a blank terminal / silent rejection.
+      if (!cancelled) reloadOnceForChunkError('shell-terminal-import');
+    });
 
     return () => {
       cancelled = true;
