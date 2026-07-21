@@ -8,15 +8,18 @@ import type {
   ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
   ClaudePushSub,
 } from '@/lib/db/schema';
-import type { PermissionMode, WorkerStatus } from '@/lib/server/claude/types';
+import type { PermissionMode, WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
 
 // Re-export so consumers don't have to know the source
 export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
   ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
-  ClaudePushSub, PermissionMode, WorkerStatus, ShellInfo,
+  ClaudePushSub, PermissionMode, WorkerStatus, AccountUsage, ShellInfo,
   InstallInfo, InstallStatus };
+
+// Account usage (the `/usage` gauges) for a VPS's Claude account. cf. §14.58.
+export type VpsUsageResponse = { usage: AccountUsage | null };
 
 // ── VPS ──────────────────────────────────────────────────────────────────────
 

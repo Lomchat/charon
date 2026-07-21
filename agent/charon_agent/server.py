@@ -54,6 +54,7 @@ from .event_log import EventLog, cleanup_orphans
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .shell import AgentShell
 from .state import load_state, save_state
+from .usage import fetch_usage
 
 
 RING_SIZE = 2000  # events buffered per session for late subscribers
@@ -297,7 +298,7 @@ class Server:
     # state and contain the moved-over branches verbatim — no behaviour change
     # (same params, return shapes, error codes, and event emission). The set
     # of methods is unchanged (cf. protocol.METHODS).
-    _META_METHODS = frozenset({"hello", "ping", "list_sessions"})
+    _META_METHODS = frozenset({"hello", "ping", "list_sessions", "get_usage"})
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "respond_permission",
@@ -337,6 +338,13 @@ class Server:
 
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]
+
+        if method == "get_usage":
+            # Account-scoped `/usage` data (five_hour / seven_day utilization,
+            # limits[], extra_usage). Blocking urllib GET → run off the event
+            # loop so a slow/hung endpoint never stalls session I/O. Never
+            # raises; returns {ok:False,...} on any failure. §14.58.
+            return await asyncio.to_thread(fetch_usage)
 
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 

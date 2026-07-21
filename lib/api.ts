@@ -6,7 +6,7 @@
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
-  RefreshVpsAgentResponse,
+  RefreshVpsAgentResponse, VpsUsageResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -108,6 +108,9 @@ export const api = {
     // Can take up to ~40s in the worst case (reconnect → start daemon →
     // reconnect), so override the default 30s client timeout.
     send<RefreshVpsAgentResponse>('POST', `/api/vps/${id}/agent/refresh`, undefined, { timeoutMs: 50_000 }),
+  // Account usage (the `/usage` gauges) for a VPS's Claude account (§14.58).
+  getVpsUsage: (id: string) =>
+    send<VpsUsageResponse>('GET', `/api/vps/${id}/usage`),
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),
   updateLocalAgent: () =>

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
-import type { WorkerStatus } from '@/lib/server/claude/types';
+import type { WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import TabBar, { computeTabs, type EntityTab } from './TabBar';
 import ShellTerminal from './ShellTerminal';
@@ -22,6 +22,7 @@ import SessionContextMenu from './SessionContextMenu';
 import LoginConsole from './LoginConsole';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
+import UsageMeter from './UsageMeter';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { prefetchAll as sessionCachePrefetchAll } from './sessionCache';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
@@ -182,7 +183,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // (the toggle buttons + drawer positioning are CSS-gated by media query).
   const [navOpen, setNavOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
-  const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); }, []);
+  // Right "usage & settings" drawer (mobile only, CSS-gated ≤820px): holds the
+  // account-usage panel + the header action buttons. Left drawer = sessions.
+  const [usageOpen, setUsageOpen] = useState(false);
+  const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); setUsageOpen(false); }, []);
+  // Account-usage gauges per VPS (the `/usage` widget). Fed by the LOW_VOLUME
+  // `account_usage` SSE event + hydrated on session-select via GET. §14.58.
+  const [usageByVps, setUsageByVps] = useState<Record<string, AccountUsage>>({});
+  const refreshUsage = useCallback((vpsId: string | null | undefined) => {
+    if (!vpsId) return;
+    api.getVpsUsage(vpsId)
+      .then((r) => { if (r.usage) setUsageByVps((prev) => ({ ...prev, [vpsId]: r.usage as AccountUsage })); })
+      .catch(() => {});
+  }, []);
 
   // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
@@ -309,6 +322,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         });
         return changed ? next : prev;
       });
+    });
+    return () => unsub();
+  }, []);
+
+  // Live account-usage gauges (§14.58). The hub polls each VPS's get_usage and
+  // fans an `account_usage` event (LOW_VOLUME → every tab; sessionId = vpsId).
+  // Keep the latest snapshot per VPS so the header widget follows the current
+  // session's account live, across tabs/devices, without an F5.
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'account_usage') return;
+      const vpsId = ev.sessionId;
+      if (!vpsId) return;
+      // ev is the account_usage variant = AccountUsage + {type, sessionId}; the
+      // extra two keys are harmless (UsageMeter only reads AccountUsage fields).
+      setUsageByVps((prev) => ({ ...prev, [vpsId]: ev as AccountUsage }));
     });
     return () => unsub();
   }, []);
@@ -647,6 +676,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     () => (selected ? vpsList.find((v) => v.id === selected.vpsId) ?? null : null),
     [selected, vpsList],
   );
+
+  // Hydrate the current VPS's usage on select (SSE is live-only, §14.14): a
+  // freshly-mounted tab has no snapshot until the next 60s poll — fetch once so
+  // the header widget shows real numbers immediately. (Declared after
+  // selectedVps to stay out of its temporal dead zone.)
+  useEffect(() => {
+    refreshUsage(selectedVps?.id);
+  }, [selectedVps?.id, refreshUsage]);
 
   // "Active session has a pending interaction" indicator — used by the
   // status pill in the header. Comes from the cross-session feed, not from
@@ -1186,14 +1223,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const selectedShellExists = !!selectedShellId && shells.some((s) => s.id === selectedShellId);
 
   return (
-    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}`}>
+    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
       {/* Backdrop behind any open drawer (mobile only; CSS-gated). Tap to close. */}
       <div className="drawer-backdrop" onClick={closeDrawers} aria-hidden />
       <header className="claude-head">
         {/* ☰ opens the sidebar drawer; CSS reveals it only ≤820px (.m-only). */}
         <button
           className="head-btn m-only nav-toggle"
-          onClick={() => { setNavOpen(true); setToolsOpen(false); }}
+          onClick={() => { setNavOpen(true); setToolsOpen(false); setUsageOpen(false); }}
           title="menu" aria-label="open navigation"
         >
           <IconMenu />
@@ -1213,17 +1250,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         </svg>
         <h1>CHARON</h1>
         <div className="head-right">
-          {/* Opens the ToolPanel (diffs/todos/calls) drawer; CSS reveals it
-              only ≤1100px, and only meaningful when a Claude session is open. */}
-          {selectedId && (
-            <button
-              className="head-btn m-only tools-toggle"
-              onClick={() => { setToolsOpen(true); setNavOpen(false); }}
-              title="diffs, todos & tool calls" aria-label="open tool panel"
-            >
-              <IconPanelRight />
-            </button>
-          )}
+          {/* Mobile only (CSS ≤820px): head-right becomes the right "usage &
+              settings" drawer. The account-usage panel sits at its top; the
+              toggle buttons that open it live OUTSIDE head-right (below) so they
+              stay visible. Hidden on desktop — the buttons flow inline as
+              before. cf. CLAUDE.md §14.58. */}
+          <div className="head-usage-panel">
+            <UsageMeter
+              usage={selectedVps ? (usageByVps[selectedVps.id] ?? null) : null}
+              vpsName={selectedVps?.name}
+              compact={false}
+              onRefresh={() => refreshUsage(selectedVps?.id)}
+            />
+          </div>
           {selected && selectedVps && (
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
           )}
@@ -1299,6 +1338,32 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings" aria-label="settings">
             <IconGear />
           </button>
+        </div>
+        {/* Mobile-only right-drawer toggles (CSS-gated). They live OUTSIDE
+            head-right because head-right itself becomes the drawer ≤820px. The
+            tools-toggle (ToolPanel drawer, ≤1100px) moved here from inside
+            head-right for the same reason. cf. CLAUDE.md §14.58 / §11. */}
+        <div className="head-toggles">
+        {selectedId && (
+          <button
+            className="head-btn m-only tools-toggle"
+            onClick={() => { setToolsOpen(true); setNavOpen(false); setUsageOpen(false); }}
+            title="diffs, todos & tool calls" aria-label="open tool panel"
+          >
+            <IconPanelRight />
+          </button>
+        )}
+        <button
+          className="head-btn m-only usage-toggle"
+          onClick={() => { setUsageOpen(true); setNavOpen(false); setToolsOpen(false); }}
+          title="usage & settings" aria-label="open usage and settings"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
+            <path d="M12 12l4-3" />
+            <path d="M5 18a8 8 0 1 1 14 0" />
+          </svg>
+        </button>
         </div>
       </header>
 
@@ -1416,6 +1481,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           sessionId={selected.id}
           selected={selected}
           selectedVps={selectedVps}
+          usage={selectedVps ? (usageByVps[selectedVps.id] ?? null) : null}
+          onUsageRefresh={() => refreshUsage(selectedVps?.id)}
           overlay={
             <>
               {loginVps && <LoginConsole vps={loginVps} onClose={closeLoginConsole} />}

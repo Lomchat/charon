@@ -166,6 +166,7 @@ export type AgentMethodName =
   | 'hello'
   | 'ping'
   | 'list_sessions'
+  | 'get_usage'
   | 'start_session'
   | 'resume_session'
   | 'subscribe'
@@ -203,6 +204,13 @@ export type AgentShellInfo = {
   exit_code: number | null;
   pid: number | null;
 };
+
+// Raw envelope returned by the `get_usage` RPC (agent >= 0.14.0). `usage` is the
+// verbatim api.anthropic.com/api/oauth/usage body — usagePoll.ts normalizes it
+// into the client-facing AccountUsage. Never throws agent-side. See §14.58.
+export type AgentUsageResult =
+  | { ok: true; subscription_type?: string | null; fetched_at: number; usage: any }
+  | { ok: false; error: string; status_code?: number; detail?: string; fetched_at: number };
 
 export type AgentClientStatus =
   | 'idle'           // never connected

@@ -7,7 +7,7 @@ import {
   vps as vpsTable,
 } from '@/lib/db';
 import type { PermissionMode } from '@/lib/server/claude/types';
-import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
+import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
 import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/claude/webPush';
@@ -180,6 +180,25 @@ export function markSessionRead(sessionId: string): void {
  */
 export function emitGlobalSessionListChanged(sessionId: string): void {
   emitGlobalSession({ type: 'session_list_changed', sessionId });
+}
+
+/**
+ * Fan a VPS's account-usage gauges onto the global bus (sessionId = vpsId).
+ * Source: usagePoll.ts (the `get_usage` RPC poll). Classed LOW_VOLUME in
+ * eventConnections so every tab's header widget updates regardless of SSE focus
+ * (usage is account-global, not focus-scoped). cf. CLAUDE.md §14.58.
+ */
+export function emitGlobalAccountUsage(vpsId: string, usage: AccountUsage): void {
+  emitGlobalSession({ type: 'account_usage', sessionId: vpsId, ...usage } as GlobalSessionEvent);
+}
+
+// Post-stop usage-refresh trigger, injected by usagePoll.ts at its import time
+// (one-directional to dodge the import cycle: this module owns the bus + the
+// `stop` handler; usagePoll owns the poll). Null until usagePoll is loaded
+// (autoConnect imports it at boot) → the `stop` handler no-ops safely. §14.58.
+let usagePollTrigger: ((vpsId: string) => void) | null = null;
+export function setUsagePollTrigger(fn: (vpsId: string) => void): void {
+  usagePollTrigger = fn;
 }
 
 export class SessionStream {
@@ -692,6 +711,11 @@ export class SessionStream {
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'stop', subtype: ev.subtype });
+        // A turn finished → the account quota just moved; refresh the usage
+        // gauges (debounced + endpoint-rate-limit-aware in usagePoll). Live
+        // stops only — a reconnect replay of old stops must not spam the
+        // /usage endpoint. cf. CLAUDE.md §14.58.
+        if (!this.isReplaying) { try { usagePollTrigger?.(this.vpsId); } catch {} }
         // Dedup the "finished" push. Without this, every agent re-subscribe
         // (Charon reboot / SSH reconnect) replays past `stop` events and
         // re-notifies the user for sessions that finished long ago.

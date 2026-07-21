@@ -3081,7 +3081,8 @@
 
   /* Backdrop: this block also matches at ≤820px (covers both drawers). */
   .claude-root.tools-open .drawer-backdrop,
-  .claude-root.nav-open .drawer-backdrop {
+  .claude-root.nav-open .drawer-backdrop,
+  .claude-root.usage-open .drawer-backdrop {
     display: block;
     position: fixed; inset: 0;
     z-index: 50;
@@ -3211,5 +3212,96 @@
     width: 24px; height: 24px;
     min-width: 24px; min-height: 24px;
     flex: 0 0 24px;
+  }
+}
+
+/* ── Account-usage widget (the `/usage` gauges, §14.58) ─────────────────────
+   Desktop: a compact chip in the chat header (.claude-bar) between the session
+   title and the action buttons; click opens a detail popover. Mobile: the full
+   detail panel lives in the right "usage & settings" drawer (see ≤820px below).
+   Colors: ok = soft green, warn = amber, crit = crimson (by severity/percent). */
+
+.head-usage-panel { display: none; }              /* desktop: chip in bar is the surface */
+.head-toggles { display: inline-flex; align-items: center; gap: 6px; }
+
+.usage-meter { position: relative; display: inline-flex; }
+.usage-chip {
+  display: inline-flex; align-items: stretch;
+  padding: 3px 2px; border-radius: 8px;
+  background: var(--shadow); border: 1px solid var(--gold-deep);
+  color: var(--parchment); cursor: pointer; line-height: 1;
+}
+.usage-chip:hover { border-color: var(--gold); }
+.usage-chip.um-warn { border-color: #e0b46a; }
+.usage-chip.um-crit { border-color: var(--crimson); }
+.usage-chip-cell { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; padding: 1px 6px; }
+.usage-chip-k { font-size: 8px; letter-spacing: .06em; text-transform: uppercase; color: var(--parchment-soft); white-space: nowrap; }
+.usage-chip-v { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--parchment); }
+.usage-chip-sep { width: 1px; background: var(--gold-deep); margin: 3px 0; }
+
+.usage-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 70;
+  width: 288px; max-width: 86vw;
+  background: var(--stone-2); border: 1px solid var(--gold-deep);
+  border-radius: 10px; box-shadow: 0 14px 40px rgba(0,0,0,0.5);
+  padding: 12px;
+}
+
+.um-detail { display: flex; flex-direction: column; gap: 10px; }
+.um-panel { width: 100%; }
+.um-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.um-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--parchment); }
+.um-plan { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: 6px; background: var(--gold-deep); color: var(--gold-bright); }
+.um-refresh { background: none; border: none; color: var(--parchment-soft); cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 6px; }
+.um-refresh:hover { color: var(--gold); background: var(--shadow); }
+.um-empty { font-size: 11px; color: var(--parchment-soft); padding: 4px 0; }
+
+.um-row { display: flex; flex-direction: column; gap: 3px; }
+.um-row-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.um-label { font-size: 11px; color: var(--parchment); }
+.um-scope { font-style: normal; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--parchment-soft); }
+.um-pct { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.um-track { height: 5px; border-radius: 3px; background: var(--shadow); overflow: hidden; }
+.um-fill { height: 100%; border-radius: 3px; transition: width .3s ease; }
+.um-reset { font-size: 9px; color: var(--parchment-soft); }
+.um-foot { font-size: 9px; color: var(--parchment-soft); text-align: right; margin-top: 2px; }
+
+.um-ok   { color: #6fb98a; }
+.um-warn { color: #e0b46a; }
+.um-crit { color: var(--crimson); }
+.um-fill.um-ok   { background: #6fb98a; }
+.um-fill.um-warn { background: #e0b46a; }
+.um-fill.um-crit { background: var(--crimson); }
+
+/* ── ≤820px : usage widget → the right "usage & settings" drawer (§14.58) ──── */
+@media (max-width: 820px) {
+  /* The in-bar chip is redundant on phones — the full panel is in the drawer. */
+  .claude-bar .usage-meter { display: none; }
+
+  /* head-right becomes the right drawer; its toggle lives outside it (in
+     .head-toggles) so it stays reachable. */
+  .claude-head .head-right {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(86vw, 340px);
+    z-index: 60;
+    margin-left: 0;
+    flex-direction: column; align-items: stretch; gap: 10px;
+    padding: calc(14px + env(safe-area-inset-top)) 14px 14px;
+    background: var(--stone-2);
+    border-left: 1px solid var(--gold-deep);
+    box-shadow: -16px 0 40px rgba(0,0,0,0.45);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    overflow-y: auto;
+  }
+  .claude-root.usage-open .head-right { transform: translateX(0); }
+  .head-toggles { margin-left: auto; }
+  .claude-head .head-btn.m-only.usage-toggle { display: inline-flex; }
+
+  /* Drawer content: usage panel on top, then the action buttons as a column of
+     touch-friendly rows. */
+  .head-usage-panel { display: block; }
+  .claude-head .head-right .head-btn {
+    width: 100%; justify-content: flex-start; gap: 10px; padding: 10px 12px;
   }
 }

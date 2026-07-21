@@ -79,6 +79,35 @@ export type BridgeEvent =
 // is imported by sessionOps.ts which itself imports from agent/types.ts).
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 
+// ── Account usage (the `/usage` gauges) ─────────────────────────────────────
+// Normalized shape of api.anthropic.com/api/oauth/usage, polled per-VPS from
+// the agent's get_usage RPC (usagePoll.ts) and fanned onto the global bus as an
+// `account_usage` synthetic event (sessionId = vpsId). ACCOUNT-scoped. §14.58.
+export type AccountUsageWindow = {
+  utilization: number | null;  // percent 0–100 (null = unknown / no active window)
+  resetsAt: string | null;     // ISO 8601, or null when the window is idle
+};
+export type AccountUsageLimit = {
+  kind: string;                // 'session' | 'weekly_all' | 'weekly_scoped' | …
+  group?: string | null;       // 'weekly' | 'session' | …
+  percent: number;             // 0–100
+  severity: string;            // 'normal' | 'warning' | 'critical' | …
+  resetsAt?: string | null;
+  scopeModel?: string | null;  // scope.model.display_name (e.g. 'Fable'), else null
+  isActive?: boolean;
+};
+export type AccountUsage = {
+  ok: boolean;
+  fetchedAt: number;           // hub Date.now() (ms) — for "updated Ns ago"
+  subscriptionType?: string | null;  // 'max' | 'pro' | …
+  error?: string | null;       // when !ok: 'no_credentials' | 'http_error' | 'request_failed'
+  statusCode?: number | null;  // when error==='http_error' (401 stale token, 429 throttled)
+  fiveHour?: AccountUsageWindow | null;
+  sevenDay?: AccountUsageWindow | null;
+  limits?: AccountUsageLimit[] | null;
+  extraUsage?: { isEnabled?: boolean; utilization?: number | null } | null;
+};
+
 // Synthetic events that the worker fabricates itself (not received from the bridge).
 export type SyntheticEvent =
   | { type: 'status'; status: WorkerStatus }
@@ -114,7 +143,12 @@ export type SyntheticEvent =
   // session id (informational only; the client just refetches GET
   // /api/claude/sessions). Charon-internal synthetic event (no JSON-RPC / pyz
   // change), classed LOW_VOLUME so it reaches every tab. cf. CLAUDE.md §14.52.
-  | { type: 'session_list_changed' };
+  | { type: 'session_list_changed' }
+  // Account usage gauges fanned onto the global bus (sessionId = vpsId). Polled
+  // from the agent's get_usage RPC by usagePoll.ts (60s + after each stop);
+  // LOW_VOLUME → every tab. The header widget shows the CURRENT session's VPS
+  // account. cf. CLAUDE.md §14.58.
+  | ({ type: 'account_usage' } & AccountUsage);
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 

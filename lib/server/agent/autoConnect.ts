@@ -5,6 +5,7 @@ import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
 import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
 import { ensureShellIdleWatch } from './shellNotify';
+import { armUsageWatch } from './usagePoll';
 import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
 import type { AgentClient } from './AgentClient';
 import type { Vps } from '@/lib/db/schema';
@@ -36,6 +37,9 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
     if (!hello) return;
     reconcileVpsAgentState(vpsId, hello.sessions).catch(() => {});
     ensureShellIdleWatch(client);
+    // Account-usage gauges (§14.58): immediate poll on connect + a steady
+    // interval. Idempotent per vpsId; self-gates on claudeLoggedIn.
+    armUsageWatch(vpsId);
     try {
       const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
       if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});

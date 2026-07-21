@@ -58,6 +58,10 @@ METHODS = {
     "hello",
     "ping",
     "list_sessions",
+    # Account usage (the `/usage` equivalent) — reads the OAuth token and GETs
+    # api.anthropic.com/api/oauth/usage. Daemon-level (account-scoped), so it's
+    # a meta method. Agent >= 0.14.0. See agent/charon_agent/usage.py, §14.58.
+    "get_usage",
     "start_session",
     "resume_session",
     "subscribe",

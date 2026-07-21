@@ -2,11 +2,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import type { SessionListItem, ClaudeEffortLevel } from '@/lib/types/api';
-import type { PermissionMode } from '@/lib/server/claude/types';
+import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
+import UsageMeter from './UsageMeter';
 import QuestionCard from './QuestionCard';
 import ExitPlanCard from './ExitPlanCard';
 import type {
@@ -62,6 +63,10 @@ type Props = {
   onKilled: () => void;
   // After reverting a file edit → refresh parent's sessions list.
   onAfterRevert?: () => void;
+  // Account-usage gauges for this session's VPS account (the header `/usage`
+  // widget). Subscribed/held in ClaudePanel (account-scoped, LOW_VOLUME). §14.58.
+  usage?: AccountUsage | null;
+  onUsageRefresh?: () => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -75,7 +80,7 @@ const sharedCacheRef: StreamCache = {
 
 export default function ClaudeSessionView({
   sessionId, selected, selectedVps,
-  overlay, onImportError, onKilled, onAfterRevert,
+  overlay, onImportError, onKilled, onAfterRevert, usage, onUsageRefresh,
 }: Props) {
   const stream = useClaudeSessionStream(sessionId, {
     cache: sharedCacheRef,
@@ -353,6 +358,12 @@ export default function ClaudeSessionView({
       <main className="claude-main">
         <div className="claude-bar">
           <span className="bar-name">{selected.name || '(unnamed)'}</span>
+          {/* Account-usage gauges (5h / 7d) for this session's VPS account —
+              leftmost of the right-aligned control cluster (between the title
+              and the buttons). Hidden in-bar on mobile → shown in the right
+              drawer instead. cf. CLAUDE.md §14.58. */}
+          <UsageMeter usage={usage ?? null} vpsName={selectedVps?.name}
+                      compact onRefresh={onUsageRefresh} />
           {status === 'sleeping' || status === 'error' ? (
             <button onClick={() => doResume()}>resume</button>
           ) : (
