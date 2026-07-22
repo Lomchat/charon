@@ -597,11 +597,15 @@ le polling, cela crée un flux continu d'écritures WAL.
 sous-systèmes aient réussi. Une erreur transitoire peut donc ne jamais être
 retentée pendant la vie du processus.
 
-- [ ] Maintenir un état indépendant par sous-système.
-- [ ] Marquer chaque étape prête seulement après succès.
-- [ ] Retenter avec backoff.
+- [x] Maintenir un état indépendant par sous-système *(fait le 22/07 —
+      `STEPS[]` + Set `stepOk`, hot path O(1) quand tout est ok)*.
+- [x] Marquer chaque étape prête seulement après succès *(l'étape async est
+      marquée optimiste et re-marquée pending si sa promesse rejette)*.
+- [x] Retenter avec backoff *(timer 5s → ×2 → cap 5min, unref ; relance
+      aussi opportuniste à chaque appel hot-path)*.
 - [ ] Distinguer liveness et readiness.
-- [ ] Ajouter un endpoint ou bouton de relance administrative.
+- [ ] Ajouter un endpoint ou bouton de relance administrative *(moins urgent :
+      le backoff auto couvre le cas ; les routes SSE/focus re-déclenchent déjà)*.
 
 **Fichier principal** : `lib/server/seed.ts`
 
