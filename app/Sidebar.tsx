@@ -547,13 +547,13 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           {sdkVersion && (
             <span className={`cs-vps-ver sdkline${sdkOutdated ? ' outdated' : ''}`} title={agentTip}>
               <AgentLogo kind="claude" size={10} title="claude-agent-sdk" />
-              {`sdk ${sdkVersion}`}
+              {`claude ${sdkVersion}`}
             </span>
           )}
           {codexSdkVersion && (
             <span className={`cs-vps-ver sdkline${codexOutdated ? ' outdated' : ''}`} title={agentTip}>
               <AgentLogo kind="codex" size={10} title="openai-codex" />
-              {`sdk ${codexSdkVersion}`}
+              {`codex ${codexSdkVersion}`}
             </span>
           )}
         </span>
@@ -591,7 +591,13 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             // Classified error (vps.agentLastError): say WHICH layer is broken.
             // ssh-level → no "reinstall" (bootstrap can't run without SSH).
             <div className="cs-agent-bar err">
-              <span className="cs-agent-meta" title={errDetail ?? undefined}>
+              {/* Tooltip = raw ssh error + since-when: "last OK contact 2 min
+                  ago" reads as a blip auto-healing on the next backoff retry;
+                  "3 d ago" reads as a genuinely dead box. */}
+              <span
+                className="cs-agent-meta"
+                title={`${errDetail ?? ''}${(v as any).agentLastSeenAt ? `${errDetail ? ' · ' : ''}last OK contact: ${formatAge((v as any).agentLastSeenAt)} — auto-retries with backoff (up to 5 min between tries)` : ''}` || undefined}
+              >
                 {errCode === 'ssh-unreachable' ? 'vps unreachable (ssh)'
                   : errCode === 'ssh-auth' ? 'ssh key refused'
                   : errCode === 'daemon-down' ? 'agent stopped'

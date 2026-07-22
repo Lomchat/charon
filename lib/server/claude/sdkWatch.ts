@@ -213,7 +213,7 @@ async function tick(): Promise<void> {
     // VPS without codex is never enrolled just for the codex axis.
     const codexOld = (v: Vps) => !!codexLatest && !!v.codexSdkVersion && isVersionOutdated(v.codexSdkVersion, codexLatest);
     const reason = (v: Vps) => [
-      sdkOld(v) ? `sdk ${v.sdkVersion}→${latest}` : null,
+      sdkOld(v) ? `claude ${v.sdkVersion}→${latest}` : null,
       pyzOld(v) ? `pyz ${(v.agentPyzSha ?? '').slice(0, 7)}→${(builtSha ?? '').slice(0, 7)}` : null,
       codexOld(v) ? `codex ${v.codexSdkVersion}→${codexLatest}` : null,
     ].filter(Boolean).join(', ');
@@ -303,7 +303,7 @@ async function tick(): Promise<void> {
         // the post-update venv/binary (pip -U is non-fatal, so sdkVersion may
         // be absent if only that sub-step failed while the pyz still updated).
         const done = [
-          res.sdkVersion ? `sdk ${res.sdkVersion}` : null,
+          res.sdkVersion ? `claude ${res.sdkVersion}` : null,
           res.codexSdkVersion ? `codex ${res.codexSdkVersion}` : null,
           res.newPyzSha ? `pyz ${res.newPyzSha.slice(0, 7)}` : null,
         ].filter(Boolean).join(', ');
@@ -329,7 +329,7 @@ async function tick(): Promise<void> {
     // Batch summary — only when something was actually attempted (a busy-only
     // tick every 30min would just be noise; those VPSes stay badge-lit anyway).
     if (updated.length > 0 || failed.length > 0) {
-      const parts: string[] = [`Agent auto-update (sdk ${latest ?? '-'}, codex ${codexLatest ?? '-'}, pyz ${builtSha ? builtSha.slice(0, 7) : '-'}):`];
+      const parts: string[] = [`Agent auto-update (claude ${latest ?? '-'}, codex ${codexLatest ?? '-'}, pyz ${builtSha ? builtSha.slice(0, 7) : '-'}):`];
       if (updated.length) parts.push(`✓ updated: ${updated.join(', ')}`);
       if (skippedBusy.length) parts.push(`⏸ busy, retry later: ${skippedBusy.join(', ')}`);
       if (failed.length) parts.push(`✗ failed:\n${failed.map((f) => `• ${f}`).join('\n')}`);

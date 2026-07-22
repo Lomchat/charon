@@ -555,6 +555,11 @@ export type UpdateAgentResult = {
   codexSdkVersion?: string;
   codexAvailable?: boolean;
   detail: string;
+  // PARTIAL failures on an ok:true update (the pip sub-steps are non-fatal by
+  // design: the pyz deploy succeeded but claude-agent-sdk and/or openai-codex
+  // did NOT upgrade). Surfaced as a toast by the UI — without this the
+  // "update" badge silently relights and the user has no idea why.
+  warnings?: string[];
 };
 
 export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
@@ -648,6 +653,11 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // running daemon actually imports), fall back to the pip step's version.
     // Only set when we actually have one (no null-clobber, §14.53).
     const codexSdkVersion = ping.codexSdkVersion ?? (codex.ok ? codex.codexVersion : undefined);
+    // Partial failures → structured warnings (the UI toasts them; the badge
+    // relighting after an "ok" update is otherwise a silent mystery).
+    const warnings: string[] = [];
+    if (!sdk.ok) warnings.push(sdkNote);
+    if (!codex.ok) warnings.push(codexNote);
     return {
       ok: true,
       newVersion: ping.version,
@@ -656,6 +666,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       ...(codexSdkVersion ? { codexSdkVersion } : {}),
       ...(ping.codexAvailable !== undefined ? { codexAvailable: ping.codexAvailable } : {}),
       detail: `${ping.detail} · ${sdkNote} · ${codexNote}`,
+      ...(warnings.length ? { warnings } : {}),
     };
   } finally {
     await closeSshSession(session);
@@ -720,7 +731,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
   yield { phase: 'verify', status: 'running', detail: 'test: python + import claude_agent_sdk' };
   let v = await tryVerify(vps, session);
   if (v.ok) {
-    yield { phase: 'verify', status: 'ok', detail: `${v.py} · sdk ${v.sdk}` };
+    yield { phase: 'verify', status: 'ok', detail: `${v.py} · claude sdk ${v.sdk}` };
   } else {
     // Broken SSH = fatal. No point trying the next phases, they'll all
     // fail the same way and eat the timeout. Yield an explicit done
@@ -730,7 +741,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       yield { phase: 'done', status: 'error', detail: `cannot SSH to ${vps.sshUser}@${vps.ip}:${vps.sshPort} — check the VPS, the key, the firewall` };
       return;
     }
-    yield { phase: 'verify', status: 'warn', detail: v.reason === 'no_py' ? 'python3.10+ missing' : v.reason === 'no_sdk' ? 'sdk missing' : v.raw.slice(-160) };
+    yield { phase: 'verify', status: 'warn', detail: v.reason === 'no_py' ? 'python3.10+ missing' : v.reason === 'no_sdk' ? 'claude sdk missing' : v.raw.slice(-160) };
 
     // Install Python if missing
     if (v.reason === 'no_py') {
@@ -815,7 +826,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
         yield { phase: 'done', status: 'error', detail: 'post-install verify fails' };
         return;
       }
-      yield { phase: 'verify', status: 'ok', detail: `${v.py} · sdk ${v.sdk}` };
+      yield { phase: 'verify', status: 'ok', detail: `${v.py} · claude sdk ${v.sdk}` };
     }
   }
 

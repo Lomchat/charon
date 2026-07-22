@@ -32,7 +32,7 @@ type Props = {
 };
 
 const PHASE_LABEL: Record<BootstrapEvent['phase'], string> = {
-  verify:             'verifying python + SDK',
+  verify:             'verifying python + claude SDK',
   detect_os:          'detecting OS',
   install_python:     'installing python',
   install_sdk:        'installing claude-agent-sdk',
