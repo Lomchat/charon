@@ -101,9 +101,18 @@ export async function startShell(
     cols: opts.cols ?? 120,
     rows: opts.rows ?? 32,
   });
-  db.insert(shellsTable).values({
-    id, vpsId, cwd: cleanCwd, name: opts.name ?? null, color: null,
-  }).run();
+  try {
+    db.insert(shellsTable).values({
+      id, vpsId, cwd: cleanCwd, name: opts.name ?? null, color: null,
+    }).run();
+  } catch (e) {
+    // Compensating kill: the remote holder was already spawned; without a DB
+    // row it would be an invisible orphan (unfindable and unkillable from
+    // the UI). Best-effort — worst case the shell_watch snapshot reconcile
+    // has no row to prune and the holder idles until the VPS reboots.
+    try { await client.call('shell_kill', { shell_id: id }); } catch {}
+    throw e;
+  }
   const [row] = db.select().from(shellsTable).where(eq(shellsTable.id, id)).all();
   return rowToInfo(row!, v.name);
 }
@@ -119,18 +128,40 @@ export function listShells(): ShellInfo[] {
   return rows.map((r) => rowToInfo(r, vpsNameOf(r.vpsId)));
 }
 
-export async function stopShell(id: string): Promise<boolean> {
+export type StopShellResult =
+  | { ok: true; forced?: boolean }
+  | { ok: false; notFound?: boolean; error: string };
+
+// "Stop" vs "forget" (P0.6): killing the remote PTY and dropping the DB row
+// are two different things. The holder is DETACHED (survives the agent, cf.
+// holder.py) — the old "the bash will die with the agent eventually" comment
+// was wrong since 0.10.0. So:
+//   - default: only drop the DB row once the agent CONFIRMED the kill (an
+//     "unknown shell" answer counts — already gone). On RPC failure the row
+//     stays and the caller reports the error.
+//   - force=true ("forget"): drop the row even if the kill failed — explicit
+//     user decision when the VPS is unreachable for good.
+export async function stopShell(id: string, opts: { force?: boolean } = {}): Promise<StopShellResult> {
   const [row] = db.select().from(shellsTable).where(eq(shellsTable.id, id)).all();
-  if (!row) return false;
-  // Best-effort: tell the agent to kill the PTY. If the agent is
-  // unreachable we still drop the DB row — the bash will die with the
-  // agent eventually, and the user expected the shell to be gone.
+  if (!row) return { ok: false, notFound: true, error: 'shell not found' };
+  let killed = false;
+  let killError = '';
   try {
     const client = getAgentClientForVpsId(row.vpsId);
     await client.call('shell_kill', { shell_id: id });
-  } catch {}
-  db.delete(shellsTable).where(eq(shellsTable.id, id)).run();
-  return true;
+    killed = true;
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    // -32000 "session/shell not found" = already gone on the agent side —
+    // deleting the row is the CORRECT outcome, not a forced one.
+    if (/not found|-32000/i.test(msg)) killed = true;
+    else killError = msg;
+  }
+  if (killed || opts.force) {
+    db.delete(shellsTable).where(eq(shellsTable.id, id)).run();
+    return killed ? { ok: true } : { ok: true, forced: true };
+  }
+  return { ok: false, error: killError || 'shell_kill failed' };
 }
 
 export function updateShellMeta(

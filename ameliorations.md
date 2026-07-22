@@ -367,17 +367,30 @@ retrouver ou d'arrêter un shell depuis Charon.
 
 **Actions**
 
-- [ ] Exécuter un kill compensatoire si l'insertion DB échoue.
-- [ ] Introduire un état `deleting` ou une tombstone.
-- [ ] Conserver la ligne tant que le holder n'a pas confirmé l'arrêt.
-- [ ] Retenter la suppression avec backoff.
-- [ ] Séparer les commandes « arrêter » et « oublier ».
-- [ ] Appliquer la même distinction à la suppression d'un VPS (au minimum :
-      kill best-effort des sessions/holders avant le delete DB).
-- [ ] Ne fermer l'UI qu'après acquittement ou afficher clairement l'échec.
+*(✔ l'essentiel fait le 22/07/2026 — vérifié en prod : VPS injoignable →
+502 `{canForce:true}` + ligne préservée, `?force=1` → purge ; chemin nominal
+→ kill confirmé, zéro holder orphelin.)*
+
+- [x] Exécuter un kill compensatoire si l'insertion DB échoue
+      *(startShell : try/catch + shell_kill best-effort)*.
+- [ ] Introduire un état `deleting` ou une tombstone *(remplacé par le
+      modèle stop-vs-forget, plus simple : la ligne reste tant que le kill
+      n'est pas confirmé)*.
+- [x] Conserver la ligne tant que le holder n'a pas confirmé l'arrêt
+      *(réponse "not found" de l'agent = déjà mort = confirmation)*.
+- [ ] Retenter la suppression avec backoff *(remplacé par le retry manuel
+      via l'UI — confirm → force)*.
+- [x] Séparer les commandes « arrêter » et « oublier »
+      (`stopShell(id, {force})`, `DELETE ?force=1`).
+- [x] Appliquer la même distinction à la suppression d'un VPS *(DELETE vps :
+      kill best-effort de TOUTES les sessions + shells distants, borné 8s,
+      avant le cascade DB — avant ça, tout continuait de tourner sur le VPS)*.
+- [x] Ne fermer l'UI qu'après acquittement ou afficher clairement l'échec
+      *(ShellTerminal + ClaudePanel : confirm « forget anyway? » sur échec)*.
 - [ ] Ajouter une réconciliation périodique entre DB et `shell_list`
       (bidirectionnelle : pruner les fantômes DB ET détecter/tuer les
-      holders inconnus de la DB).
+      holders inconnus de la DB — les 3 chemins événementiels existants
+      restent DB→prune uniquement).
 
 **Fichiers concernés**
 

@@ -28,10 +28,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 }
 
 // DELETE /api/shells/[id] — agent's `shell_kill` + drop the DB row.
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+// "Stop vs forget" (P0.6): by default the row is only dropped once the agent
+// confirmed the kill; on failure → 502 with canForce:true and the caller may
+// retry with ?force=1 to forget the shell anyway (VPS unreachable for good).
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  const ok = await stopShell(id);
-  return NextResponse.json({ ok });
+  const force = new URL(req.url).searchParams.get('force') === '1';
+  const r = await stopShell(id, { force });
+  if (!r.ok) {
+    if (r.notFound) return NextResponse.json({ error: r.error }, { status: 404 });
+    return NextResponse.json({ ok: false, error: r.error, canForce: true }, { status: 502 });
+  }
+  return NextResponse.json({ ok: true, forced: r.forced ?? false });
 }

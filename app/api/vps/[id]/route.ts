@@ -63,6 +63,29 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  // Best-effort REMOTE cleanup before dropping the rows (P0.6): the FK
+  // cascade only deletes DB rows — without this, every claude session and
+  // every detached shell holder kept running on the VPS forever, invisible
+  // and unkillable from Charon. Bounded to 8s total so an unreachable VPS
+  // can't wedge the delete (the user is removing it, possibly BECAUSE it's
+  // unreachable).
+  try {
+    const { shells: shellsTable, claudeSessions } = await import('@/lib/db');
+    const { getAgentClientForVpsId } = await import('@/lib/server/agent/AgentClientPool');
+    const shellRows = db.select().from(shellsTable).where(eq(shellsTable.vpsId, id)).all();
+    const sessRows = db.select().from(claudeSessions).where(eq(claudeSessions.vpsId, id)).all();
+    if (shellRows.length || sessRows.length) {
+      const client = getAgentClientForVpsId(id);
+      const kills = [
+        ...shellRows.map((r) => client.call('shell_kill', { shell_id: r.id }).catch(() => {})),
+        ...sessRows.map((r) => client.call('kill_session', { session_id: r.id }).catch(() => {})),
+      ];
+      await Promise.race([
+        Promise.allSettled(kills),
+        new Promise((resolve) => setTimeout(resolve, 8000)),
+      ]);
+    }
+  } catch {}
   // Close the multiplexed SSH before deleting the VPS row
   await dropAgentClient(id).catch(() => {});
   db.delete(vps).where(eq(vps.id, id)).run();

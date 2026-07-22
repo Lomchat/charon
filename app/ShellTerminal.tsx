@@ -356,7 +356,19 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
   const killShell = async () => {
     closedByUserRef.current = true;
     if (wsRef.current) { try { wsRef.current.close(1000, 'user closed'); } catch {} }
-    try { await fetch(`/api/shells/${shellId}`, { method: 'DELETE' }); } catch {}
+    // Stop-vs-forget (P0.6): only treat the shell as gone once the server
+    // confirmed the kill; on 502 offer to force-forget (VPS unreachable).
+    try {
+      const r = await fetch(`/api/shells/${shellId}`, { method: 'DELETE' });
+      if (!r.ok && r.status !== 404) {
+        if (window.confirm('kill failed (VPS unreachable?).\nForget this shell anyway? The remote bash may keep running.')) {
+          await fetch(`/api/shells/${shellId}?force=1`, { method: 'DELETE' });
+        } else {
+          closedByUserRef.current = false;
+          return; // keep the shell — user declined
+        }
+      }
+    } catch {}
     onKilled();
   };
 

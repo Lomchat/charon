@@ -1264,7 +1264,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       await api.killShell(id);
       shellKilled(id);
     } catch (e: any) {
-      setError({ msg: 'kill shell: ' + (e?.message ?? e) });
+      // Kill failed (agent unreachable). Offer "forget": drop the Charon row
+      // anyway — the detached holder may keep running on the VPS (P0.6).
+      const msg = String(e?.message ?? e);
+      if (window.confirm(`kill failed (${msg}).\nForget this shell anyway? The remote bash may keep running on the VPS.`)) {
+        try {
+          await api.killShell(id, true);
+          shellKilled(id);
+        } catch (e2: any) {
+          setError({ msg: 'forget shell: ' + (e2?.message ?? e2) });
+        }
+      } else {
+        setError({ msg: 'kill shell: ' + msg });
+      }
     }
   }
 

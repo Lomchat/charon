@@ -148,8 +148,10 @@ export const api = {
     } as StartShellBody),
   updateShell: (shellId: string, data: UpdateShellBody) =>
     send<ShellInfo>('PATCH', `/api/shells/${shellId}`, data),
-  killShell: (shellId: string) =>
-    send<OkResponse>('DELETE', `/api/shells/${shellId}`),
+  // force=true = "forget": drop the row even if the remote kill failed
+  // (unreachable VPS). Without force, a failed kill → 502 {canForce:true}.
+  killShell: (shellId: string, force = false) =>
+    send<OkResponse>('DELETE', `/api/shells/${shellId}${force ? '?force=1' : ''}`),
 
   // ── VPS folders (sidebar organization) ─────────────────────────────────────
   listVpsFolders: () =>
