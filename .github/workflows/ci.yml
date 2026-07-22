@@ -1,12 +1,10 @@
 name: CI
 
 # Runs the protocol drift check, the Next build, the Drizzle migration suite
-# against a temp DB, the Python agent compile + zipapp build, and a strict
-# `tsc --noEmit` pass.
-#
-# There are no unit tests in the repo yet — see CONTRIBUTING.md "Tests". This
-# CI catches structural regressions: protocol drift between Python and TS,
-# broken TS, broken migrations, agent that no longer compiles or zipapps.
+# against a temp DB, the Python agent compile + zipapp build, a strict
+# `tsc --noEmit` pass, AND the unit test suites: vitest (TS server/runtime
+# logic) + python unittest (agent event log, state, protocol, daemon
+# integration). Plus a blocking production npm audit (high+).
 
 on:
   push:
@@ -20,8 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Pair the ends of both supported ranges (agent minimum is Python 3.10;
+      # newest commonly deployed is 3.13) without doubling the job count.
       matrix:
-        node-version: ['20', '22']
+        include:
+          - node-version: '20'
+            python-version: '3.10'
+          - node-version: '22'
+            python-version: '3.13'
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +35,10 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
-      - name: Setup Python
+      - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: npm ci
@@ -83,9 +87,10 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
-    # Non-blocking vigilance. We don't want a transient advisory to wedge
-    # PRs, but we do want a visible signal on the run.
-    continue-on-error: true
+    # BLOCKING (P2.16): a high/critical advisory on a production dependency
+    # fails the run. For a genuinely unfixable transient advisory, add a
+    # documented temporary allowlist via `npm audit --omit=dev --json` review
+    # — don't flip this back to continue-on-error silently.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

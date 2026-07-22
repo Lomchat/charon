@@ -886,9 +886,14 @@ qu'elles sont décrites comme temporaires.
 La reconstruction du zipapp peut modifier l'artefact suivi uniquement à cause
 des timestamps ZIP.
 
-- [ ] Normaliser ordre, timestamps et permissions des entrées.
-- [ ] Reconstruire deux fois et comparer les SHA.
+- [x] Normaliser ordre, timestamps et permissions des entrées *(fait le 22/07
+      — build.sh écrit le ZIP lui-même : entrées triées, date fixe 2020-01-01,
+      perms 644, `__pycache__` exclu)*.
+- [x] Reconstruire deux fois et comparer les SHA *(vérifié : SHA identiques ;
+      pyz exécutable — `--connect` exit 2 attendu)*.
 - [ ] Faire échouer la CI si le pyz commité n'est pas reproductible ou à jour.
+- [ ] *(note : `dist/charon-agent.pyz` sera rebuilt au chantier replay pour ne
+      déclencher qu'UNE vague d'auto-update fleet — §14.53)*
 
 ### P2.16 — Automatiser la surveillance des dépendances
 
@@ -898,8 +903,9 @@ des timestamps ZIP.
 
 - [ ] Configurer Renovate ou Dependabot.
 - [ ] Épingler explicitement les dépendances critiques si nécessaire.
-- [ ] Rendre les vulnérabilités high/critical bloquantes avec allowlist
-      temporaire documentée (le job existe, retirer `continue-on-error`).
+- [x] Rendre les vulnérabilités high/critical bloquantes avec allowlist
+      temporaire documentée *(fait le 22/07 — `continue-on-error` retiré du
+      job audit)*.
 - [ ] Conserver les avis Next.js officiels dans le processus de mise à jour.
 
 Au moment de l'audit, le lockfile construisait Next.js 15.5.18, qui inclut le
@@ -961,12 +967,15 @@ skip.
 > commentaire NIE des tests qui existent, il n'en promet pas d'inexistants.
 > À corriger quand même (commentaire périmé), mais dans l'autre sens.
 
-- [ ] Tester Python 3.10, 3.11 et 3.13 (aujourd'hui : 3.11 seul).
-- [ ] Conserver Node 20 et 22.
+- [x] Tester Python 3.10, 3.11 et 3.13 *(fait le 22/07 — matrice appariée :
+      node 20+py3.10 / node 22+py3.13, les deux extrêmes des plages
+      supportées sans doubler les jobs)*.
+- [x] Conserver Node 20 et 22.
 - [ ] Ajouter smoke WebSocket et Docker.
 - [ ] Installer et épingler Playwright comme devDependency.
 - [ ] Ne plus exécuter `npm install --no-save` depuis le smoke test.
-- [ ] Corriger le commentaire ci.yml:7 (périmé : il nie des tests existants).
+- [x] Corriger le commentaire ci.yml:7 (périmé : il niait des tests
+      existants) *(fait le 22/07)*.
 - [ ] Publier les rapports de tests, couverture et audit en artefacts.
 
 ## 9. P3 — Documentation et observabilité
