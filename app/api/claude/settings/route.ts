@@ -4,8 +4,6 @@ import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
 
 const ALLOWED_KEYS = [
   'ssh.private_key_path',
-  'session.max_active',
-  'retention.killed_days',
   'notif.global_enabled',
   'shell.notify_idle',
   'vapid.subject',

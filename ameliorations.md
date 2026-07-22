@@ -576,8 +576,11 @@ en host, port 99999 refusé.)*
 Chaque requête authentifiée prolonge actuellement la session en SQLite. Avec
 le polling, cela crée un flux continu d'écritures WAL.
 
-- [ ] Ne toucher la session que toutes les 5 à 15 minutes.
-- [ ] Utiliser un `UPDATE ... WHERE expires_at < threshold`.
+- [x] Ne toucher la session que toutes les 5 à 15 minutes *(fait le 22/07 —
+      refresh seulement quand le TTL restant < TTL−30min, soit ≤1 UPDATE/30min
+      par session au lieu d'un par requête)*.
+- [x] Utiliser un `UPDATE ... WHERE expires_at < threshold` *(équivalent :
+      le seuil est vérifié en amont sur la ligne déjà lue)*.
 - [ ] Nettoyer les entrées mémoire associées aux sessions expirées.
 - [ ] Mesurer latence, contentions et taille du WAL.
 
@@ -616,9 +619,14 @@ retentée pendant la vie du processus.
 clair. La rétention des sessions `killed` est incohérente avec leur suppression
 immédiate.
 
-- [ ] Rechercher et lister tous les réglages lus, écrits et réellement utilisés.
-- [ ] Implémenter ceux qui ont encore un sens métier.
-- [ ] Retirer proprement les autres de l'API, de l'UI et de la documentation.
+- [x] Rechercher et lister tous les réglages lus, écrits et réellement
+      utilisés *(fait — seuls `session.max_active` et `retention.killed_days`
+      étaient fantômes)*.
+- [ ] Implémenter ceux qui ont encore un sens métier *(aucun retenu —
+      `max_active` n'a pas de sens en mono-user)*.
+- [x] Retirer proprement les autres de l'API, de l'UI et de la documentation
+      *(fait le 22/07 : DEFAULTS + ALLOWED_KEYS + SettingsModal + lignes DB
+      purgées)*.
 - [ ] Ajouter un test par réglage modifiable.
 
 ### P1.8 — Valider la configuration au démarrage
@@ -663,7 +671,8 @@ La recherche actuelle repose sur `%LIKE%` et effectue des lookups associés.
 Cas identifiés : ~~premier message utilisateur calculé pour toutes les
 sessions~~ *(faux — déjà agrégé)*, et nom VPS recherché shell par shell.
 
-- [ ] Remplacer les lookups successifs par des jointures (shells).
+- [x] Remplacer les lookups successifs par des jointures (shells) *(fait le
+      22/07 — Map des noms VPS en une requête)*.
 - [ ] Dénormaliser `first_user_preview` et `last_message_at` si les mesures le
       justifient.
 - [ ] Mettre à jour les champs dénormalisés dans les mêmes transactions.
@@ -713,9 +722,10 @@ sessions~~ *(faux — déjà agrégé)*, et nom VPS recherché shell par shell.
 > `db.delete`, l.59-61). En mono-user le nombre de subs est minuscule —
 > priorité basse.
 
-- [ ] Envoyer Web Push avec une concurrence limitée plutôt que strictement
-      séquentielle.
-- [ ] Définir des timeouts.
+- [x] Envoyer Web Push avec une concurrence limitée plutôt que strictement
+      séquentielle *(fait le 22/07 — allSettled parallèle ; le nombre de subs
+      est minuscule, pas besoin de pool)*.
+- [x] Définir des timeouts *(fait le 22/07 — 10s par envoi via Promise.race)*.
 - [ ] ~~Supprimer les abonnements définitivement invalides.~~ *(déjà fait)*
 - [ ] Mesurer échecs et latence sans exposer les endpoints complets.
 
@@ -751,9 +761,10 @@ Extraire des transitions pures et les tester avant de déplacer les effets.
 > garde de fraîcheur, `SearchModal.tsx:33-40`) — mais ❌ un debounce 250 ms
 > existe déjà. Fix = 5 lignes (compteur monotone). Quick win.
 
-- [ ] Annuler la requête précédente avec `AbortController`, ou utiliser un
-      identifiant monotone.
-- [ ] Ignorer toute réponse ne correspondant plus à la recherche courante.
+- [x] Annuler la requête précédente avec `AbortController`, ou utiliser un
+      identifiant monotone *(fait le 22/07 — flag `stale` par effet, la
+      réponse d'une frappe antérieure est ignorée)*.
+- [x] Ignorer toute réponse ne correspondant plus à la recherche courante.
 - [ ] Tester les réponses arrivant dans le désordre.
 
 **Fichier principal** : `app/SearchModal.tsx`
@@ -996,8 +1007,11 @@ skip.
 
 ### P3.3 — Séparer liveness, readiness et diagnostics
 
-- [ ] Garder une liveness publique minimale, par exemple `{ "ok": true }`.
-- [ ] Protéger versions, SHA, détails DB et erreurs internes par authentification.
+- [x] Garder une liveness publique minimale, par exemple `{ "ok": true }`
+      *(fait le 22/07 — anonyme = `{ok, db}` seulement)*.
+- [x] Protéger versions, SHA, détails DB et erreurs internes par
+      authentification *(fait le 22/07 — champs diagnostics uniquement avec
+      un cookie session valide)*.
 - [ ] Ajouter une readiness qui vérifie DB, initialisation et capacité agent.
 - [ ] Ne jamais exposer de secret ou chemin sensible dans les réponses.
 

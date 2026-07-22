@@ -44,13 +44,21 @@ export async function sendPushToAll(payload: {
   if (!k) return;
   const subs = db.select().from(claudePushSubs).all();
   const body = JSON.stringify(payload);
-  for (const s of subs) {
+  // Parallel + per-send 10s cap (P2.6): one hung push service must not
+  // serialize/stall the whole notification fan-out (this runs inline in
+  // event handlers). Sub count is tiny (one row per browser), so plain
+  // allSettled is bounded enough — no need for a concurrency pool.
+  const SEND_TIMEOUT_MS = 10_000;
+  await Promise.allSettled(subs.map(async (s) => {
     const sub = {
       endpoint: s.endpoint,
       keys: { p256dh: s.p256dh, auth: s.authKey },
     };
     try {
-      await webpush.sendNotification(sub as any, body, { TTL: 60 });
+      await Promise.race([
+        webpush.sendNotification(sub as any, body, { TTL: 60 }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('push send timeout')), SEND_TIMEOUT_MS)),
+      ]);
       db.update(claudePushSubs)
         .set({ lastUsedAt: Math.floor(Date.now() / 1000) })
         .where(eq(claudePushSubs.id, s.id)).run();
@@ -60,5 +68,5 @@ export async function sendPushToAll(payload: {
         db.delete(claudePushSubs).where(eq(claudePushSubs.id, s.id)).run();
       }
     }
-  }
+  }));
 }

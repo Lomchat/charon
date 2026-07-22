@@ -8,8 +8,9 @@ import { db, claudeSettings } from '@/lib/db';
 // a personal email hardcoded in plaintext in the repo.
 const DEFAULTS = {
   'ssh.private_key_path': '/root/.ssh/id_rsa',
-  'session.max_active': '10',
-  'retention.killed_days': '30',
+  // NOTE: session.max_active / retention.killed_days were REMOVED (P1.7) —
+  // they were exposed in the UI but had zero runtime consumers (decorative
+  // settings). Re-add only WITH an implementation.
   'notif.global_enabled': 'true',
   // When a persistent shell goes active→idle after a "consequential" output
   // burst (see agent shell.py idle heuristic), Charon sends a push/telegram

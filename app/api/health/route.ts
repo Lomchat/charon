@@ -1,20 +1,23 @@
 import { NextResponse } from 'next/server';
 import { db, users } from '@/lib/db';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getSession, SESSION_COOKIE } from '@/lib/server/auth';
 
 // GET /api/health — liveness + lightweight readiness probe.
 //
-// - No authentication. Intended for reverse proxies and container
+// - No authentication REQUIRED. Intended for reverse proxies and container
 //   orchestrators (Docker HEALTHCHECK, k8s liveness/readiness).
-// - Returns 200 with a small JSON body when the DB is reachable.
-// - Returns 503 when the DB ping fails.
+// - UNAUTHENTICATED callers get the minimal `{ok, db}` — no build sha,
+//   uptime, or internal error strings (P3.3: diagnostics are authed-only).
+// - A valid charon_session cookie unlocks the diagnostic fields.
+// - Returns 200 when the DB is reachable, 503 otherwise.
 // - Deliberately does not touch the agent pool (agents reconnect with
 //   backoff; an unreachable VPS would otherwise mark the hub unhealthy).
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(req: Request) {
   const startedAt = Date.now();
   let dbOk = false;
   let dbError: string | undefined;
@@ -28,14 +31,25 @@ export async function GET() {
     dbError = e instanceof Error ? e.message : String(e);
   }
 
+  let authed = false;
+  try {
+    const cookie = req.headers.get('cookie') ?? '';
+    const m = ('; ' + cookie).match(new RegExp('; ' + SESSION_COOKIE + '=([^;]+)'));
+    if (m) authed = (await getSession(decodeURIComponent(m[1]))) != null;
+  } catch {}
+
   const body = {
     ok: dbOk,
     db: dbOk,
-    agentPyzSha: getBuiltPyzSha(),
-    uptimeSeconds: Math.round(process.uptime()),
-    checkedAt: new Date().toISOString(),
-    latencyMs: Date.now() - startedAt,
-    ...(dbError ? { dbError } : {}),
+    ...(authed
+      ? {
+          agentPyzSha: getBuiltPyzSha(),
+          uptimeSeconds: Math.round(process.uptime()),
+          checkedAt: new Date().toISOString(),
+          latencyMs: Date.now() - startedAt,
+          ...(dbError ? { dbError } : {}),
+        }
+      : {}),
   };
 
   return NextResponse.json(body, { status: dbOk ? 200 : 503 });

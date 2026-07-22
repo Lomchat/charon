@@ -125,7 +125,13 @@ export function getShell(id: string): ShellInfo | null {
 
 export function listShells(): ShellInfo[] {
   const rows = db.select().from(shellsTable).all();
-  return rows.map((r) => rowToInfo(r, vpsNameOf(r.vpsId)));
+  if (rows.length === 0) return [];
+  // One query for all VPS names instead of one per shell (P2.2).
+  const names = new Map(
+    db.select({ id: vpsTable.id, name: vpsTable.name }).from(vpsTable).all()
+      .map((v) => [v.id, v.name] as const),
+  );
+  return rows.map((r) => rowToInfo(r, names.get(r.vpsId) ?? '?'));
 }
 
 export type StopShellResult =

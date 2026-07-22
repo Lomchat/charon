@@ -30,14 +30,20 @@ export default function SearchModal({ onClose, onPick }: Props) {
 
   useEffect(() => {
     if (q.trim().length < 2) { setResults([]); return; }
+    // Staleness guard (P2.8): a slow response from an earlier keystroke must
+    // never overwrite a newer one. The cleanup flips `stale` on every q
+    // change/unmount; a stale response is dropped entirely.
+    let stale = false;
     const t = setTimeout(async () => {
       setLoading(true);
       try {
         const r = await api.searchClaude(q);
-        setResults(r.results ?? []);
-      } finally { setLoading(false); }
+        if (!stale) setResults(r.results ?? []);
+      } finally {
+        if (!stale) setLoading(false);
+      }
     }, 250);
-    return () => clearTimeout(t);
+    return () => { stale = true; clearTimeout(t); };
   }, [q]);
 
   return (

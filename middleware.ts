@@ -37,9 +37,15 @@ export async function middleware(req: NextRequest) {
     const { getSession, touchSession } = await import('@/lib/server/auth');
     const session = await getSession(sid);
     if (session) {
-      // Pass the RAW cookie token — session.id is the HASHED row id and
-      // touchSession hashes its argument (see auth.ts § token hashing).
-      await touchSession(sid);
+      // Sliding-TTL refresh, THROTTLED (P1.5): only rewrite expires_at when
+      // the last refresh is >30 min old (i.e. remaining TTL dipped below
+      // TTL-30min). Untouched, every authed request — 5s polling included —
+      // was one SQLite UPDATE in the WAL. Pass the RAW cookie token —
+      // session.id is the HASHED row id and touchSession hashes its arg.
+      const remaining = session.expiresAt - Math.floor(Date.now() / 1000);
+      if (remaining < SESSION_TTL_SECS - 30 * 60) {
+        await touchSession(sid);
+      }
       valid = true;
     }
   }

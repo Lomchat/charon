@@ -155,12 +155,6 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                     <label>SSH key (path on the hub server)
                       <input value={s['ssh.private_key_path'] ?? ''} onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
                     </label>
-                    <label>max concurrent active sessions (soft warning)
-                      <input value={s['session.max_active'] ?? ''} onChange={(e) => set('session.max_active', e.target.value)} inputMode="numeric" />
-                    </label>
-                    <label>killed session retention (days, 0 = never purge)
-                      <input value={s['retention.killed_days'] ?? ''} onChange={(e) => set('retention.killed_days', e.target.value)} inputMode="numeric" />
-                    </label>
                     <label>public URL of this hub (deep links in Telegram / push)
                       <input value={s['app.public_url'] ?? ''} onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com" type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
                     </label>
