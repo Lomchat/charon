@@ -2,6 +2,7 @@ import 'server-only';
 import { and, asc, eq, gte, lte } from 'drizzle-orm';
 import { db, claudeSessionMessages } from '@/lib/db';
 import type { ClaudeSessionMessage } from '@/lib/db/schema';
+import { chronologicalKeys } from './messageOrder';
 
 // Side-channel roles: loaded as attachments of the chat window, never counted
 // against the pagination limit (CLAUDE.md §14.25).
@@ -39,16 +40,9 @@ export function loadMessageWindow(
     .all();
   if (skel.length === 0) return { messages: [], hasMore: false, oldestChatId: null };
 
-  const ck = new Map<number, number>();
-  let watermark = 0;
-  for (const r of skel) {
-    if (typeof r.seq === 'number') {
-      ck.set(r.id, r.seq);
-      if (r.seq > watermark) watermark = r.seq;
-    } else {
-      ck.set(r.id, watermark);
-    }
-  }
+  // Single source of the chronological key (messageOrder.chronologicalKeys —
+  // Codex 20.3: one definition shared with the display sort, no drift).
+  const ck = chronologicalKeys(skel); // skel is id-ascending
   const ordered = [...skel].sort((a, b) => (ck.get(a.id)! - ck.get(b.id)!) || (a.id - b.id));
   const chat = ordered.filter((r) => !NON_PAGINATED_ROLES.includes(r.role));
 
@@ -66,11 +60,19 @@ export function loadMessageWindow(
     return { messages: [], hasMore: false, oldestChatId: null };
   }
 
-  // Attachments = side-channel rows chronologically BETWEEN the window's
-  // first and last chat rows (they ride between the chat rows they document).
-  const loPos = ordered.indexOf(windowChat[0]);
-  const hiPos = ordered.indexOf(windowChat[windowChat.length - 1]);
-  const windowRows = ordered.slice(loPos, hiPos + 1);
+  // Attachment ownership = half-open PARTITION of the whole `ordered` array
+  // (Codex 20.1: an attachment sitting exactly between two pages' boundary
+  // chat rows belonged to NEITHER page — closed bounds ended the old page at
+  // its last chat and started the new one at its first chat, skipping what
+  // sat in between). Rule: each chat row owns the attachments that follow it
+  // up to the next chat row; the oldest page additionally owns the leading
+  // attachments (lo=0), the newest page the trailing ones (hi=length). Every
+  // attachment belongs to EXACTLY one page — full-history concatenation is
+  // loss-free and duplicate-free.
+  const posInOrdered = new Map(ordered.map((r, i) => [r.id, i] as const));
+  const lo = start > 0 ? posInOrdered.get(windowChat[0].id)! : 0;
+  const hi = end < chat.length ? posInOrdered.get(chat[end].id)! : ordered.length;
+  const windowRows = ordered.slice(lo, hi);
   const wanted = new Set(windowRows.map((r) => r.id));
   let minId = windowRows[0].id;
   let maxId = windowRows[0].id;

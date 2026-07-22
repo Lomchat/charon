@@ -102,6 +102,55 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
     expect(contents[contents.indexOf('msg-100') + 1]).toBe('user-after-100');
   });
 
+  it('attachments PARTITION across pages: boundary/leading/trailing all owned exactly once (Codex 20)', () => {
+    const BSID = 'd'.repeat(32);
+    db.insert(schema.claudeSessions).values({ id: BSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    const addChat = (s: number) => db.insert(schema.claudeSessionMessages).values({
+      sessionId: BSID, role: 'assistant', content: `c-${s}`, seq: s,
+    }).run();
+    const addEvent = (label: string) => db.insert(schema.claudeSessionMessages).values({
+      sessionId: BSID, role: 'event', content: `{"type":"todo_update","label":"${label}"}`, seq: null,
+    }).run();
+    // Layout (insertion = chronological): E-lead, c1..5, E-after-5, c6..15,
+    // E-after-15, c16..25, E-trail. With limit=10 the page boundaries fall
+    // EXACTLY after c5 and c15 — E-after-5 and E-after-15 sit on the cuts
+    // (the case the closed-bounds slicing dropped entirely).
+    addEvent('lead');
+    for (let s = 1; s <= 5; s++) addChat(s);
+    addEvent('after-5');
+    for (let s = 6; s <= 15; s++) addChat(s);
+    addEvent('after-15');
+    for (let s = 16; s <= 25; s++) addChat(s);
+    addEvent('trail');
+
+    const p1 = loadMessageWindow(BSID, 10, null);               // newest: c16..25
+    const p2 = loadMessageWindow(BSID, 10, p1.oldestChatId);    // c6..15
+    const p3 = loadMessageWindow(BSID, 10, p2.oldestChatId);    // oldest: c1..5
+    expect(p3.hasMore).toBe(false);
+
+    const label = (m: any) => m.role === 'event' ? JSON.parse(m.content).label : m.content;
+    // Boundary attachment belongs to the page whose LAST chat precedes it…
+    expect(p2.messages.map(label)).toContain('after-15');
+    expect(p1.messages.map(label)).not.toContain('after-15');
+    expect(p3.messages.map(label)).toContain('after-5');
+    expect(p2.messages.map(label)).not.toContain('after-5');
+    // …the oldest page owns the leading attachment, the newest the trailing.
+    expect(p3.messages.map(label)).toContain('lead');
+    expect(p1.messages.map(label)).toContain('trail');
+
+    // Full-history concatenation: every id exactly once, in global order.
+    const all = [...p3.messages, ...p2.messages, ...p1.messages];
+    expect(all).toHaveLength(29); // 25 chat + 4 events
+    const ids = all.map((m: any) => m.id);
+    expect(new Set(ids).size).toBe(29);
+    expect(ids).toEqual([...ids].sort((a: number, b: number) => a - b)); // insertion was chronological here
+    expect(all.map(label)).toEqual([
+      'lead', 'c-1', 'c-2', 'c-3', 'c-4', 'c-5', 'after-5',
+      'c-6', 'c-7', 'c-8', 'c-9', 'c-10', 'c-11', 'c-12', 'c-13', 'c-14', 'c-15', 'after-15',
+      'c-16', 'c-17', 'c-18', 'c-19', 'c-20', 'c-21', 'c-22', 'c-23', 'c-24', 'c-25', 'trail',
+    ]);
+  });
+
   it('pagination still exact on a fully-legacy session (all seq NULL → id order)', () => {
     const LEGACY = 'c'.repeat(32);
     db.insert(schema.claudeSessions).values({ id: LEGACY, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();

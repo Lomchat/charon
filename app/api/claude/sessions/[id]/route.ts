@@ -121,14 +121,20 @@ function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMe
 //
 // Query params:
 //   ?limit=N   (default 200, max 1000) — chat window size
-//   ?before=K  — pagination cursor: only returns chat messages whose
-//                id < K. Allows the "load older history" scroll-up.
+//   ?before=K  — pagination cursor for the "load older history" scroll-up.
+//                K is the `oldestChatId` of the page the client already
+//                holds; it is resolved POSITIONALLY in the session's global
+//                CHRONOLOGICAL order (seq-keyed — NOT `id < K`: crash-
+//                repaired rows have high ids but old seqs, see
+//                messageWindow.ts) and the previous slice is returned.
+//                Consecutive pages tile exactly — client prepend is safe.
 //                When this param is passed, the response contains the
 //                paginated window but the heavy fields (pendings, liveStatus,
 //                streamingText) remain populated to stay compatible with
 //                the type shape.
 //   ?since=K   — DELTA mode: returns ONLY messages with id > K (chat AND
-//                edit_snapshot/event in the range), sorted ASC.
+//                edit_snapshot/event in the range), in chronological order
+//                (orderChronologically — id order except repaired rows).
 //                `hasMore`/`oldestChatId` are not meaningful and set to
 //                false/null. Used by the client's polling safety net
 //                (cf. useClaudeSessionStream pollDelta) to catch any
@@ -138,7 +144,9 @@ function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMe
 //                When provided, ?before and ?limit are ignored.
 //
 // Note: edit_snapshot and event DO NOT COUNT toward the limit (chat-window
-// mode). They are loaded as attachments by ID range (cf. loadMessageWindow).
+// mode). They ride as attachments of the page owning their chronological
+// position — pages PARTITION the whole history with half-open bounds, so
+// every attachment belongs to exactly one page (cf. messageWindow.ts).
 // In ?since mode they are returned unconditionally so the poll detects new
 // edits/todos. In BOTH modes the edit_snapshot `content` is STRIPPED before
 // sending (see stripEditSnapshotContent) — the poll only needs the row to
