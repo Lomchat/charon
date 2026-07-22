@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
@@ -73,6 +73,19 @@ export default function NewSessionWizard({
   const [name, setName] = useState('');
   const [custom, setCustom] = useState('');
   const [pathError, setPathError] = useState<string | null>(null);
+  // ── Path autocomplete (step 2) ── suggestions = known paths ∪ the REAL
+  // subdirectories of the typed dir on the VPS (GET /api/vps/[id]/fs,
+  // debounced, cached per dir for the wizard's lifetime).
+  type Suggestion = { path: string; kind: 'known' | 'dir' };
+  const [sug, setSug] = useState<Suggestion[]>([]);
+  const [sugOpen, setSugOpen] = useState(false);
+  const [sugIdx, setSugIdx] = useState(-1);
+  const [checking, setChecking] = useState(false);      // existence check on "Use ›"
+  const [allowForce, setAllowForce] = useState(false);  // "use anyway" after a failed check
+  const customRef = useRef<HTMLInputElement | null>(null);
+  const sugListRef = useRef<HTMLDivElement | null>(null);
+  const dirCacheRef = useRef(new Map<string, string[]>());  // `${vpsId}:${dir}` → subdirs
+  const fetchSeqRef = useRef(0);
   const [step, setStep] = useState<Step>(initialVpsId ? (hasInitialCwd ? 'name' : 'path') : 'vps');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -194,11 +207,125 @@ export default function NewSessionWizard({
   }
   function choosePath(p: string | null) {
     setPath(p); setPathChosen(true); setPathError(null);
+    setSugOpen(false);
     setStep('name');
   }
-  function submitCustom() {
+
+  // Live path suggestions. No '/' typed yet → known paths only (fuzzy).
+  // Otherwise split on the LAST '/': list the dir on the VPS (debounced
+  // 250ms; per-dir cache makes further keystrokes in the same dir instant)
+  // and prefix-filter its subdirs, with matching known paths on top.
+  useEffect(() => {
+    if (step !== 'path' || !vpsId) return;
+    const typed = custom;
+    const seq = ++fetchSeqRef.current;
+    const q = typed.trim().toLowerCase();
+    const knownMatches: Suggestion[] = pickList
+      .filter((p) => p.path !== typed && (q === '' || p.path.toLowerCase().includes(q)))
+      .map((p) => ({ path: p.path, kind: 'known' as const }));
+    const lastSlash = typed.lastIndexOf('/');
+    if (lastSlash === -1) { setSug(knownMatches.slice(0, 12)); setSugIdx(-1); return; }
+    const dir = typed.slice(0, lastSlash + 1) || '/';
+    const base = typed.slice(lastSlash + 1);
+    const compose = (subdirs: string[]) => {
+      const dirMatches: Suggestion[] = subdirs
+        .filter((n) => n.startsWith(base))
+        .slice(0, 30)
+        .map((n) => ({ path: dir + n + '/', kind: 'dir' as const }));
+      const seen = new Set(dirMatches.map((s) => s.path));
+      setSug([
+        ...knownMatches.filter((k) => !seen.has(k.path) && !seen.has(k.path + '/')).slice(0, 6),
+        ...dirMatches,
+      ]);
+      setSugIdx(-1);
+    };
+    const cacheKey = `${vpsId}:${dir}`;
+    const cached = dirCacheRef.current.get(cacheKey);
+    if (cached) { compose(cached); return; }
+    const t = setTimeout(() => {
+      api.listVpsDirs(vpsId, dir)
+        .then((r) => {
+          if (seq !== fetchSeqRef.current) return;   // stale response
+          const subdirs = r.ok && r.exists ? (r.dirs ?? []) : [];
+          dirCacheRef.current.set(cacheKey, subdirs);
+          compose(subdirs);
+        })
+        .catch(() => { if (seq === fetchSeqRef.current) compose([]); });
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [custom, step, vpsId, pickList]);
+
+  // Keep the highlighted suggestion visible while arrowing through the list.
+  useEffect(() => {
+    if (sugIdx < 0) return;
+    sugListRef.current?.children[sugIdx]?.scrollIntoView({ block: 'nearest' });
+  }, [sugIdx]);
+
+  // The ⧉ button on a known-path row: put the path in the input AS-IS —
+  // no validation, no step change — so it can be edited / drilled into.
+  function copyToInput(p: string) {
+    setCustom(p);
+    setPathError(null); setAllowForce(false);
+    setSugOpen(true);
+    requestAnimationFrame(() => customRef.current?.focus());
+  }
+
+  function applySuggestion(s: Suggestion) {
+    setCustom(s.path);
+    setPathError(null); setAllowForce(false);
+    setSugOpen(true);
+    customRef.current?.focus();
+  }
+
+  function onCustomKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape' && sugOpen) {
+      // Close only the dropdown — NOT the wizard (the modal's window-level
+      // Escape listener sits behind this stopPropagation).
+      e.stopPropagation(); setSugOpen(false); return;
+    }
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && sug.length > 0) {
+      e.preventDefault();
+      setSugOpen(true);
+      setSugIdx((i) => {
+        const n = sug.length;
+        return e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n;
+      });
+      return;
+    }
+    if (e.key === 'Tab' && sugOpen && sug.length > 0) {
+      e.preventDefault();
+      applySuggestion(sug[Math.max(0, sugIdx)]);
+      return;
+    }
+    if (e.key === 'Enter') {
+      if (sugOpen && sugIdx >= 0 && sug[sugIdx]) { applySuggestion(sug[sugIdx]); return; }
+      void submitCustom();
+    }
+  }
+
+  // "Use ›" — checks the dir actually EXISTS on the VPS first (same fs
+  // listing = "can we cd there"), and canonicalizes (~ / .. / trailing
+  // slash) via the returned `pwd`. Soft: an ssh-level failure falls through
+  // and accepts the path as typed; `force` = the "use anyway" escape hatch.
+  async function submitCustom(force = false) {
     const p = custom.trim();
     if (!p) { setPathError('enter a path'); return; }
+    if (!vps || force || checking) { if (!checking) choosePath(p); return; }
+    setChecking(true);
+    try {
+      const r = await api.listVpsDirs(vps.id, p);
+      if (r.ok && r.exists === false) {
+        setPathError(`this directory does not exist on ${vps.name}`);
+        setAllowForce(true);
+        return;
+      }
+      if (r.ok && r.exists && r.resolved) { choosePath(r.resolved); return; }
+    } catch {
+      // ssh hiccup — don't block the flow
+    } finally {
+      setChecking(false);
+    }
     choosePath(p);
   }
 
@@ -370,27 +497,63 @@ export default function NewSessionWizard({
                 </button>
               )}
               {pickList.map((p) => (
-                <button key={p.path} className="wiz-pick" onClick={() => choosePath(p.path)}>
+                // A <div>, not a <button>: the row hosts the nested ⧉
+                // copy-to-input button (nested <button> is invalid HTML).
+                <div key={p.path} className="wiz-pick" role="button" tabIndex={0}
+                  onClick={() => choosePath(p.path)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') choosePath(p.path); }}
+                >
                   <span className="wiz-pick-glyph">▤</span>
                   <span className="wiz-pick-main">
                     <span className="wiz-pick-name">{p.label}</span>
                     <span className="wiz-pick-sub mono">{p.path}</span>
                   </span>
+                  <button type="button" className="wiz-pick-copy"
+                    title="copy this path into the input (edit before use)"
+                    onClick={(e) => { e.stopPropagation(); copyToInput(p.path); }}
+                  >⧉</button>
                   <span className="wiz-pick-go">›</span>
-                </button>
+                </div>
               ))}
             </div>
             <div className="wiz-custom">
               <input
-                placeholder="/custom/path…"
+                ref={customRef}
+                placeholder="/custom/path…  (type / to browse the server)"
                 value={custom}
-                onChange={(e) => { setCustom(e.target.value); setPathError(null); }}
-                onKeyDown={(e) => e.key === 'Enter' && submitCustom()}
+                onChange={(e) => { setCustom(e.target.value); setPathError(null); setAllowForce(false); setSugOpen(true); }}
+                onFocus={() => setSugOpen(true)}
+                onBlur={() => setTimeout(() => setSugOpen(false), 120)}
+                onKeyDown={onCustomKeyDown}
                 autoCapitalize="off" autoCorrect="off" spellCheck={false}
               />
-              <button className="wiz-btn primary" onClick={submitCustom}>Use ›</button>
+              <button className="wiz-btn primary" onClick={() => void submitCustom()} disabled={checking}>
+                {checking ? '…' : 'Use ›'}
+              </button>
             </div>
-            {pathError && <div className="wiz-error">⚠ {pathError}</div>}
+            {sugOpen && sug.length > 0 && (
+              <div className="wiz-sug" ref={sugListRef}>
+                {sug.map((s2, i) => (
+                  // onMouseDown preventDefault keeps the input focused so the
+                  // blur-close doesn't swallow the click.
+                  <button key={s2.kind + s2.path} type="button"
+                    className={`wiz-sug-item${i === sugIdx ? ' active' : ''}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => applySuggestion(s2)}
+                  >
+                    <span className="wiz-sug-tag">{s2.kind === 'known' ? '★' : '▸'}</span>
+                    <span className="wiz-sug-path">{s2.path}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {pathError && (
+              <div className="wiz-error">⚠ {pathError}
+                {allowForce && (
+                  <button type="button" className="wiz-btn ghost" onClick={() => void submitCustom(true)}>use anyway ›</button>
+                )}
+              </div>
+            )}
           </div>
         )}
 

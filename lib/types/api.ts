@@ -94,6 +94,20 @@ export type VpsLayoutResponse = {
 
 export type TestVpsResponse = { ok: boolean; error?: string };
 
+// GET /api/vps/[id]/fs?path= — directories directly under `path` on the VPS
+// (NewSessionWizard path autocomplete + existence check on submit).
+// ok:false = ssh-level failure, SOFT (the client just hides suggestions);
+// exists:false = the dir isn't there (cd failed).
+export type VpsFsListResponse = {
+  ok: boolean;
+  error?: string;
+  exists?: boolean;
+  // `pwd` after cd — canonical form of `path` (~ and .. resolved).
+  resolved?: string | null;
+  dirs?: string[];
+  truncated?: boolean;
+};
+
 export type UpdateVpsAgentResponse = {
   ok: boolean;
   error?: string;

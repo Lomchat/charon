@@ -3104,7 +3104,36 @@
   color: var(--parchment); font-family: var(--mono); font-size: 12px; outline: none;
 }
 .wiz-custom input:focus { border-color: var(--gold); }
+
+/* ⧉ copy-into-input button on known-path rows (step 2) */
+.wiz-pick-copy {
+  flex-shrink: 0; padding: 3px 7px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); font-size: 13px; line-height: 1; opacity: 0.55;
+  transition: opacity .12s, border-color .12s, color .12s, background .12s;
+}
+.wiz-pick:hover .wiz-pick-copy { opacity: 1; }
+.wiz-pick-copy:hover { border-color: var(--gold); color: var(--gold-bright); background: rgba(138,180,228,0.1); }
+
+/* Path autocomplete dropdown — IN-FLOW below .wiz-custom on purpose:
+   .wiz-body is overflow:auto, an absolutely-positioned popover would be
+   clipped; in-flow just grows/scrolls the body naturally (mobile included). */
+.wiz-sug {
+  margin-top: 4px; border: 1px solid var(--gold-deep); border-radius: 7px;
+  background: rgba(0,0,0,0.35); max-height: 200px; overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+.wiz-sug-item {
+  display: flex; align-items: center; gap: 8px; text-align: left;
+  padding: 6px 10px; background: transparent; border: 0; cursor: pointer;
+  color: var(--parchment); font-family: var(--mono); font-size: 12px;
+}
+.wiz-sug-item:hover, .wiz-sug-item.active { background: rgba(138,180,228,0.12); color: var(--gold-bright); }
+.wiz-sug-tag { flex-shrink: 0; font-size: 10px; color: var(--gold); opacity: 0.8; width: 12px; text-align: center; }
+.wiz-sug-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .wiz-error { margin-top: 9px; color: var(--crimson); font-size: 12px; font-family: var(--body); }
+.wiz-error .wiz-btn { margin-left: 8px; padding: 3px 10px; font-size: 11px; }
 
 .wiz-name-input {
   width: 100%; padding: 11px 13px; border-radius: 8px; margin-bottom: 14px;

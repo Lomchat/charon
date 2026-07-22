@@ -6,7 +6,7 @@
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
-  RefreshVpsAgentResponse, VpsUsageResponse,
+  RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -111,6 +111,10 @@ export const api = {
   // Account usage (the `/usage` gauges) for a VPS's Claude account (§14.58).
   getVpsUsage: (id: string) =>
     send<VpsUsageResponse>('GET', `/api/vps/${id}/usage`),
+  // Subdirectories of `path` on the VPS — wizard path autocomplete (debounced
+  // + cached client-side) and existence check on submit.
+  listVpsDirs: (id: string, path: string) =>
+    send<VpsFsListResponse>('GET', `/api/vps/${id}/fs?path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 15_000 }),
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),
   updateLocalAgent: () =>
