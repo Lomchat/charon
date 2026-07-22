@@ -140,6 +140,13 @@ export function sshExec(
       clearTimeout(killer);
       done({ ok: code === 0, stdout, stderr, code });
     });
+    // ⚠ stdin 'error' MUST be handled: writing a multi-MB blob (the base64
+    // pyz deploy) into an ssh child that dies mid-write (network timeout)
+    // surfaces EPIPE ASYNCHRONOUSLY on the stream — the try/catch around
+    // write() only covers synchronous throws, so without this listener the
+    // whole hub process takes an uncaughtException (seen live: an
+    // agent-update to a flapping VPS at the exact second its ssh timed out).
+    child.stdin.on('error', () => { /* swallowed — 'close' carries the verdict */ });
     if (opts.stdin != null) {
       try { child.stdin.write(opts.stdin); } catch {}
     }

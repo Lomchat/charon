@@ -353,12 +353,26 @@ buffers jusqu'à épuiser la mémoire du hub ou de l'agent.
 
 **Actions**
 
-- [ ] Créer une file bornée par client, mesurée en événements et en octets.
-- [ ] Utiliser une seule coroutine writer par connexion.
-- [ ] Définir des high/low watermarks.
-- [ ] Déconnecter proprement les consommateurs trop lents.
-- [ ] Reprendre les clients déconnectés via le journal durable.
-- [ ] Limiter `ws.bufferedAmount` et la taille maximale des messages.
+*(✔ l'essentiel fait le 22/07/2026 — agent 0.18.0 + server.js + SSE ;
+vérifié : WS smoke complet (replay, input, kill), tests py OK. Bonus
+découvert en route : les tests d'intégration FUYAIENT un holder par run —
+11 orphelins tués, cleanup ajouté au test.)*
+
+- [x] Créer une file bornée par client, mesurée en événements et en octets
+      *(agent : 10k events / 32MB par client)*.
+- [x] Utiliser une seule coroutine writer par connexion *(remplace la
+      task-par-événement ; bonus : ordre strict replay→réponse RPC)*.
+- [ ] Définir des high/low watermarks *(agent : overflow = déconnexion
+      sèche, pas de watermark — le curseur durable rend ça sans perte ;
+      server.js : high/low 4MB/512KB sur bufferedAmount)*.
+- [x] Déconnecter proprement les consommateurs trop lents *(agent :
+      shutdown + le hub se reconnecte)*.
+- [x] Reprendre les clients déconnectés via le journal durable *(déjà le
+      design — subscribe after_seq)*.
+- [x] Limiter `ws.bufferedAmount` *(pause/resume du flux ssh)* et la taille
+      maximale des messages *(maxPayload 1MiB)*.
+- [x] *(SSE)* drop des événements quand `desiredSize < -1000` (le poll 5s
+      est le contrat de rattrapage, §14.24).
 - [ ] Mesurer profondeur des queues, octets en attente et déconnexions lentes.
 - [ ] Effectuer des tests de charge avec navigateur et SSH artificiellement
       ralentis.
@@ -590,9 +604,11 @@ en host, port 99999 refusé.)*
 - [ ] Utiliser une origine publique configurée pour les redirects.
 - [ ] Refuser les `Host` ou `X-Forwarded-Host` non autorisés.
 - [ ] Ajouter une garde uniforme `Origin`/Fetch Metadata aux mutations.
-- [ ] Vérifier l'origin lors de l'upgrade WebSocket (prioritaire — cookie
-      lax insuffisant pour les WS).
-- [ ] Définir `maxPayload`, limites de débit et limites d'input.
+- [x] Vérifier l'origin lors de l'upgrade WebSocket *(fait le 22/07 —
+      allow-list Host / x-forwarded-host / app.public_url ; vérifié : origin
+      hostile rejetée 403, WS nominal intact)*.
+- [x] Définir `maxPayload` *(1MiB)*, ~~limites de débit et limites
+      d'input~~ *(reste ouvert)*.
 - [ ] Conserver `SameSite`, `HttpOnly` et `Secure` comme protections
       complémentaires, pas uniques.
 

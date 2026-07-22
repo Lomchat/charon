@@ -1008,6 +1008,12 @@ class Server:
             client.subscribed.clear()
             # Drop any global shell-lifecycle watch held by this client.
             self.shell_watchers.discard(client)
+            # Stop the bounded-queue writer (P0.5).
+            client._closed = True
+            try:
+                client._writer_task.cancel()
+            except Exception:
+                pass
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -1015,8 +1021,26 @@ class Server:
                 pass
 
 
+# Bounded per-client send queue (P0.5). Before this, every send_json spawned
+# its own asyncio task waiting on a shared lock: a wedged transport (hub that
+# stopped reading, half-dead SSH) accumulated tasks + payloads without limit
+# until the AGENT OOMed — taking every session on the VPS down with it.
+# Caps sized for the worst legitimate burst (a full durable-log replay of a
+# busy session ≈ thousands of events): overflow means the peer is truly stuck.
+SEND_QUEUE_MAX_EVENTS = 10_000
+SEND_QUEUE_MAX_BYTES = 32 * 1024 * 1024
+
+
 class Client:
-    """An open JSON-RPC connection (multiplexed read/write)."""
+    """An open JSON-RPC connection (multiplexed read/write).
+
+    Writes go through ONE bounded FIFO queue drained by a single writer
+    coroutine — strict ordering for everything (replay events enqueue before
+    the RPC response that follows them, so the hub's post-replay handling is
+    deterministic). On overflow the client is DISCONNECTED instead of
+    ballooning memory: the hub reconnects and resumes exactly from its
+    durable-log cursor (`subscribe {after_seq}`), so nothing is lost.
+    """
 
     def __init__(
         self,
@@ -1028,27 +1052,62 @@ class Client:
         self.reader = reader
         self.writer = writer
         self.subscribed: set[str] = set()
-        self._send_lock = asyncio.Lock()
         self._closed = False
+        self._send_q: asyncio.Queue[bytes] = asyncio.Queue()
+        self._q_bytes = 0
+        self._writer_task = asyncio.create_task(self._writer_loop())
 
     def send_json(self, obj: dict[str, Any]) -> None:
-        """Schedule a send (non-blocking, fire-and-forget)."""
+        """Enqueue a send (non-blocking, fire-and-forget, bounded)."""
         if self._closed:
             return
-        asyncio.create_task(self._send_locked(obj))
+        try:
+            line = (json.dumps(obj, default=str) + "\n").encode()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            return
+        if (self._send_q.qsize() >= SEND_QUEUE_MAX_EVENTS
+                or self._q_bytes + len(line) > SEND_QUEUE_MAX_BYTES):
+            print(
+                f"[server] send-queue overflow ({self._send_q.qsize()} events,"
+                f" {self._q_bytes} bytes) — dropping slow client",
+                file=sys.stderr, flush=True,
+            )
+            self.shutdown()
+            return
+        self._q_bytes += len(line)
+        self._send_q.put_nowait(line)
 
     async def _send_locked(self, obj: dict[str, Any]) -> None:
-        async with self._send_lock:
-            if self._closed:
-                return
-            try:
-                line = json.dumps(obj, default=str) + "\n"
-                self.writer.write(line.encode())
-                await self.writer.drain()
-            except (ConnectionResetError, BrokenPipeError):
-                self._closed = True
-            except Exception:
-                traceback.print_exc(file=sys.stderr)
+        """Kept for call-site compatibility (RPC responses/errors): now just
+        enqueues on the same FIFO as events — ordering is the queue's."""
+        self.send_json(obj)
+
+    async def _writer_loop(self) -> None:
+        try:
+            while True:
+                line = await self._send_q.get()
+                self._q_bytes -= len(line)
+                if self._closed:
+                    continue  # drain silently
+                try:
+                    self.writer.write(line)
+                    await self.writer.drain()
+                except (ConnectionResetError, BrokenPipeError):
+                    self._closed = True
+                except Exception:
+                    traceback.print_exc(file=sys.stderr)
+        except asyncio.CancelledError:
+            pass
+
+    def shutdown(self) -> None:
+        """Mark closed + close the transport; the reader loop exits on EOF
+        and _handle_client runs the full cleanup."""
+        self._closed = True
+        try:
+            self.writer.close()
+        except Exception:
+            pass
 
     async def run(self) -> None:
         while not self._closed:

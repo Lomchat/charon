@@ -61,6 +61,16 @@ export async function GET(req: Request) {
         }
       };
       const send = (ev: GlobalSessionEvent) => {
+        // Backpressure (P0.5): `desiredSize` goes negative when the client
+        // stops reading (frozen tab, dead network pre-timeout) — the stream's
+        // internal queue is unbounded and every enqueue would pile up in hub
+        // memory. Past a generous threshold, DROP the event: SSE is the fast
+        // path only, the 5s poll (§14.24) is the no-freeze contract and
+        // resyncs the client from SQLite the moment it comes back.
+        try {
+          const ds = (controller as { desiredSize?: number | null }).desiredSize;
+          if (typeof ds === 'number' && ds < -1000) return;
+        } catch {}
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
       };
       // Install events have no Claude sessionId and don't go through the

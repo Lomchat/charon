@@ -181,6 +181,15 @@ class TestDaemonIntegration(unittest.TestCase):
             )
             self.assertIn(MARKER, replayed, "output was not replayed to the reconnecting client")
         finally:
+            # KILL the shell before closing: the holder is a DETACHED process
+            # (start_new_session — survives the daemon on purpose), so the
+            # tearDown's proc.terminate() does NOT reap it. Without this,
+            # every test run leaked one `--shell-holder` process + its bash
+            # forever (observed: 11 leaked holders on the dev machine).
+            try:
+                c2.call("shell_kill", {"shell_id": shell_id})
+            except Exception:
+                pass
             c2.close()
 
 

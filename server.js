@@ -157,6 +157,26 @@ function handleShellWs(ws, shellId) {
   // an incremental after_seq cursor is correct.) See CLAUDE.md §14 gotcha 37.
   subscribeRpcId = sendRpc('shell_subscribe', { shell_id: shellId, after_seq: 0, tail_bytes: SHELL_REPLAY_TAIL_BYTES });
 
+  // ── WS backpressure (P0.5) ────────────────────────────────────────────
+  // ws.send is fire-and-forget: a slow browser link lets bufferedAmount grow
+  // without limit while a busy shell streams (yes(1), build logs…) — hub
+  // memory balloons per stuck tab. When the socket backs up past HIGH, pause
+  // the ssh stdout stream (TCP backpressure propagates to the agent, whose
+  // own bounded send-queue protects it) and poll until it drains below LOW.
+  const BP_HIGH_BYTES = 4 * 1024 * 1024;
+  const BP_LOW_BYTES = 512 * 1024;
+  let bpTimer = null;
+  const checkBackpressure = () => {
+    if (bpTimer || ws.bufferedAmount <= BP_HIGH_BYTES) return;
+    try { ssh.stdout.pause(); } catch {}
+    bpTimer = setInterval(() => {
+      if (ws.readyState !== 1 /* OPEN */ || ws.bufferedAmount < BP_LOW_BYTES) {
+        clearInterval(bpTimer); bpTimer = null;
+        try { ssh.stdout.resume(); } catch {}
+      }
+    }, 100);
+  };
+
   ssh.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString('utf8');
     let nl;
@@ -185,6 +205,7 @@ function handleShellWs(ws, shellId) {
           // Binary frame = raw bytes (utf-8). No JSON parse cost on the
           // browser side, just term.write().
           try { ws.send(Buffer.from(msg.data, 'utf8')); } catch {}
+          checkBackpressure();
         } else if (msg.event === 'shell_status') {
           try { ws.send(JSON.stringify({ type: 'status', status: msg.status, cols: msg.cols, rows: msg.rows, pid: msg.pid })); } catch {}
         } else if (msg.event === 'shell_exit') {
@@ -235,6 +256,7 @@ function handleShellWs(ws, shellId) {
   const teardown = () => {
     if (!alive) return;
     alive = false;
+    if (bpTimer) { clearInterval(bpTimer); bpTimer = null; }
     try { sendRpc('shell_unsubscribe', { shell_id: shellId }); } catch {}
     try { ssh.stdin.end(); } catch {}
     try { ssh.kill('SIGTERM'); } catch {}
@@ -245,14 +267,46 @@ function handleShellWs(ws, shellId) {
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
+// ── WS Origin allow-list (P1.4) ─────────────────────────────────────────────
+// SameSite=lax does NOT protect WebSocket handshakes (the upgrade is a
+// GET-like navigation → the cookie rides along cross-site). A hostile page
+// could otherwise open ws://hub/api/shells/<id>/ws with the victim's cookie
+// (cross-site WebSocket hijacking). Browsers always send Origin on WS: when
+// present it must match the request Host, a forwarded host, or the
+// configured public URL. Absent Origin (curl, native clients) → allowed,
+// the session cookie is still required.
+const STMT_PUBURL = db.prepare("SELECT value FROM claude_settings WHERE key = 'app.public_url'");
+function originAllowed(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  let oHost;
+  try { oHost = new URL(origin).host; } catch { return false; }
+  const allowed = new Set();
+  if (req.headers.host) allowed.add(req.headers.host);
+  const xfh = req.headers['x-forwarded-host'];
+  if (typeof xfh === 'string') for (const h of xfh.split(',')) allowed.add(h.trim());
+  try {
+    const pu = STMT_PUBURL.get()?.value;
+    if (pu) allowed.add(new URL(pu).host);
+  } catch {}
+  return allowed.has(oHost);
+}
+
 app.prepare().then(() => {
   const server = createServer((req, res) => handle(req, res, parse(req.url, true)));
-  const wss = new WebSocketServer({ noServer: true });
+  // maxPayload (P0.5): inbound frames are keystrokes + tiny JSON control —
+  // 1 MiB is generous (a huge clipboard paste) and bounds a hostile frame.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
     const { pathname } = parse(req.url || '');
     const m = pathname && pathname.match(/^\/api\/shells\/([a-f0-9]+)\/ws$/);
     if (!m) { socket.destroy(); return; }
+    if (!originAllowed(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const sid = parseCookie(req.headers.cookie || '', 'charon_session');
     if (!sessionValid(sid)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
