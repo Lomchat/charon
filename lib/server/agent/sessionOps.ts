@@ -1,6 +1,6 @@
 import 'server-only';
 import crypto from 'node:crypto';
-import { and, desc, eq, inArray, max } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages,
   claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
@@ -345,10 +345,14 @@ export class SessionStream {
   // idempotent. Cleared only by process restart (intentional: the row is
   // missing until then).
   private persistHoldbackSeq: number | null = null;
-  // MAX(seq) across this session's already-persisted message rows, loaded
-  // at replay_begin. Any replayed event with seq <= this is provably
-  // already in the DB → skipped by identity, no content comparison.
-  private replayMaxPersistedSeq: number | null = null;
+  // SET of the seqs stamped on this session's persisted rows, loaded at
+  // replay_begin. A replayed event is skipped only when ITS OWN seq has a
+  // row — NOT when it merely precedes the max. (First version used
+  // MAX(seq): Codex's counter-review showed that a failed persist at seq N
+  // followed by a successful one at N+1 made the holdback replay N… only
+  // for the MAX-gate to swallow it. A max proves nothing about the seqs
+  // below it precisely in the failure case the holdback exists for.)
+  private replayPersistedSeqs: Set<number> | null = null;
 
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
@@ -527,17 +531,33 @@ export class SessionStream {
     return cursor;
   }
 
-  /** During replay: TRUE if this event's DB effects are provably already
-   *  persisted (its seq is <= the max stamped row seq loaded at
-   *  replay_begin). Dedup by IDENTITY — replaces the content-based Sets
-   *  for seq-carrying agents; the Sets remain as fallback for events
-   *  without seq / rows stamped before the seq column existed. */
+  /** During replay: TRUE if a row stamped with THIS event's seq already
+   *  exists. Dedup by IDENTITY — replaces the content-based Sets for
+   *  seq-carrying agents; the Sets remain as fallback for events without
+   *  seq / rows stamped before the seq column existed. Row-writing events
+   *  are atomic per event (see the interaction transactions), so "a row
+   *  with my seq exists" ⟹ "my persistence completed". */
   private _replayAlreadyPersisted(ev: AgentEvent): boolean {
     if (!this.isReplaying) return false;
     const seq = (ev as { seq?: unknown }).seq;
     return typeof seq === 'number'
-      && this.replayMaxPersistedSeq != null
-      && seq <= this.replayMaxPersistedSeq;
+      && this.replayPersistedSeqs != null
+      && this.replayPersistedSeqs.has(seq);
+  }
+
+  /** When a replayed FLUSH-BOUNDARY event is identity-gated, the deltas
+   *  replayed just before it may already live in their flush row — but
+   *  ONLY discard the buffer if that flush row actually exists. Flush rows
+   *  are stamped with the FIRST DELTA's seq (pendingAssistantSince), so
+   *  the check is exact: row present → text persisted → drop; row absent
+   *  (the flush failed pre-crash) → KEEP the buffer, a later ungated
+   *  boundary will flush it (slightly late in chronology, never lost). */
+  private _dropReplayedAssistantBuffer(): void {
+    if (this.pendingAssistantSince != null
+        && this.replayPersistedSeqs?.has(this.pendingAssistantSince)) {
+      this.currentAssistant = '';
+      this.pendingAssistantSince = null;
+    }
   }
 
   private _dispatchEvent(ev: AgentEvent): void {
@@ -554,7 +574,7 @@ export class SessionStream {
         return;
       case 'replay_end':
         this.isReplaying = false;
-        this.replayMaxPersistedSeq = null;
+        this.replayPersistedSeqs = null;
         this.replayKnownToolUseIds.clear();
         this.replayKnownToolResultIds.clear();
         this.replayKnownAssistantContents.clear();
@@ -631,11 +651,11 @@ export class SessionStream {
         this._broadcast({ type: 'session_id', id: ev.claude_session_id });
         break;
       case 'assistant_text':
-        // Seq-gate: a replayed delta whose seq is covered by a stamped row
-        // is already part of persisted text — re-accumulating it would
-        // duplicate. (Ascending replay order guarantees a gated delta can
-        // never precede an ungated flush boundary.)
-        if (this._replayAlreadyPersisted(ev)) break;
+        // No identity gate here: deltas never write their own row (their
+        // text lands in the flush row stamped with the BOUNDARY event's
+        // seq), so a delta seq can never be in replayPersistedSeqs. Deltas
+        // replayed under an already-persisted flush are discarded when the
+        // gated boundary arrives (_dropReplayedAssistantBuffer).
         // Crash protection: remember where the unflushed accumulation
         // starts — the durable cursor never advances past it (P0.2).
         if (this.pendingAssistantSince == null && typeof ev.seq === 'number') {
@@ -645,7 +665,7 @@ export class SessionStream {
         this._broadcast({ type: 'assistant_text', delta: ev.delta });
         break;
       case 'thinking':
-        if (this._replayAlreadyPersisted(ev)) break;
+        if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         this._flushAssistant();
         if (this.isReplaying && this.replayKnownThinkingContents.has(ev.text)) break;
         this._persist('event', { type: 'thinking', text: ev.text });
@@ -653,7 +673,7 @@ export class SessionStream {
         if (this.isReplaying) this.replayKnownThinkingContents.add(ev.text);
         break;
       case 'tool_use':
-        if (this._replayAlreadyPersisted(ev)) break;
+        if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         this._flushAssistant();
         if (this.isReplaying && this.replayKnownToolUseIds.has(String(ev.id))) break;
         this._persist('tool_use', { type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
@@ -668,7 +688,12 @@ export class SessionStream {
         if (this.isReplaying) this.replayKnownToolResultIds.add(String(ev.tool_use_id));
         break;
       case 'permission_request':
-        if (this._replayAlreadyPersisted(ev)) break;
+        // NO identity gate-break here (Codex 13.2.C): a permission writes
+        // NO message row — but its preceding FLUSH does, stamped with THIS
+        // event's seq. Breaking on that row would skip the pending insert
+        // when it's the piece that failed. Discard the replayed buffer if
+        // the flush row exists, then let the pendingIds dedup decide.
+        if (this._replayAlreadyPersisted(ev)) this._dropReplayedAssistantBuffer();
         if (this.alwaysAllow.has(ev.tool)) {
           // Auto-allow: forward to the agent immediately
           this.respondPermission(ev.id, true).catch(() => {});
@@ -683,8 +708,19 @@ export class SessionStream {
             toolName: ev.tool,
             toolInput: JSON.stringify(ev.input ?? {}),
             status: 'pending',
-          }).run();
-        } catch {}
+          }).onConflictDoNothing().run();
+        } catch (e) {
+          // A REAL insert failure (not a dup — onConflictDoNothing absorbs
+          // those): hold the cursor back and STOP — the replay after
+          // restart redoes this event whole (broadcasting a card that
+          // wouldn't survive a refetch would just mislead the user).
+          const seq = this.currentEventSeq;
+          if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
+            this.persistHoldbackSeq = seq;
+          }
+          this._log('warn', 'sdk_error', { msg: 'pending perm insert failed', err: (e as Error)?.message });
+          break;
+        }
         this._broadcast({ type: 'permission_request', id: ev.id, tool: ev.tool, input: ev.input });
         this._log('info', 'permission', { id: ev.id, tool: ev.tool });
         this._maybePush({
@@ -695,15 +731,26 @@ export class SessionStream {
         sendPermissionToTelegram(this.id, ev.id, ev.tool, ev.input).catch(() => {});
         break;
       case 'user_question':
-        if (this._replayAlreadyPersisted(ev)) break;
+        // Identity gate on the event's OWN row: it is inserted AFTER the
+        // pending (break-on-failure order below), so its presence proves
+        // the pending write completed too — no transaction needed.
+        if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         this._flushAssistant();
         if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
         try {
           db.insert(claudePendingQuestions).values({
             id: ev.id, sessionId: this.id, kind: 'question',
             payload: JSON.stringify(ev.questions ?? []), status: 'pending',
-          }).run();
-        } catch {}
+          }).onConflictDoNothing().run();
+        } catch (e) {
+          // Real failure → holdback + stop; replay redoes pending AND row.
+          const seq = this.currentEventSeq;
+          if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
+            this.persistHoldbackSeq = seq;
+          }
+          this._log('warn', 'sdk_error', { msg: 'pending question insert failed', err: (e as Error)?.message });
+          break;
+        }
         this._persist('user_question', { type: 'user_question', id: ev.id, questions: ev.questions });
         this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
         this._maybePush({
@@ -714,15 +761,23 @@ export class SessionStream {
         sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
         break;
       case 'exit_plan_request':
-        if (this._replayAlreadyPersisted(ev)) break;
+        // Same pending-then-row break-on-failure ordering as user_question.
+        if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         this._flushAssistant();
         if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
         try {
           db.insert(claudePendingQuestions).values({
             id: ev.id, sessionId: this.id, kind: 'exit_plan',
             payload: JSON.stringify({ plan: ev.plan ?? '' }), status: 'pending',
-          }).run();
-        } catch {}
+          }).onConflictDoNothing().run();
+        } catch (e) {
+          const seq = this.currentEventSeq;
+          if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
+            this.persistHoldbackSeq = seq;
+          }
+          this._log('warn', 'sdk_error', { msg: 'pending exit_plan insert failed', err: (e as Error)?.message });
+          break;
+        }
         this._persist('exit_plan_request', { type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         this._maybePush({
@@ -1129,10 +1184,15 @@ export class SessionStream {
   private _flushAssistant(): void {
     if (!this.currentAssistant) return;
     const finalContent = this.currentAssistant;
+    // The flush row is stamped with the FIRST delta's seq — the row's
+    // identity is the accumulation start (unique: a delta belongs to
+    // exactly one accumulation, and deltas write no other row). Captured
+    // BEFORE clearing so a failed insert can restore both buffer and
+    // holdback (Codex 13.2.B: the old code forgot the buffer start before
+    // knowing whether the insert succeeded — a failed flush lost the
+    // whole turn text).
+    const flushSeq = this.pendingAssistantSince;
     this.currentAssistant = '';
-    // The accumulation is being flushed to a row — release the durable-
-    // cursor holdback (the row insert below carries the flush trigger's
-    // seq, so replay-idempotence is preserved by the seq-gate).
     this.pendingAssistantSince = null;
 
     if (this.isReplaying) {
@@ -1166,7 +1226,19 @@ export class SessionStream {
     // Stamp the row with the model that actually produced this text (per-
     // message attribution — the effective_model handler flushes BEFORE
     // switching, so buffered text never gets relabeled by a newer model).
-    this._persist('assistant', finalContent, { model: this.effectiveModel });
+    const ok = this._persist('assistant', finalContent, { model: this.effectiveModel, seq: flushSeq });
+    if (!ok) {
+      // RESTORE (Codex 13.2.B): keep the text in the buffer — the next
+      // boundary retries the flush with possibly more text (chronology
+      // slightly late, never lost) — and pin the durable cursor at the
+      // FIRST delta so a crash replays the whole accumulation.
+      this.currentAssistant = finalContent;
+      this.pendingAssistantSince = flushSeq;
+      if (flushSeq != null && (this.persistHoldbackSeq == null || flushSeq < this.persistHoldbackSeq)) {
+        this.persistHoldbackSeq = flushSeq;
+      }
+      return;
+    }
     if (this.isReplaying) this.replayKnownAssistantContents.add(finalContent);
   }
 
@@ -1185,22 +1257,17 @@ export class SessionStream {
     this.replayKnownAssistantContents.clear();
     this.replayKnownThinkingContents.clear();
     this.replayKnownPendingIds.clear();
-    // Primary gate: MAX(seq) across stamped rows. NULL (fresh DB / rows
-    // all pre-seq-column) → the content Sets below carry the dedup alone,
-    // exactly the pre-2026-07 behavior.
-    this.replayMaxPersistedSeq = null;
-    try {
-      const [r] = db.select({ m: max(claudeSessionMessages.seq) })
-        .from(claudeSessionMessages)
-        .where(eq(claudeSessionMessages.sessionId, this.id))
-        .all();
-      if (r && typeof r.m === 'number') this.replayMaxPersistedSeq = r.m;
-    } catch {}
+    // Primary gate: the SET of stamped row seqs (collected in the row loop
+    // below — same query the content Sets already need). NULL/empty (fresh
+    // DB / rows all pre-seq-column) → the content Sets carry the dedup
+    // alone, exactly the pre-2026-07 behavior.
+    this.replayPersistedSeqs = new Set<number>();
     try {
       const rows = db.select().from(claudeSessionMessages)
         .where(eq(claudeSessionMessages.sessionId, this.id))
         .all();
       for (const r of rows) {
+        if (typeof r.seq === 'number') this.replayPersistedSeqs.add(r.seq);
         try {
           if (r.role === 'tool_use') {
             const p = JSON.parse(r.content);
@@ -1236,11 +1303,14 @@ export class SessionStream {
     } catch {}
   }
 
-  private _persist(role: string, content: any, extra?: { model?: string | null }): void {
+  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null }): boolean {
     // Stamp the row with the seq of the event being dispatched (null for
     // hub-originated rows like 'user' — sendUserMessage runs outside
-    // dispatch). This is the replay-idempotence anchor (P0.3).
-    const seq = this.currentEventSeq;
+    // dispatch). Flush rows override with the FIRST DELTA's seq via
+    // extra.seq — every row's seq is then its own unique identity (no
+    // boundary/flush collision). This is the replay-idempotence anchor
+    // (P0.3). Returns false on failure so callers (flush) can restore.
+    const seq = extra && 'seq' in extra ? extra.seq ?? null : this.currentEventSeq;
     try {
       db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
@@ -1249,6 +1319,7 @@ export class SessionStream {
         ...(extra?.model ? { model: extra.model } : {}),
         ...(seq != null ? { seq } : {}),
       }).run();
+      return true;
     } catch (e: any) {
       // Hold the durable cursor back to (seq - 1): the next restart will
       // replay this event and the insert gets a second chance — without
@@ -1257,6 +1328,7 @@ export class SessionStream {
         this.persistHoldbackSeq = seq;
       }
       this._log('warn', 'sdk_error', { msg: 'persist failed', err: e?.message ?? String(e) });
+      return false;
     }
   }
 

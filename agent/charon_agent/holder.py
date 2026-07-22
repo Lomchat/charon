@@ -313,15 +313,39 @@ class Holder:
             except Exception:
                 pass
 
+    # Bounded write-buffer for the attached agent client (P0.5 — Codex 13.4:
+    # the old fire-and-forget drain assumed "interactive throughput", but a
+    # `yes`, a build or a tail -f easily exceeds that; with a slow/wedged
+    # agent the holder accumulated buffers+tasks without limit). Policy on
+    # overflow: DROP THE CLIENT — detaching flips the holder back to the
+    # bounded 8MB spool (newest-wins), which is exactly the designed offline
+    # path; the agent re-attaches and replays the spool. Nothing unbounded.
+    _WRITE_BUF_MAX = 4 * 1024 * 1024
+
     def _send(self, obj: dict[str, Any]) -> None:
         w = self._client_writer
         if w is None:
             return
         try:
+            buffered = w.transport.get_write_buffer_size()
+        except Exception:
+            buffered = 0
+        if buffered > self._WRITE_BUF_MAX:
+            print(
+                f"[holder] write buffer over {self._WRITE_BUF_MAX}B "
+                f"({buffered}B) — dropping slow client, back to spool",
+                file=sys.stderr, flush=True,
+            )
+            self._client_writer = None
+            try:
+                w.close()
+            except Exception:
+                pass
+            return
+        try:
             w.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
-            # Fire-and-forget drain: at interactive-shell throughput the
-            # write buffer never builds up; a dead peer surfaces via the
-            # read loop's EOF and flips us back to spooling.
+            # Drain still fire-and-forget for latency, but the buffer-size
+            # check above bounds what can accumulate between drains.
             asyncio.get_event_loop().create_task(self._drain(w))
         except Exception:
             self._client_writer = None

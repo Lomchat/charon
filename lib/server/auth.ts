@@ -143,7 +143,12 @@ export function migrateSessionIdsToHashed() {
       tx.update(sessions).set({ id: hashSessionToken(r.id) })
         .where(eq(sessions.id, r.id)).run();
     }
+    // Marker INSIDE the same transaction (Codex 13.5): a crash after the id
+    // rewrites committed but before the marker landed would re-run the
+    // migration — raw and hashed ids are both 64-hex, so the second pass
+    // would double-hash and log everyone out. setSetting runs on the same
+    // connection, so it joins this transaction.
+    setSetting(MARKER, '1');
   });
-  setSetting(MARKER, '1');
   if (rows.length) console.log(`[auth] hashed ${rows.length} legacy session id(s)`);
 }

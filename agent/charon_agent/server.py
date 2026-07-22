@@ -544,12 +544,26 @@ class Server:
             if cmid is not None:
                 seen = self.recent_input_ids.setdefault(sid, deque(maxlen=64))
                 if cmid in seen:
-                    # Already executed — the hub's first attempt landed but its
+                    # Already accepted — the hub's first attempt landed but its
                     # RPC response was lost (timeout). Do NOT re-send the prompt.
                     return {"ok": True, "duplicate": True}
+                # RESERVE the id BEFORE the await (Codex 13.3): RPCs run in
+                # concurrent tasks, so a duplicate arriving while the first
+                # is still inside send_input must see the id immediately.
+                # (send_input is a queue.put — microsecond window — but the
+                # reservation makes the ordering correct by construction.)
+                seen.append(cmid)
+                try:
+                    await s.send_input(content)
+                except Exception:
+                    # Not accepted → the id must stay retryable.
+                    try:
+                        seen.remove(cmid)
+                    except ValueError:
+                        pass
+                    raise
+                return {"ok": True}
             await s.send_input(content)
-            if cmid is not None:
-                self.recent_input_ids.setdefault(sid, deque(maxlen=64)).append(cmid)
             return {"ok": True}
 
         if method == "interrupt":

@@ -28,9 +28,17 @@ function encryptForRest(value: string): string {
   if (!value) return value;
   const key = getEnvAesKey();
   if (!key) {
+    // Fail-CLOSED in production (Codex 13.6): "encrypted at rest" is only a
+    // guarantee if a missing/invalid key refuses the write — the settings
+    // POST surfaces the error to the operator instead of silently storing
+    // plaintext. Dev stays fail-open (plaintext + loud warning) so a bare
+    // checkout keeps working.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('cannot store secret: MASTER_PASSWORD/MASTER_SALT missing or MASTER_SALT is not valid hex');
+    }
     if (!warnedNoKey) {
       warnedNoKey = true;
-      console.error('[settings] MASTER_PASSWORD/MASTER_SALT missing — secret settings stored in PLAINTEXT');
+      console.error('[settings] MASTER_PASSWORD/MASTER_SALT missing — secret settings stored in PLAINTEXT (dev only)');
     }
     return value;
   }
