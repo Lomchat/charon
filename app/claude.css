@@ -3131,6 +3131,13 @@
 .wiz-sug-item:hover, .wiz-sug-item.active { background: rgba(138,180,228,0.12); color: var(--gold-bright); }
 .wiz-sug-tag { flex-shrink: 0; font-size: 10px; color: var(--gold); opacity: 0.8; width: 12px; text-align: center; }
 .wiz-sug-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiz-sug-note {
+  display: flex; align-items: center; gap: 7px; padding: 6px 10px;
+  color: var(--parchment-soft); opacity: 0.75;
+  font-family: var(--body); font-size: 11px; font-style: italic;
+}
+.wiz-sug-spin { display: inline-block; font-style: normal; color: var(--gold); animation: wiz-spin 0.9s linear infinite; }
+@keyframes wiz-spin { to { transform: rotate(360deg); } }
 
 .wiz-error { margin-top: 9px; color: var(--crimson); font-size: 12px; font-family: var(--body); }
 .wiz-error .wiz-btn { margin-left: 8px; padding: 3px 10px; font-size: 11px; }

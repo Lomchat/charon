@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable
 
 from . import __version__
+from .fsnav import list_dir as fs_list_dir
 
 
 def _compute_pyz_sha() -> str:
@@ -343,6 +344,7 @@ class Server:
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
+        "list_dir",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -386,6 +388,12 @@ class Server:
 
         if method == "ping":
             return {"pong": True, "ts": time.time()}
+
+        if method == "list_dir":
+            # Path-autocomplete backend (hub NewSessionWizard). scandir runs
+            # off the event loop; ~1ms over the persistent pipe vs ~0.5s for
+            # a one-shot ssh exec (sshd session setup). Agent >= 0.17.0.
+            return await asyncio.to_thread(fs_list_dir, str(params.get("path") or ""))
 
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]

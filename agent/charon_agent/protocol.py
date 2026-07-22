@@ -74,6 +74,9 @@ METHODS = {
     "codex_login_start",
     "codex_login_status",
     "codex_login_cancel",
+    # Filesystem navigation for the hub's path autocomplete - subdirs of a
+    # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.
+    "list_dir",
     "start_session",
     "resume_session",
     "subscribe",

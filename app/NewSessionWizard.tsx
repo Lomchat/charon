@@ -80,11 +80,14 @@ export default function NewSessionWizard({
   const [sug, setSug] = useState<Suggestion[]>([]);
   const [sugOpen, setSugOpen] = useState(false);
   const [sugIdx, setSugIdx] = useState(-1);
+  const [sugLoading, setSugLoading] = useState(false); // ssh listing in flight (or debounce-pending)
+  const [sugNote, setSugNote] = useState<string | null>(null); // "no match" / failure hint
   const [checking, setChecking] = useState(false);      // existence check on "Use ›"
   const [allowForce, setAllowForce] = useState(false);  // "use anyway" after a failed check
   const customRef = useRef<HTMLInputElement | null>(null);
   const sugListRef = useRef<HTMLDivElement | null>(null);
   const dirCacheRef = useRef(new Map<string, string[]>());  // `${vpsId}:${dir}` → subdirs
+  const prefetchingRef = useRef(new Set<string>());
   const fetchSeqRef = useRef(0);
   const [step, setStep] = useState<Step>(initialVpsId ? (hasInitialCwd ? 'name' : 'path') : 'vps');
   const [busy, setBusy] = useState(false);
@@ -224,42 +227,78 @@ export default function NewSessionWizard({
       .filter((p) => p.path !== typed && (q === '' || p.path.toLowerCase().includes(q)))
       .map((p) => ({ path: p.path, kind: 'known' as const }));
     const lastSlash = typed.lastIndexOf('/');
-    if (lastSlash === -1) { setSug(knownMatches.slice(0, 12)); setSugIdx(-1); return; }
+    if (lastSlash === -1) { setSug(knownMatches.slice(0, 12)); setSugIdx(-1); setSugLoading(false); setSugNote(null); return; }
     const dir = typed.slice(0, lastSlash + 1) || '/';
     const base = typed.slice(lastSlash + 1);
-    const compose = (subdirs: string[]) => {
+    const compose = (subdirs: string[], failed = false) => {
       const dirMatches: Suggestion[] = subdirs
         .filter((n) => n.startsWith(base))
         .slice(0, 30)
         .map((n) => ({ path: dir + n + '/', kind: 'dir' as const }));
       const seen = new Set(dirMatches.map((s) => s.path));
-      setSug([
+      const merged = [
         ...knownMatches.filter((k) => !seen.has(k.path) && !seen.has(k.path + '/')).slice(0, 6),
         ...dirMatches,
-      ]);
+      ];
+      setSug(merged);
       setSugIdx(-1);
+      setSugLoading(false);
+      setSugNote(merged.length === 0 ? (failed ? 'listing failed' : 'no matching directory') : null);
     };
     const cacheKey = `${vpsId}:${dir}`;
     const cached = dirCacheRef.current.get(cacheKey);
     if (cached) { compose(cached); return; }
+    // Uncached dir → the spinner shows through the debounce AND the ssh
+    // round-trip (the user must SEE that deeper levels are on their way).
+    setSugLoading(true); setSugNote(null);
     const t = setTimeout(() => {
       api.listVpsDirs(vpsId, dir)
         .then((r) => {
           if (seq !== fetchSeqRef.current) return;   // stale response
           const subdirs = r.ok && r.exists ? (r.dirs ?? []) : [];
-          dirCacheRef.current.set(cacheKey, subdirs);
-          compose(subdirs);
+          if (r.ok) dirCacheRef.current.set(cacheKey, subdirs); // never cache a FAILURE
+          compose(subdirs, !r.ok);
         })
-        .catch(() => { if (seq === fetchSeqRef.current) compose([]); });
-    }, 250);
+        .catch(() => { if (seq === fetchSeqRef.current) compose([], true); });
+    }, 150);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [custom, step, vpsId, pickList]);
 
-  // Keep the highlighted suggestion visible while arrowing through the list.
+  // Warm-up: entering step 2 pre-lists '/' in the background. This opens the
+  // per-VPS persistent SSH master server-side (the expensive part) so the
+  // first real keystroke listing returns fast, and pre-caches the root dir.
+  useEffect(() => {
+    if (step !== 'path' || !vpsId) return;
+    const key = `${vpsId}:/`;
+    if (dirCacheRef.current.has(key)) return;
+    api.listVpsDirs(vpsId, '/')
+      .then((r) => { if (r.ok) dirCacheRef.current.set(key, r.dirs ?? []); })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, vpsId]);
+
+  // Pre-list a suggested dir while the user hovers/highlights it — by the
+  // time they click, the drill-down composes straight from cache.
+  function prefetchDir(p: string) {
+    if (!vpsId) return;
+    const key = `${vpsId}:${p}`;
+    if (dirCacheRef.current.has(key) || prefetchingRef.current.has(key)) return;
+    prefetchingRef.current.add(key);
+    api.listVpsDirs(vpsId, p)
+      .then((r) => { if (r.ok) dirCacheRef.current.set(key, r.dirs ?? []); })
+      .catch(() => {})
+      .finally(() => prefetchingRef.current.delete(key));
+  }
+
+  // Keep the highlighted suggestion visible while arrowing through the list
+  // (+ prefetch it so Enter drills down instantly).
   useEffect(() => {
     if (sugIdx < 0) return;
     sugListRef.current?.children[sugIdx]?.scrollIntoView({ block: 'nearest' });
+    const s = sug[sugIdx];
+    if (s?.kind === 'dir') prefetchDir(s.path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sugIdx]);
 
   // The ⧉ button on a known-path row: put the path in the input AS-IS —
@@ -531,7 +570,7 @@ export default function NewSessionWizard({
                 {checking ? '…' : 'Use ›'}
               </button>
             </div>
-            {sugOpen && sug.length > 0 && (
+            {sugOpen && (sug.length > 0 || sugLoading || sugNote) && (
               <div className="wiz-sug" ref={sugListRef}>
                 {sug.map((s2, i) => (
                   // onMouseDown preventDefault keeps the input focused so the
@@ -539,12 +578,19 @@ export default function NewSessionWizard({
                   <button key={s2.kind + s2.path} type="button"
                     className={`wiz-sug-item${i === sugIdx ? ' active' : ''}`}
                     onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => { if (s2.kind === 'dir') prefetchDir(s2.path); }}
                     onClick={() => applySuggestion(s2)}
                   >
                     <span className="wiz-sug-tag">{s2.kind === 'known' ? '★' : '▸'}</span>
                     <span className="wiz-sug-path">{s2.path}</span>
                   </button>
                 ))}
+                {sugLoading && (
+                  <div className="wiz-sug-note"><span className="wiz-sug-spin">⟳</span> listing directory…</div>
+                )}
+                {!sugLoading && sugNote && sug.length === 0 && (
+                  <div className="wiz-sug-note">{sugNote}</div>
+                )}
               </div>
             )}
             {pathError && (
