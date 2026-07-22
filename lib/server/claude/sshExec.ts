@@ -4,17 +4,32 @@ import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Vps } from '@/lib/db/schema';
+// Charon-scoped known_hosts — single source shared with the agent transport
+// (sshShared.js) so every connection type trusts the same host keys.
+import { KNOWN_HOSTS_PATH } from '@/lib/server/agent/sshShared.js';
+import { getSetting } from './settings';
 
 const DEFAULT_SSH_OPTS = [
   '-o', 'BatchMode=yes',
   '-o', 'ConnectTimeout=10',
   '-o', 'StrictHostKeyChecking=accept-new',
+  '-o', `UserKnownHostsFile=${KNOWN_HOSTS_PATH}`,
   '-o', 'PasswordAuthentication=no',
   '-o', 'KbdInteractiveAuthentication=no',
   '-o', 'ServerAliveInterval=30',
   '-o', 'ServerAliveCountMax=4',
   '-T',
 ];
+
+// `ssh.private_key_path` setting, same convention as sshShared.js /
+// AgentClient: explicit -i only for a non-default key. Read per call (the
+// settings layer caches) so an edit applies without a restart. This was one
+// of the P1.2 gaps: bootstrap/scan/check-login went through here and IGNORED
+// the configured key.
+export function sshKeyArgs(): string[] {
+  const keyPath = getSetting('ssh.private_key_path');
+  return keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
+}
 
 export type SshResult = { ok: boolean; stdout: string; stderr: string; code: number | null };
 
@@ -59,6 +74,7 @@ export async function closeSshSession(session: SshSession | undefined): Promise<
       '-O', 'exit',
       '-o', `ControlPath=${session.controlPath}`,
       '-p', String(session.vps.sshPort),
+      '--',
       `${session.vps.sshUser}@${session.vps.ip}`,
     ];
     const child = spawn('ssh', args, { stdio: 'ignore' });
@@ -100,7 +116,11 @@ export function sshExec(
     const args = [
       ...DEFAULT_SSH_OPTS,
       ...muxOpts,
+      ...sshKeyArgs(),
       '-p', String(vps.sshPort),
+      // `--` ends option parsing — a value starting with '-' can never be
+      // parsed as an ssh option (validated upstream too, cf. vpsValidate.ts).
+      '--',
       `${vps.sshUser}@${vps.ip}`,
       command,
     ];

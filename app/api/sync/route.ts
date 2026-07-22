@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db, vps, vpsPaths } from '@/lib/db';
+import { validateVpsTarget, validateRemotePath } from '@/lib/server/vpsValidate';
 import { eq, and } from 'drizzle-orm';
 
 // POST /api/sync — ingest VPS + paths from an external source ("vps + paths"
@@ -59,18 +60,22 @@ export async function POST(req: Request) {
   const inVps = Array.isArray(body.vps) ? body.vps : [];
   const inPaths = Array.isArray(body.vpsPaths) ? body.vpsPaths : [];
 
-  const counts = { vps: 0, paths: 0, pathsUpdated: 0, pathsSkipped: 0 };
+  const counts = { vps: 0, paths: 0, pathsUpdated: 0, pathsSkipped: 0, invalid: 0 };
 
   db.transaction((tx) => {
     for (const v of inVps) {
-      if (!v?.id || !v?.name || !v?.ip || !v?.sshUser) continue;
+      if (!v?.id || typeof v.id !== 'string' || v.id.length > 64) { counts.invalid += 1; continue; }
+      // Same strict rules as the UI path (P1.3) — the Bearer-authed sync
+      // endpoint must not be a side door into the ssh argvs.
+      const t = validateVpsTarget(v);
+      if (!t.ok) { counts.invalid += 1; continue; }
       const row = {
         id: String(v.id),
-        name: String(v.name),
-        ip: String(v.ip),
-        sshUser: String(v.sshUser),
-        sshPort: Number.isFinite(v.sshPort) && Number(v.sshPort) > 0 ? Math.floor(Number(v.sshPort)) : 22,
-        defaultPath: v.defaultPath ? String(v.defaultPath) : null,
+        name: t.name,
+        ip: t.ip,
+        sshUser: t.sshUser,
+        sshPort: t.sshPort,
+        defaultPath: t.defaultPath,
         ...(typeof v.createdAt === 'number' ? { createdAt: v.createdAt } : {})
       };
       tx.insert(vps).values(row).onConflictDoUpdate({
@@ -89,7 +94,10 @@ export async function POST(req: Request) {
     for (const r of inPaths) {
       if (!r?.vpsId || !r?.path) continue;
       const vpsId = String(r.vpsId);
-      const path = String(r.path);
+      if (vpsId.length > 64) { counts.invalid += 1; continue; }
+      const validPath = validateRemotePath(r.path);
+      if (validPath == null) { counts.invalid += 1; continue; }
+      const path = validPath;
       const label = r.label != null && String(r.label).trim() !== ''
         ? String(r.label).trim() : null;
       const existing = tx.select().from(vpsPaths)

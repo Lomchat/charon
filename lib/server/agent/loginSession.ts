@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { getSetting } from '@/lib/server/claude/settings';
+import { KNOWN_HOSTS_PATH } from '@/lib/server/agent/sshShared.js';
 
 // ── Interactive `claude login` console per VPS ───────────────────────────────
 // One active session per VPS at a time (the 2nd start kills the previous one).
@@ -44,11 +45,13 @@ class LoginSession {
       '-o', 'BatchMode=yes',
       '-o', 'ConnectTimeout=10',
       '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${KNOWN_HOSTS_PATH}`,
       '-o', 'PasswordAuthentication=no',
       '-o', 'KbdInteractiveAuthentication=no',
       '-tt',
       ...keyArgs,
       '-p', String(v.sshPort),
+      '--',
       `${v.sshUser}@${v.ip}`,
       'claude /login',
     ];

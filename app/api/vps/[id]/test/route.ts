@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
+import { sshKeyArgs } from '@/lib/server/claude/sshExec';
+import { KNOWN_HOSTS_PATH } from '@/lib/server/agent/sshShared.js';
 
 function testSsh(user: string, host: string, port: number): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
@@ -10,9 +12,14 @@ function testSsh(user: string, host: string, port: number): Promise<{ ok: boolea
       '-o', 'BatchMode=yes',
       '-o', 'ConnectTimeout=5',
       '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${KNOWN_HOSTS_PATH}`,
       '-o', 'PasswordAuthentication=no',
       '-o', 'KbdInteractiveAuthentication=no',
+      // Custom key (ssh.private_key_path) — P1.2: the connection test must
+      // exercise the SAME auth the real connections use.
+      ...sshKeyArgs(),
       '-p', String(port),
+      '--',
       `${user}@${host}`,
       'true'
     ];

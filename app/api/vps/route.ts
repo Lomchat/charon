@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { db, vps, vpsFolders } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
+import { validateVpsTarget } from '@/lib/server/vpsValidate';
 import { eq, max, asc, ne } from 'drizzle-orm';
 
 const newId = () => crypto.randomBytes(8).toString('hex');
@@ -12,17 +13,10 @@ export async function POST(req: Request) {
   if (s instanceof Response) return s;
   const body = await req.json();
 
-  const name = String(body.name ?? '').trim();
-  const ip = String(body.ip ?? '').trim();
-  const sshUser = String(body.sshUser ?? '').trim();
-  if (!name || !ip || !sshUser) {
-    return NextResponse.json({ error: 'name, ip, sshUser required' }, { status: 400 });
-  }
-  const sshPortRaw = Number(body.sshPort ?? 22);
-  const sshPort = Number.isFinite(sshPortRaw) && sshPortRaw > 0 ? Math.floor(sshPortRaw) : 22;
-  const defaultPath = body.defaultPath != null && String(body.defaultPath).trim() !== ''
-    ? String(body.defaultPath).trim()
-    : null;
+  // Strict validation — these values end up in ssh argvs (P1.3).
+  const v = validateVpsTarget(body);
+  if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
+  const { name, ip, sshUser, sshPort, defaultPath } = v;
 
   // Folder resolution: if folderId is provided and exists we use it,
   // otherwise we fall back on the first non-'default' folder (by position).

@@ -487,11 +487,22 @@ Le chemin de clé privée et certains paramètres SSH ne sont pas appliqués de
 façon uniforme aux connexions persistantes, commandes ponctuelles, bootstrap,
 test VPS, login et proxy WebSocket.
 
-- [ ] Créer un seul constructeur d'arguments/configuration SSH.
-- [ ] L'utiliser dans tous les consommateurs.
-- [ ] Partager clé, port, utilisateur, timeout et known-hosts.
+*(✔ l'essentiel fait le 22/07/2026 — `ssh.private_key_path` désormais appliqué
+aux 6 sites de spawn : AgentClient + server.js WS (STMT_KEYPATH) + sshExec/
+bootstrap (`sshKeyArgs()`) + test route + loginSession ; known_hosts dédié
+`~/.ssh/charon_known_hosts` partagé partout via `KNOWN_HOSTS_PATH`
+(sshShared.js) ; vérifié en prod : flotte reconnectée, erreurs restantes
+pré-existantes (réseau/daemon).)*
+
+- [ ] Créer un seul constructeur d'arguments/configuration SSH *(partiel :
+      sshShared.js reste LE builder agent ; sshExec garde ses opts propres
+      mais partage désormais clé + known_hosts — fusion complète = refactor
+      ultérieur)*.
+- [x] L'utiliser dans tous les consommateurs *(clé + known_hosts + `--`)*.
+- [x] Partager clé, port, utilisateur, timeout et known-hosts.
 - [ ] Tester chaque type de connexion avec une clé non standard.
-- [ ] Supprimer les constructions locales d'arguments.
+- [x] Supprimer les constructions locales d'arguments *(plus aucun site
+      n'ignore la clé configurée)*.
 
 ### P1.3 — Valider strictement les cibles et paramètres SSH
 
@@ -502,14 +513,20 @@ test VPS, login et proxy WebSocket.
 > known_hosts dédié (grep négatif). `/api/sync` : même laxisme
 > (présence + `String()` bruts) et alimente directement les argv ssh.
 
-- [ ] Limiter le port à `1..65535`.
-- [ ] Refuser utilisateurs, hôtes et destinations commençant par `-`
-      (et ajouter `--` avant la destination dans tous les argv).
-- [ ] Définir des longueurs maximales.
-- [ ] Valider hostname/IP, utilisateur POSIX et chemins selon des règles
-      documentées.
-- [ ] Appliquer les mêmes règles à `/api/sync`.
-- [ ] Gérer un fichier known-hosts dédié à Charon.
+*(✔ fait le 22/07/2026 via `lib/server/vpsValidate.ts`, appliqué à POST/PATCH
+/api/vps ET /api/sync ; vérifié en prod : `-oProxyCommand=` refusé en user et
+en host, port 99999 refusé.)*
+
+- [x] Limiter le port à `1..65535`.
+- [x] Refuser utilisateurs, hôtes et destinations commençant par `-`
+      (et ajouter `--` avant la destination dans tous les argv — les 6 sites).
+- [x] Définir des longueurs maximales *(name 120, host 253, user 64, path 512)*.
+- [x] Valider hostname/IP, utilisateur POSIX et chemins selon des règles
+      documentées *(règles commentées dans vpsValidate.ts, source unique)*.
+- [x] Appliquer les mêmes règles à `/api/sync` *(lignes invalides comptées
+      `counts.invalid`, jamais insérées)*.
+- [x] Gérer un fichier known-hosts dédié à Charon
+      (`~/.ssh/charon_known_hosts`, tous les sites).
 - [ ] Permettre l'enregistrement ou la confirmation d'une fingerprint SSH.
 - [ ] Éviter de considérer `accept-new` comme une protection du premier accès.
 

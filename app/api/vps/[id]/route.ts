@@ -4,6 +4,7 @@ import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
+import { validateHost, validateSshUser, validatePort, validateRemotePath } from '@/lib/server/vpsValidate';
 
 const ALLOWED = ['name', 'ip', 'sshUser', 'sshPort', 'defaultPath'] as const;
 
@@ -13,17 +14,30 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { id } = await params;
   const body = await req.json();
 
+  // Same strict rules as POST /api/vps — these values feed ssh argvs (P1.3).
   const update: Record<string, unknown> = {};
   for (const k of ALLOWED) {
     if (!(k in body)) continue;
     if (k === 'sshPort') {
-      const n = Number(body[k]);
-      update[k] = Number.isFinite(n) && n > 0 ? Math.floor(n) : 22;
+      const p = validatePort(body[k]);
+      if (p == null) return NextResponse.json({ error: 'invalid ssh port (1..65535)' }, { status: 400 });
+      update[k] = p;
     } else if (k === 'defaultPath') {
-      const v = body[k];
-      update[k] = v == null || String(v).trim() === '' ? null : String(v).trim();
+      const p = validateRemotePath(body[k]);
+      if (p === undefined) return NextResponse.json({ error: 'invalid default path' }, { status: 400 });
+      update[k] = p;
+    } else if (k === 'ip') {
+      const h = validateHost(body[k]);
+      if (!h) return NextResponse.json({ error: 'invalid host/ip' }, { status: 400 });
+      update[k] = h;
+    } else if (k === 'sshUser') {
+      const u = validateSshUser(body[k]);
+      if (!u) return NextResponse.json({ error: 'invalid ssh user' }, { status: 400 });
+      update[k] = u;
     } else {
-      update[k] = String(body[k] ?? '').trim();
+      const v = String(body[k] ?? '').trim();
+      if (!v || v.length > 120) return NextResponse.json({ error: 'invalid name' }, { status: 400 });
+      update[k] = v;
     }
   }
   if (Object.keys(update).length === 0) {
