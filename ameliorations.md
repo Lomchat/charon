@@ -915,10 +915,12 @@ le Dockerfile copie tout `node_modules`, y compris les dépendances de dev.
 Les routes `/v1`, `/v2` et `/v3` sont encore produites par le build alors
 qu'elles sont décrites comme temporaires.
 
-- [ ] Supprimer `app/(proto)` lorsque les maquettes ne sont plus nécessaires.
-- [ ] Retirer React Three, Three.js, XYFlow et dépendances transitives devenues
-      inutiles.
-- [ ] Vérifier le bundle et l'image après suppression.
+- [x] Supprimer `app/(proto)` *(fait le 22/07 — aucun import hors-proto
+      vérifié avant suppression)*.
+- [x] Retirer React Three, Three.js, XYFlow et dépendances transitives
+      devenues inutiles *(npm uninstall des 5 paquets)*.
+- [x] Vérifier le bundle et l'image après suppression *(build OK, app up,
+      /v1-3 n'existent plus)*.
 
 ### P2.15 — Rendre le pyz reproductible
 
