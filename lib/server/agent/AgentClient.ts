@@ -305,7 +305,26 @@ export class AgentClient {
       // Backward compat with agents <0.4.0: tail of the ring.
       params.replay = 300;
     }
-    this.call('subscribe', params)
+    this.call<{ ok?: boolean; replay_count?: number; status?: string;
+                current_seq?: number; earliest_seq?: number | null; gap?: boolean }>('subscribe', params)
+      .then((res) => {
+        // Rotation-gap detection (agent >= 0.18.0, P0.4): the agent tells us
+        // its earliest retained seq; if our cursor predates it, the events in
+        // between were rotated away and can NEVER be replayed. Surface it as
+        // a synthetic event so sessionOps can log/persist/warn — the RPC
+        // response arrives AFTER the replay stream, so this lands post-
+        // replay_end. Older agents omit `gap` → nothing fires.
+        if (res?.gap && typeof afterSeq === 'number' && typeof res.earliest_seq === 'number') {
+          const subs = this.subscribers.get(sessionId);
+          if (subs) {
+            const gapEv = {
+              event: 'replay_gap', session_id: sessionId,
+              after_seq: afterSeq, earliest_seq: res.earliest_seq,
+            } as AgentEvent;
+            for (const cb of subs) { try { cb(gapEv); } catch {} }
+          }
+        }
+      })
       .catch((e) => {
         // If subscribe fails (typically session_not_found), remove from
         // `subscribed` so a future subscribe will retry spontaneously.

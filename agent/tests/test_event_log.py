@@ -154,6 +154,53 @@ class EventLogTestCase(unittest.TestCase):
         finally:
             event_log.MAX_FILE_BYTES = orig
 
+    # ── earliest_seq / gap detection (P0.4) ──────────────────────────────
+    def test_earliest_seq_empty_log_is_none(self):
+        log = self.make()
+        self.assertIsNone(log.earliest_seq())
+
+    def test_earliest_seq_without_rotation_is_1(self):
+        log = self.make()
+        for i in range(5):
+            log.append({"event": "e", "i": i})
+        self.assertEqual(log.earliest_seq(), 1)
+
+    def test_earliest_seq_advances_when_rotation_drops_oldest(self):
+        orig = event_log.MAX_FILE_BYTES
+        event_log.MAX_FILE_BYTES = 5000
+        try:
+            log = self.make()
+            # Enough big events that the oldest rotation gets DELETED.
+            # With a 5KB cap and ~4KB events, each file holds ~2 events;
+            # retention is (MAX_ROTATIONS rotated + active) files → go
+            # well past 2 * (MAX_ROTATIONS + 1) events.
+            for i in range(2 * (MAX_ROTATIONS + 1) + 8):
+                log.append({"event": "e", "i": i, "data": "X" * 4000})
+            earliest = log.earliest_seq()
+            self.assertIsNotNone(earliest)
+            self.assertGreater(earliest, 1,
+                               "oldest events should have been dropped")
+            # The retained window must be contiguous: earliest..current
+            # all present (seqs are dense).
+            out = log.read_since(0)
+            self.assertEqual([e["seq"] for e in out],
+                             list(range(earliest, log.current_seq() + 1)))
+            # And that's exactly the gap condition the subscribe handler
+            # reports: a cursor below earliest-1 has lost events.
+            stale_cursor = earliest - 2
+            self.assertTrue(earliest > stale_cursor + 1)
+        finally:
+            event_log.MAX_FILE_BYTES = orig
+
+    def test_earliest_seq_survives_reopen(self):
+        log = self.make()
+        for i in range(3):
+            log.append({"event": "e", "i": i})
+        # Fresh instance (agent restart) — recompute from disk.
+        log2 = self.make()
+        self.assertEqual(log2.earliest_seq(), 1)
+        self.assertEqual(log2.current_seq(), 3)
+
     def test_rotation_caps_number_of_rotated_files(self):
         orig = event_log.MAX_FILE_BYTES
         event_log.MAX_FILE_BYTES = 5000

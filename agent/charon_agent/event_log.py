@@ -72,6 +72,10 @@ class EventLog:
         self.path = base_dir / f"{session_id}.jsonl"
         self._seq = 0
         self._loaded = False
+        # Cached earliest retained seq (None = unknown/empty). Invalidated
+        # when rotation drops the oldest file — consumers (subscribe) use it
+        # to detect an unrecoverable replay gap (hub cursor < earliest - 1).
+        self._earliest: int | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def _ensure_loaded(self) -> None:
@@ -161,7 +165,9 @@ class EventLog:
             return
         if size < MAX_FILE_BYTES:
             return
-        # Shift .N -> .N+1, drop the oldest.
+        # Shift .N -> .N+1, drop the oldest. Dropping a file changes the
+        # earliest retained seq → invalidate the cache (recomputed lazily).
+        self._earliest = None
         for n in range(MAX_ROTATIONS, 0, -1):
             src = self.base_dir / f"{self.session_id}.jsonl.{n}"
             if n == MAX_ROTATIONS:
@@ -270,6 +276,27 @@ class EventLog:
         self._ensure_loaded()
         return self._seq
 
+    def earliest_seq(self) -> int | None:
+        """Smallest seq still retained on disk (None if the log is empty).
+
+        Seqs are DENSE (+1 per append, never reused), so `earliest_seq > N+1`
+        proves events N+1 .. earliest-1 were rotated away and can never be
+        replayed — that's the signal `subscribe` uses to report a `gap` to
+        the hub instead of silently starting the replay at the oldest
+        retained event (P0.4). Cached; invalidated when rotation drops the
+        oldest file. Cost when uncached: first parseable line of the oldest
+        file (readers are lazy generators)."""
+        self._ensure_loaded()
+        if self._earliest is not None:
+            return self._earliest
+        for fp in self._iter_files_oldest_first():
+            for evt in _read_jsonl(fp):
+                s = evt.get("seq")
+                if isinstance(s, int):
+                    self._earliest = s
+                    return s
+        return None
+
     # ── delete ──────────────────────────────────────────────────────────
     def delete(self) -> None:
         """Remove the log files for this session. Used on session
@@ -289,6 +316,7 @@ class EventLog:
         # Reset in-memory state — a subsequent append would re-create.
         self._seq = 0
         self._loaded = False
+        self._earliest = None
 
 
 def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:

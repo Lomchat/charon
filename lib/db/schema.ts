@@ -208,6 +208,15 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // rows persisted before this column existed, and until the agent (>= 0.6.0)
   // has reported an effective model.
   model: text('model'),
+  // Durable-log seq of the agent event that produced this row (the flush
+  // trigger for accumulated assistant text). THE replay-idempotence anchor
+  // (P0.2/P0.3): on replay_begin the stream loads MAX(seq) and skips any
+  // replayed event with seq <= that — dedup by event IDENTITY, not by
+  // content (two legitimate identical "Done." answers can never be
+  // confused again). NULL on rows persisted before 2026-07-22, on user
+  // rows (hub-originated, no agent event), and with pre-0.4.0 agents
+  // (no seq → legacy content dedup applies).
+  seq: integer('seq'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // Hot path: window query (session_id + id range), delta polling

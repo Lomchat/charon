@@ -131,6 +131,13 @@ export type AgentEventCommonFields = {
 export type AgentEvent = (
   | { event: 'replay_begin'; session_id: string; count: number }
   | { event: 'replay_end'; session_id: string }
+  // HUB-SYNTHETIC (not sent by the agent): AgentClient fabricates this from
+  // the subscribe RPC result when the agent (>= 0.18.0) reports that its
+  // durable log rotated past our cursor — events (after_seq, earliest_seq)
+  // exclusive are gone for good. sessionOps surfaces the hole explicitly
+  // (log + persisted event row + UI banner) instead of silently presenting
+  // a truncated transcript. No seq (it isn't a logged event).
+  | { event: 'replay_gap'; session_id: string; after_seq: number; earliest_seq: number }
   | { event: 'status'; session_id: string; status: AgentSessionStatus }
   | { event: 'ready'; session_id: string }
   | { event: 'session_id'; session_id: string; claude_session_id: string }

@@ -162,6 +162,13 @@
       "when": 1784708026320,
       "tag": "0022_stormy_kitty_pryde",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1784721613992,
+      "tag": "0023_wild_logan",
+      "breakpoints": true
     }
   ]
 }

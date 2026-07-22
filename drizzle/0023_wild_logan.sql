@@ -1,0 +1,1 @@
+ALTER TABLE `claude_session_messages` ADD `seq` integer;

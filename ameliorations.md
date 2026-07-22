@@ -209,12 +209,22 @@ définitivement l'événement fautif.
 
 **Actions**
 
-- [ ] Séparer `lastReceivedSeq` de `lastPersistedSeq`.
-- [ ] Avancer le curseur durable uniquement après traitement réussi.
-- [ ] Ajouter des retries bornés avec backoff.
+*(✔ fait le 22/07/2026 via le chantier « seq par message » — voir P0.3.)*
+
+- [x] Séparer `lastReceivedSeq` de `lastPersistedSeq` *(mieux : le curseur
+      DURABLE est retenu par `_durableCursor()` = min(lastSeenSeq,
+      pendingAssistantSince−1, persistHoldbackSeq−1) — un crash re-livre le
+      texte non flushé au lieu d'en perdre les premières secondes)*.
+- [x] Avancer le curseur durable uniquement après traitement réussi *(un
+      `_persist` en échec épingle le curseur → le restart rejoue l'événement
+      et la ligne a une seconde chance ; le seq-gate rend le rejeu
+      idempotent)*.
+- [ ] ~~Ajouter des retries bornés avec backoff.~~ *(remplacé par le
+      holdback+rejeu — plus simple, même garantie)*
 - [ ] ~~Stocker les événements impossibles à traiter dans une dead-letter
       queue.~~ *(surdimensionné — voir verdict)*
-- [ ] Rendre cet état visible dans les logs, la santé VPS et l'interface.
+- [x] Rendre cet état visible dans les logs, la santé VPS et l'interface
+      *(replay_gap : log warn + ligne event persistée + bannière erreur UI)*.
 - [ ] Ajouter un test injectant une erreur DB au milieu d'un replay.
 
 **Fichier principal** : `lib/server/agent/sessionOps.ts`
@@ -246,10 +256,23 @@ replay.
 
 **Actions**
 
-- [ ] Persister l'identité durable de l'événement ou son `seq`.
-- [ ] Ajouter une contrainte unique `(session_id, event_seq)`.
-- [ ] Associer les fragments de texte à un tour ou intervalle de séquences.
-- [ ] Supprimer la déduplication globale par hash ou contenu.
+*(✔ fait le 22/07/2026 — migration 0023 `claude_session_messages.seq` ;
+vérifié en prod après restart : zéro doublon `(session,seq)` hors paires
+flush légitimes, stamping actif sur les nouvelles lignes.)*
+
+- [x] Persister l'identité durable de l'événement ou son `seq` *(chaque ligne
+      porte le seq de l'événement producteur ; le flush assistant porte le
+      seq de son déclencheur)*.
+- [ ] ~~Ajouter une contrainte unique `(session_id, event_seq)`.~~
+      *(**la proposition était subtilement fausse** : un même événement
+      produit légitimement DEUX lignes — flush assistant + sa propre ligne —
+      même seq, rôles différents. Le gate `MAX(seq)` à replay_begin donne la
+      même garantie sans la contrainte.)*
+- [x] Associer les fragments de texte à un tour ou intervalle de séquences
+      *(pendingAssistantSince → curseur retenu → re-livraison intégrale)*.
+- [x] Supprimer la déduplication globale par hash ou contenu *(reléguée en
+      fallback pour agents sans seq / lignes pré-0023 — jamais utilisée dès
+      que le seq-gate s'applique)*.
 - [ ] Tester plusieurs réponses textuellement identiques dans des tours
       différents.
 
@@ -280,13 +303,21 @@ un transcript incomplet sans avertissement.
 
 **Actions**
 
-- [ ] Retourner `earliest_seq`, `latest_seq` et `gap` lors du subscribe.
-- [ ] Comparer le premier événement reçu à `requested_seq + 1`.
-- [ ] Ajouter un événement ou état explicite `replay_gap`.
-- [ ] Afficher un avertissement et proposer une reconstruction depuis le
-      transcript SDK lorsque c'est possible.
+*(✔ fait le 22/07/2026 — agent 0.18.0 : `event_log.earliest_seq()` (cache
+invalidé à la rotation) + subscribe → `{earliest_seq, gap}` ; hub :
+`replay_gap` synthétisé par AgentClient → log + ligne event + bannière.)*
+
+- [x] Retourner `earliest_seq`, ~~`latest_seq`~~ (= `current_seq`, déjà là)
+      et `gap` lors du subscribe.
+- [x] Comparer le premier événement reçu à `requested_seq + 1` *(équivalent
+      côté agent : seqs DENSES → `earliest > after_seq+1` prouve le trou)*.
+- [x] Ajouter un événement ou état explicite `replay_gap`.
+- [x] Afficher un avertissement *(bannière erreur non-fatale + ligne
+      persistée)* — reconstruction SDK : non (l'import/scan existe déjà en
+      manuel).
 - [ ] Rendre la rétention et les quotas configurables.
-- [ ] Ajouter un test avec rotation et curseur antérieur au plus vieux fichier.
+- [x] Ajouter un test avec rotation et curseur antérieur au plus vieux
+      fichier *(4 tests earliest_seq, dont rotation-drop + reopen)*.
 
 **Fichiers concernés**
 

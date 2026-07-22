@@ -501,12 +501,25 @@ class Server:
             # `current_seq` lets the caller checkpoint at subscribe time —
             # useful if they want to advance their cursor even when the
             # replay was empty (e.g. they were already caught up).
+            # `earliest_seq` + `gap` (>= 0.18.0, P0.4): seqs are dense, so
+            # earliest > after_seq + 1 proves events (after_seq, earliest)
+            # were rotated away and can NEVER be replayed. The hub surfaces
+            # that hole explicitly instead of accepting a silent jump.
             try:
-                current_seq = self._event_log(sid).current_seq()
+                log = self._event_log(sid)
+                current_seq = log.current_seq()
+                earliest_seq = log.earliest_seq()
             except Exception:
                 current_seq = 0
+                earliest_seq = None
+            gap = (
+                after_seq is not None
+                and isinstance(earliest_seq, int)
+                and earliest_seq > after_seq + 1
+            )
             return {"ok": True, "replay_count": sent, "status": s.status,
-                    "current_seq": current_seq}
+                    "current_seq": current_seq, "earliest_seq": earliest_seq,
+                    "gap": gap}
 
         if method == "unsubscribe":
             sid = self._require_sid(params)
