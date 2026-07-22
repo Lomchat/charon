@@ -13,7 +13,7 @@ import type {
   InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
   ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse,
-  CheckClaudeLoginResponse,
+  CheckClaudeLoginResponse, CodexLoginStartResponse, CodexLoginStatusResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
   ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
   ClaudeSessionEditsResponse,
@@ -182,6 +182,15 @@ export const api = {
   checkVpsClaudeLogin: (id: string) =>
     send<CheckClaudeLoginResponse>('POST', `/api/vps/${id}/claude/check-login`),
   bootstrapVpsUrl: (id: string) => `/api/vps/${id}/claude/bootstrap`,
+  // ── Codex device-code login (agent >= 0.16.0, §14.61) ─────────────────────
+  // start → {loginId, verificationUrl, userCode}; the modal polls status
+  // until the user completes the code on any device; DELETE cancels.
+  startCodexLogin: (id: string) =>
+    send<CodexLoginStartResponse>('POST', `/api/vps/${id}/codex/login`),
+  codexLoginStatus: (id: string, loginId: string) =>
+    send<CodexLoginStatusResponse>('GET', `/api/vps/${id}/codex/login?loginId=${encodeURIComponent(loginId)}`),
+  cancelCodexLogin: (id: string, loginId: string) =>
+    send<OkResponse>('DELETE', `/api/vps/${id}/codex/login?loginId=${encodeURIComponent(loginId)}`),
 
   // ── Claude sessions ───────────────────────────────────────────────────────
   listClaudeSessions: (q?: ClaudeSessionListQuery) => {
@@ -264,7 +273,7 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/question`, { id: qid, answers } as RespondQuestionBody),
   respondClaudeExitPlan: (id: string, qid: string, decision: 'approve' | 'reject', feedback?: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/exit-plan`, { id: qid, decision, feedback } as RespondExitPlanBody),
-  setClaudeMode: (id: string, mode: PermissionMode) =>
+  setClaudeMode: (id: string, mode: import('@/lib/types/api').PermissionMode | import('@/lib/types/api').CodexSandboxMode) =>
     send<SetClaudeModeResponse>('POST', `/api/claude/sessions/${id}/mode`, { mode }),
   // Per-session model / effort. Both take effect on next sleep+resume — the
   // UI should label "applied at next start" until then. Passing null clears
@@ -272,9 +281,13 @@ export const api = {
   setClaudeSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
     send<SetClaudeSessionModelResponse>('POST', `/api/claude/sessions/${id}/model`,
       { model, fallbackModel } as SetClaudeSessionModelBody),
-  setClaudeSessionEffort: (id: string, effort: ClaudeEffortLevel | null) =>
+  setClaudeSessionEffort: (id: string, effort: string | null) =>
     send<SetClaudeSessionEffortResponse>('POST', `/api/claude/sessions/${id}/effort`,
       { effort } as SetClaudeSessionEffortBody),
+  // Codex model catalog for a VPS (account-driven, per-VPS). Mirrors
+  // getClaudeModels but sourced from the agent's list_codex_models RPC.
+  getCodexModels: (vpsId: string) =>
+    send<import('@/lib/types/api').CodexModelsResponse>('GET', `/api/codex/models?vpsId=${encodeURIComponent(vpsId)}`),
   // Curated list of model IDs (server-side source of truth in
   // lib/server/claude/knownModels.ts). Cached aggressively client-side via
   // the module-level cache in app/modelsCache.ts.

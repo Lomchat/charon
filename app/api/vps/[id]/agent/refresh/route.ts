@@ -56,6 +56,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       agentStatus: 'ok' as const,
       agentVersion: client.hello?.agent_version ?? null,
       agentPyzSha: client.hello?.agent_pyz_sha ?? null,
+      agentLastError: null, // cleared by the hello persist — mirror it to the client
     });
   };
 
@@ -77,14 +78,18 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   // Still failing → persist + return a definitive verdict (the auto path gates
-  // 'error' behind a reconnect threshold, so it may not be written yet).
+  // 'error' behind a reconnect threshold, so it may not be written yet). The
+  // classified detail travels with it so the health chips can say WHY
+  // (ssh-auth / ssh-unreachable / daemon-down — cf. schema.ts agentLastError).
   const status = client.lastClassified ?? 'error';
+  const lastError = status === 'error' ? (client.lastErrorDetail ?? null) : null;
   try {
-    db.update(vpsTable).set({ agentStatus: status }).where(eq(vpsTable.id, v.id)).run();
+    db.update(vpsTable).set({ agentStatus: status, agentLastError: lastError }).where(eq(vpsTable.id, v.id)).run();
   } catch {}
   return NextResponse.json({
     ok: false,
     agentStatus: status,
+    agentLastError: lastError,
     error: client.lastConnectError ?? 'agent unreachable',
   });
 }

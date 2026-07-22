@@ -2,7 +2,19 @@
 // Events are aligned with lib/server/claude/types.ts (BridgeEvent) — the wire
 // type differs slightly: we have an "event" string instead of a "type".
 
+// Agent-type discriminator (multi-agent support). 'claude' = Claude Agent SDK
+// (ClaudeSDKClient), 'codex' = OpenAI Codex (openai-codex → codex app-server).
+export type AgentKind = 'claude' | 'codex';
+
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
+
+// Codex sessions have NO interactive human approval (cf. migration-codex.md):
+// their "mode" is a SANDBOX level (the guardrail). Stored in the same
+// permission_mode field as Claude's modes.
+export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
+
+// Superset used wherever a session's mode is read regardless of kind.
+export type SessionMode = PermissionMode | CodexSandboxMode;
 
 // Mirrors claude_agent_sdk.EffortLevel literal. Newer SDK versions may add
 // values; if so, also extend this union (the agent silently drops unknown
@@ -10,6 +22,13 @@ export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 // 'ultracode' = Charon pseudo-effort (xhigh + dynamic-workflow orchestration),
 // applied agent-side via options.settings, not the SDK effort kwarg (§14.56).
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+
+// Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's
+// Workflow-delegation tier (the analog of Claude's 'ultracode').
+export type CodexEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+
+// Superset effort used at the wire/hub level regardless of kind.
+export type AnyEffort = EffortLevel | CodexEffort;
 
 export type AgentSessionStatus =
   | 'starting'
@@ -20,17 +39,19 @@ export type AgentSessionStatus =
   | 'error';
 
 export type AgentSessionInfo = {
+  // 'claude' (default when absent — agents < 0.15.0 omit it) | 'codex'.
+  kind?: AgentKind;
   session_id: string;
   claude_session_id: string | null;
   cwd: string;
   name: string | null;
-  permission_mode: PermissionMode;
+  permission_mode: SessionMode;
   status: AgentSessionStatus;
   // Optional because agents < 0.5.0 don't emit these fields. null/undefined
   // both mean "use the default" (global setting → SDK default).
   model?: string | null;
   fallback_model?: string | null;
-  effort?: EffortLevel | null;
+  effort?: AnyEffort | null;
 };
 
 export type AgentHelloResult = {
@@ -45,9 +66,50 @@ export type AgentHelloResult = {
   // Absent on older agents — persist ONLY when !== undefined so an old
   // agent's hello never null-clobbers a value written by the update flow.
   sdk_version?: string | null;
+  // ── Codex (OpenAI) availability (agent >= 0.15.0). ──
+  // Absent on older agents — persist ONLY when !== undefined so an old
+  // agent's hello never null-clobbers a value written by the update flow.
+  codex_available?: boolean;
+  codex_error?: string | null;
+  codex_sdk_version?: string | null;
+  codex_cli_version?: string | null;
   pid: number;
   sessions: AgentSessionInfo[];
 };
+
+// A single Codex model from the catalog (list_codex_models RPC). The catalog
+// is account-driven and per-VPS (openai_codex .models()). efforts is the
+// per-model supported reasoning-effort list (drives the effort picker,
+// catalog-style like Claude).
+export type CodexModelInfo = {
+  id: string;
+  display_name?: string | null;
+  description?: string | null;
+  is_default?: boolean;
+  hidden?: boolean;
+  default_effort?: string | null;
+  efforts?: string[];
+  supports_personality?: boolean;
+};
+
+export type AgentCodexModelsResult =
+  | { ok: true; models: CodexModelInfo[]; sdk_version?: string | null; cli_version?: string | null }
+  | { ok: false; error: string };
+
+// Codex account-usage snapshot (get_codex_usage RPC) — rate-limit utilization,
+// mapped onto the same shape the Claude /usage gauges consume (§14.58).
+export type CodexRateWindow = {
+  used_percent: number | null;
+  resets_at: number | null;
+  window_minutes: number | null;
+};
+export type AgentCodexUsageResult =
+  | {
+      ok: true; provider: 'codex'; plan_type?: string | null;
+      five_hour: CodexRateWindow | null; seven_day: CodexRateWindow | null;
+      windows?: CodexRateWindow[]; fetched_at: number;
+    }
+  | { ok: false; error: string };
 
 // Common fields attached to every event by the agent's durable event log
 // (>= 0.4.0). Both are optional because (a) older agents don't emit them
@@ -80,15 +142,18 @@ export type AgentEvent = (
   | { event: 'user_question'; session_id: string; id: string; questions: any[] }
   | { event: 'exit_plan_request'; session_id: string; id: string; plan: string }
   | { event: 'todo_update'; session_id: string; todos: any[] }
-  | { event: 'edit_snapshot'; session_id: string; phase: 'before' | 'after'; tool_use_id: string; file_path: string; content: string | null; size: number; truncated: boolean }
-  | { event: 'mode_changed'; session_id: string; mode: PermissionMode }
+  // phase 'before'/'after' (Claude, content-based) OR 'diff' (Codex: `diff`
+  // holds a unified diff, content is null). The GET /edits route strips both
+  // `content` and `diff` from the poll payload (egress, §14.41).
+  | { event: 'edit_snapshot'; session_id: string; phase: 'before' | 'after' | 'diff'; tool_use_id: string; file_path: string; content: string | null; diff?: string | null; size: number; truncated: boolean }
+  | { event: 'mode_changed'; session_id: string; mode: SessionMode }
   // model_changed / effort_changed: emitted by agent >= 0.5.0 when set_model
   // or set_effort is invoked. applied_at_next_start is true when the SDK
   // client is currently running (= the change takes effect on next sleep/resume),
   // false when there's no live client (= takes effect on the next start).
   // null fields mean "cleared back to default".
   | { event: 'model_changed'; session_id: string; model: string | null; fallback_model: string | null; applied_at_next_start?: boolean }
-  | { event: 'effort_changed'; session_id: string; effort: EffortLevel | null; applied_at_next_start?: boolean }
+  | { event: 'effort_changed'; session_id: string; effort: AnyEffort | null; applied_at_next_start?: boolean }
   // effective_model (agent >= 0.6.0): the model id Anthropic actually used on
   // the last AssistantMessage. Emitted on CHANGE only (= once per turn at
   // most). Useful when the configured `model` is an alias ('opus' → real id)
@@ -167,6 +232,13 @@ export type AgentMethodName =
   | 'ping'
   | 'list_sessions'
   | 'get_usage'
+  | 'list_codex_models'
+  | 'get_codex_usage'
+  // Codex ChatGPT device-code login (agent >= 0.16.0) — headless `codex
+  // login`: start → {verification_url, user_code}, hub polls status. §14.61.
+  | 'codex_login_start'
+  | 'codex_login_status'
+  | 'codex_login_cancel'
   | 'start_session'
   | 'resume_session'
   | 'subscribe'

@@ -18,8 +18,41 @@ export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
   ClaudePushSub, PermissionMode, WorkerStatus, AccountUsage, ShellInfo,
   InstallInfo, InstallStatus };
 
-// Account usage (the `/usage` gauges) for a VPS's Claude account. cf. §14.58.
-export type VpsUsageResponse = { usage: AccountUsage | null };
+// Account usage (the `/usage` gauges) for a VPS. `usage` = the Claude account
+// (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
+// (app-server rate limits), present only when the VPS runs Codex. The header
+// shows the one matching the current session's kind. cf. §14.58 / migration-codex.md.
+export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: AccountUsage | null };
+
+// ── Multi-agent (Claude + Codex) discriminator & Codex config ────────────────
+// Duplicated here (not imported from server-only agent/types.ts) to keep client
+// bundles clean, mirroring the ClaudeEffortLevel pattern below.
+export type AgentKind = 'claude' | 'codex';
+// Codex sessions have no interactive human approval; their "mode" is a sandbox
+// level (the guardrail). cf. migration-codex.md.
+export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
+export const CODEX_SANDBOX_MODES: CodexSandboxMode[] = ['read-only', 'workspace-write', 'full-access'];
+// Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's
+// Workflow-delegation tier (analog of Claude's 'ultracode').
+export type CodexEffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export const CODEX_CANONICAL_EFFORTS: CodexEffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
+
+// GET /api/codex/models?vpsId=… — Codex model catalog for a VPS (account-driven,
+// per-VPS; from the agent's list_codex_models → openai_codex .models()).
+export type CodexModelPick = {
+  id: string;
+  label: string;
+  hint?: string;
+  isDefault?: boolean;
+  efforts?: string[];          // per-model supported reasoning efforts
+  defaultEffort?: string | null;
+};
+export type CodexModelsResponse = {
+  ok: boolean;
+  models: CodexModelPick[];
+  efforts: string[];           // union across models (∪ CODEX_CANONICAL_EFFORTS)
+  error?: string;
+};
 
 // ── VPS ──────────────────────────────────────────────────────────────────────
 
@@ -78,6 +111,9 @@ export type RefreshVpsAgentResponse = {
   agentStatus: 'ok' | 'missing' | 'error' | 'unknown';
   agentVersion?: string | null;
   agentPyzSha?: string | null;
+  // Classified failure detail when agentStatus='error' (vps.agentLastError
+  // format: 'ssh-auth: …' | 'ssh-unreachable: …' | 'daemon-down: …' | 'error: …').
+  agentLastError?: string | null;
   error?: string;
 };
 
@@ -141,6 +177,22 @@ export type CheckClaudeLoginResponse = {
   error?: string;
   loggedIn: boolean;
   checkedAt: number | null;
+};
+
+// Codex ChatGPT device-code login (POST|GET|DELETE /api/vps/[id]/codex/login,
+// agent >= 0.16.0). The user opens verificationUrl on ANY device and types
+// userCode; the VPS persists its own credentials on completion (§14.61).
+export type CodexLoginStartResponse = {
+  ok: boolean;
+  error?: string;
+  loginId?: string;
+  verificationUrl?: string;
+  userCode?: string;
+};
+export type CodexLoginStatusResponse = {
+  ok: boolean;
+  status?: 'pending' | 'success' | 'error';
+  error?: string | null;
 };
 
 export type ScannedClaudeSession = {
@@ -256,22 +308,26 @@ export type CreateClaudeSessionBody = {
   vpsId: string;
   cwd: string;
   name?: string | null;
-  permissionMode?: PermissionMode;
-  // Per-session Claude config. Pass null/omit to inherit the global defaults
-  // (claudeSettings.claude.default_*). Effort must be a ClaudeEffortLevel or
-  // omitted; invalid values are silently dropped server-side.
+  // 'claude' (default) | 'codex'. Determines the backend + config semantics.
+  kind?: AgentKind;
+  // Claude: 'normal'|'acceptEdits'|'auto'|'plan'. Codex: a CodexSandboxMode.
+  permissionMode?: PermissionMode | CodexSandboxMode;
+  // Per-session config. Pass null/omit to inherit the global defaults
+  // (claude.default_* / codex.default_*). Effort validity depends on kind;
+  // invalid values are silently dropped server-side.
   model?: string | null;
-  fallbackModel?: string | null;
+  fallbackModel?: string | null;   // Claude only (Codex ignores it)
   effort?: string | null;
 };
 export type CreateClaudeSessionResponse = {
   id: string;
+  kind: AgentKind;
   status: WorkerStatus | string;
   claudeSessionId: string | null;
   vpsId: string;
   cwd: string;
   name: string | null;
-  permissionMode: PermissionMode;
+  permissionMode: PermissionMode | CodexSandboxMode;
   model: string | null;
   fallbackModel: string | null;
   effort: string | null;
@@ -316,8 +372,8 @@ export type RespondExitPlanBody = {
   feedback?: string;
 };
 
-export type SetClaudeModeBody = { mode: PermissionMode };
-export type SetClaudeModeResponse = { ok: true; mode: PermissionMode };
+export type SetClaudeModeBody = { mode: PermissionMode | CodexSandboxMode };
+export type SetClaudeModeResponse = { ok: true; mode: PermissionMode | CodexSandboxMode };
 
 // Mirrors EffortLevel in lib/server/agent/types.ts (and claude_agent_sdk).
 // Duplicated here to avoid client bundles pulling a `server-only` module.
@@ -345,8 +401,9 @@ export type SetClaudeSessionModelBody = {
 };
 export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
 
-// POST /api/claude/sessions/[id]/effort
-export type SetClaudeSessionEffortBody = { effort: ClaudeEffortLevel | null };
+// POST /api/claude/sessions/[id]/effort (effort validity depends on the
+// session's kind — Codex efforts are CodexEffortLevel).
+export type SetClaudeSessionEffortBody = { effort: ClaudeEffortLevel | CodexEffortLevel | null };
 export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
 
 // GET /api/claude/models — curated picker source. Source of truth lives in

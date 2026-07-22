@@ -15,8 +15,8 @@ import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
   sendPlainToTelegram,
 } from '@/lib/server/claude/telegram';
-import { getSetting, getSettingBool } from '@/lib/server/claude/settings';
-import type { AgentEvent, EffortLevel } from './types';
+import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
+import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
@@ -26,16 +26,30 @@ import { setVpsStatusEmitter } from './AgentClient';
 // claudeSettings, otherwise null (= let the agent pass nothing → SDK default).
 // Empty string in settings is treated as "unset" so an admin can erase a
 // default from the SettingsModal without nuking the row.
-function _resolveClaudeConfig(opts: {
-  model?: string | null;
-  fallbackModel?: string | null;
-  effort?: string | null;
-}): { model: string | null; fallbackModel: string | null; effort: string | null } {
-  const pick = (perSession: string | null | undefined, settingKey: 'claude.default_model' | 'claude.default_fallback_model' | 'claude.default_effort'): string | null => {
+//
+// Kind-aware (multi-agent): a Codex session reads codex.default_model /
+// codex.default_effort and has NO fallback-model concept; a Claude session
+// keeps the existing claude.default_* keys. cf. migration-codex.md.
+function _resolveSessionConfig(
+  kind: AgentKind,
+  opts: {
+    model?: string | null;
+    fallbackModel?: string | null;
+    effort?: string | null;
+  },
+): { model: string | null; fallbackModel: string | null; effort: string | null } {
+  const pick = (perSession: string | null | undefined, settingKey: SettingKey): string | null => {
     if (perSession && perSession.length > 0) return perSession;
     const v = getSetting(settingKey);
     return v && v.length > 0 ? v : null;
   };
+  if (kind === 'codex') {
+    return {
+      model: pick(opts.model, 'codex.default_model'),
+      fallbackModel: null, // Codex has no fallback-model concept.
+      effort: pick(opts.effort, 'codex.default_effort'),
+    };
+  }
   return {
     model: pick(opts.model, 'claude.default_model'),
     fallbackModel: pick(opts.fallbackModel, 'claude.default_fallback_model'),
@@ -46,8 +60,20 @@ function _resolveClaudeConfig(opts: {
 // Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
 // agent/charon_agent/session.py. Kept in sync with `EffortLevel` in types.ts.
 const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+// Codex reasoning-effort levels (agent/charon_agent/codex_session.py VALID_EFFORTS,
+// mirrors CodexEffort in types.ts). Distinct from Claude's set — 'none' |
+// 'minimal' | 'ultra' are Codex-only, 'ultracode' is Claude-only.
+const VALID_CODEX_EFFORTS: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export function isValidEffort(v: string | null | undefined): v is EffortLevel {
   return typeof v === 'string' && (VALID_EFFORTS as readonly string[]).includes(v);
+}
+// Kind-aware effort validity. A Codex session's effort is validated against the
+// Codex set (so 'ultra'/'none'/'minimal' aren't dropped); a Claude session uses
+// the Claude set. Invalid values are dropped (persisted as null → default).
+function isValidEffortForKind(v: string | null | undefined, kind: AgentKind): boolean {
+  if (typeof v !== 'string') return false;
+  const set = kind === 'codex' ? VALID_CODEX_EFFORTS : (VALID_EFFORTS as readonly string[]);
+  return set.includes(v);
 }
 
 const newId = () => crypto.randomBytes(8).toString('hex');
@@ -123,7 +149,11 @@ export function emitGlobalShellStatus(shellId: string, status: 'active' | 'busy'
 export function emitGlobalVpsStatus(
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
+  extra?: {
+    agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
+    agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null;
+    codexLoggedIn?: number | null;
+  },
 ): void {
   emitGlobalSession({
     type: 'vps_status',
@@ -131,6 +161,13 @@ export function emitGlobalVpsStatus(
     agentVersion: extra?.agentVersion,
     agentPyzSha: extra?.agentPyzSha,
     sdkVersion: extra?.sdkVersion,
+    // Health-chip fields (§11 vpsHealth): classified failure + codex
+    // availability/login. Same "key present ⇔ known" contract as sdkVersion —
+    // ClaudePanel patches only defined keys (no-clobber, §14.53).
+    agentLastError: extra?.agentLastError,
+    codexAvailable: extra?.codexAvailable,
+    codexSdkVersion: extra?.codexSdkVersion,
+    codexLoggedIn: extra?.codexLoggedIn,
     sessionId: vpsId,
   });
 }
@@ -201,22 +238,40 @@ export function setUsagePollTrigger(fn: (vpsId: string) => void): void {
   usagePollTrigger = fn;
 }
 
+// Parallel trigger for the Codex account-usage poll (a Codex session's `stop`
+// moved the Codex quota, not the Claude one). Same injection pattern; wired by
+// usagePoll.ts. Null until loaded → the `stop` handler no-ops safely. §14.58.
+let codexUsagePollTrigger: ((vpsId: string) => void) | null = null;
+export function setCodexUsagePollTrigger(fn: (vpsId: string) => void): void {
+  codexUsagePollTrigger = fn;
+}
+
 export class SessionStream {
   readonly id: string;
   readonly vpsId: string;
+  // Agent-type discriminator: 'claude' (default) | 'codex'. Determines config
+  // resolution (which default_* keys), effort validity, sandbox-mode semantics
+  // and which start_session kind the agent gets. Persisted in claudeSessions.kind.
+  readonly kind: AgentKind = 'claude';
   status: WorkerStatus = 'starting';
+  // For a Codex session this holds a sandbox mode ('read-only' |
+  // 'workspace-write' | 'full-access'); for Claude a permission mode. Typed as
+  // the Claude subset for the existing broadcast plumbing (BridgeEvent is
+  // locked to PermissionMode) — codex values pass through at runtime.
   permissionMode: PermissionMode = 'normal';
   claudeSessionId: string | null = null;
   name: string | null = null;
   vpsName: string;
   cwd: string | null = null;
-  // Per-session Claude model / fallback / effort. NULL = fall back to global
-  // default (claudeSettings.claude.default_*) → SDK default. Source of truth
-  // is the DB column; SessionStream caches it in memory for fast access and
-  // because resume needs to read it before any DB roundtrip.
+  // Per-session model / fallback / effort. NULL = fall back to the global
+  // default (claude.default_* or codex.default_*) → agent/SDK default. Source
+  // of truth is the DB column; SessionStream caches it in memory for fast access
+  // and because resume needs to read it before any DB roundtrip. `effort` is the
+  // AnyEffort superset (Claude or Codex level, per `kind`). `fallbackModel` is
+  // unused for Codex.
   model: string | null = null;
   fallbackModel: string | null = null;
-  effort: EffortLevel | null = null;
+  effort: AnyEffort | null = null;
   // The model Anthropic actually used on the last AssistantMessage. Captured
   // from the `effective_model` event (agent >= 0.6.0), persisted in
   // claude_sessions.effective_model (the agent only re-emits on CHANGE, so a
@@ -275,8 +330,9 @@ export class SessionStream {
 
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
-    status: WorkerStatus; permissionMode: PermissionMode;
+    status: WorkerStatus; permissionMode: SessionMode;
     claudeSessionId: string | null;
+    kind?: AgentKind;
     cwd?: string | null;
     lastSeenSeq?: number | null;
     lastStopNotifiedSeq?: number | null;
@@ -290,15 +346,16 @@ export class SessionStream {
     this.vpsName = opts.vpsName;
     this.name = opts.name;
     this.cwd = opts.cwd ?? null;
+    this.kind = opts.kind ?? 'claude';
     this.status = opts.status;
-    this.permissionMode = opts.permissionMode;
+    this.permissionMode = opts.permissionMode as PermissionMode;
     this.claudeSessionId = opts.claudeSessionId;
     this.lastSeenSeq = opts.lastSeenSeq ?? null;
     this.lastPersistedSeq = this.lastSeenSeq;
     this.lastStopNotifiedSeq = opts.lastStopNotifiedSeq ?? null;
     this.model = opts.model ?? null;
     this.fallbackModel = opts.fallbackModel ?? null;
-    this.effort = isValidEffort(opts.effort) ? opts.effort : null;
+    this.effort = isValidEffortForKind(opts.effort, this.kind) ? (opts.effort as AnyEffort) : null;
     this.effectiveModel = opts.effectiveModel ?? null;
   }
 
@@ -624,10 +681,22 @@ export class SessionStream {
         });
         break;
       }
-      case 'edit_snapshot':
-        this._persist('edit_snapshot', { type: 'edit_snapshot', phase: ev.phase, tool_use_id: ev.tool_use_id, file_path: ev.file_path, content: ev.content, size: ev.size, truncated: ev.truncated });
-        this._broadcast({ type: 'edit_snapshot', phase: ev.phase, tool_use_id: ev.tool_use_id, file_path: ev.file_path, content: ev.content, size: ev.size, truncated: ev.truncated });
+      case 'edit_snapshot': {
+        // phase 'before'/'after' (Claude, content-based) OR 'diff' (Codex:
+        // `diff` holds a unified diff, content is null — see codex_session.py).
+        // Persist the `diff` when present so the lazy /edits route can serve it
+        // (the main GET strips both content AND diff for egress, §14.41). The
+        // outgoing WorkerEvent type (BridgeEvent, locked) doesn't model
+        // phase='diff'/`diff`, so we cast on broadcast — the client handles it.
+        const snap: Record<string, unknown> = {
+          type: 'edit_snapshot', phase: ev.phase, tool_use_id: ev.tool_use_id,
+          file_path: ev.file_path, content: ev.content, size: ev.size, truncated: ev.truncated,
+        };
+        if (ev.diff !== undefined) snap.diff = ev.diff;
+        this._persist('edit_snapshot', snap);
+        this._broadcast(snap as unknown as WorkerEvent);
         break;
+      }
       case 'mode_changed':
         this.permissionMode = ev.mode as PermissionMode;
         try {
@@ -655,14 +724,16 @@ export class SessionStream {
         });
         break;
       case 'effort_changed':
-        this.effort = isValidEffort(ev.effort) ? ev.effort : null;
+        this.effort = isValidEffortForKind(ev.effort, this.kind) ? (ev.effort as AnyEffort) : null;
         try {
           db.update(claudeSessions).set({ effort: this.effort })
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
         this._broadcast({
           type: 'effort_changed',
-          effort: this.effort,
+          // BridgeEvent.effort_changed (locked) types effort as EffortLevel|null;
+          // a Codex effort passes through at runtime.
+          effort: this.effort as EffortLevel | null,
           appliedAtNextStart: !!ev.applied_at_next_start,
         });
         break;
@@ -715,7 +786,12 @@ export class SessionStream {
         // gauges (debounced + endpoint-rate-limit-aware in usagePoll). Live
         // stops only — a reconnect replay of old stops must not spam the
         // /usage endpoint. cf. CLAUDE.md §14.58.
-        if (!this.isReplaying) { try { usagePollTrigger?.(this.vpsId); } catch {} }
+        if (!this.isReplaying) {
+          try {
+            if (this.kind === 'codex') codexUsagePollTrigger?.(this.vpsId);
+            else usagePollTrigger?.(this.vpsId);
+          } catch {}
+        }
         // Dedup the "finished" push. Without this, every agent re-subscribe
         // (Charon reboot / SSH reconnect) replays past `stop` events and
         // re-notifies the user for sessions that finished long ago.
@@ -831,7 +907,10 @@ export class SessionStream {
     this._broadcast({ type: 'status', status: 'sleeping' });
   }
 
-  async setPermissionMode(mode: PermissionMode): Promise<void> {
+  // mode is a Claude PermissionMode OR (for a codex session) a Codex sandbox
+  // mode (read-only / workspace-write / full-access). Passed straight to the
+  // agent, which interprets it per kind.
+  async setPermissionMode(mode: SessionMode): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('set_permission_mode', { session_id: this.id, mode });
     // The mode_changed event will come back and do the DB sync
@@ -863,7 +942,7 @@ export class SessionStream {
    * as setModel — effort is also part of ClaudeAgentOptions. Pass null to
    * clear back to the global default. Invalid values are dropped agent-side.
    */
-  async setEffort(effort: EffortLevel | null): Promise<void> {
+  async setEffort(effort: AnyEffort | null): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('set_effort', { session_id: this.id, effort: effort ?? null });
   }
@@ -1113,7 +1192,8 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
   s = new SessionStream({
     id: row.id, vpsId: row.vpsId, vpsName: _vpsName(row.vpsId),
     name: row.name, status: row.status as WorkerStatus,
-    permissionMode: row.permissionMode as PermissionMode,
+    kind: (row.kind as AgentKind) ?? 'claude',
+    permissionMode: row.permissionMode as SessionMode,
     claudeSessionId: row.claudeSessionId,
     cwd: row.cwd,
     // Hydrate the durable-replay cursor from DB. On the next attach,
@@ -1161,19 +1241,23 @@ export async function importExistingSession(opts: {
   cwd: string;
   claudeSessionId: string;
   name?: string | null;
-  permissionMode?: PermissionMode;
+  kind?: AgentKind;
+  permissionMode?: SessionMode;
 }): Promise<string> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
   const sessionId = newId();
+  const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
+  const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
     claudeSessionId: opts.claudeSessionId,
     cwd: opts.cwd,
     name: opts.name ?? null,
+    kind,
     status: 'sleeping',
-    permissionMode: opts.permissionMode ?? 'normal',
+    permissionMode: opts.permissionMode ?? defaultMode,
   }).run();
   // Live-announce the imported session (appears on every tab/device). §14.52.
   emitGlobalSessionListChanged(sessionId);
@@ -1184,11 +1268,15 @@ export async function startNewSession(opts: {
   vpsId: string;
   cwd: string;
   name?: string | null;
-  permissionMode?: PermissionMode;
-  // Optional Claude config overrides. If null/undefined we fall back to the
-  // global defaults (claudeSettings.claude.default_*); if those are also
-  // empty, the agent passes nothing → SDK uses its own default. Effort is
-  // validated; an invalid string is silently dropped.
+  // 'claude' (default) | 'codex'. Selects the backend + config semantics.
+  kind?: AgentKind;
+  // Claude: a PermissionMode. Codex: a CodexSandboxMode (the sandbox level).
+  permissionMode?: SessionMode;
+  // Optional config overrides. If null/undefined we fall back to the global
+  // defaults (claude.default_* or codex.default_*); if those are also empty,
+  // the agent passes nothing → the SDK/Codex uses its own default. Effort is
+  // validated per-kind; an invalid string is silently dropped. fallbackModel
+  // is Claude-only (Codex ignores it).
   model?: string | null;
   fallbackModel?: string | null;
   effort?: string | null;
@@ -1196,16 +1284,19 @@ export async function startNewSession(opts: {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
+  const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
+  const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
+  const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = newId();
   // Resolve effective config: per-session opts first, then global defaults.
   // We persist the RESOLVED values to the DB row so they survive a Charon
   // restart even if the global default changes later. (If we stored null
   // here and read the default at start time, changing the SettingsModal
   // default would silently retroactively change sessions — surprising.)
-  const cfg = _resolveClaudeConfig({
+  const cfg = _resolveSessionConfig(kind, {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
-  const effortPersist = isValidEffort(cfg.effort) ? cfg.effort : null;
+  const effortPersist = isValidEffortForKind(cfg.effort, kind) ? cfg.effort : null;
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
@@ -1213,8 +1304,9 @@ export async function startNewSession(opts: {
     vpsId: opts.vpsId,
     cwd: opts.cwd,
     name: opts.name ?? null,
+    kind,
     status: 'starting',
-    permissionMode: opts.permissionMode ?? 'normal',
+    permissionMode,
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
@@ -1224,7 +1316,8 @@ export async function startNewSession(opts: {
   const stream = new SessionStream({
     id: sessionId, vpsId: opts.vpsId, vpsName: vps.name,
     name: opts.name ?? null, status: 'starting',
-    permissionMode: opts.permissionMode ?? 'normal',
+    kind,
+    permissionMode,
     cwd: opts.cwd,
     claudeSessionId: null,
     model: cfg.model,
@@ -1241,9 +1334,14 @@ export async function startNewSession(opts: {
     const client = getAgentClientForVpsId(opts.vpsId);
     await client.call('start_session', {
       session_id: sessionId,
+      // 'kind' selects the backend agent-side (agent >= 0.15.0). Older agents
+      // ignore the unknown param and default to Claude — but a codex-kind
+      // create is gated on codexAvailable at the API route, so an old agent
+      // never reaches here for a Codex session.
+      kind,
       cwd: opts.cwd,
       name: opts.name ?? null,
-      permission_mode: opts.permissionMode ?? 'normal',
+      permission_mode: permissionMode,
       // Pass-through to the agent. Older agents (< 0.5.0) silently ignore
       // unknown params — the SDK call falls back to its own defaults.
       model: cfg.model,
@@ -1291,12 +1389,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
     if (!vps) throw new Error('vps no longer exists');
 
+    const kind: AgentKind = (row.kind as AgentKind) ?? 'claude';
     let stream = streams.get(sessionId);
     if (!stream) {
       stream = new SessionStream({
         id: row.id, vpsId: row.vpsId, vpsName: vps.name,
         name: row.name, status: row.status as WorkerStatus,
-        permissionMode: row.permissionMode as PermissionMode,
+        kind,
+        permissionMode: row.permissionMode as SessionMode,
         claudeSessionId: row.claudeSessionId,
         cwd: row.cwd,
         lastSeenSeq: row.lastSeenSeq ?? null,
@@ -1332,12 +1432,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
       if (!isNotFound) throw e;
       // Recreate from scratch (the agent doesn't know this session). We
-      // pass the persisted model/fallback/effort so the resumed SDK client
-      // matches the original config — without this, a freshly restarted
-      // agent would silently revert to SDK defaults for every session.
+      // pass the persisted kind + model/fallback/effort so the resumed
+      // session matches the original config — without this, a freshly
+      // restarted agent would silently revert to Claude / SDK defaults for
+      // every session. (§14.35 — resume MUST re-read config from DB.)
       try {
         await client.call('start_session', {
           session_id: sessionId,
+          kind,
           cwd: row.cwd,
           name: row.name,
           permission_mode: row.permissionMode,

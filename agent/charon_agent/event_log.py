@@ -135,7 +135,10 @@ class EventLog:
         # seq alongside whatever fields the caller set.
         event["seq"] = seq
         event.setdefault("ts", record["ts"])
-        line = json.dumps(record, separators=(",", ":")) + "\n"
+        # default=str: never let a stray non-JSON-native value (e.g. a Codex
+        # SDK pydantic wrapper leaking into an event payload) fail the durable
+        # append — the live socket send already tolerates it the same way.
+        line = json.dumps(record, separators=(",", ":"), default=str) + "\n"
         try:
             self._maybe_rotate()
             # 'a' is atomic at the syscall level on POSIX for writes <= PIPE_BUF.

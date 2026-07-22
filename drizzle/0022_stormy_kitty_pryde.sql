@@ -1,0 +1,1 @@
+ALTER TABLE `vps` ADD `agent_last_error` text;

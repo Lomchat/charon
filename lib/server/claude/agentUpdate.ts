@@ -80,14 +80,18 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
 
   if (!result.ok) return { ...result, resumedSessionIds: [] };
 
-  // 5. Persist immediately (don't wait for the next hello). sdkVersion only
-  // when the SDK step actually confirmed one (no null-clobber).
+  // 5. Persist immediately (don't wait for the next hello). sdkVersion /
+  // codexSdkVersion / codexAvailable only when the update actually confirmed
+  // them (from the post-restart hello, falling back to the pip step) — no
+  // null-clobber of a value an older agent can't report (§14.53).
   try {
     db.update(vpsTable).set({
       agentVersion: result.newVersion ?? null,
       agentPyzSha: result.newPyzSha ?? null,
       agentLastSeenAt: Math.floor(Date.now() / 1000),
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
+      ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
+      ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
   } catch {}
 

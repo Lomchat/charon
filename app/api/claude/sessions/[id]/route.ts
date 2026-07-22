@@ -86,10 +86,14 @@ const NON_PAGINATED_ROLES: string[] = ['edit_snapshot', 'event'];
 function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMessage[] {
   return rows.map((m) => {
     if (m.role !== 'edit_snapshot') return m;
-    let parsed: { content?: unknown } | null = null;
+    let parsed: { content?: unknown; diff?: unknown } | null = null;
     try { parsed = JSON.parse(m.content); } catch { return m; }
-    if (!parsed || parsed.content == null) return m;
-    return { ...m, content: JSON.stringify({ ...parsed, content: null, contentStripped: true }) };
+    if (!parsed) return m;
+    // Null BOTH the Claude `content` (before/after file bodies) AND the Codex
+    // `diff` (unified diff) — both are heavy and re-fetched in the 5s poll
+    // loop (§14.41 egress). Diff content comes lazily from GET .../edits.
+    if (parsed.content == null && parsed.diff == null) return m;
+    return { ...m, content: JSON.stringify({ ...parsed, content: null, diff: null, contentStripped: true }) };
   });
 }
 

@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
+import type { AgentKind } from '@/lib/types/api';
 import SplitDiffModal from './SplitDiffModal';
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
@@ -12,6 +13,10 @@ import type { ToolCallEntry, Todo, EditSnapshot } from './sessionTypes';
 
 type Props = {
   sessionId: string | null;
+  // Backend of the session. Codex ships a ready-made UNIFIED DIFF (in the edit
+  // snapshot's `after`, before=null) instead of a before/after pair — rendered
+  // as a raw patch. cf. migration-codex.md.
+  kind?: AgentKind;
   toolCalls: ToolCallEntry[];
   todos: Todo[];
   edits: Map<string, EditSnapshot>;
@@ -20,7 +25,7 @@ type Props = {
 
 type Tab = 'diffs' | 'todos' | 'calls';
 
-export default function ToolPanel({ sessionId, toolCalls, todos, edits, onRevert }: Props) {
+export default function ToolPanel({ sessionId, kind = 'claude', toolCalls, todos, edits, onRevert }: Props) {
   const [tab, setTab] = useState<Tab>('diffs');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
   // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
@@ -44,7 +49,7 @@ export default function ToolPanel({ sessionId, toolCalls, todos, edits, onRevert
         </button>
       </nav>
       <div className="tp-body">
-        {tab === 'diffs' && <DiffsTab sessionId={sessionId} edits={editArr} onRevert={onRevert} />}
+        {tab === 'diffs' && <DiffsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'todos' && <TodosTab todos={todos} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
       </div>
@@ -52,10 +57,15 @@ export default function ToolPanel({ sessionId, toolCalls, todos, edits, onRevert
   );
 }
 
-function DiffsTab({ sessionId, edits, onRevert }: { sessionId: string | null; edits: EditSnapshot[]; onRevert: () => void }) {
+function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | null; kind: AgentKind; edits: EditSnapshot[]; onRevert: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<EditSnapshot | null>(null);
   if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
+
+  // Codex hands us a ready-made unified diff (in `after`); Claude gives a
+  // before/after pair we diff ourselves. Side-by-side split + revert only make
+  // sense for the Claude pair (a bare patch has no clean "before" to restore).
+  const isCodex = kind === 'codex';
 
   async function revert(filePath: string, before: string | null) {
     if (!sessionId) return;
@@ -73,7 +83,7 @@ function DiffsTab({ sessionId, edits, onRevert }: { sessionId: string | null; ed
     <>
       <div className="tp-diffs">
         {edits.map((e) => {
-          const patch = makeUnifiedDiff(e.filePath, e.before ?? '', e.after ?? '');
+          const patch = isCodex ? (e.after ?? '') : makeUnifiedDiff(e.filePath, e.before ?? '', e.after ?? '');
           const stats = countDiff(patch);
           return (
             <div key={e.toolUseId + e.filePath} className="diff-card">
@@ -86,15 +96,19 @@ function DiffsTab({ sessionId, edits, onRevert }: { sessionId: string | null; ed
                     <span className="add">+{stats.add}</span>
                     <span className="del">−{stats.del}</span>
                   </span>
-                  <button className="compare" onClick={() => setOpen(e)} title="compare side by side">⇄ split</button>
-                  <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
-                    {busy === e.filePath ? '…' : 'revert'}
-                  </button>
+                  {!isCodex && (
+                    <>
+                      <button className="compare" onClick={() => setOpen(e)} title="compare side by side">⇄ split</button>
+                      <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
+                        {busy === e.filePath ? '…' : 'revert'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               {e.truncated && <div className="warn">⚠ truncated snapshot (file &gt; 256KB)</div>}
-              {e.before == null && <div className="note">new file (Write)</div>}
-              <pre className="diff-body">{renderDiffHtml(patch)}</pre>
+              {!isCodex && e.before == null && <div className="note">new file (Write)</div>}
+              <pre className="diff-body">{isCodex ? renderRawPatch(patch) : renderDiffHtml(patch)}</pre>
             </div>
           );
         })}
@@ -169,6 +183,22 @@ function renderDiffHtml(patch: string): React.ReactNode {
     if (l.startsWith('+')) cls = 'add';
     else if (l.startsWith('-')) cls = 'del';
     else if (l.startsWith('@@')) cls = 'hunk';
+    return <span key={i} className={`dline ${cls}`}>{l + '\n'}</span>;
+  });
+}
+
+// Render a Codex-supplied unified diff verbatim (Codex already produces the
+// patch — we must NOT re-diff it). Classifies every line: file/patch headers
+// dimmed, @@ hunks highlighted, +/− add/del. No fixed header slice (Codex
+// patches don't share createPatch's exact 4-line preamble).
+function renderRawPatch(patch: string): React.ReactNode {
+  const lines = patch.split('\n');
+  return lines.map((l, i) => {
+    let cls = 'ctx';
+    if (l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ') || l.startsWith('index ') || l.startsWith('*** ')) cls = 'meta';
+    else if (l.startsWith('@@')) cls = 'hunk';
+    else if (l.startsWith('+')) cls = 'add';
+    else if (l.startsWith('-')) cls = 'del';
     return <span key={i} className={`dline ${cls}`}>{l + '\n'}</span>;
   });
 }

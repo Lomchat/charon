@@ -13,6 +13,7 @@ export type BootstrapPhase =
   | 'detect_os'
   | 'install_python'
   | 'install_sdk'        // claude-agent-sdk (Python lib for the agent)
+  | 'install_codex'      // openai-codex (OPTIONAL 2nd backend, warn-only)
   | 'install_claude_cli' // `claude` CLI (curl install.sh — for `claude login`)
   | 'install_agent'      // drops the .pyz
   | 'install_service'    // systemd-user unit (or fallback)
@@ -273,7 +274,20 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
   return { ok: false, mode: 'nohup', detail: `systemd: ${r.stderr.slice(-200) || r.stdout.slice(-200)} | nohup: ${r2.stderr.slice(-200)}` };
 }
 
-export async function pingAgent(vps: Vps, session?: SshSession): Promise<{ ok: boolean; version?: string; pyzSha?: string; detail: string }> {
+export async function pingAgent(
+  vps: Vps,
+  session?: SshSession,
+): Promise<{
+  ok: boolean;
+  version?: string;
+  pyzSha?: string;
+  // Codex (OpenAI) availability from hello (agent ≥0.15.0; absent on older
+  // agents → left undefined so callers never null-clobber, §14.53).
+  codexAvailable?: boolean;
+  codexSdkVersion?: string;
+  codexCliVersion?: string;
+  detail: string;
+}> {
   // Give the daemon a bit of time to start
   await new Promise((r) => setTimeout(r, 800));
   // Same: venv if it exists, otherwise system python ≥ 3.10
@@ -289,6 +303,9 @@ export async function pingAgent(vps: Vps, session?: SshSession): Promise<{ ok: b
   const lines = r.stdout.trim().split('\n').filter(Boolean);
   let version: string | undefined;
   let pyzSha: string | undefined;
+  let codexAvailable: boolean | undefined;
+  let codexSdkVersion: string | undefined;
+  let codexCliVersion: string | undefined;
   let pingOk = false;
   for (const l of lines) {
     try {
@@ -296,10 +313,24 @@ export async function pingAgent(vps: Vps, session?: SshSession): Promise<{ ok: b
       if (msg?.result?.pong) pingOk = true;
       if (typeof msg?.result?.agent_version === 'string') version = msg.result.agent_version;
       if (typeof msg?.result?.agent_pyz_sha === 'string') pyzSha = msg.result.agent_pyz_sha;
+      // Codex hello keys (agent ≥0.15.0). Guard on typeof so an old-agent
+      // hello (keys absent) leaves them undefined → no null-clobber.
+      if (typeof msg?.result?.codex_available === 'boolean') codexAvailable = msg.result.codex_available;
+      if (typeof msg?.result?.codex_sdk_version === 'string') codexSdkVersion = msg.result.codex_sdk_version;
+      if (typeof msg?.result?.codex_cli_version === 'string') codexCliVersion = msg.result.codex_cli_version;
     } catch {}
   }
   if (!pingOk) return { ok: false, detail: 'no pong response: ' + r.stdout.slice(-300) };
-  return { ok: true, version, pyzSha, detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}` };
+  const codexNote = codexAvailable ? ` · codex ${codexSdkVersion ?? 'on'}` : '';
+  return {
+    ok: true,
+    version,
+    pyzSha,
+    codexAvailable,
+    codexSdkVersion,
+    codexCliVersion,
+    detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}${codexNote}`,
+  };
 }
 
 // ── Ensure the latest claude-agent-sdk in the VPS venv ─────────────────────
@@ -440,6 +471,68 @@ export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<E
   }
 }
 
+// ── Ensure the latest `openai-codex` in the VPS venv (OPTIONAL, warn-only) ──
+// Codex is a SECOND agent backend (OpenAI). It installs into the SAME
+// ~/.charon/venv as claude-agent-sdk and ships its own codex CLI binary via
+// the `openai-codex-cli-bin` dependency, so there is no separate npm/CLI
+// install. Because PEP 668 is already sidestepped by using the venv (never
+// `pip --user`) and the venv is created/healed by ensureSdkLatest — which
+// ALWAYS runs first in every calling flow (bootstrap install_sdk phase +
+// updateVpsAgent) — this step only needs a healthy venv; it does NOT
+// re-implement the ensurepip/venv-heal dance. If the venv is somehow not
+// ready we return a clear non-fatal error (callers treat codex as optional:
+// a failure NEVER aborts the bootstrap/update — the VPS just reports
+// codex_available=false in hello).
+//
+// Success = the `[install_codex] OK version=` marker printed by the
+// post-install `import openai_codex` check (mirrors ensureSdkLatest).
+const INSTALL_CODEX_CMD = [
+  `set -o pipefail`,
+  // Venv must exist AND have a working pip (ensureSdkLatest guarantees this
+  // in every flow that calls us). If not, bail non-fatally.
+  `if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+  `  echo "[install_codex] venv not ready (claude-agent-sdk install must run first)"; exit 12;`,
+  `fi`,
+  `echo "[install_codex] pip install --upgrade openai-codex in ${VENV_DIR}"`,
+  // openai-codex requires Python ≥3.10 (same floor as claude-agent-sdk, so
+  // the existing python already qualifies). Pulls openai-codex-cli-bin (the
+  // bundled codex CLI) transitively — no extra step.
+  `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 | tail -40`,
+  // Post-import check: the ONLY real proof it works. importlib.metadata is
+  // the robust version source (matches codex_session.py's fallback).
+  `${VENV_PY} -c 'import openai_codex; from importlib.metadata import version; print("[install_codex] OK version=" + version("openai-codex"))'`,
+].join('\n');
+
+// Same envelope as INSTALL_SDK_TIMEOUT_MS: pip is usually <1min but a fresh
+// wheel download on a slow VPS can drag.
+const INSTALL_CODEX_TIMEOUT_MS = 300_000;
+
+export type EnsureCodexResult = {
+  ok: boolean;
+  codexVersion?: string;
+  // Human tail of the failing output (pip/import error) when ok=false.
+  error?: string;
+  // Set when the failure is the SSH transport itself (detectSshFailure).
+  sshError?: string | null;
+};
+
+export async function ensureCodexLatest(vps: Vps, session?: SshSession): Promise<EnsureCodexResult> {
+  const own = session ?? openSshSession(vps);
+  try {
+    const r = await sshExec(vps, INSTALL_CODEX_CMD, { timeoutMs: INSTALL_CODEX_TIMEOUT_MS, session: own });
+    const sshErr = detectSshFailure(r);
+    if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
+    const out = r.stdout + r.stderr;
+    const m = out.match(/\[install_codex\] OK version=(\S+)/);
+    if (!r.ok || !m) return { ok: false, error: (out.slice(-600) || `exit ${r.code}`).trim() };
+    return { ok: true, codexVersion: m[1] };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    if (!session) await closeSshSession(own);
+  }
+}
+
 // ── Update agent: deploy the pyz + upgrade the SDK + restart + verify ──────
 // Distinct from the full bootstrap: we assume the systemd unit already
 // exists. ONE unified flow (the sidebar's single "update" button + the SDK
@@ -456,6 +549,11 @@ export type UpdateAgentResult = {
   // Absent when the SDK step failed (see detail) — the update still
   // proceeds (old SDK keeps working; the badge stays lit for a retry).
   sdkVersion?: string;
+  // openai-codex version + availability post-update (from hello, falling back
+  // to the pip step). Absent when codex is not installed / the step failed —
+  // codex is OPTIONAL and NEVER fails the update (no null-clobber, §14.53).
+  codexSdkVersion?: string;
+  codexAvailable?: boolean;
   detail: string;
 };
 
@@ -477,6 +575,17 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     const sdk = await ensureSdkLatest(vps, session);
     if (!sdk.ok && sdk.sshError) return { ok: false, detail: `sdk: ${sdk.sshError}` };
     const sdkNote = sdk.ok ? `sdk ${sdk.sdkVersion}` : `sdk upgrade failed: ${(sdk.error ?? '').slice(-200)}`;
+
+    // Step 1.6: upgrade openai-codex too (OPTIONAL, warn-only). Keeps Codex
+    // fresh fleet-wide alongside claude-agent-sdk — one flow, one restart.
+    // NEVER fatal: a codex failure (not installed, pip error, no venv) must
+    // not abort the agent update. The restart below loads whatever the venv
+    // now has. We prefer the post-restart hello's codex_sdk_version for the
+    // persisted value (parsed by pingAgent), using this as the note/fallback.
+    const codex = await ensureCodexLatest(vps, session);
+    const codexNote = codex.ok
+      ? `codex ${codex.codexVersion}`
+      : `codex ${codex.sshError ? 'skipped (ssh)' : 'skipped'}: ${(codex.error ?? '').slice(-160)}`;
 
     // Step 2: restart. Try systemd-user then nohup fallback.
     // IMPORTANT: join with '\n' to preserve shell syntax (if/then/else/fi).
@@ -535,12 +644,18 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     if (!ping.ok) {
       return { ok: false, detail: `ping after restart: ${ping.detail}` };
     }
+    // Codex version: prefer the post-restart hello (authoritative — what the
+    // running daemon actually imports), fall back to the pip step's version.
+    // Only set when we actually have one (no null-clobber, §14.53).
+    const codexSdkVersion = ping.codexSdkVersion ?? (codex.ok ? codex.codexVersion : undefined);
     return {
       ok: true,
       newVersion: ping.version,
       newPyzSha: ping.pyzSha,
       ...(sdk.ok && sdk.sdkVersion ? { sdkVersion: sdk.sdkVersion } : {}),
-      detail: `${ping.detail} · ${sdkNote}`,
+      ...(codexSdkVersion ? { codexSdkVersion } : {}),
+      ...(ping.codexAvailable !== undefined ? { codexAvailable: ping.codexAvailable } : {}),
+      detail: `${ping.detail} · ${sdkNote} · ${codexNote}`,
     };
   } finally {
     await closeSshSession(session);
@@ -704,6 +819,25 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     }
   }
 
+  // Phase 1.4: install openai-codex into the venv (OPTIONAL — warn-only).
+  // Codex is a second backend (OpenAI). It lives next to claude-agent-sdk in
+  // ~/.charon/venv and ships its own codex CLI binary (dep
+  // openai-codex-cli-bin) — no separate npm install. The venv is guaranteed
+  // healthy here: either the fast-path verify imported claude_agent_sdk from
+  // it, or ensureSdkLatest just created/healed it. A failure NEVER aborts the
+  // bootstrap: VPSes without codex simply report codex_available=false in
+  // hello and the sidebar just won't offer Codex sessions there.
+  yield { phase: 'install_codex', status: 'running', detail: `pip install openai-codex in ${VENV_DIR} (optional)` };
+  const codexRes = await ensureCodexLatest(vps, session);
+  if (codexRes.ok) {
+    yield { phase: 'install_codex', status: 'ok', detail: codexRes.codexVersion ? `openai-codex ${codexRes.codexVersion} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
+  } else {
+    // Warn, not error, and do NOT return — codex is optional. (A genuine SSH
+    // outage is caught & aborted by the next mandatory phase's own
+    // detectSshFailure.)
+    yield { phase: 'install_codex', status: 'warn', detail: `codex optional — skipped: ${(codexRes.sshError ?? codexRes.error ?? 'install failed').slice(-200)}` };
+  }
+
   // Phase 1.5: install Claude CLI (`claude`) if missing.
   // This is the shell CLI distinct from the Python SDK: required for
   // `claude login` (OAuth). The agent can run without it (it uses the
@@ -835,6 +969,10 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       agentVersion: pingR.version ?? null,
       agentPyzSha: pingR.pyzSha ?? null,
       agentLastSeenAt: Math.floor(Date.now() / 1000),
+      // Codex availability/version from hello — ONLY when the agent reported
+      // them (≥0.15.0). Old agents omit the keys → never null-clobber (§14.53).
+      ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
+      ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
   } catch {}
 
@@ -849,12 +987,28 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     { timeoutMs: 8_000, session },
   );
   const isLoggedIn = lr.stdout.includes('OK');
+  // Light Codex-login probe (optional): `codex login` (ChatGPT OAuth or an
+  // API key) writes ~/.codex/auth.json. Presence ≈ logged in. Cheap file
+  // check, warn-free — persisted so the sidebar can hint at Codex readiness.
+  // Only persisted when the probe returns a clean CODEX_YES/CODEX_NO (a
+  // transport hiccup leaves codexLoggedIn untouched → no null-clobber).
+  let codexLoggedIn: boolean | null = null;
+  try {
+    const clr = await sshExec(
+      vps,
+      '[ -s "$HOME/.codex/auth.json" ] && echo CODEX_YES || echo CODEX_NO',
+      { timeoutMs: 8_000, session },
+    );
+    if (clr.stdout.includes('CODEX_YES')) codexLoggedIn = true;
+    else if (clr.stdout.includes('CODEX_NO')) codexLoggedIn = false;
+  } catch {}
   // Persist the state to DB so the sidebar can hide the "claude login"
   // button when not needed (cf. Sidebar.tsx § agentReady).
   try {
     db.update(vpsTable).set({
       claudeLoggedIn: isLoggedIn ? 1 : 0,
       claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000),
+      ...(codexLoggedIn !== null ? { codexLoggedIn: codexLoggedIn ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
   } catch {}
   if (isLoggedIn) {

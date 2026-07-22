@@ -62,6 +62,18 @@ METHODS = {
     # api.anthropic.com/api/oauth/usage. Daemon-level (account-scoped), so it's
     # a meta method. Agent >= 0.14.0. See agent/charon_agent/usage.py, §14.58.
     "get_usage",
+    # Codex (OpenAI) support (agent >= 0.15.0). Model catalog + account usage
+    # for Codex-kind sessions. See agent/charon_agent/codex_session.py.
+    "list_codex_models",
+    "get_codex_usage",
+    # Codex ChatGPT DEVICE-CODE login (agent >= 0.16.0): headless-safe
+    # `codex login` — start returns verification_url + user_code, the hub
+    # polls status until the user completes on any device. codex_login.py.
+    # NB: no braces in these comments — check-protocol-sync.mjs's regex
+    # stops at the first closing brace inside the METHODS block.
+    "codex_login_start",
+    "codex_login_status",
+    "codex_login_cancel",
     "start_session",
     "resume_session",
     "subscribe",

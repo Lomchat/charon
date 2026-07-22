@@ -1200,3 +1200,8 @@
 }
 .data-vps-caret:hover { color: var(--gold-bright); }
 .data-vps-card.is-collapsed .data-vps-head { border-bottom: none; }
+
+/* Health chips row (app/vpsHealth.tsx) — full-width second line of the VPS
+   card header (the header is flex-wrap). Indented under the name, past the
+   drag handle + caret. Chip/fix visuals live in claude.css (.vh-*). */
+.dv-health { flex-basis: 100%; display: flex; align-items: center; padding: 2px 0 0 30px; }

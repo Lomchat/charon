@@ -5,19 +5,37 @@ import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import ModelPicker from './ModelPicker';
 import EffortPicker from './EffortPicker';
-import { IconRobot, IconTerminal } from './icons';
+import CodexModelPicker from './CodexModelPicker';
+import CodexEffortPicker from './CodexEffortPicker';
+import AgentLogo from './AgentLogo';
+import { IconTerminal } from './icons';
+import type { AgentKind, CodexSandboxMode } from '@/lib/types/api';
+import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
+import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
 
-// 3-step "new session" wizard (prod). Kind (agent vs shell) is fixed by the
-// button that opened it — no toggle inside.
-//   1. pick a VPS   (grouped by folder; click = advance; skipped when a VPS
-//      is passed in from a per-VPS ＋ button)
+// 3-step "new session" wizard (prod). `kind` (agent vs shell) is fixed by the
+// button that opened it. For agents, the BACKEND (Claude vs Codex) is either
+// fixed (`agentKind` prop, from a per-VPS Claude/Codex button) or chosen in
+// step 1 (the global "＋ Agent" button → VPS+backend picker).
+//   1. pick a VPS (grouped by folder; for a backend-unfixed agent, each VPS
+//      row exposes two buttons Claude/Codex; skipped when a VPS is passed in)
 //   2. pick a path  (known paths + a custom one; "home" for shells)
-//   3. name it (+ optional model/effort for agents) and launch
+//   3. name it (+ optional model/effort/mode for agents) and launch
 type Step = 'vps' | 'path' | 'name';
 const DEFAULT_FOLDER_ID = 'default';
 
+const CODEX_MODE_DESC: Record<CodexSandboxMode, string> = {
+  'read-only': 'can read files & run read-only commands; no writes',
+  'workspace-write': 'can edit files in the workspace; network off by default',
+  'full-access': 'no sandbox — full file & network access (danger)',
+};
+
 type Props = {
   kind: 'agent' | 'shell';
+  // Backend for agent launches. When provided the wizard skips the
+  // Claude/Codex picker (per-VPS ＋ button); when absent + kind==='agent' the
+  // user chooses per VPS in step 1.
+  agentKind?: AgentKind;
   vpsList: Vps[];
   vpsFolders: VpsFolder[];
   vpsPaths: VpsPath[];
@@ -26,6 +44,13 @@ type Props = {
   onClose: () => void;
   onCreatedSession?: (id: string) => void;
   onCreatedShell?: (shell: ShellInfo) => void;
+  // Repair button on an unavailable VPS row (cf. app/vpsHealth.tsx). The
+  // parent decides what closes the wizard (install / claude-login do; a
+  // refresh or update runs in place — the row repaints via the live vpsList
+  // prop + the busy sets below).
+  onFix?: (v: Vps, action: VpsFixAction) => void;
+  refreshingAgentVpsIds?: Set<string>;
+  updatingAgentVpsIds?: Set<string>;
 };
 
 function basename(p: string): string {
@@ -33,10 +58,15 @@ function basename(p: string): string {
 }
 
 export default function NewSessionWizard({
-  kind, vpsList, vpsFolders, vpsPaths, initialVpsId, initialCwd, onClose,
+  kind, agentKind, vpsList, vpsFolders, vpsPaths, initialVpsId, initialCwd, onClose,
   onCreatedSession, onCreatedShell,
+  onFix, refreshingAgentVpsIds, updatingAgentVpsIds,
 }: Props) {
   const hasInitialCwd = typeof initialCwd === 'string' && initialCwd.trim() !== '';
+  // Backend is fixed either by the caller (agentKind) or trivially for shells.
+  // When agent + unfixed, the user picks it in the VPS step.
+  const backendFixed = kind !== 'agent' || agentKind != null;
+  const [selKind, setSelKind] = useState<AgentKind>(agentKind ?? 'claude');
   const [vpsId, setVpsId] = useState<string | null>(initialVpsId ?? null);
   const [path, setPath] = useState<string | null>(hasInitialCwd ? initialCwd! : null);
   const [pathChosen, setPathChosen] = useState<boolean>(hasInitialCwd);
@@ -47,12 +77,16 @@ export default function NewSessionWizard({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Optional per-session Claude config (agent only). Blank = inherit the
-  // global default (SettingsModal § Claude defaults).
+  const isCodex = kind === 'agent' && selKind === 'codex';
+
+  // Optional per-session config (agent only). Blank = inherit the global
+  // default (claude.default_* / codex.default_*). Codex has no fallback model
+  // and its "mode" is a sandbox level (default workspace-write).
   const [showAdv, setShowAdv] = useState(false);
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
+  const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode>('workspace-write');
   const [globalDefaults, setGlobalDefaults] = useState<{ model: string; fallbackModel: string; effort: string } | null>(null);
 
   useEffect(() => {
@@ -72,9 +106,16 @@ export default function NewSessionWizard({
       .catch(() => {});
   }, [kind]);
 
+  // Reset per-backend config when the backend switches (model ids / efforts
+  // aren't comparable across Claude and Codex).
+  useEffect(() => { setModel(''); setFallbackModel(''); setEffort(''); }, [selKind]);
+
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
-  const kindLabel = kind === 'agent' ? 'Claude agent' : 'SSH shell';
-  const KindIcon = kind === 'agent' ? IconRobot : IconTerminal;
+  const agentLabel = selKind === 'codex' ? 'Codex agent' : 'Claude agent';
+  const kindLabel = kind === 'agent' ? agentLabel : 'SSH shell';
+  const KindIcon = kind === 'agent'
+    ? () => <AgentLogo kind={selKind} size={15} />
+    : () => <IconTerminal />;
 
   // VPSes grouped by folder ("default" folder last), only non-empty folders.
   const buckets = useMemo(() => {
@@ -110,8 +151,43 @@ export default function NewSessionWizard({
     return rows;
   }, [vps, vpsPaths]);
 
-  function pickVps(v: Vps) {
-    if (kind === 'agent' && ((v as any).agentStatus ?? 'unknown') !== 'ok') return;
+  // Per-VPS availability — shared diagnosis (app/vpsHealth.tsx). Sessions
+  // need the whole stack for their backend; a shell only needs the agent
+  // layer (ssh + daemon). Each row shows the precise blocker + its fix.
+  const availFor = (v: Vps, k: AgentKind) => backendAvailability(v, k);
+
+  // The blockers to paint under a row, each PAIRED with its own repair
+  // button ("⚠ reason [fix]" per line — never a detached button cluster).
+  // Agent-layer problems (ssh / no agent / daemon down) are common to both
+  // backends → ONE pair; otherwise one pair per broken backend.
+  function rowIssues(v: Vps): { text: string; fix?: VpsFix }[] {
+    const agent = agentAvailability(v);
+    if (!agent.ok) return [{ text: agent.reason, fix: agent.fix }];
+    if (kind !== 'agent') return [];
+    const out: { text: string; fix?: VpsFix }[] = [];
+    const kinds: AgentKind[] = backendFixed ? [selKind] : ['claude', 'codex'];
+    for (const k of kinds) {
+      const av = backendAvailability(v, k);
+      if (av.ok) continue;
+      out.push({
+        text: backendFixed ? av.reason : `${k === 'codex' ? 'Codex' : 'Claude'}: ${av.reason}`,
+        fix: av.fix,
+      });
+    }
+    return out;
+  }
+  const fixBusy = (v: Vps, action: VpsFixAction) =>
+    (action === 'refresh' && !!refreshingAgentVpsIds?.has(v.id)) ||
+    (action === 'update' && !!updatingAgentVpsIds?.has(v.id));
+
+  function pickVps(v: Vps, k?: AgentKind) {
+    const backend = k ?? selKind;
+    if (kind === 'agent') {
+      if (!availFor(v, backend).ok) return;
+      setSelKind(backend);
+    } else if (!agentAvailability(v).ok) {
+      return; // a shell still needs the agent up
+    }
     setVpsId(v.id);
     setPath(null); setPathChosen(false);
     setStep('path');
@@ -135,9 +211,12 @@ export default function NewSessionWizard({
         const r = await api.createClaudeSession({
           vpsId: vps.id, cwd: path!.trim(),
           name: name.trim() || null,
-          permissionMode: 'auto',
+          kind: selKind,
+          // Codex mode = a sandbox level; Claude keeps the historical 'auto'.
+          permissionMode: isCodex ? codexSandbox : 'auto',
           model: model.trim() || null,
-          fallbackModel: fallbackModel.trim() || null,
+          // Codex has no fallback-model concept (server ignores it anyway).
+          fallbackModel: isCodex ? null : (fallbackModel.trim() || null),
           effort: effort || null,
         });
         onCreatedSession?.(r.id);
@@ -176,10 +255,12 @@ export default function NewSessionWizard({
             disabled={!pathChosen} onClick={() => pathChosen && setStep('name')} />
         </div>
 
-        {/* ── Step 1: VPS ── */}
+        {/* ── Step 1: VPS (+ backend, when the agent backend isn't fixed) ── */}
         {step === 'vps' && (
           <div className="wiz-body">
-            <div className="wiz-label">Choose a VPS</div>
+            <div className="wiz-label">
+              {kind === 'agent' && !backendFixed ? 'Choose a VPS & backend' : 'Choose a VPS'}
+            </div>
             {buckets.length === 0 && <div className="wiz-error">no VPS — add one in « manage VPS »</div>}
             {buckets.map(({ folder, vps: list }) => (
               <div key={folder.id} className="wiz-folder">
@@ -187,18 +268,81 @@ export default function NewSessionWizard({
                 <div className="wiz-pick-list">
                   {list.map((v) => {
                     const status = (v as any).agentStatus ?? 'unknown';
-                    const disabled = kind === 'agent' && status !== 'ok';
+                    const issues = rowIssues(v);
+                    // One "⚠ reason [fix]" line PER problem (the reasons come
+                    // from the shared diagnosis — "VPS unreachable (SSH)" vs
+                    // "agent not installed" vs "Claude: not signed in"…),
+                    // each with its own repair button right after it.
+                    const issuesEl = issues.length === 0 ? null : (
+                      <span className="wiz-pick-issues">
+                        {issues.map((it, i) => (
+                          <span key={i} className="wiz-issue">
+                            <span className="wiz-issue-text">⚠ {it.text}</span>
+                            {onFix && it.fix && (
+                              <button type="button" className="wiz-fix-btn"
+                                disabled={fixBusy(v, it.fix.action)} title={it.fix.title}
+                                onClick={(e) => { e.stopPropagation(); onFix(v, it.fix!.action); }}
+                              >{fixBusy(v, it.fix.action) ? '⟳ …' : it.fix.label}</button>
+                            )}
+                          </span>
+                        ))}
+                      </span>
+                    );
+                    // Agent + unfixed backend: two buttons (Claude / Codex),
+                    // each greyed by its own availability with an explanatory tip.
+                    if (kind === 'agent' && !backendFixed) {
+                      const cl = availFor(v, 'claude');
+                      const cx = availFor(v, 'codex');
+                      return (
+                        <div key={v.id} className="wiz-pick static">
+                          <span className={`wiz-pick-dot agent-${status}`} />
+                          <span className="wiz-pick-main">
+                            <span className="wiz-pick-name">{v.name}</span>
+                            <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
+                            {issuesEl}
+                          </span>
+                          <span className="wiz-kind-btns">
+                            <button type="button" className="wiz-kind-btn"
+                              disabled={!cl.ok} title={cl.reason}
+                              onClick={() => pickVps(v, 'claude')}>
+                              <AgentLogo kind="claude" size={15} /><span>Claude</span>
+                            </button>
+                            <button type="button" className="wiz-kind-btn"
+                              disabled={!cx.ok} title={cx.reason}
+                              onClick={() => pickVps(v, 'codex')}>
+                              <AgentLogo kind="codex" size={15} /><span>Codex</span>
+                            </button>
+                          </span>
+                        </div>
+                      );
+                    }
+                    // Shell OR fixed-backend agent: single clickable row. A
+                    // shell needs the agent layer too (shell_start is an agent
+                    // RPC) — same gating, minus the login/backend checks.
+                    const disabled = kind === 'agent' ? !availFor(v, selKind).ok : !agentAvailability(v).ok;
+                    if (disabled) {
+                      // Not a <button>: the row hosts the repair buttons
+                      // (nested <button> is invalid HTML) and isn't clickable.
+                      return (
+                        <div key={v.id} className="wiz-pick static disabled">
+                          <span className={`wiz-pick-dot agent-${status}`} />
+                          <span className="wiz-pick-main">
+                            <span className="wiz-pick-name">{v.name}</span>
+                            <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
+                            {issuesEl}
+                          </span>
+                        </div>
+                      );
+                    }
                     return (
                       <button key={v.id}
                         className="wiz-pick"
                         onClick={() => pickVps(v)}
-                        disabled={disabled}
-                        title={disabled ? 'agent not ready on this VPS' : undefined}
                       >
                         <span className={`wiz-pick-dot agent-${status}`} />
                         <span className="wiz-pick-main">
                           <span className="wiz-pick-name">{v.name}</span>
-                          <span className="wiz-pick-sub">{v.sshUser}@{v.ip}{disabled ? ' · agent not ready' : ''}</span>
+                          <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
                         </span>
                         <span className="wiz-pick-go">›</span>
                       </button>
@@ -266,19 +410,39 @@ export default function NewSessionWizard({
             {kind === 'agent' && (
               <div className="wiz-adv">
                 <button className="wiz-adv-toggle" onClick={() => setShowAdv((v) => !v)}>
-                  {showAdv ? '▾' : '▸'} advanced · model & effort
+                  {showAdv ? '▾' : '▸'} advanced · model{isCodex ? ', effort & sandbox' : ' & effort'}
                 </button>
                 {showAdv && (
                   <div className="wiz-adv-body">
-                    <label className="wiz-adv-field">model
-                      <ModelPicker value={model} onChange={setModel} inheritPlaceholder={globalDefaults?.model || undefined} />
-                    </label>
-                    <label className="wiz-adv-field">fallback model
-                      <ModelPicker value={fallbackModel} onChange={setFallbackModel} inheritPlaceholder={globalDefaults?.fallbackModel || 'none'} />
-                    </label>
-                    <label className="wiz-adv-field">effort
-                      <EffortPicker value={effort} onChange={setEffort} modelId={model} inheritPlaceholder={globalDefaults?.effort || undefined} />
-                    </label>
+                    {isCodex ? (
+                      <>
+                        <label className="wiz-adv-field">model
+                          <CodexModelPicker vpsId={vps.id} value={model} onChange={setModel} inheritPlaceholder="Codex default" />
+                        </label>
+                        <label className="wiz-adv-field">effort
+                          <CodexEffortPicker vpsId={vps.id} value={effort} onChange={setEffort} modelId={model} inheritPlaceholder="Codex default" />
+                        </label>
+                        <label className="wiz-adv-field">sandbox
+                          <select value={codexSandbox} onChange={(e) => setCodexSandbox(e.target.value as CodexSandboxMode)}>
+                            {CODEX_SANDBOX_MODES.map((m) => (
+                              <option key={m} value={m}>{m} — {CODEX_MODE_DESC[m]}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </>
+                    ) : (
+                      <>
+                        <label className="wiz-adv-field">model
+                          <ModelPicker value={model} onChange={setModel} inheritPlaceholder={globalDefaults?.model || undefined} />
+                        </label>
+                        <label className="wiz-adv-field">fallback model
+                          <ModelPicker value={fallbackModel} onChange={setFallbackModel} inheritPlaceholder={globalDefaults?.fallbackModel || 'none'} />
+                        </label>
+                        <label className="wiz-adv-field">effort
+                          <EffortPicker value={effort} onChange={setEffort} modelId={model} inheritPlaceholder={globalDefaults?.effort || undefined} />
+                        </label>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

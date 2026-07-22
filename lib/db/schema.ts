@@ -51,6 +51,19 @@ export const vps = sqliteTable('vps', {
   //   'missing'  : no agent (to install)
   //   'error'    : agent installed but unresponsive
   agentStatus: text('agent_status').notNull().default('unknown'),
+  // Classified reason for the LAST agentStatus='error' persist, so the UI can
+  // tell "the VPS itself is unreachable" apart from "SSH is fine but the agent
+  // daemon is down". Format: '<code>: <first stderr line>' where code ∈
+  //   'ssh-auth'        — SSH reached the host but auth failed (key refused)
+  //   'ssh-unreachable' — SSH could not reach the host (down/network/firewall)
+  //   'daemon-down'     — SSH ok, pyz present, but the daemon isn't running
+  //                       (--connect exit 2/3: socket absent / connect failed)
+  //   'error'           — anything else (generic drop)
+  // NULL when agentStatus is 'ok' (cleared on every hello) or 'missing' (SSH
+  // provably worked — the remote command ran and said "no pyz"). Written by
+  // AgentClient._handleExit + the agent/refresh route; consumed by
+  // app/vpsHealth.tsx (parseAgentLastError) for the health chips.
+  agentLastError: text('agent_last_error'),
   agentVersion: text('agent_version'),
   // Hash of the .pyz running on the VPS (first 12 chars of the sha256). Used
   // by the dashboard to detect "agent out of date" without depending on the
@@ -72,6 +85,21 @@ export const vps = sqliteTable('vps', {
   //   LoginConsole closes, or on demand)
   claudeLoggedIn: integer('claude_logged_in'),
   claudeLoggedInCheckedAt: integer('claude_logged_in_checked_at'),
+  // ── Codex (OpenAI) availability on this VPS (multi-agent support). ──
+  // codexAvailable: 1/0/NULL — whether the `openai-codex` Python SDK is
+  // importable in the VPS venv, as reported by the agent's `hello`
+  // (codex_available, agent >= 0.15.0). NULL = unknown / old agent.
+  // Old-agent hellos (no codex_* fields) must NOT null-clobber these
+  // (cf. AgentClient.ts, §14.53 no-null-clobber rule).
+  codexAvailable: integer('codex_available'),
+  // Version of `openai-codex` in the venv (hello.codex_sdk_version). Compared
+  // to the PyPI latest (settings `codex.latest_version`) to flag outdated
+  // fleets, mirroring sdkVersion for Claude.
+  codexSdkVersion: text('codex_sdk_version'),
+  // State of `codex login` on this VPS. 1 = logged in (~/.codex/auth.json has
+  // tokens), 0 = not, NULL = never checked. Mirrors claudeLoggedIn.
+  codexLoggedIn: integer('codex_logged_in'),
+  codexLoggedInCheckedAt: integer('codex_logged_in_checked_at'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 
@@ -100,6 +128,15 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // the row in the sidebar. NULL = no marker.
   color: text('color'),
   status: text('status').notNull(),
+  // Agent-type discriminator: 'claude' (default) | 'codex'. Determines which
+  // backend drives the session (ClaudeSDKClient vs the Codex app-server via
+  // openai-codex) and how the hub resolves config/model/effort/mode + which
+  // logo the sidebar paints. For a Codex session, claudeSessionId holds the
+  // Codex THREAD id (the resume handle), permissionMode holds a Codex sandbox
+  // mode ('read-only' | 'workspace-write' | 'full-access'), effort is a Codex
+  // reasoning-effort, model is a Codex model id, and fallbackModel is unused
+  // (Codex has no fallback-model concept). cf. migration-codex.md.
+  kind: text('kind').notNull().default('claude'),
   permissionMode: text('permission_mode').notNull().default('normal'),
   // Last `seq` from the agent's durable event log that Charon has
   // successfully persisted. Used on reconnect to call

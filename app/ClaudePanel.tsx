@@ -4,6 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
+import type { AgentKind } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import TabBar, { computeTabs, type EntityTab } from './TabBar';
 import ShellTerminal from './ShellTerminal';
@@ -11,6 +12,7 @@ import InstallSessionView from './InstallSessionView';
 import NewSessionWizard from './NewSessionWizard';
 import DataModal from './DataModal';
 import ResumeModal from './ResumeModal';
+import ConfirmModal from './ConfirmModal';
 import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
@@ -20,6 +22,7 @@ import SearchModal from './SearchModal';
 import SettingsModal from './SettingsModal';
 import SessionContextMenu from './SessionContextMenu';
 import LoginConsole from './LoginConsole';
+import CodexLoginModal from './CodexLoginModal';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
@@ -41,6 +44,7 @@ type Props = {
   // Latest claude-agent-sdk on PyPI (settings cache, null = never synced).
   // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
   sdkLatestVersion: string | null;
+  codexLatestVersion?: string | null;
 };
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
@@ -65,7 +69,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 // SessionState/emptyState removed in the refactor: per-session state now
 // lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, sdkLatestVersion }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, sdkLatestVersion, codexLatestVersion }: Props) {
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
@@ -113,8 +117,24 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     | null
   >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // "Delete permanently" confirmation — styled modal instead of the native
+  // confirm(). Holds the target session while the dialog is open.
+  const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
   // Interactive claude login console
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
+
+  // Codex device-code login modal (§14.61) — the Codex sibling of loginVps.
+  // On confirmed success the server has already persisted codexLoggedIn=1 +
+  // broadcast vps_status; patch locally too so THIS tab flips instantly.
+  const [codexLoginVps, setCodexLoginVps] = useState<Vps | null>(null);
+  const closeCodexLogin = useCallback((loggedIn: boolean) => {
+    const v = codexLoginVps;
+    setCodexLoginVps(null);
+    if (!v || !loggedIn) return;
+    setVpsList((prev) => prev.map((vp) => vp.id === v.id
+      ? ({ ...vp, codexLoggedIn: 1, codexLoggedInCheckedAt: Math.floor(Date.now() / 1000) } as Vps)
+      : vp));
+  }, [codexLoginVps]);
 
   // When the user closes the LoginConsole, we re-check the VPS's `claude
   // login` state — they may have just logged in (or out). The result is
@@ -187,15 +207,34 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // account-usage panel + the header action buttons. Left drawer = sessions.
   const [usageOpen, setUsageOpen] = useState(false);
   const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); setUsageOpen(false); }, []);
-  // Account-usage gauges per VPS (the `/usage` widget). Fed by the LOW_VOLUME
-  // `account_usage` SSE event + hydrated on session-select via GET. §14.58.
-  const [usageByVps, setUsageByVps] = useState<Record<string, AccountUsage>>({});
+  // Account-usage gauges per VPS AND per provider (the `/usage` widget). A VPS
+  // can run BOTH Claude and Codex, each with its own account/quota — the header
+  // shows the one matching the CURRENT session's kind. Fed by the LOW_VOLUME
+  // `account_usage` SSE event (carries `provider`) + hydrated on session-select
+  // via GET /api/vps/[id]/usage ({ usage, codexUsage }). §14.58 / migration-codex.md.
+  const [usageByVps, setUsageByVps] = useState<Record<string, { claude?: AccountUsage; codex?: AccountUsage }>>({});
   const refreshUsage = useCallback((vpsId: string | null | undefined) => {
     if (!vpsId) return;
     api.getVpsUsage(vpsId)
-      .then((r) => { if (r.usage) setUsageByVps((prev) => ({ ...prev, [vpsId]: r.usage as AccountUsage })); })
+      .then((r) => setUsageByVps((prev) => {
+        const cur = prev[vpsId] ?? {};
+        const next = { ...cur };
+        if (r.usage) next.claude = r.usage as AccountUsage;
+        if (r.codexUsage) next.codex = r.codexUsage as AccountUsage;
+        return { ...prev, [vpsId]: next };
+      }))
       .catch(() => {});
   }, []);
+  // Usage snapshot for a VPS + session kind (defaults to the Claude account).
+  const usageFor = useCallback(
+    (vpsId: string | null | undefined, kind: AgentKind | null | undefined): AccountUsage | null => {
+      if (!vpsId) return null;
+      const e = usageByVps[vpsId];
+      if (!e) return null;
+      return (kind === 'codex' ? e.codex : e.claude) ?? null;
+    },
+    [usageByVps],
+  );
 
   // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
@@ -314,11 +353,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // from an old agent's hello must not wipe a known SDK version
           // (mirrors the DB no-clobber guard in AgentClient.ts).
           const sdkVersion = ev.sdkVersion !== undefined ? ev.sdkVersion : v.sdkVersion;
-          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion) {
+          // codex fields: same "key present ⇔ known" no-clobber contract.
+          const codexAvailable = (ev as any).codexAvailable !== undefined ? (ev as any).codexAvailable : (v as any).codexAvailable;
+          const codexSdkVersion = (ev as any).codexSdkVersion !== undefined ? (ev as any).codexSdkVersion : (v as any).codexSdkVersion;
+          // agentLastError: classified failure reason (ssh vs daemon) — feeds
+          // the health chips (vpsHealth.tsx). Explicit null on 'ok' clears it.
+          const agentLastError = (ev as any).agentLastError !== undefined ? (ev as any).agentLastError : (v as any).agentLastError;
+          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion
+              && (v as any).codexAvailable === codexAvailable && (v as any).codexSdkVersion === codexSdkVersion
+              && (v as any).agentLastError === agentLastError) {
             return v;
           }
           changed = true;
-          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion } as Vps;
+          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, agentLastError } as Vps;
         });
         return changed ? next : prev;
       });
@@ -337,7 +384,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (!vpsId) return;
       // ev is the account_usage variant = AccountUsage + {type, sessionId}; the
       // extra two keys are harmless (UsageMeter only reads AccountUsage fields).
-      setUsageByVps((prev) => ({ ...prev, [vpsId]: ev as AccountUsage }));
+      // Store under the event's provider (Claude default) so a VPS running both
+      // backends keeps both gauges live.
+      const provider = (ev as AccountUsage).provider === 'codex' ? 'codex' : 'claude';
+      setUsageByVps((prev) => ({
+        ...prev,
+        [vpsId]: { ...(prev[vpsId] ?? {}), [provider]: ev as AccountUsage },
+      }));
     });
     return () => unsub();
   }, []);
@@ -577,7 +630,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Unified "new session" wizard (VPS → path → name). `kind` is fixed by the
   // button that opened it (＋Agent vs ＋Shell). Replaces the old
   // NewSessionDialog / NewShellDialog.
-  const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null }>(null);
+  const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null; agentKind?: AgentKind }>(null);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -612,6 +665,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               agentStatus: r.agentStatus,
               agentVersion: r.agentVersion ?? v.agentVersion,
               agentPyzSha: r.agentPyzSha ?? v.agentPyzSha,
+              // Classified verdict (ssh vs daemon) for the health chips —
+              // the route always sends it (null on ok = cleared).
+              ...(r.agentLastError !== undefined ? { agentLastError: r.agentLastError } : {}),
             } as Vps)
           : v
       ));
@@ -656,6 +712,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         return n;
       });
     }
+  }
+
+  // One dispatcher for the health-chip / wizard-row repair buttons
+  // (app/vpsHealth.tsx). install + claude-login switch view → close the
+  // wizard first; refresh/update run in place (the wizard rows / modal chips
+  // repaint live via vpsList + the busy sets). Plain function (not
+  // useCallback): it must close over the CURRENT runRefresh/runUpdate guards.
+  function handleVpsFix(v: Vps, action: 'install' | 'refresh' | 'update' | 'claude-login' | 'codex-login') {
+    if (action === 'install') { setWizard(null); openInstallSession(v); }
+    else if (action === 'claude-login') { setWizard(null); setLoginVps(v); }
+    // codex-login overlays whatever is open (wizard included — after the
+    // sign-in the row's Codex button re-enables live and the user launches).
+    else if (action === 'codex-login') { setCodexLoginVps(v); }
+    else if (action === 'refresh') { runRefreshAgent(v); }
+    else if (action === 'update') { runUpdateAgent(v); }
   }
 
   // Cross-session interaction queues: fed by
@@ -798,7 +869,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    *  pre-filled with the active VPS and the same cwd as the last tab. */
   function onTabBarNewSession(vpsId: string) {
     const cwd = defaultCwdFor(vpsId);
-    setWizard({ kind: 'agent', vpsId, cwd });
+    // The tab-bar "+" is the historical Claude shortcut → fix the backend so
+    // it goes straight to path/name (Codex is launched from the sidebar or the
+    // global "＋ Agent" backend picker).
+    setWizard({ kind: 'agent', vpsId, cwd, agentKind: 'claude' });
   }
   /** "+ shell" button on the right of row 2 — open the NewShellDialog
    *  pre-filled with the active VPS and the same cwd as the last tab
@@ -1134,12 +1208,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }
 
   // Permanent deletion (DB cascade on the server side). The caller must
-  // have confirmed. No more soft-kill (`status='killed'` which kept the row
-  // in DB for post-mortem inspection) — the rework merged kill→delete (cf.
-  // CLAUDE.md §10). To pause the session without losing it, use
-  // `doSleep` (reversible) in `<ClaudeSessionView>`.
+  // have confirmed — the context menu goes through `<ConfirmModal>`
+  // (`confirmDelete` state), no native confirm() here. No more soft-kill
+  // (`status='killed'` which kept the row in DB for post-mortem inspection)
+  // — the rework merged kill→delete (cf. CLAUDE.md §10). To pause the
+  // session without losing it, use `doSleep` (reversible) in
+  // `<ClaudeSessionView>`.
   async function deleteSessionOne(id: string) {
-    if (!confirm('Permanently delete this session and all its history?')) return;
     try {
       await api.deleteClaudeSession(id);
       if (id === selectedId) setSelectedId(null);
@@ -1257,7 +1332,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               before. cf. CLAUDE.md §14.58. */}
           <div className="head-usage-panel">
             <UsageMeter
-              usage={selectedVps ? (usageByVps[selectedVps.id] ?? null) : null}
+              usage={usageFor(selectedVps?.id, selected?.kind as AgentKind | undefined)}
               vpsName={selectedVps?.name}
               compact={false}
               onRefresh={() => refreshUsage(selectedVps?.id)}
@@ -1280,7 +1355,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               of the active view, acceptable for a header indicator. */}
           {selected?.liveStatus === 'thinking' ? (
             <span className="status-pill status-amber-pulse">
-              <span className="dot" /> claude is thinking
+              <span className="dot" /> {selected?.kind === 'codex' ? 'codex' : 'claude'} is thinking
             </span>
           ) : selectedHasPending ? (
             <span className="status-pill status-orange-pulse">
@@ -1291,7 +1366,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               <span className="dot" /> {STATUS_LABEL[selected.liveStatus as WorkerStatus]}
             </span>
           ) : null}
-          <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search">
+          <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search" data-label="search">
             <IconSearch />
           </button>
           <button
@@ -1303,6 +1378,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               : 'Push notifications: OFF — click to turn on'}
             aria-label={pushOn ? 'Push notifications on, click to turn off' : 'Push notifications off, click to turn on'}
             aria-pressed={pushOn}
+            data-label={pushOn ? 'push notifications — on' : 'push notifications — off'}
           >
             {pushOn ? <IconBellFill /> : <IconBellSlash />}
           </button>
@@ -1314,6 +1390,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               : 'In-app sound: OFF (muted) — click to unmute'}
             aria-label={notifSoundEnabled ? 'In-app sound on, click to mute' : 'In-app sound muted, click to unmute'}
             aria-pressed={notifSoundEnabled}
+            data-label={notifSoundEnabled ? 'notification sound — on' : 'notification sound — off'}
           >
             {notifSoundEnabled ? <IconVolumeUp /> : <IconVolumeMute />}
           </button>
@@ -1328,14 +1405,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
                 : 'Telegram notifications: OFF — click to turn on'}
             aria-label={tgEnabled && tgConfigured ? 'Telegram notifications on, click to turn off' : 'Telegram notifications off, click to turn on'}
             aria-pressed={tgEnabled && tgConfigured}
+            data-label={!tgConfigured ? 'telegram — not set up' : tgEnabled ? 'telegram — on' : 'telegram — off'}
           >
             <IconTelegram />
           </button>
-          <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data">
+          <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data" data-label="vps, projects & paths">
             <IconServers />
           </button>
           <LocalAgentButton />
-          <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings" aria-label="settings">
+          <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings" aria-label="settings" data-label="settings">
             <IconGear />
           </button>
         </div>
@@ -1394,6 +1472,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onLoginAgent={(v) => setLoginVps(v)}
         onUpdateAgent={(v) => { runUpdateAgent(v); }}
         onRefreshAgent={(v) => { runRefreshAgent(v); }}
+        onCodexLoginAgent={(v) => setCodexLoginVps(v)}
         onToggleFolderCollapsed={async (folderId, collapsed) => {
           // Optimistic: update immediately, then POST. Roll back if it fails.
           setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 1 : 0 } : f));
@@ -1406,6 +1485,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         }}
         builtPyzSha={builtPyzSha}
         sdkLatestVersion={sdkLatestVersion}
+        codexLatestVersion={codexLatestVersion}
         updatingAgentVpsIds={updatingAgentVpsIds}
         refreshingAgentVpsIds={refreshingAgentVpsIds}
       />
@@ -1481,7 +1561,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           sessionId={selected.id}
           selected={selected}
           selectedVps={selectedVps}
-          usage={selectedVps ? (usageByVps[selectedVps.id] ?? null) : null}
+          usage={usageFor(selectedVps?.id, selected.kind as AgentKind | undefined)}
           onUsageRefresh={() => refreshUsage(selectedVps?.id)}
           overlay={
             <>
@@ -1569,6 +1649,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       {wizard && (
         <NewSessionWizard
           kind={wizard.kind}
+          agentKind={wizard.agentKind}
           vpsList={vpsList}
           vpsFolders={vpsFolders}
           vpsPaths={vpsPaths}
@@ -1577,6 +1658,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onClose={() => setWizard(null)}
           onCreatedSession={(id) => { setWizard(null); selectClaude(id); refreshSessions(); }}
           onCreatedShell={(sh) => { setWizard(null); applyCreatedShell(sh); }}
+          onFix={handleVpsFix}
+          refreshingAgentVpsIds={refreshingAgentVpsIds}
+          updatingAgentVpsIds={updatingAgentVpsIds}
         />
       )}
 
@@ -1604,7 +1688,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         />
       )}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} vpsList={vpsList} />}
       {dataOpen && (
         <DataModal
           onClose={() => setDataOpen(false)}
@@ -1617,7 +1701,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             setVpsPaths(paths);
           }}
           onInstallAgent={openInstallSession}
+          onRefreshAgent={(v) => { runRefreshAgent(v); }}
+          onUpdateAgent={(v) => { runUpdateAgent(v); }}
+          onCodexLogin={(v) => setCodexLoginVps(v)}
+          refreshingAgentVpsIds={refreshingAgentVpsIds}
+          updatingAgentVpsIds={updatingAgentVpsIds}
+          liveVps={vpsList}
+          builtPyzSha={builtPyzSha}
+          sdkLatestVersion={sdkLatestVersion}
         />
+      )}
+
+      {/* Codex device-code login (§14.61) — rendered AFTER the wizard/data
+          modal so it overlays whichever surface launched it. */}
+      {codexLoginVps && (
+        <CodexLoginModal vps={codexLoginVps} onClose={closeCodexLogin} />
       )}
 
       {ctxMenu && ctxMenu.kind === 'session' && (
@@ -1643,7 +1741,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               ? () => sleepOne(ctxMenu.session.id)
               : undefined
           }
-          onDelete={() => deleteSessionOne(ctxMenu.session.id)}
+          onDelete={() => setConfirmDelete(ctxMenu.session)}
           onClose={() => setCtxMenu(null)}
         />
       )}
@@ -1690,6 +1788,33 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onKill={() => killInstallOne(ctxMenu.install.id)}
           onClose={() => setCtxMenu(null)}
         />
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete session"
+          confirmLabel="delete permanently"
+          busyLabel="deleting…"
+          onConfirm={async () => {
+            // deleteSessionOne catches its own errors (→ error banner), so
+            // we always close the dialog afterwards.
+            await deleteSessionOne(confirmDelete.id);
+            setConfirmDelete(null);
+          }}
+          onClose={() => setConfirmDelete(null)}
+        >
+          <div className="confirm-target">
+            <span className="ct-name">
+              {confirmDelete.name || confirmDelete.cwd.split('/').slice(-2).join('/')}
+            </span>
+            <span className="ct-sub">{confirmDelete.cwd}</span>
+          </div>
+          <p className="confirm-text">
+            The session and its whole history (messages, permissions, logs)
+            will be permanently deleted. This cannot be undone — to keep it
+            around, pause it instead.
+          </p>
+        </ConfirmModal>
       )}
     </div>
   );

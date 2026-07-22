@@ -1,11 +1,13 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
-import type { SessionListItem, InstallInfo } from '@/lib/types/api';
+import type { SessionListItem, InstallInfo, AgentKind } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
+import AgentLogo from './AgentLogo';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { isVersionOutdated } from '@/lib/version';
+import { backendAvailability, parseAgentLastError } from './vpsHealth';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -16,8 +18,8 @@ export type { SessionListItem };
 // Re-export for consumers (ClaudePanel) that pass installs.
 export type { InstallInfo };
 
-const COLLAPSED_KEY = 'hub.claude.collapsedVps.v2';
 const PAUSED_KEY = 'hub.claude.showPaused.v1';
+const DETAILS_KEY = 'hub.claude.showDetails.v1';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
 
 function formatAge(unixSeconds: number | null | undefined): string {
@@ -34,6 +36,17 @@ function formatAge(unixSeconds: number | null | undefined): string {
 function cwdTail(cwd: string, max = 34): string {
   return cwd.length > max ? '…' + cwd.slice(-(max - 1)) : cwd;
 }
+
+// Per-VPS backend availability (multi-agent) — thin aliases over the shared
+// diagnosis (app/vpsHealth.tsx § backendAvailability), which also feeds the
+// DataModal health chips + the wizard rows. Claude needs the Charon agent up
+// AND `claude login`; Codex needs the openai-codex SDK importable AND a Codex
+// login (codexLoggedIn !== 0 — null/never-checked is treated as "maybe", not a
+// hard block). Returns a precise human reason when disabled (tooltip on the
+// greyed button): "VPS unreachable (SSH)" vs "agent stopped" vs "not signed
+// in"… cf. migration-codex.md.
+const claudeAvailability = (v: Vps) => backendAvailability(v, 'claude');
+const codexAvailability = (v: Vps) => backendAvailability(v, 'codex');
 
 export type ShellListItem = {
   id: string;
@@ -68,7 +81,7 @@ type Props = {
   onSelect: (id: string) => void;
   onSelectShell: (id: string) => void;
   onSelectInstall: (id: string) => void;
-  onNew: (opts: { vpsId?: string; cwd?: string }) => void;
+  onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
   // "Manage VPS & folders" button in the sidebar toolbar.
@@ -83,6 +96,8 @@ type Props = {
   // exist, focuses the existing one otherwise).
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
+  // Codex device-code sign-in (opens ClaudePanel's CodexLoginModal, §14.61).
+  onCodexLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
   // Re-establish the agent connection (for a VPS shown as 'error' that is
   // actually healthy — the SSH transport just dropped). See
@@ -95,13 +110,15 @@ type Props = {
   // Latest claude-agent-sdk on PyPI (settings cache) — compared to each VPS's
   // reported vps.sdkVersion for the "SDK out of date" badge / update bar.
   sdkLatestVersion?: string | null;
+  // Latest openai-codex on PyPI — same mechanism for the codex sdk line (§14.59).
+  codexLatestVersion?: string | null;
   // VPSes for which an update is in progress (UI loading)
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
   refreshingAgentVpsIds?: Set<string>;
 };
 
-const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
+export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
   ok:       { glyph: '●', label: 'agent operational' },
   missing:  { glyph: '○', label: 'agent not installed' },
   error:    { glyph: '◐', label: 'agent unreachable — connection dropped' },
@@ -115,39 +132,21 @@ export default function Sidebar({
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
-  onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
-  builtPyzSha, sdkLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
+  onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
+  builtPyzSha, sdkLatestVersion, codexLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
 }: Props) {
 
-  // Collapsed VPS sections (persisted in localStorage) — per-VPS, per-device.
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
   const [showPaused, setShowPaused] = useState(true);
+  // Show / hide per-card details (first-message preview, cwd, age). OFF =
+  // compact one-line cards — the full info stays in the card tooltip.
+  const [showDetails, setShowDetails] = useState(true);
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(COLLAPSED_KEY);
-      if (raw) setCollapsed(new Set(JSON.parse(raw)));
       if (localStorage.getItem(PAUSED_KEY) === '0') setShowPaused(false);
+      if (localStorage.getItem(DETAILS_KEY) === '0') setShowDetails(false);
     } catch {}
   }, []);
-  function toggleCollapsed(vpsId: string) {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(vpsId)) next.delete(vpsId);
-      else next.add(vpsId);
-      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }
-  function uncollapseVps(vpsId: string) {
-    setCollapsed((prev) => {
-      if (!prev.has(vpsId)) return prev;
-      const next = new Set(prev);
-      next.delete(vpsId);
-      try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch {}
-      return next;
-    });
-  }
   function toggleShowPaused() {
     setShowPaused((v) => {
       const next = !v;
@@ -155,11 +154,17 @@ export default function Sidebar({
       return next;
     });
   }
+  function toggleShowDetails() {
+    setShowDetails((v) => {
+      const next = !v;
+      try { localStorage.setItem(DETAILS_KEY, next ? '1' : '0'); } catch {}
+      return next;
+    });
+  }
 
   // ── Auto-scroll to the selected entity (VSCode-style "reveal in
-  // explorer"). On any change to the selection, expand the parent VPS +
-  // folder if collapsed, then scroll the row into view. 2-pass (expand →
-  // re-run → scrollIntoView). See the previous implementation's notes.
+  // explorer"). On any change to the selection, expand the parent folder if
+  // needed, then scroll the row into view.
   const asideRef = useRef<HTMLElement | null>(null);
   const activeTabId = selectedId ?? selectedShellId ?? selectedInstallId ?? null;
   const parentVpsId = useMemo(() => {
@@ -178,7 +183,6 @@ export default function Sidebar({
 
   useEffect(() => {
     if (!parentVpsId) return;
-    if (collapsed.has(parentVpsId)) uncollapseVps(parentVpsId);
     if (parentFolderId) {
       const f = vpsFolders.find((ff) => ff.id === parentFolderId);
       if (f && f.collapsed === 1) onToggleFolderCollapsed?.(parentFolderId, false);
@@ -200,7 +204,7 @@ export default function Sidebar({
       row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
     return () => cancelAnimationFrame(raf);
-  }, [activeTabId, collapsed, vpsFolders]);
+  }, [activeTabId, vpsFolders]);
 
   // Group VPSes by folderId, respecting the intra-folder `position` order.
   const vpsByFolder = useMemo(() => {
@@ -261,6 +265,13 @@ export default function Sidebar({
     return agentStatus === 'ok' && isVersionOutdated(sdkVersion, sdkLatestVersion);
   }
 
+  // Same rule for openai-codex: flags only when BOTH versions are known.
+  function codexOutdatedOf(v: Vps): boolean {
+    const agentStatus = (v as any).agentStatus ?? 'unknown';
+    const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
+    return agentStatus === 'ok' && isVersionOutdated(codexSdkVersion, codexLatestVersion);
+  }
+
   const totalSleeping = sessions.filter((s) => (s.liveStatus ?? s.status) === 'sleeping').length;
 
   return (
@@ -283,13 +294,20 @@ export default function Sidebar({
             <IconTerminal /><span>Shell</span>
           </button>
         </div>
-        <label className="cs-switch" title="show or hide paused (sleeping) sessions">
-          <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} />
-          <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
-          <span className="cs-switch-label">
-            show paused{totalSleeping > 0 ? <span className="cs-switch-count">{totalSleeping}</span> : null}
-          </span>
-        </label>
+        <div className="cs-switch-row">
+          <label className="cs-switch" title="show or hide paused (sleeping) sessions">
+            <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} />
+            <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
+            <span className="cs-switch-label">
+              show paused{totalSleeping > 0 ? <span className="cs-switch-count">{totalSleeping}</span> : null}
+            </span>
+          </label>
+          <label className="cs-switch" title="show or hide card details (first message, path, age) — off = compact cards">
+            <input type="checkbox" checked={showDetails} onChange={toggleShowDetails} />
+            <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
+            <span className="cs-switch-label">details</span>
+          </label>
+        </div>
       </div>
 
       {sortedFolders.map((folder) => {
@@ -348,17 +366,18 @@ export default function Sidebar({
                   vpsSessions: x.vpsSessions,
                   vpsShells: x.vpsShells,
                   vpsInstall: x.install,
-                  isCollapsed: collapsed.has(x.vps.id),
-                  onToggle: () => toggleCollapsed(x.vps.id),
+                  showDetails,
                   agentOutOfDate: agentOutOfDateOf(x.vps),
                   sdkOutdated: sdkOutdatedOf(x.vps),
                   sdkLatestVersion,
+                  codexOutdated: codexOutdatedOf(x.vps),
+                  codexLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
                   onSelect, onSelectShell, onSelectInstall,
                   onNew, onNewShell, onScan,
                   onContext, onContextShell, onContextInstall,
                   editingId, onRenameSubmit, onRenameCancel,
-                  onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent,
+                  onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
                   updatingAgentVpsIds, refreshingAgentVpsIds,
                 }))}
               </div>
@@ -375,19 +394,22 @@ type VpsRenderOpts = {
   vpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
   vpsInstall: InstallInfo | null;
-  isCollapsed: boolean;
-  onToggle: () => void;
+  // "details" switch — false = compact cards (no preview/cwd/age).
+  showDetails: boolean;
   agentOutOfDate: boolean;
   // The VPS's claude-agent-sdk is older than the PyPI latest (both known).
   sdkOutdated: boolean;
   sdkLatestVersion?: string | null;
+  // Same pair for openai-codex (the codex sdk line, §14.59).
+  codexOutdated: boolean;
+  codexLatestVersion?: string | null;
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
   onSelect: (id: string) => void;
   onSelectShell: (id: string) => void;
   onSelectInstall: (id: string) => void;
-  onNew: (opts: { vpsId?: string; cwd?: string }) => void;
+  onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
@@ -398,6 +420,7 @@ type VpsRenderOpts = {
   onRenameCancel?: () => void;
   onInstallAgent?: (vps: Vps) => void;
   onLoginAgent?: (vps: Vps) => void;
+  onCodexLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
   onRefreshAgent?: (vps: Vps) => void;
   updatingAgentVpsIds?: Set<string>;
@@ -406,14 +429,14 @@ type VpsRenderOpts = {
 
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
-    vpsSessions, vpsShells, vpsInstall, isCollapsed, onToggle, agentOutOfDate,
-    sdkOutdated, sdkLatestVersion,
+    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
+    sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
     onSelect, onSelectShell, onSelectInstall,
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
-    onInstallAgent, onLoginAgent, onUpdateAgent, onRefreshAgent,
+    onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
     updatingAgentVpsIds, refreshingAgentVpsIds,
   } = opts;
 
@@ -421,17 +444,30 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const agentVersion = (v as any).agentVersion as string | undefined;
   const agentPyzSha = (v as any).agentPyzSha as string | undefined;
   const sdkVersion = (v as any).sdkVersion as string | null | undefined;
+  const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
   const agentReady = agentStatus === 'ok';
+  const claudeAv = claudeAvailability(v);
+  const codexAv = codexAvailability(v);
   const agentUpdating = !!updatingAgentVpsIds?.has(v.id);
   const agentRefreshing = !!refreshingAgentVpsIds?.has(v.id);
   const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
-  // ONE update surface for both staleness kinds (pyz and/or SDK) — the update
-  // button repairs both in a single flow (redeploy pyz + pip install -U).
-  const outdated = agentOutOfDate || sdkOutdated;
+  // ONE update surface for every staleness axis (pyz, claude SDK, codex SDK) —
+  // the update button repairs all three in a single flow (redeploy pyz +
+  // pip install -U claude-agent-sdk + openai-codex).
+  const outdated = agentOutOfDate || sdkOutdated || codexOutdated;
   const sdkTip = sdkVersion
-    ? (sdkOutdated && sdkLatestVersion ? ` — SDK ${sdkVersion} → ${sdkLatestVersion}` : ` — SDK ${sdkVersion}`)
+    ? (sdkOutdated && sdkLatestVersion ? ` — claude sdk ${sdkVersion} → ${sdkLatestVersion}` : ` — claude sdk ${sdkVersion}`)
     : '';
-  const agentTip = `${agentMeta.label}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${agentOutOfDate ? ' — agent update available' : ''}`;
+  const codexTip = codexSdkVersion
+    ? (codexOutdated && codexLatestVersion ? ` — codex sdk ${codexSdkVersion} → ${codexLatestVersion}` : ` — codex sdk ${codexSdkVersion}`)
+    : '';
+  // Classified failure (vps.agentLastError → 'ssh-auth' | 'ssh-unreachable' |
+  // 'daemon-down' | 'error') — refines the error bar + tooltips below.
+  const { code: errCode, detail: errDetail } = parseAgentLastError(v);
+  const errTip = agentStatus === 'error' && (errCode || errDetail)
+    ? ` — ${[errCode, errDetail].filter(Boolean).join(': ')}`
+    : '';
+  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}${agentOutOfDate ? ' — agent update available' : ''}`;
   const noAgentReason = agentStatus === 'missing'
     ? 'install the agent first'
     : agentStatus === 'error'
@@ -439,18 +475,59 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     : 'agent not yet verified — click "install agent"';
   const installRunning = vpsInstall?.status === 'running';
 
+  // Shared head elements — placed inline (details ON) or on their own
+  // right-aligned second row (details OFF = compact head).
+  const dotEl = (
+    <span className={`cs-vps-dot agent-${agentStatus}${outdated ? ' outdated' : ''}`} title={agentTip}>
+      {agentMeta.glyph}
+    </span>
+  );
+  const historyBtn = (
+    <button
+      className="cs-icon-btn"
+      onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
+      disabled={!agentReady}
+      title={agentReady ? 'scan existing Claude sessions (import)' : `history unavailable — ${noAgentReason}`}
+      aria-label="history"
+    ><IconClockHistory /></button>
+  );
+  const addBtns = (
+    <div className="cs-add">
+      {/* Two backends: Claude + Codex, each greyed by its own availability.
+          A greyed button explains why in the tooltip. cf. migration-codex.md. */}
+      <button
+        className="cs-add-btn agent"
+        onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: 'claude' }); }}
+        disabled={!claudeAv.ok}
+        title={claudeAv.reason}
+        aria-label="new Claude agent"
+      ><AgentLogo kind="claude" size={14} /></button>
+      <button
+        className="cs-add-btn agent codex"
+        onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: 'codex' }); }}
+        disabled={!codexAv.ok}
+        title={codexAv.reason}
+        aria-label="new Codex agent"
+      ><AgentLogo kind="codex" size={14} /></button>
+      <button
+        className="cs-add-btn shell"
+        onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
+        title="new SSH shell on this VPS"
+        aria-label="new shell"
+      ><IconTerminal /></button>
+    </div>
+  );
+
+  const hostLabel = `${v.sshUser}@${v.ip}${v.sshPort !== 22 ? `:${v.sshPort}` : ''}`;
+
   return (
-    <section key={v.id} className={`cs-vps agent-${agentStatus}${isCollapsed ? ' collapsed' : ''}`}>
+    <section key={v.id} className={`cs-vps agent-${agentStatus}${showDetails ? '' : ' compact'}`}>
+      {showDetails ? (
       <div className="cs-vps-head">
-        <button className="cs-caret btn" onClick={onToggle} title={isCollapsed ? 'expand' : 'collapse'}>
-          {isCollapsed ? '▸' : '▾'}
-        </button>
-        <span className={`cs-vps-dot agent-${agentStatus}${outdated ? ' outdated' : ''}`} title={agentTip}>
-          {agentMeta.glyph}
-        </span>
+        {dotEl}
         <span className="cs-vps-id">
           <span className="cs-vps-name">{v.name}</span>
-          <span className="cs-vps-ip">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
+          <span className="cs-vps-ip">{hostLabel}</span>
           {/* Agent + SDK versions — always visible under root@… (mobile + web),
               so the fleet's versions are legible at a glance. TWO stacked lines
               (the single `agent … · sdk …` line got ellipsis-cropped in the
@@ -464,38 +541,44 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 ? 'agent not installed'
                 : 'agent —'}
           </span>
+          {/* Per-backend SDK lines, differentiated by the mini agent logo:
+              claude-agent-sdk vs openai-codex, each amber for ITS OWN
+              staleness (vs the PyPI latest). */}
           {sdkVersion && (
-            <span className={`cs-vps-ver${sdkOutdated ? ' outdated' : ''}`} title={agentTip}>
+            <span className={`cs-vps-ver sdkline${sdkOutdated ? ' outdated' : ''}`} title={agentTip}>
+              <AgentLogo kind="claude" size={10} title="claude-agent-sdk" />
               {`sdk ${sdkVersion}`}
             </span>
           )}
+          {codexSdkVersion && (
+            <span className={`cs-vps-ver sdkline${codexOutdated ? ' outdated' : ''}`} title={agentTip}>
+              <AgentLogo kind="codex" size={10} title="openai-codex" />
+              {`sdk ${codexSdkVersion}`}
+            </span>
+          )}
         </span>
-        <button
-          className="cs-icon-btn"
-          onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
-          disabled={!agentReady}
-          title={agentReady ? 'scan existing Claude sessions (import)' : `history unavailable — ${noAgentReason}`}
-          aria-label="history"
-        ><IconClockHistory /></button>
-        <div className="cs-add">
-          <button
-            className="cs-add-btn agent"
-            onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id }); }}
-            disabled={!agentReady}
-            title={agentReady ? 'new Claude agent on this VPS' : `new session unavailable — ${noAgentReason}`}
-            aria-label="new Claude agent"
-          ><IconRobot /></button>
-          <button
-            className="cs-add-btn shell"
-            onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
-            title="new SSH shell on this VPS"
-            aria-label="new shell"
-          ><IconTerminal /></button>
+        {historyBtn}
+        {addBtns}
+      </div>
+      ) : (
+      /* Compact head ("details" switch OFF): dot + name on the first line,
+         the 4 action buttons on a second right-aligned row. Host + versions
+         move to the tooltip (the dot keeps the full agentTip too). */
+      <div className="cs-vps-head compact">
+        <div className="cs-vps-row1">
+          {dotEl}
+          <span className="cs-vps-id" title={`${hostLabel} — ${agentTip}`}>
+            <span className="cs-vps-name">{v.name}</span>
+          </span>
+        </div>
+        <div className="cs-vps-actions">
+          {historyBtn}
+          {addBtns}
         </div>
       </div>
+      )}
 
-      {!isCollapsed && (
-        <div className="cs-vps-body">
+      <div className="cs-vps-body">
           {/* Agent status / action bar — only when there's something to do. */}
           {installRunning ? null : agentStatus === 'missing' || agentStatus === 'unknown' ? (
             <div className="cs-agent-bar warn">
@@ -505,25 +588,36 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
               )}
             </div>
           ) : agentStatus === 'error' ? (
+            // Classified error (vps.agentLastError): say WHICH layer is broken.
+            // ssh-level → no "reinstall" (bootstrap can't run without SSH).
             <div className="cs-agent-bar err">
-              <span className="cs-agent-meta">agent unreachable</span>
+              <span className="cs-agent-meta" title={errDetail ?? undefined}>
+                {errCode === 'ssh-unreachable' ? 'vps unreachable (ssh)'
+                  : errCode === 'ssh-auth' ? 'ssh key refused'
+                  : errCode === 'daemon-down' ? 'agent stopped'
+                  : 'agent unreachable'}
+              </span>
               {onRefreshAgent && (
                 <button className="cs-agent-btn primary" disabled={agentRefreshing} onClick={() => onRefreshAgent(v)}>
-                  {agentRefreshing ? '⟳ refreshing…' : '↻ refresh'}
+                  {agentRefreshing ? '⟳ refreshing…' : errCode === 'daemon-down' ? '↻ start' : '↻ refresh'}
                 </button>
               )}
-              {onInstallAgent && (
+              {onInstallAgent && errCode !== 'ssh-unreachable' && errCode !== 'ssh-auth' && (
                 <button className="cs-agent-btn" disabled={agentRefreshing} onClick={() => onInstallAgent(v)}>reinstall</button>
               )}
             </div>
           ) : outdated ? (
             <div className="cs-agent-bar update">
               <span className="cs-agent-meta">
-                {sdkOutdated && !agentOutOfDate
-                  ? `SDK ${sdkVersion} → ${sdkLatestVersion}`
-                  : sdkOutdated
-                    ? `${agentVersion ? `v${agentVersion} · ` : ''}agent + SDK update`
-                    : `${agentVersion ? `v${agentVersion} · ` : ''}update available`}
+                {!agentOutOfDate && sdkOutdated && !codexOutdated
+                  ? `claude sdk ${sdkVersion} → ${sdkLatestVersion}`
+                  : !agentOutOfDate && codexOutdated && !sdkOutdated
+                    ? `codex sdk ${codexSdkVersion} → ${codexLatestVersion}`
+                    : !agentOutOfDate && sdkOutdated && codexOutdated
+                      ? 'sdk updates (claude + codex)'
+                      : (sdkOutdated || codexOutdated)
+                        ? `${agentVersion ? `v${agentVersion} · ` : ''}agent + SDK update`
+                        : `${agentVersion ? `v${agentVersion} · ` : ''}update available`}
               </span>
               {onUpdateAgent && (
                 <button className="cs-agent-btn update" disabled={agentUpdating} onClick={() => onUpdateAgent(v)}>
@@ -531,14 +625,30 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 </button>
               )}
             </div>
-          ) : (v as any).claudeLoggedIn !== 1 && onLoginAgent ? (
-            <div className="cs-agent-bar warn">
-              <span className="cs-agent-meta">{agentVersion ? `v${agentVersion} · ` : ''}not signed in</span>
-              <button className="cs-agent-btn" onClick={() => onLoginAgent(v)}>
-                <span className="cs-btn-ico"><IconRobot /></span> claude login
-              </button>
-            </div>
-          ) : null}
+          ) : (
+            // Sign-in bars — one per backend, INDEPENDENT (a VPS can need
+            // both): Claude → PTY LoginConsole; Codex → device-code modal
+            // (§14.61). Codex bar only when openai-codex is confirmed
+            // installed AND login confirmed absent (0, not null).
+            <>
+              {(v as any).claudeLoggedIn !== 1 && onLoginAgent && (
+                <div className="cs-agent-bar warn">
+                  <span className="cs-agent-meta">{agentVersion ? `v${agentVersion} · ` : ''}claude not signed in</span>
+                  <button className="cs-agent-btn" onClick={() => onLoginAgent(v)}>
+                    <span className="cs-btn-ico"><IconRobot /></span> claude login
+                  </button>
+                </div>
+              )}
+              {(v as any).codexAvailable === 1 && (v as any).codexLoggedIn === 0 && onCodexLoginAgent && (
+                <div className="cs-agent-bar warn">
+                  <span className="cs-agent-meta">codex not signed in</span>
+                  <button className="cs-agent-btn" onClick={() => onCodexLoginAgent(v)}>
+                    <span className="cs-btn-ico"><AgentLogo kind="codex" size={12} /></span> codex login
+                  </button>
+                </div>
+              )}
+            </>
+          )}
 
           {/* Install session row (running / finished, reopenable). */}
           {vpsInstall && (
@@ -554,6 +664,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             <SessionRow
               key={s.id} s={s}
               selected={s.id === selectedId}
+              showDetails={showDetails}
               onSelect={onSelect}
               onContext={onContext}
               editing={editingId === s.id}
@@ -565,6 +676,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             <ShellRow
               key={sh.id} sh={sh}
               selected={sh.id === selectedShellId}
+              showDetails={showDetails}
               onSelect={onSelectShell}
               onContext={onContextShell}
             />
@@ -573,8 +685,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           {vpsSessions.length === 0 && vpsShells.length === 0 && !installRunning && (
             <div className="cs-empty">no session — use ＋ to start one</div>
           )}
-        </div>
-      )}
+      </div>
     </section>
   );
 }
@@ -626,9 +737,10 @@ const STATUS_TEXT: Record<string, string> = {
   error: 'error',
 };
 
-function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit, onRenameCancel }: {
+function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel }: {
   s: SessionListItem;
   selected: boolean;
+  showDetails: boolean;
   onSelect: (id: string) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editing?: boolean;
@@ -668,7 +780,7 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
     <button
       type="button"
       data-tab-id={s.id}
-      className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}`}
+      className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       onClick={() => { if (lp.consume()) return; onSelect(s.id); }}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
       {...lp.handlers}
@@ -679,7 +791,7 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
       <span className="cs-card-stripe" />
       <div className="cs-card-top">
         <span className={`dot ${dotClass}`} />
-        <span className="cs-card-glyph"><IconRobot /></span>
+        <span className="cs-card-glyph"><AgentLogo kind={(s.kind as AgentKind) ?? 'claude'} size={14} /></span>
         <span className="cs-card-name">{headline}</span>
         {unread && (
           <span className="cs-unread" title="finished — unread (open to clear)">✓</span>
@@ -692,18 +804,21 @@ function SessionRow({ s, selected, onSelect, onContext, editing, onRenameSubmit,
         )}
         <span className={`cs-state ${effective}`}>{STATUS_TEXT[effective] ?? effective}</span>
       </div>
-      {showPreview && <div className="cs-card-preview">{preview}</div>}
-      <div className="cs-card-foot">
-        <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
-        {age && <span className="cs-card-age" suppressHydrationWarning>{age}</span>}
-      </div>
+      {showDetails && showPreview && <div className="cs-card-preview">{preview}</div>}
+      {showDetails && (
+        <div className="cs-card-foot">
+          <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
+          {age && <span className="cs-card-age" suppressHydrationWarning>{age}</span>}
+        </div>
+      )}
     </button>
   );
 }
 
-function ShellRow({ sh, selected, onSelect, onContext }: {
+function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
   sh: ShellListItem;
   selected: boolean;
+  showDetails: boolean;
   onSelect: (id: string) => void;
   onContext?: (sh: ShellListItem, x: number, y: number) => void;
 }) {
@@ -716,7 +831,7 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
     <button
       type="button"
       data-tab-id={sh.id}
-      className={`cs-card shell${selected ? ' selected' : ''}${sh.exited ? ' is-sleeping' : ''}`}
+      className={`cs-card shell${selected ? ' selected' : ''}${sh.exited ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       onClick={() => { if (lp.consume()) return; onSelect(sh.id); }}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(sh, e.clientX, e.clientY); }}
       {...lp.handlers}
@@ -732,10 +847,12 @@ function ShellRow({ sh, selected, onSelect, onContext }: {
           {sh.exited ? 'ended' : sh.liveStatus === 'busy' ? 'busy' : 'idle'}
         </span>
       </div>
-      <div className="cs-card-foot">
-        <span className="cs-card-cwd">{cwdShort}</span>
-        {age && <span className="cs-card-age">{age}</span>}
-      </div>
+      {showDetails && (
+        <div className="cs-card-foot">
+          <span className="cs-card-cwd">{cwdShort}</span>
+          {age && <span className="cs-card-age">{age}</span>}
+        </div>
+      )}
     </button>
   );
 }

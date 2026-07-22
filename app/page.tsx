@@ -5,7 +5,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { asc, desc } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
-import { getSdkLatestVersion, refreshSdkLatestIfStale } from '@/lib/server/claude/sdkSync';
+import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale } from '@/lib/server/claude/sdkSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +29,8 @@ export default async function CharonPage() {
   // badges. Kick a background refresh when stale (12h TTL, fire-and-forget).
   const sdkLatestVersion = getSdkLatestVersion();
   refreshSdkLatestIfStale();
+  const codexLatestVersion = getCodexLatestVersion();
+  refreshCodexLatestIfStale();
 
   return (
     <ClaudePanel
@@ -38,6 +40,7 @@ export default async function CharonPage() {
       initialSessions={sessionRows}
       builtPyzSha={builtPyzSha}
       sdkLatestVersion={sdkLatestVersion}
+      codexLatestVersion={codexLatestVersion}
     />
   );
 }

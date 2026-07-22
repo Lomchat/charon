@@ -5,7 +5,7 @@ import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
 import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
 import { ensureShellIdleWatch } from './shellNotify';
-import { armUsageWatch } from './usagePoll';
+import { armUsageWatch, armCodexUsageWatch } from './usagePoll';
 import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
 import type { AgentClient } from './AgentClient';
 import type { Vps } from '@/lib/db/schema';
@@ -40,6 +40,11 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
     // Account-usage gauges (§14.58): immediate poll on connect + a steady
     // interval. Idempotent per vpsId; self-gates on claudeLoggedIn.
     armUsageWatch(vpsId);
+    // Codex account-usage gauges — only for VPSes that run Codex. We read the
+    // agent's LIVE hello (set before the DB persist → correct on the very first
+    // connect too), not the DB row. Idempotent per vpsId; the poll self-gates on
+    // codex_available + login. cf. CLAUDE.md §14.58 / migration-codex.md.
+    if (hello.codex_available) armCodexUsageWatch(vpsId);
     try {
       const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
       if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});

@@ -1,7 +1,8 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
-import type { SessionListItem, ClaudeEffortLevel } from '@/lib/types/api';
+import type { SessionListItem, AgentKind, CodexSandboxMode } from '@/lib/types/api';
+import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
 import Message, { type Msg, summarizeToolInput } from './Message';
@@ -16,6 +17,12 @@ import type {
 import { useClaudeSessionStream, type StreamCache } from './useClaudeSessionStream';
 import ModelPicker from './ModelPicker';
 import EffortPicker from './EffortPicker';
+import CodexModelPicker from './CodexModelPicker';
+import CodexEffortPicker from './CodexEffortPicker';
+import AgentLogo from './AgentLogo';
+
+// A session's mode is a Claude permission mode OR a Codex sandbox level.
+type SessionMode = PermissionMode | CodexSandboxMode;
 import {
   getCached, fetchAndCache, invalidate as invalidateCache,
   extendWithOlder as extendCacheWithOlder,
@@ -100,6 +107,13 @@ export default function ClaudeSessionView({
     respondPermission, respondQuestion, respondExitPlan,
     clearPrefillInput, loadMoreHistory, clearError,
   } = stream;
+
+  // Backend of this session (Claude vs Codex). Drives the mode selector
+  // (permission modes vs sandbox levels), the model/effort pickers, the
+  // per-message logo, the diff rendering, and whether a config change shows the
+  // deferred "apply now ↻" badge (Codex applies on the next turn → no badge).
+  const sessionKind: AgentKind = (selected.kind as AgentKind) === 'codex' ? 'codex' : 'claude';
+  const vpsId = selectedVps?.id ?? '';
 
   // ── Local UI state (scroll, error details) ────────────────────────────────
   // NOTE: the textarea `input` state now lives inside <ChatInputBar> (isolated
@@ -251,6 +265,11 @@ export default function ClaudeSessionView({
   // `isAtTop` = at the ABSOLUTE top (used to decide whether the ↑ button
   // should disappear; it stays as long as there's something to scroll back up to).
   const [isAtTop, setIsAtTop] = useState(false);
+  // Top-center "⤒ message start" pill: shown when the NEWEST chat bubble is an
+  // assistant message (typically the long end-of-turn recap) whose TOP is
+  // scrolled out of view above — i.e. the user is inside/below a long final
+  // message and wants to jump back to its beginning.
+  const [showJumpToMsgStart, setShowJumpToMsgStart] = useState(false);
   const handleChatScroll = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
@@ -270,6 +289,19 @@ export default function ClaudeSessionView({
       loadMoreHistory();
     }
     setIsAtTop(max <= 0 || distFromTop < 4);
+    // Jump-to-message-start pill visibility. In column-reverse the FIRST
+    // [data-msg-role] element in DOM order is the newest user/assistant
+    // bubble (tool/thinking cards don't carry the attribute — irrelevant
+    // here). Show only when that bubble is an assistant one AND its top sits
+    // >4px above the visible top (start of the message out of view). Cheap:
+    // querySelector stops at the first match, which is near the DOM start.
+    const newest = el.querySelector<HTMLElement>('[data-msg-role]');
+    let jumpable = false;
+    if (newest && newest.dataset.msgRole === 'assistant') {
+      const gap = el.getBoundingClientRect().top - newest.getBoundingClientRect().top;
+      jumpable = gap > 4;
+    }
+    setShowJumpToMsgStart(jumpable);
   }, [hasMore, isLoadingMore, loadMoreHistory]);
   // Recompute isAtTop when the content changes (new messages → max moves).
   useEffect(() => { handleChatScroll(); }, [messages.length, handleChatScroll]);
@@ -325,6 +357,35 @@ export default function ClaudeSessionView({
   //   - not at the ABSOLUTE visual top, OR
   //   - there's still history left to paginate (hasMore || isLoadingMore).
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
+
+  // ── Jump to the start of the last (assistant) message ─────────────────
+  // Fast deterministic scroll (~240ms ease-out) instead of native
+  // scrollIntoView({behavior:'smooth'}): a long recap means a multi-thousand-px
+  // hop, and native smooth is slow/inconsistent across browsers for that.
+  // Absolute scrollTop math is sign-agnostic (Chrome AND Firefox use negative
+  // scrollTop in column-reverse; the delta is continuous either way), and
+  // appended older pages (visual top = DOM end) don't shift existing
+  // coordinates, so the animation stays stable even if loadMore fires.
+  const onJumpToMsgStart = useCallback(() => {
+    const el = chatBodyRef.current;
+    if (!el) return;
+    const bubble = el.querySelector<HTMLElement>('[data-msg-role="assistant"]');
+    if (!bubble) return;
+    const start = el.scrollTop;
+    // Land with the bubble's top 8px below the container top (breathing room;
+    // also puts the post-jump gap at -8 < 4 → the pill auto-hides).
+    const delta = bubble.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+    if (Math.abs(delta) < 2) return;
+    const t0 = performance.now();
+    const DURATION = 240;
+    const step = (now: number) => {
+      const p = Math.min(1, (now - t0) / DURATION);
+      const ease = 1 - Math.pow(1 - p, 3); // ease-out cubic
+      el.scrollTop = start + delta * ease;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, []);
 
   // Count new messages when the user is NOT at the bottom, for the ↓ N pill.
   useEffect(() => {
@@ -384,6 +445,7 @@ export default function ClaudeSessionView({
             they're following the global default.
           */}
           <ModelEffortBadges
+            kind={sessionKind} vpsId={vpsId}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
@@ -450,10 +512,10 @@ export default function ClaudeSessionView({
             ) : (
               <>
                 {currentAssistant && (
-                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming />
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} />
                 )}
                 {[...renderable].reverse().map(({ msg, attached }) => (
-                  <Message key={msg.id} m={msg} attachedResult={attached} />
+                  <Message key={msg.id} m={msg} attachedResult={attached} kind={sessionKind} />
                 ))}
                 {/* "Loading older" / "start of history" indicator.
                     In column-reverse, the last DOM child renders visually at
@@ -473,6 +535,20 @@ export default function ClaudeSessionView({
               </>
             )}
           </div>
+          {/* Top-center pill: jump to the START of the last assistant message
+              (the long end-of-turn recap). Only when the turn is over (not
+              thinking/starting) and the message start is scrolled out of view. */}
+          {showJumpToMsgStart && status !== 'thinking' && status !== 'starting' && (
+            <button
+              type="button"
+              className="claude-jump-msg-start-pill"
+              onClick={onJumpToMsgStart}
+              aria-label="scroll to the start of the last message"
+              title="scroll to the start of the last message"
+            >
+              <span className="claude-scroll-arrow">⤒</span> scroll to start
+            </button>
+          )}
           {/* Fixed area for the scroll buttons. The ↓ pill may disappear
               (when at the bottom), but the ↑ button keeps its fixed position
               above, independently. */}
@@ -502,7 +578,7 @@ export default function ClaudeSessionView({
         </div>
 
         {status === 'thinking' && (
-          <ThinkingBar currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} tokens={liveUsage?.output ?? null} />
+          <ThinkingBar label={sessionKind === 'codex' ? 'Codex is thinking' : 'Claude is thinking'} currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} tokens={liveUsage?.output ?? null} />
         )}
 
         {/* Background tasks (Bash run_in_background / bg subagents): slim
@@ -542,6 +618,7 @@ export default function ClaudeSessionView({
         ) : (
           <ChatInputBar
             sessionId={sessionId}
+            kind={sessionKind}
             permissionMode={permissionMode}
             onSetMode={setMode}
             onSend={streamSend}
@@ -553,6 +630,7 @@ export default function ClaudeSessionView({
 
       <ToolPanel
         sessionId={sessionId}
+        kind={sessionKind}
         toolCalls={toolCalls}
         todos={todos}
         edits={edits}
@@ -573,16 +651,24 @@ export default function ClaudeSessionView({
 // long sessions lagged by seconds. Memoized too, so a parent re-render
 // (new message, status change) doesn't needlessly re-render it either.
 // See CLAUDE.md §11 / §14.
+const CODEX_MODE_META: Record<CodexSandboxMode, { glyph: string; label: string; title: string }> = {
+  'read-only': { glyph: '⊘', label: 'read only', title: 'read-only — can read files & run read-only commands; no writes' },
+  'workspace-write': { glyph: '✎', label: 'workspace', title: 'workspace write — can edit files in the workspace; network off by default' },
+  'full-access': { glyph: '⚡', label: 'full access', title: 'full access — no sandbox, full file & network access (DANGER)' },
+};
+
 const ChatInputBar = memo(function ChatInputBar({
-  sessionId, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
+  sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
 }: {
   sessionId: string;
-  permissionMode: PermissionMode;
-  onSetMode: (mode: PermissionMode) => void;
+  kind: AgentKind;
+  permissionMode: SessionMode;
+  onSetMode: (mode: SessionMode) => void;
   onSend: (content: string) => Promise<void>;
   prefillInput: string | null;
   clearPrefillInput: () => void;
 }) {
+  const isCodex = kind === 'codex';
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
@@ -608,48 +694,70 @@ const ChatInputBar = memo(function ChatInputBar({
 
   return (
     <footer className="claude-input-bar">
-      <div className="mode-switch" role="radiogroup" aria-label="permission mode">
-        <button
-          type="button" role="radio"
-          aria-checked={permissionMode === 'normal'}
-          className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
-          onClick={() => onSetMode('normal')}
-          title="normal — asks permission for every tool"
-        >
-          <span className="m-glyph">▷</span><span className="m-label">normal</span>
-        </button>
-        <button
-          type="button" role="radio"
-          aria-checked={permissionMode === 'acceptEdits'}
-          className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
-          onClick={() => onSetMode('acceptEdits')}
-          title="accept edits — auto-accepts file edits, asks for the rest"
-        >
-          <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
-        </button>
-        <button
-          type="button" role="radio"
-          aria-checked={permissionMode === 'auto'}
-          className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
-          onClick={() => onSetMode('auto')}
-          title="accept all — accepts everything without asking (DANGER)"
-        >
-          <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
-        </button>
-        <button
-          type="button" role="radio"
-          aria-checked={permissionMode === 'plan'}
-          className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
-          onClick={() => onSetMode('plan')}
-          title="plan mode — proposes a plan without running tools"
-        >
-          <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
-        </button>
-      </div>
+      {isCodex ? (
+        // Codex has no interactive approval — its "mode" is a sandbox level
+        // (the guardrail). Change applies on the next turn. cf. migration-codex.md.
+        <div className="mode-switch codex" role="radiogroup" aria-label="sandbox mode">
+          {CODEX_SANDBOX_MODES.map((m) => {
+            const meta = CODEX_MODE_META[m];
+            return (
+              <button
+                key={m}
+                type="button" role="radio"
+                aria-checked={permissionMode === m}
+                className={`m-btn ${m}${permissionMode === m ? ' on' : ''}`}
+                onClick={() => onSetMode(m)}
+                title={meta.title}
+              >
+                <span className="m-glyph">{meta.glyph}</span><span className="m-label">{meta.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="mode-switch" role="radiogroup" aria-label="permission mode">
+          <button
+            type="button" role="radio"
+            aria-checked={permissionMode === 'normal'}
+            className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
+            onClick={() => onSetMode('normal')}
+            title="normal — asks permission for every tool"
+          >
+            <span className="m-glyph">▷</span><span className="m-label">normal</span>
+          </button>
+          <button
+            type="button" role="radio"
+            aria-checked={permissionMode === 'acceptEdits'}
+            className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
+            onClick={() => onSetMode('acceptEdits')}
+            title="accept edits — auto-accepts file edits, asks for the rest"
+          >
+            <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
+          </button>
+          <button
+            type="button" role="radio"
+            aria-checked={permissionMode === 'auto'}
+            className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
+            onClick={() => onSetMode('auto')}
+            title="accept all — accepts everything without asking (DANGER)"
+          >
+            <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
+          </button>
+          <button
+            type="button" role="radio"
+            aria-checked={permissionMode === 'plan'}
+            className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
+            onClick={() => onSetMode('plan')}
+            title="plan mode — proposes a plan without running tools"
+          >
+            <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
+          </button>
+        </div>
+      )}
       <textarea
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        placeholder="message to Claude (Enter sends, Shift/Ctrl+Enter for newline)"
+        placeholder={`message to ${isCodex ? 'Codex' : 'Claude'} (Enter sends, Shift/Ctrl+Enter for newline)`}
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return;
           if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -686,12 +794,13 @@ function InlinePermissionCard({ perm, onRespond }: {
 }
 
 function ThinkingBar({
-  currentTool, stepCount, startedAt, tokens,
+  currentTool, stepCount, startedAt, tokens, label = 'Claude is thinking',
 }: {
   currentTool: ToolCallEntry | null;
   stepCount: number;
   startedAt: number | null;
   tokens: number | null;
+  label?: string;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -703,7 +812,7 @@ function ThinkingBar({
   return (
     <div className="thinking-bar">
       <span className="t-dot" />
-      <span className="t-label">Claude is thinking</span>
+      <span className="t-label">{label}</span>
       {currentTool && (
         <span className="t-tool">
           <span className="sep">·</span>
@@ -755,15 +864,20 @@ function fmtTokens(n: number): string {
  * That fork capability isn't wired up yet; for now we just warn.
  */
 function ModelEffortBadges({
+  kind, vpsId,
   model, fallbackModel, effort,
   modelPendingApply, effortPendingApply,
   effectiveModel,
   claudeSessionId,
   onSetModel, onSetEffort, onApplyNow,
 }: {
+  /** Session backend — Codex sources its own per-VPS catalog, has no fallback
+   *  model, and applies changes on the next turn (no deferred badge). */
+  kind: AgentKind;
+  vpsId: string;
   model: string | null;
   fallbackModel: string | null;
-  effort: ClaudeEffortLevel | null;
+  effort: string | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
   /** Model id Anthropic actually billed for the last AssistantMessage.
@@ -779,18 +893,19 @@ function ModelEffortBadges({
    *  Anthropic session. */
   claudeSessionId: string | null;
   onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
-  onSetEffort: (e: ClaudeEffortLevel | null) => Promise<void>;
+  onSetEffort: (e: string | null) => Promise<void>;
   /** In-place SDK restart (awaited sleep + resume) — shown as a ↻ "apply
-   *  now" button when a model/effort change is pending (§14.35). */
+   *  now" button when a model/effort change is pending (§14.35). Claude only. */
   onApplyNow?: () => Promise<void> | void;
 }) {
+  const isCodex = kind === 'codex';
   const [open, setOpen] = useState(false);
   // Local edit buffers — only committed on Save so a half-typed model
   // doesn't fire an RPC per keystroke (the SDK would log an error per
   // unrecognized intermediate string). Resets on open from current state.
   const [draftModel, setDraftModel] = useState(model ?? '');
   const [draftFallback, setDraftFallback] = useState(fallbackModel ?? '');
-  const [draftEffort, setDraftEffort] = useState<'' | ClaudeEffortLevel>(effort ?? '');
+  const [draftEffort, setDraftEffort] = useState<string>(effort ?? '');
   const [saving, setSaving] = useState(false);
   // "apply now" (↻) in flight — the restart takes a few seconds (SDK
   // teardown drains the in-flight turn, then the fresh client boots).
@@ -829,8 +944,9 @@ function ModelEffortBadges({
       // changed. Server-side dedup in setModel skips the RPC if nothing
       // moved, so this is free.
       const nextModel = draftModel.trim() || null;
-      const nextFallback = draftFallback.trim() || null;
-      const nextEffort = (draftEffort as string) === '' ? null : (draftEffort as ClaudeEffortLevel);
+      // Codex has no fallback model — always submit null so it can't leak in.
+      const nextFallback = isCodex ? null : (draftFallback.trim() || null);
+      const nextEffort = draftEffort === '' ? null : draftEffort;
       if (nextModel !== (model ?? null) || nextFallback !== (fallbackModel ?? null)) {
         await onSetModel(nextModel, nextFallback);
       }
@@ -854,20 +970,23 @@ function ModelEffortBadges({
   // Mismatch is genuinely interesting (= configured differs from what
   // Anthropic billed). Could mean: alias resolved (opus → opus-4-8) which
   // is benign; or session bound to old model so configured swap was ignored
-  // — that's the gotcha §35 footgun and worth a stronger color.
-  const mismatch = !!model && !!effectiveModel && effectiveModel !== model
+  // — that's the gotcha §35 footgun and worth a stronger color. Claude-only
+  // (the binding caveat is Anthropic-side; Codex has no such trap).
+  const mismatch = !isCodex && !!model && !!effectiveModel && effectiveModel !== model
     && !(['opus', 'sonnet', 'haiku'].includes(model)); // aliases legitimately resolve to a different id
-  const anyPending = modelPendingApply || effortPendingApply;
+  // Codex applies model/effort/mode on the NEXT TURN (the *_changed events
+  // carry applied_at_next_start=false) → never show the deferred ⏳ / ↻ badge.
+  const anyPending = !isCodex && (modelPendingApply || effortPendingApply);
   const titleParts: string[] = [];
   titleParts.push(`configured model: ${model ?? '(global default)'}`);
-  if (fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
+  if (!isCodex && fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
   if (effectiveModel) titleParts.push(`effective (API-confirmed): ${effectiveModel}`);
   titleParts.push(`effort: ${effort ?? '(global default)'}`);
   if (mismatch) titleParts.push(
     '⚠ effective model differs from configured — likely bound to original model_id on Anthropic side'
   );
   if (anyPending) titleParts.push('change pending — applies at next sleep+resume');
-  const title = titleParts.join('\n');
+  const title = `${isCodex ? 'Codex' : 'Claude'} session\n${titleParts.join('\n')}`;
 
   return (
     <span className="me-badges" style={{ position: 'relative', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
@@ -895,8 +1014,12 @@ function ModelEffortBadges({
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
         }}
       >
+        <AgentLogo kind={kind} size={13} />
         {modelLabel} · {effortLabel}
         {showEffective && (
           // Effective chip: small, dimmer when it's just an alias resolution,
@@ -966,10 +1089,13 @@ function ModelEffortBadges({
             boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
           }}
         >
-          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>
-            Per-session Claude config — applies at next sleep + resume.
+          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
+            <AgentLogo kind={kind} size={13} />
+            {isCodex
+              ? 'Per-session Codex config — applies on the next turn.'
+              : 'Per-session Claude config — applies at next sleep + resume.'}
           </div>
-          {claudeSessionId && (draftModel !== (model ?? '')) && (
+          {!isCodex && claudeSessionId && (draftModel !== (model ?? '')) && (
             <div
               style={{
                 fontSize: 10.5,
@@ -991,33 +1117,57 @@ function ModelEffortBadges({
           )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>model</span>
-            <ModelPicker
-              value={draftModel}
-              onChange={setDraftModel}
-              inheritPlaceholder="global default"
-              className="model-picker-popover"
-            />
+            {isCodex ? (
+              <CodexModelPicker
+                vpsId={vpsId}
+                value={draftModel}
+                onChange={setDraftModel}
+                inheritPlaceholder="Codex default"
+                className="model-picker-popover"
+              />
+            ) : (
+              <ModelPicker
+                value={draftModel}
+                onChange={setDraftModel}
+                inheritPlaceholder="global default"
+                className="model-picker-popover"
+              />
+            )}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
-            <ModelPicker
-              value={draftFallback}
-              onChange={setDraftFallback}
-              inheritPlaceholder="none"
-              className="model-picker-popover"
-            />
-          </label>
+          {/* Codex has no fallback-model concept — hide the control entirely. */}
+          {!isCodex && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
+              <ModelPicker
+                value={draftFallback}
+                onChange={setDraftFallback}
+                inheritPlaceholder="none"
+                className="model-picker-popover"
+              />
+            </label>
+          )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontFamily: 'var(--mono)' }}>effort</span>
             {/* Options derived from the model being set (draft, else current)
-               via the live catalog. See EffortPicker. */}
-            <EffortPicker
-              value={draftEffort}
-              onChange={(v) => setDraftEffort(v as '' | ClaudeEffortLevel)}
-              modelId={draftModel || model || ''}
-              inheritPlaceholder="global default"
-              className="model-picker-popover"
-            />
+               via the live catalog. See EffortPicker / CodexEffortPicker. */}
+            {isCodex ? (
+              <CodexEffortPicker
+                vpsId={vpsId}
+                value={draftEffort}
+                onChange={setDraftEffort}
+                modelId={draftModel || model || ''}
+                inheritPlaceholder="Codex default"
+                className="model-picker-popover"
+              />
+            ) : (
+              <EffortPicker
+                value={draftEffort}
+                onChange={setDraftEffort}
+                modelId={draftModel || model || ''}
+                inheritPlaceholder="global default"
+                className="model-picker-popover"
+              />
+            )}
           </label>
           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
             <button type="button" onClick={() => setOpen(false)} disabled={saving}>cancel</button>

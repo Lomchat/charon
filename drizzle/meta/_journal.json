@@ -148,6 +148,20 @@
       "when": 1783851054172,
       "tag": "0020_brainy_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1784670313774,
+      "tag": "0021_shiny_vampiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1784708026320,
+      "tag": "0022_stormy_kitty_pryde",
+      "breakpoints": true
     }
   ]
 }

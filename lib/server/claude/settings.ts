@@ -33,6 +33,17 @@ const DEFAULTS = {
   'claude.default_model': '',
   'claude.default_fallback_model': '',
   'claude.default_effort': '',
+  // Global defaults for Codex model / effort (multi-agent support). Empty
+  // string = not set → the agent passes nothing → Codex default applies. New
+  // Codex-kind sessions inherit these unless overridden at create time. Codex
+  // has NO fallback-model concept (parallel to claude.default_fallback_model
+  // being unused for Codex). Valid effort values: 'none' | 'minimal' | 'low' |
+  // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. migration-codex.md.
+  'codex.default_model': '',
+  'codex.default_effort': '',
+  // Fleet-wide openai-codex auto-update toggle (parallel to sdk.auto_update).
+  // ON by default. User-editable (SettingsModal). cf. codexWatch (future).
+  'codex.auto_update': 'true',
   // Optional hub-side Anthropic API key (x-api-key). ONLY used to auto-sync
   // the model list from GET /v1/models — NOT for inference (sessions run via
   // the per-VPS Claude Code OAuth, untouched). Empty = no auto-sync; the
@@ -58,6 +69,14 @@ const DEFAULTS = {
   'sdk.latest_version': '',
   'sdk.latest_version_at': '',
   'sdk.last_notified_version': '',
+  // Internal, written by the codex freshness sync only (not in the settings
+  // POST allowlist): latest openai-codex version on PyPI + unix-ms of the last
+  // successful check. Parallel to sdk.latest_version(_at). cf. codexWatch.
+  'codex.latest_version': '',
+  'codex.latest_version_at': '',
+  // Last openai-codex version we sent a "new codex" notification for (dedup
+  // across ticks/restarts), parallel to sdk.last_notified_version.
+  'codex.last_notified_version': '',
   // Last locally-built pyz sha we sent a "new agent" notification for — dedup
   // for the pyz auto-update axis (sdkWatch.ts), parallel to last_notified_version.
   'agent.last_notified_pyz_sha': '',

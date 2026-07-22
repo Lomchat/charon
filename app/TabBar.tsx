@@ -1,9 +1,10 @@
 'use client';
 import { useMemo } from 'react';
 import type { Vps, VpsFolder } from '@/lib/db/schema';
-import type { SessionListItem, ShellInfo, InstallInfo } from '@/lib/types/api';
+import type { SessionListItem, ShellInfo, InstallInfo, AgentKind } from '@/lib/types/api';
 import type { PermissionRequest, PendingQuestion, PendingExitPlan } from './sessionTypes';
 import { IconRobot, IconTerminal, IconTools } from './icons';
+import AgentLogo from './AgentLogo';
 
 // TabBar
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@ import { IconRobot, IconTerminal, IconTools } from './icons';
 export type TabState = 'active' | 'thinking' | 'waiting' | 'starting' | 'sleeping';
 
 export type EntityTab =
-  | { kind: 'session'; id: string; vpsId: string; label: string; state: TabState; closable: boolean }
+  | { kind: 'session'; id: string; vpsId: string; label: string; state: TabState; closable: boolean; agentKind: AgentKind }
   | { kind: 'shell';   id: string; vpsId: string; label: string; state: TabState; closable: boolean }
   | { kind: 'install'; id: string; vpsId: string; label: string; state: TabState; closable: boolean };
 
@@ -140,6 +141,7 @@ export function computeTabs({
       entities.push({
         kind: 'session', id: s.id, vpsId: v.id, label, state,
         closable: state === 'sleeping',
+        agentKind: (s.kind as AgentKind) === 'codex' ? 'codex' : 'claude',
       });
     }
 
@@ -294,7 +296,7 @@ export default function TabBar({
                 title={t.label}
               >
                 <span className="tab-glyph" aria-hidden>
-                  {t.kind === 'session' ? <IconRobot />
+                  {t.kind === 'session' ? <AgentLogo kind={t.agentKind} size={13} />
                     : t.kind === 'shell' ? <IconTerminal />
                     : <IconTools />}
                 </span>

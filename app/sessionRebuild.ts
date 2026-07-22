@@ -76,7 +76,11 @@ export function rebuildStateFromMessages(
         if (ev.phase === 'before') {
           out.edits.set(key, { ...cur, before: ev.content, truncated: cur.truncated || !!ev.truncated });
         } else {
-          out.edits.set(key, { ...cur, after: ev.content, truncated: cur.truncated || !!ev.truncated });
+          // phase 'after' (Claude) OR 'diff' (Codex: unified diff in `diff`,
+          // content null — usually stripped from the poll payload and refilled
+          // by GET /edits as `after`). cf. migration-codex.md.
+          const after = ev.content ?? ev.diff ?? null;
+          out.edits.set(key, { ...cur, after, truncated: cur.truncated || !!ev.truncated });
         }
         out.files.add(key);
       } catch {}

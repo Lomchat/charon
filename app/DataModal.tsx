@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import LoginConsole from './LoginConsole';
+import { diagnoseVps, VpsHealthChips, type VpsFixAction } from './vpsHealth';
 import {
   DndContext,
   DragOverlay,
@@ -34,13 +35,25 @@ type Props = {
   // Before: opened a BootstrapBanner overlay INSIDE the modal, but it stacked
   // overlays and blocked access to the rest of the hub during the install.
   onInstallAgent?: (vps: Vps) => void;
-};
-
-const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
-  ok:      { glyph: '●', label: 'agent ok' },
-  missing: { glyph: '○', label: 'agent not installed' },
-  error:   { glyph: '◐', label: 'agent in error' },
-  unknown: { glyph: '?', label: 'agent untested' },
+  // Health-chip fixes (app/vpsHealth.tsx): reconnect/start the agent and
+  // update (pyz + SDKs + codex) — both run IN PLACE (the modal stays open,
+  // busy state via the sets below), unlike install which closes the modal.
+  onRefreshAgent?: (vps: Vps) => void;
+  onUpdateAgent?: (vps: Vps) => void;
+  // Codex device-code login (§14.61): delegated UP — ClaudePanel renders the
+  // CodexLoginModal AFTER this modal so it overlays it; on success the
+  // liveVps merge below repaints the chips (codexLoggedIn is a merged key).
+  onCodexLogin?: (vps: Vps) => void;
+  refreshingAgentVpsIds?: Set<string>;
+  updatingAgentVpsIds?: Set<string>;
+  // Live copy of ClaudePanel's vpsList: the modal owns its rows for CRUD, but
+  // health fields (agentStatus / agentLastError / logins / codex) must follow
+  // the live `vps_status` bus events while the modal is open — a refresh or
+  // update fired from a card must repaint its chips without closing/reopening.
+  liveVps?: Vps[];
+  // "agent outdated" detection for the agent chip (same sources as Sidebar).
+  builtPyzSha?: string | null;
+  sdkLatestVersion?: string | null;
 };
 
 const DEFAULT_FOLDER_ID = 'default';
@@ -52,6 +65,15 @@ const DEFAULT_FOLDER_ID = 'default';
 //   - Folders (the whole block) are sortable among themselves.
 // The "drop in the folder" area (= droppable id `folder-drop:<id>`) captures
 // VPSes dropped on the folder's empty space (not on a specific card).
+// Bundle passed down folder → card for the health chips: staleness inputs
+// (builtPyzSha / sdkLatestVersion) + per-VPS busy sets for the fix buttons.
+type HealthOpts = {
+  builtPyzSha?: string | null;
+  sdkLatestVersion?: string | null;
+  refreshingIds?: Set<string>;
+  updatingIds?: Set<string>;
+};
+
 function vpsDragId(id: string) { return `vps:${id}`; }
 function folderDragId(id: string) { return `folder:${id}`; }
 function folderDropZoneId(id: string) { return `folder-drop:${id}`; }
@@ -62,7 +84,12 @@ function decodeId(dragId: string): { kind: 'vps' | 'folder' | 'folder-drop'; id:
   return { kind: 'vps', id: dragId };
 }
 
-export default function DataModal({ onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent }: Props) {
+export default function DataModal({
+  onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
+  onRefreshAgent, onUpdateAgent, onCodexLogin,
+  refreshingAgentVpsIds, updatingAgentVpsIds,
+  liveVps, builtPyzSha, sdkLatestVersion,
+}: Props) {
   const [vpsList, setVpsList] = useState<Vps[]>(initialVps);
   const [folders, setFolders] = useState<VpsFolder[]>(initialFolders);
   const [paths, setPaths] = useState<VpsPath[]>(initialPaths);
@@ -95,6 +122,45 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
     onInstallAgent(v);
   }, [onClose, onInstallAgent]);
 
+  // One dispatcher for the health-chip fix buttons (cf. vpsHealth.tsx).
+  // install → closes the modal (install session view takes over);
+  // refresh/update → run in place (busy state on the card's button);
+  // claude-login → the modal's own LoginConsole overlay.
+  const handleFix = useCallback((v: Vps, action: VpsFixAction) => {
+    if (action === 'install') handleBootstrap(v);
+    else if (action === 'claude-login') setLoginVps(v);
+    else if (action === 'codex-login') onCodexLogin?.(v);
+    else if (action === 'refresh') onRefreshAgent?.(v);
+    else if (action === 'update') onUpdateAgent?.(v);
+  }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onCodexLogin]);
+
+  // Follow ClaudePanel's live vpsList for HEALTH fields only (agent status,
+  // classified error, logins, codex, versions). CRUD fields (name/ip/folder/
+  // position) stay owned by the modal's local state — a live event must never
+  // clobber an in-flight edit or drag.
+  useEffect(() => {
+    if (!liveVps) return;
+    setVpsList((prev) => {
+      let changed = false;
+      const next = prev.map((v) => {
+        const live = liveVps.find((x) => x.id === v.id) as any;
+        if (!live) return v;
+        const cur = v as any;
+        const keys = [
+          'agentStatus', 'agentLastError', 'agentVersion', 'agentPyzSha', 'sdkVersion',
+          'claudeLoggedIn', 'claudeLoggedInCheckedAt',
+          'codexAvailable', 'codexSdkVersion', 'codexLoggedIn', 'codexLoggedInCheckedAt',
+        ] as const;
+        if (keys.every((k) => cur[k] === live[k])) return v;
+        changed = true;
+        const patch: any = {};
+        for (const k of keys) patch[k] = live[k];
+        return { ...v, ...patch } as Vps;
+      });
+      return changed ? next : prev;
+    });
+  }, [liveVps]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !loginVps) onClose();
@@ -102,6 +168,25 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, loginVps]);
+
+  // Closing the login console re-checks `claude login` on that VPS (the user
+  // may have just signed in) and pushes the verdict up so the sidebar +
+  // health chips follow without an F5 — mirrors ClaudePanel.closeLoginConsole.
+  function closeLogin() {
+    const v = loginVps;
+    setLoginVps(null);
+    if (!v) return;
+    api.checkVpsClaudeLogin(v.id)
+      .then((r) => {
+        if (!r.ok) return;
+        const next = vpsList.map((vp) => vp.id === v.id
+          ? ({ ...vp, claudeLoggedIn: r.loggedIn ? 1 : 0, claudeLoggedInCheckedAt: r.checkedAt } as Vps)
+          : vp);
+        setVpsList(next);
+        notify(next);
+      })
+      .catch(() => {});
+  }
 
   function notify(nextVps?: Vps[], nextFolders?: VpsFolder[], nextPaths?: VpsPath[]) {
     onChange?.({
@@ -506,7 +591,8 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
                   onToggleCollapsed={() => toggleFolderCollapsed(folder.id)}
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
-                  onBootstrap={handleBootstrap}
+                  onFixVps={handleFix}
+                  healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                   onLogin={(v) => setLoginVps(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -530,7 +616,8 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
                 pathInputs={pathInputs}
                 collapsed={collapsedFolders.has(defaultFolder.id)}
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
-                onBootstrap={handleBootstrap}
+                onFixVps={handleFix}
+                healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                 onLogin={(v) => setLoginVps(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -557,7 +644,7 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
         </DndContext>
       </div>
       {loginVps && (
-        <LoginConsole vps={loginVps} onClose={() => setLoginVps(null)} />
+        <LoginConsole vps={loginVps} onClose={closeLogin} />
       )}
     </div>
   );
@@ -571,7 +658,7 @@ export default function DataModal({ onClose, initialVps, initialFolders, initial
 function SortableFolder({
   folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onRename, onDelete,
-  onBootstrap, onLogin, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -583,7 +670,8 @@ function SortableFolder({
   onToggleCollapsed: () => void;
   onRename: (name: string) => void;
   onDelete: () => void;
-  onBootstrap: (v: Vps) => void;
+  onFixVps: (v: Vps, action: VpsFixAction) => void;
+  healthOpts: HealthOpts;
   onLogin: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
@@ -646,7 +734,8 @@ function SortableFolder({
                 allFolders={allFolders}
                 paths={paths}
                 pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
-                onBootstrap={() => onBootstrap(v)}
+                onFix={(action) => onFixVps(v, action)}
+                healthOpts={healthOpts}
                 onLogin={() => onLogin(v)}
                 onDelete={() => onDeleteVps(v.id, v.name)}
                 onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
@@ -708,7 +797,7 @@ function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (
 // ─────────────────────────────────────────────────────────────
 function StaticFolder({
   folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
-  onBootstrap, onLogin, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -718,7 +807,8 @@ function StaticFolder({
   pathInputs: Record<string, { path: string; label: string }>;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  onBootstrap: (v: Vps) => void;
+  onFixVps: (v: Vps, action: VpsFixAction) => void;
+  healthOpts: HealthOpts;
   onLogin: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
@@ -759,7 +849,8 @@ function StaticFolder({
               allFolders={allFolders}
               paths={paths}
               pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
-              onBootstrap={() => onBootstrap(v)}
+              onFix={(action) => onFixVps(v, action)}
+              healthOpts={healthOpts}
               onLogin={() => onLogin(v)}
               onDelete={() => onDeleteVps(v.id, v.name)}
               onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
@@ -783,14 +874,15 @@ function StaticFolder({
 // ─────────────────────────────────────────────────────────────
 function SortableVpsCard({
   v, allFolders, paths, pathInput,
-  onBootstrap, onLogin, onDelete, onChangeFolder,
+  onFix, healthOpts, onLogin, onDelete, onChangeFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   v: Vps;
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInput: { path: string; label: string };
-  onBootstrap: () => void;
+  onFix: (action: VpsFixAction) => void;
+  healthOpts: HealthOpts;
   onLogin: () => void;
   onDelete: () => void;
   onChangeFolder: (newFolderId: string) => void;
@@ -811,10 +903,18 @@ function SortableVpsCard({
   // state — stays draggable while collapsed (the handle remains).
   const [collapsed, setCollapsed] = useState(false);
   const status = (v as any).agentStatus ?? 'unknown';
-  const version = (v as any).agentVersion as string | undefined;
-  const meta = AGENT_BADGE[status] ?? AGENT_BADGE.unknown;
   const vpsPathsRows = paths.filter((p) => p.vpsId === v.id)
     .sort((a, b) => (a.label ?? a.path).localeCompare(b.label ?? b.path));
+  // Full 4-axis health (ssh / agent / claude / codex) — replaces the old
+  // single "agent ok/missing/error" badge which couldn't say WHY a VPS was
+  // unusable. Each broken chip carries its OWN fix button right next to it
+  // (problem → fix pairing). The permanent "login" button in dv-actions
+  // stays for re-login/account-switch while everything is green.
+  const health = diagnoseVps(v, healthOpts);
+  const busy = {
+    refresh: !!healthOpts.refreshingIds?.has(v.id),
+    update: !!healthOpts.updatingIds?.has(v.id),
+  };
 
   return (
     <section ref={setNodeRef} style={style} className={`data-vps-card agent-${status}${isDragging ? ' is-dragging' : ''}${collapsed ? ' is-collapsed' : ''}`} {...attributes}>
@@ -829,9 +929,6 @@ function SortableVpsCard({
         <span className="dv-glyph">▣</span>
         <span className="dv-name">{v.name}</span>
         <span className="dv-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
-        <span className={`dv-agent agent-${status}`} title={meta.label + (version ? ` (v${version})` : '')}>
-          {meta.glyph}<span className="dv-agent-text">{meta.label}</span>
-        </span>
         <select
           className="dv-folder-select"
           value={v.folderId}
@@ -844,11 +941,14 @@ function SortableVpsCard({
           ))}
         </select>
         <div className="dv-actions">
-          {status !== 'ok' && (
-            <button className="dv-btn primary" onClick={onBootstrap}>install</button>
-          )}
-          <button className="dv-btn" onClick={onLogin}>login</button>
+          <button className="dv-btn" onClick={onLogin} title="open the claude login console">login</button>
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>
+        </div>
+        {/* Health chips: one per layer, hover for the why; each broken chip is
+            followed by ITS repair button (install / start / update / retry /
+            claude login / codex login). */}
+        <div className="dv-health" onPointerDown={(e) => e.stopPropagation()}>
+          <VpsHealthChips health={health} onFix={onFix} busy={busy} />
         </div>
       </header>
       {!collapsed && (

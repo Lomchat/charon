@@ -13,8 +13,17 @@ import {
 import type {
   WorkerEvent, WorkerStatus, PermissionMode,
 } from '@/lib/server/claude/types';
-import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow, ClaudeEffortLevel } from '@/lib/types/api';
+import type {
+  ClaudeSessionDetailResponse, ClaudeSessionMessageWindow, CodexSandboxMode,
+} from '@/lib/types/api';
+import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
+
+// A session's "mode" is a Claude permission mode OR a Codex sandbox level —
+// both are stored in the same permission_mode field (cf. schema.ts). Widened
+// so codex sessions don't get their sandbox mode reset to 'normal'.
+type SessionMode = PermissionMode | CodexSandboxMode;
+const CLAUDE_MODES: readonly PermissionMode[] = ['normal', 'acceptEdits', 'auto', 'plan'];
 
 // Compare two interaction-queue snapshots by id sequence. Returns true if
 // `a` and `b` reference the same set of items in the same order. Used to
@@ -143,7 +152,8 @@ export type ClaudeSessionStreamState = {
   messages: Msg[];
   currentAssistant: string;
   status: WorkerStatus | null;
-  permissionMode: PermissionMode;
+  // Claude permission mode OR Codex sandbox level (same DB field, kind-dependent).
+  permissionMode: SessionMode;
   // Per-session Claude model / fallback / effort. null = inherit the global
   // default (claudeSettings.claude.default_*). Updated by `model_changed` /
   // `effort_changed` SSE events; mirrored in DB. `pendingApply` flips to
@@ -151,7 +161,9 @@ export type ClaudeSessionStreamState = {
   // is queued and applies on next sleep+resume. UI should label it as deferred.
   model: string | null;
   fallbackModel: string | null;
-  effort: ClaudeEffortLevel | null;
+  // Claude effort (low..ultracode) OR Codex effort (none..ultra) — free string
+  // so both catalogs pass through unmolested. null = inherit the global default.
+  effort: string | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
   // Model id Anthropic actually used on the last assistant turn. Updated by
@@ -197,7 +209,7 @@ export type ClaudeSessionStreamActions = {
   send(content: string): Promise<void>;
   interrupt(): Promise<void>;
   forceStop(): Promise<void>;
-  setMode(mode: PermissionMode): Promise<void>;
+  setMode(mode: SessionMode): Promise<void>;
   /**
    * Change the model (and optionally the fallback) for this session.
    * Takes effect at NEXT SDK start — the SDK binds the model at construction
@@ -205,8 +217,9 @@ export type ClaudeSessionStreamActions = {
    * with "applies on resume"). Pass null to clear back to the global default.
    */
   setModel(model: string | null, fallbackModel?: string | null): Promise<void>;
-  /** Change the effort level. Same deferred-apply semantics as setModel. */
-  setEffort(effort: ClaudeEffortLevel | null): Promise<void>;
+  /** Change the effort level (Claude or Codex). Same deferred-apply semantics
+   *  as setModel for Claude; Codex applies on the next turn. */
+  setEffort(effort: string | null): Promise<void>;
   doSleep(): Promise<void>;
   doResume(): Promise<void>;
   // In-place SDK restart (awaited sleep+resume) — applies deferred
@@ -250,13 +263,13 @@ export function useClaudeSessionStream(
   const [messages, setMessages] = useState<Msg[]>([]);
   const [currentAssistant, setCurrentAssistant] = useState('');
   const [status, setStatus] = useState<WorkerStatus | null>(null);
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('normal');
+  const [permissionMode, setPermissionMode] = useState<SessionMode>('normal');
   // Per-session model / fallback / effort. Initialized from the DB row via
   // applyApiData; updated by `model_changed` / `effort_changed` SSE events.
   // null on either field means "inherit the global default".
   const [model, setModelState] = useState<string | null>(null);
   const [fallbackModel, setFallbackModelState] = useState<string | null>(null);
-  const [effort, setEffortState] = useState<ClaudeEffortLevel | null>(null);
+  const [effort, setEffortState] = useState<string | null>(null);
   // True while a setModel/setEffort change is queued but not yet applied
   // (live SDK client exists → takes effect at next sleep+resume). Reset on
   // the next start (status flips back to 'starting' → 'active'). The UI
@@ -407,24 +420,24 @@ export function useClaudeSessionStream(
     // diff content; the auto-load effect refills any stripped skeletons.
     setEdits((prev) => mergeEdits(prev, rebuilt.edits));
     setFiles(rebuilt.files);
+    // Mode: Claude sessions use a permission mode; Codex sessions store a
+    // sandbox level in the same field — accept both by kind so a codex mode
+    // isn't reset to 'normal'.
+    const sessKind = (r.session as { kind?: string })?.kind === 'codex' ? 'codex' : 'claude';
+    const pm = r.session?.permissionMode as SessionMode;
+    const validModes: readonly string[] = sessKind === 'codex' ? CODEX_SANDBOX_MODES : CLAUDE_MODES;
     setPermissionMode(
-      (['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(
-        r.session?.permissionMode as PermissionMode,
-      ) ? (r.session.permissionMode as PermissionMode) : 'normal',
+      validModes.includes(pm as string) ? pm : (sessKind === 'codex' ? 'workspace-write' : 'normal'),
     );
     // Initialize model / fallback / effort from the DB row. The session row
     // schema includes these columns (cf. lib/db/schema.ts § claudeSessions);
     // ClaudeSession (= typeof claudeSessions.$inferSelect) carries them
-    // transitively. Effort is validated to keep TS happy; the DB column is a
-    // free TEXT but server-side writes already filter.
+    // transitively. Effort is a free string (Claude OR Codex catalog) — server
+    // side already filters invalid values, so pass it through as-is.
     const sess = r.session as typeof r.session & { model?: string | null; fallbackModel?: string | null; effort?: string | null };
     setModelState(sess.model ?? null);
     setFallbackModelState(sess.fallbackModel ?? null);
-    const validEffortValues: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-    setEffortState(
-      (validEffortValues as readonly string[]).includes(sess.effort ?? '')
-        ? (sess.effort as ClaudeEffortLevel) : null,
-    );
+    setEffortState(sess.effort || null);
     // Full refetch = the session was reloaded from DB → any pending-apply
     // marker from a previous resume cycle is now stale (either applied or
     // moot). Clear so the UI doesn't show "applies on resume" forever.
@@ -916,7 +929,12 @@ export function useClaudeSessionStream(
             if (ev.phase === 'before') {
               next.set(key, { ...cur, before: ev.content, truncated: cur.truncated || ev.truncated });
             } else {
-              next.set(key, { ...cur, after: ev.content, truncated: cur.truncated || ev.truncated });
+              // Codex emits phase 'diff' with the unified diff in `diff`
+              // (content null); Claude uses phase 'after' with content. Either
+              // lands in `after` — the ToolPanel renders it as a raw patch for
+              // codex sessions. cf. migration-codex.md.
+              const after = ev.content ?? (ev as { diff?: string | null }).diff ?? null;
+              next.set(key, { ...cur, after, truncated: cur.truncated || ev.truncated });
             }
             return next;
           });
@@ -942,11 +960,11 @@ export function useClaudeSessionStream(
           setModelPendingApply(!!ev.appliedAtNextStart);
           break;
         case 'effort_changed': {
-          // Defensive cast: the wire type is EffortLevel|null but the
-          // backend's isValidEffort already filtered invalid strings.
-          const e = ev.effort;
-          const valid: readonly ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-          setEffortState((valid as readonly (string | null)[]).includes(e) ? e : null);
+          // The backend already filtered invalid strings (Claude AND Codex
+          // catalogs), so pass the value through as a free string. Codex sends
+          // appliedAtNextStart=false → no deferred badge.
+          const e = (ev.effort as string | null) || null;
+          setEffortState(e);
           setEffortPendingApply(!!ev.appliedAtNextStart);
           break;
         }
@@ -1143,7 +1161,7 @@ export function useClaudeSessionStream(
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
 
-  const setMode = useCallback(async (mode: PermissionMode) => {
+  const setMode = useCallback(async (mode: SessionMode) => {
     if (permissionMode === mode) return;
     const prev = permissionMode;
     setPermissionMode(mode); // optimistic — reconciled by the mode_changed SSE
@@ -1174,7 +1192,7 @@ export function useClaudeSessionStream(
     }
   }, [sessionId, model, fallbackModel]);
 
-  const setEffort = useCallback(async (newEffort: ClaudeEffortLevel | null) => {
+  const setEffort = useCallback(async (newEffort: string | null) => {
     if (newEffort === effort) return;
     const prev = effort;
     setEffortState(newEffort);

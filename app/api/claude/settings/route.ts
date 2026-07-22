@@ -16,6 +16,11 @@ const ALLOWED_KEYS = [
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',
+  // Codex (OpenAI) global defaults + auto-update toggle. codex.latest_version(_at)
+  // are written by the freshness sync, never accepted from a settings POST.
+  'codex.default_model',
+  'codex.default_effort',
+  'codex.auto_update',
   // Optional hub-side Anthropic API key, used only to auto-sync the model
   // list from GET /v1/models (see modelSync.ts). models_cache/_at are written
   // by the sync, never accepted from a settings POST.

@@ -3,6 +3,8 @@ import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import type { AgentKind } from '@/lib/types/api';
+import AgentLogo from './AgentLogo';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -14,9 +16,12 @@ type Props = {
   streaming?: boolean;
   // If provided, the tool_result linked to this tool_use is rendered inline below (⎿ style)
   attachedResult?: Msg;
+  // Which backend produced this session (Claude vs Codex). Drives the small
+  // per-message agent logo next to the model chip so it's clear who's speaking.
+  kind?: AgentKind;
 };
 
-function Message({ m, streaming = false, attachedResult }: Props) {
+function Message({ m, streaming = false, attachedResult, kind = 'claude' }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -33,10 +38,14 @@ function Message({ m, streaming = false, attachedResult }: Props) {
     >
       <header className="bubble-h">
         <span className="tag">{m.role}</span>
-        {/* Per-message model attribution (assistant only): the id Anthropic
-            actually served this message with — API truth from
-            AssistantMessage.model, NOT the model's own self-identification.
-            Absent on messages persisted before the feature / old agents. */}
+        {/* Per-message agent attribution (assistant only): a small Claude/Codex
+            logo so it's always clear which backend is speaking, next to the
+            API-confirmed model id (from AssistantMessage.model, NOT the model's
+            own self-identification). The chip is absent on messages persisted
+            before the feature / on old agents — the logo still shows. */}
+        {isAssistant && (
+          <AgentLogo kind={kind} size={12} className="bubble-agent-logo" />
+        )}
         {isAssistant && m.model && (
           <span className="model-chip" title={`API-confirmed model for this message: ${m.model}`}>
             {m.model}
@@ -179,6 +188,7 @@ function ToolResultCard({ m }: { m: Msg }) {
 export function summarizeToolInput(name: string, input: any): string {
   if (!input || typeof input !== 'object') return '';
   switch (name) {
+    // ── Claude tools ──
     case 'Read':       return String(input.file_path ?? '');
     case 'Edit':       return String(input.file_path ?? '') + (input.replace_all ? ' (replace_all)' : '');
     case 'Write':      return String(input.file_path ?? '');
@@ -189,7 +199,27 @@ export function summarizeToolInput(name: string, input: any): string {
     case 'TodoWrite':  return `${(input.todos ?? []).length} todos`;
     case 'WebFetch':   return String(input.url ?? '');
     case 'WebSearch':  return String(input.query ?? '');
+    // ── Codex tools (OpenAI) ──
+    // `shell`: input.command is an argv array (or a plain string) — show the
+    // command line the model is about to run.
+    case 'shell':
+    case 'local_shell': {
+      const c = input.command ?? input.cmd;
+      const cmd = Array.isArray(c) ? c.join(' ') : String(c ?? '');
+      return cmd.slice(0, 100);
+    }
+    // `apply_patch`: the file(s) touched, parsed out of the patch envelope.
+    case 'apply_patch': {
+      const patch = String(input.input ?? input.patch ?? '');
+      const files = extractPatchFiles(patch);
+      return files.length ? files.join(', ') : 'patch';
+    }
+    case 'web_search':  return String(input.query ?? input.q ?? '');
+    // Codex's plan tool (analog of TodoWrite).
+    case 'update_plan': return `${(input.plan ?? input.steps ?? []).length} steps`;
     default: {
+      // MCP tools surface as `mcp__server__tool` / `server__tool` / `server/tool`
+      // — the tool NAME already shows in the card; summarize the first argument.
       const keys = Object.keys(input);
       if (keys.length === 0) return '';
       const first = keys[0];
@@ -197,6 +227,21 @@ export function summarizeToolInput(name: string, input: any): string {
       return `${first}=${typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80)}`;
     }
   }
+}
+
+// Extract the file paths from an `apply_patch` envelope. Codex patches use
+// `*** Add/Update/Delete File: <path>` markers (and sometimes unified `+++ b/…`
+// headers). Best-effort — returns [] when nothing recognizable is found.
+function extractPatchFiles(patch: string): string[] {
+  const out: string[] = [];
+  const re = /^\*\*\* (?:Add|Update|Delete|Move) File:\s*(.+?)\s*$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(patch)) !== null) out.push(m[1]);
+  if (out.length === 0) {
+    const re2 = /^\+\+\+ b\/(.+?)\s*$/gm;
+    while ((m = re2.exec(patch)) !== null) out.push(m[1]);
+  }
+  return out.slice(0, 4);
 }
 
 function fmtTime(ts: number): string {

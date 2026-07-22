@@ -229,6 +229,10 @@ def _build_options_with_fallback(
 class AgentSession:
     """A Claude session isolated within the agent. Lives independently of clients."""
 
+    # Discriminator so the hub / server.py can tell Claude and Codex sessions
+    # apart (Codex sessions are CodexSession, see codex_session.py).
+    kind = "claude"
+
     # Valid effort levels (mirrors claude_agent_sdk.EffortLevel literal).
     # If the SDK installed on this VPS is older and doesn't know one of these,
     # _run will catch the TypeError on ClaudeAgentOptions(**kwargs) and retry
@@ -448,6 +452,7 @@ class AgentSession:
 
     def to_info(self) -> dict[str, Any]:
         return {
+            "kind": "claude",
             "session_id": self.session_id,
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
@@ -467,6 +472,7 @@ class AgentSession:
         if persist_status in ("starting", "thinking"):
             persist_status = "active"
         return {
+            "kind": "claude",
             "session_id": self.session_id,
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,

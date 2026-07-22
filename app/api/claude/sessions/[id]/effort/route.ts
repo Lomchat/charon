@@ -21,17 +21,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
   const raw = body?.effort;
+  // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
+  // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
+  // the final gate for both (drops a level its SDK/model doesn't know).
+  const CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   let effort: string | null;
   if (raw == null || raw === '') {
     effort = null;
-  } else if (typeof raw === 'string' && isKnownEffort(raw)) {
-    // Accept the canonical set OR any level the live catalog reports (so a
-    // brand-new level isn't 400'd before the agent/SDK is updated). The agent
-    // is the final gate — it drops a level its SDK doesn't know (gotcha 35).
+  } else if (typeof raw === 'string' &&
+             (stream.kind === 'codex' ? CODEX_EFFORTS.includes(raw) : isKnownEffort(raw))) {
     effort = raw;
   } else {
     return NextResponse.json(
-      { error: `invalid effort '${raw}'; expected a catalog effort level or null` },
+      { error: `invalid effort '${raw}'; expected a ${stream.kind === 'codex' ? 'codex' : 'catalog'} effort level or null` },
       { status: 400 },
     );
   }

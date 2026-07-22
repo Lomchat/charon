@@ -44,10 +44,26 @@ type Pending = {
 // import the global SSE bus from sessionOps directly (import cycle:
 // AgentClient ← AgentClientPool ← sessionOps). sessionOps injects the emitter
 // at its module init instead.
+export type VpsStatusExtra = {
+  agentVersion?: string | null;
+  agentPyzSha?: string | null;
+  sdkVersion?: string | null;
+  // Classified failure detail (schema.ts `vps.agentLastError`) — carried on
+  // every emit so open tabs (DataModal health chips, wizard) can tell
+  // ssh-down from daemon-down live. Explicit null on 'ok' = cleared.
+  agentLastError?: string | null;
+  // Codex availability (agent >= 0.15.0) — same no-clobber contract as
+  // sdkVersion: key present only when the hello carried it.
+  codexAvailable?: number | null;
+  codexSdkVersion?: string | null;
+  // Codex login flag — emitted by the codex/login route on a completed
+  // device-code login (hello doesn't know it; the usage poll discovers it).
+  codexLoggedIn?: number | null;
+};
 export type VpsStatusEmitter = (
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
+  extra?: VpsStatusExtra,
 ) => void;
 let vpsStatusEmitter: VpsStatusEmitter | null = null;
 export function setVpsStatusEmitter(fn: VpsStatusEmitter): void {
@@ -56,9 +72,44 @@ export function setVpsStatusEmitter(fn: VpsStatusEmitter): void {
 function emitVpsStatus(
   vpsId: string,
   agentStatus: 'ok' | 'missing' | 'error',
-  extra?: { agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null },
+  extra?: VpsStatusExtra,
 ): void {
   try { vpsStatusEmitter?.(vpsId, agentStatus, extra); } catch {}
+}
+
+// ── Failure classification (feeds `vps.agentLastError`) ──────────────────────
+// The ssh `--connect` child can die for very different reasons that the UI
+// must tell apart: the VPS itself unreachable (network / host down), the SSH
+// key refused, or SSH fine but the DAEMON dead (proxy exit 2 = socket absent,
+// 3 = connect failed — see agent/charon_agent/client.py). OpenSSH exits 255
+// for every client-level failure; remote-command exit codes pass through
+// otherwise. Returns `null` for "missing" (SSH provably worked).
+export function classifyAgentFailure(
+  code: number | null,
+  stderrTail: string,
+  spawnError: string | null,
+): { code: 'ssh-auth' | 'ssh-unreachable' | 'daemon-down' | 'error'; detail: string } {
+  // Last meaningful stderr line (errors come last; skip the known noise).
+  const line = stderrTail
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !/^Warning: Permanently added/i.test(l))
+    .pop() ?? spawnError ?? '';
+  const detail = line.slice(0, 160);
+  if (code === 2 || code === 3) {
+    // Exit codes of the pyz's own --connect proxy: the remote command RAN
+    // (so SSH + python + pyz are all fine) but the daemon's socket is
+    // absent (2) or refused (3) → the daemon is down.
+    return { code: 'daemon-down', detail: detail || 'agent socket absent — daemon not running' };
+  }
+  const sshLevel = code === 255 || code === null; // 255 = OpenSSH client failure; null = spawn error/kill
+  if (sshLevel) {
+    if (/permission denied|authentication|host key verification|too many authentication|no matching|sign_and_send|publickey/i.test(line)) {
+      return { code: 'ssh-auth', detail };
+    }
+    return { code: 'ssh-unreachable', detail: detail || 'ssh connection failed' };
+  }
+  return { code: 'error', detail: detail || `ssh exit ${code}` };
 }
 
 export type EventListener = (ev: AgentEvent) => void;
@@ -82,6 +133,11 @@ export class AgentClient {
   // (transient-drop gating, see ERROR_PERSIST_AFTER_ATTEMPTS). The manual
   // "refresh agent" endpoint reads this for a definitive verdict.
   lastClassified: 'ok' | 'missing' | 'error' | null = null;
+  // Companion detail for lastClassified='error', in the `vps.agentLastError`
+  // format ('<code>: <stderr line>'). null for 'ok'/'missing'. Kept even when
+  // the transient-drop gate skips the DB persist, so the refresh route can
+  // persist a definitive verdict WITH its reason.
+  lastErrorDetail: string | null = null;
 
   private child: ChildProcessWithoutNullStreams | null = null;
   private nextReqId = 1;
@@ -401,6 +457,7 @@ export class AgentClient {
         this.reconnectAttempts = 0;
         this.lastConnectError = null;
         this.lastClassified = 'ok';
+        this.lastErrorDetail = null;
         this._setStatus('connected');
         // Persist the ping side-effect: timestamp + version.
         // sdk_version: ONLY when the hello carries the key — an old agent
@@ -409,10 +466,18 @@ export class AgentClient {
         try {
           db.update(vpsTable).set({
             agentStatus: 'ok',
+            agentLastError: null,
             agentVersion: hello.agent_version,
             agentPyzSha: hello.agent_pyz_sha ?? null,
             agentLastSeenAt: Math.floor(Date.now() / 1000),
             ...(hello.sdk_version !== undefined ? { sdkVersion: hello.sdk_version } : {}),
+            // Codex availability (agent >= 0.15.0). Persist ONLY when the hello
+            // carries the field — an old agent (< 0.15.0) omits codex_* and must
+            // NOT null-clobber values written by a previous new-agent hello /
+            // update flow (§14.53 no-null-clobber rule, mirrors sdk_version).
+            // The DB column is a 1/0/null integer; codex_available is a boolean.
+            ...(hello.codex_available !== undefined ? { codexAvailable: hello.codex_available ? 1 : 0 } : {}),
+            ...(hello.codex_sdk_version !== undefined ? { codexSdkVersion: hello.codex_sdk_version } : {}),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
         // Live push so open tabs flip the sidebar badge without an F5
@@ -420,7 +485,12 @@ export class AgentClient {
         emitVpsStatus(this.vps.id, 'ok', {
           agentVersion: hello.agent_version,
           agentPyzSha: hello.agent_pyz_sha ?? null,
+          agentLastError: null,
           ...(hello.sdk_version !== undefined ? { sdkVersion: hello.sdk_version } : {}),
+          // Codex availability — mirror the DB persist above (no-clobber:
+          // key present only when the hello carries it, §14.53).
+          ...(hello.codex_available !== undefined ? { codexAvailable: hello.codex_available ? 1 : 0 } : {}),
+          ...(hello.codex_sdk_version !== undefined ? { codexSdkVersion: hello.codex_sdk_version } : {}),
         });
         // Re-subscribe to everything. This is the critical path for
         // "Charon was down, agent kept emitting events" — we want the
@@ -529,16 +599,35 @@ export class AgentClient {
     // SSH transport drop must not flip a healthy agent to 'error' (see the
     // const comment above). We always record the in-memory classification so
     // the manual "refresh agent" endpoint can give a definitive verdict.
-    const isMissing = /No such file|introuvable|not found/i.test(tail) || code === 127;
+    // The classified detail (ssh-auth / ssh-unreachable / daemon-down / error)
+    // is persisted alongside as `agentLastError` so the UI can say WHY —
+    // "VPS unreachable" vs "agent daemon stopped" (health chips, §11).
+    // ⚠ Both "pyz absent" AND "--connect exit 2 (daemon socket absent)" print
+    // a *not found* line and can exit 2 (python can't-open vs proxy verdict):
+    //   pyz missing : "python3.12: can't open file '….pyz': No such file…"
+    //   daemon down : "charon-agent: socket …agent.sock not found (daemon not started?)"
+    // The old regex conflated them → a merely-stopped daemon showed as "agent
+    // not installed". Disambiguate on the proxy's own message first.
+    const isSocketAbsent = (code === 2 || code === 3)
+      && /daemon not started|socket .*not found|charon-agent: connect failed/i.test(tail);
+    const isMissing = !isSocketAbsent
+      && (/No such file|introuvable|not found/i.test(tail) || code === 127);
     this.lastClassified = isMissing ? 'missing' : 'error';
+    if (isMissing) {
+      this.lastErrorDetail = null; // SSH provably worked — not an error detail
+    } else {
+      const cls = classifyAgentFailure(code, tail, this.lastConnectError);
+      this.lastErrorDetail = cls.detail ? `${cls.code}: ${cls.detail}` : cls.code;
+    }
     try {
       const shouldPersist = isMissing || this.reconnectAttempts >= ERROR_PERSIST_AFTER_ATTEMPTS;
       if (shouldPersist) {
         db.update(vpsTable).set({
           agentStatus: this.lastClassified,
+          agentLastError: this.lastErrorDetail,
         }).where(eq(vpsTable.id, this.vps.id)).run();
         // Live push (same gating as the persist: transient drops stay silent).
-        emitVpsStatus(this.vps.id, this.lastClassified);
+        emitVpsStatus(this.vps.id, this.lastClassified, { agentLastError: this.lastErrorDetail });
       }
     } catch {}
 

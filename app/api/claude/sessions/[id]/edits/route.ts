@@ -56,7 +56,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     type Accum = ClaudeEditContent;
     const byFile = new Map<string, Accum>();
     for (const row of rows) {
-      let ev: { file_path?: unknown; phase?: unknown; content?: unknown; tool_use_id?: unknown; truncated?: unknown } | null = null;
+      let ev: { file_path?: unknown; phase?: unknown; content?: unknown; diff?: unknown; tool_use_id?: unknown; truncated?: unknown } | null = null;
       try { ev = JSON.parse(row.content); } catch { continue; }
       if (!ev || typeof ev.file_path !== 'string') continue;
       const fp = ev.file_path;
@@ -66,7 +66,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
         before: null, after: null, truncated: false,
       };
       const content = typeof ev.content === 'string' ? ev.content : null;
+      // Claude: phase 'before'/'after' carry file bodies in `content`.
+      // Codex: phase 'diff' carries a unified diff in `diff` (content is null);
+      // surface it as `after` (before=null) so the diff card renders the patch
+      // directly. cf. migration-codex.md, §14.41.
       if (ev.phase === 'before') cur.before = content;
+      else if (ev.phase === 'diff') cur.after = typeof ev.diff === 'string' ? ev.diff : null;
       else cur.after = content;
       if (ev.truncated) cur.truncated = true;
       if (typeof ev.tool_use_id === 'string' && ev.tool_use_id) cur.toolUseId = ev.tool_use_id;

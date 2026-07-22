@@ -4,6 +4,8 @@ import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePe
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
+import type { AgentKind } from '@/lib/types/api';
+import type { SessionMode } from '@/lib/server/agent/types';
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -81,7 +83,7 @@ export async function GET(req: Request) {
 }
 
 // POST /api/claude/sessions
-// Body: { vpsId, cwd, name?, permissionMode? }
+// Body: { vpsId, cwd, name?, kind?, permissionMode?, model?, fallbackModel?, effort? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -94,16 +96,34 @@ export async function POST(req: Request) {
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  const ALLOWED_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
-  type Mode = (typeof ALLOWED_MODES)[number];
-  const permissionMode: Mode = ALLOWED_MODES.includes(body.permissionMode)
-    ? body.permissionMode
-    : 'auto';
-  // Normalize the per-session Claude config. Empty strings → null so the
-  // default-resolution path in startNewSession treats them as "inherit
-  // global default". Effort is forwarded as a raw string; sessionOps
-  // validates via isValidEffort and silently drops invalid values
-  // (consistent with the agent-side guard).
+  // Agent-type discriminator (multi-agent). A Codex session needs the VPS to
+  // actually run Codex (openai-codex importable, agent >= 0.15.0) — reject
+  // early with a clear message otherwise (codexAvailable is 1 when available).
+  const kind: AgentKind = body.kind === 'codex' ? 'codex' : 'claude';
+  if (kind === 'codex' && v.codexAvailable !== 1) {
+    return NextResponse.json(
+      { error: 'Codex is not available on this VPS (agent < 0.15.0 or the openai-codex SDK is not installed).' },
+      { status: 400 },
+    );
+  }
+
+  // Kind-aware mode validation + default. Claude: a PermissionMode (default
+  // 'auto'). Codex: a sandbox level (default 'workspace-write'). Codex has NO
+  // human-approval mode — the "mode" is the sandbox guardrail.
+  const CLAUDE_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
+  const CODEX_MODES = ['read-only', 'workspace-write', 'full-access'] as const;
+  const allowedModes: readonly string[] = kind === 'codex' ? CODEX_MODES : CLAUDE_MODES;
+  const defaultMode = kind === 'codex' ? 'workspace-write' : 'auto';
+  const permissionMode = (
+    typeof body.permissionMode === 'string' && allowedModes.includes(body.permissionMode)
+      ? body.permissionMode
+      : defaultMode
+  ) as SessionMode;
+  // Normalize the per-session config. Empty strings → null so the default-
+  // resolution path in startNewSession treats them as "inherit global default"
+  // (claude.default_* or codex.default_*). Effort is forwarded as a raw string;
+  // sessionOps validates it per-kind and silently drops invalid values
+  // (consistent with the agent-side guard). fallbackModel is Claude-only.
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : null;
   const fallbackModel = typeof body.fallbackModel === 'string' && body.fallbackModel.length > 0
     ? body.fallbackModel : null;
@@ -112,12 +132,13 @@ export async function POST(req: Request) {
     const stream = await startNewSession({
       vpsId, cwd,
       name: body.name ? String(body.name) : null,
+      kind,
       permissionMode,
       model, fallbackModel, effort,
     });
     return NextResponse.json({
-      id: stream.id, status: stream.status, claudeSessionId: stream.claudeSessionId,
-      vpsId, cwd, name: stream.name, permissionMode,
+      id: stream.id, kind: stream.kind, status: stream.status, claudeSessionId: stream.claudeSessionId,
+      vpsId, cwd, name: stream.name, permissionMode: stream.permissionMode,
       model: stream.model, fallbackModel: stream.fallbackModel, effort: stream.effort,
     });
   } catch (e: any) {

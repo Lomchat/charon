@@ -7,6 +7,7 @@
 // cf. CLAUDE.md §14.58.
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { AccountUsage, AccountUsageLimit } from '@/lib/server/claude/types';
+import AgentLogo from './AgentLogo';
 
 function sevClass(severity: string | undefined, percent: number | null): string {
   if (severity === 'critical') return 'crit';
@@ -72,7 +73,10 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
     return (
       <div className="um-detail">
         <div className="um-head">
-          <span className="um-title">Usage{vpsName ? ` · ${vpsName}` : ''}</span>
+          <span className="um-title">
+            {usage.provider ? <AgentLogo kind={usage.provider} size={13} /> : null}
+            Usage{vpsName ? ` · ${vpsName}` : ''}
+          </span>
           {onRefresh ? <button className="um-refresh" onClick={onRefresh} title="Refresh">↻</button> : null}
         </div>
         <div className="um-empty">{reason}</div>
@@ -95,6 +99,7 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
     <div className="um-detail">
       <div className="um-head">
         <span className="um-title">
+          {usage.provider ? <AgentLogo kind={usage.provider} size={13} /> : null}
           Usage{vpsName ? ` · ${vpsName}` : ''}
           {usage.subscriptionType ? <span className="um-plan">{usage.subscriptionType}</span> : null}
         </span>

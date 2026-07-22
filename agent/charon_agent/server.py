@@ -52,6 +52,15 @@ from .protocol import (
 )
 from .event_log import EventLog, cleanup_orphans
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
+from .codex_session import (
+    CodexSession,
+    CODEX_AVAILABLE,
+    CODEX_IMPORT_ERROR,
+    CODEX_SDK_VERSION,
+    CODEX_CLI_VERSION,
+    fetch_codex_models,
+    fetch_codex_usage,
+)
 from .shell import AgentShell
 from .state import load_state, save_state
 from .usage import fetch_usage
@@ -83,7 +92,8 @@ class Server:
         self.shells_dir = state_path.parent / "shells"
         self.shells: dict[str, AgentShell] = {}
         self.shell_event_logs: dict[str, EventLog] = {}
-        self.sessions: dict[str, AgentSession] = {}
+        # AgentSession (Claude) OR CodexSession — both expose the same contract.
+        self.sessions: dict[str, Any] = {}
         self.rings: dict[str, deque[dict[str, Any]]] = {}
         # Per-session durable log. Created on first emit (lazy via _emit),
         # cleaned up on kill. Lookups via _event_log(session_id).
@@ -202,6 +212,36 @@ class Server:
         for client in list(targets):
             client.send_json(payload)
 
+    def _make_session(
+        self,
+        *,
+        kind: str,
+        session_id: str,
+        cwd: str,
+        name: str | None,
+        permission_mode: str,
+        claude_session_id: str | None,
+        model: str | None,
+        fallback_model: str | None,
+        effort: str | None,
+    ) -> Any:
+        """Factory keyed on the agent-type discriminator. Claude → AgentSession,
+        Codex → CodexSession. Both share the exact constructor signature +
+        public/private contract that this server drives."""
+        cls = CodexSession if kind == "codex" else AgentSession
+        return cls(
+            session_id,
+            cwd=cwd,
+            name=name,
+            permission_mode=permission_mode,
+            claude_session_id=claude_session_id,
+            emit=self._emit,
+            on_state_change=self._save_state_now,
+            model=model,
+            fallback_model=fallback_model,
+            effort=effort,
+        )
+
     async def _create_session(
         self,
         *,
@@ -210,18 +250,18 @@ class Server:
         name: str | None,
         permission_mode: str,
         claude_session_id: str | None,
+        kind: str = "claude",
         model: str | None = None,
         fallback_model: str | None = None,
         effort: str | None = None,
-    ) -> AgentSession:
-        s = AgentSession(
-            session_id,
+    ) -> Any:
+        s = self._make_session(
+            kind=kind,
+            session_id=session_id,
             cwd=cwd,
             name=name,
             permission_mode=permission_mode,
             claude_session_id=claude_session_id,
-            emit=self._emit,
-            on_state_change=self._save_state_now,
             model=model,
             fallback_model=fallback_model,
             effort=effort,
@@ -258,13 +298,15 @@ class Server:
                     # Load in memory without starting the SDK
                     self._register_sleeping(row)
                     continue
-                print(f"[boot] restoring session {sid} (cwd={cwd})", file=sys.stderr, flush=True)
+                kind = row.get("kind") or "claude"
+                print(f"[boot] restoring session {sid} (kind={kind}, cwd={cwd})", file=sys.stderr, flush=True)
                 await self._create_session(
                     session_id=sid,
                     cwd=cwd,
                     name=row.get("name"),
                     permission_mode=row.get("permission_mode") or "normal",
                     claude_session_id=row.get("claude_session_id"),
+                    kind=kind,
                     model=row.get("model"),
                     fallback_model=row.get("fallback_model"),
                     effort=row.get("effort"),
@@ -276,14 +318,13 @@ class Server:
         """Registers a session in memory with status 'sleeping' without starting it.
         Used at boot for sessions paused by the user — list_sessions
         sees them, and an explicit resume will start the SDK."""
-        s = AgentSession(
-            row["session_id"],
+        s = self._make_session(
+            kind=row.get("kind") or "claude",
+            session_id=row["session_id"],
             cwd=row["cwd"],
             name=row.get("name"),
             permission_mode=row.get("permission_mode") or "normal",
             claude_session_id=row.get("claude_session_id"),
-            emit=self._emit,
-            on_state_change=self._save_state_now,
             model=row.get("model"),
             fallback_model=row.get("fallback_model"),
             effort=row.get("effort"),
@@ -298,7 +339,11 @@ class Server:
     # state and contain the moved-over branches verbatim — no behaviour change
     # (same params, return shapes, error codes, and event emission). The set
     # of methods is unchanged (cf. protocol.METHODS).
-    _META_METHODS = frozenset({"hello", "ping", "list_sessions", "get_usage"})
+    _META_METHODS = frozenset({
+        "hello", "ping", "list_sessions", "get_usage",
+        "list_codex_models", "get_codex_usage",
+        "codex_login_start", "codex_login_status", "codex_login_cancel",
+    })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "respond_permission",
@@ -329,6 +374,12 @@ class Server:
                 "sdk_available": SDK_AVAILABLE,
                 "sdk_error": SDK_IMPORT_ERROR,
                 "sdk_version": SDK_VERSION,
+                # Codex availability (agent >= 0.15.0). Absent on older agents;
+                # the hub only writes these when present (§14.53 no-null-clobber).
+                "codex_available": CODEX_AVAILABLE,
+                "codex_error": CODEX_IMPORT_ERROR,
+                "codex_sdk_version": CODEX_SDK_VERSION,
+                "codex_cli_version": CODEX_CLI_VERSION,
                 "pid": os.getpid(),
                 "sessions": [s.to_info() for s in self.sessions.values()],
             }
@@ -346,6 +397,28 @@ class Server:
             # raises; returns {ok:False,...} on any failure. §14.58.
             return await asyncio.to_thread(fetch_usage)
 
+        if method == "list_codex_models":
+            # Codex model catalog (account-driven, per-VPS). Spins up a
+            # short-lived app-server client. Never raises. (agent >= 0.15.0)
+            return await fetch_codex_models()
+
+        if method == "get_codex_usage":
+            # Codex account-usage snapshot (rate-limit utilization) — the Codex
+            # analog of get_usage. Never raises. (agent >= 0.15.0)
+            return await fetch_codex_usage()
+
+        # Codex ChatGPT device-code login (agent >= 0.16.0) — headless-safe
+        # `codex login` replacement; the hub polls status. codex_login.py.
+        if method == "codex_login_start":
+            from . import codex_login
+            return await codex_login.start()
+        if method == "codex_login_status":
+            from . import codex_login
+            return await codex_login.status(str(params.get("login_id") or ""))
+        if method == "codex_login_cancel":
+            from . import codex_login
+            return await codex_login.cancel(str(params.get("login_id") or ""))
+
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 
     # ── Session handlers ─────────────────────────────────────────────────────
@@ -357,19 +430,27 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "cwd required")
             if session_id in self.sessions:
                 raise RpcError(ERR_INVALID_PARAMS, f"session {session_id} already exists")
-            if not SDK_AVAILABLE:
-                raise RpcError(ERR_SDK_UNAVAILABLE, f"SDK unavailable: {SDK_IMPORT_ERROR}")
+            kind = params.get("kind") or "claude"
+            if kind not in ("claude", "codex"):
+                raise RpcError(ERR_INVALID_PARAMS, f"unknown kind: {kind}")
+            if kind == "codex":
+                if not CODEX_AVAILABLE:
+                    raise RpcError(ERR_SDK_UNAVAILABLE, f"Codex SDK unavailable: {CODEX_IMPORT_ERROR}")
+            else:
+                if not SDK_AVAILABLE:
+                    raise RpcError(ERR_SDK_UNAVAILABLE, f"SDK unavailable: {SDK_IMPORT_ERROR}")
             await self._create_session(
                 session_id=session_id,
                 cwd=cwd,
                 name=params.get("name"),
                 permission_mode=params.get("permission_mode") or "normal",
                 claude_session_id=params.get("claude_session_id"),
+                kind=kind,
                 model=params.get("model"),
                 fallback_model=params.get("fallback_model"),
                 effort=params.get("effort"),
             )
-            return {"session_id": session_id}
+            return {"session_id": session_id, "kind": kind}
 
         if method == "subscribe":
             sid = self._require_sid(params)
@@ -457,11 +538,13 @@ class Server:
             if fallback_model is not None and not isinstance(fallback_model, str):
                 raise RpcError(ERR_INVALID_PARAMS, "fallback_model must be a string or null")
             await s.set_model(model, fallback_model)
+            # Codex applies model per-turn (no sleep+resume) → not deferred.
+            deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
             return {
                 "ok": True,
                 "model": s.model,
                 "fallback_model": s.fallback_model,
-                "applied_at_next_start": s._client is not None,
+                "applied_at_next_start": deferred,
             }
 
         if method == "set_effort":
@@ -471,10 +554,11 @@ class Server:
             if effort is not None and not isinstance(effort, str):
                 raise RpcError(ERR_INVALID_PARAMS, "effort must be a string or null")
             await s.set_effort(effort)
+            deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
             return {
                 "ok": True,
                 "effort": s.effort,
-                "applied_at_next_start": s._client is not None,
+                "applied_at_next_start": deferred,
             }
 
         if method == "respond_permission":

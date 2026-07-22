@@ -99,6 +99,11 @@ export type AccountUsageLimit = {
 export type AccountUsage = {
   ok: boolean;
   fetchedAt: number;           // hub Date.now() (ms) — for "updated Ns ago"
+  // Which coding-agent account these gauges belong to. 'claude' (default when
+  // absent) reads api.anthropic.com/api/oauth/usage; 'codex' reads the Codex
+  // app-server rate limits (get_codex_usage). A VPS can have BOTH — the header
+  // shows the one matching the CURRENT session's kind. cf. migration-codex.md.
+  provider?: 'claude' | 'codex';
   subscriptionType?: string | null;  // 'max' | 'pro' | …
   error?: string | null;       // when !ok: 'no_credentials' | 'http_error' | 'request_failed'
   statusCode?: number | null;  // when error==='http_error' (401 stale token, 429 throttled)
@@ -126,7 +131,14 @@ export type SyntheticEvent =
   // `vps.agentStatus` inside AgentClient (hello success / classified exit) so
   // the sidebar badge + action buttons follow reality without an F5. Same
   // bus-reuse trick as shell_status; LOW_VOLUME → broadcast to every tab.
-  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null }
+  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
+      // Classified failure ('ssh-auth: …' | 'ssh-unreachable: …' | 'daemon-down: …'
+      // | 'error: …', null = cleared) + codex availability — feed the per-VPS
+      // health chips (app/vpsHealth.tsx). Keys present only when known
+      // (no-clobber contract, mirrors sdkVersion).
+      agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null;
+      // Set by the codex device-code login route on completion (§14.61).
+      codexLoggedIn?: number | null }
   // Per-session "finished, unread" marker fanned onto the global SSE bus
   // (sessionId = the Claude session id). unread=true when a turn finished
   // (`stop`) while nobody was viewing the session; unread=false when the user
