@@ -329,6 +329,30 @@ class EventLog:
         self._earliest = None
 
 
+def find_internal_gaps(
+    events: list[dict[str, Any]], after_seq: int
+) -> list[tuple[int, int]]:
+    """Holes BETWEEN consecutive events of an ascending `read_since` result.
+
+    Seqs are dense (+1 per append), so a jump between two returned events
+    proves the missing lines were lost to corruption or a failed append —
+    a different failure mode than rotation (which only eats the OLDEST
+    events and is reported via `earliest_seq`/`gap`). The leading hole
+    (after_seq → first event) is rotation's territory and NOT reported
+    here. Returns [(missing_from, missing_to), ...].
+    """
+    gaps: list[tuple[int, int]] = []
+    prev: int | None = None
+    for evt in events:
+        s = evt.get("seq")
+        if not isinstance(s, int):
+            continue
+        if prev is not None and s > prev + 1:
+            gaps.append((prev + 1, s - 1))
+        prev = s
+    return gaps
+
+
 def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     """Yields parsed objects from a JSON-Lines file, skipping bad lines."""
     try:

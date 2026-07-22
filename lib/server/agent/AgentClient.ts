@@ -306,8 +306,15 @@ export class AgentClient {
       params.replay = 300;
     }
     this.call<{ ok?: boolean; replay_count?: number; status?: string;
-                current_seq?: number; earliest_seq?: number | null; gap?: boolean }>('subscribe', params)
+                current_seq?: number; earliest_seq?: number | null; gap?: boolean;
+                internal_gaps?: [number, number][] }>('subscribe', params)
       .then((res) => {
+        // Internal log holes (corrupt lines / failed appends — agent
+        // >= 0.20.0): different failure mode than rotation, surfaced loudly
+        // hub-side; the replayed range around them is still applied.
+        if (res?.internal_gaps?.length) {
+          console.warn(`[agent ${this.vps.name}] ${sessionId}: internal event-log gaps ${JSON.stringify(res.internal_gaps)} — transcript may be missing events in those ranges`);
+        }
         // Rotation-gap detection (agent >= 0.18.0, P0.4): the agent tells us
         // its earliest retained seq; if our cursor predates it, the events in
         // between were rotated away and can NEVER be replayed. Surface it as

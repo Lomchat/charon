@@ -51,7 +51,7 @@ from .protocol import (
     ERR_SESSION_NOT_FOUND,
     RpcError,
 )
-from .event_log import EventLog, cleanup_orphans
+from .event_log import EventLog, cleanup_orphans, find_internal_gaps
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .codex_session import (
     CodexSession,
@@ -523,9 +523,27 @@ class Server:
                 and isinstance(earliest_seq, int)
                 and earliest_seq > after_seq + 1
             )
+            # Internal holes (corrupt/skipped lines, failed appends) are a
+            # DIFFERENT failure mode than rotation — report them too instead
+            # of letting the hub silently accept a jumpy replay (Codex 13.2).
+            internal_gaps: list[list[int]] = []
+            if after_seq is not None and items:
+                try:
+                    internal_gaps = [
+                        [a, b]
+                        for a, b in find_internal_gaps(items, after_seq)
+                    ]
+                    if internal_gaps:
+                        print(
+                            f"[server] WARN: internal event-log gaps for {sid}: "
+                            f"{internal_gaps} (corrupt lines / failed appends)",
+                            file=sys.stderr, flush=True,
+                        )
+                except Exception:
+                    internal_gaps = []
             return {"ok": True, "replay_count": sent, "status": s.status,
                     "current_seq": current_seq, "earliest_seq": earliest_seq,
-                    "gap": gap}
+                    "gap": gap, "internal_gaps": internal_gaps}
 
         if method == "unsubscribe":
             sid = self._require_sid(params)

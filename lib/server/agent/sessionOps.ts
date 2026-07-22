@@ -1196,31 +1196,66 @@ export class SessionStream {
     this.pendingAssistantSince = null;
 
     if (this.isReplaying) {
-      // Exact match → already in DB
-      if (this.replayKnownAssistantContents.has(finalContent)) return;
-      // Prefix → extend the existing partial
-      try {
-        const lastRows = db.select().from(claudeSessionMessages)
-          .where(and(
-            eq(claudeSessionMessages.sessionId, this.id),
-            eq(claudeSessionMessages.role, 'assistant'),
-          ))
-          .orderBy(desc(claudeSessionMessages.id))
-          .limit(1).all();
-        if (lastRows.length > 0 &&
-            finalContent.startsWith(lastRows[0].content) &&
-            finalContent.length > lastRows[0].content.length) {
-          db.update(claudeSessionMessages)
-            // Re-stamp the model too: the partial may predate the model column
-            // (or a SIGTERM flush that raced the effective_model event).
-            .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
-            .where(eq(claudeSessionMessages.id, lastRows[0].id))
-            .run();
-          this.replayKnownAssistantContents.delete(lastRows[0].content);
-          this.replayKnownAssistantContents.add(finalContent);
+      if (flushSeq != null && this.replayPersistedSeqs != null && this.replayPersistedSeqs.size > 0) {
+        // IDENTITY path (rows are seq-stamped): the flush row's identity is
+        // the FIRST delta's seq. Row present → this exact accumulation is
+        // already persisted (possibly as a SIGTERM partial → prefix-extend
+        // below). Row absent → genuinely new: identical TEXT from another
+        // turn must NOT suppress it — the original P0.3 "Done." bug lived
+        // in the content check of the else-branch, still reachable through
+        // the ungated stop/effective_model flushes until this fix.
+        // (Transition caveat: rows persisted pre-0023 are unstamped, so a
+        // replay straddling the deploy boundary can fall through to insert;
+        // one-shot window, accepted.)
+        if (this.replayPersistedSeqs.has(flushSeq)) {
+          try {
+            const [row] = db.select().from(claudeSessionMessages)
+              .where(and(
+                eq(claudeSessionMessages.sessionId, this.id),
+                eq(claudeSessionMessages.seq, flushSeq),
+                eq(claudeSessionMessages.role, 'assistant'),
+              ))
+              .limit(1).all();
+            if (row && finalContent.startsWith(row.content) && finalContent.length > row.content.length) {
+              // SIGTERM partial: the persisted row holds a strict prefix of
+              // the re-accumulated text — extend it in place.
+              db.update(claudeSessionMessages)
+                .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
+                .where(eq(claudeSessionMessages.id, row.id))
+                .run();
+            }
+          } catch {}
           return;
         }
-      } catch {}
+        // fall through → INSERT below (identity says: not persisted)
+      } else {
+        // LEGACY path (agents without seq / pre-0023 rows): content dedup +
+        // prefix-extend — the historical behavior, imperfect on identical
+        // answers but the only signal available.
+        if (this.replayKnownAssistantContents.has(finalContent)) return;
+        try {
+          const lastRows = db.select().from(claudeSessionMessages)
+            .where(and(
+              eq(claudeSessionMessages.sessionId, this.id),
+              eq(claudeSessionMessages.role, 'assistant'),
+            ))
+            .orderBy(desc(claudeSessionMessages.id))
+            .limit(1).all();
+          if (lastRows.length > 0 &&
+              finalContent.startsWith(lastRows[0].content) &&
+              finalContent.length > lastRows[0].content.length) {
+            db.update(claudeSessionMessages)
+              // Re-stamp the model too: the partial may predate the model column
+              // (or a SIGTERM flush that raced the effective_model event).
+              .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
+              .where(eq(claudeSessionMessages.id, lastRows[0].id))
+              .run();
+            this.replayKnownAssistantContents.delete(lastRows[0].content);
+            this.replayKnownAssistantContents.add(finalContent);
+            return;
+          }
+        } catch {}
+      }
     }
 
     // Stamp the row with the model that actually produced this text (per-

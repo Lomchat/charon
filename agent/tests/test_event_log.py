@@ -25,6 +25,7 @@ from charon_agent import event_log  # noqa: E402
 from charon_agent.event_log import (  # noqa: E402
     EventLog,
     cleanup_orphans,
+    find_internal_gaps,
     MAX_ROTATIONS,
 )
 
@@ -191,6 +192,34 @@ class EventLogTestCase(unittest.TestCase):
             self.assertTrue(earliest > stale_cursor + 1)
         finally:
             event_log.MAX_FILE_BYTES = orig
+
+    # ── internal gaps: corrupt line ≠ rotation (Codex 13.2) ──────────────
+    def test_corrupt_middle_line_is_detected_as_internal_gap(self):
+        log = self.make()
+        for i in range(5):
+            log.append({"event": "e", "i": i})
+        # Corrupt the line holding seq 3 (simulates a partial/failed write).
+        raw = self.path_of().read_text(encoding="utf-8").splitlines()
+        raw[2] = '{"seq": 3, CORRUPTED'
+        self.path_of().write_text("\n".join(raw) + "\n", encoding="utf-8")
+        # Fresh instance (no cached state) reads around the bad line…
+        log2 = self.make()
+        out = log2.read_since(0)
+        self.assertEqual([e["seq"] for e in out], [1, 2, 4, 5])
+        # …and the hole is DETECTED, not silently accepted.
+        self.assertEqual(find_internal_gaps(out, 0), [(3, 3)])
+
+    def test_find_internal_gaps_clean_and_leading_hole(self):
+        evts = [{"seq": s} for s in (4, 5, 6)]
+        # Leading hole (0→4) is rotation's territory (earliest_seq/gap),
+        # NOT an internal gap.
+        self.assertEqual(find_internal_gaps(evts, 0), [])
+        self.assertEqual(find_internal_gaps([], 0), [])
+        evts2 = [{"seq": s} for s in (1, 2, 5, 9)]
+        self.assertEqual(find_internal_gaps(evts2, 0), [(3, 4), (6, 8)])
+
+    def path_of(self):
+        return self.base / f"{self.sid}.jsonl"
 
     def test_earliest_seq_survives_reopen(self):
         log = self.make()
