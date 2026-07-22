@@ -159,16 +159,19 @@ maintenabilité.
 L'application HTTP peut sembler fonctionner alors que les shells WebSocket
 sont indisponibles dans les méthodes de déploiement documentées.
 
-**Actions**
+**Actions** *(✔ fait le 22/07/2026 — sauf smoke test)*
 
-- [ ] Copier `server.js` dans l'image de production.
-- [ ] Remplacer `next start` par `node server.js` dans Docker.
-- [ ] Remplacer `next start` par `node server.js` dans l'unité systemd.
-- [ ] Exécuter les migrations dans une étape explicite avant le démarrage.
-      *(déjà fait : `docker/entrypoint.sh` lance `scripts/migrate.mjs` avant
-      le CMD — il ne reste qu'à corriger le CMD)*
-- [ ] Vérifier que le service systemd peut lire la clé SSH ;
-      `ProtectHome=true` peut bloquer `/root/.ssh`.
+- [x] Copier `server.js` dans l'image de production.
+- [x] Remplacer `next start` par `node server.js` dans Docker.
+- [x] Remplacer `next start` par `node server.js` dans l'unité systemd.
+- [x] Exécuter les migrations dans une étape explicite avant le démarrage
+      *(déjà le cas : `docker/entrypoint.sh` lance `scripts/migrate.mjs`)*.
+- [x] Vérifier que le service systemd peut lire la clé SSH ;
+      `ProtectHome=true` peut bloquer `/root/.ssh` *(→ `ProtectHome=read-only`
+      + `ReadWritePaths=/root/.ssh` + commentaire explicatif)*.
+- [x] *(bonus P2.13)* `npm prune --omit=dev` + suppression de `.next/cache`
+      dans l'image ; `dotenv` déplacé en dependencies (migrate.mjs l'importe —
+      le prune l'aurait cassé).
 - [ ] Ajouter un smoke test Docker ouvrant réellement un WebSocket de shell.
 
 **Fichiers concernés**
@@ -795,8 +798,9 @@ le Dockerfile copie tout `node_modules`, y compris les dépendances de dev.
 
 - [ ] Activer `output: 'standalone'` dans Next.js.
 - [ ] Copier uniquement `.next/standalone`, `.next/static` et `public`.
-- [ ] Ne jamais copier `.next/cache`.
-- [ ] Ne pas embarquer les dépendances de développement.
+- [x] Ne jamais copier `.next/cache` *(fait le 22/07 — rm avant le COPY)*.
+- [x] Ne pas embarquer les dépendances de développement *(fait le 22/07 —
+      `npm prune --omit=dev` post-build)*.
 - [ ] Mesurer et fixer un budget de taille d'image.
 - [ ] Vérifier que `better-sqlite3` fonctionne dans l'image finale.
 

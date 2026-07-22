@@ -2,7 +2,8 @@
 # Runs once before each container start.
 # - Applies Drizzle migrations against the SQLite DB.
 # - Ensures the data directory exists.
-# - Hands off to `next start` (the Dockerfile CMD).
+# - Hands off to `node server.js` (the Dockerfile CMD — custom server with
+#   the WebSocket shell bridge; NOT `next start`).
 set -e
 
 : "${DATABASE_URL:=./data/charon.db}"

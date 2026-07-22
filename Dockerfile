@@ -37,6 +37,12 @@ ENV NODE_ENV=production \
 
 RUN npm run build
 
+# Trim what the runner stage will copy:
+# - .next/cache is webpack build cache, useless at runtime and huge.
+# - devDependencies are only needed for the build above.
+RUN rm -rf .next/cache \
+  && npm prune --omit=dev --no-audit --no-fund
+
 
 # -----------------------------------------------------------------------------
 # Stage 2 : minimal runtime image.
@@ -72,6 +78,10 @@ COPY --from=builder --chown=charon:charon /app/drizzle ./drizzle
 COPY --from=builder --chown=charon:charon /app/scripts ./scripts
 COPY --from=builder --chown=charon:charon /app/lib ./lib
 COPY --from=builder --chown=charon:charon /app/agent ./agent
+# server.js is the REAL entrypoint: custom Next server + the WebSocket
+# upgrade for /api/shells/[id]/ws. `next start` alone would silently ship
+# an app with broken shells.
+COPY --from=builder --chown=charon:charon /app/server.js ./server.js
 
 # Entrypoint runs migrations before starting the server, idempotent.
 COPY --chown=charon:charon docker/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -84,5 +94,7 @@ EXPOSE 10556
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||10556)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
+# node server.js — NOT `next start`: server.js hosts the WS shell bridge.
+# HOST/PORT come from the env (defaults above).
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
-CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "10556"]
+CMD ["node", "server.js"]

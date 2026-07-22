@@ -21,8 +21,14 @@ EnvironmentFile=/opt/charon/.env
 
 # Use the node binary that built the .next directory. nvm users often want
 # the full path to a specific Node ; system installs can usually use
-# /usr/bin/node. The `next start` script picks up HOST and PORT from .env.
-ExecStart=/usr/bin/node /opt/charon/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 10556
+# /usr/bin/node.
+#
+# IMPORTANT: launch server.js, NOT `next start`. server.js is the custom
+# server that also handles the WebSocket upgrade for persistent shells
+# (/api/shells/[id]/ws) — with plain `next start` the app looks fine but
+# every shell terminal shows "reconnecting…" forever. HOST and PORT are
+# read from .env (defaults 127.0.0.1:10556).
+ExecStart=/usr/bin/node /opt/charon/server.js
 
 # Single-user admin tool. Adjust if you've created a service user.
 User=root
@@ -33,11 +39,17 @@ RestartSec=3
 
 # Hardening (optional but recommended). Comment out anything that breaks
 # your setup ; the strict sandbox here assumes a clone in /opt/charon.
+#
+# NOTE on ProtectHome: Charon shells out to `ssh`, which needs to READ the
+# private key (~/.ssh/id_*) and WRITE known_hosts (StrictHostKeyChecking=
+# accept-new) of the User= above. `ProtectHome=true` hides the home dir
+# entirely and silently breaks every VPS connection — use read-only + an
+# explicit ReadWritePaths for ~/.ssh instead.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/charon/data /opt/charon/.next
-ProtectHome=true
+ReadWritePaths=/opt/charon/data /opt/charon/.next /root/.ssh
+ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
