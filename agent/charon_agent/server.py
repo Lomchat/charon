@@ -51,7 +51,7 @@ from .protocol import (
     ERR_SESSION_NOT_FOUND,
     RpcError,
 )
-from .event_log import EventLog, cleanup_orphans, find_internal_gaps
+from .event_log import EventLog, cleanup_orphans, find_missing_ranges
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .codex_session import (
     CodexSession,
@@ -116,6 +116,12 @@ class Server:
         # re-executing the prompt. Ids are recorded AFTER send_input succeeds
         # (a failed attempt must stay retryable with the same id).
         self.recent_input_ids: dict[str, deque[str]] = {}
+        # IN-FLIGHT send_input futures (Codex 16.4): a duplicate arriving
+        # while the first attempt is still awaiting must not be answered
+        # "duplicate" optimistically — if the first attempt then FAILED, the
+        # hub would believe a prompt landed that never did. Duplicates await
+        # the SAME future and share the first attempt's actual outcome.
+        self.inflight_inputs: dict[tuple[str, str], asyncio.Future] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -523,19 +529,23 @@ class Server:
                 and isinstance(earliest_seq, int)
                 and earliest_seq > after_seq + 1
             )
-            # Internal holes (corrupt/skipped lines, failed appends) are a
-            # DIFFERENT failure mode than rotation — report them too instead
-            # of letting the hub silently accept a jumpy replay (Codex 13.2).
+            # Non-rotation holes (corrupt/skipped lines, failed appends) —
+            # leading, internal AND trailing relative to the requested range
+            # (Codex 16.5). Rotation's share is excluded (reported via
+            # gap/earliest_seq above). Sync with read_since: no await sits
+            # between the read and current_seq(), so the range is consistent.
             internal_gaps: list[list[int]] = []
-            if after_seq is not None and items:
+            if after_seq is not None:
                 try:
                     internal_gaps = [
                         [a, b]
-                        for a, b in find_internal_gaps(items, after_seq)
+                        for a, b in find_missing_ranges(
+                            items, after_seq, current_seq, earliest_seq
+                        )
                     ]
                     if internal_gaps:
                         print(
-                            f"[server] WARN: internal event-log gaps for {sid}: "
+                            f"[server] WARN: event-log holes for {sid}: "
                             f"{internal_gaps} (corrupt lines / failed appends)",
                             file=sys.stderr, flush=True,
                         )
@@ -562,24 +572,33 @@ class Server:
             if cmid is not None:
                 seen = self.recent_input_ids.setdefault(sid, deque(maxlen=64))
                 if cmid in seen:
-                    # Already accepted — the hub's first attempt landed but its
+                    # Already ACCEPTED — the hub's first attempt landed but its
                     # RPC response was lost (timeout). Do NOT re-send the prompt.
                     return {"ok": True, "duplicate": True}
-                # RESERVE the id BEFORE the await (Codex 13.3): RPCs run in
-                # concurrent tasks, so a duplicate arriving while the first
-                # is still inside send_input must see the id immediately.
-                # (send_input is a queue.put — microsecond window — but the
-                # reservation makes the ordering correct by construction.)
-                seen.append(cmid)
+                key = (sid, cmid)
+                inflight = self.inflight_inputs.get(key)
+                if inflight is not None:
+                    # First attempt still running (Codex 16.4): share ITS
+                    # outcome — success → duplicate:true; failure → this call
+                    # fails too (no phantom "accepted"), and a later retry
+                    # with the same id can genuinely execute.
+                    await inflight
+                    return {"ok": True, "duplicate": True}
+                fut: asyncio.Future = asyncio.get_running_loop().create_future()
+                self.inflight_inputs[key] = fut
                 try:
                     await s.send_input(content)
-                except Exception:
-                    # Not accepted → the id must stay retryable.
-                    try:
-                        seen.remove(cmid)
-                    except ValueError:
-                        pass
+                except Exception as e:
+                    self.inflight_inputs.pop(key, None)
+                    if not fut.done():
+                        fut.set_exception(e)
+                        fut.exception()  # mark retrieved (no un-awaited-warning)
                     raise
+                # ACCEPTED: record the id, resolve waiters, release in-flight.
+                seen.append(cmid)
+                self.inflight_inputs.pop(key, None)
+                if not fut.done():
+                    fut.set_result(True)
                 return {"ok": True}
             await s.send_input(content)
             return {"ok": True}

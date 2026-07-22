@@ -46,7 +46,12 @@ const SID = 'a'.repeat(32);
 let db: any;
 let schema: any;
 let SessionStream: any;
+let orderChronologically: any;
+// Injection: skip the first `skipInserts` row inserts (pass through), then
+// fail the next `failNextInserts` ones. Lets a test target e.g. "the SECOND
+// insert of this event" (pending succeeds, message row fails — S6).
 let failNextInserts = 0;
+let skipInserts = 0;
 
 function mkStream(lastSeenSeq: number | null) {
   const s = new SessionStream({
@@ -95,6 +100,10 @@ beforeAll(async () => {
   // next k row inserts throw, everything after goes through untouched.
   const realInsert = db.insert.bind(db);
   vi.spyOn(db, 'insert').mockImplementation(((table: any) => {
+    if (skipInserts > 0) {
+      skipInserts--;
+      return realInsert(table);
+    }
     if (failNextInserts > 0) {
       failNextInserts--;
       const boom = () => { throw new Error('injected DB failure'); };
@@ -106,10 +115,12 @@ beforeAll(async () => {
   }) as any);
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
+  ({ orderChronologically } = await import('@/lib/server/claude/messageOrder'));
 });
 
 afterEach(() => {
   failNextInserts = 0;
+  skipInserts = 0;
   db.delete(schema.claudeSessionMessages).run();
   db.delete(schema.claudePendingQuestions).run();
   db.update(schema.claudeSessions).set({ lastSeenSeq: null }).run();
@@ -141,35 +152,43 @@ describe('replay exactness under injected faults', () => {
     expect(rows('tool_result')).toHaveLength(1); // still exactly one
   });
 
-  it('S2: flush failure after several deltas — text recovered by a later boundary', () => {
+  it('S2: flush failure — text recovered AND chronological order preserved (16.3)', () => {
     const s1 = mkStream(null);
     const parts = ['alpha ', 'beta ', 'gamma ', 'delta ', 'omega'];
     parts.forEach((p, i) =>
       s1._onAgentEvent({ event: 'assistant_text', session_id: SID, delta: p, seq: 20 + i }));
-    failNextInserts = 1; // the FLUSH row fails; the tool_use row succeeds
+    failNextInserts = 1; // the FLUSH row fails
     s1._onAgentEvent({ event: 'tool_use', session_id: SID, id: 't2', name: 'Read', input: {}, seq: 25 });
     s1._persistSeqNow();
 
     expect(persistedCursor()).toBe(19); // pinned at first delta - 1
     expect(rows('assistant')).toHaveLength(0);
-    expect(rows('tool_use')).toHaveLength(1);
+    // Order-preserving stop (Codex 16.3): the boundary's OWN row must NOT
+    // be persisted after its flush failed — else it lands BEFORE the text.
+    expect(rows('tool_use')).toHaveLength(0);
 
-    // Restart: deltas 20..24 re-delivered; boundary 25 is identity-gated
-    // (its own row exists) but the buffer is KEPT (flush row absent); the
-    // next live boundary flushes the full text.
+    // Restart: replay redoes deltas → flush → boundary IN ORDER, then the
+    // turn continues (thinking, post-tool text, stop) — the post-tool text
+    // must form a SEPARATE segment, never merged with the first one.
     const s2 = mkStream(persistedCursor());
     replayThrough(s2, [
       ...parts.map((p, i) => ({ event: 'assistant_text', delta: p, seq: 20 + i })),
       { event: 'tool_use', id: 't2', name: 'Read', input: {}, seq: 25 },
     ]);
     s2._onAgentEvent({ event: 'thinking', session_id: SID, text: 'next', seq: 26 });
+    s2._onAgentEvent({ event: 'assistant_text', session_id: SID, delta: 'after-tool', seq: 27 });
+    s2._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 28 });
     s2._persistSeqNow();
 
     const assistants = rows('assistant');
-    expect(assistants).toHaveLength(1);
+    expect(assistants).toHaveLength(2);
     expect(assistants[0].content).toBe(parts.join(''));
     expect(assistants[0].seq).toBe(20); // stamped with the FIRST delta
-    expect(rows('tool_use')).toHaveLength(1); // no duplicate
+    expect(assistants[1].content).toBe('after-tool'); // separate segment
+    expect(rows('tool_use')).toHaveLength(1);
+    // FULL chronological check through the real ordering used by the GET:
+    const ordered = orderChronologically(rows()).map((r: any) => r.role);
+    expect(ordered).toEqual(['assistant', 'tool_use', 'event', 'assistant']); // thinking rows have role 'event'
   });
 
   it('S3: identical "Done." in two turns — the genuinely-missed second one is persisted', () => {
@@ -214,6 +233,70 @@ describe('replay exactness under injected faults', () => {
     s2._persistSeqNow();
 
     expect(rows('assistant')).toHaveLength(2); // unchanged
+  });
+
+  it('S6: pending SUCCEEDS but message row FAILS — replay repairs the row without re-notifying (16.2)', () => {
+    const s1 = mkStream(null);
+    skipInserts = 1;      // pending insert passes…
+    failNextInserts = 1;  // …the user_question message row fails
+    s1._onAgentEvent({ event: 'user_question', session_id: SID, id: 'q2', questions: [{ question: 'go?' }], seq: 50 });
+    s1._persistSeqNow();
+
+    const pendings = db.select().from(schema.claudePendingQuestions).all()
+      .filter((r: any) => r.sessionId === SID);
+    expect(pendings).toHaveLength(1);           // pending survived
+    expect(rows('user_question')).toHaveLength(0); // row did not
+    expect(persistedCursor()).toBe(49);         // cursor pinned → replay
+
+    // Restart: the pending's presence must NOT short-circuit the repair.
+    const s2 = mkStream(persistedCursor());
+    replayThrough(s2, [
+      { event: 'user_question', id: 'q2', questions: [{ question: 'go?' }], seq: 50 },
+    ]);
+    s2._persistSeqNow();
+
+    const pendings2 = db.select().from(schema.claudePendingQuestions).all()
+      .filter((r: any) => r.sessionId === SID);
+    expect(pendings2).toHaveLength(1);            // still exactly one pending
+    expect(rows('user_question')).toHaveLength(1); // row REPAIRED
+    expect(persistedCursor()).toBe(50);            // cursor may now advance
+  });
+
+  it('S6bis: same repair for exit_plan_request', () => {
+    const s1 = mkStream(null);
+    skipInserts = 1;
+    failNextInserts = 1;
+    s1._onAgentEvent({ event: 'exit_plan_request', session_id: SID, id: 'p1', plan: 'the plan', seq: 60 });
+    s1._persistSeqNow();
+    expect(rows('exit_plan_request')).toHaveLength(0);
+    expect(persistedCursor()).toBe(59);
+
+    const s2 = mkStream(persistedCursor());
+    replayThrough(s2, [
+      { event: 'exit_plan_request', id: 'p1', plan: 'the plan', seq: 60 },
+    ]);
+    s2._persistSeqNow();
+    const pendings = db.select().from(schema.claudePendingQuestions).all()
+      .filter((r: any) => r.sessionId === SID);
+    expect(pendings).toHaveLength(1);
+    expect(rows('exit_plan_request')).toHaveLength(1);
+    expect(persistedCursor()).toBe(60);
+  });
+
+  it('orderChronologically: repaired rows sort back into place, null-seq rows stay anchored', () => {
+    const rowsIn = [
+      { id: 1, seq: 10, role: 'assistant' },
+      { id: 2, seq: null, role: 'user' },      // anchored at watermark 10
+      { id: 3, seq: 30, role: 'tool_use' },
+      { id: 4, seq: 31, role: 'tool_result' },
+      { id: 5, seq: 20, role: 'assistant' },   // REPAIRED row (late insert, old seq)
+      { id: 6, seq: null, role: 'user' },      // must NOT be dragged back by id 5
+    ];
+    const ordered = orderChronologically(rowsIn as any).map((r: any) => r.id);
+    expect(ordered).toEqual([1, 2, 5, 3, 4, 6]);
+    // Fully-legacy sessions (all null): exact id order preserved.
+    const legacy = [{ id: 3, seq: null }, { id: 1, seq: null }, { id: 2, seq: null }];
+    expect(orderChronologically(legacy as any).map((r: any) => r.id)).toEqual([1, 2, 3]);
   });
 
   it('S5: failed pending insert leaves nothing half-written; restart replay redoes both', () => {

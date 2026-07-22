@@ -353,6 +353,42 @@ def find_internal_gaps(
     return gaps
 
 
+def find_missing_ranges(
+    events: list[dict[str, Any]],
+    after_seq: int,
+    current_seq: int,
+    earliest_seq: int | None,
+) -> list[tuple[int, int]]:
+    """ALL holes in the range the hub asked for: (after_seq, current_seq].
+
+    Complete version of `find_internal_gaps` (Codex 16.5): also reports the
+    LEADING hole (a corrupt line right at after_seq+1 — invisible to a
+    between-events scan, and NOT explained by rotation when earliest_seq is
+    older than the cursor), the TRAILING hole (last lines corrupt/unwritten:
+    nothing after them can reveal a jump), and the everything-missing case
+    (no events returned but current_seq says there should be). The part of
+    the leading hole already explained by rotation (seqs < earliest_seq) is
+    EXCLUDED — that's `gap`/`earliest_seq`'s territory, reported separately.
+    """
+    ranges: list[tuple[int, int]] = []
+    # Start of the range the hub expects, past whatever rotation legitimately ate.
+    start = after_seq + 1
+    if isinstance(earliest_seq, int) and earliest_seq > start:
+        start = earliest_seq
+    prev = start - 1
+    for evt in events:
+        s = evt.get("seq")
+        if not isinstance(s, int):
+            continue
+        if s > prev + 1:
+            ranges.append((prev + 1, s - 1))
+        if s > prev:
+            prev = s
+    if current_seq > prev:
+        ranges.append((prev + 1, current_seq))
+    return ranges
+
+
 def _read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     """Yields parsed objects from a JSON-Lines file, skipping bad lines."""
     try:

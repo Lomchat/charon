@@ -36,7 +36,7 @@
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
     "test:watch": "vitest",
-    "test:py": "python3 -m unittest discover -s agent/tests -v",
+    "test:py": "sh -c 'PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); \"$PY\" -m unittest discover -s agent/tests -v'",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node ./scripts/migrate.mjs"
   },

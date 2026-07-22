@@ -29,18 +29,23 @@ from charon_agent.server import Server  # noqa: E402
 class _FakeSession:
     """Just enough of AgentSession for the send_input dispatch path."""
 
-    def __init__(self, delay: float = 0.0, fail_times: int = 0) -> None:
+    def __init__(self, delay: float = 0.0, fail_times: int = 0,
+                 fail_after_delay: bool = False) -> None:
         self.status = "active"
         self.calls: list[str] = []
         self._delay = delay
         self._fail_times = fail_times
+        self._fail_after_delay = fail_after_delay
 
     async def send_input(self, content: str) -> None:
-        if self._fail_times > 0:
+        if self._fail_times > 0 and not self._fail_after_delay:
             self._fail_times -= 1
             raise RuntimeError("injected send_input failure")
         if self._delay:
             await asyncio.sleep(self._delay)
+        if self._fail_times > 0 and self._fail_after_delay:
+            self._fail_times -= 1
+            raise RuntimeError("injected slow send_input failure")
         self.calls.append(content)
 
 
@@ -98,6 +103,30 @@ class SendInputDedupTestCase(unittest.TestCase):
         calls, r2 = asyncio.run(run())
         self.assertEqual(calls, ["retry-me"])
         self.assertNotIn("duplicate", r2)
+
+    def test_inflight_failure_is_shared_no_phantom_accept(self):
+        """Codex 16.4: B arrives while A is still in flight; A then FAILS.
+        Neither call may report success — else the hub believes a prompt
+        landed that never executed — and a third retry must really run."""
+        async def run():
+            fake = _FakeSession(delay=0.05, fail_times=1, fail_after_delay=True)
+            self.server.sessions["s1"] = fake
+            p = {"session_id": "s1", "content": "risky", "client_message_id": "cm4"}
+            r1, r2 = await asyncio.gather(
+                self._dispatch(dict(p)), self._dispatch(dict(p)),
+                return_exceptions=True,
+            )
+            # Both A and B must fail (shared outcome, no phantom accept).
+            failures = [r for r in (r1, r2) if isinstance(r, Exception)]
+            # A clean third retry executes for real.
+            r3 = await self._dispatch(dict(p))
+            return fake.calls, failures, r3
+
+        calls, failures, r3 = asyncio.run(run())
+        self.assertEqual(len(failures), 2,
+                         "duplicate must share the in-flight FAILURE, not fake success")
+        self.assertEqual(calls, ["risky"], "the retry after failure executes once")
+        self.assertNotIn("duplicate", r3)
 
     def test_ids_are_scoped_per_session(self):
         async def run():

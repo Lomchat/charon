@@ -309,11 +309,23 @@ export class AgentClient {
                 current_seq?: number; earliest_seq?: number | null; gap?: boolean;
                 internal_gaps?: [number, number][] }>('subscribe', params)
       .then((res) => {
-        // Internal log holes (corrupt lines / failed appends — agent
-        // >= 0.20.0): different failure mode than rotation, surfaced loudly
-        // hub-side; the replayed range around them is still applied.
+        // Non-rotation log holes (corrupt lines / failed appends — agent
+        // >= 0.20.0, complete leading/internal/trailing since 0.21.0):
+        // surfaced through the SAME replay_gap path as rotation gaps (log +
+        // persisted event row + UI banner), one synthetic event per range
+        // (capped — a shredded log shouldn't flood the transcript).
         if (res?.internal_gaps?.length) {
-          console.warn(`[agent ${this.vps.name}] ${sessionId}: internal event-log gaps ${JSON.stringify(res.internal_gaps)} — transcript may be missing events in those ranges`);
+          console.warn(`[agent ${this.vps.name}] ${sessionId}: event-log holes ${JSON.stringify(res.internal_gaps)}`);
+          const subs2 = this.subscribers.get(sessionId);
+          if (subs2) {
+            for (const [from, to] of res.internal_gaps.slice(0, 3)) {
+              const holeEv = {
+                event: 'replay_gap', session_id: sessionId,
+                after_seq: from - 1, earliest_seq: to + 1,
+              } as AgentEvent;
+              for (const cb of subs2) { try { cb(holeEv); } catch {} }
+            }
+          }
         }
         // Rotation-gap detection (agent >= 0.18.0, P0.4): the agent tells us
         // its earliest retained seq; if our cursor predates it, the events in

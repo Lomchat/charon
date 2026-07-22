@@ -10,6 +10,7 @@ import { deleteSession, peekStream } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
+import { orderChronologically } from '@/lib/server/claude/messageOrder';
 
 /**
  * The Claude SDK stores each session in
@@ -145,8 +146,8 @@ function loadMessageWindow(
     ))
     .all()
     .filter((m) => NON_PAGINATED_ROLES.includes(m.role));
-  // Merge + sort by id asc
-  const merged = [...window, ...attachments].sort((a, b) => a.id - b.id);
+  // Merge + chronological order (seq-aware, Codex 16.3 — messageOrder.ts)
+  const merged = orderChronologically([...window, ...attachments]);
   return { messages: merged, hasMore, oldestChatId: minId };
 }
 
@@ -195,14 +196,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     // Delta mode: every row with id > since. Cap at 1000 just in case
     // (a very long gap could otherwise return thousands of rows; in
     // practice we poll every 5s so the gap is small).
-    messages = db.select().from(claudeSessionMessages)
+    messages = orderChronologically(db.select().from(claudeSessionMessages)
       .where(and(
         eq(claudeSessionMessages.sessionId, id),
         gt(claudeSessionMessages.id, since),
       ))
       .orderBy(asc(claudeSessionMessages.id))
       .limit(1000)
-      .all();
+      .all());
     hasMore = false;
     oldestChatId = null;
   } else {

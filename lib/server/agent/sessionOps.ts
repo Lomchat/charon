@@ -666,7 +666,11 @@ export class SessionStream {
         break;
       case 'thinking':
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
-        this._flushAssistant();
+        // Flush failed → STOP: persisting this boundary's row now would put
+        // it BEFORE the assistant text that preceded it (Codex 16.3). The
+        // holdback pins the cursor at the first delta; the restart replay
+        // redoes flush-then-boundary in order.
+        if (!this._flushAssistant()) break;
         if (this.isReplaying && this.replayKnownThinkingContents.has(ev.text)) break;
         this._persist('event', { type: 'thinking', text: ev.text });
         this._broadcast({ type: 'thinking', text: ev.text });
@@ -674,7 +678,7 @@ export class SessionStream {
         break;
       case 'tool_use':
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
-        this._flushAssistant();
+        if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownToolUseIds.has(String(ev.id))) break;
         this._persist('tool_use', { type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
         this._broadcast({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
@@ -699,7 +703,7 @@ export class SessionStream {
           this.respondPermission(ev.id, true).catch(() => {});
           return;
         }
-        this._flushAssistant();
+        if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
         try {
           db.insert(claudePendingPermissions).values({
@@ -730,62 +734,77 @@ export class SessionStream {
         });
         sendPermissionToTelegram(this.id, ev.id, ev.tool, ev.input).catch(() => {});
         break;
-      case 'user_question':
+      case 'user_question': {
         // Identity gate on the event's OWN row: it is inserted AFTER the
         // pending (break-on-failure order below), so its presence proves
         // the pending write completed too — no transaction needed.
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
-        this._flushAssistant();
-        if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
-        try {
-          db.insert(claudePendingQuestions).values({
-            id: ev.id, sessionId: this.id, kind: 'question',
-            payload: JSON.stringify(ev.questions ?? []), status: 'pending',
-          }).onConflictDoNothing().run();
-        } catch (e) {
-          // Real failure → holdback + stop; replay redoes pending AND row.
-          const seq = this.currentEventSeq;
-          if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
-            this.persistHoldbackSeq = seq;
+        if (!this._flushAssistant()) break; // order-preserving stop (16.3)
+        // Codex 16.2: "pending exists" must NOT short-circuit the message
+        // row — the pending may have survived a crash whose row insert
+        // failed. Skip only the effects that provably happened (pending +
+        // its notifications); REPAIR the missing row silently.
+        const pendingKnown = this.isReplaying && this.replayKnownPendingIds.has(ev.id);
+        if (!pendingKnown) {
+          try {
+            db.insert(claudePendingQuestions).values({
+              id: ev.id, sessionId: this.id, kind: 'question',
+              payload: JSON.stringify(ev.questions ?? []), status: 'pending',
+            }).onConflictDoNothing().run();
+          } catch (e) {
+            // Real failure → holdback + stop; replay redoes pending AND row.
+            const seq = this.currentEventSeq;
+            if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
+              this.persistHoldbackSeq = seq;
+            }
+            this._log('warn', 'sdk_error', { msg: 'pending question insert failed', err: (e as Error)?.message });
+            break;
           }
-          this._log('warn', 'sdk_error', { msg: 'pending question insert failed', err: (e as Error)?.message });
-          break;
         }
         this._persist('user_question', { type: 'user_question', id: ev.id, questions: ev.questions });
-        this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
-        this._maybePush({
-          title: `❓ ${this.vpsName} · ${this._label()} : question`,
-          body: `${ev.questions[0]?.question ?? 'user question'}`,
-          tag: `q-${this.id}`,
-        });
-        sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
+        if (!pendingKnown) {
+          this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
+          this._maybePush({
+            title: `❓ ${this.vpsName} · ${this._label()} : question`,
+            body: `${ev.questions[0]?.question ?? 'user question'}`,
+            tag: `q-${this.id}`,
+          });
+          sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
+        }
         break;
-      case 'exit_plan_request':
-        // Same pending-then-row break-on-failure ordering as user_question.
+      }
+      case 'exit_plan_request': {
+        // Same structure as user_question: pending→row break-on-failure
+        // order + pending-survived-row-missing repair (Codex 16.2).
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
-        this._flushAssistant();
-        if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
-        try {
-          db.insert(claudePendingQuestions).values({
-            id: ev.id, sessionId: this.id, kind: 'exit_plan',
-            payload: JSON.stringify({ plan: ev.plan ?? '' }), status: 'pending',
-          }).onConflictDoNothing().run();
-        } catch (e) {
-          const seq = this.currentEventSeq;
-          if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
-            this.persistHoldbackSeq = seq;
+        if (!this._flushAssistant()) break; // order-preserving stop (16.3)
+        const pendingKnown = this.isReplaying && this.replayKnownPendingIds.has(ev.id);
+        if (!pendingKnown) {
+          try {
+            db.insert(claudePendingQuestions).values({
+              id: ev.id, sessionId: this.id, kind: 'exit_plan',
+              payload: JSON.stringify({ plan: ev.plan ?? '' }), status: 'pending',
+            }).onConflictDoNothing().run();
+          } catch (e) {
+            const seq = this.currentEventSeq;
+            if (seq != null && (this.persistHoldbackSeq == null || seq < this.persistHoldbackSeq)) {
+              this.persistHoldbackSeq = seq;
+            }
+            this._log('warn', 'sdk_error', { msg: 'pending exit_plan insert failed', err: (e as Error)?.message });
+            break;
           }
-          this._log('warn', 'sdk_error', { msg: 'pending exit_plan insert failed', err: (e as Error)?.message });
-          break;
         }
         this._persist('exit_plan_request', { type: 'exit_plan_request', id: ev.id, plan: ev.plan });
-        this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
-        this._maybePush({
-          title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
-          body: 'Claude finished planning — tap to approve',
-          tag: `plan-${this.id}`,
-        });
+        if (!pendingKnown) {
+          this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
+          this._maybePush({
+            title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
+            body: 'Claude finished planning — tap to approve',
+            tag: `plan-${this.id}`,
+          });
+        }
         break;
+      }
       case 'todo_update':
         if (this._replayAlreadyPersisted(ev)) break;
         this._persist('event', { type: 'todo_update', todos: ev.todos });
@@ -902,8 +921,10 @@ export class SessionStream {
             && ev.model !== this.effectiveModel) {
           // Stamp any text buffered BEFORE the switch with the OLD model: a
           // mid-turn model change (fallback kicking in) must not retroactively
-          // relabel text the previous model produced.
-          this._flushAssistant();
+          // relabel text the previous model produced. Flush failed → do NOT
+          // switch (the restored buffer would be mislabeled with the NEW
+          // model at its retry); the replay redoes flush-then-switch.
+          if (!this._flushAssistant()) break;
           this.effectiveModel = ev.model;
           try {
             db.update(claudeSessions).set({ effectiveModel: ev.model })
@@ -1181,8 +1202,13 @@ export class SessionStream {
    *    inserting a new one (otherwise we'd have a partial + a complete in DB).
    *  - Otherwise → normal insert.
    */
-  private _flushAssistant(): void {
-    if (!this.currentAssistant) return;
+  /** Returns FALSE when the flush row insert failed (buffer restored,
+   *  cursor pinned) — boundary handlers must then STOP before persisting
+   *  their own row, or the transcript order breaks: the boundary row would
+   *  land BEFORE the assistant text that preceded it (Codex 16.3). TRUE =
+   *  flushed or nothing to flush. */
+  private _flushAssistant(): boolean {
+    if (!this.currentAssistant) return true;
     const finalContent = this.currentAssistant;
     // The flush row is stamped with the FIRST delta's seq — the row's
     // identity is the accumulation start (unique: a delta belongs to
@@ -1225,14 +1251,14 @@ export class SessionStream {
                 .run();
             }
           } catch {}
-          return;
+          return true;
         }
         // fall through → INSERT below (identity says: not persisted)
       } else {
         // LEGACY path (agents without seq / pre-0023 rows): content dedup +
         // prefix-extend — the historical behavior, imperfect on identical
         // answers but the only signal available.
-        if (this.replayKnownAssistantContents.has(finalContent)) return;
+        if (this.replayKnownAssistantContents.has(finalContent)) return true;
         try {
           const lastRows = db.select().from(claudeSessionMessages)
             .where(and(
@@ -1252,7 +1278,7 @@ export class SessionStream {
               .run();
             this.replayKnownAssistantContents.delete(lastRows[0].content);
             this.replayKnownAssistantContents.add(finalContent);
-            return;
+            return true;
           }
         } catch {}
       }
@@ -1272,9 +1298,10 @@ export class SessionStream {
       if (flushSeq != null && (this.persistHoldbackSeq == null || flushSeq < this.persistHoldbackSeq)) {
         this.persistHoldbackSeq = flushSeq;
       }
-      return;
+      return false;
     }
     if (this.isReplaying) this.replayKnownAssistantContents.add(finalContent);
+    return true;
   }
 
   /** Public variant for graceful shutdown: persists without broadcasting. */

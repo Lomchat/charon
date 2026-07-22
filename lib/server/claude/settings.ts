@@ -46,7 +46,19 @@ function encryptForRest(value: string): string {
 }
 
 function decryptFromRest(stored: string): string {
-  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  if (!stored.startsWith(ENC_PREFIX)) {
+    // Historical PLAINTEXT value (pre-migration). In production WITHOUT a
+    // valid key, refuse to serve it (Codex 16.6): the boot migration could
+    // not run, and silently using plaintext would perpetuate a fail-open
+    // state the operator believes is encrypted. With a valid key it is
+    // served normally — encryptSecretsAtRest converts it at the next seed
+    // pass anyway (idempotent, prefix-gated).
+    if (stored && process.env.NODE_ENV === 'production' && !getEnvAesKey()) {
+      console.error('[settings] refusing to USE a plaintext stored secret in production without a valid MASTER key (fix MASTER_PASSWORD/MASTER_SALT, then re-enter or let the boot migration encrypt it) — treating as unset');
+      return '';
+    }
+    return stored;
+  }
   const key = getEnvAesKey();
   const pt = key ? tryDecrypt(stored.slice(ENC_PREFIX.length), key) : null;
   if (pt == null) {

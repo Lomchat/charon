@@ -125,6 +125,11 @@ class Holder:
         self._spool_fh = None  # lazily opened append handle
         self._done = asyncio.Event()
         self._cleaning = False
+        # Single persistent drainer (Codex 16.7): one task for the whole
+        # holder lifetime, woken on demand — the old create_task(drain) per
+        # message piled up one pending task PER MESSAGE while a slow agent
+        # kept the transport buffer above asyncio's high-water mark.
+        self._drain_waker = asyncio.Event()
 
     # ── PTY ───────────────────────────────────────────────────────────────
     def _fork_bash(self) -> None:
@@ -344,18 +349,25 @@ class Holder:
             return
         try:
             w.write((json.dumps(obj, separators=(",", ":")) + "\n").encode())
-            # Drain still fire-and-forget for latency, but the buffer-size
-            # check above bounds what can accumulate between drains.
-            asyncio.get_event_loop().create_task(self._drain(w))
+            # Wake the single persistent drainer — O(1) tasks regardless of
+            # message rate; the buffer-size check above bounds the bytes.
+            self._drain_waker.set()
         except Exception:
             self._client_writer = None
 
-    async def _drain(self, w: asyncio.StreamWriter) -> None:
-        try:
-            await w.drain()
-        except Exception:
-            if self._client_writer is w:
-                self._client_writer = None
+    async def _drain_loop(self) -> None:
+        """One drainer for the holder's lifetime (Codex 16.7)."""
+        while True:
+            await self._drain_waker.wait()
+            self._drain_waker.clear()
+            w = self._client_writer
+            if w is None:
+                continue
+            try:
+                await w.drain()
+            except Exception:
+                if self._client_writer is w:
+                    self._client_writer = None
 
     # ── Teardown ──────────────────────────────────────────────────────────
     async def _reap(self, force_after: float) -> Optional[int]:
@@ -449,6 +461,7 @@ class Holder:
             pass
 
         loop = asyncio.get_event_loop()
+        loop.create_task(self._drain_loop())
 
         def _on_signal() -> None:
             _log(self.shell_id, "signal received — shutting down")

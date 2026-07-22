@@ -26,6 +26,7 @@ from charon_agent.event_log import (  # noqa: E402
     EventLog,
     cleanup_orphans,
     find_internal_gaps,
+    find_missing_ranges,
     MAX_ROTATIONS,
 )
 
@@ -220,6 +221,57 @@ class EventLogTestCase(unittest.TestCase):
 
     def path_of(self):
         return self.base / f"{self.sid}.jsonl"
+
+    # ── find_missing_ranges: leading/trailing/empty holes (Codex 16.5) ───
+    def test_missing_ranges_corrupt_line_right_after_cursor(self):
+        # Log 1..20, cursor 10, line 11 corrupted: read_since(10) → 12..20,
+        # earliest_seq=1 (no rotation). The leading hole MUST be reported.
+        log = self.make()
+        for i in range(20):
+            log.append({"event": "e", "i": i})
+        raw = self.path_of().read_text(encoding="utf-8").splitlines()
+        raw[10] = "GARBAGE-LINE"  # seq 11
+        self.path_of().write_text("\n".join(raw) + "\n", encoding="utf-8")
+        log2 = self.make()
+        items = log2.read_since(10)
+        self.assertEqual([e["seq"] for e in items], list(range(12, 21)))
+        self.assertEqual(
+            find_missing_ranges(items, 10, log2.current_seq(), log2.earliest_seq()),
+            [(11, 11)],
+        )
+
+    def test_missing_ranges_corrupt_last_line(self):
+        # Last line corrupt: nothing after it can reveal a jump — the
+        # trailing hole must be reported against current_seq.
+        log = self.make()
+        for i in range(5):
+            log.append({"event": "e", "i": i})
+        raw = self.path_of().read_text(encoding="utf-8").splitlines()
+        raw[4] = '{"broken'  # seq 5
+        self.path_of().write_text("\n".join(raw) + "\n", encoding="utf-8")
+        # current_seq recovered from files would now be 4 — use the KNOWN
+        # allocated top (5): this models the running process whose counter
+        # advanced even though the append was lost.
+        log2 = self.make()
+        items = log2.read_since(0)
+        self.assertEqual([e["seq"] for e in items], [1, 2, 3, 4])
+        self.assertEqual(find_missing_ranges(items, 0, 5, 1), [(5, 5)])
+
+    def test_missing_ranges_everything_after_cursor_gone(self):
+        # No events returned but the counter says there should be.
+        self.assertEqual(find_missing_ranges([], 10, 20, 1), [(11, 20)])
+        # …and a caught-up cursor reports nothing.
+        self.assertEqual(find_missing_ranges([], 20, 20, 1), [])
+
+    def test_missing_ranges_rotation_plus_internal(self):
+        # Rotation ate 1..9 (earliest=10): the leading hole up to 9 is
+        # rotation's report (gap/earliest_seq), NOT ours; the internal 12
+        # and trailing 15 ARE ours.
+        items = [{"seq": s} for s in (10, 11, 13, 14)]
+        self.assertEqual(
+            find_missing_ranges(items, 5, 15, 10),
+            [(12, 12), (15, 15)],
+        )
 
     def test_earliest_seq_survives_reopen(self):
         log = self.make()
