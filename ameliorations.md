@@ -68,37 +68,60 @@ contenu, gap de rotation silencieux, `crypto.ts` mort). Quatre réserves :
 | 8.4 commentaires CI | ❌ inversé (nie des tests existants) | corriger l'énoncé |
 | P3.1 doc | ✅ + CLAUDE.md à 71k/60k | P3 |
 
-### Quick wins recommandés (une session chacun ou moins)
+### Quick wins recommandés — ✅ TOUS RÉALISÉS le 22/07/2026
 
-1. **Masquer `telegram.bot_token` + `claude.api_key` dans GET settings** (P0.7).
-2. **Dockerfile + service.example → `node server.js`** ; copier server.js (P0.1).
-3. **Kill compensatoire + « stop vs forget » shells + kill best-effort au
+1. ✅ **Masquer `telegram.bot_token` + `claude.api_key` dans GET settings** (P0.7).
+2. ✅ **Dockerfile + service.example → `node server.js`** ; server.js copié,
+   devDeps prunées, .next/cache exclu (P0.1).
+3. ✅ **Kill compensatoire + « stop vs forget » shells + kill best-effort au
    DELETE VPS** (P0.6).
-4. **Borne port 1..65535, refus des valeurs en `-`, séparateur `--` dans les
-   argv ssh** — hub + `/api/sync` (P1.3).
-5. **Appliquer `ssh.private_key_path` dans server.js, sshExec et test route**
-   (P1.2 — bug concret identifié).
-6. **Compteur monotone dans SearchModal** (P2.8).
-7. **Throttle `touchSession`** (P1.5).
-8. **Supprimer `session.max_active`/`retention.killed_days`** (P1.7).
-9. **Corriger le commentaire ci.yml:7 + rendre `npm audit` bloquant** (8.4/P2.16).
-10. **`SOURCE_DATE_EPOCH` + tri dans build.sh** (P2.15 — évite les vagues
-    d'auto-update fleet sur rebuild no-op, cf. CLAUDE.md §14.53).
+4. ✅ **Borne port 1..65535, refus des valeurs en `-`, séparateur `--` dans
+   les argv ssh** — hub + `/api/sync` (P1.3).
+5. ✅ **`ssh.private_key_path` appliqué dans server.js, sshExec et test route**
+   + known_hosts dédié (P1.2).
+6. ✅ **Garde de fraîcheur dans SearchModal** (P2.8).
+7. ✅ **Throttle `touchSession`** (30 min) (P1.5).
+8. ✅ **`session.max_active`/`retention.killed_days` supprimés** (P1.7).
+9. ✅ **Commentaire ci.yml corrigé + `npm audit` bloquant + matrice py
+   3.10/3.13** (8.4/P2.16).
+10. ✅ **build.sh déterministe** (zip trié, date fixe, perms fixes) (P2.15).
 
-### Chantiers structurels (dans l'ordre)
+### Chantiers structurels — état au 22/07/2026
 
-1. **Seq durable par message** (`claude_session_messages.seq` +
-   UNIQUE(session_id, seq)) — règle P0.2 + P0.3 d'un coup, prérequis de P0.4.
-2. **`earliest_seq`/gap au subscribe** (P0.4 — bump protocole + pyz).
-3. **File bornée par client côté agent** (P0.5 — l'OOM agent est le risque réel).
-4. **Chiffrement at-rest des settings + hash des tokens session** (P0.7 suite).
-5. **FTS5, image standalone, Strict Mode** — confort, après le reste.
-6. **Refactor machines d'état (P2.7) en DERNIER**, après les tests de panne —
-   le code est truffé d'invariants documentés (§14) qu'un refactor aveugle
-   casserait.
+1. ✅ **Seq durable par message** (migration 0023 ; SANS contrainte unique —
+   voir P0.3, la proposition était fausse) — P0.2+P0.3 réglés, curseur
+   retenu (`_durableCursor`), holdback sur échec de persist.
+2. ✅ **`earliest_seq`/gap au subscribe** (agent 0.18.0 + `replay_gap`
+   hub-side ; la flotte auto-roll — 4 VPS déjà à jour, les autres suivent
+   dès qu'ils sont quiet).
+3. ✅ **File bornée par client côté agent** + bufferedAmount/maxPayload/
+   Origin server.js + drop SSE (P0.5, P1.4 partiel).
+4. ◐ **Chiffrement at-rest des settings** : hash HMAC des tokens de session
+   ✅ (SESSION_SECRET enfin utilisé, migration one-shot) ; chiffrement des
+   settings ✗ (reste le dernier morceau de P0.7).
+5. ✗ **FTS5, image standalone, Strict Mode** — confort, non fait.
+6. ✗ **Refactor machines d'état (P2.7)** — volontairement non fait (en
+   dernier, après les tests de panne).
 
-À noter : ce fichier n'était pas commité (déposé par la review) ; `todo.md`
-(« audit Codex ») recoupe partiellement ce backlog — fusionner ou archiver.
+### Bilan d'exécution (22/07/2026)
+
+11 commits, chacun buildé + déployé + vérifié en prod avant push :
+P0.1 ✅ · P0.2 ✅ · P0.3 ✅ · P0.4 ✅ · P0.5 ✅ · P0.6 ✅ · P0.7 ✅ (sauf
+chiffrement at-rest) · P1.2 ✅ · P1.3 ✅ · P1.4 ◐ (WS Origin + maxPayload) ·
+P1.5 ✅ · P1.6 ✅ · P1.7 ✅ · P2.2 ✅ · P2.6 ✅ · P2.8 ✅ · P2.14 ✅ ·
+P2.15 ✅ · P2.16 ◐ (audit bloquant) · 8.3 ◐ (fuite holder des tests
+corrigée) · 8.4 ◐ · P3.3 ◐ (health minimal anonyme). Découvertes en route :
+fuite d'un holder par run de tests d'intégration (11 orphelins purgés),
+`dotenv` en devDeps cassait les migrations Docker post-prune, la contrainte
+UNIQUE proposée par la review aurait cassé les paires flush légitimes.
+
+Reste ouvert (principaux) : chiffrement at-rest des settings, P1.1
+(client_message_id), P1.8, FTS5/P2.3/P2.4/P2.5, standalone P2.13, Strict
+Mode P2.11, a11y P2.10, smokes Docker/WS en CI (8.2/8.4), observabilité
+P3.2, compression CLAUDE.md (P3.1 — toujours > 60k).
+
+À noter : `todo.md` (« audit Codex ») recoupe partiellement ce backlog —
+fusionner ou archiver.
 
 ## 1. Résumé exécutif
 
