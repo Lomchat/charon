@@ -31,17 +31,35 @@ const ALLOWED_KEYS = [
   'sdk.auto_update',
 ];
 
-export async function GET() {
-  const s = await requireApiSession();
-  if (s instanceof Response) return s;
-  const all = getAllSettings();
-  // Do not expose the private VAPID
+// Secrets are never returned in full to the browser: the GET masks them to
+// `••••<last4>` (truthy, so "configured?" checks in the UI keep working) and
+// the POST treats a still-masked value as "unchanged — keep the stored one".
+// Sending an empty string still clears the secret explicitly.
+const SECRET_KEYS = ['telegram.bot_token', 'claude.api_key'] as const;
+const MASK_PREFIX = '••••'; // ••••
+
+function maskSecrets(all: Record<string, string>): Record<string, string> {
+  for (const k of SECRET_KEYS) {
+    const v = all[k];
+    if (v) all[k] = `${MASK_PREFIX}${v.length > 4 ? v.slice(-4) : ''}`;
+  }
+  return all;
+}
+
+function sanitizeForResponse(all: Record<string, string>): Record<string, string> {
+  // Never expose the private VAPID key.
   delete all['vapid.private'];
   // The cached model catalog can be several KB of JSON — not needed by the UI
   // (the picker fetches the merged list from /api/claude/models). Keep the
   // lightweight `claude.models_cache_at` timestamp for the "last sync" label.
   delete all['claude.models_cache'];
-  return NextResponse.json(all);
+  return maskSecrets(all);
+}
+
+export async function GET() {
+  const s = await requireApiSession();
+  if (s instanceof Response) return s;
+  return NextResponse.json(sanitizeForResponse(getAllSettings()));
 }
 
 export async function POST(req: Request) {
@@ -51,9 +69,10 @@ export async function POST(req: Request) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'object required' }, { status: 400 });
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED_KEYS.includes(k)) continue;
-    setSetting(k as any, String(v));
+    const val = String(v);
+    // A masked secret round-tripping from the settings form means "unchanged".
+    if ((SECRET_KEYS as readonly string[]).includes(k) && val.startsWith(MASK_PREFIX)) continue;
+    setSetting(k as any, val);
   }
-  const all = getAllSettings();
-  delete all['vapid.private'];
-  return NextResponse.json(all);
+  return NextResponse.json(sanitizeForResponse(getAllSettings()));
 }

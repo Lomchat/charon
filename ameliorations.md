@@ -418,11 +418,13 @@ aux secrets distants.
 - [ ] Définir un format chiffré versionné, par exemple `enc:v1:...`.
 - [ ] Dériver une clé depuis le master secret avec paramètres validés.
 - [ ] Migrer les secrets existants de manière idempotente.
-- [ ] Ne renvoyer qu'un indicateur `configured` ou une valeur masquée
+- [x] Ne renvoyer qu'un indicateur `configured` ou une valeur masquée
       (cibles réelles : `telegram.bot_token`, `claude.api_key` —
-      `vapid.private` est déjà masqué).
-- [ ] Préserver la valeur actuelle lorsqu'un formulaire ne fournit pas de
-      nouveau secret.
+      `vapid.private` est déjà masqué) *(fait le 22/07 : GET/POST masquent
+      `••••<last4>` ; un POST encore masqué = inchangé, vide = clear ;
+      vérifié en prod : secret préservé au round-trip du formulaire)*.
+- [x] Préserver la valeur actuelle lorsqu'un formulaire ne fournit pas de
+      nouveau secret *(fait le 22/07 — sentinel masqué ignoré au POST)*.
 - [ ] Prévoir rotation de clé, récupération et sauvegarde documentées.
 - [ ] Soit supprimer `SESSION_SECRET`, soit l'utiliser réellement.
 - [ ] Envisager un hash/HMAC des tokens de session stockés en DB.
