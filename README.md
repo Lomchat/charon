@@ -245,14 +245,16 @@ guide is in [`CLAUDE.md`](./CLAUDE.md).
 
 ### About `MASTER_PASSWORD`
 
-It is (1) the login password and (2) the seed for an scrypt-derived AES key
-(`scrypt(MASTER_PASSWORD, MASTER_SALT)`). **Honest caveat: settings at rest are
-currently stored in plaintext in SQLite** — the AES-GCM module exists
-(`lib/server/crypto.ts`) but at-rest encryption of secrets (Telegram bot token,
-Anthropic API key, Web Push private key) is still on the roadmap. What IS in
-place today: secrets are masked in every settings API response (`••••<last4>`)
-and session tokens are stored hashed (see `SESSION_SECRET` above). Treat the DB
-file and backups as sensitive.
+It is (1) the login password and (2) the seed for the scrypt-derived AES-256
+key (`scrypt(MASTER_PASSWORD, MASTER_SALT)`) that encrypts secret settings at
+rest in SQLite (Telegram bot token, Anthropic API key, Web Push private key —
+stored as `enc:v1:` AES-GCM blobs; plaintext rows are migrated automatically
+at boot). Session tokens are additionally stored hashed (see `SESSION_SECRET`
+above). **Changing `MASTER_PASSWORD` or `MASTER_SALT` without re-entering the
+secrets loses them** — decryption fails closed and the UI shows them as
+unconfigured; re-enter them in Settings to recover. Rotation is manual today
+(re-enter secrets after changing the env). Still treat the DB file and
+backups as sensitive (transcripts aren't encrypted).
 
 ### About the agent `.pyz` blob
 

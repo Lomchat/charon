@@ -1,6 +1,52 @@
 import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
+import { encrypt, tryDecrypt } from '@/lib/server/crypto';
+import { getEnvAesKey } from '@/lib/server/masterKey';
+
+// ── At-rest encryption of secret settings (P0.7) ────────────────────────────
+// Secret values are stored as `enc:v1:<aes-256-gcm blob>` (key = scrypt of
+// MASTER_PASSWORD+MASTER_SALT, cf. masterKey.ts). Encryption/decryption is
+// TRANSPARENT here: every consumer keeps reading plaintext via getSetting.
+// The versioned prefix makes migration idempotent (a plaintext row is
+// re-encrypted at boot by encryptSecretsAtRest; an encrypted one is left
+// alone) and leaves room for a future v2. If the env key is missing we
+// degrade to plaintext-at-rest with a warning — a misconfigured env must
+// never brick the hub. CHANGING MASTER_PASSWORD/MASTER_SALT without
+// re-encrypting loses these values (README § About MASTER_PASSWORD): the
+// decrypt fails closed → getSetting returns '' and the UI shows the secret
+// as unconfigured (re-enter it to recover).
+const SECRET_SETTING_KEYS: ReadonlySet<string> = new Set([
+  'telegram.bot_token',
+  'claude.api_key',
+  'vapid.private',
+]);
+const ENC_PREFIX = 'enc:v1:';
+let warnedNoKey = false;
+
+function encryptForRest(value: string): string {
+  if (!value) return value;
+  const key = getEnvAesKey();
+  if (!key) {
+    if (!warnedNoKey) {
+      warnedNoKey = true;
+      console.error('[settings] MASTER_PASSWORD/MASTER_SALT missing — secret settings stored in PLAINTEXT');
+    }
+    return value;
+  }
+  return ENC_PREFIX + encrypt(value, key);
+}
+
+function decryptFromRest(stored: string): string {
+  if (!stored.startsWith(ENC_PREFIX)) return stored;
+  const key = getEnvAesKey();
+  const pt = key ? tryDecrypt(stored.slice(ENC_PREFIX.length), key) : null;
+  if (pt == null) {
+    console.error('[settings] failed to decrypt a secret setting (MASTER_PASSWORD/MASTER_SALT changed?) — treating as unset');
+    return '';
+  }
+  return pt;
+}
 
 // `vapid.subject`: sender identity on the push servers side (web-push).
 // We read `VAPID_SUBJECT` from env if present; otherwise generic fallback
@@ -89,11 +135,14 @@ if (!g._claudeSettingsCache) g._claudeSettingsCache = new Map();
 const cache: Map<string, string> = g._claudeSettingsCache;
 
 export function getSetting(key: SettingKey): string | null {
+  // Cache holds PLAINTEXT (memory only — the at-rest protection targets the
+  // DB file and its backups, not this process's heap).
   if (cache.has(key)) return cache.get(key)!;
   const [row] = db.select().from(claudeSettings).where(eq(claudeSettings.key, key)).all();
   if (row) {
-    cache.set(key, row.value);
-    return row.value;
+    const v = SECRET_SETTING_KEYS.has(key) ? decryptFromRest(row.value) : row.value;
+    cache.set(key, v);
+    return v;
   }
   const def = (DEFAULTS as any)[key] ?? null;
   if (def != null) cache.set(key, def);
@@ -101,13 +150,14 @@ export function getSetting(key: SettingKey): string | null {
 }
 
 export function setSetting(key: SettingKey, value: string): void {
+  const stored = SECRET_SETTING_KEYS.has(key) ? encryptForRest(value) : value;
   const existing = db.select().from(claudeSettings).where(eq(claudeSettings.key, key)).all();
   if (existing.length > 0) {
     db.update(claudeSettings)
-      .set({ value, updatedAt: Math.floor(Date.now() / 1000) })
+      .set({ value: stored, updatedAt: Math.floor(Date.now() / 1000) })
       .where(eq(claudeSettings.key, key)).run();
   } else {
-    db.insert(claudeSettings).values({ key, value }).run();
+    db.insert(claudeSettings).values({ key, value: stored }).run();
   }
   cache.set(key, value);
 }
@@ -115,8 +165,26 @@ export function setSetting(key: SettingKey, value: string): void {
 export function getAllSettings(): Record<string, string> {
   const rows = db.select().from(claudeSettings).all();
   const out: Record<string, string> = { ...DEFAULTS };
-  for (const r of rows) out[r.key] = r.value;
+  for (const r of rows) {
+    out[r.key] = SECRET_SETTING_KEYS.has(r.key) ? decryptFromRest(r.value) : r.value;
+  }
   return out;
+}
+
+/** One-shot boot migration (idempotent by prefix): re-write any secret
+ *  setting still stored in plaintext as `enc:v1:...`. Seed-armed. */
+export function encryptSecretsAtRest(): void {
+  const key = getEnvAesKey();
+  if (!key) return; // degraded env — nothing we can do, warning printed on write
+  for (const k of SECRET_SETTING_KEYS) {
+    const [row] = db.select().from(claudeSettings).where(eq(claudeSettings.key, k)).all();
+    if (!row || !row.value || row.value.startsWith(ENC_PREFIX)) continue;
+    db.update(claudeSettings)
+      .set({ value: ENC_PREFIX + encrypt(row.value, key), updatedAt: Math.floor(Date.now() / 1000) })
+      .where(eq(claudeSettings.key, k)).run();
+    cache.set(k, row.value);
+    console.log(`[settings] encrypted ${k} at rest`);
+  }
 }
 
 export function getSettingNumber(key: SettingKey, fallback = 0): number {

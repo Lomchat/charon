@@ -96,9 +96,9 @@ contenu, gap de rotation silencieux, `crypto.ts` mort). Quatre réserves :
    dès qu'ils sont quiet).
 3. ✅ **File bornée par client côté agent** + bufferedAmount/maxPayload/
    Origin server.js + drop SSE (P0.5, P1.4 partiel).
-4. ◐ **Chiffrement at-rest des settings** : hash HMAC des tokens de session
-   ✅ (SESSION_SECRET enfin utilisé, migration one-shot) ; chiffrement des
-   settings ✗ (reste le dernier morceau de P0.7).
+4. ✅ **Chiffrement at-rest des settings** : hash HMAC des tokens de session
+   + secrets `enc:v1:` AES-GCM (migration idempotente au boot, decrypt
+   transparent, fail-closed sur changement d'env) — P0.7 COMPLET.
 5. ✗ **FTS5, image standalone, Strict Mode** — confort, non fait.
 6. ✗ **Refactor machines d'état (P2.7)** — volontairement non fait (en
    dernier, après les tests de panne).
@@ -496,9 +496,15 @@ aux secrets distants.
 
 **Actions**
 
-- [ ] Définir un format chiffré versionné, par exemple `enc:v1:...`.
-- [ ] Dériver une clé depuis le master secret avec paramètres validés.
-- [ ] Migrer les secrets existants de manière idempotente.
+- [x] Définir un format chiffré versionné, par exemple `enc:v1:...` *(fait le
+      22/07 — AES-256-GCM, préfixe versionné)*.
+- [x] Dériver une clé depuis le master secret avec paramètres validés *(fait —
+      scrypt(MASTER_PASSWORD, MASTER_SALT) partagé via masterKey.ts ; salt
+      validé hex au boot par configCheck)*.
+- [x] Migrer les secrets existants de manière idempotente *(fait —
+      `encryptSecretsAtRest()` au seed, idempotent par préfixe ; vérifié en
+      prod : 3 secrets chiffrés, déchiffrement transparent prouvé par le
+      masque `••••<last4>` inchangé)*.
 - [x] Ne renvoyer qu'un indicateur `configured` ou une valeur masquée
       (cibles réelles : `telegram.bot_token`, `claude.api_key` —
       `vapid.private` est déjà masqué) *(fait le 22/07 : GET/POST masquent
@@ -506,7 +512,10 @@ aux secrets distants.
       vérifié en prod : secret préservé au round-trip du formulaire)*.
 - [x] Préserver la valeur actuelle lorsqu'un formulaire ne fournit pas de
       nouveau secret *(fait le 22/07 — sentinel masqué ignoré au POST)*.
-- [ ] Prévoir rotation de clé, récupération et sauvegarde documentées.
+- [x] Prévoir rotation de clé, récupération et sauvegarde documentées
+      *(README : rotation manuelle = re-saisir les secrets après changement
+      d'env ; decrypt fail-closed → secret affiché « unconfigured », jamais
+      de crash)*.
 - [x] Soit supprimer `SESSION_SECRET`, soit l'utiliser réellement *(fait le
       22/07 — clé HMAC du hash des tokens de session)*.
 - [x] Envisager un hash/HMAC des tokens de session stockés en DB *(fait le
@@ -626,7 +635,10 @@ en host, port 99999 refusé.)*
 - [ ] Ajouter un limiteur global en complément du limiteur par IP.
 - [ ] Utiliser une origine publique configurée pour les redirects.
 - [ ] Refuser les `Host` ou `X-Forwarded-Host` non autorisés.
-- [ ] Ajouter une garde uniforme `Origin`/Fetch Metadata aux mutations.
+- [x] Ajouter une garde uniforme `Origin`/Fetch Metadata aux mutations
+      *(fait le 22/07 — middleware : mutations API avec Origin non reconnu →
+      403 ; vérifié : hostile 403, légitime 200, sans-Origin 200, scénario
+      proxy via app.public_url 200)*.
 - [x] Vérifier l'origin lors de l'upgrade WebSocket *(fait le 22/07 —
       allow-list Host / x-forwarded-host / app.public_url ; vérifié : origin
       hostile rejetée 403, WS nominal intact)*.
@@ -651,7 +663,9 @@ le polling, cela crée un flux continu d'écritures WAL.
       par session au lieu d'un par requête)*.
 - [x] Utiliser un `UPDATE ... WHERE expires_at < threshold` *(équivalent :
       le seuil est vérifié en amont sur la ligne déjà lue)*.
-- [ ] Nettoyer les entrées mémoire associées aux sessions expirées.
+- [x] Nettoyer les entrées mémoire associées aux sessions expirées *(fait le
+      22/07 — cleanupExpiredSessions avait ZÉRO appelant ; désormais au boot
+      + quotidien, purge lignes expirées + SESSION_KEYS orphelines)*.
 - [ ] Mesurer latence, contentions et taille du WAL.
 
 ### P1.6 — Rendre l'initialisation retryable
@@ -709,11 +723,19 @@ immédiate.
 > `SESSION_SECRET` est mort (P0.7), ne pas le valider — le supprimer ou
 > l'utiliser d'abord.
 
-- [ ] Vérifier longueur et entropie de `MASTER_PASSWORD`, `MASTER_SALT`,
+*(✔ fait le 22/07/2026 — `lib/server/configCheck.ts`, WARN-ONLY par design
+(un .env cassé doit dégrader bruyamment, jamais briquer le hub). A trouvé un
+vrai problème dès le premier run : charon.db en 644 world-readable → 600.)*
+
+- [x] Vérifier longueur et entropie de `MASTER_PASSWORD`, `MASTER_SALT`,
       `SESSION_SECRET` et `SYNC_TOKEN` selon leur usage final.
-- [ ] Refuser les placeholders connus en production.
-- [ ] Vérifier que `MASTER_SALT` est un hexadécimal valide.
-- [ ] Vérifier les droits du répertoire DB et des clés SSH.
+- [x] Refuser les placeholders connus en production *(liste : changeme,
+      dummy, ci-dummy…, en warn)*.
+- [x] Vérifier que `MASTER_SALT` est un hexadécimal valide *(sinon
+      `Buffer.from(salt,'hex')` avale silencieusement le non-hex → clé
+      affaiblie)*.
+- [x] Vérifier les droits du répertoire DB ~~et des clés SSH~~ *(DB oui +
+      mode du fichier ; clés ssh = à ssh de râler)*.
 - [ ] Exposer les erreurs dans la readiness sans divulguer les secrets.
 
 ## 5. P2 — Base de données et performances serveur

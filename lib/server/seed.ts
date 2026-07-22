@@ -1,9 +1,11 @@
 import 'server-only';
 import { migrationV2IfNeeded } from './migrationV2';
-import { migrateSessionIdsToHashed } from './auth';
+import { migrateSessionIdsToHashed, cleanupExpiredSessions } from './auth';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
 import { startTelegramBot } from './claude/telegram';
 import { armSdkAutoUpdate } from './claude/sdkWatch';
+import { encryptSecretsAtRest } from './claude/settings';
+import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot } from './shell/shellSession';
 
 // ── Boot seed, retryable per sub-system (P1.6) ──────────────────────────────
@@ -30,12 +32,28 @@ type Step = {
 };
 
 const STEPS: Step[] = [
+  // Warn-only env/config sanity (P1.8): placeholders, weak MASTER_SALT,
+  // DB perms. Loud in logs, never blocking.
+  { name: 'configCheck', run: () => validateConfigAtBoot() },
   // One-shot data migration: pre-v2 'active' sessions → 'sleeping' (no-op on
   // fresh / already-migrated DBs).
   { name: 'migrationV2', run: () => migrationV2IfNeeded() },
   // One-shot: rehash legacy plaintext session ids (marker-gated — existing
   // cookies stay valid, lookups hash the cookie value).
   { name: 'sessionIdHash', run: () => migrateSessionIdsToHashed() },
+  // Idempotent (prefix-gated): encrypt secret settings at rest (enc:v1:).
+  { name: 'secretsAtRest', run: () => encryptSecretsAtRest() },
+  // Housekeeping: purge expired session rows + stale in-memory AES keys
+  // (had ZERO callers before 2026-07-22 — expired rows accumulated forever).
+  // Boot-time + daily interval, unref'd.
+  {
+    name: 'sessionCleanup',
+    run: () => {
+      cleanupExpiredSessions().catch(() => {});
+      const t = setInterval(() => { cleanupExpiredSessions().catch(() => {}); }, 24 * 3600 * 1000);
+      (t as unknown as { unref?: () => void }).unref?.();
+    },
+  },
   // For each VPS: connect the AgentClient (background, non-blocking) + arm
   // the onStatus('connected')→reconcile self-healing hook. THE load-bearing
   // step (§14.45).

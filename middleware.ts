@@ -32,6 +32,34 @@ export async function middleware(req: NextRequest) {
   const isApi = pathname.startsWith('/api/');
   const sid = req.cookies.get(SESSION_COOKIE)?.value;
 
+  // CSRF hardening (P1.4): cookie-authenticated API mutations must come from
+  // our own origin. Browsers ALWAYS attach Origin to cross-site fetches; when
+  // present it must match the request Host / a forwarded host / the
+  // configured public URL. Origin-less requests (curl, native tools) pass —
+  // the session cookie is still required, and non-browser clients don't
+  // carry ambient cookies. /api/sync is Bearer-authed server-to-server
+  // (already excluded above via PUBLIC_API_PATHS).
+  const MUTATING = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT' || req.method === 'DELETE';
+  if (isApi && MUTATING) {
+    const origin = req.headers.get('origin');
+    if (origin) {
+      let oHost: string | null = null;
+      try { oHost = new URL(origin).host; } catch {}
+      const allowed = new Set<string>();
+      const h = req.headers.get('host'); if (h) allowed.add(h);
+      const xfh = req.headers.get('x-forwarded-host');
+      if (xfh) for (const part of xfh.split(',')) allowed.add(part.trim());
+      try {
+        const { getSetting } = await import('@/lib/server/claude/settings');
+        const pu = getSetting('app.public_url');
+        if (pu) allowed.add(new URL(pu).host);
+      } catch {}
+      if (!oHost || !allowed.has(oHost)) {
+        return new NextResponse('cross-origin request rejected', { status: 403 });
+      }
+    }
+  }
+
   let valid = false;
   if (sid) {
     const { getSession, touchSession } = await import('@/lib/server/auth');

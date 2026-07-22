@@ -8,19 +8,10 @@ import { getSetting, setSetting } from './claude/settings';
 
 const SESSION_TTL_SECS = 24 * 60 * 60; // 24h sliding inactivity
 
-// AES key is derived from MASTER_PASSWORD + MASTER_SALT (both in .env).
-// Since the password lives in env, we can derive the key any time the server boots,
-// not only at user login. Cache it to avoid running scrypt on every request.
-let _cachedAesKey: Buffer | null = null;
-function getEnvAesKey(): Buffer | null {
-  if (_cachedAesKey) return _cachedAesKey;
-  try {
-    _cachedAesKey = deriveMasterKey();
-    return _cachedAesKey;
-  } catch {
-    return null;
-  }
-}
+// AES key derived from MASTER_PASSWORD + MASTER_SALT — shared, cached
+// derivation in masterKey.ts (also used by settings.ts for at-rest
+// encryption of secret settings).
+import { getEnvAesKey } from './masterKey';
 const SESSION_KEYS = new Map<string, Buffer>();
 
 export const SESSION_COOKIE = 'charon_session';
@@ -127,6 +118,14 @@ export async function dropSession(rawToken: string) {
 export async function cleanupExpiredSessions() {
   const now = Math.floor(Date.now() / 1000);
   db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
+  // Prune in-memory AES keys whose session row is gone (expired without
+  // ever being presented again, or deleted elsewhere) — P1.5 leftover.
+  if (SESSION_KEYS.size > 0) {
+    const live = new Set(db.select({ id: sessions.id }).from(sessions).all().map((r) => r.id));
+    for (const id of SESSION_KEYS.keys()) {
+      if (!live.has(id)) SESSION_KEYS.delete(id);
+    }
+  }
 }
 
 // ── One-shot migration: plaintext session ids → hashed ─────────────────────
