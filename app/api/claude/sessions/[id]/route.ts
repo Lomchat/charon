@@ -11,6 +11,7 @@ import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 import { orderChronologically } from '@/lib/server/claude/messageOrder';
+import { loadMessageWindow } from '@/lib/server/claude/messageWindow';
 
 /**
  * The Claude SDK stores each session in
@@ -64,7 +65,8 @@ async function relocateJsonl(
 // 'event' contains either `todo_update` (no chat display — only the last
 // one counts), or `thinking` (displayable but sparse). Both cases are
 // handled correctly with range loading.
-const NON_PAGINATED_ROLES: string[] = ['edit_snapshot', 'event'];
+// NON_PAGINATED_ROLES + the chronological window live in messageWindow.ts
+// (extracted for testability + the Codex-18 chronological pagination).
 
 // Strips the heavy `content` (full file before/after, capped at 256KB EACH by
 // the agent) out of edit_snapshot rows before they go over the wire.
@@ -111,45 +113,9 @@ function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMe
  *                oldestChatId (id of the oldest CHAT message returned — used
  *                as cursor for the next loadMore).
  */
-function loadMessageWindow(
-  sessionId: string,
-  limit: number,
-  before: number | null,
-): { messages: ClaudeSessionMessage[]; hasMore: boolean; oldestChatId: number | null } {
-  // Fetch chat messages DESC, limit+1 to detect hasMore
-  const chatRows = db.select().from(claudeSessionMessages)
-    .where(and(
-      eq(claudeSessionMessages.sessionId, sessionId),
-      notInArray(claudeSessionMessages.role, NON_PAGINATED_ROLES),
-      before != null ? lt(claudeSessionMessages.id, before) : undefined,
-    ))
-    .orderBy(desc(claudeSessionMessages.id))
-    .limit(limit + 1)
-    .all();
-  const hasMore = chatRows.length > limit;
-  const window = chatRows.slice(0, limit).reverse(); // asc by id
-  if (window.length === 0) {
-    return { messages: [], hasMore: false, oldestChatId: null };
-  }
-  const minId = window[0].id;
-  const maxId = window[window.length - 1].id;
-  // Fetch edit_snapshot + event within the chat window range. They are
-  // emitted temporally close to their tool_use (the agent sends tool_use ->
-  // edit_snapshot before/after -> tool_result), so their ids fall BETWEEN
-  // the chat messages of the same conversation.
-  const attachments = db.select().from(claudeSessionMessages)
-    .where(and(
-      eq(claudeSessionMessages.sessionId, sessionId),
-      gte(claudeSessionMessages.id, minId),
-      lte(claudeSessionMessages.id, maxId),
-      // Filter in code (drizzle inArray on tuple -> ok but we already have the range)
-    ))
-    .all()
-    .filter((m) => NON_PAGINATED_ROLES.includes(m.role));
-  // Merge + chronological order (seq-aware, Codex 16.3 — messageOrder.ts)
-  const merged = orderChronologically([...window, ...attachments]);
-  return { messages: merged, hasMore, oldestChatId: minId };
-}
+// loadMessageWindow moved to lib/server/claude/messageWindow.ts: pages are
+// consecutive slices of ONE chronological order (seq-keyed), so crash-
+// repaired rows land in the RIGHT page and client-side prepend stays exact.
 
 // GET /api/claude/sessions/[id]
 //
