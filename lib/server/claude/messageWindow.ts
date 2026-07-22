@@ -57,6 +57,31 @@ export function loadMessageWindow(
   const windowChat = chat.slice(start, end);
   const hasMore = start > 0;
   if (windowChat.length === 0) {
+    // Side-channel-only session (Codex 22.1): no chat rows at all, but the
+    // skeleton isn't empty — imports, legacy fragments, or a lone persisted
+    // replay_gap marker. Without this fallback those rows were unreachable
+    // ("every attachment belongs to exactly one page" implicitly assumed a
+    // chat row existed). Return the NEWEST `limit` side-channel rows,
+    // bounded like any page (edit_snapshot content is stripped by the route
+    // anyway); no cursor — a deeper archaeology of a chat-less session can
+    // go through /export.
+    if (chat.length === 0 && before == null && ordered.length > 0) {
+      const tailRows = ordered.slice(Math.max(0, ordered.length - limit));
+      const tailWanted = new Set(tailRows.map((r) => r.id));
+      let tMin = tailRows[0].id, tMax = tailRows[0].id;
+      for (const r of tailRows) { if (r.id < tMin) tMin = r.id; if (r.id > tMax) tMax = r.id; }
+      const tailFull = db.select().from(claudeSessionMessages)
+        .where(and(
+          eq(claudeSessionMessages.sessionId, sessionId),
+          gte(claudeSessionMessages.id, tMin),
+          lte(claudeSessionMessages.id, tMax),
+        ))
+        .all()
+        .filter((m) => tailWanted.has(m.id));
+      const tailPos = new Map(tailRows.map((r, i) => [r.id, i] as const));
+      tailFull.sort((a, b) => tailPos.get(a.id)! - tailPos.get(b.id)!);
+      return { messages: tailFull, hasMore: ordered.length > limit, oldestChatId: null };
+    }
     return { messages: [], hasMore: false, oldestChatId: null };
   }
 

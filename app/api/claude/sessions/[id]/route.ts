@@ -57,10 +57,10 @@ async function relocateJsonl(
 }
 
 // Roles considered as "chat" for pagination. edit_snapshot and event do
-// NOT count in the window — they are loaded as attachments by ID range
-// (they are temporally close to their tool_use). Otherwise a session with
-// many Edit/Write floods the 200 messages with snapshots
-// (cf. gotcha §14 in CLAUDE.md).
+// NOT count in the window — they ride as attachments of the page owning
+// their CHRONOLOGICAL position (half-open partition, messageWindow.ts).
+// Otherwise a session with many Edit/Write floods the 200 messages with
+// snapshots (cf. gotcha §14 in CLAUDE.md).
 //
 // 'event' contains either `todo_update` (no chat display — only the last
 // one counts), or `thinking` (displayable but sparse). Both cases are
@@ -100,19 +100,6 @@ function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMe
   });
 }
 
-/**
- * Loads a window of chat messages (role != edit_snapshot/event) with
- * cursor-based pagination, then adds the edit_snapshot/event that fall in
- * the same ID range (they are emitted temporally close to their parent
- * tool_use).
- *
- * @param before  If provided, window of the `limit` messages with id < before.
- *                Otherwise (initial load), window of the `limit` latest messages.
- * @returns       messages (asc by id, chat + snapshots/events merged),
- *                hasMore (true if there are even older chat messages),
- *                oldestChatId (id of the oldest CHAT message returned — used
- *                as cursor for the next loadMore).
- */
 // loadMessageWindow moved to lib/server/claude/messageWindow.ts: pages are
 // consecutive slices of ONE chronological order (seq-keyed), so crash-
 // repaired rows land in the RIGHT page and client-side prepend stays exact.

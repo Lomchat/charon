@@ -151,6 +151,30 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
     ]);
   });
 
+  it('side-channel-only session: attachments are still served, bounded (Codex 22.1)', () => {
+    const ESID = 'e'.repeat(32);
+    db.insert(schema.claudeSessions).values({ id: ESID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    for (let i = 1; i <= 15; i++) {
+      db.insert(schema.claudeSessionMessages).values({
+        sessionId: ESID, role: 'event', content: `{"type":"replay_gap","n":${i}}`, seq: null,
+      }).run();
+    }
+    const win = loadMessageWindow(ESID, 10, null);
+    expect(win.messages).toHaveLength(10); // bounded to limit, not dumped whole
+    expect(win.messages.every((m: any) => m.role === 'event')).toBe(true);
+    // newest tail (6..15), chronological order preserved
+    expect(JSON.parse(win.messages[0].content).n).toBe(6);
+    expect(JSON.parse(win.messages[9].content).n).toBe(15);
+    expect(win.hasMore).toBe(true);
+    expect(win.oldestChatId).toBeNull(); // no chat cursor to hand out
+    // and a truly empty session still returns empty
+    const NSID = 'f'.repeat(32);
+    db.insert(schema.claudeSessions).values({ id: NSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    const empty = loadMessageWindow(NSID, 10, null);
+    expect(empty.messages).toHaveLength(0);
+    expect(empty.hasMore).toBe(false);
+  });
+
   it('pagination still exact on a fully-legacy session (all seq NULL → id order)', () => {
     const LEGACY = 'c'.repeat(32);
     db.insert(schema.claudeSessions).values({ id: LEGACY, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
