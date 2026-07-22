@@ -426,9 +426,16 @@ aux secrets distants.
 - [x] Préserver la valeur actuelle lorsqu'un formulaire ne fournit pas de
       nouveau secret *(fait le 22/07 — sentinel masqué ignoré au POST)*.
 - [ ] Prévoir rotation de clé, récupération et sauvegarde documentées.
-- [ ] Soit supprimer `SESSION_SECRET`, soit l'utiliser réellement.
-- [ ] Envisager un hash/HMAC des tokens de session stockés en DB.
-- [ ] Corriger le README **et CLAUDE.md §3/§12** après implémentation.
+- [x] Soit supprimer `SESSION_SECRET`, soit l'utiliser réellement *(fait le
+      22/07 — clé HMAC du hash des tokens de session)*.
+- [x] Envisager un hash/HMAC des tokens de session stockés en DB *(fait le
+      22/07 : cookie = token brut, DB = HMAC-SHA256(SESSION_SECRET, token),
+      `lib/server/sessionHash.js` partagé auth.ts + server.js (WS) ; migration
+      one-shot des 34 lignes existantes, cookies préservés ; vérifié en prod
+      200/401)*.
+- [x] Corriger le README **et CLAUDE.md §3/§12** après implémentation *(fait
+      le 22/07 — README dit désormais honnêtement « at-rest plaintext, masking
+      + hash en place » ; le chiffrement at-rest reste le dernier morceau)*.
 
 **Fichiers concernés**
 

@@ -37,7 +37,9 @@ export async function middleware(req: NextRequest) {
     const { getSession, touchSession } = await import('@/lib/server/auth');
     const session = await getSession(sid);
     if (session) {
-      await touchSession(session.id);
+      // Pass the RAW cookie token — session.id is the HASHED row id and
+      // touchSession hashes its argument (see auth.ts § token hashing).
+      await touchSession(sid);
       valid = true;
     }
   }

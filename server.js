@@ -76,9 +76,12 @@ function parseCookie(header, name) {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+// The cookie carries the RAW token; sessions.id stores its HMAC (see
+// lib/server/sessionHash.js — shared with lib/server/auth.ts).
+const { hashSessionToken } = require('./lib/server/sessionHash.js');
 function sessionValid(id) {
   if (!id || typeof id !== 'string') return false;
-  const row = STMT_SESSION.get(id);
+  const row = STMT_SESSION.get(hashSessionToken(id));
   if (!row) return false;
   return row.expires_at >= Math.floor(Date.now() / 1000);
 }

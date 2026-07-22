@@ -207,9 +207,9 @@ A systemd unit example is in [docs/charon.service.example](./docs/charon.service
 
 | Variable          | Required | Description                                                                                            |
 | ----------------- | :------: | ------------------------------------------------------------------------------------------------------ |
-| `MASTER_PASSWORD` |   yes    | Login password **and** seed for the AES key (scrypt + `MASTER_SALT`). Changing it loses encrypted data — see *Architecture notes*. |
+| `MASTER_PASSWORD` |   yes    | Login password (checked with a timing-safe compare; also seeds an scrypt-derived key reserved for future settings encryption — see *Architecture notes*). |
 | `MASTER_SALT`     |   yes    | scrypt salt. `openssl rand -hex 32`. Treat as a secret.                                                 |
-| `SESSION_SECRET`  |   yes    | Session-cookie signing secret. `openssl rand -hex 32`.                                                  |
+| `SESSION_SECRET`  |   yes    | HMAC key for session-token hashing: the browser cookie holds a raw random token, the DB stores only `HMAC-SHA256(SESSION_SECRET, token)` — a leaked DB copy can't be replayed into a valid cookie. Changing it logs everyone out. `openssl rand -hex 32`. |
 | `SYNC_TOKEN`      |   yes    | Bearer token gating `POST /api/sync`. `openssl rand -hex 32`.                                           |
 | `DATABASE_URL`    |    no    | SQLite path. Defaults to `./data/charon.db`.                                                            |
 | `HOST` / `PORT`   |    no    | Bind host/port. Default `127.0.0.1:10556`.                                                              |
@@ -245,11 +245,14 @@ guide is in [`CLAUDE.md`](./CLAUDE.md).
 
 ### About `MASTER_PASSWORD`
 
-It is both (1) the login password and (2) the seed for the AES key that encrypts
-a few sensitive settings in SQLite (the Web Push private key, etc.), via
-`scrypt(MASTER_PASSWORD, MASTER_SALT)`. **Changing it without re-encrypting first
-permanently loses access to those encrypted settings.** Rotation is manual today
-(decrypt with old, re-encrypt with new); a helper is on the roadmap.
+It is (1) the login password and (2) the seed for an scrypt-derived AES key
+(`scrypt(MASTER_PASSWORD, MASTER_SALT)`). **Honest caveat: settings at rest are
+currently stored in plaintext in SQLite** — the AES-GCM module exists
+(`lib/server/crypto.ts`) but at-rest encryption of secrets (Telegram bot token,
+Anthropic API key, Web Push private key) is still on the roadmap. What IS in
+place today: secrets are masked in every settings API response (`••••<last4>`)
+and session tokens are stored hashed (see `SESSION_SECRET` above). Treat the DB
+file and backups as sensitive.
 
 ### About the agent `.pyz` blob
 

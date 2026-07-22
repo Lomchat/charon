@@ -1,5 +1,6 @@
 import 'server-only';
 import { migrationV2IfNeeded } from './migrationV2';
+import { migrateSessionIdsToHashed } from './auth';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
 import { startTelegramBot } from './claude/telegram';
 import { armSdkAutoUpdate } from './claude/sdkWatch';
@@ -19,6 +20,9 @@ export function seedInitialData() {
   // One-shot data migration: pre-v2 'active' sessions → 'sleeping' (no-op on
   // fresh / already-migrated DBs).
   try { migrationV2IfNeeded(); } catch (e) { console.error('[seed] migrationV2 failed', e); }
+  // One-shot: rehash legacy plaintext session ids (marker-gated, idempotent —
+  // existing cookies stay valid, lookups hash the cookie value).
+  try { migrateSessionIdsToHashed(); } catch (e) { console.error('[seed] session-id hashing failed', e); }
   // For each VPS: connect the AgentClient (background, non-blocking) + arm the
   // onStatus('connected')→reconcile self-healing hook. THE load-bearing step.
   try { autoConnectAgentsIfNeeded(); } catch (e) { console.error('[seed] autoConnect failed', e); }
