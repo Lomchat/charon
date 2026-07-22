@@ -78,8 +78,15 @@ jobs:
         run: npm run build
 
       - name: Build agent .pyz
-        # Validates the zipapp packaging (bash script + python3 -m zipapp).
+        # Validates the zipapp packaging (deterministic build — see build.sh).
         run: bash agent/build.sh
+
+      - name: Committed .pyz is up to date
+        # The build is byte-reproducible, so any diff here means someone
+        # changed agent/charon_agent/ without rebuilding the committed dist
+        # (which is what actually gets deployed AND whose sha drives the
+        # fleet auto-update). Fail loudly instead of shipping stale code.
+        run: git diff --exit-code agent/dist/charon-agent.pyz
 
       - name: Python compile check
         # Catches SyntaxError / broken imports in the agent.

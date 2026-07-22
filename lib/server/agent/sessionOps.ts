@@ -966,9 +966,25 @@ export class SessionStream {
     this._broadcast({ type: 'user_echo', content, createdAt: now });
     this.status = 'thinking';
     this._broadcast({ type: 'status', status: 'thinking' });
+    // Idempotency key (P1.1): the agent (>= 0.19.0) records the id once the
+    // input was ACCEPTED and answers {duplicate:true} on a re-send — so the
+    // ambiguous-timeout case ("did my prompt land?") can be retried without
+    // ever executing the prompt twice. Older agents ignore the extra param
+    // (retry then risks a duplicate, same as before — strictly no worse).
+    const params = {
+      session_id: this.id, content,
+      client_message_id: crypto.randomUUID(),
+    };
     try {
-      await client.call('send_input', { session_id: this.id, content });
+      await client.call('send_input', params);
     } catch (e) {
+      const msg = String((e as { message?: unknown })?.message ?? e);
+      // AMBIGUOUS timeout: the RPC may or may not have been delivered.
+      // Retry once with the SAME id — the agent-side dedup makes this safe.
+      if (/timeout on send_input/i.test(msg)) {
+        await client.call('send_input', params);
+        return;
+      }
       // Auto-recover from a status DESYNC: the agent refuses input on a
       // non-running session — session.py raises "not running (status=sleeping)"
       // (or session dead / not found, -32000/-32001) when the session slept
@@ -976,12 +992,12 @@ export class SessionStream {
       // while it still looked usable here. Rather than 500-ing, RESUME and
       // retry ONCE so the message just lands. A genuine failure (cwd gone,
       // agent unreachable) still throws → the UI flips to the "resume" CTA.
-      // cf. CLAUDE.md §14.49.
-      const msg = String((e as { message?: unknown })?.message ?? e);
+      // cf. CLAUDE.md §14.49. (Same client_message_id: if the first attempt
+      // somehow landed before the session slept, the retry dedups.)
       if (!/not running|not found|dead|-3200[01]/i.test(msg)) throw e;
       try {
         await resumeSession(this.id);   // starts/resumes the SDK session (re-reads model/effort, §14.35)
-        await client.call('send_input', { session_id: this.id, content });
+        await client.call('send_input', params);
       } catch (resumeErr) {
         this.status = 'sleeping';
         this._broadcast({ type: 'status', status: 'sleeping' });

@@ -103,13 +103,32 @@ export default function LoginConsole({ vps, onClose }: Props) {
         return true;
       });
 
-      // User stdin → POST to the remote PTY
+      // User stdin → POST to the remote PTY. COALESCED (P2.9): one POST per
+      // keystroke both spammed the network and could reorder under latency
+      // (two in-flight POSTs race). Keystrokes are queued and flushed by a
+      // SINGLE serialized sender (next flush only after the previous POST
+      // settled) — order is guaranteed by construction, bursts (paste,
+      // key-repeat) ride one request.
+      let pendingInput = '';
+      let sending = false;
+      const flushInput = async () => {
+        if (sending || !pendingInput) return;
+        sending = true;
+        const chunk = pendingInput;
+        pendingInput = '';
+        try {
+          await fetch(`/api/vps/${vps.id}/login/input`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ content: chunk }),
+          });
+        } catch {}
+        sending = false;
+        if (pendingInput) void flushInput();
+      };
       term.onData((data: string) => {
-        fetch(`/api/vps/${vps.id}/login/input`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content: data }),
-        }).catch(() => {});
+        pendingInput += data;
+        void flushInput();
       });
 
       // Start the SSH session on the server side

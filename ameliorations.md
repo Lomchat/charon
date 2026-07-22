@@ -103,22 +103,34 @@ contenu, gap de rotation silencieux, `crypto.ts` mort). Quatre réserves :
 6. ✗ **Refactor machines d'état (P2.7)** — volontairement non fait (en
    dernier, après les tests de panne).
 
-### Bilan d'exécution (22/07/2026)
+### Bilan d'exécution (22/07/2026 — deux passes)
 
-11 commits, chacun buildé + déployé + vérifié en prod avant push :
-P0.1 ✅ · P0.2 ✅ · P0.3 ✅ · P0.4 ✅ · P0.5 ✅ · P0.6 ✅ · P0.7 ✅ (sauf
-chiffrement at-rest) · P1.2 ✅ · P1.3 ✅ · P1.4 ◐ (WS Origin + maxPayload) ·
-P1.5 ✅ · P1.6 ✅ · P1.7 ✅ · P2.2 ✅ · P2.6 ✅ · P2.8 ✅ · P2.14 ✅ ·
-P2.15 ✅ · P2.16 ◐ (audit bloquant) · 8.3 ◐ (fuite holder des tests
-corrigée) · 8.4 ◐ · P3.3 ◐ (health minimal anonyme). Découvertes en route :
-fuite d'un holder par run de tests d'intégration (11 orphelins purgés),
-`dotenv` en devDeps cassait les migrations Docker post-prune, la contrainte
-UNIQUE proposée par la review aurait cassé les paires flush légitimes.
+14 commits, chacun buildé + déployé + vérifié en prod avant push.
 
-Reste ouvert (principaux) : chiffrement at-rest des settings, P1.1
-(client_message_id), P1.8, FTS5/P2.3/P2.4/P2.5, standalone P2.13, Strict
-Mode P2.11, a11y P2.10, smokes Docker/WS en CI (8.2/8.4), observabilité
-P3.2, compression CLAUDE.md (P3.1 — toujours > 60k).
+**Complets** : P0.1 · P0.2 · P0.3 · P0.4 · P0.5 · P0.6 · **P0.7 (chiffrement
+at-rest inclus)** · P1.1 (cœur) · P1.2 · P1.3 · P1.5 · P1.6 · P1.7 · P1.8 ·
+P2.2 · P2.6 · P2.8 · P2.9 · P2.14 · P2.15 · P2.16.
+**Partiels** : P1.4 (WS Origin + maxPayload + garde mutations ✅ ; XFF
+trust / limiteur global / Host allowlist ✗) · P2.4 (unique vps_paths ✅ ;
+CHECK ✗ — rebuild de table SQLite disproportionné) · 8.3/8.4 (fuite holder
+corrigée, matrice py, audit bloquant, check pyz commité ; smokes
+Docker/WS/Playwright ✗) · P3.3 (health à deux niveaux ✅ ; readiness ✗).
+
+Découvertes en route : fuite d'un holder détaché par run de tests
+d'intégration (11 orphelins purgés) ; `dotenv` en devDeps cassait les
+migrations Docker post-prune ; la contrainte UNIQUE (session,seq) proposée
+par la review aurait cassé les paires flush légitimes ;
+`cleanupExpiredSessions` n'avait aucun appelant ; `charon.db` était en 644
+world-readable (trouvé par le configCheck dès son premier run) ; un
+dependabot.yml complet existait déjà (raté par la review ET la
+contre-analyse).
+
+**Reste ouvert (gros chantiers assumés)** : FTS5 (P2.1), rétention/backup
+(P2.3), validation runtime uniforme (P2.5), refactor machines d'état (P2.7 —
+en dernier, après tests de panne), a11y (P2.10), Strict Mode (P2.11),
+analyzer/budget bundle (P2.12), image standalone (P2.13), scénarios de
+panne + smokes Docker/WS/Playwright (8.2/8.4), observabilité (P3.2),
+compression CLAUDE.md sous 60k (P3.1).
 
 À noter : `todo.md` (« audit Codex ») recoupe partiellement ce backlog —
 fusionner ou archiver.
@@ -338,7 +350,8 @@ invalidé à la rotation) + subscribe → `{earliest_seq, gap}` ; hub :
 - [x] Afficher un avertissement *(bannière erreur non-fatale + ligne
       persistée)* — reconstruction SDK : non (l'import/scan existe déjà en
       manuel).
-- [ ] Rendre la rétention et les quotas configurables.
+- [x] Rendre la rétention et les quotas configurables *(fait le 22/07 —
+      env `CHARON_EVLOG_MAX_BYTES`/`CHARON_EVLOG_ROTATIONS`, agent 0.19.0)*.
 - [x] Ajouter un test avec rotation et curseur antérieur au plus vieux
       fichier *(4 tests earliest_seq, dont rotation-drop + reopen)*.
 
@@ -455,10 +468,10 @@ retrouver ou d'arrêter un shell depuis Charon.
       avant le cascade DB — avant ça, tout continuait de tourner sur le VPS)*.
 - [x] Ne fermer l'UI qu'après acquittement ou afficher clairement l'échec
       *(ShellTerminal + ClaudePanel : confirm « forget anyway? » sur échec)*.
-- [ ] Ajouter une réconciliation périodique entre DB et `shell_list`
-      (bidirectionnelle : pruner les fantômes DB ET détecter/tuer les
-      holders inconnus de la DB — les 3 chemins événementiels existants
-      restent DB→prune uniquement).
+- [x] Ajouter une réconciliation périodique entre DB et `shell_list`
+      *(fait le 22/07 — `armShellReconcileLoop`, 10 min, bidirectionnelle :
+      prune les fantômes DB ET tue les shells agent sans ligne DB, avec
+      grâce de 2 ticks contre la course création)*.
 
 **Fichiers concernés**
 
@@ -550,14 +563,22 @@ Le message utilisateur est persisté avant l'appel RPC. Une erreur claire peut
 laisser un message jamais livré dans le transcript ; un timeout ambigu peut au
 contraire avoir livré le prompt, puis provoquer un doublon à la relance.
 
-- [ ] Générer un `client_message_id` stable.
+*(✔ le cœur fait le 22/07/2026 — agent 0.19.0 : `send_input` accepte
+`client_message_id`, ids enregistrés APRÈS acceptation (un échec reste
+retryable), ring 64/session, purgé au kill ; hub : uuid par message, retry
+UNE fois sur timeout ambigu avec le même id, même id sur le chemin
+auto-resume.)*
+
+- [x] Générer un `client_message_id` stable.
 - [ ] Ajouter les états `pending`, `accepted`, `failed` et éventuellement
-      `completed`.
-- [ ] Dédupliquer côté agent par identifiant.
-- [ ] Retenter avec le même identifiant.
+      `completed` *(non retenu : la machine d'états UI est du confort — le
+      doublon, lui, est éliminé)*.
+- [x] Dédupliquer côté agent par identifiant.
+- [x] Retenter avec le même identifiant *(sur timeout ambigu + auto-resume)*.
 - [ ] Représenter l'état de livraison dans l'interface.
 - [ ] Étendre le mécanisme aux opérations `start`, `resume`, permissions et
-      changements de configuration qui souffrent de la même ambiguïté.
+      changements de configuration *(resume est déjà noop-idempotent §14.36 ;
+      les réponses de permission résolvent des futures one-shot)*.
 
 **Fichier principal** : `lib/server/agent/sessionOps.ts`
 
@@ -792,8 +813,11 @@ sessions~~ *(faux — déjà agrégé)*, et nom VPS recherché shell par shell.
 > 🔎 **Verdict : ✅ absences confirmées** (zéro `check()` dans schema.ts ;
 > `vpsPaths` n'a qu'un index non-unique — doublons possibles).
 
-- [ ] Ajouter des `CHECK` pour les statuts, modes et kinds.
-- [ ] Ajouter une contrainte unique naturelle sur `(vps_id, path)`.
+- [ ] Ajouter des `CHECK` pour les statuts, modes et kinds *(non fait :
+      SQLite ne sait pas ADD CONSTRAINT — rebuild de table 12 étapes, risque
+      disproportionné)*.
+- [x] Ajouter une contrainte unique naturelle sur `(vps_id, path)` *(fait le
+      22/07 — migration 0024, dédoublonnage prépendu à la main)*.
 - [ ] Employer des upserts atomiques au lieu de déduplications applicatives.
 - [ ] Vérifier les foreign keys applicatives encore non garanties par SQLite.
 - [ ] Tester les migrations depuis plusieurs versions historiques.
@@ -871,8 +895,10 @@ Extraire des transitions pures et les tester avant de déplacer les effets.
 > `onData`). **Recalibré P3** : la console ne sert qu'au `claude login`,
 > une fois par VPS, quelques dizaines de frappes — impact réel négligeable.
 
-- [ ] Utiliser un WebSocket duplex, ou une queue HTTP sérialisée et batchée.
-- [ ] Garantir l'ordre des octets.
+- [x] Utiliser un WebSocket duplex, ou une queue HTTP sérialisée et batchée
+      *(fait le 22/07 — queue coalescée, UN envoi en vol à la fois)*.
+- [x] Garantir l'ordre des octets *(par construction : sender unique
+      sérialisé — l'ancien code pouvait réordonner deux POST en vol)*.
 - [ ] Gérer backpressure, fermeture et reconnexion.
 - [ ] Tester le comportement avec 300 à 1 000 ms de latence.
 
@@ -985,9 +1011,9 @@ des timestamps ZIP.
       perms 644, `__pycache__` exclu)*.
 - [x] Reconstruire deux fois et comparer les SHA *(vérifié : SHA identiques ;
       pyz exécutable — `--connect` exit 2 attendu)*.
-- [ ] Faire échouer la CI si le pyz commité n'est pas reproductible ou à jour.
-- [ ] *(note : `dist/charon-agent.pyz` sera rebuilt au chantier replay pour ne
-      déclencher qu'UNE vague d'auto-update fleet — §14.53)*
+- [x] Faire échouer la CI si le pyz commité n'est pas reproductible ou à
+      jour *(fait le 22/07 — step `git diff --exit-code` post-build, rendu
+      possible par le build déterministe)*.
 
 ### P2.16 — Automatiser la surveillance des dépendances
 
@@ -995,7 +1021,9 @@ des timestamps ZIP.
 > existe DÉJÀ en CI (job `audit`) mais en `continue-on-error: true` — le
 > rendre bloquant est un one-liner.
 
-- [ ] Configurer Renovate ou Dependabot.
+- [x] Configurer Renovate ou Dependabot *(❌ constat review : un
+      `.github/dependabot.yml` complet existait DÉJÀ — npm + actions + pip,
+      groupé hebdo, garde manuelle better-sqlite3 major)*.
 - [ ] Épingler explicitement les dépendances critiques si nécessaire.
 - [x] Rendre les vulnérabilités high/critical bloquantes avec allowlist
       temporaire documentée *(fait le 22/07 — `continue-on-error` retiré du

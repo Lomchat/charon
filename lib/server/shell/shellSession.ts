@@ -190,6 +190,61 @@ export function updateShellMeta(
 // process, the new agent has an empty shells map). Best-effort and per-VPS:
 // if the agent is unreachable we leave the rows untouched (might be a
 // transient SSH drop). Called from seed.ts via `seedInitialData`.
+// ── Periodic BIDIRECTIONAL reconcile (P0.6) ─────────────────────────────────
+// The event-driven paths (boot reconcile, shell_watch snapshot, failed
+// subscribe prune) are all DB → prune only: an agent-side shell that lost its
+// DB row (crashed insert pre-2026-07, manual DB surgery, …) ran forever,
+// invisible and unkillable. Every 10 min, per healthy VPS:
+//   - DB rows unknown to the agent → prune (catches drift the event paths
+//     missed while disconnected);
+//   - agent shells with NO DB row → kill, but only when seen orphaned on TWO
+//     consecutive ticks (grace: a shell being created legitimately exists
+//     between the shell_start RPC and the DB insert).
+const gRec = globalThis as unknown as { _shellReconcileTimer?: ReturnType<typeof setInterval>; _shellOrphanSeen?: Set<string> };
+
+export function armShellReconcileLoop(): void {
+  if (gRec._shellReconcileTimer) return;
+  if (!gRec._shellOrphanSeen) gRec._shellOrphanSeen = new Set();
+  const orphanSeen = gRec._shellOrphanSeen;
+  const tick = async () => {
+    let vpsRows: { id: string; agentStatus: string | null }[];
+    try {
+      vpsRows = db.select({ id: vpsTable.id, agentStatus: vpsTable.agentStatus }).from(vpsTable).all();
+    } catch { return; }
+    for (const v of vpsRows) {
+      if (v.agentStatus !== 'ok') continue;
+      try {
+        const client = getAgentClientForVpsId(v.id);
+        const list = await client.call<AgentShellInfo[]>('shell_list', {});
+        const agentIds = new Set((list ?? []).map((s) => s.shell_id));
+        const dbRows = db.select().from(shellsTable).where(eq(shellsTable.vpsId, v.id)).all();
+        const dbIds = new Set(dbRows.map((r) => r.id));
+        // DB phantom → prune.
+        for (const r of dbRows) {
+          if (!agentIds.has(r.id)) {
+            try { db.delete(shellsTable).where(eq(shellsTable.id, r.id)).run(); } catch {}
+          }
+        }
+        // Agent orphan → kill on the second consecutive sighting.
+        for (const id of agentIds) {
+          if (dbIds.has(id)) { orphanSeen.delete(id); continue; }
+          if (orphanSeen.has(id)) {
+            orphanSeen.delete(id);
+            console.warn(`[shells] killing orphaned agent-side shell ${id} on ${v.id} (no DB row, 2 ticks)`);
+            try { await client.call('shell_kill', { shell_id: id }); } catch {}
+          } else {
+            orphanSeen.add(id);
+          }
+        }
+      } catch {
+        // VPS unreachable this tick — try again next tick.
+      }
+    }
+  };
+  gRec._shellReconcileTimer = setInterval(() => { tick().catch(() => {}); }, 10 * 60_000);
+  (gRec._shellReconcileTimer as unknown as { unref?: () => void }).unref?.();
+}
+
 export async function reconcileShellsOnBoot(): Promise<void> {
   let rows: Shell[];
   try {

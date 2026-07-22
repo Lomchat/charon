@@ -6,7 +6,7 @@ import { startTelegramBot } from './claude/telegram';
 import { armSdkAutoUpdate } from './claude/sdkWatch';
 import { encryptSecretsAtRest } from './claude/settings';
 import { validateConfigAtBoot } from './configCheck';
-import { reconcileShellsOnBoot } from './shell/shellSession';
+import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
 
 // ── Boot seed, retryable per sub-system (P1.6) ──────────────────────────────
 // Since §14.45 this is the GUARANTEED agent-arming path (instrumentation.ts
@@ -61,6 +61,9 @@ const STEPS: Step[] = [
   // Prune persistent-shell rows whose remote shell is gone (best-effort,
   // per-VPS, non-blocking).
   { name: 'shellReconcile', run: () => reconcileShellsOnBoot() },
+  // Periodic BIDIRECTIONAL shell reconcile: prunes DB phantoms AND kills
+  // agent-side shells with no DB row (2-tick grace). Singleton, unref'd.
+  { name: 'shellReconcileLoop', run: () => armShellReconcileLoop() },
   // Poll Telegram (no-op if not configured, idempotent).
   { name: 'telegram', run: () => startTelegramBot() },
   // SDK freshness tick: PyPI latest + idle auto-update + notifications

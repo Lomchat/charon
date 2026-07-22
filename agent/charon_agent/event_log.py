@@ -52,13 +52,23 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-# Tunables. 10 MB per file × 3 rotations = 30 MB worst case per session.
-# At ~200 B/event that's 150k events of history, well beyond any
+# Tunables. Defaults: 10 MB per file × 3 rotations = 30 MB worst case per
+# session. At ~200 B/event that's 150k events of history, well beyond any
 # realistic Charon downtime window. Compaction (truncating already-
 # acknowledged events) is intentionally out of scope for now — disk is
 # cheap, and the deletion path runs on session delete anyway.
-MAX_FILE_BYTES = 10 * 1024 * 1024
-MAX_ROTATIONS = 3
+# Overridable via env (P0.4 — retention knobs): CHARON_EVLOG_MAX_BYTES /
+# CHARON_EVLOG_ROTATIONS, e.g. through a systemd-user drop-in
+# (Environment=...) for VPSes with tight disks or very long hub outages.
+def _env_int(name: str, default: int) -> int:
+    try:
+        v = int(os.environ.get(name, ""))
+        return v if v > 0 else default
+    except ValueError:
+        return default
+
+MAX_FILE_BYTES = _env_int("CHARON_EVLOG_MAX_BYTES", 10 * 1024 * 1024)
+MAX_ROTATIONS = _env_int("CHARON_EVLOG_ROTATIONS", 3)
 
 
 class EventLog:

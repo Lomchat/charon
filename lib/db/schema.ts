@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, integer, text, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const users = sqliteTable('users', {
@@ -116,6 +116,11 @@ export const vpsPaths = sqliteTable('vps_paths', {
 }, (t) => [
   // Sidebar groupings: GET /api/vps-paths filtered by vpsId.
   index('idx_vps_paths_vps_id').on(t.vpsId),
+  // Natural key (P2.4): one row per (vps, path). The application paths
+  // (/api/sync, POST /api/vps-paths) deduped applicatively before — the
+  // constraint makes races impossible. Migration 0024 deduped existing
+  // rows (keep MIN(id)) before creating the index.
+  uniqueIndex('uq_vps_paths_vps_id_path').on(t.vpsId, t.path),
 ]);
 
 export const claudeSessions = sqliteTable('claude_sessions', {

@@ -110,6 +110,12 @@ class Server:
         # the heavy output keeps flowing only to the WS subscribers (avoids
         # doubling egress — see CLAUDE.md §14 on the shell idle-notify path).
         self.shell_watchers: set[Client] = set()
+        # Idempotency keys for send_input (P1.1): per-session ring of the
+        # last client_message_ids ACCEPTED. A hub retry after an ambiguous
+        # RPC timeout re-sends the same id → answered {ok, duplicate} without
+        # re-executing the prompt. Ids are recorded AFTER send_input succeeds
+        # (a failed attempt must stay retryable with the same id).
+        self.recent_input_ids: dict[str, deque[str]] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -533,7 +539,17 @@ class Server:
             content = params.get("content")
             if not isinstance(content, str):
                 raise RpcError(ERR_INVALID_PARAMS, "content required (str)")
+            cmid = params.get("client_message_id")
+            cmid = cmid if isinstance(cmid, str) and cmid else None
+            if cmid is not None:
+                seen = self.recent_input_ids.setdefault(sid, deque(maxlen=64))
+                if cmid in seen:
+                    # Already executed — the hub's first attempt landed but its
+                    # RPC response was lost (timeout). Do NOT re-send the prompt.
+                    return {"ok": True, "duplicate": True}
             await s.send_input(content)
+            if cmid is not None:
+                self.recent_input_ids.setdefault(sid, deque(maxlen=64)).append(cmid)
             return {"ok": True}
 
         if method == "interrupt":
@@ -654,6 +670,7 @@ class Server:
             self.sessions.pop(sid, None)
             self.rings.pop(sid, None)
             self.subscribers.pop(sid, None)
+            self.recent_input_ids.pop(sid, None)
             # Tear down the durable event log for this session — it is
             # gone for good, no future subscriber will ever want its
             # history.
