@@ -138,13 +138,15 @@ export default function Sidebar({
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
   const [showPaused, setShowPaused] = useState(true);
-  // Show / hide per-card details (first-message preview, cwd, age). OFF =
-  // compact one-line cards — the full info stays in the card tooltip.
-  const [showDetails, setShowDetails] = useState(true);
+  // Show / hide per-card details (first-message preview, cwd, age). Default OFF
+  // (= compact one-line cards — the full info stays in the card tooltip); the
+  // denser default keeps a many-VPS fleet scannable. Opt back IN via the
+  // "details" toggle, persisted as DETAILS_KEY==='1'.
+  const [showDetails, setShowDetails] = useState(false);
   useEffect(() => {
     try {
       if (localStorage.getItem(PAUSED_KEY) === '0') setShowPaused(false);
-      if (localStorage.getItem(DETAILS_KEY) === '0') setShowDetails(false);
+      if (localStorage.getItem(DETAILS_KEY) === '1') setShowDetails(true);
     } catch {}
   }, []);
   function toggleShowPaused() {

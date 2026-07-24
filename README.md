@@ -9,11 +9,13 @@
 > **One browser tab to run AI coding sessions _and_ live shells across all your
 > remote servers.** Charon is a self-hosted hub with **two co-equal uses**:
 >
-> 1. **A Claude chat/discussion hub** — launch and supervise
+> 1. **A coding-agent hub** — launch and supervise
 >    [Claude Code](https://docs.claude.com/en/docs/claude-code) /
->    [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk) sessions
->    on any SSH-reachable VPS, with token-streamed replies, a permission flow,
->    diffs and notifications.
+>    [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk) **and
+>    [OpenAI Codex](https://github.com/openai/codex)** sessions, side by side on
+>    any SSH-reachable VPS, with token-streamed replies, a permission flow
+>    (Claude) or sandbox modes (Codex), diff capture & revert, live account-usage
+>    gauges and notifications.
 > 2. **A persistent SSH-shell manager** — full xterm.js terminals on those same
 >    boxes that **survive Charon restarts, agent restarts/updates and browser
 >    closes** (the PTY lives in a detached holder on the VPS).
@@ -23,7 +25,7 @@ daemon (`charon-agent`) on each VPS, so they keep running when your laptop
 sleeps, your network drops, or you restart the hub. Charon is just the control
 plane.
 
-![Charon desktop dashboard — sidebar of VPS with Claude sessions and shells, a streaming session and a permission request](./docs/img/dashboard.png)
+![Charon desktop dashboard — sidebar of VPS with Claude and Codex sessions, a streaming session with an account-usage gauge, a diff/tool panel and a permission request](./docs/img/dashboard-v2.png)
 
 ```
 ┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 per VPS)  ┌──────────────────────┐
@@ -38,34 +40,49 @@ plane.
 
 ## The two halves
 
-### 1 · Claude sessions — a real discussion UI
+### 1 · Coding sessions — Claude _and_ Codex, one UI
 
-<img src="./docs/img/claude-chat.png" alt="Claude session view: streamed answer, paired tool calls, and a permission card" width="48%"></img>
-<img src="./docs/img/mobile-chat.png" alt="Mobile session view with a permission request" width="22%"></img>
+<img src="./docs/img/claude-chat-v2.png" alt="Claude session: streamed answer, paired tool calls and a captured diff with a revert button" width="49%"></img>
+<img src="./docs/img/codex-chat-v2.png" alt="Codex session: the same UI driving OpenAI Codex, with sandbox modes and a unified diff" width="49%"></img>
 
-Each session is an independent `ClaudeSDKClient` running **on the VPS**, not on
-your machine:
+Each session is an independent agent running **on the VPS**, not on your
+machine — a `ClaudeSDKClient` (Claude) or an OpenAI Codex thread (via the Codex
+app-server). Both speak the same UI:
 
-- **Token-by-token streaming** of the assistant's answer, with **collapsible
-  thinking blocks** and tool calls **paired with their results** in a side panel.
-- **Permission flow** — every `Edit`, `Bash`, `Write`, … pauses for your
-  approval: _allow once_ / _allow always (this session)_ / _deny_. You're pinged
-  by **Web Push + Telegram** when a session is waiting on you.
-- **Diff capture & revert** — every edit stores a `before`/`after` snapshot; one
-  click rewinds a single file.
-- **Per-session model / effort**, a **todo panel**, **full-text search** across
-  all history, and **`claude login` from the browser** (a TUI that proxies the
-  OAuth flow over SSH).
+- **Token-by-token streaming** of the answer, with **collapsible thinking
+  blocks** and tool calls **paired with their results** in a side panel — Claude
+  tools (`Read`/`Edit`/`Bash`/…) and Codex tools (`shell`/`apply_patch`/
+  `update_plan`/…) alike.
+- **Approval you control** — Claude pauses on every `Edit`/`Bash`/`Write` for
+  _allow once_ / _allow always (this session)_ / _deny_; Codex runs under a
+  **sandbox mode** (read-only / workspace-write / full-access). Either way you're
+  pinged by **Web Push + Telegram** when a session needs you.
+- **Diff capture & revert** — every edit stores a `before`/`after` snapshot (a
+  unified diff for Codex); one click rewinds a file.
+- **Per-session model & reasoning effort**, a **todo / plan panel**, **live
+  account-usage gauges** (your Claude or Codex quota), **full-text search** across
+  all history, and **browser sign-in** for both (`claude login` proxied over SSH;
+  Codex via a ChatGPT device-code flow).
 - **Survives everything** — restart Charon, restart the agent, drop the
   network: the session keeps running and the UI reattaches with a durable replay
   of anything it missed. No more "my terminal died, my session is gone".
 
+<img src="./docs/img/usage-v2.png" alt="Account-usage gauges — 5-hour session, weekly, and per-model caps with reset times — beside a captured diff" width="60%"></img>
+
+The **same UI reflows to a phone** — no separate mobile app, just responsive
+breakpoints (the sidebar and tool panel become drawers; usage gauges move from
+the header to a drawer):
+
+<img src="./docs/img/mobile-select-v2.png" alt="Mobile: the session list drawer with Claude and Codex sessions" width="23%"></img>
+<img src="./docs/img/mobile-chat-v2.png" alt="Mobile: the session UI reflowed to a phone" width="23%"></img>
+<img src="./docs/img/mobile-usage-v2.png" alt="Mobile: the account-usage gauges in the right drawer" width="23%"></img>
+
 ### 2 · Persistent SSH shells
 
-![A persistent shell terminal running on a remote VPS, next to the Claude sessions in the sidebar](./docs/img/shell.png)
+![A persistent shell terminal running on a remote VPS, next to the Claude and Codex sessions in the sidebar](./docs/img/shell-v2.png)
 
-Real **xterm.js** terminals, multiple per VPS, right next to your Claude
-sessions:
+Real **xterm.js** terminals, multiple per VPS, right next to your Claude and
+Codex sessions:
 
 - The **PTY + bash live in a detached holder** on the VPS — the shell survives a
   Charon restart **and** an agent restart/update. Reopen it days later and your
@@ -86,22 +103,29 @@ your whole fleet.
 
 ## Features at a glance
 
+- **Two backends, one UI** — run **Claude** and **OpenAI Codex** sessions side by
+  side on the same fleet; each VPS can offer either, both, or neither.
 - **Multi-VPS dashboard** — sidebar grouped by folder → VPS → sessions & shells,
-  drag-and-drop between folders, a "show paused" toggle.
-- **Persistent Claude sessions** — survive Charon/agent restarts and network
-  drops; auto-resume on boot, durable event-log replay on reconnect.
+  per-VPS health chips, drag-and-drop between folders, "show paused" / "details"
+  toggles.
+- **Persistent sessions** — Claude and Codex sessions survive Charon/agent
+  restarts and network drops; auto-resume on boot, durable event-log replay on
+  reconnect.
 - **Persistent shells** — detached-holder PTYs that outlive the hub and the
   agent (see above).
 - **One SSH connection per VPS**, JSON-RPC multiplexed — no per-session SSH
   spawns.
-- **Streaming chat UI**, **permission flow**, **diff/revert**, **todo panel**,
-  **full-text search**, **per-session model/effort**.
-- **Notifications** — Web Push + Telegram on pending permissions, questions and
-  turn-completions.
-- **Mobile UI** — dedicated `/m/*` routes (bottom-sheets, big tap targets).
+- **Streaming chat UI**, **permission flow / sandbox modes**, **diff & revert**,
+  **todo / plan panel**, **full-text search**, **per-session model & effort**.
+- **Account-usage gauges** — the `/usage` quota (5-hour, weekly, per-model caps)
+  for each session's Claude or Codex account, live in the header.
+- **Notifications** — Web Push + Telegram on pending permissions, questions,
+  turn-completions and idle shells.
+- **One responsive UI** — the same components reflow from a 3-column desktop to
+  tablet/phone drawers; no separate mobile app.
 - **One-click VPS bootstrap** — detects the distro, installs Python +
-  `claude-agent-sdk` + the `claude` CLI, deploys the agent zipapp, registers a
-  systemd-user service (or `nohup` + cron fallback).
+  `claude-agent-sdk` (+ optional `openai-codex`) + the `claude` CLI, deploys the
+  agent zipapp, registers a systemd-user service (or `nohup` + cron fallback).
 - **Resilient by design** — the frontend re-syncs after a hub restart without a
   manual refresh (boot-time agent arming, status reconcile, SSE auto-recovery).
 
@@ -110,11 +134,14 @@ your whole fleet.
 **Charon host (where the dashboard runs):** Node.js ≥ 20, `openssl`, an `ssh`
 client. SQLite is bundled via `better-sqlite3` — no system SQLite needed.
 
-**Each target VPS:** SSH access **by key** (no password auth), Python ≥ 3.10
-(for the Claude Agent SDK), and the `claude` CLI for the one-time OAuth
-`claude login`. The bootstrap installer can set these up on Ubuntu/Debian (apt),
-Fedora/RHEL-like (dnf), Alpine (apk) and Arch (pacman). Other Linux distros may
-work but are untested; macOS/Windows/\*BSD as VPS targets are not supported.
+**Each target VPS:** SSH access **by key** (no password auth) and Python ≥ 3.10.
+For **Claude**, the `claude-agent-sdk` and the `claude` CLI for the one-time
+OAuth `claude login`. For **Codex** (optional), the `openai-codex` SDK and a
+one-time ChatGPT sign-in (a device-code flow from the browser). The bootstrap
+installer sets these up on Ubuntu/Debian (apt), Fedora/RHEL-like (dnf), Alpine
+(apk) and Arch (pacman) — Codex support is installed automatically when
+available. Other Linux distros may work but are untested; macOS/Windows/\*BSD as
+VPS targets are not supported.
 
 ## Quickstart
 
@@ -154,13 +181,16 @@ docker compose up -d --build
 1. Sidebar toolbar → **＋ Agent** (or the VPS settings modal) → add name, IP, SSH
    user, port, default path.
 2. The VPS appears with a red dot (agent not installed). Click **install** — the
-   panel streams every phase: detect OS → install Python → `claude-agent-sdk` →
-   `claude` CLI → deploy agent → register service → ping (~30–90 s on a fresh box).
-3. If you've never run `claude login` there, click **claude login** — a TUI opens
-   in your browser, proxying the OAuth flow over SSH. Paste the URL, complete
-   OAuth, come back.
-4. **＋ Agent** on that VPS → pick a working directory → first prompt. Or **＋ Shell**
-   for a terminal.
+   panel streams every phase: detect OS → install Python → `claude-agent-sdk`
+   (+ `openai-codex`) → `claude` CLI → deploy agent → register service → ping
+   (~30–90 s on a fresh box). Per-VPS **health chips** then show which of ssh /
+   agent / Claude / Codex are ready.
+3. Sign in per backend you'll use: **claude login** opens a TUI in your browser
+   (OAuth proxied over SSH); **codex login** shows a ChatGPT device code you
+   confirm on any device. Each is per-VPS.
+4. On that VPS's row, hit **＋** to launch a **Claude** or **Codex** session (each
+   button is greyed until that backend is ready) → pick a working directory →
+   first prompt. Or the terminal button for a **＋ Shell**.
 
 ### Behind a reverse proxy (production)
 
@@ -225,8 +255,9 @@ guide is in [`CLAUDE.md`](./CLAUDE.md).
 - **Charon hub** (this repo): Next.js 15 App Router, React 19, SQLite via Drizzle
   + `better-sqlite3`. SSR + SSE-streamed UI. One process, single-user.
 - **`charon-agent`**: a Python **stdlib-only zipapp** deployed to each VPS at
-  `~/.charon/charon-agent.pyz`. Listens on a Unix socket, hosts N
-  `ClaudeSDKClient` sessions and the detached shell holders, checkpoints state to
+  `~/.charon/charon-agent.pyz`. Listens on a Unix socket, hosts N sessions —
+  `ClaudeSDKClient` (Claude) and/or OpenAI Codex threads via the `openai-codex`
+  SDK — plus the detached shell holders, checkpointing state to
   `~/.charon/state.json` after every change.
 - **Transport**: one long-running SSH per VPS, the agent invoked as
   `exec ~/.charon/charon-agent.pyz --connect` (stdio ↔ Unix socket). Backoff
@@ -305,8 +336,9 @@ agree to the [Code of Conduct](./CODE_OF_CONDUCT.md). Security issues: follow
 The UI is English; some internal comments/docs (notably `CLAUDE.md`) are still
 partly French — translation PRs welcome.
 
-> Screenshots use 100% fictitious data (see `scripts/demo-seed.mjs` +
-> `scripts/demo-shots.mjs`).
+> Screenshots use 100% fictitious data (see `scripts/demo-seed.mjs`,
+> `scripts/demo-shots.mjs` and `scripts/demo-agent-setup.sh` for the isolated
+> local agent that backs the live shell shot).
 
 ## License
 

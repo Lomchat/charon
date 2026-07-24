@@ -203,6 +203,9 @@ export function updateShellMeta(
 const gRec = globalThis as unknown as { _shellReconcileTimer?: ReturnType<typeof setInterval>; _shellOrphanSeen?: Set<string> };
 
 export function armShellReconcileLoop(): void {
+  // Demo/CI opt-out (mirror of autoConnect): a periodic SSH fan-out to every
+  // 'ok' VPS — skip it when the boot fan-out is disabled. §14.45.
+  if (process.env.CHARON_DISABLE_AUTOCONNECT === '1') return;
   if (gRec._shellReconcileTimer) return;
   if (!gRec._shellOrphanSeen) gRec._shellOrphanSeen = new Set();
   const orphanSeen = gRec._shellOrphanSeen;
@@ -246,6 +249,10 @@ export function armShellReconcileLoop(): void {
 }
 
 export async function reconcileShellsOnBoot(): Promise<void> {
+  // Demo/CI opt-out: this is a boot-time SSH fan-out to every VPS that owns a
+  // shell row — the same thing CHARON_DISABLE_AUTOCONNECT skips for autoConnect
+  // (opening/creating a shell on demand still works). §14.45.
+  if (process.env.CHARON_DISABLE_AUTOCONNECT === '1') return;
   let rows: Shell[];
   try {
     rows = db.select().from(shellsTable).all();
