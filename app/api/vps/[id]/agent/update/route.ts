@@ -39,5 +39,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     sdkVersion: result.sdkVersion ?? null,
     builtPyzSha: getBuiltPyzSha(),
     detail: result.detail,
+    // Partial failures (pip sub-steps are non-fatal): the client toasts these
+    // so a relit "update" badge is never a silent mystery.
+    warnings: result.warnings ?? [],
   });
 }

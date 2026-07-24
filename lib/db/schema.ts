@@ -196,6 +196,16 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // restored the session as 'active' from state.json → reconcile would
   // otherwise flip the DB back to 'active'). cf. CLAUDE.md §14.46.
   sleepRequested: integer('sleep_requested').notNull().default(0),
+  // Durable MIRROR of sleepRequested: "this session was put to sleep by an
+  // AGENT UPDATE and must be brought back up" (0/1). Set by runAgentUpdateFlow
+  // on its pre-update snapshot (BEFORE the SIGTERM), cleared when a resume
+  // succeeds, when the agent reports the session running (reconcile), or when
+  // the user explicitly sleeps it (their intent wins). Recovery sweeps
+  // (autoConnect boot + reconcile-on-connect) resume any 'sleeping' session
+  // carrying this flag — the old fire-and-forget resume promises died with a
+  // hub restart mid-update and left sessions asleep forever (real incident:
+  // WS_MASTER 2026-07-22). cf. CLAUDE.md §14.62.
+  resumePending: integer('resume_pending').notNull().default(0),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 });

@@ -1,0 +1,1 @@
+ALTER TABLE `claude_sessions` ADD `resume_pending` integer DEFAULT 0 NOT NULL;

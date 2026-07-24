@@ -4,6 +4,8 @@ import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePe
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
+import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getSdkLatestVersion, getCodexLatestVersion } from '@/lib/server/claude/sdkSync';
 import type { AgentKind } from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
 
@@ -70,7 +72,19 @@ export async function GET(req: Request) {
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
       };
     });
-    return NextResponse.json({ sessions: annotated });
+    return NextResponse.json({
+      sessions: annotated,
+      // Live staleness baselines. These were SSR-only props before: a
+      // long-open tab kept comparing vps.agentPyzSha against a FROZEN
+      // builtPyzSha, so after a hub deploy + fleet auto-update every tab
+      // showed a phantom "update agent" until F5. The client refreshes them
+      // from this poll (15s + on every session_list_changed).
+      meta: {
+        builtPyzSha: getBuiltPyzSha(),
+        sdkLatestVersion: getSdkLatestVersion(),
+        codexLatestVersion: getCodexLatestVersion(),
+      },
+    });
   } catch (e: any) {
     // Never let a transient DB hiccup surface as an unhandled 500 (which
     // returns an HTML error page that breaks the client's JSON parsing and

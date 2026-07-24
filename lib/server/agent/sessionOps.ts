@@ -1,6 +1,6 @@
 import 'server-only';
 import crypto from 'node:crypto';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, or } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages,
   claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
@@ -1745,8 +1745,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     stream.status = resolvedStatus;
     emitGlobalSession({ type: 'status', status: resolvedStatus, sessionId });
     // Resuming clears any durable sleep intent (the user/reconcile explicitly
-    // wants this session running again). cf. CLAUDE.md §14.46.
-    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0 })
+    // wants this session running again, §14.46) AND the post-update resume
+    // intent (mission accomplished, §14.62).
+    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0, resumePending: 0 })
       .where(eq(claudeSessions.id, sessionId)).run();
     return stream;
   })();
@@ -1766,7 +1767,7 @@ export async function sleepSession(sessionId: string): Promise<void> {
   // never land; the agent would later restore the session as 'active' and
   // reconcileVpsAgentState would resurrect it. The flag lets reconcile honor
   // the user's intent and re-fire the sleep instead.
-  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1 })
+  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
     .where(eq(claudeSessions.id, sessionId)).run();
   // Optimistic broadcast: flip the status to 'sleeping' for ALL SSE clients
   // (sidebar badges + other tabs) right away. The acting tab already updated
@@ -1843,7 +1844,7 @@ export async function forceStopSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) return;
   // Durable stop intent — same rationale as sleepSession (CLAUDE.md §14.46).
-  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1 })
+  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
     .where(eq(claudeSessions.id, sessionId)).run();
   const stream = streams.get(sessionId);
   if (stream) {
@@ -1984,6 +1985,40 @@ export async function reconcileVpsAgentState(
       }
       continue;
     }
+    // Durable POST-UPDATE resume intent (§14.62, the mirror of the guard
+    // above): an agent update SIGTERMed this session and the fire-and-forget
+    // resume never completed (hub restarted mid-flow). The agent restored it
+    // as 'sleeping' from state.json — bring it back up. resumeSession dedups
+    // (_resumeInflight), clears the flag on success and logs.
+    if (row.resumePending && !row.sleepRequested && agentStatus === 'sleeping') {
+      resumeSession(sid)
+        .then(() => {
+          try {
+            db.insert(claudeSessionLogs).values({
+              sessionId: sid, level: 'info', event: 'resume_pending_recovered', detail: null,
+            }).run();
+          } catch {}
+        })
+        .catch((e) => {
+          try {
+            db.insert(claudeSessionLogs).values({
+              sessionId: sid, level: 'warn', event: 'resume_pending_recovered',
+              detail: JSON.stringify({ err: e?.message ?? String(e) }),
+            }).run();
+          } catch {}
+        });
+      continue;
+    }
+    // Intent satisfied: the agent already reports the session running — a
+    // lingering resumePending (e.g. from a FAILED update that never actually
+    // stopped anything) must not resurrect it later. Clear it.
+    if (row.resumePending &&
+        (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting')) {
+      try {
+        db.update(claudeSessions).set({ resumePending: 0 })
+          .where(eq(claudeSessions.id, sid)).run();
+      } catch {}
+    }
     // Realign when the agent's status diverges from EITHER the DB row OR the
     // in-memory stream. Checking the in-memory stream too matters: a prior
     // desync can leave the stream stuck (e.g. 'sleeping') while the DB has
@@ -2009,13 +2044,18 @@ export async function reconcileVpsAgentState(
   //    lost its state.json (sessions persisted as 'sleeping' that are
   //    not restarted at boot). Relaunch them via resumeSession() which
   //    falls back to start_session(claude_session_id=...) if not found.
+  //    Also covers 'sleeping' rows with the durable POST-UPDATE resume
+  //    intent (§14.62) that the agent doesn't know at all (state lost).
   let dbRows: { id: string; status: string }[] = [];
   try {
     dbRows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
       .from(claudeSessions)
       .where(and(
         eq(claudeSessions.vpsId, vpsId),
-        inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+        or(
+          inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+          and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),
+        ),
       ))
       .all() as { id: string; status: string }[];
   } catch {

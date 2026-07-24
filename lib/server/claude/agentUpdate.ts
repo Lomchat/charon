@@ -5,7 +5,7 @@ import type { Vps } from '@/lib/db/schema';
 import { updateVpsAgent, type UpdateAgentResult } from './bootstrap';
 import { dropAgentClient, getAgentClient, getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
-import { resumeSession } from '@/lib/server/agent/sessionOps';
+import { resumeSession, emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 
 /**
  * The COMPLETE agent-update orchestration, shared by the manual route
@@ -52,6 +52,17 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       ))
       .all()
       .map((r) => r.id);
+    // DURABLE resume intent (§14.62) — persisted BEFORE the update touches
+    // anything. The fire-and-forget resumes in step 6 die with a hub restart
+    // (deploys happen mid-update on this repo — real incident: WS_MASTER's
+    // sessions stayed asleep forever); with the flag in DB, the recovery
+    // sweeps (autoConnect boot + reconcile-on-connect) finish the job no
+    // matter what happens to THIS process. Cleared on successful resume /
+    // agent-confirmed running / explicit user sleep.
+    if (toResume.length > 0) {
+      db.update(claudeSessions).set({ resumePending: 1 })
+        .where(inArray(claudeSessions.id, toResume)).run();
+    }
   } catch {}
 
   // 2. Cut the live connection BEFORE killing the process, otherwise
@@ -60,22 +71,39 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
   // "reconnecting" for a long time.
   try { await dropAgentClient(vps.id); } catch {}
 
-  // 3. Deploy pyz + SDK upgrade + restart + ping.
-  let result: UpdateAgentResult;
-  try {
-    result = await updateVpsAgent(vps);
-  } catch (e: any) {
-    result = { ok: false, detail: `unhandled: ${String(e?.stack ?? e?.message ?? e).slice(0, 500)}` };
+  // 3. Deploy pyz + SDK upgrade + restart + ping. A TRANSIENT ssh failure
+  // (the exact "Connection timed out" flaps that also flip the health badge)
+  // gets ONE automatic retry after a short pause — most flaps last seconds,
+  // and without this the user sees "updating…" collapse back to "update" for
+  // a blip that would have passed on its own. A second failure is returned
+  // as-is (surfaced in the UI toast).
+  const runOnce = async (): Promise<UpdateAgentResult> => {
+    try {
+      return await updateVpsAgent(vps);
+    } catch (e: any) {
+      return { ok: false, detail: `unhandled: ${String(e?.stack ?? e?.message ?? e).slice(0, 500)}` };
+    }
+  };
+  let result = await runOnce();
+  if (!result.ok && /timed out|connection refused|connection reset|broken pipe|connection closed|kex_exchange|banner exchange/i.test(result.detail)) {
+    console.warn(`[agent-update ${vps.id}] transient ssh failure — retrying once in 8s: ${result.detail.slice(0, 160)}`);
+    await new Promise((r) => setTimeout(r, 8_000));
+    result = await runOnce();
+    if (result.ok) result = { ...result, detail: `${result.detail} (succeeded on retry)` };
   }
 
   // 4. Recreate the AgentClient and re-arm the self-healing hooks
   // (reconcile + shell watch + login check) UNCONDITIONALLY — cf. §14.51:
   // the fresh pool instance has empty subscribers and autoConnect won't
   // re-run (_agentBooted). Without this every running session on this VPS
-  // goes silent until a full Charon restart.
+  // goes silent until a full Charon restart. Also NUDGE the connection
+  // (ready() is lazy): with zero sessions to resume, nothing else would
+  // connect the fresh client → no hello → no live vps_status push → other
+  // tabs/devices keep a stale version until their next SSR.
   try {
     const client = getAgentClient(vps);
     armAgentClientHooks(client, vps.id);
+    client.ready().catch(() => {});
   } catch {}
 
   if (!result.ok) return { ...result, resumedSessionIds: [] };
@@ -93,6 +121,18 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
       ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
+    // Mirror the persist onto the live bus — WITHOUT this, an update driven by
+    // the auto-tick or by ANOTHER device never reaches open tabs (the initiator
+    // patches its own state from the HTTP response; everyone else stayed stale
+    // until F5). Same payload contract as the hello emit (no-clobber keys).
+    emitGlobalVpsStatus(vps.id, 'ok', {
+      agentVersion: result.newVersion ?? null,
+      agentPyzSha: result.newPyzSha ?? null,
+      agentLastError: null,
+      ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
+      ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
+      ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
+    });
   } catch {}
 
   // 6. Bring the snapshot back up. Mirrors autoConnect's opportunistic boot

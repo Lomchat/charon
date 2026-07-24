@@ -59,6 +59,24 @@ export function parseAgentLastError(v: Vps): { code: string | null; detail: stri
   return { code: raw.slice(0, i).trim() || null, detail: raw.slice(i + 1).trim() || null };
 }
 
+/** "3 min ago" from a unix-seconds timestamp (for the error tooltips). */
+function agoStr(unixSeconds: number): string {
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
+  if (diff < 90) return `${diff}s ago`;
+  if (diff < 5400) return `${Math.round(diff / 60)} min ago`;
+  if (diff < 129600) return `${Math.round(diff / 3600)} h ago`;
+  return `${Math.round(diff / 86400)} d ago`;
+}
+
+/** Tooltip suffix answering "since WHEN is it broken": the last successful
+ *  hello. An error badge with "last OK contact 2 min ago" reads as a blip in
+ *  progress (auto-retry with backoff will clear it); "3 d ago" reads as a
+ *  genuinely dead box. */
+function lastContactSuffix(v: Vps): string {
+  const t = (v as any).agentLastSeenAt as number | null | undefined;
+  return t ? ` · last OK contact ${agoStr(t)} — auto-retries with backoff, "retry" forces now` : '';
+}
+
 export function diagnoseVps(
   v: Vps,
   opts?: { builtPyzSha?: string | null; sdkLatestVersion?: string | null },
@@ -84,18 +102,18 @@ export function diagnoseVps(
   } else if (status === 'error' && code === 'ssh-auth') {
     axes.push({
       key: 'ssh', state: 'err', label: 'ssh key ✗',
-      detail: `SSH refused the key (wrong/missing key or user)${errSuffix}`,
+      detail: `SSH refused the key (wrong/missing key or user)${errSuffix}${lastContactSuffix(v)}`,
       fixes: [{ action: 'refresh', label: '↻ retry', title: 'retry the SSH connection', primary: true }],
     });
   } else if (status === 'error' && code === 'ssh-unreachable') {
     axes.push({
       key: 'ssh', state: 'err', label: 'ssh ✗',
-      detail: `VPS unreachable over SSH (down / network / firewall)${errSuffix}`,
+      detail: `VPS unreachable over SSH (down / network / firewall)${errSuffix}${lastContactSuffix(v)}`,
       fixes: [{ action: 'refresh', label: '↻ retry', title: 'retry the SSH connection', primary: true }],
     });
   } else if (status === 'error') {
     // Legacy error rows (no classified code yet) — can't blame a layer.
-    axes.push({ key: 'ssh', state: 'unk', label: 'ssh ?', detail: `connection failed, layer unknown${errSuffix}` });
+    axes.push({ key: 'ssh', state: 'unk', label: 'ssh ?', detail: `connection failed, layer unknown${errSuffix}${lastContactSuffix(v)}` });
   } else {
     axes.push({ key: 'ssh', state: 'unk', label: 'ssh ?', detail: 'never tested — check or install' });
   }
@@ -122,7 +140,7 @@ export function diagnoseVps(
   } else if (status === 'error' && code === 'daemon-down') {
     axes.push({
       key: 'agent', state: 'err', label: 'agent stopped',
-      detail: `installed, but the daemon is not running${errSuffix}`,
+      detail: `installed, but the daemon is not running${errSuffix}${lastContactSuffix(v)}`,
       fixes: [{ action: 'refresh', label: '↻ start agent', title: 'start the agent daemon and reconnect', primary: true }],
     });
   } else if (status === 'error' && (code === 'ssh-auth' || code === 'ssh-unreachable')) {
@@ -130,7 +148,7 @@ export function diagnoseVps(
   } else if (status === 'error') {
     axes.push({
       key: 'agent', state: 'err', label: 'agent ✗',
-      detail: `connection to the agent dropped${errSuffix}`,
+      detail: `connection to the agent dropped${errSuffix}${lastContactSuffix(v)}`,
       fixes: [
         { action: 'refresh', label: '↻ refresh', title: 'reconnect (and start the daemon if needed)', primary: true },
         { action: 'install', label: 'reinstall', title: 'redo the full bootstrap', primary: false },

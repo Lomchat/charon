@@ -118,6 +118,10 @@ export type UpdateVpsAgentResponse = {
   sdkVersion?: string | null;
   builtPyzSha: string;
   detail: string;
+  // Non-fatal sub-step failures on an ok update ("sdk upgrade failed: …",
+  // "codex skipped: …") — the pyz deployed but a pip step didn't, so the
+  // "update" badge will relight. The UI surfaces these as a toast.
+  warnings?: string[];
 };
 
 export type RefreshVpsAgentResponse = {
@@ -235,7 +239,17 @@ export type SessionListItem = ClaudeSession & {
   pendingPermissions: number;
   firstUserMessage: string | null;
 };
-export type ClaudeSessionsListResponse = { sessions: SessionListItem[] };
+export type ClaudeSessionsListResponse = {
+  sessions: SessionListItem[];
+  // Live staleness baselines (hub pyz sha + PyPI latests) — refreshed by the
+  // client on every list poll so long-open tabs never compare against frozen
+  // SSR props (phantom "update agent" badge). Optional: older servers omit it.
+  meta?: {
+    builtPyzSha: string | null;
+    sdkLatestVersion: string | null;
+    codexLatestVersion: string | null;
+  };
+};
 
 export type PendingPermissionPayload = {
   id: string;

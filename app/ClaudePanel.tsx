@@ -74,6 +74,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
+  // LIVE staleness baselines. The SSR props freeze at page load; a tab that
+  // survives a hub deploy would forever compare vps.agentPyzSha against the
+  // OLD builtPyzSha → phantom "update agent" badge on the whole fleet until
+  // F5 (and "update" would never clear it: the server deploys the NEW sha,
+  // which still ≠ the stale prop). Refreshed from the session-list poll's
+  // `meta` (15s + on session_list_changed). The ref mirrors the state for
+  // use inside stable-closure event handlers.
+  const [buildMeta, setBuildMeta] = useState({
+    builtPyzSha: builtPyzSha ?? null,
+    sdkLatestVersion: sdkLatestVersion ?? null,
+    codexLatestVersion: codexLatestVersion ?? null,
+  });
+  const buildMetaRef = useRef(buildMeta);
+  useEffect(() => { buildMetaRef.current = buildMeta; }, [buildMeta]);
   const searchParams = useSearchParams();
   const queryParamSession = searchParams?.get('session') ?? null;
   // `?shell=` deep-link (shell-idle push/telegram notification, parity with
@@ -286,9 +300,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               ? ({
                   ...v,
                   agentStatus: 'ok',
-                  // builtPyzSha comes from the prop; null tolerable (fallback
-                  // at the next AgentClient hello).
-                  agentPyzSha: builtPyzSha ?? v.agentPyzSha,
+                  // Live buildMeta (via ref — stable closure); null tolerable
+                  // (fallback at the next AgentClient hello).
+                  agentPyzSha: buildMetaRef.current.builtPyzSha ?? v.agentPyzSha,
                 } as Vps)
               : v,
           ));
@@ -296,7 +310,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       }
     });
     return () => unsub();
-  }, [builtPyzSha]);
+  }, []);
 
   // Live shell activity status (agent >= 0.9.0). The agent emits a
   // `shell_status` busy/active event whenever a PTY starts/stops streaming
@@ -703,8 +717,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             } as Vps)
           : v
       ));
+      // PARTIAL success (pyz deployed, a pip sub-step failed): say WHY the
+      // "update" badge is about to relight instead of silently reverting.
+      if (r?.warnings?.length) {
+        setError({ msg: `update ${vps.name}: partial — ${r.warnings.join(' · ')}` });
+      }
     } catch (e: any) {
-      setError({ msg: `update agent: ${e?.message ?? e}` });
+      const msg = String(e?.message ?? e);
+      // A client/proxy timeout does NOT mean the update failed: pip can take
+      // minutes and the flow finishes server-side (the badge then clears
+      // itself via the next hello). Don't cry wolf for that case.
+      if (/timeout|timed out|abort/i.test(msg)) {
+        setError({ msg: `update ${vps.name}: still running server-side (client timed out) — the badge will clear by itself if it succeeds; retry otherwise` });
+      } else {
+        setError({ msg: `update ${vps.name}: ${msg}` });
+      }
     } finally {
       setUpdatingAgentVpsIds((prev) => {
         const n = new Set(prev);
@@ -954,9 +981,48 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // another client. 15s is amply sufficient.
   const refreshSessions = useCallback(async () => {
     try {
-      const r = (await api.listClaudeSessions()) as { sessions: SessionListItem[] };
-      setSessions(r.sessions);
+      const r = await api.listClaudeSessions();
+      setSessions(r.sessions as SessionListItem[]);
+      // Refresh the staleness baselines (builtPyzSha / PyPI latests) so a
+      // long-open tab converges within one poll after a hub deploy — no more
+      // phantom "update agent" badges that only F5 could clear.
+      const m = r.meta;
+      if (m) {
+        setBuildMeta((prev) =>
+          prev.builtPyzSha === m.builtPyzSha
+            && prev.sdkLatestVersion === m.sdkLatestVersion
+            && prev.codexLatestVersion === m.codexLatestVersion
+            ? prev
+            : { builtPyzSha: m.builtPyzSha, sdkLatestVersion: m.sdkLatestVersion, codexLatestVersion: m.codexLatestVersion });
+      }
     } catch {}
+  }, []);
+
+  // Live per-session STATUS mirror (cross-device dots). `status` events are
+  // LOW_VOLUME (every tab gets them, §14.16) but only the focused session's
+  // view consumed them — a session going thinking/sleeping on ANOTHER device
+  // only updated this sidebar at the next 15s poll. Patch the list row
+  // immediately; the poll remains the convergence backstop (replays or missed
+  // events can't wedge anything). 'killed' is a deletion signal — handled by
+  // session_list_changed → refreshSessions, skip it here.
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'status') return;
+      const sid = ev.sessionId;
+      const st = (ev as any).status as string | undefined;
+      if (!sid || !st || st === 'killed') return;
+      setSessions((prev) => {
+        let changed = false;
+        const next = prev.map((s) => {
+          if (s.id !== sid) return s;
+          if ((s.liveStatus ?? s.status) === st) return s;
+          changed = true;
+          return { ...s, liveStatus: st as SessionListItem['liveStatus'] };
+        });
+        return changed ? next : prev;
+      });
+    });
+    return () => unsub();
   }, []);
   useEffect(() => {
     refreshSessions();
@@ -1495,9 +1561,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 0 : 1 } : f));
           }
         }}
-        builtPyzSha={builtPyzSha}
-        sdkLatestVersion={sdkLatestVersion}
-        codexLatestVersion={codexLatestVersion}
+        builtPyzSha={buildMeta.builtPyzSha}
+        sdkLatestVersion={buildMeta.sdkLatestVersion}
+        codexLatestVersion={buildMeta.codexLatestVersion}
         updatingAgentVpsIds={updatingAgentVpsIds}
         refreshingAgentVpsIds={refreshingAgentVpsIds}
       />
@@ -1719,8 +1785,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
           liveVps={vpsList}
-          builtPyzSha={builtPyzSha}
-          sdkLatestVersion={sdkLatestVersion}
+          builtPyzSha={buildMeta.builtPyzSha}
+          sdkLatestVersion={buildMeta.sdkLatestVersion}
         />
       )}
 
