@@ -21,7 +21,7 @@ import { subscribeAll } from './globalEventStream';
 import SearchModal from './SearchModal';
 import SettingsModal from './SettingsModal';
 import SessionContextMenu from './SessionContextMenu';
-import LoginConsole from './LoginConsole';
+import ClaudeLoginModal from './ClaudeLoginModal';
 import CodexLoginModal from './CodexLoginModal';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
@@ -150,14 +150,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       : vp));
   }, [codexLoginVps]);
 
-  // When the user closes the LoginConsole, we re-check the VPS's `claude
-  // login` state — they may have just logged in (or out). The result is
-  // persisted on the server side and patched locally so the sidebar
-  // immediately hides the "claude login" button if no longer needed.
-  const closeLoginConsole = useCallback(() => {
+  // Closing the Claude login modal (§14.64). On a CONFIRMED success we patch
+  // locally right away — the server already persisted the flag and broadcast
+  // `vps_status`, so other tabs follow on their own (mirrors closeCodexLogin).
+  // Otherwise we re-check: the user may have signed in (or out) by another
+  // route, and the result self-heals the sidebar button + health chips.
+  const closeLoginConsole = useCallback((loggedIn: boolean) => {
     const v = loginVps;
     setLoginVps(null);
     if (!v) return;
+    if (loggedIn) {
+      setVpsList((prev) => prev.map((vp) => vp.id === v.id
+        ? ({ ...vp, claudeLoggedIn: 1, claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000) } as Vps)
+        : vp));
+      return;
+    }
     // Best-effort, async. If SSH crashes, we keep the old value.
     api.checkVpsClaudeLogin(v.id)
       .then((r) => {
@@ -373,13 +380,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // agentLastError: classified failure reason (ssh vs daemon) — feeds
           // the health chips (vpsHealth.tsx). Explicit null on 'ok' clears it.
           const agentLastError = (ev as any).agentLastError !== undefined ? (ev as any).agentLastError : (v as any).agentLastError;
+          // Login flags, same no-clobber contract. Broadcast by the codex
+          // (§14.61) and claude (§14.64) device-code logins on success — this
+          // is what flips the chips/buttons in the OTHER tabs and devices
+          // (the originating tab also patches locally on modal close).
+          const codexLoggedIn = (ev as any).codexLoggedIn !== undefined ? (ev as any).codexLoggedIn : (v as any).codexLoggedIn;
+          const claudeLoggedIn = (ev as any).claudeLoggedIn !== undefined ? (ev as any).claudeLoggedIn : (v as any).claudeLoggedIn;
           if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion
               && (v as any).codexAvailable === codexAvailable && (v as any).codexSdkVersion === codexSdkVersion
-              && (v as any).agentLastError === agentLastError) {
+              && (v as any).agentLastError === agentLastError
+              && (v as any).codexLoggedIn === codexLoggedIn && (v as any).claudeLoggedIn === claudeLoggedIn) {
             return v;
           }
           changed = true;
-          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, agentLastError } as Vps;
+          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, agentLastError, codexLoggedIn, claudeLoggedIn } as Vps;
         });
         return changed ? next : prev;
       });
@@ -1641,11 +1655,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           selectedVps={selectedVps}
           usage={usageFor(selectedVps?.id, selected.kind as AgentKind | undefined)}
           onUsageRefresh={() => refreshUsage(selectedVps?.id)}
-          overlay={
-            <>
-              {loginVps && <LoginConsole vps={loginVps} onClose={closeLoginConsole} />}
-            </>
-          }
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the
@@ -1702,13 +1711,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             </div>
           ))}
         </main>
-      )}
-
-      {/* Also render the LoginConsole when selected ALONG with an install/shell —
-          loginVps is cross-panel (triggered from Sidebar or
-          InstallSessionView). We keep a global mount. */}
-      {loginVps && (selectedShellId || selectedInstallId) && (
-        <LoginConsole vps={loginVps} onClose={closeLoginConsole} />
       )}
 
       <PermissionPopup
@@ -1782,6 +1784,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onRefreshAgent={(v) => { runRefreshAgent(v); }}
           onUpdateAgent={(v) => { runUpdateAgent(v); }}
           onCodexLogin={(v) => setCodexLoginVps(v)}
+          onClaudeLogin={(v) => setLoginVps(v)}
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
           liveVps={vpsList}
@@ -1790,10 +1793,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         />
       )}
 
-      {/* Codex device-code login (§14.61) — rendered AFTER the wizard/data
-          modal so it overlays whichever surface launched it. */}
+      {/* Device-code logins (Codex §14.61, Claude §14.64) — rendered AFTER the
+          wizard/data modal so they overlay whichever surface launched them.
+          loginVps/codexLoginVps are cross-panel (sidebar, health chips,
+          install view), hence a single global mount each. */}
       {codexLoginVps && (
         <CodexLoginModal vps={codexLoginVps} onClose={closeCodexLogin} />
+      )}
+      {loginVps && (
+        <ClaudeLoginModal vps={loginVps} onClose={closeLoginConsole} />
       )}
 
       {ctxMenu && ctxMenu.kind === 'session' && (

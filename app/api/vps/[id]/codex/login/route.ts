@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // Codex ChatGPT DEVICE-CODE login (agent >= 0.16.0) — the in-hub `codex
-// login` equivalent of the Claude LoginConsole, minus the PTY: the flow is
+// login` equivalent of <ClaudeLoginModal> (§14.64): the flow is
 // pure copy-paste (open verification_url on any device, type user_code; the
 // VPS's codex app-server persists ~/.codex/auth.json itself on completion).
 //   POST   → start an attempt → { ok, loginId, verificationUrl, userCode }

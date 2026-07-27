@@ -13,7 +13,8 @@ import type {
   InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
   ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse,
-  CheckClaudeLoginResponse, CodexLoginStartResponse, CodexLoginStatusResponse,
+  CheckClaudeLoginResponse, ClaudeLoginStatusResponse,
+  CodexLoginStartResponse, CodexLoginStatusResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
   ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
   ClaudeSessionEditsResponse,
@@ -183,11 +184,24 @@ export const api = {
   scanVpsClaude: (id: string) =>
     send<ScanVpsClaudeResponse>('GET', `/api/vps/${id}/claude/scan`),
   // Re-checks the VPS's `claude login` state. Persists in DB + returns.
-  // Triggered when the LoginConsole closes (the user may have just logged
+  // Triggered when the login modal closes (the user may have just logged
   // in or out), or on manual demand.
   checkVpsClaudeLogin: (id: string) =>
     send<CheckClaudeLoginResponse>('POST', `/api/vps/${id}/claude/check-login`),
   bootstrapVpsUrl: (id: string) => `/api/vps/${id}/claude/bootstrap`,
+  // ── Claude device-code login (§14.64) ─────────────────────────────────────
+  // start → the modal polls status until an OAuth url shows up, the user
+  // authorizes on any device and pastes the code back via submitClaudeLoginCode;
+  // the phase then goes 'verifying' → 'success' (confirmed by
+  // `claude auth status --json`, never by scraping stdout).
+  startClaudeLogin: (id: string) =>
+    send<ClaudeLoginStatusResponse>('POST', `/api/vps/${id}/login`),
+  claudeLoginStatus: (id: string) =>
+    send<ClaudeLoginStatusResponse>('GET', `/api/vps/${id}/login`),
+  submitClaudeLoginCode: (id: string, code: string) =>
+    send<ClaudeLoginStatusResponse>('POST', `/api/vps/${id}/login/code`, { code }),
+  cancelClaudeLogin: (id: string) =>
+    send<OkResponse>('DELETE', `/api/vps/${id}/login`),
   // ── Codex device-code login (agent >= 0.16.0, §14.61) ─────────────────────
   // start → {loginId, verificationUrl, userCode}; the modal polls status
   // until the user completes the code on any device; DELETE cancels.

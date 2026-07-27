@@ -5,7 +5,7 @@ import type { Vps } from '@/lib/db/schema';
 import AgentLogo from './AgentLogo';
 
 // Codex sign-in via the ChatGPT DEVICE-CODE flow (agent >= 0.16.0, §14.61) —
-// the Codex sibling of <LoginConsole>, without a PTY: POST start returns a
+// the Codex sibling of <ClaudeLoginModal> (§14.64): POST start returns a
 // verification URL + short code; the user opens the URL on ANY device (this
 // browser, a phone…), types the code, and the VPS's codex app-server persists
 // its own credentials. We poll GET status until success/error.

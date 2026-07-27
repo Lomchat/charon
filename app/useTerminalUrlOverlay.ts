@@ -6,7 +6,7 @@ import { extractWrappedUrls } from './terminalUrlDetect';
 // ─────────────────────────────────────────────────────────────────────────────
 // Lightweight hook that accumulates terminal text and exposes the latest "long"
 // URL detected (typically an OAuth URL wrapped across multiple lines). Used by
-// `LoginConsole` and `ShellTerminal` to offer a copy/open overlay
+// `ShellTerminal` to offer a copy/open overlay
 // when the user cannot select the URL by hand.
 //
 // Internal state:

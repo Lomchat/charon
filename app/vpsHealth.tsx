@@ -182,14 +182,14 @@ export function diagnoseVps(
     } else if (claudeLoggedIn === 0) {
       axes.push({
         key: 'claude', state: 'warn', label: 'claude: login',
-        detail: 'installed but not signed in — open the claude login console',
-        fixes: [{ action: 'claude-login', label: 'claude login', title: 'open the claude login console', primary: false }],
+        detail: 'installed but not signed in — run the claude login flow',
+        fixes: [{ action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)', primary: false }],
       });
     } else if (claudeLoggedIn == null) {
       axes.push({
         key: 'claude', state: 'unk', label: 'claude ?',
         detail: 'login never checked — open the console to sign in / verify',
-        fixes: [{ action: 'claude-login', label: 'claude login', title: 'open the claude login console', primary: false }],
+        fixes: [{ action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)', primary: false }],
       });
     } else {
       axes.push({ key: 'claude', state: 'ok', label: 'claude ✓', detail: `signed in${sdkVersion ? ` · sdk ${sdkVersion}` : ''}` });
@@ -289,7 +289,7 @@ export function backendAvailability(
     return {
       ok: false,
       reason: claudeLoggedIn === 0 ? 'not signed in' : 'login not verified',
-      fix: { action: 'claude-login', label: 'claude login', title: 'open the claude login console' },
+      fix: { action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)' },
     };
   }
   return { ok: true, reason: 'new Claude agent on this VPS' };

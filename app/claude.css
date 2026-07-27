@@ -3637,8 +3637,12 @@
 .wiz-fix-btn:hover:not(:disabled) { background: rgba(138,180,228,0.22); }
 .wiz-fix-btn:disabled { opacity: 0.5; cursor: wait; }
 
-/* ── Codex device-code login modal (app/CodexLoginModal.tsx, §14.61) ────── */
+/* ── Device-code login modals ────────────────────────────────────────────
+   Shared `.cxl-*` styles for CodexLoginModal (§14.61) and ClaudeLoginModal
+   (§14.64). Claude's is a touch wider: it also carries a code INPUT (Codex
+   only displays a code, Claude needs it pasted back). */
 .codex-login-modal { max-width: 480px; }
+.claude-login-modal { max-width: 540px; }
 .cxl-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .cxl-head h2 { font-size: 15px; margin: 0; color: var(--gold-bright); }
 .cxl-body { display: flex; flex-direction: column; gap: 12px; }
@@ -3659,3 +3663,27 @@
 .cxl-status { font-size: 12px; color: var(--parchment-soft); }
 .cxl-status.ok { color: #7ac478; font-size: 13px; }
 .cxl-status.err { color: var(--crimson); }
+.cxl-status code { font-family: var(--mono); font-size: 11px; color: var(--gold-bright); }
+/* Claude-only: url + copy button on one row, then the paste-back field. */
+.cxl-url-row { display: flex; align-items: flex-start; gap: 8px; }
+.cxl-url-row .cxl-url { flex: 1; min-width: 0; }
+.cxl-copy {
+  flex: none; font-size: 11px; padding: 3px 8px; border-radius: 5px;
+  border: 1px solid var(--gold); background: rgba(138,180,228,0.08);
+  color: var(--parchment-soft); cursor: pointer;
+}
+.cxl-copy:hover { background: rgba(138,180,228,0.18); color: var(--parchment); }
+.cxl-code-row { display: flex; align-items: center; gap: 8px; }
+.cxl-input {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 14px;
+  padding: 9px 12px; border-radius: 6px; border: 1px dashed var(--gold);
+  background: rgba(138,180,228,0.08); color: var(--parchment);
+}
+.cxl-input:focus { outline: none; border-style: solid; background: rgba(138,180,228,0.14); }
+.cxl-input:disabled { opacity: 0.5; }
+/* Non-fatal (a rejected code): the flow continues with a fresh url. */
+.cxl-warn {
+  font-size: 12px; color: var(--gold-bright); padding: 7px 10px; border-radius: 5px;
+  border: 1px solid rgba(216,168,90,0.4); background: rgba(216,168,90,0.1);
+}
+.cxl-account { font-family: var(--mono); font-size: 11px; color: var(--parchment-soft); }

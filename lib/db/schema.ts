@@ -82,7 +82,7 @@ export const vps = sqliteTable('vps', {
   // "claude login" button in the sidebar when not needed. Updated by:
   // - `check_login` phase of the bootstrap (cf. bootstrap.ts)
   // - POST /api/vps/[id]/claude/check-login (triggered when the
-  //   LoginConsole closes, or on demand)
+  //   the login modal closes, or on demand)
   claudeLoggedIn: integer('claude_logged_in'),
   claudeLoggedInCheckedAt: integer('claude_logged_in_checked_at'),
   // ── Codex (OpenAI) availability on this VPS (multi-agent support). ──

@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
-import LoginConsole from './LoginConsole';
 import { diagnoseVps, VpsHealthChips, type VpsFixAction } from './vpsHealth';
 import {
   DndContext,
@@ -40,10 +39,12 @@ type Props = {
   // busy state via the sets below), unlike install which closes the modal.
   onRefreshAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
-  // Codex device-code login (§14.61): delegated UP — ClaudePanel renders the
-  // CodexLoginModal AFTER this modal so it overlays it; on success the
-  // liveVps merge below repaints the chips (codexLoggedIn is a merged key).
+  // Device-code logins (Codex §14.61, Claude §14.64): delegated UP —
+  // ClaudePanel renders both modals AFTER this one so they overlay it; on
+  // success the liveVps merge below repaints the chips (claudeLoggedIn /
+  // codexLoggedIn are merged keys).
   onCodexLogin?: (vps: Vps) => void;
+  onClaudeLogin?: (vps: Vps) => void;
   refreshingAgentVpsIds?: Set<string>;
   updatingAgentVpsIds?: Set<string>;
   // Live copy of ClaudePanel's vpsList: the modal owns its rows for CRUD, but
@@ -86,7 +87,7 @@ function decodeId(dragId: string): { kind: 'vps' | 'folder' | 'folder-drop'; id:
 
 export default function DataModal({
   onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
-  onRefreshAgent, onUpdateAgent, onCodexLogin,
+  onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin,
   refreshingAgentVpsIds, updatingAgentVpsIds,
   liveVps, builtPyzSha, sdkLatestVersion,
 }: Props) {
@@ -94,7 +95,6 @@ export default function DataModal({
   const [folders, setFolders] = useState<VpsFolder[]>(initialFolders);
   const [paths, setPaths] = useState<VpsPath[]>(initialPaths);
   const [err, setErr] = useState<string | null>(null);
-  const [loginVps, setLoginVps] = useState<Vps | null>(null);
   const [addVpsOpen, setAddVpsOpen] = useState(false);
   const [addFolderOpen, setAddFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -125,14 +125,14 @@ export default function DataModal({
   // One dispatcher for the health-chip fix buttons (cf. vpsHealth.tsx).
   // install → closes the modal (install session view takes over);
   // refresh/update → run in place (busy state on the card's button);
-  // claude-login → the modal's own LoginConsole overlay.
+  // claude-login / codex-login → delegated up (see the props above).
   const handleFix = useCallback((v: Vps, action: VpsFixAction) => {
     if (action === 'install') handleBootstrap(v);
-    else if (action === 'claude-login') setLoginVps(v);
+    else if (action === 'claude-login') onClaudeLogin?.(v);
     else if (action === 'codex-login') onCodexLogin?.(v);
     else if (action === 'refresh') onRefreshAgent?.(v);
     else if (action === 'update') onUpdateAgent?.(v);
-  }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onCodexLogin]);
+  }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin]);
 
   // Follow ClaudePanel's live vpsList for HEALTH fields only (agent status,
   // classified error, logins, codex, versions). CRUD fields (name/ip/folder/
@@ -163,30 +163,11 @@ export default function DataModal({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !loginVps) onClose();
+      if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, loginVps]);
-
-  // Closing the login console re-checks `claude login` on that VPS (the user
-  // may have just signed in) and pushes the verdict up so the sidebar +
-  // health chips follow without an F5 — mirrors ClaudePanel.closeLoginConsole.
-  function closeLogin() {
-    const v = loginVps;
-    setLoginVps(null);
-    if (!v) return;
-    api.checkVpsClaudeLogin(v.id)
-      .then((r) => {
-        if (!r.ok) return;
-        const next = vpsList.map((vp) => vp.id === v.id
-          ? ({ ...vp, claudeLoggedIn: r.loggedIn ? 1 : 0, claudeLoggedInCheckedAt: r.checkedAt } as Vps)
-          : vp);
-        setVpsList(next);
-        notify(next);
-      })
-      .catch(() => {});
-  }
+  }, [onClose]);
 
   function notify(nextVps?: Vps[], nextFolders?: VpsFolder[], nextPaths?: VpsPath[]) {
     onChange?.({
@@ -593,7 +574,7 @@ export default function DataModal({
                   onDelete={() => deleteFolder(folder.id, folder.name)}
                   onFixVps={handleFix}
                   healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
-                  onLogin={(v) => setLoginVps(v)}
+                  onLogin={(v) => onClaudeLogin?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                   onAddPath={(vpsId) => addPath(vpsId)}
@@ -618,7 +599,7 @@ export default function DataModal({
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onFixVps={handleFix}
                 healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
-                onLogin={(v) => setLoginVps(v)}
+                onLogin={(v) => onClaudeLogin?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                 onAddPath={(vpsId) => addPath(vpsId)}
@@ -643,9 +624,6 @@ export default function DataModal({
           </DragOverlay>
         </DndContext>
       </div>
-      {loginVps && (
-        <LoginConsole vps={loginVps} onClose={closeLogin} />
-      )}
     </div>
   );
 }
@@ -941,7 +919,7 @@ function SortableVpsCard({
           ))}
         </select>
         <div className="dv-actions">
-          <button className="dv-btn" onClick={onLogin} title="open the claude login console">login</button>
+          <button className="dv-btn" onClick={onLogin} title="sign in to Claude (hosted OAuth code)">login</button>
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>
         </div>
         {/* Health chips: one per layer, hover for the why; each broken chip is

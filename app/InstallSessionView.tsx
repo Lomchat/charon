@@ -23,7 +23,7 @@ type Props = {
   vpsName: string;
   onClosed: () => void;
   /** Callback when the install finishes OK and we need to offer "Setup login".
-   *  The component doesn't know how to open the LoginConsole — that's the
+   *  The component doesn't know how to open the Claude login modal — that's the
    *  parent ClaudePanel's job. */
   onSetupLogin?: () => void;
   /** Callback when the agent is OK, to signal that the user wants to "close

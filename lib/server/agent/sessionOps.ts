@@ -152,7 +152,7 @@ export function emitGlobalVpsStatus(
   extra?: {
     agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
     agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null;
-    codexLoggedIn?: number | null;
+    codexLoggedIn?: number | null; claudeLoggedIn?: number | null;
   },
 ): void {
   emitGlobalSession({
@@ -168,6 +168,7 @@ export function emitGlobalVpsStatus(
     codexAvailable: extra?.codexAvailable,
     codexSdkVersion: extra?.codexSdkVersion,
     codexLoggedIn: extra?.codexLoggedIn,
+    claudeLoggedIn: extra?.claudeLoggedIn,
     sessionId: vpsId,
   });
 }

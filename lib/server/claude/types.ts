@@ -137,8 +137,9 @@ export type SyntheticEvent =
       // health chips (app/vpsHealth.tsx). Keys present only when known
       // (no-clobber contract, mirrors sdkVersion).
       agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null;
-      // Set by the codex device-code login route on completion (§14.61).
-      codexLoggedIn?: number | null }
+      // Set by the codex device-code login route on completion (§14.61) and by
+      // the claude device-code login session on success (§14.64).
+      codexLoggedIn?: number | null; claudeLoggedIn?: number | null }
   // Per-session "finished, unread" marker fanned onto the global SSE bus
   // (sessionId = the Claude session id). unread=true when a turn finished
   // (`stop`) while nobody was viewing the session; unread=false when the user

@@ -5,7 +5,7 @@ import { isChunkLoadError, reloadOnceForChunkError } from './chunkReload';
 
 // Window-level net for stale-chunk failures that React error boundaries never
 // see (§14.57): a rejected dynamic `import()` inside an async handler (e.g. the
-// xterm load in ShellTerminal/LoginConsole) becomes an unhandledrejection, and
+// xterm load in ShellTerminal) becomes an unhandledrejection, and
 // a failed <script> chunk fires a window 'error' — neither reaches
 // global-error.tsx / error.tsx. Mounted once in the root layout.
 export default function ChunkReloadGuard() {

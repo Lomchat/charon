@@ -197,6 +197,28 @@ export type CheckClaudeLoginResponse = {
   checkedAt: number | null;
 };
 
+// Claude device-code login (POST|GET|DELETE /api/vps/[id]/login + POST
+// /api/vps/[id]/login/code, §14.64). `claude auth login` prints a hosted OAuth
+// url (platform.claude.com callback — works headless), the user authorizes on
+// ANY device and pastes the code back. A rejected code is recoverable: the
+// phase returns to 'pending' with a fresh `url` and a non-fatal `error`.
+export type ClaudeLoginPhase = 'starting' | 'pending' | 'verifying' | 'success' | 'error';
+export type ClaudeLoginAccount = {
+  authMethod?: string;
+  email?: string;
+  orgName?: string;
+  subscriptionType?: string;
+};
+export type ClaudeLoginStatusResponse = {
+  ok: boolean;
+  phase?: ClaudeLoginPhase;
+  url?: string | null;
+  error?: string | null;
+  account?: ClaudeLoginAccount | null;
+  /** Bumps on every fresh url — distinguishes a retry from a re-render. */
+  attempt?: number;
+};
+
 // Codex ChatGPT device-code login (POST|GET|DELETE /api/vps/[id]/codex/login,
 // agent >= 0.16.0). The user opens verificationUrl on ANY device and types
 // userCode; the VPS persists its own credentials on completion (§14.61).

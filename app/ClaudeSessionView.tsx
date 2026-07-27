@@ -38,7 +38,6 @@ import { useInputDraft } from './inputDraftStore';
 //     not through a button in the bar (cf. kill→delete rework: only
 //     `sleep` is reversible, everything else destroys)
 //   - Reconnect / disconnect / error banner
-//   - Slot for overlay (LoginConsole for `claude login`)
 //   - Scroll-reverse chat + scroll pill
 //   - ThinkingBar during 'thinking'
 //   - Input bar (mode switch + textarea + send) — replaced by
@@ -55,11 +54,6 @@ type Props = {
   sessionId: string;
   selected: SessionListItem;
   selectedVps: Vps | null;
-  // Slot for parent overlay (LoginConsole for `claude login`). Rendered
-  // between the bar and the chat. Agent bootstrap no longer goes through
-  // here — it opens a dedicated install session
-  // (cf. ClaudePanel.openInstallSession).
-  overlay?: React.ReactNode;
   // Sound + native Notification handled by the parent (cross-session), but
   // we can still play a beep on stop if configured.
   notifSoundEnabled?: boolean;
@@ -87,7 +81,7 @@ const sharedCacheRef: StreamCache = {
 
 export default function ClaudeSessionView({
   sessionId, selected, selectedVps,
-  overlay, onImportError, onKilled, onAfterRevert, usage, onUsageRefresh,
+  onImportError, onKilled, onAfterRevert, usage, onUsageRefresh,
 }: Props) {
   const stream = useClaudeSessionStream(sessionId, {
     cache: sharedCacheRef,
@@ -496,8 +490,6 @@ export default function ClaudeSessionView({
             <button onClick={clearError}>✕</button>
           </div>
         )}
-
-        {overlay}
 
         <div className="claude-chat-wrap">
           <div className="claude-chat" ref={chatBodyRef} onScroll={handleChatScroll}>

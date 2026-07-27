@@ -11,7 +11,7 @@ type Props = {
  * has been detected (probably wrapped across multiple lines by hard-wrap
  * or soft-wrap). Buttons: copy (clipboard), open (new tab), hide.
  *
- * Designed to sit on any `position: relative` container (LoginConsole
+ * Designed to sit on any `position: relative` container (ShellTerminal
  * and ShellTerminal set their xterm-container that way).
  */
 export default function TerminalUrlOverlay({ url, onDismiss }: Props) {
