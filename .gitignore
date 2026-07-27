@@ -23,3 +23,7 @@ __pycache__/
 # Internal/private dev docs (not for the public repo)
 todo.md
 CLAUDE.md
+# AGENTS.md is a local symlink -> CLAUDE.md. It MUST stay untracked: committing
+# the symlink ships a DANGLING link (CLAUDE.md is ignored above), and `next
+# build` stat()s the repo root -> ENOENT -> CI build failure. See §14.63.
+AGENTS.md
