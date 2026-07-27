@@ -79,8 +79,17 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
     if (!s) return;
     setBusy(true);
     try {
-      const r = await api.updateClaudeSettings(s);
-      setS(r);
+      const resp: any = await api.updateClaudeSettings(s);
+      const rejected: string[] | undefined = resp?.rejected;
+      delete resp?.rejected;
+      if (rejected?.includes('claude.api_key')) {
+        // The server refused a non-sk-ant- key (browser autofilled the login
+        // password into the type=password field). Clear it, keep the modal open.
+        setS({ ...resp, 'claude.api_key': '' });
+        alert('Anthropic API key not saved — it must start with "sk-ant-". A browser password-manager likely autofilled your login password here; retype the real key (or leave it blank).');
+        return;
+      }
+      setS(resp);
       onClose();
     } catch (e: any) {
       alert('save: ' + (e?.message ?? e));
@@ -92,7 +101,11 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
     setSyncing(true);
     setSyncMsg(null);
     try {
-      await api.updateClaudeSettings(s); // persist the key first
+      const saved: any = await api.updateClaudeSettings(s); // persist the key first
+      if (saved?.rejected?.includes('claude.api_key')) {
+        setSyncMsg({ ok: false, msg: 'key rejected — it must start with "sk-ant-". A browser autofill likely replaced it with your login password; retype the real Anthropic key.' });
+        return;
+      }
       const r = await api.refreshClaudeModels();
       if (r.ok) {
         invalidateModels();
@@ -191,12 +204,29 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
 
                     <div className="settings-sub">model catalog</div>
                     <label>Anthropic API key (catalog sync only — never inference)
+                      {/* PLAIN TEXT on purpose (NOT type=password): Chrome's
+                          password manager only autofills the SITE login password
+                          into type=password fields (ignoring autocomplete=off),
+                          which overwrote the real key. type=text + a
+                          non-credential name keep autofill away. The GET returns
+                          only a start+end preview (`sk-ant-api…wXYZ`), never the
+                          secret middle; leaving it untouched round-trips as
+                          "unchanged" (the route keeps the stored key), and any
+                          non-sk-ant- value is rejected. */}
                       <input
                         value={s['claude.api_key'] ?? ''}
                         onChange={(e) => set('claude.api_key', e.target.value)}
                         placeholder="sk-ant-…"
-                        type="password"
+                        type="text"
+                        name="charon-anthropic-catalog-key"
                         autoComplete="off"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-form-type="other"
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
                       />
                     </label>
                     <div className="tg-test-row">

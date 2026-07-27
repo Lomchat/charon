@@ -23,7 +23,16 @@ import { CANONICAL_EFFORTS } from '@/lib/types/api';
 const MODELS_API = 'https://api.anthropic.com/v1/models';
 const ANTHROPIC_VERSION = '2023-06-01';
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const FETCH_TIMEOUT_MS = 15_000;
+// Per-ATTEMPT connect/response timeout. Kept short (a healthy connect returns
+// in ~0.2s) so several retries fit inside the refresh route's ~30s client
+// budget. The hub's outbound link to api.anthropic.com can drop TCP SYNs
+// intermittently (real incident: ~25% connect success on a flaky VPS uplink,
+// ICMP clean, IPv6 dead) → the fetch throws `fetch failed` (ETIMEDOUT). One
+// shot then almost always failed; retrying into a fresh window turns
+// ~25%/attempt into ~68% over 4 attempts (and the caller can click again).
+const FETCH_TIMEOUT_MS = 6_000;
+const MAX_FETCH_ATTEMPTS = 4;
+const RETRY_BACKOFF_MS = 500;
 const MAX_PAGES = 20;
 
 // Accept ANY `claude-*` id the catalog returns. Do NOT allowlist families
@@ -69,23 +78,47 @@ function mapLive(m: LiveModel, seedById: Map<string, KnownModel>): KnownModel {
   return { id: m.id, label: m.display_name || m.id, group: 'current', efforts };
 }
 
+/** One catalog page fetch with bounded retries. Retries on NETWORK throws
+ *  (ETIMEDOUT/ENETUNREACH/abort — the flaky-egress case above) and on transient
+ *  HTTP statuses (429 / 5xx); definitive statuses (401/403/other 4xx) are
+ *  returned as-is so the caller surfaces the real error message (e.g. an
+ *  invalid api-key must NOT be retried 4×). Worst case ≈ MAX_FETCH_ATTEMPTS ×
+ *  FETCH_TIMEOUT_MS + backoffs (~25s), under the refresh route's 30s budget. */
+async function fetchModelsPage(url: string, apiKey: string): Promise<Response> {
+  let lastErr: unknown = new Error('models API: no attempt made');
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
+        signal: ctrl.signal,
+      });
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX_FETCH_ATTEMPTS) {
+        await res.text().catch(() => {}); // drain the body so the socket frees
+        lastErr = new Error(`models API ${res.status} (transient)`);
+      } else {
+        return res; // 2xx, or a definitive 4xx the caller will report
+      }
+    } catch (e) {
+      lastErr = e; // network-level failure — retry into a fresh window
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < MAX_FETCH_ATTEMPTS) {
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 /** Fetch + paginate the live catalog. Throws on non-2xx (caller swallows). */
 export async function fetchLiveModels(apiKey: string): Promise<KnownModel[]> {
   const seedById = new Map(KNOWN_MODELS.map((m) => [m.id, m]));
   const out: KnownModel[] = [];
   let url = `${MODELS_API}?limit=100`;
   for (let i = 0; i < MAX_PAGES; i++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    const res = await fetchModelsPage(url, apiKey);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(`models API ${res.status}: ${body.slice(0, 200)}`);
