@@ -4,20 +4,23 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
+import { AGENT_DIR_NAME, AGENT_PKILL_PATTERN, INSTANCE, UNIT_NAME } from './agentPaths.js';
 
 // Helpers to manage the local agent — the one running on the dashboard's
 // machine (not on a remote VPS). No SSH here, everything is local.
 //
-// Assumed layout:
-//   ~/.charon/charon-agent.pyz   ← deployed
-//   ~/.charon/venv/bin/python    ← venv interpreter (created at bootstrap)
-//   ~/.config/systemd/user/charon-agent.service  ← unit
+// Assumed layout (instance-scoped, §14.70 — `<dir>` is `.charon` for the
+// default hub, `.charon-<CHARON_INSTANCE>` for a co-tenant one):
+//   ~/<dir>/charon-agent.pyz     ← deployed
+//   ~/.charon/venv/bin/python    ← venv interpreter, SHARED across instances
+//   ~/.config/systemd/user/<UNIT_NAME>  ← unit
 //
 // Status:
 //   - sha of the local pyz: computeFileSha12()
 //   - service running: systemctl --user is-active
 
-const LOCAL_PYZ = path.join(os.homedir(), '.charon', 'charon-agent.pyz');
+const LOCAL_PYZ = path.join(os.homedir(), AGENT_DIR_NAME, 'charon-agent.pyz');
+const LOCAL_AGENT_LOG = path.join(os.homedir(), AGENT_DIR_NAME, 'agent.log');
 const DASHBOARD_PYZ = path.join(process.cwd(), 'agent/dist/charon-agent.pyz');
 
 function computeFileSha12(p: string): string | null {
@@ -60,7 +63,7 @@ export async function getLocalAgentStatus(): Promise<LocalAgentStatus> {
 
   let serviceActive: boolean | null = null;
   try {
-    const r = await execLocal('systemctl', ['--user', 'is-active', 'charon-agent.service'], 4000);
+    const r = await execLocal('systemctl', ['--user', 'is-active', UNIT_NAME], 4000);
     if (r.code === 0) serviceActive = r.stdout.trim() === 'active';
     else if (r.code === 3) serviceActive = false;  // inactive
     else serviceActive = null;
@@ -98,23 +101,34 @@ export async function updateLocalAgent(): Promise<LocalUpdateResult> {
 
   // Restart systemd-user. If it fails, fallback to nohup so we don't leave
   // the user with an up-to-date but stopped agent.
-  const r = await execLocal('systemctl', ['--user', 'restart', 'charon-agent.service'], 15000);
+  const r = await execLocal('systemctl', ['--user', 'restart', UNIT_NAME], 15000);
   let serviceActive: boolean;
   if (r.code === 0) {
     // Check that it's actually active
     await new Promise((res) => setTimeout(res, 800));
-    const chk = await execLocal('systemctl', ['--user', 'is-active', 'charon-agent.service'], 4000);
+    const chk = await execLocal('systemctl', ['--user', 'is-active', UNIT_NAME], 4000);
     serviceActive = chk.code === 0 && chk.stdout.trim() === 'active';
   } else {
-    // Fallback: pkill + nohup via shell
-    await execLocal('pkill', ['-f', 'charon-agent.pyz'], 4000);
+    // Fallback: pkill + nohup via shell.
+    //
+    // The pattern is the instance-scoped, `$`-anchored one (§14.70). The old
+    // literal `charon-agent.pyz` was anchored on NEITHER end, so it killed the
+    // detached shell HOLDERS too (their cmdline continues past the pyz) —
+    // destroying exactly the processes whose whole purpose is surviving an
+    // agent restart (§14.44). It would also have taken out a co-tenant hub's
+    // daemon on a shared host.
+    await execLocal('pkill', ['-f', AGENT_PKILL_PATTERN], 4000);
+    // The venv is shared across instances — always `~/.charon/venv`.
     const venvPy = path.join(os.homedir(), '.charon', 'venv', 'bin', 'python');
     const py = fs.existsSync(venvPy) ? venvPy : 'python3';
+    // `env VAR=…` — NOT a bare `VAR=… ` prefix: after `nohup setsid`, a bare
+    // assignment is just another argv word and setsid would try to exec it.
+    const env = INSTANCE ? `env CHARON_AGENT_HOME=${path.join(os.homedir(), AGENT_DIR_NAME)} ` : '';
     const sh = await execLocal(
       'sh',
       [
         '-c',
-        `nohup setsid ${py} ${LOCAL_PYZ} >> $HOME/.charon/agent.log 2>&1 < /dev/null &`,
+        `nohup setsid ${env}${py} ${LOCAL_PYZ} >> ${LOCAL_AGENT_LOG} 2>&1 < /dev/null &`,
       ],
       5000,
     );

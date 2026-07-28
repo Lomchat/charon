@@ -1,6 +1,7 @@
 import 'server-only';
 import fs from 'node:fs';
 import path from 'node:path';
+import { parseInstance } from './agent/agentPaths.js';
 
 // Startup configuration validation (P1.8). WARN-ONLY by design: a
 // misconfigured .env must degrade loudly, never brick the hub (the operator
@@ -26,6 +27,21 @@ function checkSecret(name: string, minLen: number, problems: string[]): void {
 }
 
 export function validateConfigAtBoot(): void {
+  // CHARON_INSTANCE is checked in EVERY environment, before the production
+  // gate below (§14.70). An invalid value silently degrades to the default
+  // instance in `agentPaths.js` — and on a host shared with another hub, the
+  // default instance is the OTHER hub's daemon. Silently joining a co-tenant's
+  // agent is precisely the failure this whole mechanism exists to prevent, so
+  // it must be loud even in dev.
+  const inst = parseInstance(process.env.CHARON_INSTANCE);
+  if (!inst.ok) {
+    console.error(`[config] ⚠ ${inst.error}`);
+    console.error('[config]   falling back to the DEFAULT agent instance (~/.charon) — ' +
+      'if another hub manages these VPSes, both are now driving the same daemon');
+  } else if (inst.instance) {
+    console.log(`[config] agent instance: ${inst.instance} (~/.charon-${inst.instance}, unit charon-agent-${inst.instance}.service)`);
+  }
+
   if (process.env.NODE_ENV !== 'production') return; // dev setups are allowed to be sloppy
   const problems: string[] = [];
 

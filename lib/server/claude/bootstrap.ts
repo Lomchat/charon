@@ -6,6 +6,24 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { sshExec, openSshSession, closeSshSession, type SshResult, type SshSession } from './sshExec';
 import { parseVerifyOutput, isVenvPython } from './verifyParse';
+import {
+  AGENT_DIR_NAME,
+  AGENT_DIR_TILDE,
+  AGENT_DIR_HOME,
+  AGENT_LOG_TILDE,
+  AGENT_LOG_HOME,
+  AGENT_LOG_SYSTEMD,
+  AGENT_PKILL_PATTERN,
+  AGENT_DIR_SYSTEMD,
+  INSTANCE,
+  REMOTE_AGENT_PATH,
+  SHARED_VENV_HOME,
+  SHARED_VENV_PY_HOME,
+  SHARED_VENV_PY_SYSTEMD,
+  UNIT_NAME,
+  agentHomeEnvPrefix,
+  systemdEnvironmentLine,
+} from '@/lib/server/agent/agentPaths.js';
 
 // ── Event types (consumed by InstallSessionView via the ring buffer of
 // installSession.ts) ────────────────────────────────────────────────────────
@@ -39,8 +57,14 @@ const PY_CHAIN =
 // Benefits: no conflict with system packages, works around PEP 668
 // (Debian 12 / Ubuntu 23+ refuse `pip install --user` by default), and
 // keeps the same python path across install, verify, ping and systemd.
-const VENV_DIR = '$HOME/.charon/venv';
-const VENV_PY = `${VENV_DIR}/bin/python`;
+//
+// DELIBERATELY NOT NAMESPACED per instance (§14.70): every hub co-tenanting a
+// host shares this venv, so an SDK/codex upgrade from either one benefits
+// both — which is the whole point of letting them share a VPS. Only the
+// agent's own state (socket, state.json, events/, shells/, the pyz and the
+// unit) is per-instance.
+const VENV_DIR = SHARED_VENV_HOME;
+const VENV_PY = SHARED_VENV_PY_HOME;
 // Bash snippet that resolves the right python: venv if it exists, otherwise
 // the best system python. Used everywhere we have to invoke python on the VPS.
 const PY_LOOKUP_VENV_OR_SYSTEM =
@@ -163,34 +187,49 @@ export async function installAgentPyz(vps: Vps, session?: SshSession): Promise<{
   }
   // Pipe the base64 via stdin to avoid bloating the command line (fails
   // if the command > ARG_MAX, which happens for a multi-MB blob).
+  // Every path is instance-scoped (§14.70): a co-tenant hub's pyz lives in its
+  // own `~/.charon-<instance>/` and must never be overwritten by ours — the
+  // two hubs can legitimately run different Charon commits, and a shared pyz
+  // is what turns that into a 30-minute rollback war.
   const remoteCmd =
-    'mkdir -p ~/.charon && ' +
-    'base64 -d > ~/.charon/charon-agent.pyz.new && ' +
-    'mv ~/.charon/charon-agent.pyz.new ~/.charon/charon-agent.pyz && ' +
-    'chmod +x ~/.charon/charon-agent.pyz && ' +
+    `mkdir -p ${AGENT_DIR_TILDE} && ` +
+    `base64 -d > ${REMOTE_AGENT_PATH}.new && ` +
+    `mv ${REMOTE_AGENT_PATH}.new ${REMOTE_AGENT_PATH} && ` +
+    `chmod +x ${REMOTE_AGENT_PATH} && ` +
     'echo OK';
   const r = await sshExec(vps, remoteCmd, { stdin: b64, timeoutMs: 60_000, session });
   if (!r.ok || !r.stdout.includes('OK')) {
     return { ok: false, detail: (r.stderr.slice(-300) || r.stdout.slice(-300) || `exit ${r.code}`) };
   }
-  return { ok: true, detail: '~/.charon/charon-agent.pyz' };
+  return { ok: true, detail: REMOTE_AGENT_PATH };
 }
 
 // ── systemd-user service (with nohup fallback) ──────────────────────────────
 // The agent runs via the python from the venv ~/.charon/venv where we
 // installed the SDK. Fallback: if for some reason the venv doesn't exist
 // (shouldn't happen after bootstrap), we fall back to the best system python.
+//
+// Instance-aware (§14.70): the unit NAME, the pyz path and the log path are
+// namespaced, and a namespaced instance gains an `Environment=` line pointing
+// the agent at its own state dir — that single env var is what relocates
+// state.json, agent.sock, events/ and shells/ agent-side (no Python change
+// needed). The venv path stays `%h/.charon/venv` because it is shared.
+//
+// For the DEFAULT instance every line below is byte-identical to the
+// pre-instance unit (`systemdEnvironmentLine()` returns ''), so redeploying
+// this to an existing fleet rewrites the exact same file — pinned by
+// tests/agentPaths.test.ts.
 const SYSTEMD_UNIT = `[Unit]
-Description=Charon Agent
+Description=Charon Agent${INSTANCE ? ` (${INSTANCE})` : ''}
 After=default.target
 
 [Service]
-ExecStart=/bin/sh -c 'PY=%h/.charon/venv/bin/python; [ -x "$PY" ] || PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" %h/.charon/charon-agent.pyz'
+${systemdEnvironmentLine()}ExecStart=/bin/sh -c 'PY=${SHARED_VENV_PY_SYSTEMD}; [ -x "$PY" ] || PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3); exec "$PY" ${AGENT_DIR_SYSTEMD}/charon-agent.pyz'
 Restart=always
 RestartSec=2
 KillMode=process
-StandardOutput=append:%h/.charon/agent.log
-StandardError=append:%h/.charon/agent.log
+StandardOutput=append:${AGENT_LOG_SYSTEMD}
+StandardError=append:${AGENT_LOG_SYSTEMD}
 
 [Install]
 WantedBy=default.target
@@ -210,7 +249,7 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
     // Create the dir
     'mkdir -p ~/.config/systemd/user',
     // Drop the unit (base64 decode from stdin to avoid heredocs)
-    `echo '${unitB64}' | base64 -d > ~/.config/systemd/user/charon-agent.service`,
+    `echo '${unitB64}' | base64 -d > ~/.config/systemd/user/${UNIT_NAME}`,
     // Enable linger (survives after logout). Try without sudo first, then with silent sudo.
     'loginctl enable-linger "$(whoami)" 2>/dev/null || sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || true',
     // EXPLICITLY start the user manager if not already active. This is what
@@ -223,10 +262,10 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
     'export XDG_RUNTIME_DIR=/run/user/$(id -u)',
     // Ask systemctl --user
     'systemctl --user daemon-reload',
-    'systemctl --user enable charon-agent.service',
-    'systemctl --user restart charon-agent.service',
+    `systemctl --user enable ${UNIT_NAME}`,
+    `systemctl --user restart ${UNIT_NAME}`,
     'sleep 1',
-    'systemctl --user is-active charon-agent.service',
+    `systemctl --user is-active ${UNIT_NAME}`,
   ].join(' && ');
   const r = await sshExec(vps, systemdScript, { timeoutMs: 30_000, session });
   if (r.ok && r.stdout.trim().endsWith('active')) {
@@ -245,24 +284,32 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
   //     rather than attempted with embedded \'...\' — bash does NOT support
   //     escaping a single quote inside a single-quoted string; you have to
   //     either close/reopen ('\''), or (simpler) avoid the question.
-  const PY_LOOKUP = '$(if [ -x $HOME/.charon/venv/bin/python ]; then echo $HOME/.charon/venv/bin/python; else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3; fi)';
-  const cronLine = `@reboot sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 &`;
+  const PY_LOOKUP = `$(if [ -x ${SHARED_VENV_PY_HOME} ]; then echo ${SHARED_VENV_PY_HOME}; else command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || echo python3; fi)`;
+  const cronLine = `@reboot sh -c 'exec ${agentHomeEnvPrefix('home')}${PY_LOOKUP} ${REMOTE_AGENT_PATH}' >> ${AGENT_LOG_TILDE} 2>&1 &`;
   const cronLineB64 = Buffer.from(cronLine, 'utf8').toString('base64');
   const fallbackScript = [
     // Kill any running DAEMON instance (if we're replacing the binary).
-    // The `$` anchor is load-bearing: the cmdline of a shell HOLDER is
-    // `… charon-agent.pyz --shell-holder <id> …` and must NOT match —
-    // holders are exactly the processes that survive an agent restart.
-    "pkill -f 'charon-agent.pyz$' || true",
+    // TWO anchors, both load-bearing (§14.70, see agentPaths.js):
+    //  - the leading `/<dir>/` keeps us off a CO-TENANT hub's daemon; the old
+    //    unscoped `charon-agent.pyz$` matched every instance on the host, so
+    //    installing one hub's agent tore down the other's live sessions;
+    //  - the trailing `$` spares the shell HOLDERS, whose cmdline continues
+    //    past the pyz — they are exactly what must survive a restart (§14.44).
+    `pkill -f '${AGENT_PKILL_PATTERN}' || true`,
     // Launch the daemon in the background, detached. The final `&` is
     // followed by a newline (join('\n')), so no broken `&;`.
-    `nohup setsid sh -c 'exec ${PY_LOOKUP} ~/.charon/charon-agent.pyz' >> ~/.charon/agent.log 2>&1 < /dev/null &`,
+    `nohup setsid sh -c 'exec ${agentHomeEnvPrefix('home')}${PY_LOOKUP} ${REMOTE_AGENT_PATH}' >> ${AGENT_LOG_TILDE} 2>&1 < /dev/null &`,
     "sleep 1",
     // Make sure there's a @reboot in crontab. The cron line is sent as
     // base64 to avoid any quoting hell (the single-quotes of the inner
     // `sh -c '...'` wouldn't survive an echo inside another single-quoted
     // string).
-    `(crontab -l 2>/dev/null | grep -v 'charon-agent.pyz'; echo '${cronLineB64}' | base64 -d) | crontab -`,
+    //
+    // The `grep -v` that de-dupes our own line is scoped to THIS instance's
+    // pyz path: the old unscoped `grep -v 'charon-agent.pyz'` stripped every
+    // charon line from the crontab, so a co-tenant hub lost its @reboot entry
+    // (silently — until the VPS rebooted and its agent never came back).
+    `(crontab -l 2>/dev/null | grep -v '${AGENT_DIR_NAME}/charon-agent.pyz'; echo '${cronLineB64}' | base64 -d) | crontab -`,
     "echo OK_NOHUP",
   ].join('\n');
   const r2 = await sshExec(vps, fallbackScript, { timeoutMs: 15_000, session });
@@ -293,7 +340,7 @@ export async function pingAgent(
   const PY = `$(${PY_LOOKUP_VENV_OR_SYSTEM})`;
   const r = await sshExec(
     vps,
-    `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ${PY} ~/.charon/charon-agent.pyz --connect`,
+    `printf '{"id":1,"method":"ping"}\\n{"id":2,"method":"hello"}\\n' | ${agentHomeEnvPrefix('home')}${PY} ${REMOTE_AGENT_PATH} --connect`,
     { timeoutMs: 8_000, session },
   );
   if (!r.ok) {
@@ -605,21 +652,22 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     const restartCmd = [
       'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
       'mkdir -p ~/.config/systemd/user 2>/dev/null || true',
-      `echo '${unitB64ForUpdate}' | base64 -d > ~/.config/systemd/user/charon-agent.service 2>/dev/null || true`,
+      `echo '${unitB64ForUpdate}' | base64 -d > ~/.config/systemd/user/${UNIT_NAME} 2>/dev/null || true`,
       'systemctl --user daemon-reload 2>/dev/null || true',
-      'if systemctl --user restart charon-agent.service 2>/dev/null; then',
+      `if systemctl --user restart ${UNIT_NAME} 2>/dev/null; then`,
       '  sleep 1',
-      '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then',
+      `  if systemctl --user is-active ${UNIT_NAME} >/dev/null 2>&1; then`,
       '    echo OK_SYSTEMD',
       '    exit 0',
       '  fi',
       'fi',
-      '# Nohup fallback: kill the running daemon (NOT the shell holders —',
-      '# their cmdline continues past .pyz, hence the $ anchor) and relaunch',
-      "pkill -f 'charon-agent.pyz$' 2>/dev/null || true",
+      '# Nohup fallback: kill the running daemon — ONLY this instance\'s (the',
+      '# leading dir anchor keeps a co-tenant hub alive, §14.70) and NOT the',
+      '# shell holders (their cmdline continues past .pyz, hence the $ anchor).',
+      `pkill -f '${AGENT_PKILL_PATTERN}' 2>/dev/null || true`,
       'sleep 0.5',
-      'if [ -x "$HOME/.charon/venv/bin/python" ]; then',
-      '  PY="$HOME/.charon/venv/bin/python"',
+      `if [ -x "${SHARED_VENV_PY_HOME}" ]; then`,
+      `  PY="${SHARED_VENV_PY_HOME}"`,
       'else',
       '  PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3)',
       'fi',
@@ -627,7 +675,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       '  echo "NO_PYTHON" >&2',
       '  exit 11',
       'fi',
-      'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
+      `nohup setsid ${agentHomeEnvPrefix('home')}"$PY" "${AGENT_DIR_HOME}/charon-agent.pyz" >> "${AGENT_LOG_HOME}" 2>&1 < /dev/null &`,
       'sleep 1',
       'echo OK_NOHUP',
     ].join('\n');
@@ -685,16 +733,19 @@ export async function ensureAgentRunning(vps: Vps): Promise<EnsureRunningResult>
   const cmd = [
     'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
     // Already running? Leave it strictly alone (don't disturb live sessions).
-    "if pgrep -f 'charon-agent\\.pyz$' >/dev/null 2>&1 || systemctl --user is-active charon-agent.service >/dev/null 2>&1; then echo ALREADY; exit 0; fi",
+    // The pgrep is instance-scoped: a co-tenant hub's daemon must NOT read as
+    // "ours is already running" (§14.70) — that would leave this hub's agent
+    // permanently down while "refresh" cheerfully reports ALREADY.
+    `if pgrep -f '${AGENT_PKILL_PATTERN}' >/dev/null 2>&1 || systemctl --user is-active ${UNIT_NAME} >/dev/null 2>&1; then echo ALREADY; exit 0; fi`,
     // systemd-user `start` (a no-op if somehow active; never `restart`).
-    'if systemctl --user start charon-agent.service 2>/dev/null; then',
+    `if systemctl --user start ${UNIT_NAME} 2>/dev/null; then`,
     '  sleep 1',
-    '  if systemctl --user is-active charon-agent.service >/dev/null 2>&1; then echo OK_SYSTEMD; exit 0; fi',
+    `  if systemctl --user is-active ${UNIT_NAME} >/dev/null 2>&1; then echo OK_SYSTEMD; exit 0; fi`,
     'fi',
     // nohup fallback (same PY resolution as install/update).
-    'if [ -x "$HOME/.charon/venv/bin/python" ]; then PY="$HOME/.charon/venv/bin/python"; else PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); fi',
+    `if [ -x "${SHARED_VENV_PY_HOME}" ]; then PY="${SHARED_VENV_PY_HOME}"; else PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); fi`,
     '[ -z "$PY" ] && { echo NO_PYTHON >&2; exit 11; }',
-    'nohup setsid "$PY" "$HOME/.charon/charon-agent.pyz" >> "$HOME/.charon/agent.log" 2>&1 < /dev/null &',
+    `nohup setsid ${agentHomeEnvPrefix('home')}"$PY" "${AGENT_DIR_HOME}/charon-agent.pyz" >> "${AGENT_LOG_HOME}" 2>&1 < /dev/null &`,
     'sleep 1',
     'echo OK_NOHUP',
   ].join('\n');
@@ -961,7 +1012,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
   }
 
   // Phase 2: install agent (drop .pyz)
-  yield { phase: 'install_agent', status: 'running', detail: 'dropping ~/.charon/charon-agent.pyz' };
+  yield { phase: 'install_agent', status: 'running', detail: `dropping ${REMOTE_AGENT_PATH}` };
   const installR = await installAgentPyz(vps, session);
   if (!installR.ok) {
     yield { phase: 'install_agent', status: 'error', detail: installR.detail };
