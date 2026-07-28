@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { getSetting } from '@/lib/server/claude/settings';
-import { KNOWN_HOSTS_PATH } from '@/lib/server/agent/sshShared.js';
+import { KNOWN_HOSTS_PATH, controlPath } from '@/lib/server/agent/sshShared.js';
 import { readClaudeAuthStatus, type ClaudeAccount } from './claudeLoginCheck';
 import { emitGlobalVpsStatus } from './sessionOps';
 
@@ -59,6 +59,16 @@ export type ClaudeLoginStatus = {
 
 /** Device codes expire server-side; reap abandoned attempts (and their ssh). */
 const TTL_MS = 15 * 60 * 1000;
+/**
+ * Remote-process reaping — see `_reapRemote` for WHY killing the local ssh is
+ * not enough. Anchored on the WHOLE cmdline so it matches the CLI (argv is
+ * exactly `claude auth login`) and can never match the remote shell running
+ * this very command (its cmdline starts with the shell) nor the `timeout`
+ * wrapper below (starts with `timeout`).
+ */
+const REMOTE_MATCH = '^claude auth login$';
+/** A reap is best-effort plumbing: never let it linger. */
+const REAP_TIMEOUT_MS = 15_000;
 /** Cadence + budget of the post-submit `claude auth status` polling. */
 const VERIFY_POLL_MS = 2_500;
 const VERIFY_BUDGET_MS = 60_000;
@@ -67,6 +77,22 @@ const TAIL_MAX = 4_000;
 
 const RE_URL = /visit:\s*(https?:\/\/\S+)/;
 const RE_INVALID = /Invalid code\./i;
+
+/** ssh options shared by the login channel and its reaper. */
+function _sshBaseArgs(v: Vps): string[] {
+  const keyPath = getSetting('ssh.private_key_path');
+  const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
+  return [
+    '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=10',
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', `UserKnownHostsFile=${KNOWN_HOSTS_PATH}`,
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
+    ...keyArgs,
+    '-p', String(v.sshPort),
+  ];
+}
 
 class ClaudeLoginSession {
   readonly vpsId: string;
@@ -104,23 +130,25 @@ class ClaudeLoginSession {
       return;
     }
     this.vps = v;
-    const keyPath = getSetting('ssh.private_key_path');
-    const keyArgs = keyPath && keyPath !== '/root/.ssh/id_rsa' ? ['-i', keyPath] : [];
     const args = [
-      '-o', 'BatchMode=yes',
-      '-o', 'ConnectTimeout=10',
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', `UserKnownHostsFile=${KNOWN_HOSTS_PATH}`,
-      '-o', 'PasswordAuthentication=no',
-      '-o', 'KbdInteractiveAuthentication=no',
+      ..._sshBaseArgs(v),
       '-o', 'ServerAliveInterval=30',
       // -T (no PTY): the flow is line-oriented on both directions. See header.
       '-T',
-      ...keyArgs,
-      '-p', String(v.sshPort),
       '--',
       `${v.sshUser}@${v.ip}`,
-      'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; exec claude auth login',
+      [
+        // Sweep stragglers the hub could not reap (crash/restart mid-login).
+        // Runs BEFORE our own CLI starts, so it can only hit dead attempts.
+        `pkill -f '${REMOTE_MATCH}' 2>/dev/null || true;`,
+        'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH";',
+        // Belt to the reap's suspender: if the hub dies before it can kill
+        // this, the CLI still self-destructs at the TTL instead of waiting on
+        // stdin forever. `timeout` is coreutils, but degrade gracefully.
+        `if command -v timeout >/dev/null 2>&1;`,
+        `then exec timeout ${Math.ceil(TTL_MS / 1000)} claude auth login;`,
+        'else exec claude auth login; fi',
+      ].join(' '),
     ];
     let child: ChildProcessWithoutNullStreams;
     try {
@@ -167,7 +195,13 @@ class ClaudeLoginSession {
     this._scheduleVerify(Date.now() + VERIFY_BUDGET_MS);
   }
 
-  cancel(): void {
+  /**
+   * @param reap kill the REMOTE CLI too. Skipped when a NEW attempt for this
+   *   same VPS is about to start: its own in-band sweep already clears the
+   *   old process, and an async reap landing a second later would shoot the
+   *   fresh attempt instead.
+   */
+  cancel({ reap = true }: { reap?: boolean } = {}): void {
     this._cleanupTimers();
     this.done = true;
     const c = this.child;
@@ -175,11 +209,50 @@ class ClaudeLoginSession {
     if (c) {
       try { c.stdin.end(); } catch {}
       try { c.kill('SIGTERM'); } catch {}
-      setTimeout(() => { try { c.kill('SIGKILL'); } catch {} }, 1500);
+      setTimeout(() => { try { c.kill('SIGKILL'); } catch {} }, 1500).unref();
     }
+    if (reap) this._reapRemote();
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * Kill the REMOTE `claude auth login`.
+   *
+   * Dropping the local ssh is NOT enough. With `-T` there is no PTY, so no
+   * SIGHUP reaches the remote process group when the connection dies, and the
+   * CLI deliberately survives stdin EOF (it re-emits a url and keeps waiting,
+   * §14.64). What is left is a ~165 MB process reparented to init, waiting on
+   * a pipe nobody will ever write to — measured 5× on the fleet, ~800 MB held
+   * hostage, the oldest 21 h in. So every terminal path reaps explicitly.
+   *
+   * Best-effort by construction: piggybacks the agent's ControlMaster when one
+   * is up (`ControlMaster=no` joins an existing master, else opens a plain
+   * connection — no new master left behind), detached, and hard-capped so a
+   * hung ssh can never hold the event loop or the caller.
+   */
+  private _reapRemote(): void {
+    const v = this.vps;
+    if (!v) return;
+    try {
+      const child = spawn(
+        'ssh',
+        [
+          ..._sshBaseArgs(v),
+          '-o', 'ControlMaster=no',
+          '-o', `ControlPath=${controlPath(v)}`,
+          '-T',
+          '--',
+          `${v.sshUser}@${v.ip}`,
+          `pkill -f '${REMOTE_MATCH}' 2>/dev/null || true`,
+        ],
+        { stdio: 'ignore' },
+      );
+      child.on('error', () => {});
+      child.unref();
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, REAP_TIMEOUT_MS).unref();
+    } catch {}
+  }
 
   private _ingest(text: string): void {
     this.buf += text;
@@ -261,13 +334,16 @@ class ClaudeLoginSession {
         emitGlobalVpsStatus(v.id, v.agentStatus, { claudeLoggedIn: 1 });
       }
     }
-    // The CLI has already written its credentials; drop the ssh.
+    // The CLI has already written its credentials (the status probe read them
+    // back) — drop the ssh, then reap in case the CLI is still sitting on the
+    // prompt rather than having exited on its own.
     const c = this.child;
     this.child = null;
     if (c) {
       try { c.stdin.end(); } catch {}
       try { c.kill('SIGTERM'); } catch {}
     }
+    this._reapRemote();
   }
 
   private _fail(msg: string): void {
@@ -281,6 +357,9 @@ class ClaudeLoginSession {
       try { c.stdin.end(); } catch {}
       try { c.kill('SIGTERM'); } catch {}
     }
+    // Covers the TTL path: an abandoned modal is exactly how the orphans
+    // observed on the fleet were born.
+    this._reapRemote();
   }
 
   private _cleanupVerify(): void {
@@ -302,7 +381,9 @@ const pool: Map<string, ClaudeLoginSession> = g._loginSessions;
 export function startLoginSession(vpsId: string): ClaudeLoginSession {
   const existing = pool.get(vpsId);
   if (existing) {
-    existing.cancel();
+    // No reap: the fresh attempt's in-band sweep kills the old CLI, and an
+    // async reap would otherwise race it and shoot the new one.
+    existing.cancel({ reap: false });
     pool.delete(vpsId);
   }
   const sess = new ClaudeLoginSession(vpsId);
