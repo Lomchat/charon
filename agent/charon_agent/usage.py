@@ -20,6 +20,8 @@ the credentials file, so it works whether or not a session is streaming.
 """
 from __future__ import annotations
 
+import datetime
+import email.utils
 import json
 import time
 import urllib.error
@@ -51,12 +53,54 @@ def _read_oauth() -> dict[str, Any] | None:
     return o
 
 
-def fetch_usage(timeout: float = 20.0) -> dict[str, Any]:
+def _retry_after_seconds(headers: Any) -> float | None:
+    """Parse a `Retry-After` header → seconds from now, or None.
+
+    RFC 7231 allows either delta-seconds or an HTTP-date; the endpoint sends
+    delta-seconds (observed: 0 for the short burst bucket, up to ~3000 for the
+    escalated per-IP lockout). The hub uses this as an EXACT wall to back off
+    against — a flat guess made it retry ~10x into a 51-minute lockout and pin
+    the "rate-limited" state in the UI the whole time. cf. CLAUDE.md §14.72.
+    """
+    if headers is None:
+        return None
+    raw = headers.get("Retry-After")
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (dt - now).total_seconds())
+
+
+def fetch_usage(timeout: float = 30.0) -> dict[str, Any]:
     """Blocking GET of /api/oauth/usage. Returns a normalized envelope.
 
-    Success: {ok:True, subscription_type, fetched_at, usage:<raw endpoint json>}
-    Failure: {ok:False, error:<slug>, fetched_at, status_code?}
+    Success: {ok:True, subscription_type, org_id, fetched_at,
+              usage:<raw endpoint json>}
+    Failure: {ok:False, error:<slug>, fetched_at, status_code?, retry_after?}
     Never raises — the hub treats a failure envelope as "usage unavailable".
+
+    `org_id` (the `anthropic-organization-id` response header) is the ACCOUNT
+    identity: the gauges are account-scoped, so N VPSes signed into the same
+    account return byte-identical numbers. The hub keys its cache on it and
+    polls ONE VPS per account instead of all of them (§14.72). It is only
+    present on a 200 — the 429s are generated at the edge and carry no
+    org/request id at all.
+
+    The timeout is generous on purpose: a successful call regularly takes
+    ~15s (measured), well past the old 20s margin once TLS setup is included.
     """
     now = time.time()
     o = _read_oauth()
@@ -75,18 +119,26 @@ def fetch_usage(timeout: float = 20.0) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode("utf-8", "replace")
+            org_id = r.headers.get("anthropic-organization-id")
         data = json.loads(body)
     except urllib.error.HTTPError as e:
         # 401 = token expired (the CLI refreshes it as it runs sessions);
-        # 429 = the endpoint's own rate limit (hub backs off).
-        return {"ok": False, "error": "http_error", "status_code": e.code,
-                "fetched_at": now}
+        # 429 = throttled at the edge (per source IP, ~1 call/min sustained,
+        # with escalating multi-minute lockouts). Retry-After is the exact
+        # reset — pass it up so the hub backs off against the real wall.
+        out = {"ok": False, "error": "http_error", "status_code": e.code,
+               "fetched_at": now}
+        ra = _retry_after_seconds(getattr(e, "headers", None))
+        if ra is not None:
+            out["retry_after"] = ra
+        return out
     except Exception as e:
         return {"ok": False, "error": "request_failed",
                 "detail": str(e)[:200], "fetched_at": now}
     return {
         "ok": True,
         "subscription_type": o.get("subscriptionType"),
+        "org_id": org_id,
         "fetched_at": now,
         "usage": data,
     }

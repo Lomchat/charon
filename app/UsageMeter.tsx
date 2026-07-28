@@ -41,7 +41,27 @@ function fmtAgo(fetchedAt: number): string {
   const s = Math.max(0, Math.round((Date.now() - fetchedAt) / 1000));
   if (s < 60) return `updated ${s}s ago`;
   const m = Math.floor(s / 60);
-  return `updated ${m}m ago`;
+  if (m < 60) return `updated ${m}m ago`;
+  return `updated ${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')} ago`;
+}
+
+/** "in 4m" / "shortly" for a retry timestamp. */
+function fmtIn(at: number | null | undefined): string {
+  if (!at) return 'shortly';
+  const s = Math.round((at - Date.now()) / 1000);
+  if (s <= 30) return 'shortly';
+  if (s < 90) return 'in a minute';
+  return `in ${Math.round(s / 60)}m`;
+}
+
+/** Why the numbers on screen are older than the poll cadence. The gauges
+ *  themselves stay visible — see CLAUDE.md §14.72: blanking a good reading over
+ *  a transient 429 is what read as "usage is broken". */
+function degradedNote(d: NonNullable<AccountUsage['degraded']>): string {
+  if (d.statusCode === 429) return `throttled by the usage API — retrying ${fmtIn(d.retryAt)}`;
+  if (d.statusCode === 401) return 'token expired — refreshes on the next turn';
+  if (d.reason === 'no_credentials') return 'not signed in on this VPS';
+  return `refresh failed — retrying ${fmtIn(d.retryAt)}`;
 }
 
 function Bar({ label, sub, pct, severity, reset }: {
@@ -64,6 +84,8 @@ function Bar({ label, sub, pct, severity, reset }: {
 function UsageDetail({ usage, vpsName, onRefresh }: {
   usage: AccountUsage; vpsName?: string | null; onRefresh?: () => void;
 }) {
+  // Only reached when we have NO good reading at all — a degraded snapshot
+  // still renders its (real, just older) gauges below. §14.72.
   if (!usage.ok) {
     const reason =
       usage.error === 'no_credentials' ? 'Not signed in on this VPS.'
@@ -112,7 +134,10 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
       {usage.extraUsage?.isEnabled ? (
         <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? 0} severity="normal" />
       ) : null}
-      <div className="um-foot">{fmtAgo(usage.fetchedAt)}</div>
+      <div className={`um-foot${usage.degraded ? ' um-foot-stale' : ''}`}>
+        {fmtAgo(usage.fetchedAt)}
+        {usage.degraded ? <> · {degradedNote(usage.degraded)}</> : null}
+      </div>
     </div>
   );
 }

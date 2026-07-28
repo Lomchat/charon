@@ -292,9 +292,13 @@ export type AgentShellInfo = {
 // Raw envelope returned by the `get_usage` RPC (agent >= 0.14.0). `usage` is the
 // verbatim api.anthropic.com/api/oauth/usage body — usagePoll.ts normalizes it
 // into the client-facing AccountUsage. Never throws agent-side. See §14.58.
+// `org_id` = the `anthropic-organization-id` response header (agent >= 0.22.0):
+// the ACCOUNT identity behind the gauges. Absent on older agents and on every
+// failure envelope (429s are edge-generated and carry no org id).
+// `retry_after` = seconds, straight from the `Retry-After` header (>= 0.22.0).
 export type AgentUsageResult =
-  | { ok: true; subscription_type?: string | null; fetched_at: number; usage: any }
-  | { ok: false; error: string; status_code?: number; detail?: string; fetched_at: number };
+  | { ok: true; subscription_type?: string | null; org_id?: string | null; fetched_at: number; usage: any }
+  | { ok: false; error: string; status_code?: number; detail?: string; retry_after?: number; fetched_at: number };
 
 export type AgentClientStatus =
   | 'idle'           // never connected

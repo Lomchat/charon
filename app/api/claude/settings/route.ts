@@ -68,6 +68,9 @@ function sanitizeForResponse(all: Record<string, string>): Record<string, string
   // (the picker fetches the merged list from /api/claude/models). Keep the
   // lightweight `claude.models_cache_at` timestamp for the "last sync" label.
   delete all['claude.models_cache'];
+  // Same deal for the persisted account-usage snapshots (§14.72): several KB of
+  // JSON the UI gets live over SSE / GET /api/vps/[id]/usage instead.
+  delete all['usage.snapshots'];
   return maskSecrets(all);
 }
 

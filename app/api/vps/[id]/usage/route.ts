@@ -25,11 +25,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   let usage = getUsageSnapshot(id);
-  if (!usage || usageSnapshotAge(id) > USAGE_STALE_MS) {
-    // force only when we have nothing to show — a stale-but-present snapshot
-    // does a gap-respecting poll so re-opening the widget can't hammer the
-    // (rate-limited) endpoint.
-    const fresh = await pollUsageForVps(id, { force: !usage });
+  if (!usage || usage.degraded || usageSnapshotAge(id) > USAGE_STALE_MS) {
+    // Force when there is nothing good to show — no snapshot at all, a cached
+    // FAILURE, or good-but-stale gauges. A cached failure used to count as
+    // "present" here, so `force:false` let the backoff swallow the call and the
+    // ↻ button could not recover the widget at all (§14.72). Forcing is safe:
+    // it skips our own guessed cool-down, never the server's Retry-After nor
+    // the 2-minute per-account floor.
+    const fresh = await pollUsageForVps(id, { force: !usage || !usage.ok || !!usage.degraded });
     if (fresh) usage = fresh;
   }
 

@@ -3473,6 +3473,9 @@
 .um-fill { height: 100%; border-radius: 3px; transition: width .3s ease; }
 .um-reset { font-size: 9px; color: var(--parchment-soft); }
 .um-foot { font-size: 9px; color: var(--parchment-soft); text-align: right; margin-top: 2px; }
+/* Gauges are real but the last refresh failed (throttled / token stale) — the
+   numbers stay on screen, the footer says why they're older. §14.72. */
+.um-foot-stale { color: var(--amber, #d8a657); opacity: .85; }
 
 .um-ok   { color: #6fb98a; }
 .um-warn { color: #e0b46a; }

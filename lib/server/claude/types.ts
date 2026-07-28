@@ -107,6 +107,15 @@ export type AccountUsage = {
   subscriptionType?: string | null;  // 'max' | 'pro' | …
   error?: string | null;       // when !ok: 'no_credentials' | 'http_error' | 'request_failed'
   statusCode?: number | null;  // when error==='http_error' (401 stale token, 429 throttled)
+  // Anthropic org id behind these gauges (agent >= 0.22.0). The hub groups
+  // VPSes by it and polls ONE per account — usage is account-scoped, so N
+  // VPSes on one account return identical numbers. cf. CLAUDE.md §14.72.
+  orgId?: string | null;
+  // Set on an OK snapshot when the LATEST refresh attempt failed: the gauges
+  // below are real but no longer fresh. The widget keeps rendering them (with
+  // the "updated Nm ago" age) and mentions the reason — blanking working
+  // numbers on a transient 429 is what read as "usage is broken". §14.72.
+  degraded?: { reason: string; statusCode?: number | null; retryAt?: number | null } | null;
   fiveHour?: AccountUsageWindow | null;
   sevenDay?: AccountUsageWindow | null;
   limits?: AccountUsageLimit[] | null;

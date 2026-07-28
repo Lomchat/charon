@@ -147,6 +147,16 @@ const DEFAULTS = {
   // Last locally-built pyz sha we sent a "new agent" notification for — dedup
   // for the pyz auto-update axis (sdkWatch.ts), parallel to last_notified_version.
   'agent.last_notified_pyz_sha': '',
+  // Internal, written by usagePoll only (not in the settings POST allowlist,
+  // stripped from the settings GET): JSON `{vpsOrg:{vpsId:orgId},
+  // accounts:{orgId:AccountUsage}}` — the last GOOD account-usage snapshot per
+  // Anthropic account, plus the learned VPS→account mapping. Persisted because
+  // the endpoint is throttled hard (§14.72): an in-memory-only cache meant every
+  // Charon restart began with nothing to show, so the first 429 of the
+  // reconnect burst became the widget's state. Restored at boot, it degrades to
+  // "these numbers are N minutes old" instead. Never authoritative — the next
+  // successful poll overwrites it.
+  'usage.snapshots': '',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 
