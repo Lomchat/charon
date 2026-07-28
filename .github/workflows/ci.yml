@@ -152,10 +152,39 @@ jobs:
       - name: Server process is NOT root
         # The image has no `USER` (the entrypoint needs root to chown the bind
         # mounts) — this asserts the setpriv drop actually happened.
+        #
+        # The uid comes from procfs, NOT from `docker top`, for two reasons:
+        #   - the daemon runs the host `ps` and parses its output, so it
+        #     REJECTS any -eo format without a `pid` column ("Couldn't find PID
+        #     field in ps output") — a step that dies before asserting anything;
+        #   - even fixed, its `user` column is the HOST's name for the uid
+        #     (`runner` on a GH runner, truncated to 8 chars elsewhere), which
+        #     is not what we want to compare against.
+        # /proc is always present, needs no procps in the image, and yields the
+        # number itself.
+        #
+        # Matching on argv[0] is NOT cosmetic: Docker appends CMD to ENTRYPOINT,
+        # so PID 1 (tini, ROOT) carries `/usr/bin/tini -- entrypoint.sh node
+        # server.js` in its own cmdline, and /proc/1 sorts first — a substring
+        # scan reports uid 0 and fails a perfectly correct drop. Same reason we
+        # skip our own pid: this `sh -c` runs as root and its script text
+        # contains "server.js" too.
         run: |
-          owner=$(docker top charon -eo user,args | awk '/node .*server\.js/ {print $1; exit}')
-          echo "server.js runs as: ${owner:-<not found>}"
-          test -n "$owner" && test "$owner" != "root"
+          docker top charon -eo pid,user,args || true
+          uid=$(docker compose exec -T charon sh -c '
+            self=$$
+            for p in /proc/[0-9]*; do
+              pid=${p#/proc/}
+              [ "$pid" = "$self" ] && continue
+              cmd=$(tr "\0" " " < "$p/cmdline" 2>/dev/null) || continue
+              case "$cmd" in *server.js*) ;; *) continue ;; esac
+              case "${cmd%% *}" in *node) ;; *) continue ;; esac
+              grep "^Uid:" "$p/status" | cut -f2
+              exit 0
+            done
+            exit 1' | tr -d '[:space:]')
+          echo "server.js runs as uid: ${uid:-<not found>}"
+          test -n "$uid" && test "$uid" != "0"
 
       - name: ~/.ssh is writable by the server user (host-key store)
         # charon_known_hosts must be creatable, else every VPS connection
