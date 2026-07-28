@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
+import { isTurnInterrupted } from '@/lib/turnInterrupted';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -25,9 +26,16 @@ type Props = {
   // (§14.65) — the fix is one click away from the error instead of a hunt
   // through the sidebar. MUST be a stable reference (memo, §14.38).
   onReauth?: () => void;
+  // Sends "Continue" to this session. Rendered as a CTA under an assistant
+  // bubble that IS the CLI's "connection closed mid-response" report (§14.68),
+  // so resuming a turn the transport cut is one click instead of retyping.
+  // The parent hands it ONLY to the last visible message (an interruption in
+  // the middle of the history has already been dealt with) and never while a
+  // turn is running. MUST be a stable reference (memo, §14.38).
+  onContinue?: () => void;
 };
 
-function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth }: Props) {
+function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -82,6 +90,35 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
           </button>
         </div>
       )}
+      {isAssistant && onContinue && isTurnInterrupted(m.content, m.model) && (
+        <ContinueCta onContinue={onContinue} />
+      )}
+    </div>
+  );
+}
+
+// "The turn was cut mid-response" affordance (§14.68). Its own component
+// because <Message> returns early for the non-bubble roles — a useState at the
+// top of Message would break the rules of hooks.
+//
+// The button disables itself on click and is NOT re-enabled: `send` is
+// optimistic (it appends the user bubble + flips the status to 'thinking'
+// synchronously), so the parent stops passing `onContinue` a tick later and
+// this whole node unmounts. The flag only has to cover the double-click window.
+function ContinueCta({ onContinue }: { onContinue: () => void }) {
+  const [sent, setSent] = useState(false);
+  return (
+    <div className="bubble-continue">
+      <span>The connection dropped mid-answer — this turn stopped early.</span>
+      <button
+        type="button"
+        className="wiz-btn primary"
+        disabled={sent}
+        onClick={() => { setSent(true); onContinue(); }}
+        title="send &quot;Continue&quot; to resume where it stopped"
+      >
+        {sent ? 'sending…' : 'Continue'}
+      </button>
     </div>
   );
 }

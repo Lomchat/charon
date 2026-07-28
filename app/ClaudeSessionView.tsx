@@ -5,6 +5,7 @@ import type { SessionListItem, AgentKind, CodexSandboxMode } from '@/lib/types/a
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
+import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
 import BgTasksBar from './BgTasksBar';
@@ -183,6 +184,30 @@ export default function ClaudeSessionView({
     }
     return out;
   }, [messages]);
+
+  // ── "Continue" affordance for a turn the transport cut (§14.68) ───────────
+  // The CLI closes such a turn with a synthetic assistant bubble ("API Error:
+  // Connection closed mid-response…"); the one-word fix is to send "Continue".
+  // We offer it on the LAST VISIBLE message only: further down the history the
+  // interruption was already handled (a user bubble follows), and a row of
+  // dead buttons up the scrollback is noise. Side-channel rows (event /
+  // edit_snapshot) render as null, so they must be skipped when looking for
+  // "the last thing the user sees" — otherwise a trailing edit_snapshot would
+  // hide the CTA. Gated on the turn being over: while it's thinking, Continue
+  // would just queue a redundant prompt.
+  const continuableMsgId = useMemo(() => {
+    if (status === 'thinking' || status === 'starting' || currentAssistant) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'event' || m.role === 'edit_snapshot') continue;
+      return m.role === 'assistant' && isTurnInterrupted(m.content, m.model) ? m.id : null;
+    }
+    return null;
+  }, [messages, status, currentAssistant]);
+
+  // Stable ref (memo(Message), §14.38). `send` is optimistic, so the user
+  // bubble appears at once and `continuableMsgId` goes null on the next render.
+  const sendContinue = useCallback(() => { void streamSend('Continue'); }, [streamSend]);
 
   const stepCount = useMemo(() => {
     let count = 0;
@@ -510,7 +535,11 @@ export default function ClaudeSessionView({
                   <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={onReauth} />
                 )}
                 {[...renderable].reverse().map(({ msg, attached }) => (
-                  <Message key={msg.id} m={msg} attachedResult={attached} kind={sessionKind} onReauth={onReauth} />
+                  <Message
+                    key={msg.id} m={msg} attachedResult={attached} kind={sessionKind}
+                    onReauth={onReauth}
+                    onContinue={msg.id === continuableMsgId ? sendContinue : undefined}
+                  />
                 ))}
                 {/* "Loading older" / "start of history" indicator.
                     In column-reverse, the last DOM child renders visually at
