@@ -3,13 +3,16 @@
 # Quickstart:
 #   1) cp .env.example .env  (fill in MASTER_PASSWORD, MASTER_SALT,
 #      SESSION_SECRET, SYNC_TOKEN with `openssl rand -hex 32`)
-#   2) Make sure ./data exists and is writable. (compose creates it.)
+#   2) Put the SSH private key Charon will use to reach your VPS fleet in
+#      ./docker/ssh — any standard name works (id_ed25519, id_rsa, …):
+#         install -m 600 ~/.ssh/id_ed25519 docker/ssh/
+#      The key must have NO passphrase (Charon runs ssh in BatchMode).
 #   3) docker compose up -d --build
-#   4) Put a reverse proxy with TLS in front (nginx/caddy/traefik).
-#      The container exposes 10556 ; bind it to 127.0.0.1 in production.
+#   4) Put a reverse proxy with TLS in front (nginx/caddy/traefik). The
+#      published port below is bound to 127.0.0.1 — keep it that way in prod.
 #
-# SSH keys: mount your private key into ~/.ssh/id_rsa for the `charon` user
-# (uid 1001). Adjust the path and key name as needed.
+# Ownership of ./data and ./docker/ssh is repaired automatically by the
+# entrypoint (it starts as root, chowns the mounts to uid 1001, then drops).
 
 services:
   charon:
@@ -21,20 +24,33 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=/app/data/charon.db
+      # MUST be set here rather than left to .env: `environment:` overrides
+      # `env_file:`, and .env.example ships HOST=127.0.0.1 — correct for a
+      # bare-metal install behind a proxy, fatal in a container (it binds the
+      # CONTAINER's loopback, so the published port refuses every connection
+      # while the healthcheck, which probes 127.0.0.1 from INSIDE, stays
+      # green). Exposure is controlled by `ports:` below, not by this.
+      - HOST=0.0.0.0
     ports:
-      # In production: bind to 127.0.0.1 and put TLS proxy in front.
+      # In production: bind to 127.0.0.1 and put a TLS proxy in front.
       - "127.0.0.1:10556:10556"
     volumes:
       - ./data:/app/data
-      # Read-only mount of an SSH key so Charon can reach your VPS fleet.
-      # Set CHARON_SSH_KEY in the host shell, or hardcode a path here.
-      - ${CHARON_SSH_KEY:-./docker/dummy-key}:/home/charon/.ssh/id_rsa:ro
-      # Persist known_hosts across container restarts. Otherwise every
-      # first connection re-asks the host key fingerprint.
-      - ./docker/known_hosts:/home/charon/.ssh/known_hosts
+      # SSH material, mounted as a DIRECTORY on purpose. Mounting individual
+      # FILES here (a key path, a known_hosts) is a trap: when the source
+      # doesn't exist on the host — and it never does in a fresh clone, both
+      # being gitignored — Docker silently materialises it as an empty
+      # DIRECTORY and mounts that over the key. A directory mount can't fail
+      # that way, and it also persists ~/.ssh/charon_known_hosts (the
+      # Charon-scoped host-key store, cf. lib/server/agent/sshShared.js)
+      # across container restarts.
+      - ./docker/ssh:/home/charon/.ssh
     healthcheck:
       # The image already declares a HEALTHCHECK ; this is just here so
-      # `docker compose ps` shows the health state.
+      # `docker compose ps` shows the health state. NOTE: it probes from
+      # INSIDE the container, so it proves the process is alive — not that
+      # the published port is reachable. The CI `docker` job curls it from
+      # the host for exactly that reason.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:10556/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s

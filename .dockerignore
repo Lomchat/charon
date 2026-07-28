@@ -7,10 +7,11 @@ data/*
 .env
 .env.*
 !.env.example
-# Keep docker/entrypoint.sh in the build context (the Dockerfile COPYs it);
-# only exclude the local-only artifacts (cf. .gitignore).
-docker/dummy-key
-docker/known_hosts
+# Keep docker/entrypoint.sh in the build context (the Dockerfile COPYs it).
+# docker/ssh holds the operator's PRIVATE KEY at runtime (bind-mounted, never
+# COPYed) — excluding it from the context guarantees a key can't be baked into
+# an image layer by an accidental `COPY . .`.
+docker/ssh
 Dockerfile
 docker-compose.yml
 README.md

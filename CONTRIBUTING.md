@@ -29,9 +29,15 @@ box with a key in `authorized_keys` is enough.
 - `scripts/` — `migrate.mjs` (apply migrations), `check-protocol-sync.mjs`
   (prebuild check that the Python and TypeScript JSON-RPC method lists agree).
 - `docs/` — architecture decisions (ADR-001).
-- [`CLAUDE.md`](./CLAUDE.md) — operational guide. The file is verbose but it
-  is the single source of truth for the JSON-RPC protocol, DB schema, the
-  list of known footguns, and the post-change checklist.
+- `docker/` — container entrypoint + the bind-mounted runtime SSH material
+  (`docker/ssh`, gitignored except for its `.gitkeep`).
+
+The canonical spec of the JSON-RPC protocol lives in the code itself:
+`agent/charon_agent/protocol.py` (`METHODS`) mirrored by
+`lib/server/agent/types.ts` — `scripts/check-protocol-sync.mjs` fails the build
+on any drift. The DB schema is `lib/db/schema.ts`. Maintainers additionally
+keep a private operational guide (`CLAUDE.md`, gitignored) that is *not* part
+of the public repo — nothing in it is required to contribute.
 
 ## Common tasks
 

@@ -52,22 +52,33 @@ RUN rm -rf .next/cache \
 # -----------------------------------------------------------------------------
 FROM node:20-bookworm-slim AS runner
 WORKDIR /app
+# HOST=0.0.0.0 is the only value that makes sense INSIDE a container (the
+# published port is what controls exposure — compose binds it to 127.0.0.1).
+# The entrypoint re-forces it if an .env from a bare-metal install leaks
+# HOST=127.0.0.1 in. HOME is pinned so `os.homedir()` resolves to the mounted
+# ssh dir regardless of how the process was started.
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=10556
+    PORT=10556 \
+    HOME=/home/charon
 
 # openssh-client : Charon shells out to `ssh` for every VPS connection.
 # ca-certificates : TLS for web-push / Telegram outbound calls.
+# util-linux      : `setpriv`, used by the entrypoint to drop root (Essential
+#                   on Debian — pinned explicitly so an image-base change
+#                   can't silently remove the privilege-drop helper).
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        openssh-client \
        ca-certificates \
        tini \
+       util-linux \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 charon \
   && useradd  --system --uid 1001 --gid charon --create-home --shell /sbin/nologin charon \
-  && mkdir -p /app/data \
-  && chown -R charon:charon /app
+  && mkdir -p /app/data /home/charon/.ssh \
+  && chmod 700 /home/charon/.ssh \
+  && chown -R charon:charon /app /home/charon
 
 COPY --from=builder --chown=charon:charon /app/package.json /app/package-lock.json ./
 COPY --from=builder --chown=charon:charon /app/node_modules ./node_modules
@@ -83,11 +94,19 @@ COPY --from=builder --chown=charon:charon /app/agent ./agent
 # an app with broken shells.
 COPY --from=builder --chown=charon:charon /app/server.js ./server.js
 
-# Entrypoint runs migrations before starting the server, idempotent.
-COPY --chown=charon:charon docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# Entrypoint: repairs bind-mount ownership, preflights the config, applies the
+# migrations, then DROPS to uid 1001 for the server itself. Idempotent.
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER charon
+# NO `USER charon` here — deliberately. The entrypoint needs root for exactly
+# as long as it takes to chown the host bind mounts (./data, ./docker/ssh,
+# which arrive owned by the HOST user, never by uid 1001) and then drops to
+# `charon` via setpriv before exec'ing the CMD. With `USER charon` the
+# entrypoint was powerless and a mis-owned mount surfaced as an opaque
+# SQLITE_CANTOPEN / ssh "permission denied". Overriding the user is still
+# supported (`docker run -u`, compose `user:`) — the entrypoint detects it and
+# skips both the chown and the drop.
 VOLUME ["/app/data"]
 EXPOSE 10556
 

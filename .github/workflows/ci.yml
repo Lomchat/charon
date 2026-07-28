@@ -4,7 +4,8 @@ name: CI
 # against a temp DB, the Python agent compile + zipapp build, a strict
 # `tsc --noEmit` pass, AND the unit test suites: vitest (TS server/runtime
 # logic) + python unittest (agent event log, state, protocol, daemon
-# integration). Plus a blocking production npm audit (high+).
+# integration). Plus a blocking production npm audit (high+) and a `docker`
+# job that boots the full compose stack and probes it FROM THE HOST.
 
 on:
   push:
@@ -91,6 +92,83 @@ jobs:
       - name: Python compile check
         # Catches SyntaxError / broken imports in the agent.
         run: python3 -m compileall -q agent/charon_agent
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The self-hosting path had NO coverage at all, so every Docker-only
+    # regression shipped silently. This job builds the image and boots the
+    # real compose stack with the real `.env.example` values, then probes
+    # /api/health **from the host**.
+    #
+    # That last word is the whole point: the container's own HEALTHCHECK curls
+    # 127.0.0.1 from INSIDE, so it stays green even when the app binds the
+    # container's loopback and the published port refuses every connection —
+    # exactly what `HOST=127.0.0.1` (the correct bare-metal value, shipped in
+    # .env.example and fed to the container by `env_file:`) used to cause.
+    # Only a host-side probe can catch that class of bug.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: .env from the shipped example (HOST=127.0.0.1 kept ON PURPOSE)
+        # Real secrets, but the example's bind address: compose must override
+        # it. Anything that reintroduces the trap fails the probe below.
+        run: |
+          {
+            echo "MASTER_PASSWORD=ci-smoke-password"
+            echo "MASTER_SALT=$(openssl rand -hex 32)"
+            echo "SESSION_SECRET=$(openssl rand -hex 32)"
+            echo "SYNC_TOKEN=$(openssl rand -hex 32)"
+            echo "DATABASE_URL=./data/charon.db"
+            echo "HOST=127.0.0.1"
+            echo "PORT=10556"
+            echo "NODE_ENV=production"
+            echo "VAPID_SUBJECT=mailto:ci@example.com"
+          } > .env
+
+      - name: Resolved config binds 0.0.0.0
+        # Cheap static assertion, independent of the runtime probe: proves the
+        # `environment:` entry still wins over `env_file:`.
+        run: docker compose config | grep -E 'HOST:\s*"?0\.0\.0\.0"?'
+
+      - name: Build image + start the stack
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: /api/health answers on the PUBLISHED port
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 http://127.0.0.1:10556/api/health | grep -q '"ok":true'; then
+              echo "health OK after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::/api/health is unreachable from the host — the container is probably bound to its own loopback"
+          exit 1
+
+      - name: Login page is served
+        run: curl -fsS --max-time 10 http://127.0.0.1:10556/login | grep -qi 'charon\|password'
+
+      - name: Server process is NOT root
+        # The image has no `USER` (the entrypoint needs root to chown the bind
+        # mounts) — this asserts the setpriv drop actually happened.
+        run: |
+          owner=$(docker top charon -eo user,args | awk '/node .*server\.js/ {print $1; exit}')
+          echo "server.js runs as: ${owner:-<not found>}"
+          test -n "$owner" && test "$owner" != "root"
+
+      - name: ~/.ssh is writable by the server user (host-key store)
+        # charon_known_hosts must be creatable, else every VPS connection
+        # re-accepts host keys forever.
+        run: docker compose exec -T -u 1001 charon sh -c 'touch /home/charon/.ssh/.ci-probe && rm /home/charon/.ssh/.ci-probe'
+
+      - name: Container logs
+        if: always()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans
 
   audit:
     runs-on: ubuntu-latest

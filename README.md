@@ -168,13 +168,37 @@ Open the URL, log in with your `MASTER_PASSWORD`, and you're in.
 ### Run with Docker
 
 ```bash
+git clone https://github.com/Lomchat/charon.git
+cd charon
 cp .env.example .env          # fill MASTER_PASSWORD + the three secrets as above
-# Charon needs an SSH private key to reach your VPS. Point CHARON_SSH_KEY at it
-# (mounted read-only into the container) or drop one in ./data — see
-# docker-compose.yml. The SQLite DB persists in the ./data volume.
+
+# The SSH private key Charon uses to reach your VPS fleet goes in ./docker/ssh
+# (any standard name: id_ed25519, id_rsa, …). It must have NO passphrase —
+# Charon runs ssh in BatchMode.
+install -m 600 ~/.ssh/id_ed25519 docker/ssh/
+
 docker compose up -d --build
 # → http://127.0.0.1:10556
 ```
+
+That's the whole procedure — the container fixes its own footguns:
+
+- **`HOST` from `.env` is ignored** (compose pins `HOST=0.0.0.0`, the entrypoint
+  re-forces it). Inside a container `127.0.0.1` means the *container's* loopback,
+  which would make the published port refuse every connection. Exposure stays
+  controlled by the `ports:` binding — `127.0.0.1:10556` on the host.
+- **Ownership is repaired at boot.** Bind mounts arrive with the *host's*
+  ownership, never uid 1001; the entrypoint starts as root, `chown`s `./data`
+  and `./docker/ssh`, applies the Drizzle migrations, then drops to the
+  unprivileged `charon` user before starting the server.
+- **The SQLite DB persists in `./data`**, the host keys in
+  `./docker/ssh/charon_known_hosts`.
+
+Two things it can't fix for you: a key mounted **read-only** from elsewhere stays
+unreadable by uid 1001 (`sudo chown 1001:1001 <key> && chmod 600 <key>`), and a
+key with a **non-standard name** isn't tried by ssh automatically — point
+**Settings → SSH key (path on the hub server)** at `/home/charon/.ssh/<name>`.
+Both cases print an explicit warning in `docker compose logs` at startup.
 
 ### Adding your first VPS
 
@@ -201,6 +225,14 @@ serve HTTPS. It must also forward **SSE** (no buffering) **and** the WebSocket
 (200 when the DB is reachable, 503 otherwise). Example nginx:
 
 ```nginx
+# REQUIRED, at the http{} level (outside any server block): without this map
+# the $connection_upgrade below is empty and every shell terminal loops on
+# "reconnecting…".
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
 server {
   listen 443 ssl http2;
   server_name charon.example.com;
@@ -214,7 +246,7 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     # WebSocket upgrade (persistent shells)
     proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection $connection_upgrade;   # map: ''→'', 'upgrade'→'upgrade'
+    proxy_set_header Connection $connection_upgrade;
     # SSE — no buffering, long timeouts
     proxy_buffering off; proxy_cache off;
     proxy_read_timeout 1h; proxy_send_timeout 1h;
@@ -249,8 +281,9 @@ A systemd unit example is in [docs/charon.service.example](./docs/charon.service
 ## Architecture notes
 
 The short version. The long version, with the *why*, is in
-[`docs/adr-001-charon-agent.md`](./docs/adr-001-charon-agent.md); the operational
-guide is in [`CLAUDE.md`](./CLAUDE.md).
+[`docs/adr-001-charon-agent.md`](./docs/adr-001-charon-agent.md); the
+contributor's map of the codebase is in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 - **Charon hub** (this repo): Next.js 15 App Router, React 19, SQLite via Drizzle
   + `better-sqlite3`. SSR + SSE-streamed UI. One process, single-user.
@@ -313,7 +346,9 @@ with `bash agent/build.sh` (CI rebuilds it on every push).
 | `next start` loops "Could not find a production build" | A dev process polluted `.next`. Same fix. |
 | Sidebar shows a red dot next to a VPS | Agent not installed/reachable. Click **install** → watch the bootstrap stream. |
 | "Agent out of date" badge | Bundled `.pyz` SHA ≠ the one in DB. Click **Update agent**. |
-| Shell stuck "reconnecting…" behind a proxy | The reverse proxy isn't forwarding the WebSocket `Upgrade`. See the nginx block above. |
+| Shell stuck "reconnecting…" behind a proxy | The reverse proxy isn't forwarding the WebSocket `Upgrade` — and check the `map $http_upgrade $connection_upgrade` block, it's easy to miss. See the nginx block above. |
+| Docker: the published port refuses connections but `docker compose ps` says *healthy* | The app bound the container's loopback. The healthcheck probes from inside, so it can't see it. Don't set `HOST` in the container env — compose pins `HOST=0.0.0.0`; exposure is the `ports:` binding. |
+| Docker: every VPS fails to connect, or `SQLITE_CANTOPEN` | A bind mount is owned by the wrong uid. The entrypoint repairs `./data` and `./docker/ssh` automatically; a **read-only** key mounted from elsewhere it can't — `sudo chown 1001:1001 <key> && chmod 600 <key>`. `docker compose logs` names the exact file. |
 | Session stuck on "thinking" | The SDK ignored an `interrupt`. Use **Force stop** (resumable). |
 | `ensurepip is not available` during install | The VPS lacks `python3-venv`. Bootstrap auto-installs it on apt/dnf — open an issue for other distros. |
 
@@ -333,8 +368,8 @@ mode, migrations, the JSON-RPC protocol, and the PR flow. By participating you
 agree to the [Code of Conduct](./CODE_OF_CONDUCT.md). Security issues: follow
 [SECURITY.md](./SECURITY.md) — please don't open a public issue.
 
-The UI is English; some internal comments/docs (notably `CLAUDE.md`) are still
-partly French — translation PRs welcome.
+The UI is English; some internal comments are still partly French — translation
+PRs welcome.
 
 > Screenshots use 100% fictitious data (see `scripts/demo-seed.mjs`,
 > `scripts/demo-shots.mjs` and `scripts/demo-agent-setup.sh` for the isolated

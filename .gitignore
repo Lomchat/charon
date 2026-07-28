@@ -8,9 +8,13 @@ data/*
 .env.*
 !.env.example
 
-# Local docker artifacts (not committed)
-docker/dummy-key
-docker/known_hosts
+# Local docker artifacts: ./docker/ssh is the runtime SSH material bind-mounted
+# into the container (private key + charon_known_hosts). NEVER commit its
+# contents — but the DIRECTORY itself must exist in a fresh clone, hence the
+# tracked .gitkeep: a bind mount whose source is missing is materialised by
+# Docker as an empty directory, which would then shadow the key path.
+docker/ssh/*
+!docker/ssh/.gitkeep
 
 # Python artifacts (agent/charon_agent/)
 __pycache__/
