@@ -401,10 +401,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, []);
 
-  // Live account-usage gauges (§14.58). The hub polls each VPS's get_usage and
-  // fans an `account_usage` event (LOW_VOLUME → every tab; sessionId = vpsId).
-  // Keep the latest snapshot per VPS so the header widget follows the current
-  // session's account live, across tabs/devices, without an F5.
+  // Live account-usage gauges (§14.58). The hub polls get_usage once per
+  // ACCOUNT (§14.72 — the endpoint is throttled per source IP) and fans one
+  // `account_usage` event per VPS on that account (LOW_VOLUME → every tab;
+  // sessionId = vpsId). Keep the latest snapshot per VPS so the header widget
+  // follows the current session's account live, across tabs/devices, no F5.
   useEffect(() => {
     const unsub = subscribeAll((ev) => {
       if (ev.type !== 'account_usage') return;
