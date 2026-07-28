@@ -986,6 +986,40 @@
   font-size: 11px; text-align: center;
 }
 
+/* ── DataModal: search bar (name / ip / project path) ─────────────────────
+   Auto-focused on open (cf. app/vpsSearch.ts) so the modal can be filtered
+   by typing straight away. While it holds a query, drag-and-drop is off and
+   the handles are greyed (a drop index read off a filtered list would
+   reorder the wrong neighbours). */
+.data-search {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  background: var(--shadow); border: 1px solid var(--gold-deep);
+  border-radius: 10px;
+}
+.data-search:focus-within { border-color: var(--gold); }
+.data-search-glyph { color: var(--gold); font-family: var(--mono); font-size: 15px; line-height: 1; }
+.data-search-input {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  color: var(--parchment); font-family: var(--mono); font-size: 13px;
+}
+.data-search-input::placeholder { color: var(--parchment-soft); opacity: 0.55; }
+.data-search-count {
+  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
+  background: rgba(0,0,0,0.3); border: 1px solid var(--gold-deep);
+  padding: 2px 8px; flex-shrink: 0;
+}
+.data-search-clear {
+  flex-shrink: 0; cursor: pointer; padding: 2px 7px; border-radius: 6px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); font-size: 12px; line-height: 1;
+}
+.data-search-clear:hover { border-color: var(--gold); color: var(--gold-bright); }
+.data-folder-drag-handle.is-off,
+.data-vps-drag-handle.is-off { opacity: 0.25; cursor: default; }
+
 /* ── DataModal: draggable folder section ──────────────────────────────────── */
 .data-modal-v2 .data-help {
   margin: -4px 0 14px;

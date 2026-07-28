@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import { diagnoseVps, VpsHealthChips, type VpsFixAction } from './vpsHealth';
+import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 import {
   DndContext,
   DragOverlay,
@@ -98,6 +99,11 @@ export default function DataModal({
   const [addVpsOpen, setAddVpsOpen] = useState(false);
   const [addFolderOpen, setAddFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  // Search box (name / ip / project path — cf. app/vpsSearch.ts). Focused on
+  // open so the modal can be driven straight from the keyboard.
+  const [query, setQuery] = useState('');
+  const search = useVpsSearch(query, paths);
+  const searchRef = useSearchAutoFocus<HTMLInputElement>();
   // Per-VPS inline form state for adding a path
   const [pathInputs, setPathInputs] = useState<Record<string, { path: string; label: string }>>({});
   // Current drag-and-drop ID (for DragOverlay)
@@ -209,6 +215,33 @@ export default function DataModal({
     for (const arr of m.values()) arr.sort((a, b) => a.position - b.position);
     return m;
   }, [vpsList]);
+
+  // ─── Search view ─────────────────────────────────────
+  // `vpsByFolder` stays the FULL truth (drag-and-drop positions are computed
+  // from it); only the RENDERED lists are filtered. DnD is disabled while a
+  // query is active — a drop index read off a filtered list would reorder the
+  // wrong neighbours.
+  const shownVpsByFolder = useMemo(() => {
+    if (!search.active) return vpsByFolder;
+    const m = new Map<string, Vps[]>();
+    for (const [folderId, arr] of vpsByFolder) {
+      m.set(folderId, arr.filter((v) => search.match(v).ok));
+    }
+    return m;
+  }, [vpsByFolder, search]);
+  const shownCount = useMemo(() => {
+    let n = 0;
+    for (const arr of shownVpsByFolder.values()) n += arr.length;
+    return n;
+  }, [shownVpsByFolder]);
+  const hasVps = (folderId: string) => (shownVpsByFolder.get(folderId)?.length ?? 0) > 0;
+  // While searching, empty folders are noise → only folders with a hit show.
+  const shownDraggableFolders = useMemo(
+    () => (search.active ? draggableFolders.filter((f) => hasVps(f.id)) : draggableFolders),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [draggableFolders, search, shownVpsByFolder],
+  );
+  const showDefaultFolder = !!defaultFolder && (!search.active || hasVps(defaultFolder.id));
 
   // ─── VPS CRUD ────────────────────────────────────────
   const [vpsForm, setVpsForm] = useState({ name: '', ip: '', sshUser: 'root', sshPort: '22', defaultPath: '', folderId: DEFAULT_FOLDER_ID });
@@ -402,6 +435,9 @@ export default function DataModal({
 
   function handleDragEnd(e: DragEndEvent) {
     setActiveDragId(null);
+    // Filtered list ⇒ the visible neighbours aren't the real ones: refuse the
+    // reorder rather than persisting a layout computed from a partial view.
+    if (search.active) return;
     const { active, over } = e;
     if (!over) return;
     const a = decodeId(String(active.id));
@@ -505,8 +541,36 @@ export default function DataModal({
             >{addVpsOpen ? '− cancel' : '+ VPS'}</button>
           </div>
         </header>
+        <div className="data-search">
+          <span className="data-search-glyph">⌕</span>
+          <input
+            ref={searchRef}
+            className="data-search-input"
+            placeholder="filter — name, ip or project path…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Escape clears the filter FIRST (the modal's window-level
+              // Escape listener sits behind this stopPropagation).
+              if (e.key === 'Escape' && query) { e.stopPropagation(); setQuery(''); }
+            }}
+            autoCapitalize="off" autoCorrect="off" spellCheck={false}
+          />
+          {search.active && (
+            <span className="data-search-count">{shownCount}/{vpsList.length}</span>
+          )}
+          {query && (
+            <button
+              className="data-search-clear"
+              onClick={() => { setQuery(''); searchRef.current?.focus(); }}
+              title="clear the filter (Esc)"
+            >✕</button>
+          )}
+        </div>
         <p className="data-help">
-          Drag folders to reorder them, or a VPS to move it to another folder (or change its order).
+          {search.active
+            ? 'Filtering — clear the search box to drag folders or VPSes again.'
+            : 'Drag folders to reorder them, or a VPS to move it to another folder (or change its order).'}
         </p>
 
         {err && <div className="data-err">{err}</div>}
@@ -555,20 +619,25 @@ export default function DataModal({
             {sortedFolders.length === 0 && (
               <div className="data-empty">no folders — click on « + folder » to start</div>
             )}
+            {search.active && shownCount === 0 && (
+              <div className="data-empty">no VPS matches « {query.trim()} »</div>
+            )}
             {/* Draggable folders: reorderable among themselves via DnD */}
             <SortableContext
-              items={draggableFolders.map((f) => folderDragId(f.id))}
+              items={shownDraggableFolders.map((f) => folderDragId(f.id))}
               strategy={verticalListSortingStrategy}
             >
-              {draggableFolders.map((folder) => (
+              {shownDraggableFolders.map((folder) => (
                 <SortableFolder
                   key={folder.id}
                   folder={folder}
-                  vps={vpsByFolder.get(folder.id) ?? []}
+                  vps={shownVpsByFolder.get(folder.id) ?? []}
+                  totalVps={(vpsByFolder.get(folder.id) ?? []).length}
+                  dragDisabled={search.active}
                   allFolders={sortedFolders}
                   paths={paths}
                   pathInputs={pathInputs}
-                  collapsed={collapsedFolders.has(folder.id)}
+                  collapsed={!search.active && collapsedFolders.has(folder.id)}
                   onToggleCollapsed={() => toggleFolderCollapsed(folder.id)}
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
@@ -588,14 +657,16 @@ export default function DataModal({
                 non-draggable as a folder. But its zone (droppable) still
                 accepts VPSes dragged into it, and its VPS content remains
                 sortable intra-folder. */}
-            {defaultFolder && (
+            {defaultFolder && showDefaultFolder && (
               <StaticFolder
                 folder={defaultFolder}
-                vps={vpsByFolder.get(defaultFolder.id) ?? []}
+                vps={shownVpsByFolder.get(defaultFolder.id) ?? []}
+                totalVps={(vpsByFolder.get(defaultFolder.id) ?? []).length}
+                dragDisabled={search.active}
                 allFolders={sortedFolders}
                 paths={paths}
                 pathInputs={pathInputs}
-                collapsed={collapsedFolders.has(defaultFolder.id)}
+                collapsed={!search.active && collapsedFolders.has(defaultFolder.id)}
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onFixVps={handleFix}
                 healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
@@ -634,13 +705,16 @@ export default function DataModal({
 // tombent sur le header / l'espace vide du dossier (pas sur une carte VPS).
 // ─────────────────────────────────────────────────────────────
 function SortableFolder({
-  folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
+  folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onRename, onDelete,
   onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
   vps: Vps[];
+  /** Unfiltered size, to render "shown/total" while a search is active. */
+  totalVps: number;
+  dragDisabled: boolean;
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInputs: Record<string, { path: string; label: string }>;
@@ -666,7 +740,7 @@ function SortableFolder({
     transition,
     isDragging,
     setDroppableNodeRef,
-  } = useSortableWithDroppable(folder.id);
+  } = useSortableWithDroppable(folder.id, dragDisabled);
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -682,7 +756,9 @@ function SortableFolder({
       {...attributes}
     >
       <header className="data-folder-head">
-        <span className="data-folder-drag-handle" {...listeners} title="drag to reorder folders">⋮⋮</span>
+        {dragDisabled
+          ? <span className="data-folder-drag-handle is-off" title="clear the search box to reorder">⋮⋮</span>
+          : <span className="data-folder-drag-handle" {...listeners} title="drag to reorder folders">⋮⋮</span>}
         <button
           className="data-folder-caret"
           onClick={onToggleCollapsed}
@@ -691,7 +767,9 @@ function SortableFolder({
         >{collapsed ? '▸' : '▾'}</button>
         <span className="data-folder-glyph">▤</span>
         <FolderRenameInput initial={folder.name} onSubmit={onRename} />
-        <span className="data-folder-count">{vps.length} VPS</span>
+        <span className="data-folder-count">
+          {vps.length === totalVps ? `${totalVps} VPS` : `${vps.length}/${totalVps} VPS`}
+        </span>
         {folder.id !== DEFAULT_FOLDER_ID && (
           <button className="dv-btn danger" onClick={onDelete} title="delete this folder">✕</button>
         )}
@@ -709,6 +787,7 @@ function SortableFolder({
               <SortableVpsCard
                 key={v.id}
                 v={v}
+                dragDisabled={dragDisabled}
                 allFolders={allFolders}
                 paths={paths}
                 pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
@@ -734,9 +813,9 @@ function SortableFolder({
 // with a separate useDroppable on the folder body (to accept VPSes
 // dropped on the folder's empty space). The two refs are applied to
 // different DOM nodes (section for the sortable, body for the droppable).
-function useSortableWithDroppable(folderId: string) {
-  const sortable = useSortable({ id: folderDragId(folderId) });
-  const droppable = useDroppable({ id: folderDropZoneId(folderId) });
+function useSortableWithDroppable(folderId: string, disabled = false) {
+  const sortable = useSortable({ id: folderDragId(folderId), disabled });
+  const droppable = useDroppable({ id: folderDropZoneId(folderId), disabled });
   return { ...sortable, setDroppableNodeRef: droppable.setNodeRef };
 }
 
@@ -774,12 +853,14 @@ function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (
 // live there.
 // ─────────────────────────────────────────────────────────────
 function StaticFolder({
-  folder, vps, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
+  folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
   vps: Vps[];
+  totalVps: number;
+  dragDisabled: boolean;
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInputs: Record<string, { path: string; label: string }>;
@@ -796,7 +877,7 @@ function StaticFolder({
   onSetPathInput: (vpsId: string, field: 'path' | 'label', value: string) => void;
 }) {
   // The body is droppable so we can drop VPSes into it at drag-end.
-  const { setNodeRef: setBodyRef } = useDroppable({ id: folderDropZoneId(folder.id) });
+  const { setNodeRef: setBodyRef } = useDroppable({ id: folderDropZoneId(folder.id), disabled: dragDisabled });
   return (
     <section className={`data-folder-card data-folder-static${collapsed ? ' is-collapsed' : ''}`}>
       <header className="data-folder-head">
@@ -809,7 +890,9 @@ function StaticFolder({
         <span className="data-folder-lock" title="folder locked in last position">🔒</span>
         <span className="data-folder-glyph">▤</span>
         <span className="data-folder-name-static">{folder.name}</span>
-        <span className="data-folder-count">{vps.length} VPS</span>
+        <span className="data-folder-count">
+          {vps.length === totalVps ? `${totalVps} VPS` : `${vps.length}/${totalVps} VPS`}
+        </span>
       </header>
       {!collapsed && (
       <div ref={setBodyRef} className="data-folder-body">
@@ -824,6 +907,7 @@ function StaticFolder({
             <SortableVpsCard
               key={v.id}
               v={v}
+              dragDisabled={dragDisabled}
               allFolders={allFolders}
               paths={paths}
               pathInput={pathInputs[v.id] ?? { path: '', label: '' }}
@@ -851,11 +935,12 @@ function StaticFolder({
 // misinterpretation.
 // ─────────────────────────────────────────────────────────────
 function SortableVpsCard({
-  v, allFolders, paths, pathInput,
+  v, dragDisabled, allFolders, paths, pathInput,
   onFix, healthOpts, onLogin, onDelete, onChangeFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   v: Vps;
+  dragDisabled: boolean;
   allFolders: VpsFolder[];
   paths: VpsPath[];
   pathInput: { path: string; label: string };
@@ -871,7 +956,7 @@ function SortableVpsCard({
 }) {
   const {
     attributes, listeners, setNodeRef, transform, transition, isDragging,
-  } = useSortable({ id: vpsDragId(v.id) });
+  } = useSortable({ id: vpsDragId(v.id), disabled: dragDisabled });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -897,7 +982,9 @@ function SortableVpsCard({
   return (
     <section ref={setNodeRef} style={style} className={`data-vps-card agent-${status}${isDragging ? ' is-dragging' : ''}${collapsed ? ' is-collapsed' : ''}`} {...attributes}>
       <header className="data-vps-head">
-        <span className="data-vps-drag-handle" {...listeners} title="drag to reorder or move to another folder">⋮⋮</span>
+        {dragDisabled
+          ? <span className="data-vps-drag-handle is-off" title="clear the search box to drag">⋮⋮</span>
+          : <span className="data-vps-drag-handle" {...listeners} title="drag to reorder or move to another folder">⋮⋮</span>}
         <button
           className="data-vps-caret"
           onClick={() => setCollapsed((c) => !c)}

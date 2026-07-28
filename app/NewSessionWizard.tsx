@@ -12,6 +12,7 @@ import { IconTerminal } from './icons';
 import type { AgentKind, CodexSandboxMode } from '@/lib/types/api';
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
+import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 
 // 3-step "new session" wizard (prod). `kind` (agent vs shell) is fixed by the
 // button that opened it. For agents, the BACKEND (Claude vs Codex) is either
@@ -92,6 +93,12 @@ export default function NewSessionWizard({
   const [step, setStep] = useState<Step>(initialVpsId ? (hasInitialCwd ? 'name' : 'path') : 'vps');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // ── Step 1 filter (name / ip / project path — cf. app/vpsSearch.ts) ──
+  // Auto-focused whenever step 1 is on screen, so "open the wizard → type"
+  // narrows the list without a click.
+  const [vpsQuery, setVpsQuery] = useState('');
+  const vpsSearch = useVpsSearch(vpsQuery, vpsPaths);
+  const vpsSearchRef = useSearchAutoFocus<HTMLInputElement>(step === 'vps');
 
   const isCodex = kind === 'agent' && selKind === 'codex';
 
@@ -156,6 +163,15 @@ export default function NewSessionWizard({
     return out;
   }, [vpsList, vpsFolders]);
 
+  // Same buckets, narrowed by the search box; a folder with no hit vanishes.
+  const shownBuckets = useMemo(() => {
+    if (!vpsSearch.active) return buckets;
+    return buckets
+      .map((b) => ({ folder: b.folder, vps: b.vps.filter((v) => vpsSearch.match(v).ok) }))
+      .filter((b) => b.vps.length > 0);
+  }, [buckets, vpsSearch]);
+  const shownVps = useMemo(() => shownBuckets.flatMap((b) => b.vps), [shownBuckets]);
+
   const pickList = useMemo(() => {
     if (!vps) return [] as { label: string; path: string }[];
     const rows = vpsPaths
@@ -208,6 +224,31 @@ export default function NewSessionWizard({
     setPath(null); setPathChosen(false);
     setStep('path');
   }
+  // Enter in the search box = "take the obvious one": only when the filter
+  // left EXACTLY one usable VPS (and, for a backend-free agent launch, only
+  // one usable backend) — otherwise typing blind could start a session on the
+  // wrong machine.
+  function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape' && vpsQuery) {
+      // Clear the filter instead of closing the wizard (the window-level
+      // Escape listener sits behind this stopPropagation).
+      e.stopPropagation(); setVpsQuery(''); return;
+    }
+    if (e.key !== 'Enter' || shownVps.length !== 1) return;
+    const v = shownVps[0];
+    if (kind !== 'agent') {
+      if (agentAvailability(v).ok) pickVps(v);
+      return;
+    }
+    if (backendFixed) {
+      if (availFor(v, selKind).ok) pickVps(v);
+      return;
+    }
+    const cl = availFor(v, 'claude').ok;
+    const cx = availFor(v, 'codex').ok;
+    if (cl !== cx) pickVps(v, cl ? 'claude' : 'codex');
+  }
+
   function choosePath(p: string | null) {
     setPath(p); setPathChosen(true); setPathError(null);
     setSugOpen(false);
@@ -427,14 +468,46 @@ export default function NewSessionWizard({
             <div className="wiz-label">
               {kind === 'agent' && !backendFixed ? 'Choose a VPS & backend' : 'Choose a VPS'}
             </div>
+            <div className="wiz-search">
+              <span className="wiz-search-glyph">⌕</span>
+              <input
+                ref={vpsSearchRef}
+                placeholder="filter — name, ip or project path…"
+                value={vpsQuery}
+                onChange={(e) => setVpsQuery(e.target.value)}
+                onKeyDown={onSearchKeyDown}
+                autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              />
+              {vpsSearch.active && (
+                <span className="wiz-search-count">{shownVps.length}/{vpsList.length}</span>
+              )}
+              {vpsQuery && (
+                <button type="button" className="wiz-search-clear"
+                  title="clear the filter (Esc)"
+                  onClick={() => { setVpsQuery(''); vpsSearchRef.current?.focus(); }}
+                >✕</button>
+              )}
+            </div>
             {buckets.length === 0 && <div className="wiz-error">no VPS — add one in « manage VPS »</div>}
-            {buckets.map(({ folder, vps: list }) => (
+            {buckets.length > 0 && shownBuckets.length === 0 && (
+              <div className="wiz-empty">no VPS matches « {vpsQuery.trim()} »</div>
+            )}
+            {shownBuckets.map(({ folder, vps: list }) => (
               <div key={folder.id} className="wiz-folder">
                 <div className="wiz-folder-name">▤ {folder.name}</div>
                 <div className="wiz-pick-list">
                   {list.map((v) => {
                     const status = (v as any).agentStatus ?? 'unknown';
                     const issues = rowIssues(v);
+                    // Why this row survived a project-path search — without it
+                    // a row matched on a path the row doesn't show looks random.
+                    const matched = vpsSearch.active ? vpsSearch.match(v).paths : [];
+                    const matchEl = matched.length === 0 ? null : (
+                      <span className="wiz-pick-sub mono wiz-pick-match" title={matched.join('\n')}>
+                        ▤ {matched.slice(0, 2).join('  ·  ')}
+                        {matched.length > 2 ? `  +${matched.length - 2}` : ''}
+                      </span>
+                    );
                     // One "⚠ reason [fix]" line PER problem (the reasons come
                     // from the shared diagnosis — "VPS unreachable (SSH)" vs
                     // "agent not installed" vs "Claude: not signed in"…),
@@ -465,6 +538,7 @@ export default function NewSessionWizard({
                           <span className="wiz-pick-main">
                             <span className="wiz-pick-name">{v.name}</span>
                             <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
+                            {matchEl}
                             {issuesEl}
                           </span>
                           <span className="wiz-kind-btns">
@@ -495,6 +569,7 @@ export default function NewSessionWizard({
                           <span className="wiz-pick-main">
                             <span className="wiz-pick-name">{v.name}</span>
                             <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
+                            {matchEl}
                             {issuesEl}
                           </span>
                         </div>
@@ -509,6 +584,7 @@ export default function NewSessionWizard({
                         <span className="wiz-pick-main">
                           <span className="wiz-pick-name">{v.name}</span>
                           <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
+                          {matchEl}
                         </span>
                         <span className="wiz-pick-go">›</span>
                       </button>

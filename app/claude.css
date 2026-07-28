@@ -3083,6 +3083,38 @@
 }
 .wiz-opt { color: var(--parchment-soft); opacity: 0.6; text-transform: none; letter-spacing: 0; font-family: var(--body); }
 .wiz-body { max-height: 60vh; overflow-y: auto; overflow-x: hidden; }
+
+/* Step-1 VPS filter (name / ip / project path — cf. app/vpsSearch.ts).
+   Auto-focused when step 1 shows, so "open → type" narrows the list. */
+.wiz-search {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 10px; padding: 7px 10px; border-radius: 8px;
+  background: var(--shadow); border: 1px solid var(--gold-deep);
+}
+.wiz-search:focus-within { border-color: var(--gold); }
+.wiz-search-glyph { color: var(--gold); font-family: var(--mono); font-size: 15px; line-height: 1; }
+.wiz-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  color: var(--parchment); font-family: var(--mono); font-size: 13px;
+}
+.wiz-search input::placeholder { color: var(--parchment-soft); opacity: 0.55; }
+.wiz-search-count {
+  flex-shrink: 0; font-family: var(--mono); font-size: 10px;
+  color: var(--parchment-soft); background: rgba(0,0,0,0.3);
+  border: 1px solid var(--gold-deep); padding: 2px 7px; border-radius: 5px;
+}
+.wiz-search-clear {
+  flex-shrink: 0; cursor: pointer; padding: 2px 7px; border-radius: 6px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); font-size: 12px; line-height: 1;
+}
+.wiz-search-clear:hover { border-color: var(--gold); color: var(--gold-bright); }
+.wiz-empty {
+  padding: 18px 12px; text-align: center; font-style: italic;
+  color: var(--parchment-soft); font-size: 12px;
+}
+/* "matched because of this project path" hint under a filtered row */
+.wiz-pick-match { color: var(--gold); opacity: 0.75; font-size: 10.5px; }
 .wiz-folder { margin-bottom: 12px; }
 .wiz-folder-name { font-family: var(--mono); font-size: 11px; color: var(--gold); margin: 0 0 6px 2px; opacity: 0.85; }
 .wiz-pick-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; }
