@@ -32,7 +32,8 @@ export function loadMessageWindow(
 ): { messages: ClaudeSessionMessage[]; hasMore: boolean; oldestChatId: number | null } {
   const skel = db.select({
     id: claudeSessionMessages.id,
-    seq: claudeSessionMessages.seq,
+    // ts_ms, not seq, is the chronological key (§14.71).
+    tsMs: claudeSessionMessages.tsMs,
     role: claudeSessionMessages.role,
   }).from(claudeSessionMessages)
     .where(eq(claudeSessionMessages.sessionId, sessionId))

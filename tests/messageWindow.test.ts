@@ -35,27 +35,34 @@ beforeAll(async () => {
   db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
 
   // 259 live rows: seqs 1..260 EXCEPT 20 (its persist "failed"). A user row
-  // (seq NULL) sits after seq 100 to pin the anchoring rule. Then the REPAIR
-  // of seq 20 arrives last → highest id.
+  // sits after seq 100 to pin the anchoring rule. Then the REPAIR of seq 20
+  // arrives last → highest id.
+  //
+  // Ordering is driven by `ts_ms`, not by seq (§14.71) — here the two agree
+  // (ts = BASE + seq seconds), which is what makes the repaired row a real
+  // test: it is INSERTED last but carries the ts of the moment it belongs to,
+  // so it must sort back between 19 and 21 rather than land at the end.
+  const BASE = 1_700_000_000_000;
+  const at = (s: number, offsetMs = 0) => BASE + s * 1000 + offsetMs;
   for (let s = 1; s <= 260; s++) {
     if (s === 20) continue;
     db.insert(schema.claudeSessionMessages).values({
-      sessionId: SID, role: 'assistant', content: `msg-${s}`, seq: s,
+      sessionId: SID, role: 'assistant', content: `msg-${s}`, seq: s, tsMs: at(s),
     }).run();
     if (s === 100) {
       db.insert(schema.claudeSessionMessages).values({
-        sessionId: SID, role: 'user', content: 'user-after-100', seq: null,
+        sessionId: SID, role: 'user', content: 'user-after-100', seq: null, tsMs: at(100, 1),
       }).run();
     }
     // one attachment riding right after seq 150 (must follow its page)
     if (s === 150) {
       db.insert(schema.claudeSessionMessages).values({
-        sessionId: SID, role: 'event', content: '{"type":"todo_update","todos":[]}', seq: null,
+        sessionId: SID, role: 'event', content: '{"type":"todo_update","todos":[]}', seq: null, tsMs: at(150, 1),
       }).run();
     }
   }
   db.insert(schema.claudeSessionMessages).values({
-    sessionId: SID, role: 'assistant', content: 'msg-20-REPAIRED', seq: 20,
+    sessionId: SID, role: 'assistant', content: 'msg-20-REPAIRED', seq: 20, tsMs: at(20),
   }).run();
 
   ({ loadMessageWindow } = await import('@/lib/server/claude/messageWindow'));

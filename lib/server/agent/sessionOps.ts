@@ -30,7 +30,7 @@ import { isClaudeAuthExpired } from '@/lib/authExpired';
 //
 // Kind-aware (multi-agent): a Codex session reads codex.default_model /
 // codex.default_effort and has NO fallback-model concept; a Claude session
-// keeps the existing claude.default_* keys. cf. migration-codex.md.
+// keeps the existing claude.default_* keys. cf. CLAUDE.md §14.59.
 function _resolveSessionConfig(
   kind: AgentKind,
   opts: {
@@ -335,12 +335,21 @@ export class SessionStream {
   // outside dispatch). Stamped onto every message row _persist writes —
   // the per-row identity that replaces content-based dedup.
   private currentEventSeq: number | null = null;
+  // `currentEventTs`: WHEN the event being dispatched happened, unix ms (the
+  // agent's `ts`, emitted next to `seq`). Stamped onto every row _persist
+  // writes and used as THE chronological sort key (§14.71) — `seq` cannot be
+  // one, it restarts at 1 whenever the agent's event log is recreated.
+  private currentEventTs: number | null = null;
   // First seq of the still-unflushed assistant accumulation. The DURABLE
   // cursor is held back to (pendingAssistantSince - 1): after a hard crash
   // the whole unflushed text is re-delivered and rebuilt instead of losing
   // the first seconds of a turn (the old cursor advanced past deltas whose
   // text only lived in this process's memory).
   private pendingAssistantSince: number | null = null;
+  // …and the ts of that same first delta. A flush row must be dated when the
+  // assistant STARTED speaking, not when the boundary event closed the
+  // buffer, or a long turn's text sorts after the tools it preceded.
+  private pendingAssistantTsMs: number | null = null;
   // Seq of the earliest event whose _persist FAILED (DB error). Holds the
   // durable cursor back so the next restart replays it and the row gets a
   // second chance — the seq-gate makes the re-delivery of everything else
@@ -504,10 +513,14 @@ export class SessionStream {
   private _onAgentEvent(ev: AgentEvent): void {
     const seq = (ev as { seq?: unknown }).seq;
     this.currentEventSeq = typeof seq === 'number' ? seq : null;
+    // The agent sends `ts` as unix SECONDS (float, from the durable log).
+    const ts = (ev as { ts?: unknown }).ts;
+    this.currentEventTs = typeof ts === 'number' && Number.isFinite(ts) ? Math.round(ts * 1000) : null;
     try {
       this._dispatchEvent(ev);
     } finally {
       this.currentEventSeq = null;
+      this.currentEventTs = null;
       // Advance the in-memory cursor AFTER the dispatch ran. The `finally`
       // is safe since the seq-gate (P0.2/P0.3): the DURABLE cursor persisted
       // to DB is held back below both the unflushed-assistant boundary and
@@ -559,6 +572,7 @@ export class SessionStream {
         && this.replayPersistedSeqs?.has(this.pendingAssistantSince)) {
       this.currentAssistant = '';
       this.pendingAssistantSince = null;
+      this.pendingAssistantTsMs = null;
     }
   }
 
@@ -662,6 +676,13 @@ export class SessionStream {
         // starts — the durable cursor never advances past it (P0.2).
         if (this.pendingAssistantSince == null && typeof ev.seq === 'number') {
           this.pendingAssistantSince = ev.seq;
+        }
+        // …and WHEN it starts, so the flush row is dated from the first
+        // delta rather than from the boundary that closes it (§14.71).
+        // Guarded on the ts, not on pendingAssistantSince: a seq-less agent
+        // still gives us a usable date.
+        if (this.pendingAssistantTsMs == null && this.currentEventTs != null) {
+          this.pendingAssistantTsMs = this.currentEventTs;
         }
         this.currentAssistant += ev.delta;
         this._broadcast({ type: 'assistant_text', delta: ev.delta });
@@ -1220,8 +1241,13 @@ export class SessionStream {
     // knowing whether the insert succeeded — a failed flush lost the
     // whole turn text).
     const flushSeq = this.pendingAssistantSince;
+    // Same reasoning for the date: the row belongs to the moment the
+    // assistant STARTED speaking. Stamping it with the boundary event's ts
+    // would sort a long answer after the tool calls it actually preceded.
+    const flushTsMs = this.pendingAssistantTsMs;
     this.currentAssistant = '';
     this.pendingAssistantSince = null;
+    this.pendingAssistantTsMs = null;
 
     if (this.isReplaying) {
       if (flushSeq != null && this.replayPersistedSeqs != null && this.replayPersistedSeqs.size > 0) {
@@ -1289,7 +1315,7 @@ export class SessionStream {
     // Stamp the row with the model that actually produced this text (per-
     // message attribution — the effective_model handler flushes BEFORE
     // switching, so buffered text never gets relabeled by a newer model).
-    const ok = this._persist('assistant', finalContent, { model: this.effectiveModel, seq: flushSeq });
+    const ok = this._persist('assistant', finalContent, { model: this.effectiveModel, seq: flushSeq, tsMs: flushTsMs });
     if (!ok) {
       // RESTORE (Codex 13.2.B): keep the text in the buffer — the next
       // boundary retries the flush with possibly more text (chronology
@@ -1297,6 +1323,7 @@ export class SessionStream {
       // FIRST delta so a crash replays the whole accumulation.
       this.currentAssistant = finalContent;
       this.pendingAssistantSince = flushSeq;
+      this.pendingAssistantTsMs = flushTsMs;
       if (flushSeq != null && (this.persistHoldbackSeq == null || flushSeq < this.persistHoldbackSeq)) {
         this.persistHoldbackSeq = flushSeq;
       }
@@ -1400,7 +1427,7 @@ export class SessionStream {
     } catch {}
   }
 
-  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null }): boolean {
+  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null }): boolean {
     // Stamp the row with the seq of the event being dispatched (null for
     // hub-originated rows like 'user' — sendUserMessage runs outside
     // dispatch). Flush rows override with the FIRST DELTA's seq via
@@ -1408,6 +1435,13 @@ export class SessionStream {
     // boundary/flush collision). This is the replay-idempotence anchor
     // (P0.3). Returns false on failure so callers (flush) can restore.
     const seq = extra && 'seq' in extra ? extra.seq ?? null : this.currentEventSeq;
+    // ts_ms is THE sort key (§14.71), so it must ALWAYS be set — never leave
+    // it null and let the reader guess. Preference order: an explicit stamp
+    // (flush rows carry the first delta's ts), then the event being
+    // dispatched, then now (hub-originated rows like 'user', and agents too
+    // old to send `ts`). Wall-clock has no epochs, so unlike `seq` this stays
+    // monotonic across an agent event-log reset.
+    const tsMs = (extra && 'tsMs' in extra ? extra.tsMs : null) ?? this.currentEventTs ?? Date.now();
     try {
       db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
@@ -1415,6 +1449,7 @@ export class SessionStream {
         // Only assistant rows carry a model stamp (see _flushAssistant).
         ...(extra?.model ? { model: extra.model } : {}),
         ...(seq != null ? { seq } : {}),
+        tsMs,
       }).run();
       return true;
     } catch (e: any) {

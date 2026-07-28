@@ -53,6 +53,11 @@ export async function POST(req: Request) {
               role: m.role,
               content: m.content,
               ...(m.ts ? { createdAt: m.ts } : {}),
+              // ts_ms is the chronological key (§14.71) and must always be
+              // set: without it an imported transcript would collapse onto a
+              // single watermark instead of keeping its real timeline.
+              // `m.ts` is unix SECONDS, like createdAt above.
+              tsMs: m.ts ? m.ts * 1000 : Date.now(),
             }).run();
           }
         });

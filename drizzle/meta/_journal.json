@@ -183,6 +183,13 @@
       "when": 1784733718587,
       "tag": "0025_mysterious_silvermane",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1785255604510,
+      "tag": "0026_freezing_loa",
+      "breakpoints": true
     }
   ]
 }

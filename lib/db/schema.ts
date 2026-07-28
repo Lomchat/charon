@@ -140,7 +140,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // Codex THREAD id (the resume handle), permissionMode holds a Codex sandbox
   // mode ('read-only' | 'workspace-write' | 'full-access'), effort is a Codex
   // reasoning-effort, model is a Codex model id, and fallbackModel is unused
-  // (Codex has no fallback-model concept). cf. migration-codex.md.
+  // (Codex has no fallback-model concept). cf. CLAUDE.md §14.59.
   kind: text('kind').notNull().default('claude'),
   permissionMode: text('permission_mode').notNull().default('normal'),
   // Last `seq` from the agent's durable event log that Charon has
@@ -232,6 +232,24 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // rows (hub-originated, no agent event), and with pre-0.4.0 agents
   // (no seq → legacy content dedup applies).
   seq: integer('seq'),
+  // WHEN this row's event actually happened, in unix MILLISECONDS — the
+  // agent's `ts` (durable log, emitted next to `seq`) rounded to ms, and
+  // `Date.now()` for hub-originated rows (user messages).
+  //
+  // THE chronological sort key (§14.71). It exists because `seq` cannot be
+  // one: seq is per-session and RESTARTS AT 1 whenever the agent's event log
+  // is recreated, which silently buried every reply of the new epoch in the
+  // middle of the transcript (8 of 16 live sessions were in that state).
+  // Wall-clock time has no epochs. It also orders a REPAIRED row correctly
+  // for free — the row is inserted late but carries the ts of the moment it
+  // belongs to — which is exactly what `seq` was being abused for.
+  //
+  // NOT `created_at`: that one is INSERT time at SECOND granularity (a
+  // repaired row would sort at the end, and a whole turn shares one value).
+  // Backfilled from `created_at * 1000` by migration 0026, so no row is NULL
+  // in practice; the column stays nullable only so the backfill and any
+  // pre-0026 writer degrade instead of failing.
+  tsMs: integer('ts_ms'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // Hot path: window query (session_id + id range), delta polling

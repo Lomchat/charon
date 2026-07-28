@@ -283,19 +283,24 @@ describe('replay exactness under injected faults', () => {
     expect(persistedCursor()).toBe(60);
   });
 
-  it('orderChronologically: repaired rows sort back into place, null-seq rows stay anchored', () => {
+  it('orderChronologically: repaired rows sort back into place, ts-less rows stay anchored', () => {
+    // Keyed on ts_ms, not seq (§14.71). A repaired row is inserted late (high
+    // id) but carries the ts of the moment it belongs to, so it sorts back
+    // between its true neighbours; rows without a ts anchor to the running
+    // watermark instead of jumping to the front.
+    const T = 1_700_000_000_000;
     const rowsIn = [
-      { id: 1, seq: 10, role: 'assistant' },
-      { id: 2, seq: null, role: 'user' },      // anchored at watermark 10
-      { id: 3, seq: 30, role: 'tool_use' },
-      { id: 4, seq: 31, role: 'tool_result' },
-      { id: 5, seq: 20, role: 'assistant' },   // REPAIRED row (late insert, old seq)
-      { id: 6, seq: null, role: 'user' },      // must NOT be dragged back by id 5
+      { id: 1, tsMs: T + 10_000, role: 'assistant' },
+      { id: 2, tsMs: null, role: 'user' },            // anchored at watermark
+      { id: 3, tsMs: T + 30_000, role: 'tool_use' },
+      { id: 4, tsMs: T + 31_000, role: 'tool_result' },
+      { id: 5, tsMs: T + 20_000, role: 'assistant' }, // REPAIRED (late insert, old ts)
+      { id: 6, tsMs: null, role: 'user' },            // must NOT be dragged back by id 5
     ];
     const ordered = orderChronologically(rowsIn as any).map((r: any) => r.id);
     expect(ordered).toEqual([1, 2, 5, 3, 4, 6]);
-    // Fully-legacy sessions (all null): exact id order preserved.
-    const legacy = [{ id: 3, seq: null }, { id: 1, seq: null }, { id: 2, seq: null }];
+    // Fully-legacy sessions (no ts at all): exact id order preserved.
+    const legacy = [{ id: 3, tsMs: null }, { id: 1, tsMs: null }, { id: 2, tsMs: null }];
     expect(orderChronologically(legacy as any).map((r: any) => r.id)).toEqual([1, 2, 3]);
   });
 
