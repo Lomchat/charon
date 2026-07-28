@@ -61,8 +61,9 @@ app-server). Both speak the same UI:
   unified diff for Codex); one click rewinds a file.
 - **Per-session model & reasoning effort**, a **todo / plan panel**, **live
   account-usage gauges** (your Claude or Codex quota), **full-text search** across
-  all history, and **browser sign-in** for both (`claude login` proxied over SSH;
-  Codex via a ChatGPT device-code flow).
+  all history, and **in-hub sign-in** for both — headless code flows, no
+  terminal: Claude hands you an OAuth url to open and a code to paste back,
+  Codex a ChatGPT device code you confirm on any device.
 - **Survives everything** — restart Charon, restart the agent, drop the
   network: the session keeps running and the UI reattaches with a durable replay
   of anything it missed. No more "my terminal died, my session is gone".
@@ -124,8 +125,8 @@ your whole fleet.
 - **One responsive UI** — the same components reflow from a 3-column desktop to
   tablet/phone drawers; no separate mobile app.
 - **One-click VPS bootstrap** — detects the distro, installs Python +
-  `claude-agent-sdk` (+ optional `openai-codex`) + the `claude` CLI, deploys the
-  agent zipapp, registers a systemd-user service (or `nohup` + cron fallback).
+  `claude-agent-sdk` + `openai-codex` + the `claude` CLI, deploys the agent
+  zipapp, registers a systemd-user service (or `nohup` + cron fallback).
 - **Resilient by design** — the frontend re-syncs after a hub restart without a
   manual refresh (boot-time agent arming, status reconcile, SSE auto-recovery).
 
@@ -136,11 +137,13 @@ client. SQLite is bundled via `better-sqlite3` — no system SQLite needed.
 
 **Each target VPS:** SSH access **by key** (no password auth) and Python ≥ 3.10.
 For **Claude**, the `claude-agent-sdk` and the `claude` CLI for the one-time
-OAuth `claude login`. For **Codex** (optional), the `openai-codex` SDK and a
-one-time ChatGPT sign-in (a device-code flow from the browser). The bootstrap
-installer sets these up on Ubuntu/Debian (apt), Fedora/RHEL-like (dnf), Alpine
-(apk) and Arch (pacman) — Codex support is installed automatically when
-available. Other Linux distros may work but are untested; macOS/Windows/\*BSD as
+OAuth sign-in. For **Codex**, the `openai-codex` SDK and a one-time ChatGPT
+sign-in (a device-code flow from the browser). The bootstrap installer sets
+these up on Ubuntu/Debian (apt), Fedora/RHEL-like (dnf), Alpine (apk) and Arch
+(pacman) — **both backends are installed on every VPS**, and a failed
+`openai-codex` install is reported without aborting the run (that box just stays
+Claude-only). What's optional is *using* a backend: sign in only to the one(s)
+you want. Other Linux distros may work but are untested; macOS/Windows/\*BSD as
 VPS targets are not supported.
 
 ## Quickstart
@@ -209,9 +212,10 @@ Both cases print an explicit warning in `docker compose logs` at startup.
    (+ `openai-codex`) → `claude` CLI → deploy agent → register service → ping
    (~30–90 s on a fresh box). Per-VPS **health chips** then show which of ssh /
    agent / Claude / Codex are ready.
-3. Sign in per backend you'll use: **claude login** opens a TUI in your browser
-   (OAuth proxied over SSH); **codex login** shows a ChatGPT device code you
-   confirm on any device. Each is per-VPS.
+3. Sign in per backend you'll use — no terminal either way: **claude login**
+   shows an OAuth url (open it on any device, approve, paste the code back);
+   **codex login** shows a ChatGPT device code you confirm on any device. Each
+   is per-VPS.
 4. On that VPS's row, hit **＋** to launch a **Claude** or **Codex** session (each
    button is greyed until that backend is ready) → pick a working directory →
    first prompt. Or the terminal button for a **＋ Shell**.
@@ -263,13 +267,14 @@ A systemd unit example is in [docs/charon.service.example](./docs/charon.service
   `VAPID_SUBJECT` (a `mailto:`/`https:` identity) or override it in Settings.
 - **Telegram** (optional): create a bot with @BotFather, then enter the **bot
   token** and your **chat id** in **Settings → Notifications**.
-- Both are gated by a global notifications toggle in Settings.
+- Web Push is gated by the global notifications toggle in Settings; Telegram has
+  its own toggle and is independent of it.
 
 ## Environment variables
 
 | Variable          | Required | Description                                                                                            |
 | ----------------- | :------: | ------------------------------------------------------------------------------------------------------ |
-| `MASTER_PASSWORD` |   yes    | Login password (checked with a timing-safe compare; also seeds an scrypt-derived key reserved for future settings encryption — see *Architecture notes*). |
+| `MASTER_PASSWORD` |   yes    | Login password (checked with a timing-safe compare; also seeds the scrypt-derived AES-256 key that encrypts secret settings at rest — see *About `MASTER_PASSWORD`* below). |
 | `MASTER_SALT`     |   yes    | scrypt salt. `openssl rand -hex 32`. Treat as a secret.                                                 |
 | `SESSION_SECRET`  |   yes    | HMAC key for session-token hashing: the browser cookie holds a raw random token, the DB stores only `HMAC-SHA256(SESSION_SECRET, token)` — a leaked DB copy can't be replayed into a valid cookie. Changing it logs everyone out. `openssl rand -hex 32`. |
 | `SYNC_TOKEN`      |   yes    | Bearer token gating `POST /api/sync`. `openssl rand -hex 32`.                                           |
@@ -329,8 +334,7 @@ with `bash agent/build.sh` (CI rebuilds it on every push).
 ## Known quirks
 
 - **`next build --turbopack` breaks `next start`** on Next 15.5.x (all
-  `_next/static/*` 404). The `build` script does *not* pass `--turbopack`; dev
-  mode does, which is fine.
+  `_next/static/*` 404). The `build` script does *not* pass it — don't add it.
 - **`reactStrictMode: false`** is intentional — dev double-render duplicates SSE
   events and races the interaction queues.
 - **A `.next` polluted by a crashed `next dev`** makes `next start` loop with

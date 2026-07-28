@@ -21,7 +21,7 @@ type Props = {
  * <ModelPicker> but sourced PER-VPS from the agent's list_codex_models RPC
  * (openai-codex .models()) instead of the hub-wide Claude catalog. Keeps the
  * "✎ enter a model id…" escape hatch so a model the catalog doesn't yet report
- * is still reachable. cf. migration-codex.md / §14.58.
+ * is still reachable. cf. CLAUDE.md §14.59 / §14.58.
  */
 export default function CodexModelPicker({
   vpsId, value, onChange, inheritPlaceholder, noInherit, className, id,

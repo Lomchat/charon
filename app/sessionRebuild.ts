@@ -78,7 +78,7 @@ export function rebuildStateFromMessages(
         } else {
           // phase 'after' (Claude) OR 'diff' (Codex: unified diff in `diff`,
           // content null — usually stripped from the poll payload and refilled
-          // by GET /edits as `after`). cf. migration-codex.md.
+          // by GET /edits as `after`). cf. CLAUDE.md §14.59.
           const after = ev.content ?? ev.diff ?? null;
           out.edits.set(key, { ...cur, after, truncated: cur.truncated || !!ev.truncated });
         }

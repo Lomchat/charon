@@ -8,7 +8,7 @@ export type AgentKind = 'claude' | 'codex';
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
-// Codex sessions have NO interactive human approval (cf. migration-codex.md):
+// Codex sessions have NO interactive human approval (cf. CLAUDE.md §14.59):
 // their "mode" is a SANDBOX level (the guardrail). Stored in the same
 // permission_mode field as Claude's modes.
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';

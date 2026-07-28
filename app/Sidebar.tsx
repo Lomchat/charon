@@ -44,7 +44,7 @@ function cwdTail(cwd: string, max = 34): string {
 // login (codexLoggedIn !== 0 — null/never-checked is treated as "maybe", not a
 // hard block). Returns a precise human reason when disabled (tooltip on the
 // greyed button): "VPS unreachable (SSH)" vs "agent stopped" vs "not signed
-// in"… cf. migration-codex.md.
+// in"… cf. CLAUDE.md §14.59.
 const claudeAvailability = (v: Vps) => backendAvailability(v, 'claude');
 const codexAvailability = (v: Vps) => backendAvailability(v, 'codex');
 
@@ -496,7 +496,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const addBtns = (
     <div className="cs-add">
       {/* Two backends: Claude + Codex, each greyed by its own availability.
-          A greyed button explains why in the tooltip. cf. migration-codex.md. */}
+          A greyed button explains why in the tooltip. cf. CLAUDE.md §14.59. */}
       <button
         className="cs-add-btn agent"
         onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: 'claude' }); }}

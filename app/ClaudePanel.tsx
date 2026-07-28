@@ -232,7 +232,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // can run BOTH Claude and Codex, each with its own account/quota — the header
   // shows the one matching the CURRENT session's kind. Fed by the LOW_VOLUME
   // `account_usage` SSE event (carries `provider`) + hydrated on session-select
-  // via GET /api/vps/[id]/usage ({ usage, codexUsage }). §14.58 / migration-codex.md.
+  // via GET /api/vps/[id]/usage ({ usage, codexUsage }). §14.58 / §14.59.
   const [usageByVps, setUsageByVps] = useState<Record<string, { claude?: AccountUsage; codex?: AccountUsage }>>({});
   const refreshUsage = useCallback((vpsId: string | null | undefined) => {
     if (!vpsId) return;

@@ -932,7 +932,7 @@ export function useClaudeSessionStream(
               // Codex emits phase 'diff' with the unified diff in `diff`
               // (content null); Claude uses phase 'after' with content. Either
               // lands in `after` — the ToolPanel renders it as a raw patch for
-              // codex sessions. cf. migration-codex.md.
+              // codex sessions. cf. CLAUDE.md §14.59.
               const after = ev.content ?? (ev as { diff?: string | null }).diff ?? null;
               next.set(key, { ...cur, after, truncated: cur.truncated || ev.truncated });
             }

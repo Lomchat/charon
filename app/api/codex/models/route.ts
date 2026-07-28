@@ -10,7 +10,7 @@ import { CODEX_CANONICAL_EFFORTS } from '@/lib/types/api';
 // (openai_codex .models()). Short in-memory per-VPS TTL cache lives in the
 // helper. Always returns 200 with a graceful { ok:false, models:[],
 // efforts:CANONICAL } when Codex is unavailable/unreachable so the picker never
-// breaks. cf. migration-codex.md.
+// breaks. cf. CLAUDE.md §14.59.
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;

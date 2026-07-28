@@ -285,7 +285,7 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                     )}
                     <p className="set-meta">
                       permission model: Codex has no interactive approvals — each
-                      session picks a sandbox level instead (cf. migration-codex.md).
+                      session picks a sandbox level instead (cf. CLAUDE.md §14.59).
                     </p>
                   </>
                 )}

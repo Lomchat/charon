@@ -687,12 +687,28 @@
   background: rgba(28,31,41,0.5);
   min-height: 40px;
 }
+/* Identity block: session title + cwd subtitle, stacked. It owns the flex
+   growth (the title used to) so both lines share the same shrink budget. */
+.claude-bar .bar-ident {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
 .claude-bar .bar-name {
-  flex: 1;
   font-family: var(--display); font-size: 12px;
   letter-spacing: 0.16em; color: var(--gold-bright);
   text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* cwd subtitle: only .c-head ellipsizes, .c-tail (last segment) is pinned. */
+.claude-bar .bar-cwd {
+  display: flex; min-width: 0;
+  font-family: var(--mono); font-size: 10px;
+  color: var(--parchment-soft);
+}
+.claude-bar .bar-cwd .c-head {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.claude-bar .bar-cwd .c-tail { flex: none; white-space: nowrap; color: var(--parchment-soft); }
 .claude-bar .bar-empty {
   font-family: var(--body); font-style: italic;
   color: var(--parchment-soft); font-size: 13px;
@@ -3349,10 +3365,8 @@
     flex-wrap: wrap;
     row-gap: 6px;
   }
-  .claude-bar .bar-name {
-    flex: 1 1 100%;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  /* The identity block (title + cwd subtitle) takes the whole first line. */
+  .claude-bar .bar-ident { flex: 1 1 100%; }
   .claude-bar button { padding: 5px 9px; letter-spacing: 0.12em; }
   /* The badge group loses its margin-left:auto push (inline style) once
      wrapped — cap its width so the model id ellipsizes instead of

@@ -4,46 +4,92 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+No version has been tagged yet, so everything below is unreleased. Entries
+predating the open-source release are grouped thematically rather than
+commit-by-commit — `git log` has the detail.
+
 ## [Unreleased]
 
 ### Added
 
-- Initial open-source release preparation : `LICENSE`, `README.md`,
-  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, GitHub issue and
-  PR templates, Dependabot config.
+- **Codex as a second backend.** Every session carries a `kind`
+  (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
+  SDK and translated into the same event vocabulary, so the whole chat UI is
+  shared. A VPS can offer either backend, both, or neither.
+- **In-hub sign-in for both backends.** Claude uses the hosted OAuth-code flow
+  (open the URL, paste the code back — works on a headless VPS); Codex uses the
+  ChatGPT device-code flow. No PTY, no callback on the VPS.
+- **Persistent SSH shells** (xterm.js over a WebSocket) whose PTY lives in a
+  detached holder process on the VPS: they survive both an agent restart and a
+  Charon restart, and spool their output while detached.
+- **Durable per-session event log** on the agent: every event gets a monotonic
+  `seq`, replay resumes from a cursor instead of an in-memory ring, and log
+  rotation or a corrupt line surfaces as an explicit gap banner rather than
+  silently losing events.
+- **Account-usage gauges** (5h / 7d windows) per VPS, with global pacing so N
+  VPSes sharing one account don't hammer the endpoint.
+- **Live token counter** and turn stats (step count, elapsed) while a turn runs.
+- **Per-session model, fallback model and reasoning effort**, including the
+  `ultracode` pseudo-effort (workflow orchestration), with an "apply now"
+  restart for Claude — Codex applies them on the next turn.
+- **Background-task tracking**: a bar above the input showing turns the CLI
+  started on its own, plus per-sub-agent progress for workflow runs.
+- **Fleet-wide freshness**: the hub compares the agent version, the committed
+  `.pyz` hash and the PyPI versions of `claude-agent-sdk` / `openai-codex`, and
+  offers a one-click update or auto-updates quiet VPSes.
+- **Per-VPS health chips** — four axes (ssh / agent / Claude / Codex), each with
+  the contextual fix, so an unusable VPS says why.
+- **VPS list filtering** by name, host or project path, in both the VPS manager
+  and the new-session wizard, plus path autocomplete driven by a remote
+  `list_dir` RPC.
+- **Session working directory in the chat header**, as a subtitle under the
+  session name.
+- **Inline recovery CTAs**: a "sign in to Claude" button under a bubble that
+  reports an expired OAuth token, and a one-click "Continue" when the CLI cuts a
+  turn mid-response.
+- **Notifications**: Web Push and Telegram for permission requests, questions,
+  finished turns and idle shells, with deep links back to the session or shell.
+- **Import of existing Claude CLI sessions** found on a VPS, history included.
+- **Test suites**: Vitest for the hub, stdlib `unittest` for the agent, both
+  wired into CI (`npm test`, `npm run test:py`) alongside a login rate-limiter,
+  replay/pagination fault-injection suites and an agent holder load test.
+- Initial open-source release preparation: `LICENSE`, `README.md`,
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, GitHub issue and PR
+  templates, Dependabot config.
 - `Dockerfile` and `docker-compose.yml` for self-hosting.
 - `GET /api/health` endpoint for reverse-proxy and container healthchecks.
-- `agent/requirements.txt` declaring the Python runtime deps installed on
-  each managed VPS.
+- `agent/requirements.txt` declaring the Python runtime deps installed on each
+  managed VPS.
 - `npm run typecheck` script (`tsc --noEmit`) and matching CI job.
 - CI `docker` job: builds the image, boots the full compose stack and probes
-  `/api/health` **from the host** (the in-container healthcheck cannot detect
-  a container-loopback bind), asserts the server runs unprivileged and that
-  the mounted `~/.ssh` is writable.
+  `/api/health` **from the host** (the in-container healthcheck cannot detect a
+  container-loopback bind), asserts the server runs unprivileged and that the
+  mounted `~/.ssh` is writable.
 - Startup preflight in the container entrypoint: warns explicitly when an SSH
-  key is unreadable by the server user, has been materialised as a directory
-  by a missing bind-mount source, or when no key is present at all.
+  key is unreadable by the server user, has been materialised as a directory by
+  a missing bind-mount source, or when no key is present at all.
 
 ### Changed
 
-- Full UI translation from French to English (desktop and mobile).
+- **One responsive UI** at `/`: the separate mobile route tree was retired in
+  favour of breakpoints and drawers, so phones run the same components.
+- Full UI translation from French to English.
 - Default project license is Apache 2.0.
-- `next.config.mjs` now sets standard security headers
-  (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy`, `Permissions-Policy`, and `Strict-Transport-Security`
-  in production).
+- Scroll-up pagination is chronological (page slices of one stable order)
+  instead of id-based, which used to interleave rows and drop attachments at
+  page boundaries.
+- `next.config.mjs` now sets standard security headers (`X-Frame-Options:
+  DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`,
+  `Permissions-Policy`, and `Strict-Transport-Security` in production).
 - Cookie session is `Secure` when `NODE_ENV=production`.
-- `VAPID_SUBJECT` is now an environment variable (was previously
-  hardcoded).
+- `VAPID_SUBJECT` is now an environment variable (was previously hardcoded).
 - **Docker: SSH material moved to a single directory mount**
-  `./docker/ssh:/home/charon/.ssh` (was two file mounts: `${CHARON_SSH_KEY}`
-  → `id_rsa` and `docker/known_hosts`). A file mount whose source doesn't
-  exist on the host — which was always the case in a fresh clone, both paths
-  being gitignored — is materialised by Docker as an empty *directory* that
-  then shadows the key. The directory mount also persists
-  `charon_known_hosts`, which the old `known_hosts` mount never did (Charon
-  uses a Charon-scoped store). `CHARON_SSH_KEY` is no longer read: put the
-  key in `./docker/ssh/`.
+  `./docker/ssh:/home/charon/.ssh` (was two file mounts). A file mount whose
+  source doesn't exist on the host — always the case in a fresh clone, both
+  paths being gitignored — is materialised by Docker as an empty *directory*
+  that then shadows the key. The directory mount also persists
+  `charon_known_hosts`. `CHARON_SSH_KEY` is no longer read: put the key in
+  `./docker/ssh/`.
 - **Docker: the image no longer sets `USER charon`.** The entrypoint runs as
   root just long enough to `chown` the bind mounts (which arrive with the
   *host's* ownership, never uid 1001) and apply the migrations, then drops to
@@ -59,10 +105,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now includes the required `map $http_upgrade $connection_upgrade` block
   (without it every shell terminal loops on "reconnecting…").
 
+### Fixed
+
+- Charon restarts no longer freeze open tabs: agent connections are armed at
+  process start, and the browser self-heals through a reconcile on reconnect
+  plus an SSE-independent poll.
+- Sessions no longer go silent after an agent update (stale client
+  subscriptions are re-attached), and a mid-update hub restart no longer leaves
+  sessions asleep forever.
+- Replay is exact: rows are keyed by the producing event's seq, the durable
+  cursor is held back on a failed write, and rotation gaps are reported.
+- Phantom shells no longer loop on "reconnecting…" — the row is pruned wherever
+  the agent reports the shell gone.
+- Diff snapshots are stripped from session reads and served lazily, which cut
+  a multi-GB/day egress leak.
+- `next build` no longer opens the runtime SQLite database, which could race
+  itself into "database is locked" during page-data collection.
+- Codex is now installed on every VPS, and a crashed Python probe can no longer
+  be mistaken for a successful one (a VPS could pass verification with neither
+  backend actually installed).
+- The remote `claude auth login` process is reaped on every terminal path
+  instead of surviving forever on the VPS.
+- An oversized tool result no longer kills the turn (the agent raises the SDK's
+  per-message buffer cap).
+
+### Security
+
+- Secret settings (Telegram token, Claude API key, VAPID private key) are
+  encrypted at rest with AES-256-GCM and masked in every API response.
+- Session tokens are stored hashed (HMAC-SHA256) instead of raw.
+- CSRF origin check on cookie-authenticated mutations, and an origin allow-list
+  on the shell WebSocket upgrade (lax cookies don't protect handshakes).
+- Login brute-force throttling with exponential lockout.
+- Strict validation of SSH targets, `--` before every ssh destination, a
+  Charon-scoped `known_hosts`, and a configurable private key honoured by every
+  spawn site.
+- CI runs a blocking `npm audit --omit=dev --audit-level=high`.
+
 ### Removed
 
-- Various development-time path hardcodings and personal references.
+- The PTY-based login console (superseded by the OAuth-code and device-code
+  flows).
+- Prototype pages and their `three.js` / `xyflow` production dependencies.
 - Legacy `bridge.py` references in code and docs (the agent replaces it).
+- Various development-time path hardcodings and personal references.
+- Internal planning and audit documents. Their durable content — invariants,
+  rejected alternatives, known footguns — lives in the code comments and the
+  maintainer guide.
 
 ## How releases work
 

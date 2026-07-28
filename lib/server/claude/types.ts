@@ -102,7 +102,7 @@ export type AccountUsage = {
   // Which coding-agent account these gauges belong to. 'claude' (default when
   // absent) reads api.anthropic.com/api/oauth/usage; 'codex' reads the Codex
   // app-server rate limits (get_codex_usage). A VPS can have BOTH — the header
-  // shows the one matching the CURRENT session's kind. cf. migration-codex.md.
+  // shows the one matching the CURRENT session's kind. cf. CLAUDE.md §14.59.
   provider?: 'claude' | 'codex';
   subscriptionType?: string | null;  // 'max' | 'pro' | …
   error?: string | null;       // when !ok: 'no_credentials' | 'http_error' | 'request_failed'

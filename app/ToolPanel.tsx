@@ -15,7 +15,7 @@ type Props = {
   sessionId: string | null;
   // Backend of the session. Codex ships a ready-made UNIFIED DIFF (in the edit
   // snapshot's `after`, before=null) instead of a before/after pair — rendered
-  // as a raw patch. cf. migration-codex.md.
+  // as a raw patch. cf. CLAUDE.md §14.59.
   kind?: AgentKind;
   toolCalls: ToolCallEntry[];
   todos: Todo[];

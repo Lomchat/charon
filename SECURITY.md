@@ -48,9 +48,15 @@ reverse proxy** (or on `localhost` only). The threat model assumes :
   reverse proxy with TLS).
 - An attacker who learns the `MASTER_PASSWORD` has full access — there is
   no MFA. Choose a strong passphrase and store it in a password manager.
-- The host's filesystem is trusted. SQLite, the agent `.pyz` and the SSH
-  private key live on disk in plaintext (the private key file's
-  permissions are what `ssh` requires).
+- The host's filesystem is trusted. Two settings are hardened against a
+  stolen DB copy — secret settings (Telegram bot token, Anthropic API key,
+  VAPID private key) are stored as AES-256-GCM `enc:v1:` blobs keyed by
+  `scrypt(MASTER_PASSWORD, MASTER_SALT)`, and session tokens are stored as
+  `HMAC-SHA256(SESSION_SECRET, token)` rather than raw. Everything else is
+  plaintext on disk : session transcripts and messages in SQLite, the agent
+  `.pyz`, and the SSH private key (whose file permissions are what `ssh`
+  requires). At-rest encryption protects a leaked database file, not the
+  live host — an attacker with the host's env has the key too.
 - Each VPS that Charon talks to is trusted. Charon runs arbitrary `bash`
   and `claude` commands on every VPS it manages, by design — the agent
   receives RPC calls over a `chmod 600` Unix socket reachable only via
@@ -75,8 +81,13 @@ We're interested in reports about :
 - Cross-site request forgery on state-changing endpoints.
 - Shell command injection on inputs that reach `sshExec` without
   `shQuote`.
-- Path traversal in any endpoint that reads/writes files (none should
-  exist today).
+- Path traversal or unintended file access in the endpoints that take a
+  user-supplied path or reach the filesystem of a managed VPS — notably
+  `GET /api/vps/[id]/fs?path=` (directory listing for the path
+  autocomplete), `POST /api/claude/sessions/[id]/revert` (writes/deletes a
+  file over SSH) and `GET /api/claude/sessions/[id]/export` (dumps a full
+  transcript). These are authenticated, but we want to hear about any way
+  to escape their intended scope.
 - Anything that lets an unauthenticated visitor learn about the existence
   or contents of sessions / VPS / settings.
 - Anything that lets a logged-in user escalate beyond the documented

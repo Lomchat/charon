@@ -440,7 +440,13 @@ export default function ClaudeSessionView({
     <>
       <main className="claude-main">
         <div className="claude-bar">
-          <span className="bar-name">{selected.name || '(unnamed)'}</span>
+          {/* Session identity: title + the cwd it runs in, as a subtitle.
+              The path is the fastest "where am I?" cue when several sessions
+              share a name (or have none). */}
+          <div className="bar-ident">
+            <span className="bar-name">{selected.name || '(unnamed)'}</span>
+            {selected.cwd && <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />}
+          </div>
           {/* Account-usage gauges (5h / 7d) for this session's VPS account —
               leftmost of the right-aligned control cluster (between the title
               and the buttons). Hidden in-bar on mobile → shown in the right
@@ -720,7 +726,7 @@ const ChatInputBar = memo(function ChatInputBar({
     <footer className="claude-input-bar">
       {isCodex ? (
         // Codex has no interactive approval — its "mode" is a sandbox level
-        // (the guardrail). Change applies on the next turn. cf. migration-codex.md.
+        // (the guardrail). Change applies on the next turn. cf. CLAUDE.md §14.59.
         <div className="mode-switch codex" role="radiogroup" aria-label="sandbox mode">
           {CODEX_SANDBOX_MODES.map((m) => {
             const meta = CODEX_MODE_META[m];
@@ -814,6 +820,28 @@ function InlinePermissionCard({ perm, onRespond }: {
         <button type="button" className="deny" onClick={() => onRespond(false, false)}>deny</button>
       </footer>
     </div>
+  );
+}
+
+/**
+ * Header subtitle: the cwd the session was opened in.
+ *
+ * The path is split into [leading dirs, last segment] so that only the HEAD
+ * ellipsizes when the bar is narrow — the last segment is what actually
+ * identifies the project, so it must never be the part that gets cut. (A
+ * plain `text-overflow: ellipsis` on the whole path would eat exactly that.)
+ * Full path (+ VPS name) stays available in the tooltip.
+ */
+function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
+  const clean = cwd.replace(/\/+$/, '') || cwd;
+  const cut = clean.lastIndexOf('/');
+  const head = cut > 0 ? clean.slice(0, cut + 1) : '';
+  const tail = cut > 0 ? clean.slice(cut + 1) : clean;
+  return (
+    <span className="bar-cwd" title={vpsName ? `${vpsName} · ${cwd}` : cwd}>
+      {head && <span className="c-head">{head}</span>}
+      <span className="c-tail">{tail}</span>
+    </span>
   );
 }
 

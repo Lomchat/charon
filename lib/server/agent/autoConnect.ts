@@ -43,7 +43,7 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
     // Codex account-usage gauges — only for VPSes that run Codex. We read the
     // agent's LIVE hello (set before the DB persist → correct on the very first
     // connect too), not the DB row. Idempotent per vpsId; the poll self-gates on
-    // codex_available + login. cf. CLAUDE.md §14.58 / migration-codex.md.
+    // codex_available + login. cf. CLAUDE.md §14.58 / §14.59.
     if (hello.codex_available) armCodexUsageWatch(vpsId);
     try {
       const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();

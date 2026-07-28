@@ -12,7 +12,7 @@ thinking, tool_use, tool_result, todo_update, edit_snapshot, usage, stop,
 error, interrupted, session_id, ready, mode_changed, model_changed,
 effort_changed, effective_model, bg_task).
 
-Transport model (differs from Claude, cf. migration-codex.md):
+Transport model (differs from Claude, cf. CLAUDE.md §14.59):
   * The Python SDK (``openai_codex``) drives a local ``codex app-server`` over
     JSON-RPC. We use the ASYNC client (:class:`openai_codex.AsyncCodex`).
   * Codex is TURN-based: ``thread.turn(input)`` starts a turn and returns a
@@ -25,7 +25,7 @@ Transport model (differs from Claude, cf. migration-codex.md):
     so a mid-session change applies on the NEXT turn WITHOUT a sleep+resume
     (unlike Claude, whose model is bound at client construction — §14.35).
 
-Permissions (THE incompatibility, see migration-codex.md): the SDK exposes only
+Permissions (THE incompatibility, see CLAUDE.md §14.59): the SDK exposes only
 ``ApprovalMode.auto_review`` (a server-side guardian sub-agent auto-decides
 escalations) or ``ApprovalMode.deny_all`` — there is NO human-in-the-loop
 approval callback like Claude's ``can_use_tool``. Charon's interactive

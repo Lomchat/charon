@@ -1,15 +1,44 @@
 # ADR-001 — charon-agent: a per-VPS daemon for persistent sessions
 
-**Status**: adopted · **Date**: 2026-05-18
+**Status**: accepted · partly superseded (historical record of the 2026-05
+design) · **Date**: 2026-05-18
 
 > **Historical note**: this ADR documents the migration **from** the old
 > pre-v2 architecture (a `bridge.py` process as a child of one SSH per
-> session) **to** the current architecture (a `charon-agent` daemon per VPS
-> that multiplexes N sessions). Everything described in the "Decision"
-> section below is the present state of the code. The "Context" section
-> describes the old architecture, kept to explain the *why*. A deployer
-> starting on a fresh DB has nothing to do — the
-> `migrationV2IfNeeded()` is a no-op on a fresh base.
+> session) **to** the `charon-agent` daemon per VPS that multiplexes N
+> sessions. It reflects the design **as of 2026-05**; the code has moved on
+> — see "What changed since" below for the deltas, and read the code for the
+> present state. The "Context" section describes the old architecture, kept
+> to explain the *why*. A deployer starting on a fresh DB has nothing to do
+> — the `migrationV2IfNeeded()` is a no-op on a fresh base.
+>
+> The **core decision still holds**: one Python daemon per VPS, one
+> multiplexed SSH, a `--connect` stdio↔socket proxy, `state.json` for
+> restore-on-boot, a chmod-600 Unix socket and the SSH key as the only
+> authorization. Everything below is annotated where it drifted; nothing has
+> been rewritten to pretend it was always so.
+
+## What changed since (as of 2026-07)
+
+- **`claude login` no longer uses a mini-terminal.** The SSE-stdout +
+  POST-stdin console was removed; sign-in is the **hosted OAuth-code flow**
+  with no PTY (`lib/server/agent/loginSession.ts`,
+  `app/ClaudeLoginModal.tsx`). Codex has its own device-code flow
+  (`agent/charon_agent/codex_login.py`).
+- **The agent is no longer Claude-only.** A session has a `kind`
+  (`claude` | `codex`); `codex_session.py` mirrors `session.py`'s contract.
+  Both SDKs live in a dedicated venv `~/.charon/venv`.
+- **Persistent PTY shells** were added (`shell.py` + the detached
+  `holder.py`), unknown to this ADR.
+- **The method set grew from 13 to ~34** (usage, Codex, shells, `list_dir`,
+  `resume_session`/`force_stop`, `set_model`/`set_effort`, …). The tables
+  that used to live here are gone — see the pointer under "JSON-RPC
+  protocol".
+- **The ring buffer is no longer the recovery mechanism**: a durable
+  append-only event log (`event_log.py`, monotonic `seq` + rotation) is, and
+  `subscribe` prefers `after_seq` over `replay`.
+- **Agent auto-update shipped** — it was listed as out-of-scope here.
+- `bridge.py` and its `BridgeEvent` type no longer exist anywhere.
 
 ## Context
 
@@ -57,10 +86,16 @@ in JSON-RPC, to the daemon's Unix socket `~/.charon/agent.sock`.
   Charon side. The Charon-side DB session stays `active` during reconnects
   (the UI displays `reconnecting`).
 - **Ultra-light install**: a single `charon-agent.pyz` file (Python stdlib
-  zipapp, ~50KB) + a systemd-user unit. No `pip install` on the agent side
-  (the SDK is installed separately; this is just a blob we `scp`).
-- **`claude login` is still manual** but made easier by a mini-terminal in
-  the UI (SSE for stdout + POST for stdin).
+  zipapp, ~68 KB today) + a systemd-user unit. No `pip install` on the agent
+  side (the SDKs are installed separately, in `~/.charon/venv`; the pyz is
+  just a blob we `scp`).
+- ~~**`claude login` is still manual** but made easier by a mini-terminal in
+  the UI (SSE for stdout + POST for stdin).~~ **Superseded**: the
+  mini-terminal was removed. `claude login` is driven from the UI through the
+  **hosted OAuth-code flow** (no PTY): the hub runs `claude auth login` over
+  the SSH pipe, shows the URL, the user pastes the code back
+  (`lib/server/agent/loginSession.ts`, `app/ClaudeLoginModal.tsx`). Codex
+  signs in via a device code (`codex_login.py`). Still per-VPS.
 
 ## JSON-RPC protocol (line-delimited JSON)
 
@@ -69,7 +104,7 @@ in JSON-RPC, to the daemon's Unix socket `~/.charon/agent.sock`.
 Charon opens a long-running SSH per VPS:
 
 ```
-ssh user@host -- /opt/charon/charon-agent.pyz --connect
+ssh user@host -- ~/.charon/charon-agent.pyz --connect
 ```
 
 The binary in `--connect` mode opens `~/.charon/agent.sock` and acts as a
@@ -89,48 +124,39 @@ Each line (separated by `\n`) is a JSON object. Three variants:
 The `id`s are allocated by Charon (increasing integers, scoped to the
 connection).
 
-### Methods (Charon → Agent)
+### Methods and events
 
-| Method | Params | Result |
-|---|---|---|
-| `hello` | `{client: "charon", version}` | `{agent_version, sdk_version, sessions: [SessionInfo]}` |
-| `list_sessions` | `{}` | `[SessionInfo]` |
-| `start_session` | `{session_id, cwd, name?, permission_mode?, claude_session_id?}` | `{session_id}` |
-| `subscribe` | `{session_id, replay?: int}` | `{ok: true, replay_count}` — the agent then pushes the buffered events (up to `replay` last ones) then live |
-| `unsubscribe` | `{session_id}` | `{ok: true}` |
-| `send_input` | `{session_id, content}` | `{ok: true}` |
-| `interrupt` | `{session_id}` | `{ok: true}` |
-| `set_permission_mode` | `{session_id, mode}` | `{ok: true}` |
-| `respond_permission` | `{session_id, perm_id, allow, always?}` | `{ok: true}` |
-| `respond_question` | `{session_id, q_id, answers}` | `{ok: true}` |
-| `respond_exit_plan` | `{session_id, q_id, decision, feedback?}` | `{ok: true}` |
-| `sleep_session` | `{session_id}` | `{ok: true}` — stops the session, keeps the `claude_session_id` |
-| `kill_session` | `{session_id}` | `{ok: true}` — stops + removes from state.json |
-| `ping` | `{}` | `{pong: true, ts}` |
+> **Superseded — no third copy is kept in sync.** This ADR originally listed
+> 13 methods and ~15 events. The **canonical** lists now live in:
+>
+> - `agent/charon_agent/protocol.py` § `METHODS` (~34 methods) + the error
+>   codes — the spec;
+> - `lib/server/agent/types.ts` — its TypeScript mirror (`AgentMethodName`,
+>   `AgentEvent`), kept identical by `scripts/check-protocol-sync.mjs`, which
+>   fails the hub build on drift.
+>
+> What grew since 2026-05: account usage (`get_usage`), the Codex backend
+> (`list_codex_models`, `get_codex_usage`, `codex_login_*`), persistent
+> shells (`shell_*`, incl. the global output-free `shell_watch`), `list_dir`,
+> `resume_session` / `force_stop`, and `set_model` / `set_effort`. Events
+> gained `model_changed` / `effort_changed` / `effective_model`, `bg_task`,
+> `usage`, `interrupted`, `replay_begin` / `replay_end`, `shell_*` — and all
+> durable ones now carry `seq` + `ts`.
 
-### Events (Agent → Charon)
+### Ring buffer → durable event log
 
-All carry `session_id`. The set mirrors the current `BridgeEvent`:
-
-```
-{event: "status", session_id, status: "starting"|"active"|"thinking"|"sleeping"|"error"}
-{event: "session_id", session_id, claude_session_id}     # SDK uuid persisted
-{event: "ready", session_id}
-{event: "assistant_text", session_id, delta}
-{event: "thinking", session_id, text}
-{event: "tool_use", session_id, id, name, input}
-{event: "tool_result", session_id, tool_use_id, content, is_error}
-{event: "permission_request", session_id, id, tool, input}
-{event: "user_question", session_id, id, questions}
-{event: "exit_plan_request", session_id, id, plan}
-{event: "todo_update", session_id, todos}
-{event: "edit_snapshot", session_id, phase, tool_use_id, file_path, content, size, truncated}
-{event: "mode_changed", session_id, mode}
-{event: "stop", session_id, subtype}
-{event: "error", session_id, msg, fatal?}
-```
-
-### Ring buffer
+> **Superseded.** The design below (an in-memory ring, `N=300`, sent first on
+> `subscribe`) shipped, but it is **no longer what recovery relies on**: the
+> ring (now `RING_SIZE=2000` in `server.py`) is only a fast path. The source
+> of truth is the **durable append-only event log**
+> (`agent/charon_agent/event_log.py`): one JSONL file per session under
+> `~/.charon/events/`, a monotonic `seq` written **before** the ring and the
+> broadcast, rotation at 10 MB × 3. `subscribe` therefore takes `after_seq`
+> and replays exactly what the hub missed **across rotations and agent
+> restarts**; the `replay` param below survives only as backward
+> compatibility for hub clients older than agent 0.4.0. The subscribe result
+> also reports `earliest_seq`/`gap`, from which the hub synthesizes a
+> `replay_gap`.
 
 The agent buffers the **last N=300 events per session** in memory. On
 `subscribe`, it sends them first (bracketed by synthetic
@@ -309,8 +335,13 @@ is not yet installed on the VPS: explicit error + "Setup VPS" button.
 
 ## Things not covered (out-of-scope)
 
-- Agent auto-update: we redeploy it manually via the setup. Later: version
-  check on `hello`, drop + restart if stale.
+- ~~Agent auto-update: we redeploy it manually via the setup. Later: version
+  check on `hello`, drop + restart if stale.~~ **Shipped** — exactly as the
+  "later" sketched it: `hello` returns `agent_version` + `agent_pyz_sha`,
+  compared against the committed `agent/dist/charon-agent.pyz`; a manual
+  update runs through `app/api/vps/[id]/agent/update/route.ts`, and a
+  fleet-wide auto-update tick redeploys stale VPSes on its own (gated on the
+  VPS being quiet).
 - Multi-user: we stay mono-user (one Charon = one user).
 - Sharing the Claude Code OAuth across VPSes: no, each VPS runs its own
   `claude login` (cf. product discussion, too fragile otherwise).

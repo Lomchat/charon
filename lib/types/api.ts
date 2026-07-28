@@ -21,7 +21,7 @@ export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
 // Account usage (the `/usage` gauges) for a VPS. `usage` = the Claude account
 // (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
 // (app-server rate limits), present only when the VPS runs Codex. The header
-// shows the one matching the current session's kind. cf. §14.58 / migration-codex.md.
+// shows the one matching the current session's kind. cf. §14.58 / §14.59.
 export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: AccountUsage | null };
 
 // ── Multi-agent (Claude + Codex) discriminator & Codex config ────────────────
@@ -29,7 +29,7 @@ export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: Accoun
 // bundles clean, mirroring the ClaudeEffortLevel pattern below.
 export type AgentKind = 'claude' | 'codex';
 // Codex sessions have no interactive human approval; their "mode" is a sandbox
-// level (the guardrail). cf. migration-codex.md.
+// level (the guardrail). cf. CLAUDE.md §14.59.
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
 export const CODEX_SANDBOX_MODES: CodexSandboxMode[] = ['read-only', 'workspace-write', 'full-access'];
 // Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's

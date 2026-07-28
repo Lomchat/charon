@@ -6,7 +6,7 @@ import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 // Kind-aware:
 //   claude → 'normal' | 'acceptEdits' | 'auto' | 'plan'
 //   codex  → 'read-only' | 'workspace-write' | 'full-access' (sandbox level;
-//            Codex has no interactive approval — cf. migration-codex.md).
+//            Codex has no interactive approval — cf. CLAUDE.md §14.59).
 const CLAUDE_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
 const CODEX_MODES = ['read-only', 'workspace-write', 'full-access'] as const;
 

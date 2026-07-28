@@ -69,7 +69,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       // Claude: phase 'before'/'after' carry file bodies in `content`.
       // Codex: phase 'diff' carries a unified diff in `diff` (content is null);
       // surface it as `after` (before=null) so the diff card renders the patch
-      // directly. cf. migration-codex.md, §14.41.
+      // directly. cf. CLAUDE.md §14.59, §14.41.
       if (ev.phase === 'before') cur.before = content;
       else if (ev.phase === 'diff') cur.after = typeof ev.diff === 'string' ? ev.diff : null;
       else cur.after = content;

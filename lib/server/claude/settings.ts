@@ -105,7 +105,7 @@ const DEFAULTS = {
   // Codex-kind sessions inherit these unless overridden at create time. Codex
   // has NO fallback-model concept (parallel to claude.default_fallback_model
   // being unused for Codex). Valid effort values: 'none' | 'minimal' | 'low' |
-  // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. migration-codex.md.
+  // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. CLAUDE.md §14.59.
   'codex.default_model': '',
   'codex.default_effort': '',
   // Fleet-wide openai-codex auto-update toggle (parallel to sdk.auto_update).
