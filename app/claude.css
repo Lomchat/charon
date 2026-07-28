@@ -1623,6 +1623,15 @@
   color: var(--parchment-soft);
 }
 .bubble .content { white-space: pre-wrap; line-height: 1.5; }
+/* "OAuth token expired" bubble → inline fix (§14.65). Sits under the text so
+   the remedy is one click from the error instead of a hunt in the sidebar. */
+.bubble-reauth {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px; padding: 9px 11px; border-radius: 6px;
+  border: 1px solid rgba(216,168,90,0.45); background: rgba(216,168,90,0.10);
+}
+.bubble-reauth span { flex: 1; min-width: 180px; font-size: 12px; color: var(--gold-bright); }
+.bubble-reauth .wiz-btn { flex: none; }
 .bubble.role-user { border-color: var(--teal-deep); background: rgba(134,197,216,0.07); }
 .bubble.role-user .tag { color: var(--teal); }
 .bubble.role-assistant { border-color: var(--gold); background: rgba(138,180,228,0.05); }

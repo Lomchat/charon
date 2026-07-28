@@ -20,6 +20,7 @@ import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from 
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
+import { isClaudeAuthExpired } from '@/lib/authExpired';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -1302,7 +1303,40 @@ export class SessionStream {
       return false;
     }
     if (this.isReplaying) this.replayKnownAssistantContents.add(finalContent);
+    // LIVE only: a replay re-walking an old auth failure must not re-flag a
+    // VPS that has been signed in again since.
+    else this._noteAuthExpired(finalContent);
     return true;
+  }
+
+  /**
+   * The CLI answered the turn with "your OAuth token expired" instead of doing
+   * the work (§14.65). That message is the ONLY signal — no protocol `error`
+   * event is emitted — so we treat it as an authoritative logout: flip
+   * `vps.claudeLoggedIn` to 0 and broadcast it, which lights the "claude
+   * login" affordances (sidebar bar, health chips) everywhere at once. The
+   * chat bubble itself grows a "sign in again" button client-side.
+   *
+   * Cheap + idempotent: no write unless the DB still believes we're signed in.
+   */
+  private _noteAuthExpired(text: string): void {
+    // Codex sessions carry their own credentials — never touch the claude flag.
+    if (this.kind !== 'claude') return;
+    if (!isClaudeAuthExpired(text)) return;
+    try {
+      const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
+      if (!v || v.claudeLoggedIn === 0) return;
+      db.update(vpsTable)
+        .set({ claudeLoggedIn: 0, claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000) })
+        .where(eq(vpsTable.id, this.vpsId)).run();
+      this._log('warn', 'claude_auth_expired', { vpsId: this.vpsId });
+      // Only mirror a status we actually know: emitGlobalVpsStatus's union
+      // excludes 'unknown', and sending a wrong agentStatus would corrupt the
+      // badge (the client patches it from the event).
+      if (v.agentStatus === 'ok' || v.agentStatus === 'missing' || v.agentStatus === 'error') {
+        emitGlobalVpsStatus(this.vpsId, v.agentStatus, { claudeLoggedIn: 0 });
+      }
+    } catch {}
   }
 
   /** Public variant for graceful shutdown: persists without broadcasting. */

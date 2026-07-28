@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
+import { isClaudeAuthExpired } from '@/lib/authExpired';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -19,9 +20,14 @@ type Props = {
   // Which backend produced this session (Claude vs Codex). Drives the small
   // per-message agent logo next to the model chip so it's clear who's speaking.
   kind?: AgentKind;
+  // Opens the Claude sign-in modal for this session's VPS. Rendered as a CTA
+  // under an assistant bubble that IS the "OAuth token expired" message
+  // (§14.65) — the fix is one click away from the error instead of a hunt
+  // through the sidebar. MUST be a stable reference (memo, §14.38).
+  onReauth?: () => void;
 };
 
-function Message({ m, streaming = false, attachedResult, kind = 'claude' }: Props) {
+function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -68,6 +74,14 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude' }: Prop
           <span>{m.content}</span>
         )}
       </div>
+      {isAssistant && onReauth && kind === 'claude' && isClaudeAuthExpired(m.content) && (
+        <div className="bubble-reauth">
+          <span>This VPS's Claude sign-in has expired — the session can't run until it's renewed.</span>
+          <button type="button" className="wiz-btn primary" onClick={onReauth}>
+            Sign in to Claude
+          </button>
+        </div>
+      )}
     </div>
   );
 }

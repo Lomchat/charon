@@ -789,6 +789,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     [selected, vpsList],
   );
 
+  // Handed down to <Message>: an assistant bubble that IS the "OAuth token
+  // expired" message gets a "Sign in to Claude" button, so the fix is one
+  // click from the error (§14.65). Stable across renders except when the VPS
+  // itself changes — <Message> is memoized and must not get a fresh identity
+  // on every parent render (§14.38).
+  const reauthSelectedVps = useCallback(() => {
+    if (selectedVps) setLoginVps(selectedVps);
+  }, [selectedVps]);
+
   // Hydrate the current VPS's usage on select (SSE is live-only, §14.14): a
   // freshly-mounted tab has no snapshot until the next 60s poll — fetch once so
   // the header widget shows real numbers immediately. (Declared after
@@ -1655,6 +1664,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           selectedVps={selectedVps}
           usage={usageFor(selectedVps?.id, selected.kind as AgentKind | undefined)}
           onUsageRefresh={() => refreshUsage(selectedVps?.id)}
+          onReauth={reauthSelectedVps}
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the

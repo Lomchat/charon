@@ -54,6 +54,9 @@ type Props = {
   sessionId: string;
   selected: SessionListItem;
   selectedVps: Vps | null;
+  // Opens the Claude sign-in modal for this session's VPS — handed down to
+  // <Message> so an "OAuth token expired" bubble carries its own fix (§14.65).
+  onReauth?: () => void;
   // Sound + native Notification handled by the parent (cross-session), but
   // we can still play a beep on stop if configured.
   notifSoundEnabled?: boolean;
@@ -81,7 +84,7 @@ const sharedCacheRef: StreamCache = {
 
 export default function ClaudeSessionView({
   sessionId, selected, selectedVps,
-  onImportError, onKilled, onAfterRevert, usage, onUsageRefresh,
+  onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
 }: Props) {
   const stream = useClaudeSessionStream(sessionId, {
     cache: sharedCacheRef,
@@ -504,10 +507,10 @@ export default function ClaudeSessionView({
             ) : (
               <>
                 {currentAssistant && (
-                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} />
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={onReauth} />
                 )}
                 {[...renderable].reverse().map(({ msg, attached }) => (
-                  <Message key={msg.id} m={msg} attachedResult={attached} kind={sessionKind} />
+                  <Message key={msg.id} m={msg} attachedResult={attached} kind={sessionKind} onReauth={onReauth} />
                 ))}
                 {/* "Loading older" / "start of history" indicator.
                     In column-reverse, the last DOM child renders visually at
