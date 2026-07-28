@@ -36,7 +36,7 @@ const PHASE_LABEL: Record<BootstrapEvent['phase'], string> = {
   detect_os:          'detecting OS',
   install_python:     'installing python',
   install_sdk:        'installing claude-agent-sdk',
-  install_codex:      'installing openai-codex (optional)',
+  install_codex:      'installing openai-codex',
   install_claude_cli: 'installing claude CLI',
   install_agent:      'deploying charon-agent',
   install_service:    'systemd-user service',

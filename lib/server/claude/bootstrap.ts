@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { sshExec, openSshSession, closeSshSession, type SshResult, type SshSession } from './sshExec';
+import { parseVerifyOutput, isVenvPython } from './verifyParse';
 
 // ── Event types (consumed by InstallSessionView via the ring buffer of
 // installSession.ts) ────────────────────────────────────────────────────────
@@ -13,7 +14,8 @@ export type BootstrapPhase =
   | 'detect_os'
   | 'install_python'
   | 'install_sdk'        // claude-agent-sdk (Python lib for the agent)
-  | 'install_codex'      // openai-codex (OPTIONAL 2nd backend, warn-only)
+  | 'install_codex'      // openai-codex (2nd backend — installed on EVERY VPS,
+                         //   like the SDK; failure is loud but non-blocking)
   | 'install_claude_cli' // `claude` CLI (curl install.sh — for `claude login`)
   | 'install_agent'      // drops the .pyz
   | 'install_service'    // systemd-user unit (or fallback)
@@ -121,6 +123,10 @@ function detectSshFailure(r: SshResult): string | null {
 }
 
 // ── Python+SDK verification ─────────────────────────────────────────────────
+// The output parsing + the venv-path test live in `verifyParse.ts` (plain,
+// db-free module → unit-tested by `tests/bootstrapVerify.test.ts`). Read the
+// header there before touching them: a naive marker grep silently reported a
+// crashing python as a healthy SDK (§14.67).
 async function tryVerify(vps: Vps, session?: SshSession): Promise<{ ok: boolean; sdk?: string; py?: string; reason: 'no_py' | 'no_sdk' | 'ok' | 'other' | 'ssh'; raw: string; sshError?: string }> {
   // Use the venv if it exists, otherwise the system python. If we fall on
   // a system python without the SDK, we signal 'no_sdk' → bootstrap will
@@ -137,14 +143,7 @@ async function tryVerify(vps: Vps, session?: SshSession): Promise<{ ok: boolean;
   const sshErr = detectSshFailure(r);
   if (sshErr) return { ok: false, reason: 'ssh', raw: (r.stdout + r.stderr).trim(), sshError: sshErr };
   const out = (r.stdout + r.stderr).trim();
-  if (out.includes('NO_PY')) return { ok: false, reason: 'no_py', raw: out };
-  const pyMatch = out.match(/PY=(\S+)/);
-  const sdkMatch = out.match(/SDK=(\S+)/);
-  if (sdkMatch && pyMatch) return { ok: true, sdk: sdkMatch[1], py: pyMatch[1], reason: 'ok', raw: out };
-  if (out.includes("No module named 'claude_agent_sdk'") || out.includes('ModuleNotFoundError')) {
-    return { ok: false, reason: 'no_sdk', py: pyMatch?.[1], raw: out };
-  }
-  return { ok: false, reason: 'other', py: pyMatch?.[1], raw: out };
+  return { ...parseVerifyOutput(out, r.ok), raw: out };
 }
 
 // ── Agent: deployment ───────────────────────────────────────────────────────
@@ -830,23 +829,46 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     }
   }
 
-  // Phase 1.4: install openai-codex into the venv (OPTIONAL — warn-only).
-  // Codex is a second backend (OpenAI). It lives next to claude-agent-sdk in
-  // ~/.charon/venv and ships its own codex CLI binary (dep
-  // openai-codex-cli-bin) — no separate npm install. The venv is guaranteed
-  // healthy here: either the fast-path verify imported claude_agent_sdk from
-  // it, or ensureSdkLatest just created/healed it. A failure NEVER aborts the
-  // bootstrap: VPSes without codex simply report codex_available=false in
-  // hello and the sidebar just won't offer Codex sessions there.
-  yield { phase: 'install_codex', status: 'running', detail: `pip install openai-codex in ${VENV_DIR} (optional)` };
+  // Phase 1.3: NORMALIZE a legacy system-python host into the venv (§14.67).
+  // The fast-path verify above is happy as soon as `import claude_agent_sdk`
+  // works in ANY python — including a legacy host where the SDK sits in the
+  // system python and ~/.charon/venv does not exist. Every pip step targets
+  // the venv, so on such a host install_codex could only ever bail with
+  // "venv not ready": Codex was unreachable BY CONSTRUCTION, not by choice.
+  // ensureSdkLatest is idempotent and creates/heals the venv, so we run it
+  // to converge on the one python the systemd unit prefers.
+  // Non-fatal on purpose: Claude already works here via the system python, so
+  // a pip/apt hiccup must not turn a WORKING VPS into a failed bootstrap — it
+  // degrades into a visible install_codex error two lines below.
+  if (v.ok && !isVenvPython(v.py)) {
+    yield { phase: 'install_sdk', status: 'running', detail: `SDK found outside the venv (${v.py}) — normalizing into ${VENV_DIR}` };
+    const normRes = await ensureSdkLatest(vps, session);
+    if (normRes.ok) {
+      yield { phase: 'install_sdk', status: 'ok', detail: `claude-agent-sdk ${normRes.sdkVersion ?? ''} in ${VENV_DIR}`.replace(/\s+/g, ' ') };
+    } else {
+      yield { phase: 'install_sdk', status: 'warn', detail: `venv normalization failed (the system-python SDK keeps working): ${(normRes.sshError ?? normRes.error ?? 'install failed').slice(-200)}` };
+    }
+  }
+
+  // Phase 1.4: install openai-codex into the venv — MANDATORY, non-blocking.
+  // Codex is a first-class second backend (OpenAI), installed on every VPS
+  // exactly like claude-agent-sdk: it lives next to it in ~/.charon/venv and
+  // ships its own codex CLI binary (dep openai-codex-cli-bin), so there is no
+  // separate npm install. The venv is guaranteed by install_sdk (fresh host)
+  // or by the normalization step just above (legacy host).
+  // A failure is reported as an ERROR (it is a real defect to fix, not a
+  // shrug) but never aborts the run: the agent still gets deployed and Claude
+  // stays usable — the VPS just reports codex_available=false in hello and the
+  // sidebar greys out the Codex button. (A genuine SSH outage is caught &
+  // aborted by the next mandatory phase's own detectSshFailure.)
+  yield { phase: 'install_codex', status: 'running', detail: `pip install openai-codex in ${VENV_DIR}` };
   const codexRes = await ensureCodexLatest(vps, session);
+  let codexError: string | null = null;
   if (codexRes.ok) {
     yield { phase: 'install_codex', status: 'ok', detail: codexRes.codexVersion ? `openai-codex ${codexRes.codexVersion} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
   } else {
-    // Warn, not error, and do NOT return — codex is optional. (A genuine SSH
-    // outage is caught & aborted by the next mandatory phase's own
-    // detectSshFailure.)
-    yield { phase: 'install_codex', status: 'warn', detail: `codex optional — skipped: ${(codexRes.sshError ?? codexRes.error ?? 'install failed').slice(-200)}` };
+    codexError = (codexRes.sshError ?? codexRes.error ?? 'install failed').slice(-200);
+    yield { phase: 'install_codex', status: 'error', detail: `openai-codex NOT installed — Codex sessions unavailable on this VPS: ${codexError}` };
   }
 
   // Phase 1.5: install Claude CLI (`claude`) if missing.
@@ -1028,5 +1050,13 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     yield { phase: 'check_login', status: 'warn', detail: 'no claude login — do it via the "Setup login" button' };
   }
 
-  yield { phase: 'done', status: 'ok' };
+  // `done` stays 'ok' even when codex failed: `installSession.ts` maps any
+  // non-ok done to a RED "install failed", which would be a lie — the agent is
+  // deployed and Claude works. The failure is already a red install_codex
+  // phase; we only echo it in the summary so it can't be scrolled past.
+  yield {
+    phase: 'done',
+    status: 'ok',
+    ...(codexError ? { detail: `agent ready — but openai-codex failed to install (Codex sessions unavailable): ${codexError}` } : {}),
+  };
 }
