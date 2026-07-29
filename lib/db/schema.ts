@@ -291,6 +291,49 @@ export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
   index('idx_claude_pending_questions_session_id_status').on(t.sessionId, t.status),
 ]);
 
+// Files the user attached to a session (drag & drop / paperclip). Charon does
+// NOT feed these to the model as inline content blocks: it drops the file on
+// the VPS filesystem and writes the PATH into the prompt. Both backends then
+// pick it up with their own built-in tool — Claude Code's `Read` (images, PDF,
+// notebooks, text) and Codex's `view_image` (+ shell for everything else). That
+// is why NO mime filtering happens anywhere: whether a given file is usable is
+// the agent's call, not ours.
+//
+// Two copies exist and they serve different masters:
+//  - `remotePath` on the VPS (under <cwd>/.charon-uploads/) is what the AGENT
+//    reads. Inside the cwd on purpose: Codex sandbox levels are scoped to the
+//    workspace and `view_image` resolves relative to it, so a path outside is a
+//    gamble on both backends.
+//  - `localPath` on the hub (data/uploads/<sessionId>/) is what the USER
+//    re-downloads from the Files tab. It also means the attachment list stays
+//    meaningful after the VPS is wiped or the session is moved.
+// Deleting the session cascades this table; the hub blobs are swept by
+// deleteSession, the remote copy is left to the VPS (best-effort unlink only
+// on explicit per-file delete).
+export const claudeSessionAttachments = sqliteTable('claude_session_attachments', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  // Original filename as sent by the browser, sanitised to a single path
+  // segment (no separators, no leading dot-dot). Display + download name.
+  name: text('name').notNull(),
+  // Absolute path on the VPS — the exact string injected into the prompt.
+  // Unique per session (collisions get a numeric suffix at upload time), so a
+  // re-upload of the same name never silently shadows an older attachment the
+  // conversation still references.
+  remotePath: text('remote_path').notNull(),
+  // Path of the hub-side copy, relative to the uploads root. Nullable so a row
+  // survives its blob going missing (manual cleanup, disk restore).
+  localPath: text('local_path'),
+  size: integer('size').notNull(),
+  // Browser-reported MIME. Informational ONLY — never used to accept, reject
+  // or route a file. Empty string when the browser doesn't know.
+  mime: text('mime'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+}, (t) => [
+  // The Files tab lists by session, newest first.
+  index('idx_claude_session_attachments_session_id_id').on(t.sessionId, t.createdAt),
+]);
+
 export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   sessionId: text('session_id'),
@@ -353,6 +396,7 @@ export type ClaudeSession = typeof claudeSessions.$inferSelect;
 export type ClaudeSessionMessage = typeof claudeSessionMessages.$inferSelect;
 export type ClaudePendingPermission = typeof claudePendingPermissions.$inferSelect;
 export type ClaudePendingQuestion = typeof claudePendingQuestions.$inferSelect;
+export type ClaudeSessionAttachment = typeof claudeSessionAttachments.$inferSelect;
 export type ClaudeSessionLog = typeof claudeSessionLogs.$inferSelect;
 export type Shell = typeof shells.$inferSelect;
 export type ClaudeSetting = typeof claudeSettings.$inferSelect;

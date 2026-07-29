@@ -28,7 +28,6 @@ export type BridgeEvent =
   | { type: 'interaction_resolved'; kind: 'permission' | 'question' | 'exit_plan'; id: string }
   | { type: 'prefill_input'; content: string }
   | { type: 'reconnecting'; attempt: number; nextRetryIn: number; reason: string }
-  | { type: 'todo_update'; todos: any[] }
   | { type: 'edit_snapshot'; phase: 'before' | 'after'; tool_use_id: string; file_path: string; content: string | null; size: number; truncated: boolean }
   | { type: 'mode_changed'; mode: PermissionMode }
   // Per-session Claude model / effort changes (agent >= 0.5.0). Both carry

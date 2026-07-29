@@ -21,6 +21,7 @@ import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
+import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -828,11 +829,6 @@ export class SessionStream {
         }
         break;
       }
-      case 'todo_update':
-        if (this._replayAlreadyPersisted(ev)) break;
-        this._persist('event', { type: 'todo_update', todos: ev.todos });
-        this._broadcast({ type: 'todo_update', todos: ev.todos });
-        break;
       case 'bg_task': {
         if (this._replayAlreadyPersisted(ev)) break;
         // Background-task lifecycle (agent >= 0.13.0): started / updated /
@@ -1968,6 +1964,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
   db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
   db.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
+  // Attachment ROWS go with the FK cascade, but the hub-side blobs under
+  // data/uploads/<sessionId>/ are plain files nothing else would ever collect —
+  // without this they leak for the lifetime of the install. Fire-and-forget:
+  // the session is already gone as far as the user is concerned, and a failed
+  // unlink must not turn a delete into an error.
+  void purgeSessionBlobs(sessionId);
   // Live-announce the removal so every other tab/device drops the card. §14.52.
   emitGlobalSessionListChanged(sessionId);
   try {

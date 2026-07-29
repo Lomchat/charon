@@ -8,7 +8,7 @@
 // that fork.
 
 import type {
-  Msg, ToolCallEntry, Todo, EditSnapshot,
+  Msg, ToolCallEntry, EditSnapshot,
 } from './sessionTypes';
 import type { WorkerStatus } from '@/lib/server/claude/types';
 import {
@@ -31,7 +31,6 @@ export type RebuiltSessionState = {
   messages: Msg[];
   status: WorkerStatus;
   toolCalls: ToolCallEntry[];
-  todos: Todo[];
   edits: Map<string, EditSnapshot>;
   files: Set<string>;
   // Background tasks (Bash run_in_background / bg subagents) rebuilt from the
@@ -47,7 +46,6 @@ export function rebuildStateFromMessages(
     messages: [],
     status,
     toolCalls: [],
-    todos: [],
     edits: new Map(),
     files: new Set(),
     bgTasks: [],
@@ -89,7 +87,6 @@ export function rebuildStateFromMessages(
     if (m.role === 'event') {
       try {
         const ev = JSON.parse(m.content);
-        if (ev.type === 'todo_update') out.todos = (ev.todos ?? []);
         if (ev.type === 'bg_task') applyBgTaskEvent(bgMap, ev, m.createdAt, bgLaunches);
         if (ev.type === 'thinking') {
           out.messages.push({

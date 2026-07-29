@@ -1528,7 +1528,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <button
             className="head-btn m-only tools-toggle"
             onClick={() => { setToolsOpen(true); setNavOpen(false); setUsageOpen(false); }}
-            title="diffs, todos & tool calls" aria-label="open tool panel"
+            title="diffs, tool calls & files" aria-label="open tool panel"
           >
             <IconPanelRight />
           </button>

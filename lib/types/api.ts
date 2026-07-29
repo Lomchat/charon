@@ -536,6 +536,33 @@ export type PushSubscribeResponse = {
 
 export type PushUnsubscribeBody = { endpoint: string };
 
+// ── Session attachments ──────────────────────────────────────────────────────
+// A file the user dropped on the chat. Charon copies it to the VPS inside the
+// session cwd and hands the AGENT nothing but the path — Claude Code's `Read`
+// and Codex's `view_image` do the rest. `remotePath` is therefore the payload
+// that matters: it is the exact string inserted into the prompt, and the key
+// the input bar underlines on.
+export type SessionAttachment = {
+  id: string;
+  // Basename on the VPS (collision-suffixed), also the download filename.
+  name: string;
+  // Absolute path on the VPS — what goes into the message.
+  remotePath: string;
+  size: number;
+  // Browser-declared MIME, informational only (drives the icon, nothing else).
+  mime: string;
+  // Content-type the server WILL serve this file with when opened inline, or
+  // null when it can only be downloaded. Resolved server-side from the
+  // extension against a security allow-list (never from `mime`, which the
+  // uploading browser controls) — so the client can show/hide the "open"
+  // action without duplicating that table, and can never talk the server into
+  // rendering something it wouldn't have. cf. attachmentNames.ts.
+  previewMime: string | null;
+  createdAt: number;
+};
+export type SessionAttachmentsResponse = { attachments: SessionAttachment[] };
+export type UploadSessionAttachmentResponse = { attachment: SessionAttachment };
+
 // ── Generic response helpers ─────────────────────────────────────────────────
 
 export type OkResponse = { ok: true };

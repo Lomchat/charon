@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type {
-  Msg, ToolCallEntry, Todo, EditSnapshot,
+  Msg, ToolCallEntry, EditSnapshot,
   PermissionRequest, PendingQuestion, PendingExitPlan,
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
@@ -102,7 +102,7 @@ function reloadForExpiredSession(): void {
 //     server streams high-volume events (assistant_text, tool_*) for
 //     THIS session
 //   - Maintains messages/currentAssistant/status/permissionMode/toolCalls/
-//     todos/edits/files/permQueue/questionQueue/exitPlanQueue
+//     edits/files/permQueue/questionQueue/exitPlanQueue
 //   - GET /api/claude/sessions/[id] at mount and when the tab returns to
 //     foreground — the DB is the source of truth for history
 //   - Batches `assistant_text` deltas via requestAnimationFrame (60Hz max)
@@ -178,7 +178,6 @@ export type ClaudeSessionStreamState = {
   // the turn totals (durationMs/costUsd) on the ResultMessage.
   liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null } | null;
   toolCalls: ToolCallEntry[];
-  todos: Todo[];
   edits: Map<string, EditSnapshot>;
   files: Set<string>;
   // Background tasks (Bash run_in_background / bg subagents) — fed by the
@@ -282,7 +281,6 @@ export function useClaudeSessionStream(
   const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
   const [liveUsage, setLiveUsage] = useState<ClaudeSessionStreamState['liveUsage']>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
-  const [todos, setTodos] = useState<Todo[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
   const [files, setFiles] = useState<Set<string>>(new Set());
   const [bgTasks, setBgTasks] = useState<BgTask[]>([]);
@@ -409,7 +407,6 @@ export function useClaudeSessionStream(
     setMessages(rebuilt.messages);
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
-    setTodos(rebuilt.todos);
     // Background-task registry: replace wholesale (the rebuild IS the source
     // of truth — bg_task rows are persisted). Keep the live ref map in sync
     // so subsequent SSE events patch on top of the rebuilt state.
@@ -722,9 +719,6 @@ export function useClaudeSessionStream(
           }
           return next;
         });
-        // Todos: NEVER overwrite the current list with old snapshots —
-        // todos are by definition state-driven, the latest version is the
-        // real one (cf. rebuild which does latest-wins anyway).
       }
       // Advance the cursor + hasMore status based on the new limit.
       oldestChatIdRef.current = older.oldestChatId ?? cursor;
@@ -917,9 +911,6 @@ export function useClaudeSessionStream(
           break;
         case 'reconnecting':
           setError(null);
-          break;
-        case 'todo_update':
-          setTodos((ev.todos ?? []) as Todo[]);
           break;
         case 'edit_snapshot': {
           const key = ev.file_path;
@@ -1307,7 +1298,7 @@ export function useClaudeSessionStream(
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits, files, bgTasks,
+    toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
@@ -1319,7 +1310,7 @@ export function useClaudeSessionStream(
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits, files, bgTasks,
+    toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,

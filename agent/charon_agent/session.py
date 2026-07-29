@@ -819,10 +819,6 @@ class AgentSession:
                             "name": tname,
                             "input": tinput,
                         })
-                        if tname == "TodoWrite":
-                            todos = tinput.get("todos") if isinstance(tinput, dict) else None
-                            if todos is not None:
-                                out.append({"event": "todo_update", "todos": todos})
             elif ev_type in ("TaskStartedMessage", "TaskUpdatedMessage", "TaskNotificationMessage"):
                 # First-class background-task lifecycle messages (SDK ≥ 0.2.11x):
                 # started (Bash run_in_background / background subagent / a

@@ -30,6 +30,7 @@ import type {
   RevertClaudeEditResponse, SearchClaudeResponse,
   ClaudeSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
   PushSubscribeResponse,
+  SessionAttachmentsResponse, UploadSessionAttachmentResponse,
   OkResponse, OkOrErrorResponse,
 } from '@/lib/types/api';
 
@@ -282,6 +283,61 @@ export const api = {
     send<ResumeClaudeSessionResponse>('POST', `/api/claude/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
   sendClaudeInput: (id: string, content: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { content }),
+  // ── Session attachments (drag & drop / paperclip) ───────────────────────
+  // Upload is the ONE call that can't go through `send()`: that helper always
+  // sets `content-type: application/json`, and a multipart body needs the
+  // browser to generate its own boundary — so it has a bespoke fetch below.
+  listSessionAttachments: (id: string, opts?: { signal?: AbortSignal }) =>
+    send<SessionAttachmentsResponse>('GET', `/api/claude/sessions/${id}/attachments`, undefined, opts),
+  uploadSessionAttachment: async (
+    id: string,
+    file: File,
+    opts?: { signal?: AbortSignal },
+  ): Promise<UploadSessionAttachmentResponse> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    if (opts?.signal) {
+      if (opts.signal.aborted) ac.abort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    // Generous, size-aware timeout: 25 MB over a slow uplink plus the hub's own
+    // ssh push to the VPS can legitimately take minutes. The default 30s of
+    // `send()` would abort a perfectly healthy upload — and unlike a GET, a
+    // retry here is expensive and user-visible.
+    const timeoutMs = 120_000 + Math.ceil(file.size / (1024 * 1024)) * 8_000;
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(`/api/claude/sessions/${id}/attachments`, {
+        method: 'POST',
+        // NO content-type header: the browser must set it WITH the multipart
+        // boundary. Setting it by hand yields an unparseable body server-side.
+        body: fd,
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+      if (opts?.signal) opts.signal.removeEventListener('abort', onAbort);
+    }
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const txt = await res.text();
+        try { detail = JSON.parse(txt)?.error || txt; } catch { detail = txt; }
+      } catch { /* body already consumed or unreadable */ }
+      throw new Error(detail || `upload failed → ${res.status}`);
+    }
+    return res.json() as Promise<UploadSessionAttachmentResponse>;
+  },
+  deleteSessionAttachment: (id: string, attId: string) =>
+    send<OkResponse>('DELETE', `/api/claude/sessions/${id}/attachments/${attId}`),
+  // `inline` opens the file in a browser tab (images / PDF / audio / video /
+  // text); without it the response is an opaque download. The server decides
+  // what inline actually means — this flag only asks.
+  sessionAttachmentUrl: (id: string, attId: string, opts?: { inline?: boolean }) =>
+    `/api/claude/sessions/${id}/attachments/${attId}${opts?.inline ? '?inline=1' : ''}`,
   interruptClaude: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { type: 'interrupt' }),
   forceStopClaude: (id: string) =>

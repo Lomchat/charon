@@ -57,7 +57,7 @@ beforeAll(async () => {
     // one attachment riding right after seq 150 (must follow its page)
     if (s === 150) {
       db.insert(schema.claudeSessionMessages).values({
-        sessionId: SID, role: 'event', content: '{"type":"todo_update","todos":[]}', seq: null, tsMs: at(150, 1),
+        sessionId: SID, role: 'event', content: '{"type":"bg_task","kind":"started"}', seq: null, tsMs: at(150, 1),
       }).run();
     }
   }
@@ -116,7 +116,7 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
       sessionId: BSID, role: 'assistant', content: `c-${s}`, seq: s,
     }).run();
     const addEvent = (label: string) => db.insert(schema.claudeSessionMessages).values({
-      sessionId: BSID, role: 'event', content: `{"type":"todo_update","label":"${label}"}`, seq: null,
+      sessionId: BSID, role: 'event', content: `{"type":"bg_task","label":"${label}"}`, seq: null,
     }).run();
     // Layout (insertion = chronological): E-lead, c1..5, E-after-5, c6..15,
     // E-after-15, c16..25, E-trail. With limit=10 the page boundaries fall

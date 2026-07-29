@@ -1,7 +1,7 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
-import type { SessionListItem, AgentKind, CodexSandboxMode } from '@/lib/types/api';
+import type { SessionListItem, AgentKind, CodexSandboxMode, SessionAttachment } from '@/lib/types/api';
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
@@ -29,6 +29,10 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
+import {
+  useSessionAttachments, type PendingUpload,
+} from './sessionAttachments';
+import { IconPaperclip } from './icons';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,7 +47,7 @@ import { useInputDraft } from './inputDraftStore';
 //   - ThinkingBar during 'thinking'
 //   - Input bar (mode switch + textarea + send) — replaced by
 //     QuestionCard / ExitPlanCard / InlinePermissionCard when pending
-//   - ToolPanel (diffs / todos / calls)
+//   - ToolPanel (diffs / calls / files)
 //
 // All SSE + per-session state logic lives in useClaudeSessionStream,
 // so this component is essentially rendering + computeds.
@@ -96,7 +100,7 @@ export default function ClaudeSessionView({
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage,
-    toolCalls, todos, edits, bgTasks,
+    toolCalls, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
     hasMore, isLoadingMore,
@@ -112,6 +116,23 @@ export default function ClaudeSessionView({
   // deferred "apply now ↻" badge (Codex applies on the next turn → no badge).
   const sessionKind: AgentKind = (selected.kind as AgentKind) === 'codex' ? 'codex' : 'claude';
   const vpsId = selectedVps?.id ?? '';
+
+  // ── Session attachments ───────────────────────────────────────────────────
+  // One list, two consumers: <ChatInputBar> (underline + insert on upload) and
+  // the ToolPanel "files" tab (re-download / copy / re-insert). Held here so
+  // they can never disagree. cf. app/sessionAttachments.ts.
+  const {
+    attachments, pending: pendingUploads, upload: uploadAttachments,
+    remove: removeAttachment, dismissPending: dismissPendingUpload,
+  } = useSessionAttachments(sessionId);
+  // "Insert this path into the message" from the Files tab. Carries a nonce so
+  // inserting the SAME path twice in a row still fires (a plain string would
+  // be === the previous value and the drain effect would skip it).
+  const [insertRequest, setInsertRequest] = useState<{ text: string; nonce: number } | null>(null);
+  const requestInsertPath = useCallback((text: string) => {
+    setInsertRequest({ text, nonce: Date.now() });
+  }, []);
+  const clearInsertRequest = useCallback(() => setInsertRequest(null), []);
 
   // ── Local UI state (scroll, error details) ────────────────────────────────
   // NOTE: the textarea `input` state now lives inside <ChatInputBar> (isolated
@@ -654,6 +675,11 @@ export default function ClaudeSessionView({
             onSend={streamSend}
             prefillInput={prefillInput}
             clearPrefillInput={clearPrefillInput}
+            pending={pendingUploads}
+            onUploadFiles={uploadAttachments}
+            onDismissPending={dismissPendingUpload}
+            insertRequest={insertRequest}
+            clearInsertRequest={clearInsertRequest}
           />
         )}
       </main>
@@ -662,9 +688,11 @@ export default function ClaudeSessionView({
         sessionId={sessionId}
         kind={sessionKind}
         toolCalls={toolCalls}
-        todos={todos}
         edits={edits}
         onRevert={() => onAfterRevert?.()}
+        attachments={attachments}
+        onRemoveAttachment={removeAttachment}
+        onInsertPath={requestInsertPath}
       />
     </>
   );
@@ -689,6 +717,7 @@ const CODEX_MODE_META: Record<CodexSandboxMode, { glyph: string; label: string; 
 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
+  pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest,
 }: {
   sessionId: string;
   kind: AgentKind;
@@ -697,12 +726,36 @@ const ChatInputBar = memo(function ChatInputBar({
   onSend: (content: string) => Promise<void>;
   prefillInput: string | null;
   clearPrefillInput: () => void;
+  pending: PendingUpload[];
+  onUploadFiles: (files: File[], onEach?: (att: SessionAttachment) => void) => Promise<void>;
+  onDismissPending: (key: string) => void;
+  // "Insert this path" request coming from the Files tab. Same drain pattern as
+  // prefillInput: the parent holds it until this bar is mounted to consume it,
+  // so clicking + in the tab while a permission card is showing isn't lost.
+  insertRequest: { text: string; nonce: number } | null;
+  clearInsertRequest: () => void;
 }) {
   const isCodex = kind === 'codex';
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
+
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Last known caret offset. A drop lands on the WINDOW, not the textarea, so
+  // by the time we insert, the textarea may not even be focused — without this
+  // the path would always be appended at the end, which is exactly what the
+  // "insert where my cursor is" requirement rules out.
+  const caretRef = useRef<number | null>(null);
+  // Mirror of `input` that is updated SYNCHRONOUSLY by insertAtCaret. Dropping
+  // three files fires three inserts back-to-back, all before React has
+  // re-rendered — reading state there would make each one overwrite the last,
+  // and only the final path would survive.
+  const inputRef = useRef(input);
+  useEffect(() => { inputRef.current = input; }, [input]);
+
+  const [dragging, setDragging] = useState(false);
 
   // Drain prefill_input: copy into the textarea then clear. If this bar is
   // unmounted when a prefill arrives (pending interaction / sleeping session),
@@ -715,10 +768,126 @@ const ChatInputBar = memo(function ChatInputBar({
     }
   }, [prefillInput, clearPrefillInput, setInput]);
 
+  const rememberCaret = useCallback(() => {
+    const ta = taRef.current;
+    if (ta) caretRef.current = ta.selectionStart;
+  }, []);
+
+  /**
+   * Insert text at the remembered caret, padding with spaces so a path never
+   * gets glued to an adjacent word (`voir/tmp/a.png` would be unreadable to
+   * the model AND break the exact-match underline).
+   */
+  const insertAtCaret = useCallback((text: string) => {
+    const cur = inputRef.current;
+    const pos = Math.min(caretRef.current ?? cur.length, cur.length);
+    const before = cur.slice(0, pos);
+    const after = cur.slice(pos);
+    const lead = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+    const trail = after.length === 0 || !/^\s/.test(after) ? ' ' : '';
+    const chunk = lead + text + trail;
+    const next = before + chunk + after;
+    inputRef.current = next;
+    setInput(next);
+    const caret = before.length + chunk.length;
+    caretRef.current = caret;
+    // After React commits the new value — setting the selection before that
+    // would be overwritten by the controlled re-render.
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      try { ta.setSelectionRange(caret, caret); } catch { /* detached */ }
+    });
+  }, [setInput]);
+
+  // Drain "insert this path" from the Files tab.
+  useEffect(() => {
+    if (!insertRequest) return;
+    insertAtCaret(insertRequest.text);
+    clearInsertRequest();
+  }, [insertRequest, insertAtCaret, clearInsertRequest]);
+
+  const handleFiles = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    // The path is appended as each upload lands, so the user sees progress
+    // rather than a frozen bar followed by a burst of paths.
+    void onUploadFiles(files, (att) => insertAtCaret(att.remotePath));
+  }, [onUploadFiles, insertAtCaret]);
+
+  // ── Window-level drag & drop ──────────────────────────────────────────────
+  // Listeners go on the window, not the textarea: the requirement is to drop
+  // anywhere on the page. Scoping is automatic — this bar only exists while a
+  // chat session is open, so a drop over a shell terminal or an install log
+  // never reaches here.
+  useEffect(() => {
+    // Depth counter, because dragenter/dragleave fire for every child element
+    // the pointer crosses; a naive boolean flickers the overlay constantly.
+    let depth = 0;
+    const isFileDrag = (e: DragEvent) => {
+      const types = e.dataTransfer?.types;
+      if (!types) return false;
+      return Array.prototype.indexOf.call(types, 'Files') !== -1;
+    };
+    const onEnter = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      depth++;
+      setDragging(true);
+    };
+    const onOver = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      // MANDATORY: without preventDefault the drop event never fires and the
+      // browser navigates away to the dropped file instead.
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragging(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragging(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      handleFiles(files);
+    };
+    window.addEventListener('dragenter', onEnter);
+    window.addEventListener('dragover', onOver);
+    window.addEventListener('dragleave', onLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onEnter);
+      window.removeEventListener('dragover', onOver);
+      window.removeEventListener('dragleave', onLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [handleFiles]);
+
+  // Paste a screenshot straight into the message (Cmd/Ctrl+V). Same pipeline as
+  // a drop — on desktop this is how screenshots actually reach a chat.
+  const onPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;   // plain text paste → let the browser do it
+    e.preventDefault();
+    rememberCaret();
+    handleFiles(files);
+  }, [handleFiles, rememberCaret]);
+
+  // An upload is in flight (an entry with an `error` is a finished failure, not
+  // progress). Drives the blocking overlay: the ssh push to the VPS takes a few
+  // seconds, and without a visible gate the user types into a textarea that is
+  // about to have a path spliced into it at a caret that has since moved.
+  const uploading = pending.filter((p) => !p.error);
+
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content) return;
     setInput('');
+    inputRef.current = '';
+    caretRef.current = 0;
     await onSend(content);
   }, [input, onSend, setInput]);
 
@@ -785,9 +954,15 @@ const ChatInputBar = memo(function ChatInputBar({
         </div>
       )}
       <textarea
+        ref={taRef}
         value={input}
-        onChange={(e) => setInput(e.target.value)}
-        placeholder={`message to ${isCodex ? 'Codex' : 'Claude'} (Enter sends, Shift/Ctrl+Enter for newline)`}
+        onChange={(e) => { setInput(e.target.value); caretRef.current = e.target.selectionStart; }}
+        onPaste={onPaste}
+        onSelect={rememberCaret}
+        onClick={rememberCaret}
+        onKeyUp={rememberCaret}
+        onBlur={rememberCaret}
+        placeholder={`message to ${isCodex ? 'Codex' : 'Claude'} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`}
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return;
           if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -796,7 +971,70 @@ const ChatInputBar = memo(function ChatInputBar({
         }}
         rows={3}
       />
-      <button className="send" onClick={send} disabled={!input.trim()}>send</button>
+      <div className="ci-send-col">
+        <button
+          type="button"
+          className="ci-attach"
+          onClick={() => { rememberCaret(); fileInputRef.current?.click(); }}
+          title="attach a file — it is uploaded to the session workspace and its path inserted here"
+          aria-label="attach a file"
+        >
+          <IconPaperclip />
+        </button>
+        <button className="send" onClick={send} disabled={!input.trim()}>send</button>
+      </div>
+      {/* No `accept` filter: any file type goes through, on purpose — whether
+          the agent can do something with it is ITS verdict, not ours. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="ci-file-input"
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          // Reset so re-picking the SAME file fires change again.
+          e.target.value = '';
+          handleFiles(files);
+        }}
+      />
+      {pending.length > 0 && (
+        <div className="ci-pending">
+          {pending.map((p) => (
+            <span key={p.key} className={`ci-chip${p.error ? ' err' : ''}`} title={p.error ?? undefined}>
+              <span className="ci-chip-name">{p.name}</span>
+              {p.error
+                ? <button type="button" className="ci-chip-x" onClick={() => onDismissPending(p.key)} aria-label="dismiss">✕</button>
+                : <span className="ci-chip-spin">uploading…</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {dragging && (
+        <div className="ci-drop-overlay">
+          <div className="ci-drop-card">
+            <IconPaperclip />
+            <span>drop to attach — the file lands in the session workspace</span>
+          </div>
+        </div>
+      )}
+      {/* Blocking gate while the upload runs. Same visual language as the drop
+          overlay, but this one INTERCEPTS pointer events on purpose: the hub
+          has to push the bytes to the VPS over ssh, which takes seconds, and
+          the path is spliced in at the remembered caret when it lands. Letting
+          the user keep typing or click send in the meantime means the insert
+          arrives somewhere they no longer expect — or after the message has
+          already gone. */}
+      {uploading.length > 0 && (
+        <div className="ci-upload-overlay" role="status" aria-live="polite">
+          <div className="ci-drop-card">
+            <span className="ci-spinner" aria-hidden="true" />
+            <span>
+              uploading {uploading.length > 1 ? `${uploading.length} files` : uploading[0].name}
+              {' — '}pushing to the session workspace…
+            </span>
+          </div>
+        </div>
+      )}
     </footer>
   );
 });

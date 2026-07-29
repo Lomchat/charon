@@ -62,8 +62,8 @@ async function relocateJsonl(
 // Otherwise a session with many Edit/Write floods the 200 messages with
 // snapshots (cf. gotcha §14 in CLAUDE.md).
 //
-// 'event' contains either `todo_update` (no chat display — only the last
-// one counts), or `thinking` (displayable but sparse). Both cases are
+// 'event' contains either `bg_task` (no chat display — folded into the
+// BgTasks registry), or `thinking` (displayable but sparse). Both cases are
 // handled correctly with range loading.
 // NON_PAGINATED_ROLES + the chronological window live in messageWindow.ts
 // (extracted for testability + the Codex-18 chronological pagination).
@@ -135,7 +135,7 @@ function stripEditSnapshotContent(rows: ClaudeSessionMessage[]): ClaudeSessionMe
 // position — pages PARTITION the whole history with half-open bounds, so
 // every attachment belongs to exactly one page (cf. messageWindow.ts).
 // In ?since mode they are returned unconditionally so the poll detects new
-// edits/todos. In BOTH modes the edit_snapshot `content` is STRIPPED before
+// edits. In BOTH modes the edit_snapshot `content` is STRIPPED before
 // sending (see stripEditSnapshotContent) — the poll only needs the row to
 // exist (it triggers a clean reload), and diff content is fetched lazily via
 // GET /api/claude/sessions/[id]/edits. cf. CLAUDE.md §14 gotcha 41.

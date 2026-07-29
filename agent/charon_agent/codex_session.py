@@ -8,7 +8,7 @@ set_effort / respond_* / to_info / to_persist, plus the ``_stopped`` /
 that ``resume_session`` and ``set_model``/``set_effort`` poke directly), and
 translates the Codex **app-server** notification stream into the exact SAME
 Charon event vocabulary the hub already understands (status, assistant_text,
-thinking, tool_use, tool_result, todo_update, edit_snapshot, usage, stop,
+thinking, tool_use, tool_result, edit_snapshot, usage, stop,
 error, interrupted, session_id, ready, mode_changed, model_changed,
 effort_changed, effective_model, bg_task).
 
@@ -551,21 +551,6 @@ class CodexSession:
             elif pt == "ItemCompletedNotification":
                 self._on_item(getattr(payload, "item", None), phase="completed", out=out)
 
-            elif pt == "TurnPlanUpdatedNotification":
-                plan = getattr(payload, "plan", None) or []
-                todos = []
-                for step in plan:
-                    st = getattr(step, "status", None)
-                    st = getattr(st, "value", st)
-                    status = {"pending": "pending", "inProgress": "in_progress",
-                              "completed": "completed"}.get(str(st), "pending")
-                    todos.append({
-                        "content": getattr(step, "step", "") or "",
-                        "status": status,
-                        "activeForm": getattr(step, "step", "") or "",
-                    })
-                out.append({"event": "todo_update", "todos": todos})
-
             elif pt == "ThreadTokenUsageUpdatedNotification":
                 tu = getattr(payload, "token_usage", None)
                 u = self._usage_from(tu)
@@ -684,6 +669,36 @@ class CodexSession:
                 out.append({
                     "event": "tool_result", "tool_use_id": item_id,
                     "content": content, "is_error": err is not None,
+                })
+
+        elif it == "ImageViewThreadItem":
+            # Codex's built-in `view_image` tool: it loaded a local image into
+            # the conversation and can now actually SEE it.
+            #
+            # This is the whole Codex half of the file-attachment feature (a
+            # dropped screenshot is uploaded to <cwd>/.charon-uploads/ and its
+            # path written into the prompt; Codex picks it up with this tool —
+            # Claude's equivalent is `Read`). Without this branch the item fell
+            # through to the ignore bucket, so the model would answer *about* an
+            # image with nothing in the transcript showing it had ever looked —
+            # indistinguishable from a hallucination, and the ToolPanel stayed
+            # empty. Verified live: with the tool, Codex transcribes the image
+            # exactly; when it instead shells out to `tesseract` (its fallback
+            # when the path is wrong) it gets the text subtly WRONG, so telling
+            # the two apart in the UI genuinely matters.
+            #
+            # `path` is a pydantic RootModel — coerce through _path_str, never
+            # emit it raw (§14.59: emit only JSON-native data).
+            path = self._path_str(getattr(item, "path", None))
+            if phase == "started":
+                out.append({
+                    "event": "tool_use", "id": item_id, "name": "view_image",
+                    "input": {"path": path},
+                })
+            else:
+                out.append({
+                    "event": "tool_result", "tool_use_id": item_id,
+                    "content": path or "(image loaded)", "is_error": False,
                 })
 
         elif it == "WebSearchThreadItem":

@@ -3,7 +3,7 @@
 Why this exists
 ---------------
 The agent emits a constant stream of events per session (assistant_text
-deltas, tool_use, tool_result, edit_snapshot, todo_update, …). Charon
+deltas, tool_use, tool_result, edit_snapshot, bg_task, …). Charon
 persists them into SQLite, but only while it is connected. If Charon is
 down (restart, network, etc.) and the agent keeps running, events pile
 up in the in-memory ring buffer (`RING_SIZE` in server.py). When the

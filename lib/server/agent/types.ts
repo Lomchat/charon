@@ -148,7 +148,6 @@ export type AgentEvent = (
   | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any }
   | { event: 'user_question'; session_id: string; id: string; questions: any[] }
   | { event: 'exit_plan_request'; session_id: string; id: string; plan: string }
-  | { event: 'todo_update'; session_id: string; todos: any[] }
   // phase 'before'/'after' (Claude, content-based) OR 'diff' (Codex: `diff`
   // holds a unified diff, content is null). The GET /edits route strips both
   // `content` and `diff` from the poll payload (egress, §14.41).

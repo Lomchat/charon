@@ -1,7 +1,7 @@
 // Types for the chat view (ClaudePanel + ClaudeSessionView +
 // useClaudeSessionStream). Before this file, the desktop and the old separate
 // mobile view each redeclared the same types locally (Msg, ToolCallEntry,
-// Todo, EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
+// EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
 // with a "copied from..." comment; the mobile view has since been folded into
 // the responsive `/` (CLAUDE.md §11).
 //
@@ -27,18 +27,12 @@ export type ToolCallEntry = {
   id: string;
   name: string;
   // `any` rather than `unknown` because the call sites access polymorphic
-  // sub-fields (file_path, content, command, todos...) without systematic
+  // sub-fields (file_path, content, command, pattern...) without systematic
   // narrowing. Tightening implies a big cleanup out of scope.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: any;
   result?: { content: string; isError: boolean };
   startedAt: number;
-};
-
-export type Todo = {
-  content: string;
-  status: 'pending' | 'in_progress' | 'completed';
-  activeForm?: string;
 };
 
 export type EditSnapshot = {

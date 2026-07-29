@@ -2,14 +2,18 @@
 import { useMemo, useState } from 'react';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
-import type { AgentKind } from '@/lib/types/api';
+import type { AgentKind, SessionAttachment } from '@/lib/types/api';
 import SplitDiffModal from './SplitDiffModal';
+import { fmtSize } from './sessionAttachments';
+import {
+  IconClipboard, IconDownload, IconEye, IconFileEarmark, IconPlusSquare, IconTrash,
+} from './icons';
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
-// to preserve historical imports (`import { ToolCallEntry, Todo,
-// EditSnapshot } from './ToolPanel'`).
-export type { ToolCallEntry, Todo, EditSnapshot } from './sessionTypes';
-import type { ToolCallEntry, Todo, EditSnapshot } from './sessionTypes';
+// to preserve historical imports (`import { ToolCallEntry, EditSnapshot }
+// from './ToolPanel'`).
+export type { ToolCallEntry, EditSnapshot } from './sessionTypes';
+import type { ToolCallEntry, EditSnapshot } from './sessionTypes';
 
 type Props = {
   sessionId: string | null;
@@ -18,14 +22,23 @@ type Props = {
   // as a raw patch. cf. CLAUDE.md §14.59.
   kind?: AgentKind;
   toolCalls: ToolCallEntry[];
-  todos: Todo[];
   edits: Map<string, EditSnapshot>;
   onRevert: () => void; // refresh signal
+  // Files the user attached to this session (drag & drop / paperclip). The
+  // list is owned by ClaudeSessionView so this panel and the input bar always
+  // show the same thing. cf. app/sessionAttachments.ts.
+  attachments?: SessionAttachment[];
+  onRemoveAttachment?: (id: string) => void;
+  // Re-insert a path into the message being composed.
+  onInsertPath?: (path: string) => void;
 };
 
-type Tab = 'diffs' | 'todos' | 'calls';
+type Tab = 'diffs' | 'calls' | 'files';
 
-export default function ToolPanel({ sessionId, kind = 'claude', toolCalls, todos, edits, onRevert }: Props) {
+export default function ToolPanel({
+  sessionId, kind = 'claude', toolCalls, edits, onRevert,
+  attachments = [], onRemoveAttachment, onInsertPath,
+}: Props) {
   const [tab, setTab] = useState<Tab>('diffs');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
   // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
@@ -41,8 +54,8 @@ export default function ToolPanel({ sessionId, kind = 'claude', toolCalls, todos
         <button className={tab === 'diffs' ? 'on' : ''} onClick={() => setTab('diffs')}>
           diffs {editArr.length > 0 && <span className="badge">{editArr.length}</span>}
         </button>
-        <button className={tab === 'todos' ? 'on' : ''} onClick={() => setTab('todos')}>
-          todos {todos.length > 0 && <span className="badge">{todos.filter((t) => t.status !== 'completed').length}/{todos.length}</span>}
+        <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
+          files {attachments.length > 0 && <span className="badge">{attachments.length}</span>}
         </button>
         <button className={tab === 'calls' ? 'on' : ''} onClick={() => setTab('calls')}>
           tools {toolCalls.length > 0 && <span className="badge">{toolCalls.length}</span>}
@@ -50,8 +63,15 @@ export default function ToolPanel({ sessionId, kind = 'claude', toolCalls, todos
       </nav>
       <div className="tp-body">
         {tab === 'diffs' && <DiffsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
-        {tab === 'todos' && <TodosTab todos={todos} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
+        {tab === 'files' && (
+          <FilesTab
+            sessionId={sessionId}
+            attachments={attachments}
+            onRemove={onRemoveAttachment}
+            onInsert={onInsertPath}
+          />
+        )}
       </div>
     </aside>
   );
@@ -125,14 +145,109 @@ function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
   );
 }
 
-function TodosTab({ todos }: { todos: Todo[] }) {
-  if (todos.length === 0) return <div className="tp-empty">no todos</div>;
+/**
+ * Files attached to the session.
+ *
+ * The point of this tab is continuity: within one session the user can see
+ * which files are actually in play on the VPS, get them back, and re-attach one
+ * to a later message without hunting through the transcript for the path.
+ *
+ * Three actions per file, in order of how often they're wanted:
+ *  - `+`  re-insert the path into the message being composed (the whole reason
+ *         the tab exists — a file uploaded 40 messages ago is one click away).
+ *  - copy the path (for a shell, or to paste into another session).
+ *  - download the hub-side copy.
+ * Removal is deliberately last and unlabelled-by-default: it drops the entry and
+ * best-effort deletes the remote file, which would strand any earlier message
+ * that references it.
+ */
+function FilesTab({ sessionId, attachments, onRemove, onInsert }: {
+  sessionId: string | null;
+  attachments: SessionAttachment[];
+  onRemove?: (id: string) => void;
+  onInsert?: (path: string) => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function copyPath(a: SessionAttachment) {
+    try {
+      await navigator.clipboard.writeText(a.remotePath);
+      setCopied(a.id);
+      setTimeout(() => setCopied((c) => (c === a.id ? null : c)), 1200);
+    } catch {
+      // Clipboard API needs a secure context (https / localhost). On plain
+      // http the path is still selectable in the DOM — don't pretend it worked.
+      alert(a.remotePath);
+    }
+  }
+
+  if (attachments.length === 0) {
+    return (
+      <div className="tp-empty">
+        no files attached yet
+        <br />
+        <span className="tp-empty-hint">drop a file anywhere on the page, or use the 📎 button</span>
+      </div>
+    );
+  }
+
   return (
-    <ul className="todo-list">
-      {todos.map((t, i) => (
-        <li key={i} className={`todo-${t.status}`}>
-          <span className="chk">{t.status === 'completed' ? '✓' : t.status === 'in_progress' ? '▸' : '○'}</span>
-          <span className="text">{t.content}</span>
+    <ul className="files-list">
+      {attachments.map((a) => (
+        <li key={a.id}>
+          <div className="f-head">
+            <IconFileEarmark className="f-icon" />
+            <span className="f-name" title={a.name}>{a.name}</span>
+            <span className="f-size">{fmtSize(a.size)}</span>
+          </div>
+          <div className="f-path" title={a.remotePath}>{a.remotePath}</div>
+          <div className="f-actions">
+            {/* Open in a new tab and let the browser render it natively —
+                image, PDF, audio, video, text. Shown only when the SERVER says
+                it will serve this file inline (`previewMime`), so the button
+                can never promise a preview the route would refuse.
+                `rel=noopener` because the new tab is a sandboxed document we
+                don't want holding a handle on `window.opener`. */}
+            {sessionId && a.previewMime && (
+              <a
+                className="f-open"
+                href={api.sessionAttachmentUrl(sessionId, a.id, { inline: true })}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`open in a new tab (${a.previewMime})`}
+              >
+                <IconEye /> open
+              </a>
+            )}
+            <button type="button" onClick={() => onInsert?.(a.remotePath)} title="insert this path into the message">
+              <IconPlusSquare /> insert
+            </button>
+            <button type="button" onClick={() => copyPath(a)} title="copy the path on the VPS">
+              <IconClipboard /> {copied === a.id ? 'copied' : 'copy'}
+            </button>
+            {sessionId && (
+              <a
+                className="f-dl"
+                href={api.sessionAttachmentUrl(sessionId, a.id)}
+                download={a.name}
+                title="download the copy kept by Charon"
+              >
+                <IconDownload /> get
+              </a>
+            )}
+            <button
+              type="button"
+              className="f-rm"
+              onClick={() => {
+                if (confirm(`Remove "${a.name}" from this session?\n\nThe copy on the VPS is deleted too — any earlier message pointing at this path will stop resolving.`)) {
+                  onRemove?.(a.id);
+                }
+              }}
+              title="remove from the session (deletes the file on the VPS)"
+            >
+              <IconTrash />
+            </button>
+          </div>
         </li>
       ))}
     </ul>

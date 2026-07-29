@@ -1883,6 +1883,10 @@
   border-top: 1px solid var(--gold-deep);
   background: rgba(28,31,41,0.5);
   align-items: stretch;
+  /* Wrap so the upload chips (flex-basis:100%) get their own line above the
+     input row. The three real items each carry their own basis/shrink, so
+     enabling wrap doesn't move anything as long as they fit — which they do. */
+  flex-wrap: wrap;
 }
 .claude-input-bar .mode-switch {
   display: flex; flex-direction: column;
@@ -1930,6 +1934,7 @@
 }
 .claude-input-bar textarea {
   flex: 1;
+  min-width: 0;
   background: var(--shadow);
   border: 1px solid var(--gold-deep);
   color: var(--parchment);
@@ -1940,6 +1945,29 @@
 }
 .claude-input-bar textarea:focus { border-color: var(--gold); }
 .claude-input-bar textarea:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Send column: 📎 stacked above SEND ─────────────────────────────────── */
+.claude-input-bar .ci-send-col {
+  display: flex; flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+.claude-input-bar .ci-attach {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft);
+  cursor: pointer;
+  /* 40px min: a comfortable tap target on a phone (the paperclip IS the
+     mobile upload path — there is no drag & drop on touch). */
+  min-height: 40px;
+  flex-shrink: 0;
+  padding: 0 22px;
+}
+.claude-input-bar .ci-attach:hover { color: var(--gold-bright); border-color: var(--gold); }
+.claude-input-bar .ci-attach:active { background: rgba(138,180,228,0.12); }
+.claude-input-bar .ci-file-input { display: none; }
 .claude-input-bar .send {
   background: var(--shadow);
   border: 1px solid var(--gold);
@@ -1948,10 +1976,86 @@
   letter-spacing: 0.18em; text-transform: uppercase;
   padding: 0 22px;
   cursor: pointer;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 40px;
 }
 .claude-input-bar .send:hover:not(:disabled) { background: rgba(138,180,228,0.1); }
 .claude-input-bar .send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── In-flight upload chips ─────────────────────────────────────────────── */
+.claude-input-bar .ci-pending {
+  flex-basis: 100%;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  order: -1;                    /* own line ABOVE the input row */
+}
+.claude-input-bar .ci-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 100%;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft);
+  font-size: 11px;
+  padding: 4px 8px;
+}
+.claude-input-bar .ci-chip.err { border-color: var(--crimson-deep); color: var(--crimson); }
+.claude-input-bar .ci-chip-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;
+}
+.claude-input-bar .ci-chip-spin { color: var(--gold); font-size: 10px; letter-spacing: 0.1em; }
+.claude-input-bar .ci-chip-x {
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font-size: 12px; line-height: 1; padding: 2px 4px;
+}
+
+/* ── Drop overlay ───────────────────────────────────────────────────────── */
+/* Covers the viewport while a file is dragged over the page. pointer-events
+   none so the drag events keep bubbling to the window listener that does the
+   actual work — an interactive overlay would swallow the drop. */
+.claude-input-bar .ci-drop-overlay {
+  position: fixed; inset: 0;
+  z-index: 900;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(24,27,36,0.72);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+.claude-input-bar .ci-drop-card {
+  display: flex; align-items: center; gap: 12px;
+  border: 1px dashed var(--gold);
+  background: var(--stone-2);
+  color: var(--gold-bright);
+  font-family: var(--display); font-size: 12px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 26px 34px;
+  text-align: center;
+}
+.claude-input-bar .ci-drop-card svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* ── Upload gate ────────────────────────────────────────────────────────────
+   Same card as the drop overlay, but this one deliberately does NOT set
+   pointer-events:none — it BLOCKS the screen. The hub has to push the bytes
+   over ssh (seconds, not milliseconds) and the path is spliced in at the
+   remembered caret when that returns; typing or sending in the meantime lands
+   the insert somewhere the user no longer expects. */
+.claude-input-bar .ci-upload-overlay {
+  position: fixed; inset: 0;
+  z-index: 950;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(24,27,36,0.72);
+  backdrop-filter: blur(2px);
+  cursor: progress;
+}
+.claude-input-bar .ci-spinner {
+  width: 18px; height: 18px; flex-shrink: 0;
+  border: 2px solid var(--gold-deep);
+  border-top-color: var(--gold-bright);
+  border-radius: 50%;
+  animation: ci-spin 0.7s linear infinite;
+}
+@keyframes ci-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .claude-input-bar .ci-spinner { animation-duration: 2.4s; }
+}
 
 /* Big resume button in place of the input bar when the session is disconnected */
 .claude-disconnect-cta {
@@ -2409,6 +2513,56 @@
 }
 .tp-body { flex: 1; overflow-y: auto; padding: 10px; }
 .tp-empty { font-style: italic; color: var(--parchment-soft); padding: 20px; font-size: 12px; text-align: center; }
+.tp-empty-hint { display: inline-block; margin-top: 8px; opacity: 0.75; font-size: 11px; }
+
+/* ── Files tab: attachments of the session ───────────────────────────────── */
+.files-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.files-list > li {
+  border: 1px solid var(--gold-deep);
+  background: var(--stone);
+  padding: 8px 10px;
+}
+.files-list .f-head { display: flex; align-items: center; gap: 8px; }
+.files-list .f-icon { flex-shrink: 0; color: var(--parchment-soft); width: 14px; height: 14px; }
+.files-list .f-name {
+  flex: 1; min-width: 0;
+  color: var(--parchment); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.files-list .f-size { flex-shrink: 0; color: var(--parchment-soft); font-size: 10px; }
+/* The remote path is the load-bearing string (it's what the agent reads and
+   what the input bar underlines) — monospace, wrapping on separators so a deep
+   path stays fully readable in a 340px panel instead of being ellipsized. */
+.files-list .f-path {
+  margin-top: 4px;
+  font-family: var(--mono); font-size: 10px;
+  color: var(--teal);
+  word-break: break-all;
+  line-height: 1.4;
+}
+.files-list .f-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
+.files-list .f-actions button,
+.files-list .f-actions .f-dl {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft);
+  font-family: var(--display); font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-decoration: none;
+  min-height: 30px;
+}
+.files-list .f-actions button svg,
+.files-list .f-actions .f-dl svg { width: 11px; height: 11px; }
+.files-list .f-actions button:hover,
+.files-list .f-actions .f-dl:hover { color: var(--gold-bright); border-color: var(--gold); }
+/* `open` deliberately carries NO accent of its own: it shares the generic
+   `.f-actions button / a` styling with insert / copy / get so the row reads as
+   one row of peers. */
+.files-list .f-actions .f-rm { margin-left: auto; }
+.files-list .f-actions .f-rm:hover { color: var(--crimson); border-color: var(--crimson-deep); }
 
 /* Diff cards */
 .diff-card {
@@ -2456,20 +2610,6 @@
 .dline.del  { color: var(--crimson); }
 .dline.hunk { color: var(--lavender); }
 .dline.ctx  { color: var(--parchment-soft); }
-
-/* Todos */
-.todo-list { list-style: none; padding: 0; margin: 0; }
-.todo-list li {
-  display: flex; gap: 8px; padding: 6px 4px;
-  border-bottom: 1px solid rgba(106,115,136,0.2);
-  font-family: var(--body); font-size: 13px;
-}
-.todo-list .chk { width: 16px; font-family: var(--mono); }
-.todo-list .text { flex: 1; }
-.todo-list .todo-completed .text { text-decoration: line-through; opacity: 0.6; color: var(--parchment-soft); }
-.todo-list .todo-completed .chk { color: #a0c87b; }
-.todo-list .todo-in_progress .chk { color: var(--gold-bright); }
-.todo-list .todo-pending .chk { color: var(--parchment-soft); }
 
 /* Tool calls */
 .calls-list { list-style: none; padding: 0; margin: 0; }
@@ -3395,8 +3535,16 @@
     min-width: 0;
     justify-content: center;
   }
+  /* Textarea shrinks, but the wrapper drives the height (both layers are
   .claude-input-bar textarea { flex: 1 1 auto; min-height: 54px; }
-  .claude-input-bar .send { padding: 0 20px; }
+  .claude-input-bar .ci-send-col { flex: 0 0 auto; }
+  .claude-input-bar .send { padding: 0 18px; }
+  .claude-input-bar .ci-attach { padding: 0 18px; min-height: 38px; }
+  /* On touch there IS no drag & drop — the paperclip is the only way in, so it
+     must never be the cramped button. */
+  .claude-input-bar .ci-attach svg { width: 18px; height: 18px; }
+  .claude-input-bar .ci-chip-name { max-width: 150px; }
+  .claude-input-bar .ci-drop-card { padding: 20px 22px; font-size: 11px; }
 }
 
 /* ── ≤820px : navigation polish (TabBar + context menu) — Étape 3 ───────────

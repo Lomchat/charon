@@ -247,7 +247,6 @@ export function summarizeToolInput(name: string, input: any): string {
     case 'Bash':       return String(input.command ?? '').slice(0, 100);
     case 'Grep':       return `"${input.pattern ?? ''}" in ${input.path ?? '.'}`;
     case 'Glob':       return String(input.pattern ?? '');
-    case 'TodoWrite':  return `${(input.todos ?? []).length} todos`;
     case 'WebFetch':   return String(input.url ?? '');
     case 'WebSearch':  return String(input.query ?? '');
     // ── Codex tools (OpenAI) ──
@@ -266,7 +265,8 @@ export function summarizeToolInput(name: string, input: any): string {
       return files.length ? files.join(', ') : 'patch';
     }
     case 'web_search':  return String(input.query ?? input.q ?? '');
-    // Codex's plan tool (analog of TodoWrite).
+    // Codex's plan tool — rendered as a plain tool card (the hub keeps no
+    // plan/todo state of its own).
     case 'update_plan': return `${(input.plan ?? input.steps ?? []).length} steps`;
     default: {
       // MCP tools surface as `mcp__server__tool` / `server__tool` / `server/tool`

@@ -32,7 +32,6 @@ describe('rebuildStateFromMessages', () => {
     const s = rebuildStateFromMessages([], 'active');
     expect(s.messages).toEqual([]);
     expect(s.toolCalls).toEqual([]);
-    expect(s.todos).toEqual([]);
     expect(s.edits.size).toBe(0);
     expect(s.files.size).toBe(0);
   });
@@ -141,32 +140,6 @@ describe('rebuildStateFromMessages', () => {
     expect([...s.files].sort()).toEqual(['/srv/a.ts', '/srv/b.ts']);
   });
 
-  // --- todos: latest todo_update wins ---
-
-  it('takes the latest todo_update event (latest wins, replaces not merges)', () => {
-    const rows = [
-      row('event', JSON.stringify({ type: 'todo_update', todos: [{ content: 'old', status: 'pending' }] })),
-      row('event', JSON.stringify({
-        type: 'todo_update',
-        todos: [
-          { content: 'task A', status: 'completed' },
-          { content: 'task B', status: 'in_progress' },
-        ],
-      })),
-    ];
-    const s = rebuildStateFromMessages(rows, 'active');
-    expect(s.todos).toEqual([
-      { content: 'task A', status: 'completed' },
-      { content: 'task B', status: 'in_progress' },
-    ]);
-  });
-
-  it('todo_update with no todos field yields an empty array (nullish fallback)', () => {
-    const rows = [row('event', JSON.stringify({ type: 'todo_update' }))];
-    const s = rebuildStateFromMessages(rows, 'active');
-    expect(s.todos).toEqual([]);
-  });
-
   // --- edit snapshots ---
 
   it('accumulates before/after edit snapshots per file_path and tracks the file', () => {
@@ -233,10 +206,6 @@ describe('rebuildStateFromMessages', () => {
       toolUse('toolu_read', 'Read', { file_path: '/srv/charon/CLAUDE.md' }),
       toolResult('toolu_read', '# CLAUDE.md', false),
       row('assistant', 'Here is the content'),
-      row('event', JSON.stringify({
-        type: 'todo_update',
-        todos: [{ content: 'summarize', status: 'in_progress' }],
-      })),
     ];
     const s = rebuildStateFromMessages(rows, 'active');
 
@@ -245,8 +214,6 @@ describe('rebuildStateFromMessages', () => {
     expect(s.toolCalls[0].result?.content).toBe('# CLAUDE.md');
     // file tracked
     expect(s.files.has('/srv/charon/CLAUDE.md')).toBe(true);
-    // todos
-    expect(s.todos).toEqual([{ content: 'summarize', status: 'in_progress' }]);
     // messages: user, thinking, tool_use, tool_result, assistant (5 chat rows)
     expect(s.messages.map((m) => m.role)).toEqual([
       'user', 'thinking', 'tool_use', 'tool_result', 'assistant',
