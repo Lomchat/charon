@@ -842,18 +842,43 @@ class CodexSession:
         try:
             thread = None
             if self.claude_session_id:
-                # Resume an existing Codex thread. resume() doesn't take sandbox
-                # at start in some builds; pass what it accepts, fall back to a
-                # fresh thread if resume fails.
-                try:
-                    thread = await client.thread_resume(
-                        self.claude_session_id, cwd=self.cwd,
-                        approval_mode=approval, sandbox=sandbox,
-                        **({"model": self.model} if self.model else {}),
+                # ── Resuming a KNOWN thread ──────────────────────────────────
+                # NEVER silently fall back to thread_start() here. The thread id
+                # IS the conversation: a fresh thread gets a NEW id which then
+                # overwrites self.claude_session_id below and is persisted, so a
+                # single transient hiccup (app-server still booting, codex
+                # logged out, cwd temporarily missing) would destroy the resume
+                # handle permanently — the user keeps a session that silently
+                # lost all its context, with only one `error` line as evidence.
+                # Retry once, then fail LOUDLY and keep the id so a later resume
+                # can still succeed once the real cause is fixed.
+                last_err: Exception | None = None
+                for attempt in (1, 2):
+                    try:
+                        thread = await client.thread_resume(
+                            self.claude_session_id, cwd=self.cwd,
+                            approval_mode=approval, sandbox=sandbox,
+                            **({"model": self.model} if self.model else {}),
+                        )
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        thread = None
+                        if attempt == 1:
+                            # Transient-failure grace: the app-server child is
+                            # spawned lazily by the first RPC.
+                            await asyncio.sleep(1.5)
+                if last_err is not None:
+                    self.status = "error"
+                    self._error_msg = (
+                        f"resume of Codex thread {self.claude_session_id} failed: "
+                        f"{self._format_err('resume', last_err)}"
                     )
-                except Exception as e:
-                    self._emit("error", msg=f"resume {self.claude_session_id}: {e} — starting fresh thread")
-                    thread = None
+                    self._emit("error", msg=self._error_msg, fatal=True)
+                    self._emit("status", status="error")
+                    self._ready_evt.set()   # unblock any waiter, else it hangs
+                    return                  # _run's finally closes + persists
             if thread is None:
                 thread = await client.thread_start(**start_kw)
             self._thread = thread

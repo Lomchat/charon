@@ -2410,6 +2410,33 @@
 }
 .claude-modal .modal-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
 
+/* ResumeModal backend tabs (claude | codex). Claude is the default tab; both
+   stay clickable even when the backend is unusable, so the reason is readable
+   instead of hidden behind a disabled control. */
+.resume-tabs { display: flex; gap: 6px; margin: 12px 0 4px; }
+.resume-tab {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--shadow); border: 1px solid var(--gold-deep);
+  color: var(--parchment-soft); font-family: var(--display);
+  font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  padding: 6px 14px; cursor: pointer;
+}
+.resume-tab:hover { color: var(--gold); border-color: var(--gold); }
+.resume-tab.active {
+  color: var(--gold-bright); border-color: var(--gold);
+  background: rgba(198,160,74,0.10);
+}
+/* Dimmed, not disabled — the tooltip carries the reason. */
+.resume-tab.unavailable img { opacity: 0.45; filter: grayscale(1); }
+.resume-tab.unavailable:not(.active) { opacity: 0.7; }
+.resume-warn {
+  margin: 8px 0 0; padding: 6px 9px; font-size: 11px; line-height: 1.5;
+  color: var(--parchment-soft);
+  border: 1px solid rgba(198,160,74,0.35);
+  border-left: 2px solid var(--gold);
+  background: rgba(198,160,74,0.06);
+}
+
 .resume-list { list-style: none; padding: 0; margin: 0 0 10px; }
 .resume-list li {
   display: flex; align-items: center; gap: 10px;

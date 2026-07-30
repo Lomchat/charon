@@ -12,7 +12,7 @@ import type {
   ShellsListResponse, StartShellBody, UpdateShellBody,
   InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
-  ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse,
+  ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse, ScanVpsCodexResponse,
   CheckClaudeLoginResponse, ClaudeLoginStatusResponse,
   CodexLoginStartResponse, CodexLoginStatusResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
@@ -184,6 +184,10 @@ export const api = {
     send<SetupVpsClaudeResponse>('POST', `/api/vps/${id}/claude/setup`),
   scanVpsClaude: (id: string) =>
     send<ScanVpsClaudeResponse>('GET', `/api/vps/${id}/claude/scan`),
+  // Codex sibling: lists the VPS's Codex threads (~/.codex/sessions rollouts)
+  // so they can be imported + resumed like Claude ones.
+  scanVpsCodex: (id: string) =>
+    send<ScanVpsCodexResponse>('GET', `/api/vps/${id}/codex/scan`),
   // Re-checks the VPS's `claude login` state. Persists in DB + returns.
   // Triggered when the login modal closes (the user may have just logged
   // in or out), or on manual demand.

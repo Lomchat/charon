@@ -4,15 +4,21 @@ import { db, vps as vpsTable, claudeSessionMessages, claudeSessionLogs } from '@
 import { requireApiSession } from '@/lib/server/session';
 import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
+import { importCodexRolloutMessages } from '@/lib/server/claude/importCodexRollout';
+import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 
 // POST /api/claude/sessions/import
-// Body: { vpsId, claudeSessionId, cwd, name?, permissionMode? }
+// Body: { vpsId, claudeSessionId, cwd, name?, kind?, permissionMode? }
 //
 // 1. Creates a claude_sessions row with status='sleeping' and the claudeSessionId
-// 2. Fetches the .jsonl from the VPS and inserts the historical messages in DB
-//    -> the chat displays the history immediately after import
+//    (on a kind='codex' row that column holds the Codex THREAD id — §14.59)
+// 2. Fetches the transcript from the VPS and inserts the historical messages in
+//    DB -> the chat displays the history immediately after import.
+//    Claude: ~/.claude/projects/<slug>/<uuid>.jsonl
+//    Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl
 // 3. On a later resume, the agent calls start_session(claude_session_id=...)
-//    which resumes the conversation on the SDK side so it can continue.
+//    → ClaudeSDKClient(resume=…) or codex thread_resume(), so the conversation
+//    continues with its real context on the backend side too.
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -23,17 +29,24 @@ export async function POST(req: Request) {
   if (!vpsId || !claudeSessionId || !cwd) {
     return NextResponse.json({ error: 'vpsId, claudeSessionId, cwd required' }, { status: 400 });
   }
+  const kind = body.kind === 'codex' ? 'codex' : 'claude';
 
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   try {
-    const id = await importExistingSession({
-      vpsId, cwd, claudeSessionId,
-      name: body.name ? String(body.name) : null,
-      permissionMode: (['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(body.permissionMode)
+    // The mode namespaces are disjoint: Claude PermissionModes vs Codex
+    // sandbox levels. Validating with the wrong list would silently hand the
+    // agent a mode it coerces back to its default (§14.59).
+    const permissionMode = kind === 'codex'
+      ? (CODEX_SANDBOX_MODES.includes(body.permissionMode) ? body.permissionMode : 'workspace-write')
+      : ((['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(body.permissionMode)
         ? body.permissionMode
-        : 'auto',
+        : 'auto');
+    const id = await importExistingSession({
+      vpsId, cwd, claudeSessionId, kind,
+      name: body.name ? String(body.name) : null,
+      permissionMode,
     });
 
     // Fetch + insert messages (best-effort: if it fails, the session is
@@ -41,7 +54,9 @@ export async function POST(req: Request) {
     let importedCount = 0;
     let importError: string | undefined;
     try {
-      const r = await importJsonlMessages(v, claudeSessionId);
+      const r = kind === 'codex'
+        ? await importCodexRolloutMessages(v, claudeSessionId)
+        : await importJsonlMessages(v, claudeSessionId);
       if (!r.ok) {
         importError = r.error;
       } else if (r.messages.length > 0) {

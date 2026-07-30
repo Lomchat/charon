@@ -1,22 +1,18 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, ClaudeSession } from '@/lib/db/schema';
+import type { AgentKind, ScannedSession } from '@/lib/types/api';
+import AgentLogo from './AgentLogo';
+import { backendAvailability } from './vpsHealth';
 
-type ScannedSession = {
-  sessionId: string;
-  cwd: string;
-  mtime: number;
-  size: number;
-  summary?: string;
-  aiTitle?: string;
-  lastPrompt?: string;
-  firstUserText?: string;
-  messageCount?: number;
-  model?: string;
-  gitBranch?: string;
-};
-
+// "Scan existing sessions" — one modal, TWO backends behind a tab bar.
+//
+// Both halves are symmetric on purpose (§14.59): the Codex scan route answers
+// the same row shape as the Claude one, `claudeSessionId` carries the Codex
+// THREAD id, and the import route dispatches the history fetch on `kind`. So
+// the whole list/card rendering below is shared and only three things branch:
+// the scan endpoint, the DB-list filter, and the codex-availability gate.
 type Props = {
   vpsList: Vps[];
   dbSessions: ClaudeSession[];
@@ -26,27 +22,62 @@ type Props = {
   onResumed: (id: string) => void;
 };
 
+const KINDS: AgentKind[] = ['claude', 'codex'];
+
 export default function ResumeModal({
   vpsList, dbSessions, initialVpsId, onClose, onImported, onResumed,
 }: Props) {
   const [vpsId, setVpsId] = useState(initialVpsId ?? vpsList[0]?.id ?? '');
+  // Claude is the default tab (the historical behaviour of this button).
+  const [kind, setKind] = useState<AgentKind>('claude');
   const [scanLoading, setScanLoading] = useState(false);
-  const [scanned, setScanned] = useState<ScannedSession[] | null>(null);
-  const [scanError, setScanError] = useState<string | null>(null);
+  // Scans are cached per (vps, kind) so flipping tabs back and forth doesn't
+  // re-run an ssh round-trip that takes seconds on a big ~/.codex/sessions.
+  const [scans, setScans] = useState<Record<string, ScannedSession[]>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  const reqSeq = useRef(0);
 
-  const dbForVps = dbSessions.filter((s) => s.vpsId === vpsId);
-  const dbClaudeIds = useMemo(() => new Set(dbForVps.map((s) => s.claudeSessionId).filter(Boolean) as string[]), [dbForVps]);
+  const cacheKey = `${vpsId}:${kind}`;
+  const scanned = scans[cacheKey] ?? null;
+  const scanError = errors[cacheKey] ?? null;
+
+  const vps = vpsList.find((v) => v.id === vpsId);
+  // ADVISORY only — never a gate. Scanning reads transcript files over ssh and
+  // needs neither a signed-in account nor an installed backend, so a VPS whose
+  // Codex is signed out must still list its threads: importing them is exactly
+  // how you keep the history before fixing the login. What the reason DOES
+  // predict is that the follow-up resume will fail, so we say so up front.
+  const availability = vps ? backendAvailability(vps, kind) : null;
+  const unusable = availability && !availability.ok ? availability.reason : null;
+
+  const dbForVps = dbSessions.filter(
+    (s) => s.vpsId === vpsId && ((s.kind ?? 'claude') === kind),
+  );
+  const dbKnownIds = useMemo(
+    () => new Set(dbForVps.map((s) => s.claudeSessionId).filter(Boolean) as string[]),
+    [dbForVps],
+  );
   const resumable = dbForVps.filter((s) => s.status === 'sleeping' || s.status === 'error');
+  const notImported = scanned ? scanned.filter((s) => !dbKnownIds.has(s.sessionId)) : null;
 
-  async function doScan() {
-    setScanLoading(true); setScanError(null); setScanned(null);
+  async function doScan(force = false) {
+    if (!vpsId) return;
+    const key = `${vpsId}:${kind}`;
+    if (!force && scans[key]) return;    // cached
+    const seq = ++reqSeq.current;
+    setScanLoading(true);
+    setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
     try {
-      const r = await api.scanVpsClaude(vpsId);
-      setScanned(r.sessions ?? []);
+      const r = kind === 'codex' ? await api.scanVpsCodex(vpsId) : await api.scanVpsClaude(vpsId);
+      if (seq !== reqSeq.current) return;  // a newer tab/VPS switch won
+      setScans((s) => ({ ...s, [key]: (r.sessions ?? []) as ScannedSession[] }));
     } catch (e: any) {
-      setScanError(String(e?.message ?? e));
-    } finally { setScanLoading(false); }
+      if (seq !== reqSeq.current) return;
+      setErrors((x) => ({ ...x, [key]: String(e?.message ?? e) }));
+    } finally {
+      if (seq === reqSeq.current) setScanLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -55,14 +86,16 @@ export default function ResumeModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  useEffect(() => { if (vpsId) doScan(); }, [vpsId]); // eslint-disable-line
+  // Scan on mount and on every (vps, kind) switch — cached, so a tab flip back
+  // is instant.
+  useEffect(() => { doScan(); }, [vpsId, kind]); // eslint-disable-line
 
   async function importScanned(s: ScannedSession) {
     setBusy(s.sessionId);
     try {
       const title = s.aiTitle || s.summary || s.firstUserText;
       const r = await api.importClaudeSession({
-        vpsId, claudeSessionId: s.sessionId, cwd: s.cwd,
+        vpsId, kind, claudeSessionId: s.sessionId, cwd: s.cwd,
         name: title ? title.slice(0, 60) : null,
       });
       onImported(r.id);
@@ -97,7 +130,8 @@ export default function ResumeModal({
 
   function fmtModel(m?: string) {
     if (!m) return '';
-    // claude-opus-4-7 → opus-4.7, claude-sonnet-4-6 → sonnet-4.6
+    // claude-opus-4-7 → opus-4.7, claude-sonnet-4-6 → sonnet-4.6.
+    // Codex ids (gpt-5.6-sol) already read fine and are left untouched.
     const x = m.replace(/^claude-/, '');
     return x.replace(/-(\d+)-(\d+)$/, '-$1.$2');
   }
@@ -116,8 +150,38 @@ export default function ResumeModal({
           </select>
         </label>
 
+        <div className="resume-tabs" role="tablist">
+          {KINDS.map((k) => {
+            const avail = vps ? backendAvailability(vps, k) : null;
+            const off = avail && !avail.ok ? avail.reason : null;
+            return (
+              <button
+                key={k}
+                role="tab"
+                aria-selected={kind === k}
+                className={`resume-tab${kind === k ? ' active' : ''}${off ? ' unavailable' : ''}`}
+                // NOT disabled on purpose: the tab stays clickable so the user
+                // can read WHY the backend is unusable instead of facing a
+                // dead control with no explanation.
+                title={off ? `${k}: ${off}` : `${k} sessions on this VPS`}
+                onClick={() => setKind(k)}
+              >
+                <AgentLogo kind={k} size={14} />
+                <span>{k}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {unusable && (
+          <p className="resume-warn">
+            {kind === 'codex' ? 'Codex' : 'Claude'} is {unusable} on this VPS — you can still
+            import (the transcript is read over ssh), but resuming will fail until it is fixed.
+          </p>
+        )}
+
         <h3>in DB ({resumable.length})</h3>
-        {resumable.length === 0 && <p className="empty">no sleeping or errored sessions</p>}
+        {resumable.length === 0 && <p className="empty">no sleeping or errored {kind} sessions</p>}
         <ul className="resume-list">
           {resumable.map((s) => (
             <li key={s.id}>
@@ -129,15 +193,21 @@ export default function ResumeModal({
           ))}
         </ul>
 
-        <h3>on the VPS, not imported ({scanned ? scanned.filter((s) => !dbClaudeIds.has(s.sessionId)).length : '?'})
-          <button className="reload" onClick={doScan} disabled={scanLoading}>{scanLoading ? '…' : '⟳'}</button>
+        <h3>on the VPS, not imported ({notImported ? notImported.length : '?'})
+          <button className="reload" onClick={() => doScan(true)} disabled={scanLoading}>
+            {scanLoading ? '…' : '⟳'}
+          </button>
         </h3>
         {scanError && <p className="err">{scanError}</p>}
-        {scanned && (
+        {scanned && notImported?.length === 0 && (
+          <p className="empty">nothing left to import</p>
+        )}
+        {notImported && (
           <ul className="resume-list">
-            {scanned.filter((s) => !dbClaudeIds.has(s.sessionId)).map((s) => {
+            {notImported.map((s) => {
               const title = s.aiTitle || s.summary || s.firstUserText || s.sessionId.slice(0, 8);
               const preview = s.lastPrompt || (s.firstUserText && s.firstUserText !== title ? s.firstUserText : '');
+              const effort = 'effort' in s ? s.effort : undefined;   // Codex-only
               return (
                 <li key={s.sessionId} className="scan-row">
                   <div className="scan-row-main">
@@ -153,6 +223,7 @@ export default function ResumeModal({
                         <span className="meta-pill" title="messages">{s.messageCount} msg</span>
                       )}
                       {s.model && <span className="meta-pill" title="model">{fmtModel(s.model)}</span>}
+                      {effort && <span className="meta-pill" title="reasoning effort">{effort}</span>}
                       <span className="meta-pill" title="file size">{fmtSize(s.size)}</span>
                     </div>
                     {preview && (

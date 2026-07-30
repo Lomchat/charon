@@ -251,6 +251,20 @@ export type ScannedClaudeSession = {
 };
 export type ScanVpsClaudeResponse = { sessions: ScannedClaudeSession[] };
 
+// The Codex scan (/api/vps/[id]/codex/scan) answers the SAME shape so one
+// component renders both backends — `sessionId` is the Codex THREAD id and
+// `effort` is Codex-only (the reasoning effort of the thread's last turn).
+// `cwdLatest`/`summary` are absent server-side; keep them optional here rather
+// than emitting empty strings the UI would have to special-case.
+export type ScannedCodexSession = Omit<ScannedClaudeSession, 'cwdLatest' | 'summary'> & {
+  cwdLatest?: string;
+  summary?: string;
+  effort?: string;
+};
+export type ScanVpsCodexResponse = { sessions: ScannedCodexSession[] };
+/** Either backend's scan row — what ResumeModal actually renders. */
+export type ScannedSession = ScannedClaudeSession | ScannedCodexSession;
+
 // ── Claude sessions ──────────────────────────────────────────────────────────
 
 export type ClaudeSessionListQuery = { vpsId?: string; status?: string };
@@ -385,10 +399,13 @@ export type CreateClaudeSessionResponse = {
 
 export type ImportClaudeSessionBody = {
   vpsId: string;
+  // Claude: the SDK session uuid. Codex: the thread id (§14.59).
   claudeSessionId: string;
   cwd: string;
   name?: string | null;
-  permissionMode?: PermissionMode;
+  kind?: AgentKind;
+  // Claude: a PermissionMode. Codex: a CodexSandboxMode.
+  permissionMode?: PermissionMode | CodexSandboxMode;
 };
 export type ImportClaudeSessionResponse = {
   id: string;
