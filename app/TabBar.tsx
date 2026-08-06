@@ -28,7 +28,7 @@ import AgentLogo from './AgentLogo';
 //   - VPSes: folder.position → VPS.position
 //   - entities inside a VPS: createdAt asc
 
-export type TabState = 'active' | 'thinking' | 'waiting' | 'starting' | 'sleeping';
+export type TabState = 'active' | 'thinking' | 'waiting' | 'starting' | 'failed' | 'sleeping';
 
 export type EntityTab =
   | { kind: 'session'; id: string; vpsId: string; label: string; state: TabState; closable: boolean; agentKind: AgentKind }
@@ -42,12 +42,13 @@ export type VpsTab = {
   // For VPS tabs we don't expose `closable` — closing happens per-entity in row 2.
 };
 
-const ACTIVE_SESSION_STATUSES = new Set(['active', 'thinking', 'starting']);
+const ACTIVE_SESSION_STATUSES = new Set(['active', 'thinking', 'starting', 'failed']);
 
 // Priority used to roll up a VPS's state from its entities' states.
 // Higher number = more important (will dominate the aggregation).
 const STATE_PRIORITY: Record<TabState, number> = {
-  waiting: 4,
+  waiting: 5,
+  failed: 4,
   thinking: 3,
   starting: 2,
   active: 1,
@@ -131,6 +132,7 @@ export function computeTabs({
       let state: TabState;
       if (isSleepingLike) state = 'sleeping';
       else if (pendingSessionIds.has(s.id)) state = 'waiting';
+      else if (baseStatus === 'failed') state = 'failed';
       else if (baseStatus === 'thinking') state = 'thinking';
       else if (baseStatus === 'starting') state = 'starting';
       else state = 'active';

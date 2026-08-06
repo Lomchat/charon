@@ -2,10 +2,10 @@ import 'server-only';
 import { and, asc, eq, gt, inArray, like } from 'drizzle-orm';
 import { db, vps as vpsTable, claudeSessions, claudeSessionMessages, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { isVersionOutdated } from '@/lib/version';
+import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { getSetting, setSetting, getSettingBool, type SettingKey } from './settings';
 import { getSdkLatestVersion, refreshSdkLatest, getCodexLatestVersion, refreshCodexLatest } from './sdkSync';
-import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { runAgentUpdateFlow } from './agentUpdate';
 import { sendPlainToTelegram } from './telegram';
 import { sendPushToAll } from './webPush';
@@ -16,11 +16,12 @@ import { sendPushToAll } from './webPush';
  * Every TICK_MS (+ a first run shortly after boot): refresh the PyPI latest
  * for BOTH packages, then enroll VPSes outdated on ANY axis — venv SDK behind
  * PyPI latest (vps.sdkVersion, hello ≥0.12.0), venv openai-codex behind PyPI
- * latest (vps.codexSdkVersion, hello ≥0.15.0), OR the deployed pyz sha ≠ the
- * locally-built one (vps.agentPyzSha, same check as the sidebar "update agent"
- * button, §14.6 — so a pyz rebuild auto-propagates fleet-wide, and <0.12.0
- * agents are reachable via this axis). Notify once per new SDK / codex version
- * / new pyz sha (Telegram + push), then run the unified update flow (pyz +
+ * latest (vps.codexSdkVersion, hello ≥0.15.0), OR the deployed agent
+ * `__version__` STRICTLY OLDER than the pyz this hub ships (vps.agentVersion,
+ * same check as the sidebar "update agent" button, §14.6 — so a version bump
+ * auto-propagates fleet-wide while a hub running an older build never rolls a
+ * VPS back). Notify once per new SDK / codex / agent version (Telegram +
+ * push), then run the unified update flow (pyz +
  * pip -U claude-agent-sdk + pip -U openai-codex + restart + resume,
  * agentUpdate.ts) on each outdated VPS that is IDLE, in SERIES. One flow fixes
  * all axes. Gates are independent: `sdk.auto_update` (default ON) covers the
@@ -36,13 +37,15 @@ import { sendPushToAll } from './webPush';
  * globalThis singleton guard so HMR / repeated seeds never double-arm.
  */
 
-// Dedup key for the codex notification axis, parallel to
-// `sdk.last_notified_version` / `agent.last_notified_pyz_sha`. The settings
-// owner has not yet registered it in settings.ts DEFAULTS (SettingKey union);
-// getSetting/setSetting handle an unregistered key fine at runtime (read →
-// falls back to '', treated as "never notified"; write → persisted to DB), so
-// the cast is a temporary type bridge — remove it once the key is added.
-const CODEX_LAST_NOTIFIED_KEY = 'codex.last_notified_version' as SettingKey;
+// Dedup keys for the notification axes, parallel to
+// `sdk.last_notified_version`. Both are registered in settings.ts DEFAULTS
+// (internal keys — written here, never POSTable).
+const CODEX_LAST_NOTIFIED_KEY: SettingKey = 'codex.last_notified_version';
+// Dedup key for the agent axis. Replaces `agent.last_notified_pyz_sha`: the
+// key must be the thing we now act on (§14.6), i.e. the VERSION we ship —
+// keyed on the sha, a rebuild with no bump would re-notify about an update
+// that no longer happens.
+const AGENT_LAST_NOTIFIED_KEY: SettingKey = 'agent.last_notified_agent_version';
 
 const TICK_MS = 30 * 60 * 1000; // 30min — cheap probes (SQLite + one PyPI CDN hit)
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000; // ~2min after boot (let agents hello first)
@@ -148,7 +151,7 @@ function isVpsBusy(vpsId: string): boolean {
     .from(claudeSessions)
     .where(and(
       eq(claudeSessions.vpsId, vpsId),
-      eq(claudeSessions.status, 'active'),
+      inArray(claudeSessions.status, ['active', 'failed']),
     ))
     .all();
   if (live.length === 0) return false;
@@ -191,6 +194,7 @@ async function tick(): Promise<void> {
     const latest = getSdkLatestVersion();
     const codexLatest = getCodexLatestVersion();
     const builtSha = getBuiltPyzSha();
+    const builtVersion = getBuiltAgentVersion();
     // THREE independent staleness axes, ONE update flow (runAgentUpdateFlow
     // deploys the pyz AND pip-upgrades BOTH claude-agent-sdk and openai-codex
     // in a single pass, so a VPS behind on any — or all — is fixed by one run):
@@ -200,45 +204,53 @@ async function tick(): Promise<void> {
     //            hello ≥0.15.0 — NULL codexSdkVersion is invisible; a VPS
     //            without codex is never enrolled just for this axis). Gated by
     //            `codex.auto_update` (default ON), independent of sdk.auto_update.
-    //   · pyz:   deployed agent sha ≠ the sha Charon has built locally (same
-    //            check as the sidebar "update agent" button, §14.6). This axis
-    //            DOES see <0.12.0 agents (they still report a pyz sha) → a pyz
-    //            rebuild auto-propagates fleet-wide.
-    if (!latest && !builtSha && !codexLatest) return; // no way to compare on any axis
+    //   · agent: deployed `__version__` STRICTLY OLDER than the pyz this hub
+    //            ships (§14.6, same check as the sidebar button). ORDERED, so
+    //            a hub on an older build leaves a newer VPS alone instead of
+    //            rolling it back every tick (§14.70). Equal version + different
+    //            sha is NOT an axis: bump `__version__` to propagate.
+    if (!latest && !builtVersion && !codexLatest) return; // no way to compare on any axis
     const fleet: Vps[] = db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all();
     const sdkOld = (v: Vps) => !!latest && !!v.sdkVersion && isVersionOutdated(v.sdkVersion, latest);
-    const pyzOld = (v: Vps) => !!builtSha && !!v.agentPyzSha && v.agentPyzSha !== builtSha;
+    const pyzOld = (v: Vps) => isAgentOutdated(v.agentVersion, builtVersion);
     // Codex axis: only VPSes that actually report a codex version (codex
     // installed, hello ≥0.15.0). NULL codexSdkVersion is invisible here — a
     // VPS without codex is never enrolled just for the codex axis.
     const codexOld = (v: Vps) => !!codexLatest && !!v.codexSdkVersion && isVersionOutdated(v.codexSdkVersion, codexLatest);
     const reason = (v: Vps) => [
       sdkOld(v) ? `claude ${v.sdkVersion}→${latest}` : null,
-      pyzOld(v) ? `pyz ${(v.agentPyzSha ?? '').slice(0, 7)}→${(builtSha ?? '').slice(0, 7)}` : null,
+      pyzOld(v) ? `agent v${v.agentVersion}→v${builtVersion}` : null,
       codexOld(v) ? `codex ${v.codexSdkVersion}→${codexLatest}` : null,
     ].filter(Boolean).join(', ');
     const outdated = fleet
       .filter((v) => sdkOld(v) || pyzOld(v) || codexOld(v))
       .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
-    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, codex-latest=${codexLatest ?? '-'}, pyz=${builtSha ? builtSha.slice(0, 7) : '-'}, fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
+    // VPSes running an agent NEWER than this hub's build — logged, never
+    // touched. On a co-tenant host that line is the expected steady state, not
+    // an anomaly: the other hub is simply ahead (§14.70).
+    const ahead = fleet.filter((v) => agentBuildRelation(v.agentVersion, builtVersion) === 'ahead');
+    if (ahead.length) {
+      console.log(`[sdkWatch] ${ahead.length} VPS ahead of this hub's build (v${builtVersion}) — left alone: ${ahead.map((v) => `${v.name} v${v.agentVersion}`).join(', ')}`);
+    }
+    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, codex-latest=${codexLatest ?? '-'}, agent=v${builtVersion ?? '-'} (pyz ${builtSha ? builtSha.slice(0, 7) : '-'}), fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
     if (outdated.length === 0) return;
 
     // --- Notification (once per NEW sdk version AND/OR codex version AND/OR
-    // pyz sha, durable across restarts via three independent dedup keys) ---
+    // agent version, durable across restarts via three independent dedup keys) ---
     // Independent auto-update gates: `sdk.auto_update` covers the SDK + pyz
     // axes; `codex.auto_update` (default ON) covers the codex axis. Either
     // being on is enough to run the (unified) flow for its axis.
     const autoSdk = getSettingBool('sdk.auto_update');
     const autoCodex = getSettingBool('codex.auto_update');
     const sdkIsNew = !!latest && latest !== (getSetting('sdk.last_notified_version') || '') && outdated.some(sdkOld);
-    const pyzIsNew = !!builtSha && builtSha !== (getSetting('agent.last_notified_pyz_sha') || '') && outdated.some(pyzOld);
+    const pyzIsNew = !!builtVersion && builtVersion !== (getSetting(AGENT_LAST_NOTIFIED_KEY) || '') && outdated.some(pyzOld);
     const codexIsNew = !!codexLatest && codexLatest !== (getSetting(CODEX_LAST_NOTIFIED_KEY) || '') && outdated.some(codexOld);
     if (sdkIsNew || pyzIsNew || codexIsNew) {
       const auto = autoSdk || autoCodex;
       const head = [
         sdkIsNew ? `claude-agent-sdk ${latest}` : null,
         codexIsNew ? `openai-codex ${codexLatest}` : null,
-        pyzIsNew ? `agent pyz ${builtSha!.slice(0, 7)}` : null,
+        pyzIsNew ? `charon-agent v${builtVersion}` : null,
       ].filter(Boolean).join(' + ');
       const lines = outdated.map((v) => `• ${v.name} (${reason(v)})`).join('\n');
       const text =
@@ -256,7 +268,7 @@ async function tick(): Promise<void> {
         }).catch(() => {});
       }
       if (sdkIsNew) setSetting('sdk.last_notified_version', latest!);
-      if (pyzIsNew) setSetting('agent.last_notified_pyz_sha', builtSha!);
+      if (pyzIsNew) setSetting(AGENT_LAST_NOTIFIED_KEY, builtVersion!);
       if (codexIsNew) setSetting(CODEX_LAST_NOTIFIED_KEY, codexLatest!);
     }
 
@@ -279,9 +291,9 @@ async function tick(): Promise<void> {
         continue;
       }
       // Key spans ALL axes so a new SDK version, a new codex version OR a
-      // fresh local pyz build re-enables a previously-attempted VPS
+      // newer agent version re-enables a previously-attempted VPS
       // (in-memory; a restart also does).
-      const key = `${v.id}@${latest ?? '-'}/${builtSha ?? '-'}/${codexLatest ?? '-'}`;
+      const key = `${v.id}@${latest ?? '-'}/${builtVersion ?? '-'}/${codexLatest ?? '-'}`;
       if (state.attempted.has(key)) {
         // Already attempted this exact target in this process (success or
         // failure) — no hammering; a NEW sdk/codex version or pyz build or a

@@ -139,6 +139,9 @@ export type LocalAgentStatus = {
   installed: boolean;
   deployedPyzSha: string | null;
   builtPyzSha: string | null;
+  // Versions drive `outOfDate` (§14.6); the shas above are display-only.
+  deployedAgentVersion?: string | null;
+  builtAgentVersion?: string | null;
   outOfDate: boolean;
   serviceActive: boolean | null;
 };
@@ -282,6 +285,8 @@ export type ClaudeSessionsListResponse = {
   // SSR props (phantom "update agent" badge). Optional: older servers omit it.
   meta?: {
     builtPyzSha: string | null;
+    // `__version__` of the pyz this hub ships — THE staleness baseline (§14.6).
+    builtAgentVersion?: string | null;
     sdkLatestVersion: string | null;
     codexLatestVersion: string | null;
   };

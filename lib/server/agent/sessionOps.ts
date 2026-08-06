@@ -21,6 +21,7 @@ import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
+import { classifyTerminalClaudeError } from '@/lib/terminalClaudeError';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
@@ -351,6 +352,18 @@ export class SessionStream {
   // assistant STARTED speaking, not when the boundary event closed the
   // buffer, or a long turn's text sorts after the tools it preceded.
   private pendingAssistantTsMs: number | null = null;
+  // Some Claude CLI failures are delivered as a synthetic assistant bubble
+  // followed by a perfectly ordinary stop→active sequence. Remember the
+  // classified final bubble until `stop`, then latch the session in `failed`;
+  // while latched, the agent's idle `active` frame must not overwrite it.
+  private pendingTerminalAssistantError: { text: string; kind: 'authentication' | 'api' } | null = null;
+  // Evidence that the current/replayed turn actually carried assistant output.
+  // Needed to clear an older `failed` latch on a later successful replay
+  // without treating an isolated duplicate stop as a recovery.
+  private pendingTurnAssistantSeen = false;
+  private terminalErrorLatched = false;
+  private terminalErrorText: string | null = null;
+  private terminalErrorKind: 'authentication' | 'api' | null = null;
   // Seq of the earliest event whose _persist FAILED (DB error). Holds the
   // durable cursor back so the next restart replays it and the row gets a
   // second chance — the seq-gate makes the re-delivery of everything else
@@ -395,6 +408,10 @@ export class SessionStream {
     this.fallbackModel = opts.fallbackModel ?? null;
     this.effort = isValidEffortForKind(opts.effort, this.kind) ? (opts.effort as AnyEffort) : null;
     this.effectiveModel = opts.effectiveModel ?? null;
+    // Preserve a durable failed-turn marker across a Charon reconnect. The
+    // daemon is still idle/active; only a new turn or explicit lifecycle
+    // recovery clears this display state.
+    this.terminalErrorLatched = this.kind === 'claude' && opts.status === 'failed';
   }
 
   /** Wires the listener to the agent (idempotent).
@@ -628,6 +645,15 @@ export class SessionStream {
         if (this.isReplaying) {
           break;
         }
+        // The Claude daemon returns to idle after ResultMessage even when the
+        // final assistant bubble was an API/auth failure. Keep the durable
+        // failed-turn marker visible until a new turn really starts.
+        if (ev.status === 'active' && this.terminalErrorLatched) {
+          break;
+        }
+        if (ev.status === 'thinking' || ev.status === 'starting') {
+          this.clearTerminalErrorLatch();
+        }
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
         // A new turn beginning (status → thinking) means the session is being
@@ -686,6 +712,7 @@ export class SessionStream {
           this.pendingAssistantTsMs = this.currentEventTs;
         }
         this.currentAssistant += ev.delta;
+        this.pendingTurnAssistantSeen = true;
         this._broadcast({ type: 'assistant_text', delta: ev.delta });
         break;
       case 'thinking':
@@ -968,13 +995,41 @@ export class SessionStream {
           cost_usd: ev.cost_usd,
         });
         break;
-      case 'stop':
+      case 'stop': {
         this._flushAssistant();
+        const terminalError = this.pendingTerminalAssistantError;
+        const turnSawAssistant = this.pendingTurnAssistantSeen;
+        const recoveredFromFailed =
+          !terminalError && turnSawAssistant && this.status === 'failed';
+        this.pendingTerminalAssistantError = null;
+        this.pendingTurnAssistantSeen = false;
+        if (terminalError) {
+          this.terminalErrorLatched = true;
+          this.terminalErrorText = terminalError.text;
+          this.terminalErrorKind = terminalError.kind;
+          this.status = 'failed';
+        } else if (recoveredFromFailed) {
+          // During replay, historical status frames (including `thinking`) are
+          // intentionally ignored. A later genuine assistant answer + stop is
+          // therefore the durable proof that the old failed turn recovered.
+          this.clearTerminalErrorLatch();
+          this.status = 'active';
+        }
         try {
-          db.update(claudeSessions).set({ lastUsedAt: Math.floor(Date.now() / 1000) })
+          db.update(claudeSessions).set({
+            lastUsedAt: Math.floor(Date.now() / 1000),
+            ...(terminalError
+              ? { status: 'failed' }
+              : recoveredFromFailed ? { status: 'active' } : {}),
+          })
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'stop', subtype: ev.subtype });
+        if (terminalError) {
+          this._broadcast({ type: 'status', status: 'failed' });
+        } else if (recoveredFromFailed) {
+          this._broadcast({ type: 'status', status: 'active' });
+        }
         // A turn finished → the account quota just moved; refresh the usage
         // gauges (debounced + endpoint-rate-limit-aware in usagePoll). Live
         // stops only — a reconnect replay of old stops must not spam the
@@ -1000,7 +1055,15 @@ export class SessionStream {
             ? !this.isReplaying
             : (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq);
           if (!this.isReplaying && isNewFinish) {
-            this._maybePush({
+            const terminalError = this.terminalErrorLatched;
+            const terminalErrorLabel = this.terminalErrorKind === 'authentication'
+              ? 'an authentication error'
+              : 'an API error';
+            this._maybePush(terminalError ? {
+              title: `⚠ ${this.vpsName} · ${this._label()}`,
+              body: `Claude ended with ${terminalErrorLabel}`,
+              tag: `stop-${this.id}`,
+            } : {
               title: `✓ ${this.vpsName} · ${this._label()}`,
               body: 'Claude finished its response',
               tag: `stop-${this.id}`,
@@ -1013,7 +1076,9 @@ export class SessionStream {
             // already prevents reconnect/replay storms. No-op if Telegram is
             // off/unconfigured. (CLAUDE.md §7)
             sendPlainToTelegram(
-              `✓ ${this.vpsName} · ${this._label()}\nClaude finished its response`,
+              terminalError
+                ? `⚠ ${this.vpsName} · ${this._label()}\nClaude ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
+                : `✓ ${this.vpsName} · ${this._label()}\nClaude finished its response`,
               `/?session=${this.id}`,
             ).catch(() => {});
           }
@@ -1043,6 +1108,7 @@ export class SessionStream {
           }
         }
         break;
+      }
       case 'interrupted':
         this._broadcast({ type: 'mode_changed', mode: this.permissionMode }); // free-form
         break;
@@ -1056,6 +1122,7 @@ export class SessionStream {
   // ── Actions (forwarded to the agent) ─────────────────────────────────────
   async sendUserMessage(content: string): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
+    this.clearTerminalErrorLatch();
     this._persist('user', content);
     const now = Math.floor(Date.now() / 1000);
     this._broadcast({ type: 'user_echo', content, createdAt: now });
@@ -1229,6 +1296,12 @@ export class SessionStream {
   private _flushAssistant(): boolean {
     if (!this.currentAssistant) return true;
     const finalContent = this.currentAssistant;
+    if (this.kind === 'claude') {
+      const terminalKind = classifyTerminalClaudeError(finalContent, this.effectiveModel);
+      this.pendingTerminalAssistantError = terminalKind
+        ? { text: finalContent, kind: terminalKind }
+        : null;
+    }
     // The flush row is stamped with the FIRST delta's seq — the row's
     // identity is the accumulation start (unique: a delta belongs to
     // exactly one accumulation, and deltas write no other row). Captured
@@ -1365,6 +1438,15 @@ export class SessionStream {
   /** Public variant for graceful shutdown: persists without broadcasting. */
   flushPendingAssistant(): void {
     this._flushAssistant();
+  }
+
+  /** Explicit user/lifecycle recovery permits the daemon's active status again. */
+  clearTerminalErrorLatch(): void {
+    this.terminalErrorLatched = false;
+    this.pendingTerminalAssistantError = null;
+    this.pendingTurnAssistantSeen = false;
+    this.terminalErrorText = null;
+    this.terminalErrorKind = null;
   }
 
   /**
@@ -1796,6 +1878,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         if (!/already exists/i.test(msg)) throw startErr;
       }
     }
+    // An explicit resume is the acknowledgement/recovery boundary for a
+    // connected failed-turn marker. Clear the local latch before resubscribing so
+    // the daemon's authoritative active frame is accepted again.
+    stream.clearTerminalErrorLatch();
     stream.attach();
     // If the user had already opened the SSE before the resume, attach() has
     // already tried a subscribe on the agent side that failed (session not yet
@@ -1879,7 +1965,7 @@ export async function restartSession(sessionId: string): Promise<SessionStream> 
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) throw new Error(`session ${sessionId} not found`);
 
-  const wasRunning = ['active', 'thinking', 'starting'].includes(row.status);
+  const wasRunning = ['active', 'thinking', 'starting', 'failed'].includes(row.status);
   if (wasRunning) {
     const client = getAgentClientForVpsId(row.vpsId);
     try {
@@ -2091,6 +2177,13 @@ export async function reconcileVpsAgentState(
           .where(eq(claudeSessions.id, sid)).run();
       } catch {}
     }
+    // A synthetic Claude API/auth failure leaves the remote SDK client idle.
+    // Preserve the connected `failed` marker across reconnect; a real new
+    // turn (or explicit lifecycle recovery) clears it.
+    if (row.status === 'failed' &&
+        (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting')) {
+      continue;
+    }
     // Realign when the agent's status diverges from EITHER the DB row OR the
     // in-memory stream. Checking the in-memory stream too matters: a prior
     // desync can leave the stream stuck (e.g. 'sleeping') while the DB has
@@ -2125,7 +2218,7 @@ export async function reconcileVpsAgentState(
       .where(and(
         eq(claudeSessions.vpsId, vpsId),
         or(
-          inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+          inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed']),
           and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),
         ),
       ))

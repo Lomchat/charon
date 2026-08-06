@@ -663,6 +663,7 @@
   padding: 2px 6px; border-radius: 9px; border: 1px solid var(--gold-deep);
 }
 .cs-state.active { color: #a0c87b; border-color: rgba(160,200,123,0.4); }
+.cs-state.failed, .cs-state.error { color: var(--crimson); border-color: var(--crimson-deep); }
 .cs-state.thinking, .cs-state.starting { color: var(--gold-bright); }
 .cs-state.waiting { color: #f0a060; border-color: rgba(240,160,96,0.5); }
 .cs-card-preview {
@@ -971,6 +972,7 @@
 /* ── Tab states (shared between .tab and .vps-tab) ─────────────────────────
    Color convention aligned with the sidebar dots:
      - active   = green
+     - failed   = red (last turn failed; session remains connected)
      - starting = amber/gold-bright (the actual gold-bright var resolves
                   to a blue in the Nordic Tokyo theme — kept as-is for
                   consistency with `dot-amber`/`status-amber`)
@@ -983,6 +985,7 @@
 .tab.tab-starting,   .vps-tab.tab-starting   { border-top-color: var(--gold-bright); }
 .tab.tab-thinking,   .vps-tab.tab-thinking   { border-top-color: var(--gold); animation: tab-thinking-pulse 1.6s ease-in-out infinite; }
 .tab.tab-waiting,    .vps-tab.tab-waiting    { border-top-color: #f0a060; animation: tab-waiting-pulse 1.3s ease-in-out infinite; }
+.tab.tab-failed,     .vps-tab.tab-failed     { border-top-color: var(--crimson); }
 .tab.tab-sleeping,   .vps-tab.tab-sleeping   { border-top-color: var(--gold-deep); opacity: 0.55; }
 .tab.tab-sleeping .tab-label { color: var(--parchment-soft); font-style: italic; }
 .tab.tab-sleeping.selected,

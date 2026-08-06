@@ -6,7 +6,7 @@ import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons'
 import AgentLogo from './AgentLogo';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
-import { isVersionOutdated } from '@/lib/version';
+import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, parseAgentLastError } from './vpsHealth';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
@@ -20,7 +20,7 @@ export type { InstallInfo };
 
 const PAUSED_KEY = 'hub.claude.showPaused.v1';
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
-const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting']);
+const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed']);
 
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
@@ -105,8 +105,10 @@ type Props = {
   onRefreshAgent?: (vps: Vps) => void;
   // Toggle a folder's collapsed state (persisted in DB via PATCH /api/vps-folders/[id]).
   onToggleFolderCollapsed?: (folderId: string, collapsed: boolean) => void;
-  // SHA of the .pyz embedded in the dashboard (used to detect agent out-of-date)
-  builtPyzSha?: string | null;
+  // `__version__` of the .pyz embedded in the dashboard — THE out-of-date baseline: a VPS is stale iff it
+  // runs a STRICTLY OLDER version (ordered, so a hub on an older build never
+  // rolls a co-tenant's newer agent back, §14.70).
+  builtAgentVersion?: string | null;
   // Latest claude-agent-sdk on PyPI (settings cache) — compared to each VPS's
   // reported vps.sdkVersion for the "SDK out of date" badge / update bar.
   sdkLatestVersion?: string | null;
@@ -133,7 +135,7 @@ export default function Sidebar({
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
-  builtPyzSha, sdkLatestVersion, codexLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
+  builtAgentVersion, sdkLatestVersion, codexLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
 }: Props) {
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
@@ -251,10 +253,14 @@ export default function Sidebar({
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
+  // "Agent out of date" = this hub SHIPS a strictly newer `__version__` than
+  // the VPS runs (§14.6). Deliberately NOT a sha comparison: an equal version
+  // with a different sha is ignored (bump `__version__` to propagate), and a
+  // VPS running a NEWER agent — the normal steady state when two hubs share a
+  // host, §14.70 — shows nothing rather than an update that would roll it back.
   function agentOutOfDateOf(v: Vps): boolean {
     const agentStatus = (v as any).agentStatus ?? 'unknown';
-    const agentPyzSha = (v as any).agentPyzSha as string | undefined;
-    return agentStatus === 'ok' && !!builtPyzSha && (agentPyzSha == null || agentPyzSha !== builtPyzSha);
+    return agentStatus === 'ok' && isAgentOutdated((v as any).agentVersion, builtAgentVersion);
   }
 
   // "SDK out of date" — the claude-agent-sdk python package on the VPS is
@@ -370,6 +376,7 @@ export default function Sidebar({
                   vpsInstall: x.install,
                   showDetails,
                   agentOutOfDate: agentOutOfDateOf(x.vps),
+                  builtAgentVersion,
                   sdkOutdated: sdkOutdatedOf(x.vps),
                   sdkLatestVersion,
                   codexOutdated: codexOutdatedOf(x.vps),
@@ -399,6 +406,9 @@ type VpsRenderOpts = {
   // "details" switch — false = compact cards (no preview/cwd/age).
   showDetails: boolean;
   agentOutOfDate: boolean;
+  // `__version__` this hub ships — for the "vX → vY" labels and the 'ahead'
+  // tooltip (the verdict itself is computed by the parent, §14.6).
+  builtAgentVersion?: string | null;
   // The VPS's claude-agent-sdk is older than the PyPI latest (both known).
   sdkOutdated: boolean;
   sdkLatestVersion?: string | null;
@@ -431,7 +441,7 @@ type VpsRenderOpts = {
 
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
-    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
+    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
     onSelect, onSelectShell, onSelectInstall,
@@ -469,7 +479,12 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const errTip = agentStatus === 'error' && (errCode || errDetail)
     ? ` — ${[errCode, errDetail].filter(Boolean).join(': ')}`
     : '';
-  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}${agentOutOfDate ? ' — agent update available' : ''}`;
+  // 'ahead' = the VPS runs a newer agent than this hub builds — expected on a
+  // co-tenant host (§14.70); surfaced in the tooltip only, never as an action.
+  const agentAhead = agentReady && agentBuildRelation(agentVersion, builtAgentVersion) === 'ahead';
+  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}`
+    + (agentOutOfDate ? ` — agent update available (v${agentVersion} → v${builtAgentVersion})` : '')
+    + (agentAhead ? ` — newer than this hub's build (v${builtAgentVersion}), left alone` : '');
   const noAgentReason = agentStatus === 'missing'
     ? 'install the agent first'
     : agentStatus === 'error'
@@ -624,8 +639,8 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                     : !agentOutOfDate && sdkOutdated && codexOutdated
                       ? 'sdk updates (claude + codex)'
                       : (sdkOutdated || codexOutdated)
-                        ? `${agentVersion ? `v${agentVersion} · ` : ''}agent + SDK update`
-                        : `${agentVersion ? `v${agentVersion} · ` : ''}update available`}
+                        ? `${agentVersion ? `v${agentVersion} → v${builtAgentVersion} · ` : ''}agent + SDK update`
+                        : `${agentVersion ? `v${agentVersion} → v${builtAgentVersion}` : 'update available'}`}
               </span>
               {onUpdateAgent && (
                 <button className="cs-agent-btn update" disabled={agentUpdating} onClick={() => onUpdateAgent(v)}>
@@ -733,6 +748,7 @@ const DOT_CLASS: Record<string, string> = {
   sleeping: 'dot-gray',
   killed: 'dot-gray',
   error: 'dot-red',
+  failed: 'dot-red',
   waiting: 'dot-orange-pulse',
 };
 
@@ -743,6 +759,7 @@ const STATUS_TEXT: Record<string, string> = {
   sleeping: 'paused',
   waiting: 'needs you',
   error: 'error',
+  failed: 'error',
 };
 
 function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel }: {

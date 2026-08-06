@@ -4,7 +4,7 @@ import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePe
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
-import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, getCodexLatestVersion } from '@/lib/server/claude/sdkSync';
 import type { AgentKind } from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
@@ -81,6 +81,7 @@ export async function GET(req: Request) {
       // from this poll (15s + on every session_list_changed).
       meta: {
         builtPyzSha: getBuiltPyzSha(),
+        builtAgentVersion: getBuiltAgentVersion(),
         sdkLatestVersion: getSdkLatestVersion(),
         codexLatestVersion: getCodexLatestVersion(),
       },

@@ -47,7 +47,7 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       .from(claudeSessions)
       .where(and(
         eq(claudeSessions.vpsId, vps.id),
-        inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+        inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed']),
         eq(claudeSessions.sleepRequested, 0),
       ))
       .all()
@@ -108,14 +108,17 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
 
   if (!result.ok) return { ...result, resumedSessionIds: [] };
 
-  // 5. Persist immediately (don't wait for the next hello). sdkVersion /
-  // codexSdkVersion / codexAvailable only when the update actually confirmed
-  // them (from the post-restart hello, falling back to the pip step) — no
-  // null-clobber of a value an older agent can't report (§14.53).
+  // 5. Persist immediately (don't wait for the next hello). EVERY field is
+  // written only when the update actually confirmed it (post-restart hello,
+  // falling back to the pip step) — no null-clobber (§14.53). agentVersion is
+  // in that set since §14.6 made it the staleness baseline: nulling it would
+  // make the VPS invisible to the update axis (no badge, no auto-update) until
+  // the next hello, whereas keeping the previous value leaves the badge lit —
+  // visible, and self-healing on the reconnect this flow triggers anyway.
   try {
     db.update(vpsTable).set({
-      agentVersion: result.newVersion ?? null,
-      agentPyzSha: result.newPyzSha ?? null,
+      ...(result.newVersion ? { agentVersion: result.newVersion } : {}),
+      ...(result.newPyzSha ? { agentPyzSha: result.newPyzSha } : {}),
       agentLastSeenAt: Math.floor(Date.now() / 1000),
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
@@ -126,8 +129,8 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
     // patches its own state from the HTTP response; everyone else stayed stale
     // until F5). Same payload contract as the hello emit (no-clobber keys).
     emitGlobalVpsStatus(vps.id, 'ok', {
-      agentVersion: result.newVersion ?? null,
-      agentPyzSha: result.newPyzSha ?? null,
+      ...(result.newVersion ? { agentVersion: result.newVersion } : {}),
+      ...(result.newPyzSha ? { agentPyzSha: result.newPyzSha } : {}),
       agentLastError: null,
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),

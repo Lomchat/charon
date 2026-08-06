@@ -144,9 +144,12 @@ const DEFAULTS = {
   // Last openai-codex version we sent a "new codex" notification for (dedup
   // across ticks/restarts), parallel to sdk.last_notified_version.
   'codex.last_notified_version': '',
-  // Last locally-built pyz sha we sent a "new agent" notification for — dedup
-  // for the pyz auto-update axis (sdkWatch.ts), parallel to last_notified_version.
-  'agent.last_notified_pyz_sha': '',
+  // Last charon-agent `__version__` we sent a "new agent" notification for —
+  // dedup for the agent auto-update axis (sdkWatch.ts), parallel to
+  // sdk.last_notified_version. Keyed on the VERSION, not the pyz sha, since
+  // §14.6 made the version the only thing that triggers a deploy (a rebuild
+  // with no bump must not re-notify about an update that won't happen).
+  'agent.last_notified_agent_version': '',
   // Internal, written by usagePoll only (not in the settings POST allowlist,
   // stripped from the settings GET): JSON `{vpsOrg:{vpsId:orgId},
   // accounts:{orgId:AccountUsage}}` — the last GOOD account-usage snapshot per

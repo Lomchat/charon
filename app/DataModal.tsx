@@ -54,7 +54,7 @@ type Props = {
   // update fired from a card must repaint its chips without closing/reopening.
   liveVps?: Vps[];
   // "agent outdated" detection for the agent chip (same sources as Sidebar).
-  builtPyzSha?: string | null;
+  builtAgentVersion?: string | null;
   sdkLatestVersion?: string | null;
 };
 
@@ -68,9 +68,9 @@ const DEFAULT_FOLDER_ID = 'default';
 // The "drop in the folder" area (= droppable id `folder-drop:<id>`) captures
 // VPSes dropped on the folder's empty space (not on a specific card).
 // Bundle passed down folder → card for the health chips: staleness inputs
-// (builtPyzSha / sdkLatestVersion) + per-VPS busy sets for the fix buttons.
+// (builtAgentVersion / sdkLatestVersion) + per-VPS busy sets for the fix buttons.
 type HealthOpts = {
-  builtPyzSha?: string | null;
+  builtAgentVersion?: string | null;
   sdkLatestVersion?: string | null;
   refreshingIds?: Set<string>;
   updatingIds?: Set<string>;
@@ -90,7 +90,7 @@ export default function DataModal({
   onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
   onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin,
   refreshingAgentVpsIds, updatingAgentVpsIds,
-  liveVps, builtPyzSha, sdkLatestVersion,
+  liveVps, builtAgentVersion, sdkLatestVersion,
 }: Props) {
   const [vpsList, setVpsList] = useState<Vps[]>(initialVps);
   const [folders, setFolders] = useState<VpsFolder[]>(initialFolders);
@@ -642,7 +642,7 @@ export default function DataModal({
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
                   onFixVps={handleFix}
-                  healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                  healthOpts={{ builtAgentVersion, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                   onLogin={(v) => onClaudeLogin?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -669,7 +669,7 @@ export default function DataModal({
                 collapsed={!search.active && collapsedFolders.has(defaultFolder.id)}
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onFixVps={handleFix}
-                healthOpts={{ builtPyzSha, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                healthOpts={{ builtAgentVersion, sdkLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                 onLogin={(v) => onClaudeLogin?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}

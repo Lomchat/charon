@@ -1,7 +1,7 @@
 'use client';
 import type { Vps } from '@/lib/db/schema';
 import type { AgentKind } from '@/lib/types/api';
-import { isVersionOutdated } from '@/lib/version';
+import { isVersionOutdated, agentBuildRelation } from '@/lib/version';
 
 // ── Per-VPS health diagnosis (single source of truth) ────────────────────────
 // Turns the vps row's health columns (agentStatus + agentLastError +
@@ -79,12 +79,11 @@ function lastContactSuffix(v: Vps): string {
 
 export function diagnoseVps(
   v: Vps,
-  opts?: { builtPyzSha?: string | null; sdkLatestVersion?: string | null },
+  opts?: { builtAgentVersion?: string | null; sdkLatestVersion?: string | null },
 ): VpsHealth {
   const status = ((v as any).agentStatus as string | undefined) ?? 'unknown';
   const { code, detail } = parseAgentLastError(v);
   const agentVersion = (v as any).agentVersion as string | null | undefined;
-  const agentPyzSha = (v as any).agentPyzSha as string | null | undefined;
   const sdkVersion = (v as any).sdkVersion as string | null | undefined;
   const claudeLoggedIn = (v as any).claudeLoggedIn as number | null | undefined;
   const codexAvailable = (v as any).codexAvailable as number | null | undefined;
@@ -120,13 +119,24 @@ export function diagnoseVps(
 
   // ── agent (charon-agent daemon) ────────────────────────────────────────────
   if (status === 'ok') {
-    const pyzOutdated = !!opts?.builtPyzSha && (agentPyzSha == null || agentPyzSha !== opts.builtPyzSha);
+    // Version-ORDERED (§14.6): stale only when this hub ships a strictly newer
+    // `__version__`. A newer agent than the hub's build ('ahead' — normal when
+    // two hubs share the host, §14.70) reports OK with a note, never an update
+    // that would roll it back; an equal version with a different pyz sha is not
+    // a staleness signal at all (bump `__version__` to propagate).
+    const rel = agentBuildRelation(agentVersion, opts?.builtAgentVersion ?? null);
+    const pyzOutdated = rel === 'outdated';
     const sdkOutdated = isVersionOutdated(sdkVersion, opts?.sdkLatestVersion ?? null);
     if (pyzOutdated || sdkOutdated) {
       axes.push({
         key: 'agent', state: 'warn', label: 'agent ⇪',
-        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${sdkOutdated && sdkVersion ? ` (sdk ${sdkVersion} → ${opts?.sdkLatestVersion})` : ''}`,
+        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${pyzOutdated ? ` (agent v${agentVersion} → v${opts?.builtAgentVersion})` : ''}${sdkOutdated && sdkVersion ? ` (sdk ${sdkVersion} → ${opts?.sdkLatestVersion})` : ''}`,
         fixes: [{ action: 'update', label: '⇪ update', title: 'redeploy the agent + update the SDKs', primary: false }],
+      });
+    } else if (rel === 'ahead') {
+      axes.push({
+        key: 'agent', state: 'ok', label: 'agent ✓',
+        detail: `charon-agent v${agentVersion} running — newer than this hub's build (v${opts?.builtAgentVersion}), left alone`,
       });
     } else {
       axes.push({ key: 'agent', state: 'ok', label: 'agent ✓', detail: `charon-agent running${agentVersion ? ` (v${agentVersion})` : ''}` });

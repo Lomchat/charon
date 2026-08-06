@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { db, users } from '@/lib/db';
-import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSession, SESSION_COOKIE } from '@/lib/server/auth';
 
 // GET /api/health — liveness + lightweight readiness probe.
@@ -44,6 +44,7 @@ export async function GET(req: Request) {
     ...(authed
       ? {
           agentPyzSha: getBuiltPyzSha(),
+          agentVersion: getBuiltAgentVersion(),
           uptimeSeconds: Math.round(process.uptime()),
           checkedAt: new Date().toISOString(),
           latencyMs: Date.now() - startedAt,

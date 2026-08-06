@@ -5,6 +5,8 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { AGENT_DIR_NAME, AGENT_PKILL_PATTERN, INSTANCE, UNIT_NAME } from './agentPaths.js';
+import { readPyzVersion } from './pyzVersion';
+import { isAgentOutdated } from '@/lib/version';
 
 // Helpers to manage the local agent — the one running on the dashboard's
 // machine (not on a remote VPS). No SSH here, everything is local.
@@ -36,6 +38,10 @@ export type LocalAgentStatus = {
   installed: boolean;
   deployedPyzSha: string | null;
   builtPyzSha: string | null;
+  // `__version__` read out of each pyz — these decide `outOfDate` (§14.6);
+  // the shas above are identity/display only.
+  deployedAgentVersion: string | null;
+  builtAgentVersion: string | null;
   outOfDate: boolean;
   serviceActive: boolean | null;  // null = systemctl unavailable / error
 };
@@ -59,7 +65,13 @@ export async function getLocalAgentStatus(): Promise<LocalAgentStatus> {
   const deployedPyzSha = computeFileSha12(LOCAL_PYZ);
   const builtPyzSha = computeFileSha12(DASHBOARD_PYZ);
   const installed = deployedPyzSha !== null;
-  const outOfDate = installed && builtPyzSha !== null && deployedPyzSha !== builtPyzSha;
+  // Same version-ORDERED rule as the fleet (§14.6): only a strictly newer
+  // built `__version__` counts as an update. Keeps a co-tenant hub from
+  // rolling this box's agent back (§14.70) and makes a rebuild without a bump
+  // a no-op here too.
+  const deployedAgentVersion = installed ? readPyzVersion(LOCAL_PYZ) : null;
+  const builtAgentVersion = readPyzVersion(DASHBOARD_PYZ);
+  const outOfDate = installed && isAgentOutdated(deployedAgentVersion, builtAgentVersion);
 
   let serviceActive: boolean | null = null;
   try {
@@ -71,7 +83,7 @@ export async function getLocalAgentStatus(): Promise<LocalAgentStatus> {
     serviceActive = null;
   }
 
-  return { installed, deployedPyzSha, builtPyzSha, outOfDate, serviceActive };
+  return { installed, deployedPyzSha, builtPyzSha, deployedAgentVersion, builtAgentVersion, outOfDate, serviceActive };
 }
 
 export type LocalUpdateResult = {

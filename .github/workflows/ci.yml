@@ -29,6 +29,10 @@ jobs:
             python-version: '3.13'
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history: the version-bump guard below diffs against the PR
+          # base / the previous push (a depth-1 clone has neither).
+          fetch-depth: 0
 
       - name: Setup Node ${{ matrix.node-version }}
         uses: actions/setup-node@v7
@@ -84,14 +88,27 @@ jobs:
 
       - name: Committed .pyz is up to date
         # The build is byte-reproducible, so any diff here means someone
-        # changed agent/charon_agent/ without rebuilding the committed dist
-        # (which is what actually gets deployed AND whose sha drives the
-        # fleet auto-update). Fail loudly instead of shipping stale code.
+        # changed agent/charon_agent/ without rebuilding the committed dist —
+        # which is what actually gets deployed, and whose embedded __version__
+        # is read back as the fleet-update baseline (§14.6). A stale dist would
+        # advertise the OLD version and deploy in a loop. Fail loudly.
         run: git diff --exit-code agent/dist/charon-agent.pyz
 
       - name: Python compile check
         # Catches SyntaxError / broken imports in the agent.
         run: python3 -m compileall -q agent/charon_agent
+
+      - name: Agent change requires a __version__ bump
+        # Fleet propagation is version-ORDERED (§14.6): a VPS updates only when
+        # the hub ships a STRICTLY NEWER charon_agent.__version__. An agent
+        # change without a bump therefore reaches nobody — and does so
+        # silently, which is exactly the kind of failure CI should own.
+        # One matrix leg is enough (pure git check).
+        if: matrix.node-version == '20'
+        run: |
+          node scripts/check-agent-version-bump.mjs \
+            "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}" \
+            "${{ github.sha }}"
 
   docker:
     runs-on: ubuntu-latest

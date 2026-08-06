@@ -41,6 +41,9 @@ type Props = {
   vpsPaths: VpsPath[];
   initialSessions: ClaudeSession[];
   builtPyzSha: string | null;
+  // `__version__` of the pyz this hub ships — THE agent-staleness baseline
+  // (§14.6); builtPyzSha is kept for identity/receipts only.
+  builtAgentVersion: string | null;
   // Latest claude-agent-sdk on PyPI (settings cache, null = never synced).
   // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
   sdkLatestVersion: string | null;
@@ -51,6 +54,7 @@ const STATUS_LABEL: Record<WorkerStatus, string> = {
   starting: 'starting',
   active: 'active',
   thinking: 'thinking',
+  failed: 'error',
   sleeping: 'sleeping',
   killed: 'killed',
   error: 'error',
@@ -60,6 +64,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
   starting: 'amber',
   active: 'green',
   thinking: 'amber-pulse',
+  failed: 'red',
   sleeping: 'gray',
   killed: 'gray',
   error: 'red',
@@ -69,7 +74,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 // SessionState/emptyState removed in the refactor: per-session state now
 // lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, sdkLatestVersion, codexLatestVersion }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion }: Props) {
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
@@ -83,6 +88,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // use inside stable-closure event handlers.
   const [buildMeta, setBuildMeta] = useState({
     builtPyzSha: builtPyzSha ?? null,
+    builtAgentVersion: builtAgentVersion ?? null,
     sdkLatestVersion: sdkLatestVersion ?? null,
     codexLatestVersion: codexLatestVersion ?? null,
   });
@@ -308,8 +314,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
                   ...v,
                   agentStatus: 'ok',
                   // Live buildMeta (via ref — stable closure); null tolerable
-                  // (fallback at the next AgentClient hello).
+                  // (fallback at the next AgentClient hello). The VERSION is
+                  // what clears the "update" badge now (§14.6) — patching only
+                  // the sha would leave it lit until the next hello.
                   agentPyzSha: buildMetaRef.current.builtPyzSha ?? v.agentPyzSha,
+                  agentVersion: buildMetaRef.current.builtAgentVersion ?? v.agentVersion,
                 } as Vps)
               : v,
           ));
@@ -588,7 +597,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     const ids: string[] = [];
     for (const s of sessions) {
       const st = s.liveStatus ?? s.status;
-      if (st === 'active' || st === 'thinking' || st === 'starting') ids.push(s.id);
+      if (st === 'active' || st === 'thinking' || st === 'starting' || st === 'failed') ids.push(s.id);
     }
     for (const sh of shells) if (!sh.exited) ids.push(sh.id);
     for (const i of installs) if (i.status === 'running') ids.push(i.id);
@@ -1014,10 +1023,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (m) {
         setBuildMeta((prev) =>
           prev.builtPyzSha === m.builtPyzSha
+            && prev.builtAgentVersion === (m.builtAgentVersion ?? null)
             && prev.sdkLatestVersion === m.sdkLatestVersion
             && prev.codexLatestVersion === m.codexLatestVersion
             ? prev
-            : { builtPyzSha: m.builtPyzSha, sdkLatestVersion: m.sdkLatestVersion, codexLatestVersion: m.codexLatestVersion });
+            : {
+                builtPyzSha: m.builtPyzSha,
+                builtAgentVersion: m.builtAgentVersion ?? null,
+                sdkLatestVersion: m.sdkLatestVersion,
+                codexLatestVersion: m.codexLatestVersion,
+              });
       }
     } catch {}
   }, []);
@@ -1585,7 +1600,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 0 : 1 } : f));
           }
         }}
-        builtPyzSha={buildMeta.builtPyzSha}
+        builtAgentVersion={buildMeta.builtAgentVersion}
         sdkLatestVersion={buildMeta.sdkLatestVersion}
         codexLatestVersion={buildMeta.codexLatestVersion}
         updatingAgentVpsIds={updatingAgentVpsIds}
@@ -1635,7 +1650,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
                   ? ({
                       ...v,
                       agentStatus: 'ok',
-                      agentPyzSha: builtPyzSha ?? v.agentPyzSha,
+                      agentPyzSha: buildMetaRef.current.builtPyzSha ?? v.agentPyzSha,
+                      agentVersion: buildMetaRef.current.builtAgentVersion ?? v.agentVersion,
                     } as Vps)
                   : v,
               ));
@@ -1799,7 +1815,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
           liveVps={vpsList}
-          builtPyzSha={buildMeta.builtPyzSha}
+          builtAgentVersion={buildMeta.builtAgentVersion}
           sdkLatestVersion={buildMeta.sdkLatestVersion}
         />
       )}
@@ -1827,14 +1843,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // shells/installs below keep their `onKill` (= close).
           //
           // `onSleep` is only passed if the session is in a state where sleep
-          // makes sense (active/thinking/starting). For sleeping/error/killed,
+          // makes sense (active/thinking/starting/failed). For sleeping/error/killed,
           // the item disappears from the menu (the "resume" button in the
           // chat header takes care of waking up the session; we don't duplicate here).
           onRename={() => setEditingId(ctxMenu.session.id)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
           onSleep={
-            ['active', 'thinking', 'starting'].includes(ctxMenu.session.status)
+            ['active', 'thinking', 'starting', 'failed'].includes(ctxMenu.session.status)
               ? () => sleepOne(ctxMenu.session.id)
               : undefined
           }

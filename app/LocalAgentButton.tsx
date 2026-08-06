@@ -47,7 +47,9 @@ export default function LocalAgentButton() {
     }
   }
 
-  const tip = `local agent out of sync — ${status.deployedPyzSha ?? '??'} → ${status.builtPyzSha ?? '??'}\nclick to update (restart systemd-user)`;
+  const tip = `local agent out of date — v${status.deployedAgentVersion ?? '?'} → v${status.builtAgentVersion ?? '?'}`
+    + ` (${status.deployedPyzSha ?? '??'} → ${status.builtPyzSha ?? '??'})`
+    + `\nclick to update (restart systemd-user)`;
 
   return (
     <button

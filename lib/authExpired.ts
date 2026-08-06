@@ -6,11 +6,11 @@
 //   Failed to authenticate. API Error: 401 OAuth access token has expired.
 //   Re-authenticate to continue.
 //
-// So the only place this is observable is the assistant text. Two consumers
-// share this detector, hence a PLAIN module (no 'server-only'): sessionOps
-// flips `vps.claudeLoggedIn` to 0 + broadcasts `vps_status`, and <Message>
-// renders a "sign in again" affordance right under the offending bubble
-// (§14.65).
+// So the only place this is observable is the assistant text. Shared consumers
+// need a PLAIN module (no 'server-only'): sessionOps flips
+// `vps.claudeLoggedIn` to 0 + broadcasts `vps_status`, terminalClaudeError
+// latches the failed turn in connected status `failed`, and <Message> renders a "sign in
+// again" affordance under the offending bubble (§14.65).
 //
 // FALSE POSITIVES are the real design risk here: a session that is itself
 // working on OAuth code will happily print these words, and wrongly marking a

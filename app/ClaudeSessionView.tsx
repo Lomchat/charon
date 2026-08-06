@@ -483,7 +483,7 @@ export default function ClaudeSessionView({
           <button
             className="kill"
             onClick={forceStop}
-            disabled={!['thinking', 'active', 'starting'].includes(status ?? '')}
+            disabled={!['thinking', 'active', 'starting', 'failed'].includes(status ?? '')}
             title="Force cancel (SDK stuck) — session goes to sleeping, resume possible"
           >force stop</button>
           {/*

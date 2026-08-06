@@ -173,7 +173,12 @@ export type SyntheticEvent =
 
 export type WorkerEvent = BridgeEvent | SyntheticEvent;
 
-export type WorkerStatus = 'starting' | 'active' | 'thinking' | 'sleeping' | 'killed' | 'error' | 'reconnecting';
+// `failed` is connected/idle: the last Claude turn ended in a synthetic
+// API/auth error, but the SDK session is still alive and accepts input.
+// `error` is reserved for an actually broken/stopped SDK session.
+export type WorkerStatus =
+  | 'starting' | 'active' | 'thinking' | 'failed'
+  | 'sleeping' | 'killed' | 'error' | 'reconnecting';
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 

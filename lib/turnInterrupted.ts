@@ -9,9 +9,10 @@
 //   API Error: Connection closed mid-response. The response above may be
 //   incomplete.
 //
-// The session is perfectly healthy — the work simply stopped halfway, and the
-// one-word fix is to send "Continue". So <Message> renders that button right
-// under the offending bubble instead of making the user type it (§14.68).
+// The SDK client remains healthy although the turn failed, so Charon uses the
+// connected `failed` status (red in the UI, input still live), not the broken
+// session status `error`. The one-word recovery is still "Continue", rendered
+// as a button under the offending bubble (§14.68).
 //
 // Two signals, both from the CLI itself:
 //   - the TEXT, anchored at the start of the bubble;
