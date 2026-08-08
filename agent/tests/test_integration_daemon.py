@@ -148,6 +148,50 @@ class TestDaemonIntegration(unittest.TestCase):
         finally:
             c.close()
 
+    def test_oneshot_connect_pipe_receives_every_response(self):
+        """§14.75: `printf '…' | charon-agent.pyz --connect` must come back
+        with the answers, not an empty stdout.
+
+        This is the exact shape of the bootstrap's `ping_agent` phase (and of
+        the debug one-liner in CLAUDE.md §16): the payload AND the pipe's EOF
+        reach the daemon's reader in the same event-loop wakeup, so
+        `Client.run()` breaks out of its loop before the dispatched
+        `_handle_one` tasks have run at all. Without the post-EOF flush the
+        per-connection cleanup cancelled the writer out from under them and the
+        caller read exit 0 with ZERO bytes — which the hub surfaced as "the
+        daemon is not responding to ping" against a perfectly healthy agent.
+        Measured ~80% loss before the fix, so repeat to defeat the race.
+        """
+        payload = b'{"id":1,"method":"ping"}\n{"id":2,"method":"hello"}\n'
+        for attempt in range(5):
+            r = subprocess.run(
+                [_find_py310(), PYZ, "--connect"],
+                env=dict(os.environ, HOME=self.home),
+                input=payload,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "attempt %d: --connect exited %d (%s)"
+                % (attempt, r.returncode, r.stderr.decode("utf-8", "replace")[-300:]),
+            )
+            got = {}
+            for line in r.stdout.decode("utf-8", "replace").splitlines():
+                if not line.strip():
+                    continue
+                msg = json.loads(line)
+                if isinstance(msg.get("id"), int):
+                    got[msg["id"]] = msg
+            self.assertEqual(
+                set(got), {1, 2},
+                "attempt %d: lost responses — got ids %s, stdout=%r"
+                % (attempt, sorted(got), r.stdout[:400]),
+            )
+            self.assertTrue(got[1].get("result", {}).get("pong"))
+            self.assertTrue(got[2].get("result", {}).get("agent_version"))
+
     def test_shell_output_is_durable_and_replays_on_reconnect(self):
         shell_id = "abc123def4567890"  # 16-hex shell id
         c = _Conn(self.sock)

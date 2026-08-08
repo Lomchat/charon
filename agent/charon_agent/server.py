@@ -1070,23 +1070,32 @@ class Server:
         try:
             await client.run()
         finally:
-            # Remove from all subscriptions
-            for sid in list(client.subscribed):
-                self.subscribers.get(sid, set()).discard(client)
-            client.subscribed.clear()
-            # Drop any global shell-lifecycle watch held by this client.
-            self.shell_watchers.discard(client)
-            # Stop the bounded-queue writer (P0.5).
-            client._closed = True
+            # The reader hit EOF: give the requests dispatched just before it
+            # a bounded chance to answer, and let the writer flush them,
+            # BEFORE anything is torn down (§14.75). Must run first — every
+            # step below makes writes impossible. Nested try/finally because a
+            # cancelled flush (daemon shutting down) must NOT skip the cleanup
+            # below: that would leak this client in `subscribers` forever.
             try:
-                client._writer_task.cancel()
-            except Exception:
-                pass
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
+                await client.flush_before_close()
+            finally:
+                # Remove from all subscriptions
+                for sid in list(client.subscribed):
+                    self.subscribers.get(sid, set()).discard(client)
+                client.subscribed.clear()
+                # Drop any global shell-lifecycle watch held by this client.
+                self.shell_watchers.discard(client)
+                # Stop the bounded-queue writer (P0.5).
+                client._closed = True
+                try:
+                    client._writer_task.cancel()
+                except Exception:
+                    pass
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
 
 # Bounded per-client send queue (P0.5). Before this, every send_json spawned
@@ -1097,6 +1106,11 @@ class Server:
 # busy session ≈ thousands of events): overflow means the peer is truly stuck.
 SEND_QUEUE_MAX_EVENTS = 10_000
 SEND_QUEUE_MAX_BYTES = 32 * 1024 * 1024
+
+# Grace budget for the post-EOF flush (§14.75). Generous enough for any normal
+# RPC round-trip, short enough that a dead transport or a genuinely slow call
+# can't wedge the per-connection cleanup.
+EOF_FLUSH_GRACE_S = 5.0
 
 
 class Client:
@@ -1123,6 +1137,10 @@ class Client:
         self._closed = False
         self._send_q: asyncio.Queue[bytes] = asyncio.Queue()
         self._q_bytes = 0
+        # In-flight _handle_one tasks. Tracked so the EOF path can wait for
+        # their answers (§14.75) — and so a detached task can't be garbage
+        # collected mid-call, which asyncio allows for an unreferenced task.
+        self._inflight: set[asyncio.Task[None]] = set()
         self._writer_task = asyncio.create_task(self._writer_loop())
 
     def send_json(self, obj: dict[str, Any]) -> None:
@@ -1155,17 +1173,54 @@ class Client:
         try:
             while True:
                 line = await self._send_q.get()
-                self._q_bytes -= len(line)
-                if self._closed:
-                    continue  # drain silently
+                # task_done() must fire for EVERY get, including the dropped
+                # ones — flush_before_close() waits on _send_q.join(), which
+                # would otherwise hang until its timeout (§14.75).
                 try:
-                    self.writer.write(line)
-                    await self.writer.drain()
-                except (ConnectionResetError, BrokenPipeError):
-                    self._closed = True
-                except Exception:
-                    traceback.print_exc(file=sys.stderr)
+                    self._q_bytes -= len(line)
+                    if self._closed:
+                        continue  # drain silently
+                    try:
+                        self.writer.write(line)
+                        await self.writer.drain()
+                    except (ConnectionResetError, BrokenPipeError):
+                        self._closed = True
+                    except Exception:
+                        traceback.print_exc(file=sys.stderr)
+                finally:
+                    self._send_q.task_done()
         except asyncio.CancelledError:
+            pass
+
+    async def flush_before_close(self) -> None:
+        """Bounded best-effort flush once the reader hit EOF.
+
+        `run()` dispatches every request as a DETACHED task, so at EOF the
+        answers routinely exist only as pending tasks, or as queue entries the
+        writer coroutine hasn't picked up yet. Both have to land before
+        `_closed` is set (which makes `_writer_loop` drop silently) and before
+        `_writer_task` is cancelled.
+
+        Skipping this made every one-shot `--connect` client read an EMPTY
+        stdout from a perfectly healthy daemon: the pipe's EOF reaches the
+        reader in the same event-loop wakeup as the data, so `run()` breaks out
+        before the dispatched tasks have run at all (§14.75).
+        """
+        if self._closed:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + EOF_FLUSH_GRACE_S
+        try:
+            if self._inflight:
+                await asyncio.wait(set(self._inflight),
+                                   timeout=max(0.0, deadline - loop.time()))
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                await asyncio.wait_for(self._send_q.join(), timeout=remaining)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Timeout, dead transport, handler blowup — all best-effort here.
             pass
 
     def shutdown(self) -> None:
@@ -1207,8 +1262,11 @@ class Client:
                     )
                 )
                 continue
-            # Dispatch async
-            asyncio.create_task(self._handle_one(req_id, method, params))
+            # Dispatch async — detached on purpose (a slow RPC must not block
+            # the next one), but TRACKED so EOF can wait for it (§14.75).
+            task = asyncio.create_task(self._handle_one(req_id, method, params))
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
 
     async def _handle_one(self, req_id: Any, method: str, params: dict[str, Any]) -> None:
         try:
