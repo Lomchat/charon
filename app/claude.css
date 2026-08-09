@@ -2571,7 +2571,12 @@
   line-height: 1.4;
 }
 .files-list .f-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
+/* `open` and `get` are <a> (a real navigation / download), insert / copy /
+   remove are <button> — but the row must read as ONE row of peers, so the three
+   rules below list EVERY action explicitly. Styling them via `button` + `.f-dl`
+   alone is what once left `open` rendering as a bare blue link. */
 .files-list .f-actions button,
+.files-list .f-actions .f-open,
 .files-list .f-actions .f-dl {
   display: inline-flex; align-items: center; gap: 4px;
   background: var(--shadow);
@@ -2585,12 +2590,12 @@
   min-height: 30px;
 }
 .files-list .f-actions button svg,
+.files-list .f-actions .f-open svg,
 .files-list .f-actions .f-dl svg { width: 11px; height: 11px; }
 .files-list .f-actions button:hover,
+.files-list .f-actions .f-open:hover,
 .files-list .f-actions .f-dl:hover { color: var(--gold-bright); border-color: var(--gold); }
-/* `open` deliberately carries NO accent of its own: it shares the generic
-   `.f-actions button / a` styling with insert / copy / get so the row reads as
-   one row of peers. */
+/* `open` deliberately carries NO accent of its own — same chrome as its peers. */
 .files-list .f-actions .f-rm { margin-left: auto; }
 .files-list .f-actions .f-rm:hover { color: var(--crimson); border-color: var(--crimson-deep); }
 
@@ -2657,14 +2662,10 @@
 .calls-list .input { font-family: var(--mono); font-size: 11px; color: var(--parchment-soft); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .calls-list .result { font-family: var(--mono); font-size: 11px; margin-top: 3px; color: var(--parchment); }
 
-/* Files */
-.files-list { list-style: none; padding: 0; margin: 0; }
-.files-list li {
-  padding: 4px 0;
-  border-bottom: 1px solid rgba(106,115,136,0.2);
-  font-size: 12px;
-}
-.files-list code { font-family: var(--mono); color: var(--parchment); }
+/* (The Files tab is styled ONCE, above — a second `.files-list` block used to
+   sit here from an older flat rendering and, being later in the file at equal
+   specificity, silently overrode the card padding with `4px 0` and added a
+   stray bottom border. Keep Files-tab CSS in the one block above.) */
 
 /* ── Permission popup ── */
 .perm-popup {
