@@ -59,7 +59,7 @@ export type Tab = 'diffs' | 'git' | 'tree' | 'files' | 'calls';
 const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
   { id: 'tree', label: 'files', Icon: IconTree },
   { id: 'git', label: 'git', Icon: IconGitBranch },
-  { id: 'diffs', label: 'diffs', Icon: IconDiff },
+  { id: 'diffs', label: 'diffs (session)', Icon: IconDiff },
   { id: 'files', label: 'attach', Icon: IconPaperclip },
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];

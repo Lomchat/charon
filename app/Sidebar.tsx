@@ -796,7 +796,7 @@ function SessionList({
   onRenameCancel?: () => void;
   onReorder?: (vpsId: string, ids: string[]) => void;
 }) {
-  const dnd = useReorder(sessions.map((s) => s.id), (ids) => onReorder?.(vpsId, ids));
+  const dnd = useReorder(sessions.map((s) => s.id), (ids) => onReorder?.(vpsId, ids), { axis: 'y' });
   return (
     <>
       {sessions.map((s) => (

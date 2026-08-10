@@ -4339,10 +4339,15 @@
 .tb-tab.temporary .tb-name { font-style: italic; opacity: 0.9; }
 .tb-tab.orphan .tb-name { opacity: 0.45; text-decoration: line-through; }
 
-/* Drag & drop feedback, shared by the three rows and the sidebar. */
+/* Drag & drop feedback, shared by the three rows and the sidebar. The bar
+   sits on the SIDE the row would land on — that is the whole point of the
+   before/after split, and it is what makes the end of a list a visible
+   target instead of a place you can't reach. */
 [data-dragging="true"] { opacity: 0.4; }
-[data-over="true"] { box-shadow: inset 2px 0 0 var(--gold-bright); }
-.cs-card[data-over="true"] { box-shadow: inset 0 2px 0 var(--gold-bright); }
+[data-over="before"] { box-shadow: inset 2px 0 0 var(--gold-bright); }
+[data-over="after"]  { box-shadow: inset -2px 0 0 var(--gold-bright); }
+.cs-card[data-over="before"] { box-shadow: inset 0 2px 0 var(--gold-bright); }
+.cs-card[data-over="after"]  { box-shadow: inset 0 -2px 0 var(--gold-bright); }
 
 .tab-row-paths { gap: 3px; padding: 2px 6px 0; background: rgba(0,0,0,0.10); }
 .tab-row-entities { gap: 3px; }
