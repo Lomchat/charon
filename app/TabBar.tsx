@@ -255,6 +255,15 @@ export default function TabBar({
             className={`tb-item tb-tab${t.id === activeTabId ? ' selected' : ''}${t.pinned ? '' : ' temporary'}`
               + ` state-${t.state}${t.orphan ? ' orphan' : ''}`}
             onContextMenu={(e) => onTabContext(e, t)}
+            // Middle-click closes, like every browser and every IDE. On Linux
+            // the default for button 1 is paste-primary-selection, so this has
+            // to preventDefault or the click lands in whatever has focus.
+            onAuxClick={(e) => {
+              if (e.button !== 1) return;
+              e.preventDefault(); e.stopPropagation();
+              onTabClose(t);
+            }}
+            onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
             {...tabDnd.itemProps(t.id)}
           >
             <button

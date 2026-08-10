@@ -33,11 +33,37 @@ type State = {
 const g = globalThis as unknown as {
   __charonTabState?: State;
   __charonTabSubs?: Set<() => void>;
+  __charonTabMru?: string[];
 };
 // The snapshot is REPLACED, never mutated: useSyncExternalStore compares by
 // identity, so an in-place edit is a change nothing re-renders for.
 let state: State = (g.__charonTabState ??= { tabs: [], loaded: false, dirty: new Set() });
 const subs = (g.__charonTabSubs ??= new Set<() => void>());
+/**
+ * Focus history, most-recent-first. NOT in the snapshot — nothing renders it.
+ *
+ * It exists so that closing a tab returns you to the one you were ACTUALLY on,
+ * not to whichever neighbour happens to sit next to the hole. Open a file from
+ * tab 1, close it, and you belong back on tab 1 — "the last tab in the row" is
+ * only ever right by accident. Browser-side like `lastByGroup`: which tab you
+ * were looking at is a per-screen fact.
+ */
+const mru = (g.__charonTabMru ??= []);
+
+function touchMru(id: string | null | undefined) {
+  if (!id) return;
+  const i = mru.indexOf(id);
+  if (i !== -1) mru.splice(i, 1);
+  mru.unshift(id);
+  if (mru.length > 60) mru.length = 60;
+}
+
+/** The tab focus should fall to when `closingId` goes away. */
+function nextFocusAfterClosing(closingId: string): string | null {
+  const live = new Set(state.tabs.filter((t) => t.id !== closingId).map((t) => t.id));
+  for (const id of mru) if (id !== closingId && live.has(id)) return id;
+  return null;
+}
 
 function commit(next: State) {
   state = next;
@@ -50,6 +76,8 @@ function setTabs(tabs: TabDTO[]) {
   // editor and the close guard fires on a tab that is already gone.
   const live = new Set(tabs.map((t) => t.id));
   const dirty = new Set([...state.dirty].filter((id) => live.has(id)));
+  for (let i = mru.length - 1; i >= 0; i--) if (!live.has(mru[i])) mru.splice(i, 1);
+  touchMru(tabs.find((t) => t.active)?.id);
   commit({ tabs, loaded: true, dirty });
 }
 
@@ -123,8 +151,16 @@ export async function pinTab(id: string): Promise<void> {
 }
 
 export async function closeTab(id: string): Promise<void> {
-  setTabs(state.tabs.filter((t) => t.id !== id));
-  try { setTabs((await api.closeTab(id)).tabs); } catch { void refreshTabs(); }
+  const wasActive = state.tabs.find((t) => t.id === id)?.active ?? false;
+  // Decide the next focus BEFORE the row disappears, from the history rather
+  // than from the geometry of the row.
+  const next = wasActive ? nextFocusAfterClosing(id) : null;
+  setTabs(state.tabs
+    .filter((t) => t.id !== id)
+    .map((t) => (next ? { ...t, active: t.id === next } : t)));
+  try {
+    setTabs((await api.closeTab(id, next ?? undefined)).tabs);
+  } catch { void refreshTabs(); }
 }
 
 /**

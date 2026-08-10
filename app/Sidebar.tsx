@@ -133,7 +133,7 @@ export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 export default function Sidebar({
   vpsList, vpsFolders, sessions, shells, installs,
   selectedId, selectedShellId, selectedInstallId,
-  onSelect, onSelectShell, onSelectInstall,
+  onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
@@ -389,7 +389,7 @@ export default function Sidebar({
                   codexOutdated: codexOutdatedOf(x.vps),
                   codexLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
-                  onSelect, onSelectShell, onSelectInstall,
+                  onSelect, onSelectShell, onSelectInstall, onReorderSessions,
                   onNew, onNewShell, onScan,
                   onContext, onContextShell, onContextInstall,
                   editingId, onRenameSubmit, onRenameCancel,

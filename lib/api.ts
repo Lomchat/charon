@@ -164,8 +164,9 @@ export const api = {
     send<{ tab: TabDTO; tabs: TabDTO[] }>('POST', '/api/tabs', body),
   updateTab: (id: string, body: { pin?: boolean; activate?: boolean }) =>
     send<{ tab: TabDTO; tabs: TabDTO[] }>('PATCH', `/api/tabs/${id}`, body),
-  closeTab: (id: string) =>
-    send<CloseTabResponse & { tabs: TabDTO[] }>('DELETE', `/api/tabs/${id}`),
+  closeTab: (id: string, nextActiveId?: string) =>
+    send<CloseTabResponse & { tabs: TabDTO[] }>('DELETE',
+      `/api/tabs/${id}${nextActiveId ? `?next=${encodeURIComponent(nextActiveId)}` : ''}`),
   reorderTabs: (body: ReorderTabsBody) =>
     send<{ ok: boolean; tabs: TabDTO[] }>('POST', '/api/tabs/reorder', body),
   closeTabsWhere: (q: { vpsId?: string; path?: string; exceptId?: string }) => {

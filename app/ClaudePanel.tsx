@@ -115,14 +115,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   );
 
   // If the ?session= param changes (notification click or navigation), switch
-  useEffect(() => {
-    if (!queryParamSession) return;
-    // A notification tap must land on a real TAB, not on a pane the bar
-    // doesn't show. Pinned: arriving from a push is never a casual preview.
-    const sess = sessions.find((x) => x.id === queryParamSession);
-    if (sess) openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', true);
-    else setSelectedId(queryParamSession);
-  }, [queryParamSession, sessions]); // eslint-disable-line
 
   // Sync selectedId → URL (?session=...) without spamming history
   useEffect(() => {
@@ -890,6 +882,29 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setBrowseVpsId(null); setBrowsePath(null);
     void openWorkspaceTab({ vpsId, path, kind, ref, pin });
   }, []);
+
+  // Handled-once guard. This component also WRITES `?session=` from the active
+  // tab, so without it every selection bounced back through here — which is
+  // what pinned a freshly-previewed session a beat after it opened — and every
+  // 15s list poll re-ran it and stole focus back from whatever you had moved to.
+  const handledDeepLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (!queryParamSession) return;
+    if (handledDeepLink.current === queryParamSession) return;
+    // Our own URL sync, not an arrival: the tab is already the active one.
+    if (activeTab?.kind === 'session' && activeTab.ref === queryParamSession) {
+      handledDeepLink.current = queryParamSession;
+      return;
+    }
+    handledDeepLink.current = queryParamSession;
+    // A notification tap must land on a real TAB, not on a pane the bar
+    // doesn't show — but as a PREVIEW. Pinning is reserved for having actually
+    // worked in a tab (a message, an edit, a double-click); arriving and
+    // reading is not that.
+    const sess = sessions.find((x) => x.id === queryParamSession);
+    if (sess) openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', false);
+    else setSelectedId(queryParamSession);
+  }, [queryParamSession, sessions, activeTab, openEntityTab]);
 
   /**
    * Where you were, per group. Browser-side (not the DB): "the tab I was last

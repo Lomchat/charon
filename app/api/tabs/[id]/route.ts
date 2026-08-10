@@ -22,11 +22,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   return NextResponse.json({ tab, tabs: listTabs() });
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
-  const r = closeTab(id);
+  // `?next=` is the client's focus history — see closeTab().
+  const next = new URL(req.url).searchParams.get('next');
+  const r = closeTab(id, next);
   if (!r.closed) return NextResponse.json({ error: 'tab not found' }, { status: 404 });
   emitGlobalTabsChanged();
   return NextResponse.json<CloseTabResponse & { tabs: ReturnType<typeof listTabs> }>({

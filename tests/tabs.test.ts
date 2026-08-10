@@ -144,6 +144,25 @@ describe('closing', () => {
     expect(T.closeTab(here.id).nextActiveId).toBe(other.id);
   });
 
+  it('honours the client\'s preferred next focus over the neighbour walk', () => {
+    // The browser knows which tab you were ACTUALLY on; the row geometry
+    // doesn't. Open a file from tab a, close it, and you belong back on a.
+    const a = T.openTab({ vpsId: VPS, path: P, kind: 'session', ref: 's1', pin: true });
+    const b = T.openTab({ vpsId: VPS, path: P, kind: 'session', ref: 's2', pin: true });
+    const file = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'x.ts' });
+    // Geometry would hand focus to `b` (the left neighbour of the file).
+    const r = T.closeTab(file.id, a.id);
+    expect(r.nextActiveId).toBe(a.id);
+    expect(T.getActiveTab()?.id).toBe(a.id);
+    expect(b.id).not.toBe(a.id);
+  });
+
+  it('falls back to the neighbour when the preferred tab is gone', () => {
+    const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
+    const b = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });
+    expect(T.closeTab(b.id, 'a-tab-that-no-longer-exists').nextActiveId).toBe(a.id);
+  });
+
   it('closing an inactive tab leaves focus alone', () => {
     const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
     const b = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });

@@ -239,7 +239,7 @@ export function dropTabsForRef(kind: TabKind, ref: string): boolean {
  * then anything else that is open — an editor that lands on a blank pane after
  * a close makes you re-find your place every time.
  */
-export function closeTab(id: string): { closed: boolean; nextActiveId: string | null } {
+export function closeTab(id: string, preferredNextId?: string | null): { closed: boolean; nextActiveId: string | null } {
   const [r] = db.select().from(tabs).where(eq(tabs.id, id)).limit(1).all();
   if (!r) return { closed: false, nextActiveId: null };
 
@@ -252,6 +252,16 @@ export function closeTab(id: string): { closed: boolean; nextActiveId: string | 
   db.delete(tabs).where(eq(tabs.id, id)).run();
 
   if (!wasActive) return { closed: true, nextActiveId: null };
+  // The CLIENT's focus history wins when it names a tab that still exists:
+  // only the browser knows which tab you were actually on before this one.
+  // The neighbour walk below is the fallback for a caller that didn't say.
+  if (preferredNextId) {
+    const [pref] = db.select().from(tabs).where(eq(tabs.id, preferredNextId)).limit(1).all();
+    if (pref) {
+      setActive(pref.id);
+      return { closed: true, nextActiveId: pref.id };
+    }
+  }
   const neighbour = siblings[idx - 1] ?? siblings[idx + 1] ?? null;
   const fallback = neighbour ?? db.select().from(tabs).orderBy(tabs.updatedAt).all().pop() ?? null;
   setActive(fallback?.id ?? null);
