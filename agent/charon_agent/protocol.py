@@ -84,6 +84,8 @@ METHODS = {
     # caller-supplied root, which is the session cwd.
     "fs_list",
     "fs_read",
+    # Cheap open-editor change token (agent >= 0.28.0). No content transfer.
+    "fs_stat",
     # Text write for the in-browser editor (agent >= 0.26.0). Atomic, and
     # gated on an expected sha so a save cannot silently clobber a file a
     # coding agent wrote in the meantime.

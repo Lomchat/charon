@@ -39,6 +39,26 @@ if (!globalForDb._sqlite) {
   sqlite.pragma('busy_timeout = 5000');
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
+  // WAL+NORMAL retains atomic/consistent commits while avoiding an fsync for
+  // every small streaming event. Set CHARON_SQLITE_SYNC=FULL for hosts that
+  // prefer maximum power-loss durability over event-ingest latency.
+  const requestedSync = String(process.env.CHARON_SQLITE_SYNC ?? 'NORMAL').toUpperCase();
+  const sync = ['OFF', 'NORMAL', 'FULL', 'EXTRA'].includes(requestedSync)
+    ? requestedSync
+    : 'NORMAL';
+  sqlite.pragma(`synchronous = ${sync}`);
+  // Keep hot B-tree pages and temporary sorts off disk. mmap is a ceiling,
+  // not an upfront allocation; SQLite only maps pages it actually reads.
+  sqlite.pragma('cache_size = -65536');
+  sqlite.pragma('temp_store = MEMORY');
+  sqlite.pragma('mmap_size = 268435456');
+  sqlite.pragma('wal_autocheckpoint = 2000');
+  sqlite.pragma('journal_size_limit = 67108864');
+  if (!isBuildPhase) {
+    // Bounded planner-stat refresh; unlike VACUUM this neither rewrites nor
+    // exclusively locks the full database at process start.
+    try { sqlite.pragma('optimize = 0x10002'); } catch {}
+  }
   globalForDb._sqlite = sqlite;
 }
 

@@ -61,10 +61,16 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
   // is about.
   const buf = useRef('');
   const shaRef = useRef<string | null>(null);
+  const versionRef = useRef<string | null>(null);
+  const dirtyRef = useRef(false);
+  const statInflightRef = useRef(false);
+  const statSupportedRef = useRef(true);
+  const externalSeenRef = useRef<string | null>(null);
   const inlineUrl = api.fsFileUrl(vpsId, root, path, { inline: true });
   const rawUrl = api.fsFileUrl(vpsId, root, path);
 
   const markDirty = useCallback((v: boolean) => {
+    dirtyRef.current = v;
     setDirty(v);
     setTabDirty(tabId, v);
   }, [tabId]);
@@ -79,6 +85,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
       setRes(r);
       buf.current = r.content ?? '';
       shaRef.current = r.sha256 ?? null;
+      versionRef.current = r.version ?? null;
+      externalSeenRef.current = null;
       markDirty(false);
       setDocKey((k) => k + 1);
     } catch (e: unknown) {
@@ -89,6 +97,11 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
   }, [vpsId, root, path, markDirty]);
 
   useEffect(() => { if (!media) void load(); else setLoading(false); }, [load, media]);
+  useEffect(() => {
+    statSupportedRef.current = true;
+    versionRef.current = null;
+    externalSeenRef.current = null;
+  }, [vpsId, root, path]);
   // Leaving the file behind must clear its badge, or a closed editor keeps a
   // dot on a tab nobody can save.
   useEffect(() => () => setTabDirty(tabId, false), [tabId]);
@@ -104,6 +117,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
       });
       if (r.ok) {
         shaRef.current = r.sha256 ?? null;
+        versionRef.current = r.version ?? versionRef.current;
+        externalSeenRef.current = null;
         markDirty(false);
         setConflict(null);
         setNote({ kind: 'ok', text: 'saved' });
@@ -122,6 +137,64 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
       setSaving(false);
     }
   }, [vpsId, root, path, saving, media, markDirty, onInteract]);
+
+  // Cheap external-change synchronization. The agent returns only a stat
+  // token (device/inode/size/mtime_ns), never the file body or a recomputed
+  // hash. A clean buffer follows the VPS automatically; a dirty one surfaces
+  // the existing explicit conflict UI and never overwrites either side.
+  const probeExternalChange = useCallback(async () => {
+    if (media || statInflightRef.current || !statSupportedRef.current) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    statInflightRef.current = true;
+    try {
+      const r = await api.statFsFile(vpsId, root, path);
+      if (!r.ok) {
+        if (r.reason === 'unsupported') statSupportedRef.current = false;
+        return;
+      }
+      const token = r.exists === false ? '__missing__' : (r.version ?? null);
+      if (!token) return;
+      if (versionRef.current == null) { versionRef.current = token; return; }
+      if (token === versionRef.current) return;
+      if (dirtyRef.current) {
+        if (externalSeenRef.current !== token) {
+          externalSeenRef.current = token;
+          setConflict({ serverSha: null });
+        }
+        return;
+      }
+      if (r.exists === false) {
+        versionRef.current = token;
+        setRes(null);
+        setErr('this file was deleted on the VPS');
+        setNote({ kind: 'err', text: 'the open file no longer exists' });
+        return;
+      }
+      await load();
+      setNote({ kind: 'ok', text: 'reloaded — the file changed on the VPS' });
+    } catch {
+      // Connectivity is already represented by the VPS badge. A stat probe is
+      // advisory and must not turn a temporarily-offline editor into an error.
+    } finally {
+      statInflightRef.current = false;
+    }
+  }, [media, vpsId, root, path, load]);
+
+  useEffect(() => {
+    if (media) return;
+    const timer = window.setInterval(() => { void probeExternalChange(); }, 10_000);
+    const wake = () => { void probeExternalChange(); };
+    const visible = () => { if (document.visibilityState === 'visible') wake(); };
+    window.addEventListener('focus', wake);
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', wake);
+      window.removeEventListener('online', wake);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [media, probeExternalChange]);
 
   // Ctrl+S also works when focus is outside CodeMirror (the header, a button)
   // — the shortcut belongs to the pane, not to the text area.

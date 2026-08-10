@@ -8,7 +8,7 @@ import type {
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
-  GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse,
+  GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   ReorderTabsBody, FsOpBody, FsOpResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
@@ -150,6 +150,8 @@ export const api = {
     send<FsOpResponse>('POST', `/api/vps/${id}/fs/op`, body, { timeoutMs: 60_000 }),
   readFsFile: (id: string, root: string, path: string) =>
     send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
+  statFsFile: (id: string, root: string, path: string) =>
+    send<FsStatResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&stat=1`, undefined, { timeoutMs: 15_000 }),
   // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
   fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
     `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,

@@ -1,56 +1,74 @@
 import { NextResponse } from 'next/server';
-import { like, desc, eq } from 'drizzle-orm';
-import { db, claudeSessionMessages, claudeSessions, vps as vpsTable } from '@/lib/db';
+import { eq, inArray, sql } from 'drizzle-orm';
+import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 
+function toFtsQuery(input: string): string | null {
+  const terms = input.match(/[\p{L}\p{N}_]+/gu)?.slice(0, 12) ?? [];
+  if (terms.length === 0) return null;
+  // ANDed prefixes are forgiving for partially typed words while quoting
+  // makes all FTS operators in user input inert.
+  return terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(' AND ');
+}
+
 // GET /api/claude/search?q=...
-// LIKE %q% on claude_session_messages.content + aggregates by session.
+// FTS5 replaces the unindexed LIKE %q% scan over the full (400MB+) message
+// table. Results and session/VPS metadata are each fetched in one query.
 export async function GET(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
-  const url = new URL(req.url);
-  const q = String(url.searchParams.get('q') ?? '').trim();
-  if (!q) return NextResponse.json({ results: [] });
-  const rows = db.select({
-    id: claudeSessionMessages.id,
-    sessionId: claudeSessionMessages.sessionId,
-    role: claudeSessionMessages.role,
-    content: claudeSessionMessages.content,
-    createdAt: claudeSessionMessages.createdAt,
-  })
-    .from(claudeSessionMessages)
-    .where(like(claudeSessionMessages.content, `%${q}%`))
-    .orderBy(desc(claudeSessionMessages.id))
-    .limit(80)
-    .all();
-  const sessionIds = Array.from(new Set(rows.map((r) => r.sessionId)));
-  const sessionMap = new Map<string, any>();
-  const vpsCache = new Map<string, string>();
-  for (const sid of sessionIds) {
-    const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sid)).all();
-    if (!row) continue;
-    let vpsName: string | null = null;
-    if (row.vpsId) {
-      vpsName = vpsCache.get(row.vpsId) ?? null;
-      if (!vpsName) {
-        const [v] = db.select({ name: vpsTable.name }).from(vpsTable).where(eq(vpsTable.id, row.vpsId)).all();
-        if (v?.name) { vpsName = v.name; vpsCache.set(row.vpsId, v.name); }
-      }
+  const q = String(new URL(req.url).searchParams.get('q') ?? '').trim();
+  const ftsQuery = toFtsQuery(q);
+  if (!ftsQuery) return NextResponse.json({ results: [] });
+  const perfStarted = performance.now();
+
+  const rows = db.all(sql`
+    SELECT CAST(f.message_id AS INTEGER) AS id,
+           f.session_id AS sessionId,
+           f.role AS role,
+           snippet(claude_session_messages_fts, 3, '', '', '…', 22) AS snippet,
+           m.created_at AS createdAt
+    FROM claude_session_messages_fts f
+    JOIN claude_session_messages m ON m.id = f.rowid
+    WHERE claude_session_messages_fts MATCH ${ftsQuery}
+    ORDER BY bm25(claude_session_messages_fts), m.id DESC
+    LIMIT 80
+  `) as Array<{
+    id: number;
+    sessionId: string;
+    role: string;
+    snippet: string;
+    createdAt: number;
+  }>;
+
+  const sessionIds = [...new Set(rows.map((r) => r.sessionId))];
+  const sessionMap = new Map<string, Record<string, unknown>>();
+  if (sessionIds.length > 0) {
+    const sessions = db.select({ session: claudeSessions, vpsName: vpsTable.name })
+      .from(claudeSessions)
+      .leftJoin(vpsTable, eq(vpsTable.id, claudeSessions.vpsId))
+      .where(inArray(claudeSessions.id, sessionIds))
+      .all();
+    for (const row of sessions) {
+      sessionMap.set(row.session.id, { ...row.session, vpsName: row.vpsName });
     }
-    sessionMap.set(sid, { ...row, vpsName });
   }
-  // Snippet around q
-  const lower = q.toLowerCase();
-  const results = rows.map((r) => {
-    const idx = r.content.toLowerCase().indexOf(lower);
-    const start = Math.max(0, idx - 60);
-    const end = Math.min(r.content.length, idx + q.length + 60);
-    const snippet = (start > 0 ? '…' : '') + r.content.slice(start, end) + (end < r.content.length ? '…' : '');
-    return {
-      messageId: r.id, sessionId: r.sessionId, role: r.role,
-      snippet, createdAt: r.createdAt,
+
+  const response = NextResponse.json({
+    results: rows.map((r) => ({
+      messageId: r.id,
+      sessionId: r.sessionId,
+      role: r.role,
+      snippet: r.snippet,
+      createdAt: r.createdAt,
       session: sessionMap.get(r.sessionId),
-    };
+    })),
   });
-  return NextResponse.json({ results });
+  const totalMs = performance.now() - perfStarted;
+  response.headers.set('server-timing', `search-fts;dur=${totalMs.toFixed(1)}`);
+  if (totalMs > 150) {
+    // eslint-disable-next-line no-console
+    console.warn(`[perf] search GET ${totalMs.toFixed(1)}ms (${rows.length} hits)`);
+  }
+  return response;
 }

@@ -13,6 +13,17 @@ import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import type { Msg } from './sessionTypes';
 export type { Msg };
 
+// Stable plugin/component identities. Besides avoiding small allocations on
+// every bubble render, this lets react-markdown reuse more of its processing
+// setup for completed messages.
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
+  [rehypeHighlight, { detect: true, ignoreMissing: true }],
+];
+const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']> = {
+  a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+};
+
 type Props = {
   m: Msg;
   streaming?: boolean;
@@ -69,15 +80,20 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
       </header>
       <div className="content md">
         {isAssistant ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}
-            components={{
-              a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-            }}
-          >
-            {m.content}
-          </ReactMarkdown>
+          streaming ? (
+            // Parsing + auto-detecting/highlighting the entire growing answer
+            // at 60Hz was quadratic work. The final persisted bubble gets the
+            // full Markdown renderer; the live tail stays deliberately cheap.
+            <span className="streaming-plain">{m.content}</span>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+              rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+              components={MARKDOWN_COMPONENTS}
+            >
+              {m.content}
+            </ReactMarkdown>
+          )
         ) : (
           <span>{m.content}</span>
         )}

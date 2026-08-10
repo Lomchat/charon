@@ -258,6 +258,7 @@ export default function ClaudeSessionView({
   // Stable ref (memo(Message), §14.38). `send` is optimistic, so the user
   // bubble appears at once and `continuableMsgId` goes null on the next render.
   const sendContinue = useCallback(() => { void streamSend('Continue'); }, [streamSend]);
+  const revertAndRefresh = useCallback(() => { onAfterRevert?.(); }, [onAfterRevert]);
 
   const stepCount = useMemo(() => {
     let count = 0;
@@ -610,13 +611,13 @@ export default function ClaudeSessionView({
                 {currentAssistant && (
                   <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={onReauth} />
                 )}
-                {[...renderable].reverse().map(({ msg, attached }) => (
-                  <Message
-                    key={msg.id} m={msg} attachedResult={attached} kind={sessionKind}
-                    onReauth={onReauth}
-                    onContinue={msg.id === continuableMsgId ? sendContinue : undefined}
-                  />
-                ))}
+                <MessageHistory
+                  renderable={renderable}
+                  kind={sessionKind}
+                  onReauth={onReauth}
+                  continuableMsgId={continuableMsgId}
+                  onContinue={sendContinue}
+                />
                 {/* "Loading older" / "start of history" indicator.
                     In column-reverse, the last DOM child renders visually at
                     the TOP of the chat — exactly where the user wants it. */}
@@ -753,7 +754,7 @@ export default function ClaudeSessionView({
         kind={sessionKind}
         toolCalls={toolCalls}
         edits={edits}
-        onRevert={() => onAfterRevert?.()}
+        onRevert={revertAndRefresh}
         attachments={attachments}
         onRemoveAttachment={removeAttachment}
         onInsertPath={requestInsertPath}
@@ -768,6 +769,27 @@ export default function ClaudeSessionView({
 }
 
 // ── View-specific sub-components ────────────────────────────────────────────
+
+// Completed history is immutable while an assistant streams. Keeping the map
+// inside a memoized child means a delta no longer creates/reconciles hundreds
+// of <Message> elements; only the small live-tail bubble changes.
+const MessageHistory = memo(function MessageHistory({
+  renderable, kind, onReauth, continuableMsgId, onContinue,
+}: {
+  renderable: { msg: Msg; attached?: Msg }[];
+  kind: AgentKind;
+  onReauth?: () => void;
+  continuableMsgId: string | null;
+  onContinue: () => void;
+}) {
+  return [...renderable].reverse().map(({ msg, attached }) => (
+    <Message
+      key={msg.id} m={msg} attachedResult={attached} kind={kind}
+      onReauth={onReauth}
+      onContinue={msg.id === continuableMsgId ? onContinue : undefined}
+    />
+  ));
+});
 
 // Isolated input bar. It owns the textarea `input` state (via useInputDraft)
 // so that typing only re-renders THIS small component — never the parent

@@ -1,47 +1,50 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
-import type { AgentKind } from '@/lib/types/api';
+import type { AgentKind, TabDTO } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
-import ToolPanel from './ToolPanel';
 import type { EditSnapshot } from './sessionTypes';
-import FileEditor from './FileEditor';
 import {
-  useTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
+  useTabs, hydrateTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
   pinTab as pinWorkspaceTab, closeTabGuarded, reorderTabs as reorderWorkspaceTabs,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
-import InstallSessionView from './InstallSessionView';
-import NewSessionWizard from './NewSessionWizard';
-import DataModal from './DataModal';
-import ResumeModal from './ResumeModal';
 import ConfirmModal from './ConfirmModal';
 import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
 import { useInstallNotifications } from './useInstallNotifications';
 import { subscribeAll } from './globalEventStream';
-import SearchModal from './SearchModal';
-import SettingsModal from './SettingsModal';
 import SessionContextMenu from './SessionContextMenu';
-import ClaudeLoginModal from './ClaudeLoginModal';
-import CodexLoginModal from './CodexLoginModal';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
-import { prefetchAll as sessionCachePrefetchAll } from './sessionCache';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
   IconMenu, IconPanelRight,
 } from './icons';
+
+// Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
+// chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
+const ToolPanel = dynamic(() => import('./ToolPanel'));
+const FileEditor = dynamic(() => import('./FileEditor'));
+const InstallSessionView = dynamic(() => import('./InstallSessionView'));
+const NewSessionWizard = dynamic(() => import('./NewSessionWizard'), { ssr: false });
+const DataModal = dynamic(() => import('./DataModal'), { ssr: false });
+const ResumeModal = dynamic(() => import('./ResumeModal'), { ssr: false });
+const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
+const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
+const ClaudeLoginModal = dynamic(() => import('./ClaudeLoginModal'), { ssr: false });
+const CodexLoginModal = dynamic(() => import('./CodexLoginModal'), { ssr: false });
 
 type Props = {
   vpsList: Vps[];
@@ -56,7 +59,21 @@ type Props = {
   // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
   sdkLatestVersion: string | null;
   codexLatestVersion?: string | null;
+  initialTabs: TabDTO[];
 };
+
+function sameSessionRows(a: SessionListItem[], b: SessionListItem[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] as unknown as Record<string, unknown>;
+    const y = b[i] as unknown as Record<string, unknown>;
+    const xk = Object.keys(x);
+    const yk = Object.keys(y);
+    if (xk.length !== yk.length) return false;
+    for (const k of xk) if (x[k] !== y[k]) return false;
+  }
+  return true;
+}
 
 const STATUS_LABEL: Record<WorkerStatus, string> = {
   starting: 'starting',
@@ -84,7 +101,12 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 
 const emptyEdits: Map<string, EditSnapshot> = new Map();
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion, initialTabs }: Props) {
+  // The workspace is part of the SSR snapshot. Hydrating it synchronously
+  // prevents the initial session from mounting, being cleared by an empty tab
+  // store, then mounting again after GET /api/tabs.
+  hydrateTabs(initialTabs);
+  const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded } = useTabs();
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
@@ -111,9 +133,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // a notification tap lands on the shell, not the first chat.
   const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
-  const [selectedId, setSelectedId] = useState<string | null>(
-    queryParamShell ? null : (queryParamSession ?? initialSessions[0]?.id ?? null),
-  );
+  const initialActiveTab = initialTabs.find((t) => t.active) ?? null;
+  const [selectedId, setSelectedId] = useState<string | null>(queryParamShell
+    ? null
+    : (queryParamSession ?? (initialActiveTab?.kind === 'session' ? initialActiveTab.ref : null)));
 
   // If the ?session= param changes (notification click or navigation), switch
 
@@ -580,35 +603,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       setError({ msg: 'close install: ' + (e?.message ?? e) });
     }
   }
-  // ── Tabs (VSCode-style) ────────────────────────────────────────────────
-  // `keptOpenIds` is the set of entity ids the user wants to keep visible in
-  // the tab bar even after they've become inactive (sleeping session, exited
-  // shell, finished install). Active entities always show a tab regardless.
-  //
-  // Auto-populated as soon as an entity is selected or becomes active —
-  // that way a session put to sleep doesn't immediately vanish; it stays
-  // greyed-out with a × until the user explicitly closes it.
-  //
-  // Cleared when the user clicks × on a closable tab.
-  const [keptOpenIds, setKeptOpenIds] = useState<Set<string>>(new Set());
-
-  const keepOpen = useCallback((id: string) => {
-    setKeptOpenIds((prev) => {
-      if (prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.add(id);
-      return next;
-    });
-  }, []);
-  const forgetOpen = useCallback((id: string) => {
-    setKeptOpenIds((prev) => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
-  }, []);
-
   // `mountedShellIds` is the set of shell ids whose <ShellTerminal> stays
   // MOUNTED (its WebSocket + xterm alive) even while another entity is
   // selected — so switching sessions and coming back keeps the live shell
@@ -618,68 +612,33 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Lazy on purpose: a shell mounts only once it has been SELECTED at least
   // once this page-load (not on F5 for every shell in the sidebar) — that
   // caps the number of live ssh+agent connections to shells the user
-  // actually opened. The GC effect below drops ids whose shell is gone OR
-  // whose tab was closed (× → removed from keptOpenIds).
+  // actually opened. Keep only the three most-recent terminals: detached
+  // holders preserve every bash/scrollback remotely, so an older terminal
+  // can reconnect on demand without leaking one browser WebSocket per shell.
   const [mountedShellIds, setMountedShellIds] = useState<Set<string>>(new Set());
-
-  // Whenever a new active entity appears (or is selected), pin its tab.
-  // Active Claude sessions, live shells, running installs.
-  useEffect(() => {
-    const ids: string[] = [];
-    for (const s of sessions) {
-      const st = s.liveStatus ?? s.status;
-      if (st === 'active' || st === 'thinking' || st === 'starting' || st === 'failed') ids.push(s.id);
-    }
-    for (const sh of shells) if (!sh.exited) ids.push(sh.id);
-    for (const i of installs) if (i.status === 'running') ids.push(i.id);
-    if (selectedId) ids.push(selectedId);
-    if (selectedShellId) ids.push(selectedShellId);
-    if (selectedInstallId) ids.push(selectedInstallId);
-    setKeptOpenIds((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const id of ids) {
-        if (!next.has(id)) { next.add(id); changed = true; }
-      }
-      return changed ? next : prev;
-    });
-  }, [sessions, shells, installs, selectedId, selectedShellId, selectedInstallId]);
-
-  // Garbage-collect ids of entities that no longer exist (deleted sessions,
-  // killed shells removed from the list, etc.) — otherwise the Set grows
-  // monotonically.
-  useEffect(() => {
-    setKeptOpenIds((prev) => {
-      if (prev.size === 0) return prev;
-      const alive = new Set<string>();
-      for (const s of sessions) alive.add(s.id);
-      for (const sh of shells) alive.add(sh.id);
-      for (const i of installs) alive.add(i.id);
-      let changed = false;
-      const next = new Set<string>();
-      for (const id of prev) {
-        if (alive.has(id)) next.add(id);
-        else changed = true;
-      }
-      return changed ? next : prev;
-    });
-  }, [sessions, shells, installs]);
 
   // Mount a shell terminal the first time it's selected, then keep it
   // mounted (see `mountedShellIds` above).
   useEffect(() => {
     if (!selectedShellId) return;
     setMountedShellIds((prev) => {
-      if (prev.has(selectedShellId)) return prev;
       const next = new Set(prev);
+      // Delete+add touches insertion order, which is our tiny LRU.
+      next.delete(selectedShellId);
       next.add(selectedShellId);
+      while (next.size > 3) {
+        const oldest = next.values().next().value as string | undefined;
+        if (!oldest) break;
+        next.delete(oldest);
+      }
+      if (next.size === prev.size && [...next].every((id, i) => [...prev][i] === id)) return prev;
       return next;
     });
   }, [selectedShellId]);
 
-  // GC mounted shells: drop any whose shell row no longer exists (deleted /
-  // reconciled away) OR whose tab the user closed (no longer in
-  // keptOpenIds). Dropping unmounts <ShellTerminal> → its WebSocket closes
+  // GC mounted shells: drop any whose shell row no longer exists or whose
+  // persisted workspace tab was closed. Dropping unmounts the terminal and
+  // closes its WebSocket; the detached remote holder remains alive.
   // and the ssh+agent client is freed. The agent's bash + durable log live
   // on, so reopening the shell replays the full scrollback.
   useEffect(() => {
@@ -687,14 +646,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (prev.size === 0) return prev;
       let changed = false;
       const next = new Set<string>();
+      const openShellIds = new Set(workspaceTabs.filter((t) => t.kind === 'shell').map((t) => t.ref));
       for (const id of prev) {
-        const keep = shells.some((s) => s.id === id) && keptOpenIds.has(id);
+        const keep = shells.some((s) => s.id === id) && openShellIds.has(id);
         if (keep) next.add(id);
         else changed = true;
       }
       return changed ? next : prev;
     });
-  }, [shells, keptOpenIds]);
+  }, [shells, workspaceTabs]);
 
   // Unified "new session" wizard (VPS → path → name). `kind` is fixed by the
   // button that opened it (＋Agent vs ＋Shell). Replaces the old
@@ -860,14 +820,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, [permQueue, questionQueue, exitPlanQueue, selectedId]);
 
   // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
-  // change to sessions/shells/installs/pendings/keptOpen — cheap, ~O(n).
+  // change to sessions/shells/installs/pendings — cheap, ~O(n).
   // `ShellListItem` is structurally identical to `ShellInfo` (same fields).
   // ── Workspace tabs (§14.78) ───────────────────────────────────────────────
   // The bar is no longer derived from "every non-sleeping session": it is a
   // persisted, shared list. This resolves those rows against the live entity
   // lists once, and both the strip and the main pane read the same answer.
-  const { tabs: workspaceTabs, dirty: dirtyIds } = useTabs();
-  useEffect(() => { void refreshTabs(); }, []);
   const resolvedTabs = useMemo(() => resolveTabs({
     tabs: workspaceTabs, sessions, shells, installs,
     permQueue, questionQueue, exitPlanQueue, dirtyIds,
@@ -888,6 +846,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // so this is the single place that translates.
   const [selectedFile, setSelectedFile] = useState<ResolvedTab | null>(null);
   useEffect(() => {
+    if (!workspaceTabsLoaded) return;
     if (!activeTab) {
       setSelectedId(null); setSelectedShellId(null); setSelectedInstallId(null); setSelectedFile(null);
       return;
@@ -896,7 +855,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setSelectedId(activeTab.kind === 'session' ? activeTab.ref : null);
     setSelectedShellId(activeTab.kind === 'shell' ? activeTab.ref : null);
     setSelectedInstallId(activeTab.kind === 'install' ? activeTab.ref : null);
-  }, [activeTab]);
+  }, [activeTab, workspaceTabsLoaded]);
 
   /** Open (or focus) something as a tab. Preview unless `pin`. */
   const openEntityTab = useCallback((
@@ -1071,7 +1030,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return { claude: reason('claude'), codex: reason('codex') };
   }, [vpsList, activeVpsId]);
 
-  // ── Sessions list (poll 15s) ──
+  // ── Sessions list (slow convergence poll; SSE is the fast path) ──
   // Before: 4s. But each tick did `setSessions(...)` (same content) which
   // re-rendered the Sidebar + main panel → CPU + flicker. Intra-session
   // status changes already arrive via the per-session SSE; the poll only
@@ -1080,7 +1039,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const refreshSessions = useCallback(async () => {
     try {
       const r = await api.listClaudeSessions();
-      setSessions(r.sessions as SessionListItem[]);
+      const next = r.sessions as SessionListItem[];
+      setSessions((prev) => sameSessionRows(prev, next) ? prev : next);
       // Refresh the staleness baselines (builtPyzSha / PyPI latests) so a
       // long-open tab converges within one poll after a hub deploy — no more
       // phantom "update agent" badges that only F5 could clear.
@@ -1130,8 +1090,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, []);
   useEffect(() => {
     refreshSessions();
-    const t = setInterval(refreshSessions, 15_000);
-    return () => clearInterval(t);
+    const tick = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') refreshSessions();
+    };
+    const t = setInterval(tick, 60_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshSessions(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
   }, [refreshSessions]);
 
   // Live "the session list changed" signal (CLAUDE.md §14.52). When a session
@@ -1333,14 +1298,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // questionQueue/exitPlanQueue from the API on every refetch. Today
   // useCrossSessionInteractionFeed keeps these queues up to date via an
   // SSE per session (pendings are replayed on subscribe). Nothing to do here.
-
-  // Prefetch all sessions at mount (and when the list changes) → the
-  // module-level `sessionCache.ts` cache is populated; when the user clicks
-  // a session, `<ClaudeSessionView>` remounts with its hook reading from the
-  // cache first (instant render) then fetching fresh in the background.
-  useEffect(() => {
-    sessionCachePrefetchAll(sessions.map((s) => s.id));
-  }, [sessions.length, sessions]);
 
   // [SSE + per-session state + refetch + scroll = delegated to
   //   `<ClaudeSessionView>` which uses `useClaudeSessionStream`.

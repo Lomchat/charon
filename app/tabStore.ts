@@ -78,7 +78,26 @@ function setTabs(tabs: TabDTO[]) {
   const dirty = new Set([...state.dirty].filter((id) => live.has(id)));
   for (let i = mru.length - 1; i >= 0; i--) if (!live.has(mru[i])) mru.splice(i, 1);
   touchMru(tabs.find((t) => t.active)?.id);
+  const sameTabs = state.loaded && tabs.length === state.tabs.length && tabs.every((tab, i) => {
+    const prev = state.tabs[i];
+    return prev != null
+      && tab.id === prev.id && tab.vpsId === prev.vpsId && tab.path === prev.path
+      && tab.kind === prev.kind && tab.ref === prev.ref && tab.pinned === prev.pinned
+      && tab.position === prev.position && tab.active === prev.active
+      && tab.vpsPos === prev.vpsPos && tab.groupPos === prev.groupPos;
+  });
+  const sameDirty = dirty.size === state.dirty.size && [...dirty].every((id) => state.dirty.has(id));
+  if (sameTabs && sameDirty) return;
   commit({ tabs, loaded: true, dirty });
+}
+
+/** Seed the client store from the SSR payload before the first subscription.
+ * A remounted/HMR store that is already live wins over the older SSR snapshot. */
+export function hydrateTabs(tabs: TabDTO[]): void {
+  if (state.loaded) return;
+  state = { tabs, loaded: true, dirty: state.dirty };
+  g.__charonTabState = state;
+  touchMru(tabs.find((t) => t.active)?.id);
 }
 
 let inflight: Promise<void> | null = null;
@@ -89,6 +108,16 @@ export function refreshTabs(): Promise<void> {
     .catch(() => { /* the poll or the next event will retry */ })
     .finally(() => { inflight = null; });
   return inflight;
+}
+
+// Optimistic updates make clicks immediate, while serializing the actual
+// mutations prevents two rapid actions from being processed/answered out of
+// order and letting an older full-layout response overwrite the newer one.
+let mutationTail: Promise<unknown> = Promise.resolve();
+function runMutation<T>(fn: () => Promise<T>): Promise<T> {
+  const result = mutationTail.then(fn, fn);
+  mutationTail = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 export function useTabs(): State {
@@ -131,7 +160,7 @@ export async function openTab(input: {
     setTabs([...kept.map((t) => ({ ...t, active: false })), provisional]);
   }
   try {
-    const r = await api.openTab(input);
+    const r = await runMutation(() => api.openTab(input));
     setTabs(r.tabs);
     return r.tab;
   } catch {
@@ -142,12 +171,12 @@ export async function openTab(input: {
 
 export async function activateTab(id: string): Promise<void> {
   setTabs(state.tabs.map((t) => ({ ...t, active: t.id === id })));
-  try { setTabs((await api.updateTab(id, { activate: true })).tabs); } catch { void refreshTabs(); }
+  try { setTabs((await runMutation(() => api.updateTab(id, { activate: true }))).tabs); } catch { void refreshTabs(); }
 }
 
 export async function pinTab(id: string): Promise<void> {
   setTabs(state.tabs.map((t) => (t.id === id ? { ...t, pinned: true } : t)));
-  try { setTabs((await api.updateTab(id, { pin: true, activate: true })).tabs); } catch { void refreshTabs(); }
+  try { setTabs((await runMutation(() => api.updateTab(id, { pin: true, activate: true }))).tabs); } catch { void refreshTabs(); }
 }
 
 export async function closeTab(id: string): Promise<void> {
@@ -159,7 +188,7 @@ export async function closeTab(id: string): Promise<void> {
     .filter((t) => t.id !== id)
     .map((t) => (next ? { ...t, active: t.id === next } : t)));
   try {
-    setTabs((await api.closeTab(id, next ?? undefined)).tabs);
+    setTabs((await runMutation(() => api.closeTab(id, next ?? undefined))).tabs);
   } catch { void refreshTabs(); }
 }
 
@@ -181,11 +210,11 @@ export async function reorderTabs(body: ReorderTabsBody): Promise<void> {
   } else {
     setTabs(state.tabs.map((t) => ({ ...t, vpsPos: rank(body.vpsIds, t.vpsId) })));
   }
-  try { setTabs((await api.reorderTabs(body)).tabs); } catch { void refreshTabs(); }
+  try { setTabs((await runMutation(() => api.reorderTabs(body))).tabs); } catch { void refreshTabs(); }
 }
 
 export async function closeTabsWhere(q: { vpsId?: string; path?: string; exceptId?: string }): Promise<void> {
-  try { setTabs((await api.closeTabsWhere(q)).tabs); } catch { void refreshTabs(); }
+  try { setTabs((await runMutation(() => api.closeTabsWhere(q))).tabs); } catch { void refreshTabs(); }
 }
 
 // ── Dirty tracking (local) ──────────────────────────────────────────────────

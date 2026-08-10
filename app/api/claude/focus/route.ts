@@ -36,17 +36,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'sessionId must be string or null' }, { status: 400 });
   }
 
-  const ok = setConnectionFocus(conn, sessionId ?? null);
+  const focusSeq = Number(body?.focusSeq);
+  if (!Number.isSafeInteger(focusSeq) || focusSeq < 1) {
+    return NextResponse.json({ error: 'focusSeq must be a positive integer' }, { status: 400 });
+  }
+  const result = setConnectionFocus(conn, sessionId ?? null, focusSeq);
 
   // Opening/focusing a session counts as "reading" it: clear the durable
   // "finished, unread" marker (CLAUDE.md §14.47) and mirror it live to every
   // tab/device. Done regardless of `ok` (the focus filter and the unread flag
   // are independent) and no-op when the session wasn't unread.
-  if (typeof sessionId === 'string' && sessionId.length > 0) {
+  if (result.ok && result.focus === sessionId && typeof sessionId === 'string' && sessionId.length > 0) {
     try { markSessionRead(sessionId); } catch {}
   }
 
   // If `ok` is false: the connection does not exist (SSE not yet opened or
   // already closed). Not a fatal error — the client can retry.
-  return NextResponse.json({ ok });
+  return NextResponse.json(result);
 }

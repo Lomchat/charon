@@ -1,6 +1,6 @@
 import 'server-only';
 import crypto from 'node:crypto';
-import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages,
   claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
@@ -24,6 +24,9 @@ import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { classifyTerminalClaudeError } from '@/lib/terminalClaudeError';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 import { dropTabsForRef } from '@/lib/server/claude/tabs';
+import {
+  compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
+} from '@/lib/server/claude/messageWire';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -297,6 +300,13 @@ export class SessionStream {
   effectiveModel: string | null = null;
 
   private currentAssistant = '';
+  // Agent deltas may arrive one token at a time. Forwarding each one through
+  // the global bus/SSE made Node serialize tens of events per second and made
+  // every browser wake up just as often. Keep the live feel while coalescing
+  // adjacent text for one short frame-sized interval. Any non-text boundary
+  // flushes first, so tool/status ordering stays exact.
+  private pendingBroadcastAssistant = '';
+  private assistantBroadcastTimer: NodeJS.Timeout | null = null;
   private agentListener: AgentEventListener | null = null;
   private attached = false;
   // The AgentClient instance this stream is currently subscribed to. The pool
@@ -505,6 +515,7 @@ export class SessionStream {
     } catch {}
     this.attachedClient = null;
     this.agentListener = null;
+    this._flushAssistantBroadcast();
     // Cancel the pending seq-persist timer — no more events are coming.
     // We don't bother flushing one last time: the seq will be irrelevant
     // after the session is deleted (agent will tear down its log too).
@@ -742,14 +753,20 @@ export class SessionStream {
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownToolUseIds.has(String(ev.id))) break;
         this._persist('tool_use', { type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
-        this._broadcast({ type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
+        this._broadcast({
+          type: 'tool_use', id: ev.id, name: ev.name,
+          input: compactToolInputForWire(ev.input),
+        } as WorkerEvent);
         if (this.isReplaying) this.replayKnownToolUseIds.add(String(ev.id));
         break;
       case 'tool_result':
         if (this._replayAlreadyPersisted(ev)) break;
         if (this.isReplaying && this.replayKnownToolResultIds.has(String(ev.tool_use_id))) break;
         this._persist('tool_result', { type: 'tool_result', tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error });
-        this._broadcast({ type: 'tool_result', tool_use_id: ev.tool_use_id, content: ev.content, is_error: ev.is_error });
+        this._broadcast({
+          type: 'tool_result', tool_use_id: ev.tool_use_id,
+          ...compactToolResultForWire(ev.content), is_error: ev.is_error,
+        } as WorkerEvent);
         if (this.isReplaying) this.replayKnownToolResultIds.add(String(ev.tool_use_id));
         break;
       case 'permission_request':
@@ -1277,6 +1294,32 @@ export class SessionStream {
 
   // ── Privates ─────────────────────────────────────────────────────────────
   private _broadcast(ev: WorkerEvent): void {
+    if (ev.type === 'assistant_text') {
+      this.pendingBroadcastAssistant += ev.delta;
+      if (!this.assistantBroadcastTimer) {
+        this.assistantBroadcastTimer = setTimeout(() => {
+          this.assistantBroadcastTimer = null;
+          this._flushAssistantBroadcast();
+        }, 25);
+      }
+      return;
+    }
+    this._flushAssistantBroadcast();
+    this._emitBroadcast(ev);
+  }
+
+  private _flushAssistantBroadcast(): void {
+    if (this.assistantBroadcastTimer) {
+      clearTimeout(this.assistantBroadcastTimer);
+      this.assistantBroadcastTimer = null;
+    }
+    if (!this.pendingBroadcastAssistant) return;
+    const delta = this.pendingBroadcastAssistant;
+    this.pendingBroadcastAssistant = '';
+    this._emitBroadcast({ type: 'assistant_text', delta });
+  }
+
+  private _emitBroadcast(ev: WorkerEvent): void {
     // Push all events on the global bus — the multiplexed /events SSE
     // handles the fan-out + filter by connection focus. Tag with sessionId
     // so consumers know which session it came from.
@@ -1342,7 +1385,10 @@ export class SessionStream {
         // one-shot window, accepted.)
         if (this.replayPersistedSeqs.has(flushSeq)) {
           try {
-            const [row] = db.select().from(claudeSessionMessages)
+            const [row] = db.select({
+              id: claudeSessionMessages.id,
+              content: claudeSessionMessages.content,
+            }).from(claudeSessionMessages)
               .where(and(
                 eq(claudeSessionMessages.sessionId, this.id),
                 eq(claudeSessionMessages.seq, flushSeq),
@@ -1367,7 +1413,10 @@ export class SessionStream {
         // answers but the only signal available.
         if (this.replayKnownAssistantContents.has(finalContent)) return true;
         try {
-          const lastRows = db.select().from(claudeSessionMessages)
+          const lastRows = db.select({
+            id: claudeSessionMessages.id,
+            content: claudeSessionMessages.content,
+          }).from(claudeSessionMessages)
             .where(and(
               eq(claudeSessionMessages.sessionId, this.id),
               eq(claudeSessionMessages.role, 'assistant'),
@@ -1469,17 +1518,33 @@ export class SessionStream {
     this.replayKnownAssistantContents.clear();
     this.replayKnownThinkingContents.clear();
     this.replayKnownPendingIds.clear();
-    // Primary gate: the SET of stamped row seqs (collected in the row loop
-    // below — same query the content Sets already need). NULL/empty (fresh
-    // DB / rows all pre-seq-column) → the content Sets carry the dedup
-    // alone, exactly the pre-2026-07 behavior.
+    // Primary gate: stamped row identities. Load only the integer column — a
+    // previous SELECT * materialized the entire multi-hundred-MB transcript
+    // on every reconnect merely to build this Set.
     this.replayPersistedSeqs = new Set<number>();
     try {
-      const rows = db.select().from(claudeSessionMessages)
+      const stamped = db.select({ seq: claudeSessionMessages.seq })
+        .from(claudeSessionMessages)
         .where(eq(claudeSessionMessages.sessionId, this.id))
         .all();
-      for (const r of rows) {
+      for (const r of stamped) {
         if (typeof r.seq === 'number') this.replayPersistedSeqs.add(r.seq);
+      }
+
+      // Only pre-seq rows need the legacy content fallback. Current rows are
+      // deduped by identity above; don't parse their JSON or retain their
+      // assistant bodies in memory.
+      const legacy = db.select({
+        role: claudeSessionMessages.role,
+        content: claudeSessionMessages.content,
+      }).from(claudeSessionMessages)
+        .where(and(
+          eq(claudeSessionMessages.sessionId, this.id),
+          isNull(claudeSessionMessages.seq),
+          inArray(claudeSessionMessages.role, ['tool_use', 'tool_result', 'assistant', 'thinking', 'event']),
+        ))
+        .all();
+      for (const r of legacy) {
         try {
           if (r.role === 'tool_use') {
             const p = JSON.parse(r.content);
@@ -1531,9 +1596,12 @@ export class SessionStream {
     // monotonic across an agent event-log reset.
     const tsMs = (extra && 'tsMs' in extra ? extra.tsMs : null) ?? this.currentEventTs ?? Date.now();
     try {
+      const rawContent = typeof content === 'string' ? content : JSON.stringify(content);
+      const storage = deriveMessageStorage(role, rawContent);
       db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
-        content: typeof content === 'string' ? content : JSON.stringify(content),
+        content: rawContent,
+        ...storage,
         // Only assistant rows carry a model stamp (see _flushAssistant).
         ...(extra?.model ? { model: extra.model } : {}),
         ...(seq != null ? { seq } : {}),

@@ -31,20 +31,25 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  const perfStarted = performance.now();
   try {
-    // Groupwise-max: for each (file_path, phase) keep only the row with the
-    // highest id (the most recent snapshot). This mirrors what
+    // Groupwise-max: for each normalized (file_path, phase) keep only the row
+    // with the highest id. Migration 0030 backfilled these columns and an
+    // index; this avoids json_extract parsing every historical file body.
+    // This mirrors what
     // rebuildStateFromMessages computes client-side (latest before + latest
     // after, independently per phase → the most recent edit's diff).
     const rows = db.all(sql`
       SELECT m.id AS id, m.content AS content
       FROM claude_session_messages m
       JOIN (
-        SELECT json_extract(content, '$.file_path') AS fp,
-               json_extract(content, '$.phase')     AS ph,
+        SELECT snapshot_file_path AS fp,
+               snapshot_phase     AS ph,
                MAX(id)                              AS mid
         FROM claude_session_messages
-        WHERE session_id = ${id} AND role = 'edit_snapshot'
+        WHERE session_id = ${id}
+          AND role = 'edit_snapshot'
+          AND snapshot_file_path IS NOT NULL
         GROUP BY fp, ph
       ) latest ON m.id = latest.mid
       ORDER BY m.id ASC
@@ -95,7 +100,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       edits.push(e);
     }
 
-    return NextResponse.json({ edits, truncatedList });
+    const response = NextResponse.json({ edits, truncatedList });
+    const totalMs = performance.now() - perfStarted;
+    response.headers.set('server-timing', `edits;dur=${totalMs.toFixed(1)}`);
+    if (totalMs > 250) {
+      // eslint-disable-next-line no-console
+      console.warn(`[perf] edits GET ${id} ${totalMs.toFixed(1)}ms (${edits.length} files)`);
+    }
+    return response;
   } catch (e: any) {
     // Same rationale as the main session GET: a transient DB failure must be a
     // clean retryable 503, never an unhandled 500 (HTML error page → client

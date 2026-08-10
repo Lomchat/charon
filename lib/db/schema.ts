@@ -219,6 +219,18 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
   role: text('role').notNull(),
   content: text('content').notNull(),
+  // Compact representation used by the looping chat API. `content` remains
+  // the lossless source for export/replay and lazy detail endpoints, while
+  // oversized tool results and edit snapshots can have a metadata/preview
+  // form here. NULL means "the full content is already cheap".
+  wireContent: text('wire_content'),
+  // Normalized edit-snapshot metadata. Besides avoiding json_extract over
+  // hundreds of MB in /edits, these columns let SQLite's index identify the
+  // latest snapshot for each file/phase before reading any file body.
+  snapshotFilePath: text('snapshot_file_path'),
+  snapshotPhase: text('snapshot_phase'),
+  snapshotToolUseId: text('snapshot_tool_use_id'),
+  snapshotTruncated: integer('snapshot_truncated'),
   // For role='assistant' rows only: the model id Anthropic actually served
   // this message with (stamped at flush time from the stream's
   // effectiveModel — see sessionOps._flushAssistant). Lets the UI label every
@@ -262,6 +274,13 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // session_id has no automatic index in SQLite. The compound
   // (session_id, id) is the right shape for every chat read query.
   index('idx_claude_session_messages_session_id_id').on(t.sessionId, t.id),
+  // Chronological page seek — replaces a full-session JS sort per GET.
+  index('idx_claude_session_messages_session_ts_id').on(t.sessionId, t.tsMs, t.id),
+  // Durable replay checks select only identities for one session.
+  index('idx_claude_session_messages_session_seq').on(t.sessionId, t.seq),
+  // Latest before/after snapshot per path without parsing every JSON body.
+  index('idx_claude_session_messages_snapshot_lookup')
+    .on(t.sessionId, t.role, t.snapshotFilePath, t.snapshotPhase, t.id),
 ]);
 
 export const claudePendingPermissions = sqliteTable('claude_pending_permissions', {
@@ -454,7 +473,13 @@ export type Vps = typeof vps.$inferSelect;
 export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
 export type ClaudeSession = typeof claudeSessions.$inferSelect;
-export type ClaudeSessionMessage = typeof claudeSessionMessages.$inferSelect;
+export type ClaudeSessionMessageRow = typeof claudeSessionMessages.$inferSelect;
+// Internal compact-storage fields are deliberately not part of the API type:
+// route projections expose `wireContent ?? content` under the original
+// `content` key and never leak a second copy or implementation metadata.
+export type ClaudeSessionMessage = Omit<ClaudeSessionMessageRow,
+  'wireContent' | 'snapshotFilePath' | 'snapshotPhase' |
+  'snapshotToolUseId' | 'snapshotTruncated'>;
 export type ClaudePendingPermission = typeof claudePendingPermissions.$inferSelect;
 export type ClaudePendingQuestion = typeof claudePendingQuestions.$inferSelect;
 export type ClaudeSessionAttachment = typeof claudeSessionAttachments.$inferSelect;

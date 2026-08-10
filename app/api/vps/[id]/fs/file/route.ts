@@ -5,7 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
 import { previewMimeFor } from '@/lib/server/claude/attachmentNames';
-import type { FsReadResponse } from '@/lib/types/api';
+import type { FsReadResponse, FsStatResponse } from '@/lib/types/api';
 
 // GET /api/vps/[id]/fs/file?root=<cwd>&path=<rel>[&inline=1][&raw=1]
 //
@@ -33,6 +33,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const path = url.searchParams.get('path') ?? '';
   const inline = url.searchParams.get('inline') === '1';
   const raw = url.searchParams.get('raw') === '1';
+  const stat = url.searchParams.get('stat') === '1';
   if (!root || !path || root.length > 4096 || path.length > 4096) {
     return NextResponse.json({ ok: false, error: 'root and path are required' }, { status: 400 });
   }
@@ -43,11 +44,22 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   try {
     const client = getAgentClientForVpsId(id);
     if (!client || client.status !== 'connected') {
+      if (stat) return NextResponse.json<FsStatResponse>({ ok: false, reason: 'offline', error: 'the agent is not connected' });
       return NextResponse.json({ ok: false, error: 'the agent is not connected' });
+    }
+    if (stat) {
+      const sr = await client.call<FsStatResponse & { mtime_ns?: number }>('fs_stat', { root, path });
+      return NextResponse.json<FsStatResponse>({ ...sr, mtimeNs: sr.mtime_ns });
     }
     r = await client.call<FsReadResponse>('fs_read', { root, path });
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
+      if (stat) {
+        return NextResponse.json<FsStatResponse>({
+          ok: false, reason: 'unsupported',
+          error: 'this VPS runs an agent older than 0.28.0',
+        });
+      }
       return NextResponse.json({ ok: false, error: 'this VPS runs an agent older than 0.25.0 — update it to view files' });
     }
     const msg = e instanceof Error ? e.message : String(e);

@@ -13,18 +13,54 @@ import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/
 type CacheEntry = {
   data: ClaudeSessionDetailResponse;
   fetchedAt: number;
+  approxBytes: number;
 };
 
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<ClaudeSessionDetailResponse>>();
+
+// A cached detail response contains parsed message objects and strings, whose
+// actual JS heap cost is several times their wire size. Keep the hot working
+// set deliberately small: session switching remains instant for recent tabs,
+// while a long-lived browser can no longer retain every transcript forever.
+const MAX_ENTRIES = 5;
+const MAX_APPROX_BYTES = 24 * 1024 * 1024;
 
 // An entry is "fresh" for STALE_MS. Beyond that, we refetch (but we
 // return the cache first to render instantly; the caller re-applies
 // when the fresh data arrives).
 const STALE_MS = 15_000;
 
+function estimateBytes(data: ClaudeSessionDetailResponse): number {
+  let n = 2_048;
+  for (const m of data.messages ?? []) {
+    n += 256 + (typeof m.content === 'string' ? m.content.length * 2 : 0);
+  }
+  n += String(data.streamingText ?? '').length * 2;
+  return n;
+}
+
+function touch(id: string, entry: CacheEntry): void {
+  cache.delete(id);
+  cache.set(id, entry);
+}
+
+function prune(): void {
+  let total = 0;
+  for (const e of cache.values()) total += e.approxBytes;
+  while (cache.size > MAX_ENTRIES || total > MAX_APPROX_BYTES) {
+    const oldest = cache.entries().next().value as [string, CacheEntry] | undefined;
+    if (!oldest) break;
+    cache.delete(oldest[0]);
+    total -= oldest[1].approxBytes;
+  }
+}
+
 export function getCached(id: string): ClaudeSessionDetailResponse | undefined {
-  return cache.get(id)?.data;
+  const e = cache.get(id);
+  if (!e) return undefined;
+  touch(id, e);
+  return e.data;
 }
 
 export function isCacheFresh(id: string): boolean {
@@ -46,7 +82,9 @@ export async function fetchAndCache(id: string, force = false): Promise<ClaudeSe
   const p = (async () => {
     try {
       const data = await api.getClaudeSession(id);
-      cache.set(id, { data, fetchedAt: Date.now() });
+      const entry = { data, fetchedAt: Date.now(), approxBytes: estimateBytes(data) };
+      touch(id, entry);
+      prune();
       return data;
     } finally {
       inflight.delete(id);
@@ -54,13 +92,6 @@ export async function fetchAndCache(id: string, force = false): Promise<ClaudeSe
   })();
   inflight.set(id, p);
   return p;
-}
-
-/** Launch background prefetches for the list of sessions. */
-export function prefetchAll(ids: string[]): void {
-  for (const id of ids) {
-    fetchAndCache(id).catch(() => {});
-  }
 }
 
 export function invalidate(id: string): void {
@@ -92,6 +123,8 @@ export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow): 
       hasMore: older.hasMore,
       oldestChatId: older.oldestChatId,
     },
+    approxBytes: e.approxBytes + estimateBytes({ ...e.data, messages: older.messages } as ClaudeSessionDetailResponse),
     // fetchedAt unchanged: we didn't refresh the session, just extended it.
   });
+  prune();
 }

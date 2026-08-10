@@ -162,6 +162,31 @@ class TreeTest(unittest.TestCase):
         self.assertFalse(r["binary"])
         self.assertIn("caf", r["content"])
 
+    # ── fs_stat ────────────────────────────────────────────────────────────
+    def test_stat_is_a_cheap_stable_version_token(self):
+        first = F.fs_stat(self.root, "README.md")
+        second = F.fs_stat(self.root, "README.md")
+        self.assertTrue(first["ok"])
+        self.assertTrue(first["exists"])
+        self.assertEqual(first["version"], second["version"])
+        self.assertEqual(first["version"], F.fs_read(self.root, "README.md")["version"])
+
+    def test_stat_version_changes_after_an_atomic_replace(self):
+        before = F.fs_stat(self.root, "README.md")["version"]
+        tmp = os.path.join(self.root, "replacement")
+        with open(tmp, "w") as f:
+            f.write("# changed, same-ish size\n")
+        os.replace(tmp, os.path.join(self.root, "README.md"))
+        after = F.fs_stat(self.root, "README.md")["version"]
+        self.assertNotEqual(before, after)
+
+    def test_stat_missing_and_escape_are_explicit(self):
+        missing = F.fs_stat(self.root, "gone.txt")
+        self.assertTrue(missing["ok"])
+        self.assertFalse(missing["exists"])
+        self.assertIsNone(missing["version"])
+        self.assertFalse(F.fs_stat(self.root, "../../etc/passwd")["ok"])
+
 
 class WriteTest(unittest.TestCase):
     """fs_write — the only RPC in this module that can destroy work."""
@@ -183,6 +208,7 @@ class WriteTest(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(self.read(), "two\n")
         self.assertEqual(r["sha256"], F.fs_read(self.root, "a.txt")["sha256"])
+        self.assertEqual(r["version"], F.fs_stat(self.root, "a.txt")["version"])
 
     def test_expected_sha_round_trip(self):
         # The editor's normal path: read, edit, save with the sha it read.

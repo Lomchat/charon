@@ -4426,3 +4426,15 @@
 .tt-menu button:disabled { opacity: 0.4; cursor: default; }
 .tt-menu button.danger { color: #e0736b; }
 .tt-menu-sep { height: 1px; background: var(--gold-deep); margin: 4px 2px; opacity: 0.6; }
+.streaming-plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Completed history can become very tall after pagination. Let the browser
+   skip layout/paint for off-screen bubbles while retaining a stable estimated
+   height for scroll anchoring. The live bubble stays fully laid out. */
+.bubble:not(.streaming) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}

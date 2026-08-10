@@ -6,14 +6,15 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   NewSessionWizard autocomplete. Riding the persistent RPC pipe makes it ~1ms;
   the hub falls back to a one-shot ssh `ls` (~0.5s of sshd session setup) for
   older agents.
-- `fs_list` / `fs_read` (agent >= 0.25.0), `fs_write` (>= 0.26.0) and
+- `fs_list` / `fs_read` (agent >= 0.25.0), `fs_write` (>= 0.26.0),
+  `fs_stat` (>= 0.28.0) and
   `fs_mkdir` / `fs_rename` / `fs_delete` (>= 0.27.0) — the file tree in the
   ToolPanel, its editor, and its context menu. Deliberately separate from
   `list_dir` rather than an extension of it: that one is on the hot path of
   every keystroke in the wizard and returns directories only, and widening its
   contract would make a typo in the tree break session creation.
 
-All three tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
+All tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
 The ssh user can already read anything — the hub hands out shells — so this is
 not a privilege boundary; it is there so that a `..` in a path can't quietly
 turn a file browser into a way to page through `/etc` by accident.
@@ -180,6 +181,40 @@ def _looks_binary(head: bytes) -> bool:
     return b"\0" in head
 
 
+def _version_from_stat(st: os.stat_result) -> str:
+    """Cheap change token — detects atomic replaces and in-place writes.
+
+    This deliberately is not a content hash: the editor polls it while open,
+    and re-reading megabytes every ten seconds to discover that nothing moved
+    would turn synchronization into its own performance bug. Saves remain
+    sha-gated, so this token is only an early-notification hint, never write
+    authorization.
+    """
+    return f"{st.st_dev:x}:{st.st_ino:x}:{st.st_size:x}:{st.st_mtime_ns:x}"
+
+
+def fs_stat(root: str, path: str) -> dict[str, Any]:
+    """Cheap version probe for one open editor (agent >= 0.28.0)."""
+    try:
+        target = _contained(root, path)
+        if target is None:
+            return {"ok": False, "error": "path outside the root"}
+        if not os.path.exists(target):
+            return {"ok": True, "path": path, "exists": False, "version": None}
+        if not os.path.isfile(target):
+            return {"ok": False, "error": "not a file"}
+        st = os.stat(target)
+        return {
+            "ok": True, "path": path, "exists": True,
+            "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "version": _version_from_stat(st),
+        }
+    except PermissionError:
+        return {"ok": False, "error": "permission denied"}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+
 def fs_read(root: str, path: str) -> dict[str, Any]:
     """Read ONE file under `root`, for the viewer.
 
@@ -203,9 +238,10 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
             binary = _looks_binary(head)
             cap = MAX_BINARY_BYTES if binary else MAX_TEXT_BYTES
             if size > cap:
+                st = os.stat(target)
                 return {"ok": True, "path": path, "size": size, "binary": binary,
                         "too_large": True, "content": None, "encoding": None,
-                        "truncated": True}
+                        "truncated": True, "version": _version_from_stat(st)}
             rest = f.read(cap - len(head) + 1)
         data = head + rest
         truncated = len(data) > cap
@@ -215,13 +251,16 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
         # read must not be able to produce a token that would later authorise
         # overwriting the whole file with the prefix the editor showed.
         sha = _file_sha(target)
+        version = _version_from_stat(os.stat(target))
         if binary:
             return {"ok": True, "path": path, "size": size, "binary": True,
                     "encoding": "base64", "content": base64.b64encode(data).decode(),
-                    "truncated": truncated, "too_large": False, "sha256": sha}
+                    "truncated": truncated, "too_large": False, "sha256": sha,
+                    "version": version}
         return {"ok": True, "path": path, "size": size, "binary": False,
                 "encoding": "utf8", "content": data.decode("utf-8", "replace"),
-                "truncated": truncated, "too_large": False, "sha256": sha}
+                "truncated": truncated, "too_large": False, "sha256": sha,
+                "version": version}
     except PermissionError:
         return {"ok": False, "error": "permission denied"}
     except OSError as e:
@@ -303,7 +342,9 @@ def fs_write(root: str, path: str, content: str, expected_sha256: str | None = N
                 except OSError:
                     pass
 
-        return {"ok": True, "path": path, "size": len(data), "sha256": _file_sha(target)}
+        st = os.stat(target)
+        return {"ok": True, "path": path, "size": len(data),
+                "sha256": _file_sha(target), "version": _version_from_stat(st)}
     except PermissionError:
         return {"ok": False, "error": "permission denied", "reason": "error"}
     except OSError as e:

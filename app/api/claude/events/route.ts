@@ -43,6 +43,9 @@ export async function GET(req: Request) {
     return new Response('missing or invalid conn id', { status: 400 });
   }
   const initialFocus = url.searchParams.get('focus');
+  const initialFocusSeqRaw = Number(url.searchParams.get('focusSeq') ?? 0);
+  const initialFocusSeq = Number.isSafeInteger(initialFocusSeqRaw) && initialFocusSeqRaw >= 0
+    ? initialFocusSeqRaw : 0;
 
   const encoder = new TextEncoder();
   let hbTimer: NodeJS.Timeout | null = null;
@@ -52,6 +55,9 @@ export async function GET(req: Request) {
   const sseStream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      let snapshotting = true;
+      const pendingSessionEvents: GlobalSessionEvent[] = [];
+      const pendingInstallEvents: InstallBusEvent[] = [];
       const sendRaw = (data: string) => {
         if (closed) return;
         // Backpressure (P0.5): `desiredSize` goes negative when the client
@@ -65,7 +71,12 @@ export async function GET(req: Request) {
         // reconnects a conn this stuck).
         try {
           const ds = (controller as { desiredSize?: number | null }).desiredSize;
-          if (typeof ds === 'number' && ds < -1000) return;
+          if (typeof ds === 'number' && ds < 0) {
+            // A silent drop can lose a permission or stop forever. Closing is
+            // explicit: EventSource reconnects and receives a fresh snapshot.
+            close();
+            return;
+          }
         } catch {}
         try {
           controller.enqueue(encoder.encode(data));
@@ -73,14 +84,22 @@ export async function GET(req: Request) {
           closed = true;
         }
       };
-      const send = (ev: GlobalSessionEvent) => {
+      const sendNow = (ev: GlobalSessionEvent) => {
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
+      };
+      const sendLive = (ev: GlobalSessionEvent) => {
+        if (snapshotting) pendingSessionEvents.push(ev);
+        else sendNow(ev);
       };
       // Install events have no Claude sessionId and don't go through the
       // focus filter — they are broadcast to everyone, like a "hub"-level
       // notification (cf. installSession.ts § subscribeInstallBus).
-      const sendInstall = (ev: InstallBusEvent) => {
+      const sendInstallNow = (ev: InstallBusEvent) => {
         sendRaw(`data: ${JSON.stringify(ev)}\n\n`);
+      };
+      const sendInstallLive = (ev: InstallBusEvent) => {
+        if (snapshotting) pendingInstallEvents.push(ev);
+        else sendInstallNow(ev);
       };
       const close = () => {
         if (closed) return;
@@ -90,6 +109,15 @@ export async function GET(req: Request) {
         if (unsubInstall) { unsubInstall(); unsubInstall = null; }
         try { controller.close(); } catch {}
       };
+
+      // Subscribe BEFORE reading the snapshot. Events emitted while SQLite is
+      // being read are buffered and drained afterwards, closing the old
+      // snapshot→register loss window. Duplicate status/pending events are
+      // harmless because client queues are id-keyed.
+      unregister = registerConnection({
+        connId, send: sendLive, initialFocus, initialFocusSeq,
+      });
+      unsubInstall = subscribeInstallBus(sendInstallLive);
 
       // Initial snapshot: status of all sessions + pendings. This lets the
       // client populate its sidebar immediately without depending on
@@ -108,7 +136,7 @@ export async function GET(req: Request) {
           // Prefer the live (in-memory) status over the DB one if available.
           const live = peekStream(row.id);
           const effective = live ? live.status : row.status;
-          send({ type: 'status', sessionId: row.id, status: effective as any });
+          sendNow({ type: 'status', sessionId: row.id, status: effective as any });
         }
         // Pendings: we replay them once to repopulate the client queues
         // (the cross-session popup + the focused session need them).
@@ -118,7 +146,7 @@ export async function GET(req: Request) {
         for (const p of perms) {
           let input: any = {};
           try { input = JSON.parse(p.toolInput); } catch {}
-          send({ type: 'permission_request', sessionId: p.sessionId, id: p.id, tool: p.toolName, input });
+          sendNow({ type: 'permission_request', sessionId: p.sessionId, id: p.id, tool: p.toolName, input });
         }
         const qs = db.select().from(claudePendingQuestions).where(
           eq(claudePendingQuestions.status, 'pending'),
@@ -127,9 +155,9 @@ export async function GET(req: Request) {
           let payload: any = {};
           try { payload = JSON.parse(q.payload); } catch {}
           if (q.kind === 'question') {
-            send({ type: 'user_question', sessionId: q.sessionId, id: q.id, questions: payload });
+            sendNow({ type: 'user_question', sessionId: q.sessionId, id: q.id, questions: payload });
           } else if (q.kind === 'exit_plan') {
-            send({ type: 'exit_plan_request', sessionId: q.sessionId, id: q.id, plan: payload?.plan ?? '' });
+            sendNow({ type: 'exit_plan_request', sessionId: q.sessionId, id: q.id, plan: payload?.plan ?? '' });
           }
         }
       } catch {}
@@ -140,7 +168,7 @@ export async function GET(req: Request) {
       try {
         for (const inst of listInstalls()) {
           if (inst.status === 'running') {
-            sendInstall({
+            sendInstallNow({
               type: 'install_started',
               installId: inst.id, vpsId: inst.vpsId, vpsName: inst.vpsName,
               status: 'running',
@@ -149,10 +177,11 @@ export async function GET(req: Request) {
         }
       } catch {}
 
-      // Connect to the global session bus with focus filtering.
-      unregister = registerConnection({ connId, send, initialFocus });
-      // Connect to the install bus (broadcast to everyone, no focus filter).
-      unsubInstall = subscribeInstallBus(sendInstall);
+      snapshotting = false;
+      for (const ev of pendingSessionEvents) sendNow(ev);
+      pendingSessionEvents.length = 0;
+      for (const ev of pendingInstallEvents) sendInstallNow(ev);
+      pendingInstallEvents.length = 0;
 
       // Heartbeat: sent as a TYPED DATA event (not an SSE comment), because
       // EventSource does NOT surface comment lines (`: ...`) to JavaScript —
@@ -177,7 +206,7 @@ export async function GET(req: Request) {
       if (unregister) { unregister(); unregister = null; }
       if (unsubInstall) { unsubInstall(); unsubInstall = null; }
     },
-  });
+  }, new ByteLengthQueuingStrategy({ highWaterMark: 512 * 1024 }));
 
   return new Response(sseStream, {
     headers: {

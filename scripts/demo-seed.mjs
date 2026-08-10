@@ -3,8 +3,11 @@
 // (SESSION_SECRET is read from .env so the seeded browser session validates.)
 //
 // IPs use RFC 5737 documentation ranges (192.0.2.x / 203.0.113.x) — non-routable
-// — except `sandbox` = 127.0.0.1, the ISOLATED local charon-agent used for the
-// live shell screenshot (see scripts/demo-agent-setup.sh).
+// — except `prod-eu-1` = 127.0.0.1, the ISOLATED local charon-agent from
+// scripts/demo-agent-setup.sh. That one box is REAL: it is what makes the file
+// explorer, the editor, the git tab and the terminal shots live rather than
+// mocked, and its sessions' cwd is the fictitious /srv/checkout-service repo
+// that script builds.
 //
 // The dataset showcases the CURRENT interface: Claude AND Codex sessions side by
 // side (kind='codex'), per-message model chips, a "finished — unread" glow, a
@@ -36,7 +39,8 @@ const now = Math.floor(Date.now() / 1000);
 
 // Wipe (idempotent reseed)
 for (const t of ['claude_session_messages', 'claude_pending_permissions', 'claude_pending_questions',
-  'claude_session_logs', 'claude_sessions', 'shells', 'vps_paths', 'vps', 'vps_folders', 'sessions', 'users']) {
+  'claude_session_logs', 'claude_session_attachments', 'tabs', 'claude_sessions', 'shells',
+  'vps_paths', 'vps', 'vps_folders', 'sessions', 'users']) {
   try { db.prepare(`DELETE FROM ${t}`).run(); } catch {}
 }
 
@@ -58,24 +62,31 @@ for (const [id, name, pos] of folders)
     .run(id, name, pos, now);
 
 // VPS. agent_status='ok' + a current pyz sha (matches the built .pyz so no
-// spurious "update agent" badge). Most boxes run BOTH backends
+// spurious "update agent" badge). Every box runs BOTH backends
 // (codex_available=1, codex_logged_in=1) → the +Codex launch button is enabled
-// and the health chips read "claude ✓ / codex ✓". `sandbox` is a shells-only
-// box (no SDK, no login).
-const PYZ = '9a979df10530';           // first 12 of sha256(agent/dist/charon-agent.pyz)
-const AGENT_V = '0.21.0';
-const SDK_V = '0.19.1';               // claude-agent-sdk in the venv
-const CODEX_V = '0.5.2';              // openai-codex in the venv
+// and the health chips read "claude ✓ / codex ✓".
+//
+// Keep AGENT_V/PYZ/SDK_V/CODEX_V in sync with what the demo agent really
+// answers to `hello` — it OVERWRITES these on connect (§14.53), and a stale
+// value here means the sidebar shows an "update agent" bar mid-capture:
+//   printf '{"id":1,"method":"hello"}\n' | ssh charondemo@127.0.0.1 \
+//     '~/.charon/charon-agent.pyz --connect'
+const PYZ = 'be3f76c851fe';           // first 12 of sha256(agent/dist/charon-agent.pyz)
+const AGENT_V = '0.27.0';
+const SDK_V = '0.2.134';              // claude-agent-sdk in the venv
+const CODEX_V = '0.144.4';            // openai-codex in the venv
 // [id, name, ip, user, folder, pos, dual]  dual=false → Claude-only / shells-only
 const vpses = [
-  ['v_eu1', 'prod-eu-1',  '192.0.2.11',   'deploy', 'f_prod', 0, true],
+  // prod-eu-1 → the REAL isolated localhost agent (scripts/demo-agent-setup.sh).
+  // It hosts the hero sessions, so their files, git state and shells are live.
+  ['v_eu1', 'prod-eu-1',   '127.0.0.1',   'charondemo', 'f_prod', 0, true],
   ['v_api', 'api-gateway', '192.0.2.24',  'deploy', 'f_prod', 1, true],
   ['v_stg', 'staging-01',  '203.0.113.7', 'ubuntu', 'f_stg',  0, true],
   ['v_ml',  'ml-trainer',  '203.0.113.42', 'root',  'f_labs', 0, true],
-  // sandbox → the REAL isolated localhost agent used for the live shell shot
-  // (marked healthy so the sidebar card is clean — no "claude login" bar).
-  ['v_box', 'sandbox',     '127.0.0.1',   'charondemo', 'f_labs', 1, true],
+  ['v_box', 'edge-cache',  '203.0.113.9', 'deploy', 'f_labs', 1, true],
 ];
+// The live box's project — the git repo scripts/demo-agent-setup.sh builds.
+const REPO = '/srv/checkout-service';
 const insVps = db.prepare(`INSERT INTO vps
   (id,name,ip,ssh_user,ssh_port,default_path,created_at,agent_status,agent_version,
    agent_pyz_sha,sdk_version,agent_last_seen_at,folder_id,position,
@@ -83,23 +94,24 @@ const insVps = db.prepare(`INSERT INTO vps
    codex_available,codex_sdk_version,codex_logged_in,codex_logged_in_checked_at)
   VALUES (?,?,?,?,22,?,?,'ok',?,?,?,?,?,?,?,?,?,?,?,?)`);
 for (const [id, name, ip, user, folder, pos, dual] of vpses)
-  insVps.run(id, name, ip, user, '/srv/app', now, AGENT_V, PYZ,
+  insVps.run(id, name, ip, user, id === 'v_eu1' ? REPO : '/srv/app', now, AGENT_V, PYZ,
     dual ? SDK_V : null, now, folder, pos,
     dual ? 1 : null, dual ? now : null,
     dual ? 1 : null, dual ? CODEX_V : null, dual ? 1 : null, dual ? now : null);
 
 // Known cwds (path autocomplete + sidebar groupings)
 for (const [vps, path] of [
-  ['v_eu1', '/srv/app'], ['v_api', '/srv/api'], ['v_stg', '/srv/web'], ['v_ml', '/data/pipeline'],
+  ['v_eu1', REPO], ['v_api', '/srv/api'], ['v_stg', '/srv/web'], ['v_ml', '/data/pipeline'],
 ]) db.prepare(`INSERT INTO vps_paths (vps_id,path,created_at) VALUES (?,?,?)`).run(vps, path, now);
 
 // ── Sessions: Claude + Codex side by side, varied statuses ──────────────────
 // [id, kind, vps, cwd, name, status, mode, color, model, effort, effModel, unread]
 const CO = '#7c9cff', CY = '#ffd479', GR = '#9be29b', PK = '#ff9bc1', VB = '#b79bff', TL = '#79d6c4';
 const sessions = [
-  // Production · prod-eu-1 — Claude (HERO) + Codex on the SAME box (dual-use)
-  ['s_auth',   'claude', 'v_eu1', '/srv/app',  'refactor auth middleware',   'active',   'acceptEdits',     CO, 'claude-opus-4-8', 'high',   'claude-opus-4-8', 0],
-  ['s_review', 'codex',  'v_eu1', '/srv/app',  'audit /checkout endpoint',   'active',   'workspace-write', TL, 'gpt-5-codex',     'high',   'gpt-5-codex',     0],
+  // Production · prod-eu-1 (the LIVE box) — Claude (HERO) + Codex on the SAME
+  // checkout-service checkout: their files, git status and shells are real.
+  ['s_auth',   'claude', 'v_eu1', REPO,        'refactor auth middleware',   'active',   'acceptEdits',     CO, 'claude-opus-4-8', 'high',   'claude-opus-4-8', 0],
+  ['s_review', 'codex',  'v_eu1', REPO,        'audit /checkout endpoint',   'active',   'workspace-write', TL, 'gpt-5-codex',     'high',   'gpt-5-codex',     0],
   // Production · api-gateway — Claude (thinking, pending permission) + Codex
   ['s_tests',  'claude', 'v_api', '/srv/api',  'fix flaky integration tests','thinking', 'normal',          CY, 'claude-opus-4-8', 'high',   'claude-opus-4-8', 0],
   ['s_build',  'codex',  'v_api', '/srv/api',  'port build to esbuild',      'active',   'workspace-write', VB, 'gpt-5-codex',     'medium', 'gpt-5-codex',     0],
@@ -122,8 +134,8 @@ for (const [id, kind, vps, cwd, name, status, mode, color, model, effort, effMod
 // Persistent shells: NONE seeded on purpose. A seeded shell row on an
 // unreachable VPS makes reconcileShellsOnBoot SSH-probe that box at boot and
 // flip it to 'error' (and would prune the phantom). The one live/openable shell
-// — on the isolated sandbox agent — is created on demand by demo-shots.mjs, so
-// it appears next to the Claude/Codex sessions (the dual-use story) in shell.png.
+// — on prod-eu-1, the isolated local agent — is created on demand by
+// demo-shots.mjs, so it appears next to that box's Claude and Codex sessions.
 
 // ── Message helper (stamps assistant rows with the per-message model chip) ──
 const insMsg = db.prepare(`INSERT INTO claude_session_messages
@@ -142,13 +154,13 @@ conv('s_auth', 'claude-opus-4-8', [
   ['thinking', 'Let me read the current middleware and the session store interface before changing anything — I want to keep the cookie contract identical and only swap the lookup.', 592],
   ['assistant', "I'll do this in two steps:\n\n1. Swap the synchronous in-memory session lookup for the new async store (keeping the cookie contract identical).\n2. Add a sliding-window rate limiter on `/login`.\n\nLet me start by reading the relevant files.", 590],
   ['tool_use', tu('t1', 'Read', { file_path: 'src/middleware/auth.ts' }), 588],
-  ['tool_result', tr('t1', "1  import { getSessionSync } from '../lib/store';\n2  export function auth(req, res, next) {\n3    const sid = req.cookies.sid;\n4    const s = getSessionSync(sid);\n5    if (!s) return res.status(401).end();\n6    req.user = s.user; next();\n7  }"), 587],
+  ['tool_result', tr('t1', "1  import { getSessionSync } from \"../lib/sessionStore.js\";\n2\n3  /** Rejects anything without a live session cookie. */\n4  export function auth(req, reply, done) {\n5    const sid = req.cookies.sid;\n6    const session = getSessionSync(sid);\n7    if (!session) return reply.status(401).send({ error: \"unauthorized\" });\n8    req.user = session.user;\n9    done();\n10 }"), 587],
   ['tool_use', tu('t2', 'Read', { file_path: 'src/lib/sessionStore.ts' }), 584],
-  ['tool_result', tr('t2', "export async function getSession(id: string): Promise<Session | null> { /* redis-backed */ }"), 583],
+  ['tool_result', tr('t2', "export async function getSession(id: string) {\n  if (!id) return null;\n  const raw = await redis.get(`sess:${id}`);\n  return raw ? JSON.parse(raw) : null;\n}"), 583],
   ['assistant', "The middleware reads sessions synchronously from memory. I'll switch it to the async Redis-backed `getSession`, make the handler `async`, and preserve the 401-on-missing behaviour — then add the rate limiter.", 580],
   ['tool_use', tu('t3', 'Grep', { pattern: 'getSessionSync', path: 'src' }), 578],
-  ['tool_result', tr('t3', 'src/middleware/auth.ts:3:  const s = getSessionSync(sid);'), 577],
-  ['tool_use', tu('t4', 'Edit', { file_path: 'src/middleware/auth.ts', old_string: 'const s = getSessionSync(sid);', new_string: 'const s = await getSession(sid);' }), 574],
+  ['tool_result', tr('t3', 'src/middleware/auth.ts:6:  const session = getSessionSync(sid);'), 577],
+  ['tool_use', tu('t4', 'Edit', { file_path: 'src/middleware/auth.ts', old_string: 'const session = getSessionSync(sid);', new_string: 'const session = await getSession(sid);' }), 574],
   ['tool_result', tr('t4', 'Applied edit to src/middleware/auth.ts'), 573],
   ['assistant', "Store swap done. Now the rate limiter — a small sliding-window keyed by IP, wired before the login handler. Let me run the suite to make sure nothing regressed.", 540],
 ]);
@@ -156,20 +168,24 @@ conv('s_auth', 'claude-opus-4-8', [
 // A captured before/after snapshot for the Edit above → the DIFFS tab of the
 // tool panel renders a real diff (the "diff capture & revert" feature). The
 // session GET strips the bodies; GET .../edits serves them on demand (§14.41).
+// (Byte-identical to HEAD vs the working tree in the demo repo, so the DIFFS
+// tab, the git tab and the file the editor opens all agree.)
 const authBefore =
-  "import { getSessionSync } from '../lib/store';\n\n" +
-  "export function auth(req, res, next) {\n" +
-  "  const sid = req.cookies.sid;\n" +
-  "  const s = getSessionSync(sid);\n" +
-  "  if (!s) return res.status(401).end();\n" +
-  "  req.user = s.user;\n  next();\n}\n";
+  'import { getSessionSync } from "../lib/sessionStore.js";\n\n' +
+  '/** Rejects anything without a live session cookie. */\n' +
+  'export function auth(req, reply, done) {\n' +
+  '  const sid = req.cookies.sid;\n' +
+  '  const session = getSessionSync(sid);\n' +
+  '  if (!session) return reply.status(401).send({ error: "unauthorized" });\n' +
+  '  req.user = session.user;\n  done();\n}\n';
 const authAfter =
-  "import { getSession } from '../lib/store';\n\n" +
-  "export async function auth(req, res, next) {\n" +
-  "  const sid = req.cookies.sid;\n" +
-  "  const s = await getSession(sid);\n" +
-  "  if (!s) return res.status(401).end();\n" +
-  "  req.user = s.user;\n  next();\n}\n";
+  'import { getSession } from "../lib/sessionStore.js";\n\n' +
+  '/** Rejects anything without a live session cookie. */\n' +
+  'export async function auth(req, reply) {\n' +
+  '  const sid = req.cookies.sid;\n' +
+  '  const session = await getSession(sid);\n' +
+  '  if (!session) return reply.status(401).send({ error: "unauthorized" });\n' +
+  '  req.user = session.user;\n}\n';
 for (const [phase, body, dt] of [['before', authBefore, 574], ['after', authAfter, 573]])
   insMsg.run('s_auth', 'edit_snapshot', JSON.stringify({
     type: 'edit_snapshot', phase, tool_use_id: 't4',
@@ -187,11 +203,11 @@ conv('s_review', 'gpt-5-codex', [
     { step: 'Patch + re-run the endpoint tests', status: 'pending' },
   ] }), 474],
   ['tool_result', tr('c1', 'plan updated (4 steps)'), 473],
-  ['tool_use', tu('c2', 'shell', { command: ['rg', '-n', 'SELECT .*\\+', 'server/routes/checkout.ts'] }), 470],
+  ['tool_use', tu('c2', 'shell', { command: ['rg', '-n', 'SELECT .*\\+', 'src/routes/checkout.ts'] }), 470],
   ['tool_result', tr('c2', "42:  const q = `SELECT * FROM carts WHERE id = ${req.body.cartId}`;\n58:  const row = await db.raw(q);"), 469],
   ['assistant', "Two problems on the same path: line 42 interpolates `cartId` straight into SQL (injection), and nothing checks the cart belongs to `req.user`. I'll switch to a parameterised query and add an ownership guard.", 465],
-  ['tool_use', tu('c3', 'apply_patch', { input: "*** Begin Patch\n*** Update File: server/routes/checkout.ts\n@@\n-  const q = `SELECT * FROM carts WHERE id = ${req.body.cartId}`;\n-  const row = await db.raw(q);\n+  const row = await db.one(\n+    'SELECT * FROM carts WHERE id = $1 AND user_id = $2',\n+    [req.body.cartId, req.user.id],\n+  );\n+  if (!row) return res.status(404).end();\n*** End Patch" }), 460],
-  ['tool_result', tr('c3', 'Applied patch to server/routes/checkout.ts (1 file changed, +5 −2)'), 459],
+  ['tool_use', tu('c3', 'apply_patch', { input: "*** Begin Patch\n*** Update File: src/routes/checkout.ts\n@@\n-  const q = `SELECT * FROM carts WHERE id = ${req.body.cartId}`;\n-  const row = await db.raw(q);\n+  const row = await db.one(\n+    'SELECT * FROM carts WHERE id = $1 AND user_id = $2',\n+    [req.body.cartId, req.user.id],\n+  );\n+  if (!row) return res.status(404).end();\n*** End Patch" }), 460],
+  ['tool_result', tr('c3', 'Applied patch to src/routes/checkout.ts (1 file changed, +5 −2)'), 459],
   ['assistant', "Patched: the query is now parameterised and scoped to `user_id`, so an attacker can neither inject nor read another user's cart. Running the checkout tests to confirm nothing broke.", 452],
 ]);
 
@@ -208,7 +224,7 @@ const checkoutDiff =
   "+  if (!row) return res.status(404).end();\n";
 insMsg.run('s_review', 'edit_snapshot', JSON.stringify({
   type: 'edit_snapshot', phase: 'diff', tool_use_id: 'c3',
-  file_path: 'server/routes/checkout.ts', diff: checkoutDiff, size: checkoutDiff.length, truncated: false,
+  file_path: 'src/routes/checkout.ts', diff: checkoutDiff, size: checkoutDiff.length, truncated: false,
 }), null, now - 459);
 
 // Short openers so the other sessions aren't empty if opened / hovered.

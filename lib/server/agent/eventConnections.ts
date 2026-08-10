@@ -65,6 +65,7 @@ function isLowVolume(type: string): boolean {
 type ConnState = {
   send: (ev: GlobalSessionEvent) => void;
   focus: string | null;
+  focusSeq: number;
   unsubBus: (() => void) | null;
 };
 
@@ -108,6 +109,7 @@ export function registerConnection(opts: {
   connId: string;
   send: (ev: GlobalSessionEvent) => void;
   initialFocus?: string | null;
+  initialFocusSeq?: number;
 }): () => void {
   // If a connId already exists (e.g. client reconnected before we detected
   // the close), replace it cleanly.
@@ -117,6 +119,7 @@ export function registerConnection(opts: {
   const conn: ConnState = {
     send: opts.send,
     focus: opts.initialFocus ?? null,
+    focusSeq: Math.max(0, Math.floor(opts.initialFocusSeq ?? 0)),
     unsubBus: null,
   };
   conn.unsubBus = subscribeGlobalSessionEvents((ev) => {
@@ -142,16 +145,26 @@ export function registerConnection(opts: {
  * The SSE keeps flowing; starting with the next event, the filter uses
  * the new focus.
  */
-export function setConnectionFocus(connId: string, sessionId: string | null): boolean {
+export function setConnectionFocus(
+  connId: string,
+  sessionId: string | null,
+  focusSeq: number,
+): { ok: boolean; applied: boolean; focus: string | null; focusSeq: number } {
   const conn = connections.get(connId);
-  if (!conn) return false;
+  if (!conn) return { ok: false, applied: false, focus: null, focusSeq: 0 };
+  // Latest-wins ordering across concurrent HTTP requests. A slow POST for A
+  // arriving after the user's newer switch to B can no longer clobber B.
+  if (focusSeq <= conn.focusSeq) {
+    return { ok: true, applied: false, focus: conn.focus, focusSeq: conn.focusSeq };
+  }
   // Stamp BOTH the session being left and the one being entered as "viewed just
   // now", so the recently-viewed grace covers a turn that finishes immediately
   // after a switch (the user was reading it a moment ago). cf. CLAUDE.md §14.47.
   touchView(conn.focus);
   conn.focus = sessionId;
+  conn.focusSeq = focusSeq;
   touchView(sessionId);
-  return true;
+  return { ok: true, applied: true, focus: conn.focus, focusSeq: conn.focusSeq };
 }
 
 /**

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { AgentKind, SessionAttachment } from '@/lib/types/api';
@@ -64,7 +64,7 @@ const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];
 
-export default function ToolPanel({
+function ToolPanel({
   sessionId, kind = 'claude', toolCalls, edits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
@@ -135,15 +135,22 @@ export default function ToolPanel({
   );
 }
 
+export default memo(ToolPanel);
+
 function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | null; kind: AgentKind; edits: EditSnapshot[]; onRevert: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<EditSnapshot | null>(null);
-  if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
 
   // Codex hands us a ready-made unified diff (in `after`); Claude gives a
   // before/after pair we diff ourselves. Side-by-side split + revert only make
   // sense for the Claude pair (a bare patch has no clean "before" to restore).
   const isCodex = kind === 'codex';
+  const prepared = useMemo(() => edits.map((edit) => {
+    const patch = isCodex ? (edit.after ?? '') : makeUnifiedDiff(edit.filePath, edit.before ?? '', edit.after ?? '');
+    return { edit, patch, stats: countDiff(patch) };
+  }), [edits, isCodex]);
+
+  if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
 
   async function revert(filePath: string, before: string | null) {
     if (!sessionId) return;
@@ -160,9 +167,7 @@ function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
   return (
     <>
       <div className="tp-diffs">
-        {edits.map((e) => {
-          const patch = isCodex ? (e.after ?? '') : makeUnifiedDiff(e.filePath, e.before ?? '', e.after ?? '');
-          const stats = countDiff(patch);
+        {prepared.map(({ edit: e, patch, stats }) => {
           return (
             <div key={e.toolUseId + e.filePath} className="diff-card">
               <div className="diff-head">

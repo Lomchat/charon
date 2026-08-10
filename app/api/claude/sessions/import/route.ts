@@ -6,6 +6,7 @@ import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
 import { importCodexRolloutMessages } from '@/lib/server/claude/importCodexRollout';
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
+import { deriveMessageStorage } from '@/lib/server/claude/messageWire';
 
 // POST /api/claude/sessions/import
 // Body: { vpsId, claudeSessionId, cwd, name?, kind?, permissionMode? }
@@ -67,6 +68,7 @@ export async function POST(req: Request) {
               sessionId: id,
               role: m.role,
               content: m.content,
+              ...deriveMessageStorage(m.role, m.content),
               ...(m.ts ? { createdAt: m.ts } : {}),
               // ts_ms is the chronological key (§14.71) and must always be
               // set: without it an imported transcript would collapse onto a

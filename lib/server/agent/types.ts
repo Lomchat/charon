@@ -255,6 +255,7 @@ export type AgentMethodName =
   // contained under the session cwd.
   | 'fs_list'
   | 'fs_read'
+  | 'fs_stat'
   // Text write for the editor (agent >= 0.26.0) - atomic, sha-gated.
   | 'fs_write'
   // Explorer context menu (agent >= 0.27.0).

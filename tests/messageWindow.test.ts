@@ -198,4 +198,31 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
       Array.from({ length: 10 }, (_, k) => `legacy-${6 + k}`));
     expect(p2.hasMore).toBe(true);
   });
+
+  it('serves only latest edit metadata instead of every historical snapshot', () => {
+    const SSID = '9'.repeat(32);
+    db.insert(schema.claudeSessions).values({ id: SSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).run();
+    for (let turn = 1; turn <= 20; turn++) {
+      db.insert(schema.claudeSessionMessages).values({
+        sessionId: SSID, role: 'assistant', content: `turn-${turn}`, tsMs: 1_800_000_000_000 + turn * 10,
+      }).run();
+      for (const file of ['/a.ts', '/b.ts']) for (const phase of ['before', 'after']) {
+        const content = JSON.stringify({
+          type: 'edit_snapshot', file_path: file, phase,
+          tool_use_id: `tool-${turn}`, content: 'x'.repeat(10_000),
+        });
+        db.insert(schema.claudeSessionMessages).values({
+          sessionId: SSID, role: 'edit_snapshot', content,
+          wireContent: JSON.stringify({ file_path: file, phase, tool_use_id: `tool-${turn}`, content: null, contentStripped: true }),
+          snapshotFilePath: file, snapshotPhase: phase, snapshotToolUseId: `tool-${turn}`,
+          tsMs: 1_800_000_000_000 + turn * 10 + 1,
+        }).run();
+      }
+    }
+    const win = loadMessageWindow(SSID, 10, null);
+    const snapshots = win.messages.filter((m: any) => m.role === 'edit_snapshot');
+    expect(snapshots).toHaveLength(4); // 2 files × before/after, not 80 rows
+    expect(snapshots.every((m: any) => !m.content.includes('xxxxxxxx'))).toBe(true);
+    expect(snapshots.every((m: any) => JSON.parse(m.content).tool_use_id === 'tool-20')).toBe(true);
+  });
 });

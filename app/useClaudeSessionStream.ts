@@ -34,6 +34,17 @@ function sameQueueById<T extends { id: string }>(a: T[], b: T[]): boolean {
   return true;
 }
 
+function sameShallowRecord(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  const keys = Object.keys(x);
+  if (keys.length !== Object.keys(y).length) return false;
+  for (const k of keys) if (x[k] !== y[k]) return false;
+  return true;
+}
+
 // Merge a freshly-rebuilt edits Map (from a full reload) into the current one
 // WITHOUT losing already-loaded diff content.
 //
@@ -308,10 +319,10 @@ export function useClaudeSessionStream(
   const [streamKey, setStreamKey] = useState(0);
 
   const assistantBufRef = useRef('');
-  // RAF batch for assistant_text deltas. Without it, each token =
-  // setCurrentAssistant = subtree re-render. At 100 tokens/sec, it lags.
-  // With RAF, we cap at 60Hz, the browser rate-limits on its own.
-  const assistantFlushRafRef = useRef<number | null>(null);
+  // Rendering Markdown at display refresh rate is unnecessary even after the
+  // live-tail renderer was made lightweight. A short timer caps React commits
+  // around 12Hz while keeping typing/streaming perceptually immediate.
+  const assistantFlushTimerRef = useRef<number | null>(null);
   // Ref mirror of `effectiveModel` (state) so flushAssistantBuf — called from
   // SSE handlers whose closure would see a stale state value — can stamp the
   // finalized assistant bubble with the model that actually produced it.
@@ -361,6 +372,9 @@ export function useClaudeSessionStream(
   // brief window before the server reflects it — that would flicker. We skip
   // poll-driven status reconciliation within this guard window.
   const lastOptimisticStatusTsRef = useRef<number>(0);
+  // Full fetches and live SSE race on different transports. A response that
+  // started before a live event must not replace newer queues/config/text.
+  const liveEventRevisionRef = useRef(0);
 
   // ── Lazy edit-content loading state (CLAUDE.md §14 gotcha 41) ────────────
   // The session GET strips edit_snapshot content; the diff content is fetched
@@ -493,9 +507,12 @@ export function useClaudeSessionStream(
     if (cache) {
       const cached = cache.get(sessionId);
       if (cached) applyApiData(cached);
+      const requestRevision = liveEventRevisionRef.current;
       try {
         const fresh = await cache.fetch(sessionId, true);
-        applyApiData(fresh);
+        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
+          applyApiData(fresh);
+        }
       } catch (e) {
         if (!cached) {
           setError({ msg: String((e as Error)?.message ?? e) });
@@ -503,9 +520,12 @@ export function useClaudeSessionStream(
         }
       }
     } else {
+      const requestRevision = liveEventRevisionRef.current;
       try {
         const r = (await api.getClaudeSession(sessionId)) as ClaudeSessionDetailResponse;
-        applyApiData(r);
+        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
+          applyApiData(r);
+        }
       } catch (e) {
         setError({ msg: String((e as Error)?.message ?? e) });
         setIsLoadingHistory(false);
@@ -613,6 +633,44 @@ export function useClaudeSessionStream(
       if (live && live !== 'killed' && (Date.now() - lastOptimisticStatusTsRef.current) > 4000) {
         setStatus((prev) => (prev === live ? prev : live));
       }
+      // The delta endpoint also carries the complete lightweight live
+      // envelope. Reconcile it even when no DB message was inserted: a long
+      // assistant stream, a permission resolution, or a model change can all
+      // happen without advancing the message cursor.
+      const streamingText = String(r?.streamingText ?? '');
+      if (streamingText.length >= assistantBufRef.current.length) {
+        assistantBufRef.current = streamingText;
+        setCurrentAssistant((prev) => prev === streamingText ? prev : streamingText);
+      }
+      const sid = r?.session?.id ?? sessionId;
+      const nextPerms = ((r?.pendingPermissions ?? []) as Omit<PermissionRequest, 'sessionId'>[])
+        .map((p) => ({ ...p, sessionId: sid }));
+      const nextQuestions = ((r?.pendingQuestions ?? []) as Omit<PendingQuestion, 'sessionId'>[])
+        .map((q) => ({ ...q, sessionId: sid }));
+      const nextExitPlans = ((r?.pendingExitPlans ?? []) as Omit<PendingExitPlan, 'sessionId'>[])
+        .map((ep) => ({ ...ep, sessionId: sid }));
+      setPermQueue((prev) => sameQueueById(prev, nextPerms) ? prev : nextPerms);
+      setQuestionQueue((prev) => sameQueueById(prev, nextQuestions) ? prev : nextQuestions);
+      setExitPlanQueue((prev) => sameQueueById(prev, nextExitPlans) ? prev : nextExitPlans);
+
+      if (r?.session) {
+        const sess = r.session as typeof r.session & {
+          kind?: string; model?: string | null; fallbackModel?: string | null; effort?: string | null;
+        };
+        const kind = sess.kind === 'codex' ? 'codex' : 'claude';
+        const validModes: readonly string[] = kind === 'codex' ? CODEX_SANDBOX_MODES : CLAUDE_MODES;
+        const nextMode = validModes.includes(sess.permissionMode)
+          ? sess.permissionMode as SessionMode
+          : kind === 'codex' ? 'workspace-write' : 'normal';
+        setPermissionMode((prev) => prev === nextMode ? prev : nextMode);
+        setModelState((prev) => prev === (sess.model ?? null) ? prev : sess.model ?? null);
+        setFallbackModelState((prev) => prev === (sess.fallbackModel ?? null) ? prev : sess.fallbackModel ?? null);
+        setEffortState((prev) => prev === (sess.effort || null) ? prev : sess.effort || null);
+        setSessionMeta((prev) => sameShallowRecord(prev, sess) ? prev : sess);
+      }
+      const polledEffective = r?.effectiveModel ?? null;
+      setEffectiveModel((prev) => prev === polledEffective ? prev : polledEffective);
+      effectiveModelRef.current = polledEffective;
       const n = r?.messages?.length ?? 0;
       if (n > 0) {
         // Something new on the server. Rather than incrementally merge the
@@ -750,10 +808,10 @@ export function useClaudeSessionStream(
     // Called before any event that interrupts the text (tool_use, thinking,
     // permission_request, user_question, exit_plan_request, stop).
     const flushAssistantBuf = () => {
-      // Cancel a pending RAF — we flush immediately.
-      if (assistantFlushRafRef.current != null) {
-        cancelAnimationFrame(assistantFlushRafRef.current);
-        assistantFlushRafRef.current = null;
+      // Cancel a pending preview commit — the boundary flushes immediately.
+      if (assistantFlushTimerRef.current != null) {
+        clearTimeout(assistantFlushTimerRef.current);
+        assistantFlushTimerRef.current = null;
       }
       if (!assistantBufRef.current) return;
       const finalContent = assistantBufRef.current;
@@ -769,17 +827,17 @@ export function useClaudeSessionStream(
       setCurrentAssistant('');
     };
 
-    // Schedule a flush of the streaming preview via RAF. Coalesces deltas
-    // arrived in the same frame into a single setState.
+    // Coalesce token deltas into at most one React commit per 80ms.
     const scheduleAssistantFlush = () => {
-      if (assistantFlushRafRef.current != null) return;
-      assistantFlushRafRef.current = requestAnimationFrame(() => {
-        assistantFlushRafRef.current = null;
+      if (assistantFlushTimerRef.current != null) return;
+      assistantFlushTimerRef.current = window.setTimeout(() => {
+        assistantFlushTimerRef.current = null;
         setCurrentAssistant(assistantBufRef.current);
-      });
+      }, 80);
     };
 
     const handleEvent = (ev: WorkerEvent & { sessionId: string }) => {
+      liveEventRevisionRef.current += 1;
       switch (ev.type) {
         case 'status':
           // `'killed'` is no longer a persistent DB state (cf. CLAUDE.md §10):
@@ -994,26 +1052,14 @@ export function useClaudeSessionStream(
     const unsubscribe = subscribeSession(sessionId, handleEvent);
 
     return () => {
-      if (assistantFlushRafRef.current != null) {
-        cancelAnimationFrame(assistantFlushRafRef.current);
-        assistantFlushRafRef.current = null;
+      if (assistantFlushTimerRef.current != null) {
+        clearTimeout(assistantFlushTimerRef.current);
+        assistantFlushTimerRef.current = null;
       }
       unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, streamKey, refetchHistory]);
-
-  // Refetch when the tab comes back to the foreground (case: backend restart
-  // while we were in the background → empty SSE ring, DB = source).
-  useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        refetchHistory();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [refetchHistory]);
 
   // Refetch on SSE reconnect (= the EventSource connection was
   // re-established after a drop, typically after a `systemctl restart
@@ -1023,15 +1069,13 @@ export function useClaudeSessionStream(
   // had to refresh by hand (cf. CLAUDE.md §14 gotcha 24).
   useEffect(() => {
     const unsub = subscribeReconnect(() => {
-      // Belt-and-suspenders: trigger BOTH a refetch (replaces local
-      // state) AND a poll (incremental, catches anything refetch missed
-      // due to a race). The poll is idempotent so the cost is one
-      // extra HTTP roundtrip with empty body.
-      refetchHistory();
-      pollDelta();
+      // One coalesced catch-up path. forcePoll aborts a stale request; the
+      // delta response carries the live envelope and escalates to one clean
+      // reload only when persisted rows actually changed.
+      forcePoll();
     });
     return () => unsub();
-  }, [refetchHistory, pollDelta]);
+  }, [forcePoll]);
 
   // ── Polling safety-net loop ────────────────────────────────────────────
   // Always-on: every 5s the hook polls the server for any messages with

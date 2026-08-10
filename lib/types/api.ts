@@ -178,6 +178,19 @@ export type FsReadResponse = {
   tooLarge?: boolean;
   /** sha256 of the BYTES ON DISK — the token a later write must present. */
   sha256?: string | null;
+  /** Cheap stat token for external-change polling; never authorizes a write. */
+  version?: string | null;
+};
+
+export type FsStatResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: 'offline' | 'unsupported' | 'error';
+  path?: string;
+  exists?: boolean;
+  size?: number;
+  mtimeNs?: number;
+  version?: string | null;
 };
 
 export type FsWriteBody = {
@@ -194,6 +207,7 @@ export type FsWriteResponse = {
   size?: number;
   /** On success the new sha, on 'stale' the CURRENT one (offer a reload). */
   sha256?: string | null;
+  version?: string | null;
 };
 
 // Explorer context menu (agent >= 0.27.0). One route, one shape.

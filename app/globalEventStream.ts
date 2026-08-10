@@ -84,13 +84,13 @@ function genConnId(): string {
 let connId: string | null = null;
 let es: EventSource | null = null;
 let currentFocus: string | null = null;
+let currentFocusSeq = 0;
 // `null` key = catch-all listeners (which want all events from all
 // sessions, e.g. useCrossSessionInteractionFeed). Stored as a Set of
 // the widest possible function type (GlobalListener); for per-sessionId
 // subscriptions, the callbacks are contravariantly compatible because
 // they will only ever receive SessionBusClientEvent values.
 const listeners = new Map<string | null, Set<GlobalListener>>();
-let pendingFocusPost: Promise<void> | null = null;
 
 // EventSource reconnect detection: `openCount` starts at 0, becomes 1 on
 // the 1st connection (boot), then ≥2 on each browser auto-reconnect after
@@ -189,27 +189,30 @@ function maybeProbeAuth(): void {
 
 // POST /focus with self-healing retry. Stops early if the focus changed under
 // us (a newer setFocus/postFocus owns the retry then) or after N attempts.
-function postFocus(sessionId: string | null, attempt = 0): void {
+async function postFocus(sessionId: string | null, focusSeq: number, attempt = 0): Promise<void> {
   if (typeof window === 'undefined') return;
   // Bail BEFORE issuing the POST if the desired focus changed under us — a
   // stale retry chain (setFocus(A) failed → scheduled; user switched to B)
   // would otherwise POST {sessionId:A} and clobber the server's focus back to
   // the previous session, muting B's high-volume stream. cf. CLAUDE.md §14.45.
-  if (currentFocus !== sessionId) return;
+  if (currentFocus !== sessionId || currentFocusSeq !== focusSeq) return;
   const id = getConnId();
   const retry = () => {
-    if (currentFocus !== sessionId) return;          // superseded — drop
+    if (currentFocus !== sessionId || currentFocusSeq !== focusSeq) return;
     if (attempt >= FOCUS_POST_MAX_RETRIES) return;
-    setTimeout(() => postFocus(sessionId, attempt + 1), FOCUS_POST_RETRY_MS);
+    setTimeout(() => { void postFocus(sessionId, focusSeq, attempt + 1); }, FOCUS_POST_RETRY_MS);
   };
-  fetch('/api/claude/focus', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ conn: id, sessionId }),
-  })
-    .then((r) => r.json().catch(() => ({ ok: false })))
-    .then((j) => { if (!(j && j.ok)) retry(); })
-    .catch(retry);
+  try {
+    const r = await fetch('/api/claude/focus', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ conn: id, sessionId, focusSeq }),
+    });
+    const j = await r.json().catch(() => ({ ok: false }));
+    if (!(j?.ok && j.focusSeq === focusSeq && j.focus === sessionId)) retry();
+  } catch {
+    retry();
+  }
 }
 
 function getConnId(): string {
@@ -220,7 +223,8 @@ function getConnId(): string {
 function buildUrl(): string {
   const id = getConnId();
   return `/api/claude/events?conn=${encodeURIComponent(id)}`
-    + (currentFocus ? `&focus=${encodeURIComponent(currentFocus)}` : '');
+    + (currentFocus ? `&focus=${encodeURIComponent(currentFocus)}` : '')
+    + `&focusSeq=${currentFocusSeq}`;
 }
 
 function clearReconnectTimer(): void {
@@ -443,7 +447,7 @@ function openStream(): void {
     // Self-healing re-POST: reads {ok} and retries on ok:false (conn not yet
     // re-registered after the native reconnect) so high-volume streaming for
     // the focused session resumes reliably. cf. CLAUDE.md §14.45 (RC5).
-    if (currentFocus) postFocus(currentFocus);
+    if (currentFocus) void postFocus(currentFocus, currentFocusSeq);
     for (const cb of reconnectListeners) {
       try { cb(); } catch {}
     }
@@ -544,32 +548,17 @@ export function subscribeAll(cb: GlobalListener): () => void {
  * If `sessionId` matches the current focus, no-op.
  *
  * Idempotent: if several setFocus calls fire at the same time (rapid
- * navigation), the last one wins; we coalesce via `pendingFocusPost`.
+ * navigation), the monotonic sequence makes the last one win server-side
+ * even when an older POST response arrives later.
  */
 export async function setFocus(sessionId: string | null): Promise<void> {
-  ensureStream();
-  if (currentFocus === sessionId) return;
+  if (currentFocus === sessionId) { ensureStream(); return; }
+  // Set the desired focus BEFORE opening the EventSource so its initial URL is
+  // already correct. The sequence also makes concurrent POSTs latest-wins.
   currentFocus = sessionId;
-  // POST /focus — read {ok} and self-heal on ok:false (the conn may not be
-  // registered yet if setFocus raced ensureStream). cf. CLAUDE.md §14.45 (RC5).
-  const id = getConnId();
-  const post = fetch('/api/claude/focus', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ conn: id, sessionId }),
-  })
-    .then((r) => r.json().catch(() => ({ ok: false })))
-    .then((j) => {
-      if (currentFocus === sessionId && !(j && j.ok)) {
-        setTimeout(() => postFocus(sessionId, 1), FOCUS_POST_RETRY_MS);
-      }
-    })
-    .catch(() => {
-      if (currentFocus === sessionId) setTimeout(() => postFocus(sessionId, 1), FOCUS_POST_RETRY_MS);
-    });
-  pendingFocusPost = post;
-  await post;
-  if (pendingFocusPost === post) pendingFocusPost = null;
+  const seq = ++currentFocusSeq;
+  ensureStream();
+  await postFocus(sessionId, seq);
 }
 
 /**

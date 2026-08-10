@@ -19,6 +19,7 @@ from .fsnav import (
     list_dir as fs_list_dir,
     fs_list as _fs_list,
     fs_read as _fs_read,
+    fs_stat as _fs_stat,
     fs_write as _fs_write,
     fs_mkdir as _fs_mkdir,
     fs_rename as _fs_rename,
@@ -374,7 +375,7 @@ class Server:
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
         "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_discard",
-        "fs_list", "fs_read", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
+        "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -436,6 +437,11 @@ class Server:
         if method == "fs_read":
             return await asyncio.to_thread(
                 _fs_read, str(params.get("root") or ""), str(params.get("path") or ""),
+            )
+
+        if method == "fs_stat":
+            return await asyncio.to_thread(
+                _fs_stat, str(params.get("root") or ""), str(params.get("path") or ""),
             )
 
         if method == "fs_write":

@@ -4,6 +4,7 @@ import { requireSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
 import { asc, desc } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
+import { listTabs } from '@/lib/server/claude/tabs';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale } from '@/lib/server/claude/sdkSync';
 
@@ -33,6 +34,7 @@ export default async function CharonPage() {
   refreshSdkLatestIfStale();
   const codexLatestVersion = getCodexLatestVersion();
   refreshCodexLatestIfStale();
+  const initialTabs = listTabs();
 
   return (
     <ClaudePanel
@@ -44,6 +46,7 @@ export default async function CharonPage() {
       builtAgentVersion={builtAgentVersion}
       sdkLatestVersion={sdkLatestVersion}
       codexLatestVersion={codexLatestVersion}
+      initialTabs={initialTabs}
     />
   );
 }

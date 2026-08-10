@@ -11,7 +11,7 @@ import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 import { orderChronologically } from '@/lib/server/claude/messageOrder';
-import { loadMessageWindow } from '@/lib/server/claude/messageWindow';
+import { loadMessageWindow, publicMessageColumns } from '@/lib/server/claude/messageWindow';
 
 /**
  * The Claude SDK stores each session in
@@ -143,6 +143,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  const perfStarted = performance.now();
   try {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!row) return NextResponse.json({ error: 'not found' }, { status: 404 });
@@ -153,11 +154,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   let messages: ClaudeSessionMessage[];
   let hasMore: boolean;
   let oldestChatId: number | null;
+  const windowStarted = performance.now();
   if (since != null) {
     // Delta mode: every row with id > since. Cap at 1000 just in case
     // (a very long gap could otherwise return thousands of rows; in
     // practice we poll every 5s so the gap is small).
-    messages = orderChronologically(db.select().from(claudeSessionMessages)
+    messages = orderChronologically(db.select(publicMessageColumns).from(claudeSessionMessages)
       .where(and(
         eq(claudeSessionMessages.sessionId, id),
         gt(claudeSessionMessages.id, since),
@@ -181,6 +183,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // client refills diff content lazily via the dedicated /edits endpoint.
   // cf. CLAUDE.md §14 gotcha 41.
   messages = stripEditSnapshotContent(messages);
+  const windowMs = performance.now() - windowStarted;
   const stream = peekStream(id);
 
   // True max message id for this session (ALL roles, including
@@ -208,7 +211,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     eq(claudePendingQuestions.status, 'pending'),
   )).all();
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     session: row,
     liveStatus: stream ? stream.status : row.status,
     subscribers: focusCountFor(id),
@@ -242,6 +245,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       return { id: q.id, plan: payload?.plan ?? '', createdAt: q.createdAt };
     }),
   });
+  const totalMs = performance.now() - perfStarted;
+  response.headers.set('server-timing', `message-window;dur=${windowMs.toFixed(1)}, session-total;dur=${totalMs.toFixed(1)}`);
+  if (totalMs > 250) {
+    // eslint-disable-next-line no-console
+    console.warn(`[perf] session GET ${id} ${since != null ? 'delta' : 'window'} ${totalMs.toFixed(1)}ms (${messages.length} rows)`);
+  }
+  return response;
   } catch (e: any) {
     // Same rationale as the list route: a transient failure must not
     // become an unhandled 500 (HTML error page → client JSON parse
