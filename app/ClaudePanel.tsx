@@ -889,7 +889,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // 15s list poll re-ran it and stole focus back from whatever you had moved to.
   const handledDeepLink = useRef<string | null>(null);
   useEffect(() => {
-    if (!queryParamSession) return;
+    // Moving to something that isn't a session DELETES the param (see the sync
+    // effect above). Forget what we handled, so tapping the same notification
+    // again later is an arrival rather than a swallowed no-op.
+    if (!queryParamSession) { handledDeepLink.current = null; return; }
     if (handledDeepLink.current === queryParamSession) return;
     // Our own URL sync, not an arrival: the tab is already the active one.
     if (activeTab?.kind === 'session' && activeTab.ref === queryParamSession) {
