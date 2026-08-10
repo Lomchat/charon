@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { FsEntry } from '@/lib/types/api';
-import FileViewerModal from './FileViewerModal';
 import { buildGitDecorations, fileStatusLabel, useGitStatus } from './gitStore';
+import { openTab as openWorkspaceTab } from './tabStore';
 import { IconForKind, fileKind } from './fileIcons';
 
 type Props = { vpsId: string | null; cwd: string | null };
@@ -22,9 +22,10 @@ type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsE
  * node_modules across the ssh pipe to render six visible rows, and the tree
  * only ever shows what someone opened.
  *
- * Nothing here writes. Opening a file is a read into a viewer; editing on the
- * VPS stays the agent's job, and a half-built editor that can silently
- * conflict with a session writing the same file would be worse than none.
+ * Clicking a file opens it in the MAIN pane as a tab (§14.78) — single click
+ * is a preview, double click keeps it. The tree itself never writes: the save
+ * path, its sha precondition and its conflict handling all live in FileEditor,
+ * so there is exactly one place that can modify a file from the browser.
  */
 export default function TreeTab({ vpsId, cwd }: Props) {
   const { status } = useGitStatus(vpsId, cwd);
@@ -32,7 +33,12 @@ export default function TreeTab({ vpsId, cwd }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [errors, setErrors] = useState<Map<string, string>>(() => new Map());
-  const [open, setOpen] = useState<{ path: string; name: string; size: number } | null>(null);
+  // Single click previews (italic tab, replaced by the next preview in this
+  // folder); double click keeps it. Same contract as the sidebar. §14.78
+  const openFile = useCallback((rel: string, pin: boolean) => {
+    if (!vpsId || !cwd) return;
+    void openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: rel, pin });
+  }, [vpsId, cwd]);
   const inflight = useRef<Set<string>>(new Set());
 
   const isRepo = !!status?.ok && !!status.isRepo;
@@ -156,7 +162,8 @@ export default function TreeTab({ vpsId, cwd }: Props) {
                 <button
                   className={`tt-row ${r.dir ? 'is-dir' : 'is-file'}${r.entry.ignored ? ' ignored' : ''}${st ? ' g-' + st.cls : ''}`}
                   style={{ paddingLeft: 4 + r.depth * 11 }}
-                  onClick={() => (r.dir ? toggle(r.path) : setOpen({ path: r.path, name: r.name, size: r.entry.size }))}
+                  onClick={() => (r.dir ? toggle(r.path) : openFile(r.path, false))}
+                  onDoubleClick={() => { if (!r.dir) openFile(r.path, true); }}
                   title={err ? `${r.path} — ${err}` : `${r.path}${st ? ` · ${st.label}` : ''}${r.entry.ignored ? ' · git-ignored' : ''}`}
                 >
                   <span className="tt-caret">{r.dir ? (busy ? '·' : isOpen ? '▾' : '▸') : ''}</span>
@@ -174,16 +181,6 @@ export default function TreeTab({ vpsId, cwd }: Props) {
         </ul>
       )}
 
-      {open && (
-        <FileViewerModal
-          vpsId={vpsId}
-          root={cwd}
-          path={open.path}
-          name={open.name}
-          size={open.size}
-          onClose={() => setOpen(null)}
-        />
-      )}
     </div>
   );
 }

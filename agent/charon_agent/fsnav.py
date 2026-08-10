@@ -6,13 +6,13 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   NewSessionWizard autocomplete. Riding the persistent RPC pipe makes it ~1ms;
   the hub falls back to a one-shot ssh `ls` (~0.5s of sshd session setup) for
   older agents.
-- `fs_list` / `fs_read` (agent >= 0.25.0) — the read-only file tree in the
-  ToolPanel. Deliberately separate from `list_dir` rather than an extension of
-  it: that one is on the hot path of every keystroke in the wizard and returns
-  directories only, and widening its contract would make a typo in the tree
-  break session creation.
+- `fs_list` / `fs_read` (agent >= 0.25.0) and `fs_write` (>= 0.26.0) — the
+  file tree in the ToolPanel and its editor. Deliberately separate from
+  `list_dir` rather than an extension of it: that one is on the hot path of
+  every keystroke in the wizard and returns directories only, and widening its
+  contract would make a typo in the tree break session creation.
 
-Both tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
+All three tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
 The ssh user can already read anything — the hub hands out shells — so this is
 not a privilege boundary; it is there so that a `..` in a path can't quietly
 turn a file browser into a way to page through `/etc` by accident.
@@ -20,8 +20,10 @@ turn a file browser into a way to page through `/etc` by accident.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import subprocess
+import tempfile
 from typing import Any
 
 MAX_ENTRIES = 400
@@ -207,14 +209,100 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
         truncated = len(data) > cap
         data = data[:cap]
 
+        # The sha is of the BYTES ON DISK, not of what we return — a truncated
+        # read must not be able to produce a token that would later authorise
+        # overwriting the whole file with the prefix the editor showed.
+        sha = _file_sha(target)
         if binary:
             return {"ok": True, "path": path, "size": size, "binary": True,
                     "encoding": "base64", "content": base64.b64encode(data).decode(),
-                    "truncated": truncated, "too_large": False}
+                    "truncated": truncated, "too_large": False, "sha256": sha}
         return {"ok": True, "path": path, "size": size, "binary": False,
                 "encoding": "utf8", "content": data.decode("utf-8", "replace"),
-                "truncated": truncated, "too_large": False}
+                "truncated": truncated, "too_large": False, "sha256": sha}
     except PermissionError:
         return {"ok": False, "error": "permission denied"}
     except OSError as e:
         return {"ok": False, "error": str(e)}
+
+
+def _file_sha(path: str) -> str | None:
+    """sha256 of a file's bytes, or None if it can't be read."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(262144), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def fs_write(root: str, path: str, content: str, expected_sha256: str | None = None) -> dict[str, Any]:
+    """Write utf-8 text to ONE file under `root`. Agent >= 0.26.0.
+
+    Two rules, both load-bearing on these boxes:
+
+    * **`expected_sha256` is a precondition, not a hint.** A coding agent may
+      be writing this very file while someone edits it in the browser; saving
+      without checking would silently discard whichever side was slower. A
+      mismatch returns `reason: 'stale'` WITHOUT writing, and the caller
+      decides (reload / overwrite). Pass None only for a deliberate
+      force-overwrite, and `""` for "this file must not exist yet".
+    * **The write is atomic** — tmp file in the same directory, fsync, then
+      rename. A half-written source file is worse than an unwritten one, and a
+      rename within a directory is the only way to guarantee a reader sees
+      either the old bytes or the new ones.
+
+    Text only. The editor is for text; shipping arbitrary bytes back through
+    the JSON RPC is a different feature with different limits.
+    """
+    try:
+        target = _contained(root, path)
+        if target is None:
+            return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        if os.path.isdir(target):
+            return {"ok": False, "error": "that is a directory", "reason": "bad_path"}
+        if len(content.encode("utf-8", "surrogateescape")) > MAX_TEXT_BYTES:
+            return {"ok": False, "error": "file too large to write", "reason": "too_large"}
+
+        exists = os.path.exists(target)
+        if expected_sha256 is not None:
+            current = _file_sha(target) if exists else ""
+            if current != expected_sha256:
+                return {
+                    "ok": False, "reason": "stale",
+                    "error": ("the file was deleted on the VPS" if not exists
+                              else "the file changed on the VPS since it was opened"),
+                    "sha256": current,
+                }
+
+        data = content.encode("utf-8", "surrogateescape")
+        directory = os.path.dirname(target) or "."
+        fd, tmp = tempfile.mkstemp(prefix=".charon-w-", dir=directory)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            # Preserve the existing mode: an editor must not turn a 755 script
+            # into a 600 file just because it saved it.
+            if exists:
+                try:
+                    os.chmod(tmp, os.stat(target).st_mode & 0o7777)
+                except OSError:
+                    pass
+            os.replace(tmp, target)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        return {"ok": True, "path": path, "size": len(data), "sha256": _file_sha(target)}
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error"}
+    except OSError as e:
+        return {"ok": False, "error": str(e), "reason": "error"}

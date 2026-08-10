@@ -23,6 +23,7 @@ import { setVpsStatusEmitter } from './AgentClient';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { classifyTerminalClaudeError } from '@/lib/terminalClaudeError';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
+import { dropTabsForRef } from '@/lib/server/claude/tabs';
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -221,6 +222,15 @@ export function markSessionRead(sessionId: string): void {
  */
 export function emitGlobalSessionListChanged(sessionId: string): void {
   emitGlobalSession({ type: 'session_list_changed', sessionId });
+}
+
+/**
+ * Tell every connection the workspace layout moved (§14.78). Tabs are shared
+ * across devices, so this is LOW_VOLUME and carries no payload — the client
+ * refetches the (small) list rather than us trying to diff it over the wire.
+ */
+export function emitGlobalTabsChanged(): void {
+  emitGlobalSession({ type: 'tabs_changed', sessionId: 'tabs' } as GlobalSessionEvent);
 }
 
 /**
@@ -2056,6 +2066,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
   // the session is already gone as far as the user is concerned, and a failed
   // unlink must not turn a delete into an error.
   void purgeSessionBlobs(sessionId);
+  // The tab is a view of the session, so it goes with it — but only the tab:
+  // closing a tab never deletes a session, and this is the one direction that
+  // does propagate. §14.78
+  try {
+    if (dropTabsForRef('session', sessionId)) emitGlobalTabsChanged();
+  } catch { /* the layout is not worth failing a delete over */ }
   // Live-announce the removal so every other tab/device drops the card. §14.52.
   emitGlobalSessionListChanged(sessionId);
   try {

@@ -163,5 +163,104 @@ class TreeTest(unittest.TestCase):
         self.assertIn("caf", r["content"])
 
 
+class WriteTest(unittest.TestCase):
+    """fs_write — the only RPC in this module that can destroy work."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-write-")
+        with open(os.path.join(self.root, "a.txt"), "w") as f:
+            f.write("one\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def read(self, rel="a.txt"):
+        with open(os.path.join(self.root, rel)) as f:
+            return f.read()
+
+    def test_write_returns_the_new_sha(self):
+        r = F.fs_write(self.root, "a.txt", "two\n")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.read(), "two\n")
+        self.assertEqual(r["sha256"], F.fs_read(self.root, "a.txt")["sha256"])
+
+    def test_expected_sha_round_trip(self):
+        # The editor's normal path: read, edit, save with the sha it read.
+        before = F.fs_read(self.root, "a.txt")["sha256"]
+        r = F.fs_write(self.root, "a.txt", "edited\n", expected_sha256=before)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.read(), "edited\n")
+
+    def test_stale_write_is_refused_and_changes_nothing(self):
+        # THE invariant: a coding agent wrote the file while the browser had it
+        # open. Saving must not silently discard that.
+        before = F.fs_read(self.root, "a.txt")["sha256"]
+        with open(os.path.join(self.root, "a.txt"), "w") as f:
+            f.write("written by an agent\n")
+        r = F.fs_write(self.root, "a.txt", "my edit\n", expected_sha256=before)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "stale")
+        self.assertEqual(self.read(), "written by an agent\n")
+        # …and it hands back the CURRENT sha so the client can offer a reload.
+        self.assertEqual(r["sha256"], F.fs_read(self.root, "a.txt")["sha256"])
+
+    def test_force_overwrite_when_no_expectation_is_given(self):
+        r = F.fs_write(self.root, "a.txt", "forced\n", expected_sha256=None)
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.read(), "forced\n")
+
+    def test_empty_expectation_means_must_not_exist(self):
+        ok = F.fs_write(self.root, "new.txt", "hi\n", expected_sha256="")
+        self.assertTrue(ok["ok"], ok)
+        clash = F.fs_write(self.root, "a.txt", "hi\n", expected_sha256="")
+        self.assertFalse(clash["ok"])
+        self.assertEqual(clash["reason"], "stale")
+
+    def test_deleted_file_is_a_stale_write_not_a_resurrection(self):
+        before = F.fs_read(self.root, "a.txt")["sha256"]
+        os.unlink(os.path.join(self.root, "a.txt"))
+        r = F.fs_write(self.root, "a.txt", "back\n", expected_sha256=before)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "stale")
+        self.assertIn("deleted", r["error"])
+
+    def test_escape_is_refused(self):
+        victim = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt")
+        victim.write("precious")
+        victim.close()
+        try:
+            r = F.fs_write(self.root, victim.name, "pwned", expected_sha256=None)
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["reason"], "bad_path")
+            with open(victim.name) as f:
+                self.assertEqual(f.read(), "precious")
+        finally:
+            os.unlink(victim.name)
+
+    def test_a_directory_is_refused(self):
+        os.makedirs(os.path.join(self.root, "d"))
+        r = F.fs_write(self.root, "d", "x")
+        self.assertFalse(r["ok"])
+
+    def test_mode_is_preserved(self):
+        # Saving a shell script must not make it non-executable.
+        p = os.path.join(self.root, "run.sh")
+        with open(p, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(p, 0o755)
+        F.fs_write(self.root, "run.sh", "#!/bin/sh\necho hi\n")
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o755)
+
+    def test_no_temp_file_is_left_behind(self):
+        F.fs_write(self.root, "a.txt", "x\n")
+        self.assertEqual([n for n in os.listdir(self.root) if n.startswith(".charon-w-")], [])
+
+    def test_too_large_is_refused(self):
+        r = F.fs_write(self.root, "a.txt", "x" * (F.MAX_TEXT_BYTES + 1))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "too_large")
+        self.assertEqual(self.read(), "one\n")   # untouched
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -4246,3 +4246,103 @@
   color: var(--parchment-soft); padding: 2px 4px; text-decoration: none;
 }
 .claude-bar .git-remote:hover { color: var(--gold-bright); border-color: var(--gold-bright); }
+
+/* ── Workspace tabs: the path row + tab states (§14.78) ──────────────────── */
+/* Row 2 — the folders open on the active VPS. Visually lighter than the VPS
+   row above it so the hierarchy reads top-down without a separator. */
+.tab-row-paths {
+  gap: 2px; padding: 2px 6px;
+  background: rgba(0,0,0,0.12);
+  border-bottom: 1px solid var(--gold-deep);
+}
+.path-tab {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid transparent; border-radius: 3px;
+  color: var(--parchment-soft); cursor: pointer;
+  font-family: var(--mono); font-size: 10px; padding: 2px 8px;
+}
+.path-tab:hover { color: var(--gold-bright); }
+.path-tab.selected {
+  color: var(--gold-bright);
+  border-color: var(--gold-deep);
+  background: rgba(138,180,228,0.10);
+}
+.path-tab-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.path-tab-count {
+  font-size: 9px; opacity: 0.6;
+  background: var(--gold-deep); color: var(--stone);
+  border-radius: 2px; padding: 0 4px;
+}
+.path-tab.state-waiting .path-tab-name,
+.path-tab.state-failed .path-tab-name { color: var(--crimson, #e0736b); }
+.path-tab.state-thinking .path-tab-name { color: var(--gold-bright); }
+
+/* A TEMPORARY tab is italic — the one visual cue that it will be replaced by
+   the next thing opened in this folder. Nothing else distinguishes it, on
+   purpose: a preview must not look broken, just provisional. */
+.tab.temporary .tab-label { font-style: italic; opacity: 0.9; }
+/* Unsaved edits. Deliberately louder than the temporary italic: losing a
+   buffer is the only irreversible thing this bar can do. */
+.tab .tab-dirty { flex: none; color: var(--gold-bright); font-size: 9px; margin-left: 2px; }
+/* The referent is gone (deleted session, missing file) — still closable. */
+.tab.orphan .tab-label { opacity: 0.45; text-decoration: line-through; }
+.tab .tab-glyph svg { width: 12px; height: 12px; }
+
+/* ── File pane: the editor in the main column (§14.78) ───────────────────── */
+.file-editor {
+  grid-area: main; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  background: rgba(28,31,41,0.5);
+}
+.fe-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 26px; min-height: 40px;
+  border-bottom: 1px solid var(--gold-deep);
+  background: rgba(28,31,41,0.5);
+}
+.fe-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11px; color: var(--gold-bright);
+}
+.fe-dirty { flex: none; color: var(--gold-bright); font-size: 10px; }
+.fe-size { flex: none; font-family: var(--mono); font-size: 10px; color: var(--parchment-soft); }
+.fe-save, .fe-dl {
+  flex: none; background: var(--shadow); border: 1px solid var(--gold-deep);
+  color: var(--gold); border-radius: 3px; text-decoration: none;
+  font-family: var(--display); font-size: 9.5px; letter-spacing: 0.14em;
+  text-transform: uppercase; padding: 5px 10px; cursor: pointer;
+}
+.fe-save:hover:not(:disabled), .fe-dl:hover { color: var(--gold-bright); border-color: var(--gold); }
+.fe-save:disabled { opacity: 0.35; cursor: default; }
+.fe-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.fe-note {
+  font-family: var(--mono); font-size: 10.5px; padding: 5px 26px;
+  border-bottom: 1px solid rgba(216,168,90,0.15);
+}
+.fe-note.ok { color: #7fbf7f; }
+.fe-note.err { color: #e0736b; }
+/* The save conflict. Full-width and unmissable: it is the only moment where
+   two writers are about to lose each other's work. */
+.fe-conflict {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 10px 26px; padding: 10px 12px;
+  border: 1px solid rgba(224,115,107,0.5); background: rgba(224,115,107,0.08);
+  border-radius: 5px; font-family: var(--body); font-size: 12px; color: var(--parchment);
+}
+.fe-conflict b { color: #e0736b; font-family: var(--display); letter-spacing: 0.06em; }
+.fe-conflict-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.fe-conflict-actions button {
+  background: transparent; border: 1px solid var(--gold-deep); color: var(--parchment-soft);
+  border-radius: 3px; font-family: var(--mono); font-size: 10.5px; padding: 4px 9px; cursor: pointer;
+}
+.fe-conflict-actions button:hover { color: var(--gold-bright); border-color: var(--gold-bright); }
+.fe-conflict-actions button.danger { color: #e0736b; border-color: rgba(224,115,107,0.5); }
+/* CodeMirror fills what's left; its own scroller does the scrolling. */
+.cm-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.cm-host .cm-editor { height: 100%; }
+.cm-host .cm-editor.cm-focused { outline: none; }
+
+@media (max-width: 820px) {
+  .fe-head { padding: 8px 12px; flex-wrap: wrap; row-gap: 6px; }
+  .fe-note, .fe-conflict { margin-left: 12px; margin-right: 12px; padding-left: 10px; }
+}

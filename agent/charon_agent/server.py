@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any, Awaitable
 
 from . import __version__
-from .fsnav import list_dir as fs_list_dir, fs_list as _fs_list, fs_read as _fs_read
+from .fsnav import (
+    list_dir as fs_list_dir,
+    fs_list as _fs_list,
+    fs_read as _fs_read,
+    fs_write as _fs_write,
+)
 from .git import (
     git_commit as _git_commit,
     git_diff as _git_diff,
@@ -366,7 +371,7 @@ class Server:
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
         "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_discard",
-        "fs_list", "fs_read",
+        "fs_list", "fs_read", "fs_write",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -428,6 +433,14 @@ class Server:
         if method == "fs_read":
             return await asyncio.to_thread(
                 _fs_read, str(params.get("root") or ""), str(params.get("path") or ""),
+            )
+
+        if method == "fs_write":
+            exp = params.get("expected_sha256")
+            return await asyncio.to_thread(
+                _fs_write, str(params.get("root") or ""), str(params.get("path") or ""),
+                str(params.get("content") or ""),
+                None if exp is None else str(exp),
             )
 
         if method.startswith("git_"):

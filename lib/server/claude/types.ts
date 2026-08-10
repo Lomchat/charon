@@ -165,6 +165,10 @@ export type SyntheticEvent =
   // /api/claude/sessions). Charon-internal synthetic event (no JSON-RPC / pyz
   // change), classed LOW_VOLUME so it reaches every tab. cf. CLAUDE.md §14.52.
   | { type: 'session_list_changed' }
+  // The workspace layout changed (a tab opened / closed / pinned / activated).
+  // LOW_VOLUME: tabs are shared across devices, so every connection needs it
+  // regardless of which session it is focused on. §14.78.
+  | { type: 'tabs_changed' }
   // Account usage gauges fanned onto the global bus (sessionId = vpsId). Polled
   // from the agent's get_usage RPC by usagePoll.ts (60s + after each stop);
   // LOW_VOLUME → every tab. The header widget shows the CURRENT session's VPS

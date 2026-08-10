@@ -5,6 +5,7 @@ import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
 import { startTelegramBot } from './claude/telegram';
 import { armSdkAutoUpdate } from './claude/sdkWatch';
 import { encryptSecretsAtRest } from './claude/settings';
+import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/claude/tabs';
 import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
 
@@ -58,6 +59,17 @@ const STEPS: Step[] = [
   // the onStatus('connected')→reconcile self-healing hook. THE load-bearing
   // step (§14.45).
   { name: 'autoConnect', run: () => autoConnectAgentsIfNeeded() },
+  // Workspace layout (§14.78): drop tabs whose referent is gone — install
+  // tabs ALWAYS (installs are in-memory and never survive a restart) — then
+  // seed one pinned tab per live session the very first time, so the bar
+  // isn't empty on the release that introduces it.
+  {
+    name: 'tabs',
+    run: () => {
+      reconcileTabs();
+      seedTabsIfEmpty();
+    },
+  },
   // Prune persistent-shell rows whose remote shell is gone (best-effort,
   // per-VPS, non-blocking).
   { name: 'shellReconcile', run: () => reconcileShellsOnBoot() },

@@ -108,6 +108,29 @@ export type VpsFsListResponse = {
   truncated?: boolean;
 };
 
+// ── Tabs: the persisted workspace layout (§14.78) ──────────────────────────
+export type TabKind = 'session' | 'shell' | 'install' | 'file';
+
+export type TabDTO = {
+  id: string;
+  vpsId: string;
+  /** Group key: the session/shell cwd, or the folder containing a file. */
+  path: string;
+  kind: TabKind;
+  /** Entity id, or the file path relative to `path`. */
+  ref: string;
+  /** false = temporary preview (italic, one per group). */
+  pinned: boolean;
+  position: number;
+  active: boolean;
+};
+
+export type TabsResponse = { tabs: TabDTO[] };
+export type OpenTabBody = {
+  vpsId: string; path: string; kind: TabKind; ref: string; pin?: boolean;
+};
+export type CloseTabResponse = { ok: boolean; nextActiveId: string | null };
+
 // ── Read-only file tree (agent >= 0.25.0, agent/charon_agent/fsnav.py) ─────
 // One directory per call: the tree expands lazily, so a node_modules costs
 // nothing until someone opens it.
@@ -143,6 +166,24 @@ export type FsReadResponse = {
   truncated?: boolean;
   /** Bigger than the viewer will ship — content is null and says so. */
   tooLarge?: boolean;
+  /** sha256 of the BYTES ON DISK — the token a later write must present. */
+  sha256?: string | null;
+};
+
+export type FsWriteBody = {
+  root: string; path: string; content: string;
+  /** Precondition. Omit to force, '' to require the file not to exist yet. */
+  expectedSha256?: string | null;
+};
+
+export type FsWriteResponse = {
+  ok: boolean;
+  error?: string;
+  /** 'stale' = the file changed on the VPS since it was read. */
+  reason?: 'stale' | 'bad_path' | 'too_large' | 'offline' | 'unsupported' | 'error';
+  size?: number;
+  /** On success the new sha, on 'stale' the CURRENT one (offer a reload). */
+  sha256?: string | null;
 };
 
 // ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────

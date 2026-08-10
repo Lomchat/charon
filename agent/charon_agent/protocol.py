@@ -84,6 +84,10 @@ METHODS = {
     # caller-supplied root, which is the session cwd.
     "fs_list",
     "fs_read",
+    # Text write for the in-browser editor (agent >= 0.26.0). Atomic, and
+    # gated on an expected sha so a save cannot silently clobber a file a
+    # coding agent wrote in the meantime.
+    "fs_write",
     # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
     # to the repo containing a path, not to a session - the hub polls
     # git_status while a session is on screen, so it rides the persistent pipe

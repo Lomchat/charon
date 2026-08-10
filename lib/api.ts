@@ -9,6 +9,7 @@ import type {
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse,
+  FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -142,11 +143,29 @@ export const api = {
   // call — the tree expands lazily.
   listFsTree: (id: string, root: string, path: string, withGit: boolean) =>
     send<FsListResponse>('GET', `/api/vps/${id}/fs/list?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}${withGit ? '&git=1' : ''}`, undefined, { timeoutMs: 20_000 }),
+  writeFsFile: (id: string, body: FsWriteBody) =>
+    send<FsWriteResponse>('POST', `/api/vps/${id}/fs/write`, body, { timeoutMs: 60_000 }),
   readFsFile: (id: string, root: string, path: string) =>
     send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
   // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
   fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
     `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,
+
+  // ── Tabs: the shared workspace layout (§14.78) ────────────────────────────
+  listTabs: () => send<TabsResponse>('GET', '/api/tabs'),
+  openTab: (body: OpenTabBody) =>
+    send<{ tab: TabDTO; tabs: TabDTO[] }>('POST', '/api/tabs', body),
+  updateTab: (id: string, body: { pin?: boolean; activate?: boolean }) =>
+    send<{ tab: TabDTO; tabs: TabDTO[] }>('PATCH', `/api/tabs/${id}`, body),
+  closeTab: (id: string) =>
+    send<CloseTabResponse & { tabs: TabDTO[] }>('DELETE', `/api/tabs/${id}`),
+  closeTabsWhere: (q: { vpsId?: string; path?: string; exceptId?: string }) => {
+    const p = new URLSearchParams();
+    if (q.vpsId !== undefined) p.set('vpsId', q.vpsId);
+    if (q.path !== undefined) p.set('path', q.path);
+    if (q.exceptId !== undefined) p.set('exceptId', q.exceptId);
+    return send<{ ok: boolean; closed: number; tabs: TabDTO[] }>('DELETE', `/api/tabs?${p}`);
+  },
 
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),

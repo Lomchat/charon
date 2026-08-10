@@ -6,7 +6,14 @@ import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
 import type { AgentKind } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
-import TabBar, { computeTabs, type EntityTab } from './TabBar';
+import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
+import ToolPanel from './ToolPanel';
+import type { EditSnapshot } from './sessionTypes';
+import FileEditor from './FileEditor';
+import {
+  useTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
+  pinTab as pinWorkspaceTab, closeTabGuarded,
+} from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import InstallSessionView from './InstallSessionView';
 import NewSessionWizard from './NewSessionWizard';
@@ -74,6 +81,8 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 // SessionState/emptyState removed in the refactor: per-session state now
 // lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
 
+const emptyEdits: Map<string, EditSnapshot> = new Map();
+
 export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion }: Props) {
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
@@ -107,10 +116,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
   // If the ?session= param changes (notification click or navigation), switch
   useEffect(() => {
-    if (queryParamSession && queryParamSession !== selectedId) {
-      setSelectedId(queryParamSession);
-    }
-  }, [queryParamSession]); // eslint-disable-line
+    if (!queryParamSession) return;
+    // A notification tap must land on a real TAB, not on a pane the bar
+    // doesn't show. Pinned: arriving from a push is never a casual preview.
+    const sess = sessions.find((x) => x.id === queryParamSession);
+    if (sess) openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', true);
+    else setSelectedId(queryParamSession);
+  }, [queryParamSession, sessions]); // eslint-disable-line
 
   // Sync selectedId → URL (?session=...) without spamming history
   useEffect(() => {
@@ -486,14 +498,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // inline busy/error like the session dialog); this just wires the result in.
   function applyCreatedShell(sh: ShellListItem) {
     setShells((prev) => [...prev.filter((s) => s.id !== sh.id), sh]);
-    setSelectedShellId(sh.id);
-    setSelectedId(null);  // mutually exclusive with a Claude session
-    setSelectedInstallId(null);
+    // Something the user just created is not a preview.
+    openEntityTab('shell', sh.id, sh.vpsId, sh.cwd ?? '', true);
   }
-  function selectShell(id: string) {
-    setSelectedShellId(id);
-    setSelectedId(null);
-    setSelectedInstallId(null);
+  /**
+   * Sidebar → open as a PREVIEW (single click) or pinned (double click).
+   * §14.78: a click is browsing, and browsing must not accumulate tabs.
+   */
+  function selectShell(id: string, pin = false) {
+    const sh = shells.find((x) => x.id === id);
+    if (sh) openEntityTab('shell', id, sh.vpsId, sh.cwd ?? '', pin);
     closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
   function shellKilled(id: string) {
@@ -501,17 +515,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     if (selectedShellId === id) setSelectedShellId(null);
   }
   // When we select a Claude session, we deselect shell + install
-  function selectClaude(id: string) {
-    setSelectedId(id);
-    setSelectedShellId(null);
-    setSelectedInstallId(null);
+  function selectClaude(id: string, pin = false) {
+    const sess = sessions.find((x) => x.id === id);
+    if (sess) openEntityTab('session', id, sess.vpsId, sess.cwd ?? '', pin);
     closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
   function selectInstall(id: string) {
-    setSelectedInstallId(id);
-    setSelectedId(null);
-    setSelectedShellId(null);
-    closeDrawers();  // mobile: picking from the sidebar drawer closes it
+    const inst = installs.find((x) => x.id === id);
+    // Installs have no folder — they get the VPS's pathless group, and they
+    // are pinned because they are short-lived and you always want to watch
+    // one to the end.
+    if (inst) openEntityTab('install', id, inst.vpsId, '', true);
+    closeDrawers();
   }
   function installClosed(id: string) {
     setInstalls((prev) => prev.filter((i) => i.id !== id));
@@ -831,72 +846,81 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
   // change to sessions/shells/installs/pendings/keptOpen — cheap, ~O(n).
   // `ShellListItem` is structurally identical to `ShellInfo` (same fields).
-  const tabGroups = useMemo(
-    () => computeTabs({
-      sessions,
-      shells,
-      installs,
-      vpsList,
-      vpsFolders,
-      keptOpenIds,
-      permQueue, questionQueue, exitPlanQueue,
-    }),
-    [sessions, shells, installs, vpsList, vpsFolders, keptOpenIds,
-     permQueue, questionQueue, exitPlanQueue],
-  );
+  // ── Workspace tabs (§14.78) ───────────────────────────────────────────────
+  // The bar is no longer derived from "every non-sleeping session": it is a
+  // persisted, shared list. This resolves those rows against the live entity
+  // lists once, and both the strip and the main pane read the same answer.
+  const { tabs: workspaceTabs, dirty: dirtyIds } = useTabs();
+  useEffect(() => { void refreshTabs(); }, []);
+  const resolvedTabs = useMemo(() => resolveTabs({
+    tabs: workspaceTabs, sessions, shells, installs,
+    permQueue, questionQueue, exitPlanQueue, dirtyIds,
+  }), [workspaceTabs, sessions, shells, installs, permQueue, questionQueue, exitPlanQueue, dirtyIds]);
 
-  // Active VPS for the 2-row tab bar.
-  // Source of truth: derived from the currently selected entity (its
-  // vpsId), with a per-VPS memory of the last selected entity so the
-  // user can hop between VPSes without losing context.
-  const lastSelectedByVpsRef = useRef<Map<string, EntityTab>>(new Map());
-  // Remember the entity each time it gets selected.
+  const activeTab = useMemo(() => resolvedTabs.find((t) => t.active) ?? null, [resolvedTabs]);
+  // Row 1 / row 2 follow the active tab, but stay independently steerable so
+  // clicking a VPS or a folder can browse without changing what's open.
+  const [browseVpsId, setBrowseVpsId] = useState<string | null>(null);
+  const [browsePath, setBrowsePath] = useState<string | null>(null);
+  const activeVpsId = browseVpsId ?? activeTab?.vpsId ?? resolvedTabs[0]?.vpsId ?? null;
+  const activePath = browsePath ?? (activeTab && activeTab.vpsId === activeVpsId
+    ? activeTab.path
+    : resolvedTabs.find((t) => t.vpsId === activeVpsId)?.path ?? null);
+
+  // THE bridge: the active tab drives the main pane. Everything else in this
+  // component still speaks in selectedId / selectedShellId / selectedInstallId,
+  // so this is the single place that translates.
+  const [selectedFile, setSelectedFile] = useState<ResolvedTab | null>(null);
   useEffect(() => {
-    const tab = tabGroups.flat.find((t) => (
-      (t.kind === 'session' && t.id === selectedId)
-      || (t.kind === 'shell' && t.id === selectedShellId)
-      || (t.kind === 'install' && t.id === selectedInstallId)
-    ));
-    if (tab) lastSelectedByVpsRef.current.set(tab.vpsId, tab);
-  }, [selectedId, selectedShellId, selectedInstallId, tabGroups]);
-
-  // The "active VPS" is the one of the currently selected entity. If
-  // nothing is selected, fall back to the first VPS that has tabs.
-  const activeVpsId = useMemo(() => {
-    const selectedEntity = tabGroups.flat.find((t) => (
-      (t.kind === 'session' && t.id === selectedId)
-      || (t.kind === 'shell' && t.id === selectedShellId)
-      || (t.kind === 'install' && t.id === selectedInstallId)
-    ));
-    if (selectedEntity) return selectedEntity.vpsId;
-    return tabGroups.vpsTabs[0]?.vps.id ?? null;
-  }, [selectedId, selectedShellId, selectedInstallId, tabGroups]);
-
-  // Click on a VPS tab → switch to that VPS. Selects:
-  //   - the entity we last selected for that VPS (if it's still around), OR
-  //   - the first entity in that VPS's row (sidebar order).
-  function onVpsTabClick(vps: Vps) {
-    const entities = tabGroups.entitiesByVps.get(vps.id);
-    if (!entities || entities.length === 0) return;
-    const remembered = lastSelectedByVpsRef.current.get(vps.id);
-    const stillExists = remembered && entities.some((e) =>
-      e.kind === remembered.kind && e.id === remembered.id
-    );
-    const next = stillExists ? remembered! : entities[0];
-    selectEntity(next);
-  }
-
-  // Tab click dispatch (handles all 3 kinds). Mutually exclusive views —
-  // selecting one clears the others (mirrors selectClaude/selectShell/selectInstall).
-  function selectEntity(t: EntityTab) {
-    if (t.kind === 'session') {
-      setSelectedId(t.id); setSelectedShellId(null); setSelectedInstallId(null);
-    } else if (t.kind === 'shell') {
-      setSelectedShellId(t.id); setSelectedId(null); setSelectedInstallId(null);
-    } else {
-      setSelectedInstallId(t.id); setSelectedId(null); setSelectedShellId(null);
+    if (!activeTab) {
+      setSelectedId(null); setSelectedShellId(null); setSelectedInstallId(null); setSelectedFile(null);
+      return;
     }
+    setSelectedFile(activeTab.kind === 'file' ? activeTab : null);
+    setSelectedId(activeTab.kind === 'session' ? activeTab.ref : null);
+    setSelectedShellId(activeTab.kind === 'shell' ? activeTab.ref : null);
+    setSelectedInstallId(activeTab.kind === 'install' ? activeTab.ref : null);
+  }, [activeTab]);
+
+  /** Open (or focus) something as a tab. Preview unless `pin`. */
+  const openEntityTab = useCallback((
+    kind: 'session' | 'shell' | 'install' | 'file',
+    ref: string, vpsId: string, path: string, pin = false,
+  ) => {
+    setBrowseVpsId(null); setBrowsePath(null);
+    void openWorkspaceTab({ vpsId, path, kind, ref, pin });
+  }, []);
+
+  // Row 1: browse to a VPS. Purely navigational — it changes what row 2 and
+  // row 3 show without opening or focusing anything, so glancing at another
+  // machine can't steal focus from what you were doing.
+  function onVpsRowClick(vpsId: string) {
+    setBrowseVpsId(vpsId);
+    setBrowsePath(null);
   }
+  function onPathRowClick(vpsId: string, path: string) {
+    setBrowseVpsId(vpsId);
+    setBrowsePath(path);
+  }
+
+  /** Row 3: single click focuses, double click pins. */
+  function onTabClick(t: ResolvedTab) {
+    setBrowseVpsId(null); setBrowsePath(null);
+    void activateWorkspaceTab(t.id);
+  }
+  function onTabDoubleClick(t: ResolvedTab) {
+    setBrowseVpsId(null); setBrowsePath(null);
+    void pinWorkspaceTab(t.id);
+  }
+  /**
+   * Closing a tab is a VIEW operation: the session keeps running and stays in
+   * the sidebar. A tab with unsaved edits asks first — the buffer only exists
+   * in this browser.
+   */
+  function onTabCloseClick(t: ResolvedTab) {
+    void closeTabGuarded(t.id, t.label);
+  }
+
   /**
    * Resolves the "default cwd" for a "+ new tab" action triggered from
    * row 2's action buttons. Strategy (mirrors the user expectation
@@ -909,26 +933,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    *   3. Otherwise undefined (server-side falls back to user home).
    */
   function defaultCwdFor(vpsId: string): string | undefined {
-    const entities = tabGroups.entitiesByVps.get(vpsId) ?? [];
-    for (let i = entities.length - 1; i >= 0; i--) {
-      const e = entities[i];
-      if (e.kind === 'session') {
-        const s = sessions.find((x) => x.id === e.id);
-        if (s?.cwd) return s.cwd;
-      } else if (e.kind === 'shell') {
-        const sh = shells.find((x) => x.id === e.id);
-        if (sh?.cwd) return sh.cwd;
-      }
-      // installs: no cwd, skip
-    }
+    // The folder currently being browsed wins — that is what the user is
+    // looking at when they press "+".
+    if (browseVpsId === vpsId && browsePath) return browsePath;
+    const here = resolvedTabs.filter((t) => t.vpsId === vpsId && t.path);
+    if (here.length) return (here.find((t) => t.active) ?? here[here.length - 1]).path;
     const vps = vpsList.find((v) => v.id === vpsId);
     return vps?.defaultPath ?? undefined;
   }
 
   /** "+ Claude" button on the right of row 2 — open the NewSessionDialog
    *  pre-filled with the active VPS and the same cwd as the last tab. */
-  function onTabBarNewSession(vpsId: string) {
-    const cwd = defaultCwdFor(vpsId);
+  function onTabBarNewSession(vpsId: string, path?: string) {
+    const cwd = path || defaultCwdFor(vpsId);
     // The tab-bar "+" is the historical Claude shortcut → fix the backend so
     // it goes straight to path/name (Codex is launched from the sidebar or the
     // global "＋ Agent" backend picker).
@@ -937,8 +954,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   /** "+ shell" button on the right of row 2 — open the NewShellDialog
    *  pre-filled with the active VPS and the same cwd as the last tab
    *  (mirrors the "+ Claude" flow). */
-  function onTabBarNewShell(vpsId: string) {
-    const cwd = defaultCwdFor(vpsId) ?? null;
+  function onTabBarNewShell(vpsId: string, path?: string) {
+    const cwd = path || defaultCwdFor(vpsId) || null;
     setWizard({ kind: 'shell', vpsId, cwd });
   }
   /**
@@ -949,17 +966,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    * because the rendering happens once at the bottom of ClaudePanel's
    * JSX (`<SessionContextMenu>` for ctxMenu.kind=session/shell/install).
    */
-  function onTabContext(t: EntityTab, x: number, y: number) {
+  function onTabContext(e: React.MouseEvent, t: ResolvedTab) {
+    e.preventDefault();
+    const x = e.clientX; const y = e.clientY;
     if (t.kind === 'session') {
-      const s = sessions.find((x) => x.id === t.id);
-      if (s) setCtxMenu({ kind: 'session', session: s, x, y });
+      const sess = sessions.find((z) => z.id === t.ref);
+      if (sess) setCtxMenu({ kind: 'session', session: sess, x, y });
     } else if (t.kind === 'shell') {
-      const sh = shells.find((x) => x.id === t.id);
+      const sh = shells.find((z) => z.id === t.ref);
       if (sh) setCtxMenu({ kind: 'shell', shell: sh, x, y });
-    } else {
-      const inst = installs.find((x) => x.id === t.id);
+    } else if (t.kind === 'install') {
+      const inst = installs.find((z) => z.id === t.ref);
       if (inst) setCtxMenu({ kind: 'install', install: inst, x, y });
     }
+    // A file tab has no entity menu — closing is the ✕, pinning is a
+    // double-click, and everything else about a file lives in the tree.
   }
 
   /** Reason to disable the "+ Claude" button (agent not ready). The
@@ -974,36 +995,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     if (status === 'missing') return 'agent not installed';
     if (status === 'error') return 'agent in error';
     return 'agent not yet verified';
-  }
-
-  // Closing a tab is purely local — it just removes the entity from the
-  // tab bar (not from the DB or from the sidebar). Active tabs are not
-  // closable so this only fires on greyed-out / sleeping tabs.
-  function onEntityClose(t: EntityTab) {
-    forgetOpen(t.id);
-    lastSelectedByVpsRef.current.delete(t.vpsId);
-    // If we just closed the currently-selected tab, jump elsewhere so the
-    // user isn't left looking at an "orphan" view. Prefer the previous tab
-    // in the same VPS row first, falling back to the global flat order.
-    const wasSelected =
-      (t.kind === 'session' && t.id === selectedId)
-      || (t.kind === 'shell' && t.id === selectedShellId)
-      || (t.kind === 'install' && t.id === selectedInstallId);
-    if (!wasSelected) return;
-    const sameVps = tabGroups.entitiesByVps.get(t.vpsId) ?? [];
-    const sameVpsIdx = sameVps.findIndex((x) => x.id === t.id);
-    const sameVpsRemaining = sameVps.filter((x) => x.id !== t.id);
-    if (sameVpsRemaining.length > 0) {
-      const next = sameVpsIdx > 0 ? sameVps[sameVpsIdx - 1] : sameVpsRemaining[0];
-      selectEntity(next);
-      return;
-    }
-    const flatRemaining = tabGroups.flat.filter((x) => x.id !== t.id);
-    if (flatRemaining.length === 0) {
-      setSelectedId(null); setSelectedShellId(null); setSelectedInstallId(null);
-      return;
-    }
-    selectEntity(flatRemaining[0]);
   }
 
   // ── Sessions list (poll 15s) ──
@@ -1078,6 +1069,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // backstop in case an event is missed (SSE drop).
   useEffect(() => {
     const unsub = subscribeAll((ev) => {
+      if (ev.type === 'tabs_changed') { void refreshTabs(); return; }
       if (ev.type !== 'session_list_changed') return;
       refreshSessions();
     });
@@ -1415,7 +1407,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const selectedShellExists = !!selectedShellId && shells.some((s) => s.id === selectedShellId);
 
   return (
-    <div className={`claude-root${selectedShellId ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
+    <div className={`claude-root${selectedShellId && !selectedFile ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
       {/* Backdrop behind any open drawer (mobile only; CSS-gated). Tap to close. */}
       <div className="drawer-backdrop" onClick={closeDrawers} aria-hidden />
       <header className="claude-head">
@@ -1608,19 +1600,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       />
 
       <TabBar
-        vpsTabs={tabGroups.vpsTabs}
-        entitiesByVps={tabGroups.entitiesByVps}
+        resolved={resolvedTabs}
+        vpsList={vpsList}
+        vpsFolders={vpsFolders}
         activeVpsId={activeVpsId}
-        selectedSessionId={selectedId}
-        selectedShellId={selectedShellId}
-        selectedInstallId={selectedInstallId}
-        onVpsClick={onVpsTabClick}
-        onEntitySelect={selectEntity}
-        onEntityClose={onEntityClose}
+        activePath={activePath}
+        activeTabId={activeTab?.id ?? null}
+        onVpsClick={onVpsRowClick}
+        onPathClick={onPathRowClick}
+        onTabClick={onTabClick}
+        onTabDoubleClick={onTabDoubleClick}
+        onTabClose={onTabCloseClick}
+        onTabContext={onTabContext}
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
         newSessionDisabledReason={newSessionDisabledReasonFor(activeVpsId)}
-        onTabContext={onTabContext}
       />
 
       {/* Main panel routing: 3 mutually exclusive views.
@@ -1628,7 +1622,32 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           - selectedShellId   → <ShellTerminal> (ephemeral SSH xterm)
           - selectedId        → <ClaudeSessionView> (chat + tool panel)
           - otherwise: placeholder. */}
-      {selectedInstallId ? (() => {
+      {selectedFile ? (
+        <>
+        <FileEditor
+          key={`${selectedFile.vpsId}:${selectedFile.path}:${selectedFile.ref}`}
+          tabId={selectedFile.id}
+          vpsId={selectedFile.vpsId}
+          root={selectedFile.path}
+          path={selectedFile.ref}
+          // Editing or saving is a real interaction: the tab stops being a
+          // preview so the next file opened here can't evict unsaved work.
+          onInteract={() => { if (!selectedFile.pinned) void pinWorkspaceTab(selectedFile.id); }}
+        />
+        {/* The explorer has to stay: opening a file from the tree and losing
+            the tree in the same gesture is how you end up clicking back and
+            forth. The session-scoped tabs (diffs / attach / tools) render
+            their empty states — there is no session here. */}
+        <ToolPanel
+          sessionId={null}
+          toolCalls={[]}
+          edits={emptyEdits}
+          onRevert={() => {}}
+          vpsId={selectedFile.vpsId}
+          cwd={selectedFile.path}
+        />
+        </>
+      ) : selectedInstallId ? (() => {
         const inst = installs.find((i) => i.id === selectedInstallId);
         if (!inst) return <main className="claude-main"><div className="bar-empty">install not found</div></main>;
         const vps = vpsList.find((v) => v.id === inst.vpsId);

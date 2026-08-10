@@ -50,6 +50,8 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // across tabs AND devices (a session started on a phone shows on the desktop
   // without an F5). See sessionOps.ts § emitGlobalSessionListChanged (§14.52).
   'session_list_changed',
+  // Workspace layout — shared across devices, so it must reach every tab.
+  'tabs_changed',
   // Account-usage gauges (sessionId = vpsId). ACCOUNT-global (not focus-scoped),
   // so every tab's header widget must update regardless of which session the SSE
   // is focused on. Source: usagePoll.ts → emitGlobalAccountUsage. §14.58.

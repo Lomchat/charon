@@ -78,8 +78,8 @@ type Props = {
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
-  onSelect: (id: string) => void;
-  onSelectShell: (id: string) => void;
+  onSelect: (id: string, pin?: boolean) => void;
+  onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
@@ -418,8 +418,8 @@ type VpsRenderOpts = {
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
-  onSelect: (id: string) => void;
-  onSelectShell: (id: string) => void;
+  onSelect: (id: string, pin?: boolean) => void;
+  onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
@@ -716,7 +716,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
 function InstallRow({ install, selected, onSelect, onContext }: {
   install: InstallInfo;
   selected: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, pin?: boolean) => void;
   onContext?: (install: InstallInfo, x: number, y: number) => void;
 }) {
   const lp = useLongPress((c) => { onContext?.(install, c.x, c.y); });
@@ -766,7 +766,7 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
   s: SessionListItem;
   selected: boolean;
   showDetails: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, pin?: boolean) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editing?: boolean;
   onRenameSubmit?: (id: string, name: string) => void;
@@ -807,6 +807,7 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
       data-tab-id={s.id}
       className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       onClick={() => { if (lp.consume()) return; onSelect(s.id); }}
+      onDoubleClick={() => onSelect(s.id, true)}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
       {...lp.handlers}
       title={`${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
@@ -844,7 +845,7 @@ function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
   sh: ShellListItem;
   selected: boolean;
   showDetails: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, pin?: boolean) => void;
   onContext?: (sh: ShellListItem, x: number, y: number) => void;
 }) {
   const lp = useLongPress((c) => { onContext?.(sh, c.x, c.y); });
@@ -858,6 +859,7 @@ function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
       data-tab-id={sh.id}
       className={`cs-card shell${selected ? ' selected' : ''}${sh.exited ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       onClick={() => { if (lp.consume()) return; onSelect(sh.id); }}
+      onDoubleClick={() => onSelect(sh.id, true)}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(sh, e.clientX, e.clientY); }}
       {...lp.handlers}
       title={`SSH shell${sh.cwd ? ` · ${sh.cwd}` : ''}\nStarted ${age}${sh.exited ? '\n(ended)' : ''}`}

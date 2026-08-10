@@ -371,6 +371,51 @@ export const shells = sqliteTable('shells', {
   index('idx_shells_vps_id').on(t.vpsId),
 ]);
 
+/**
+ * Open editor tabs — the workspace layout, persisted (§14.78).
+ *
+ * Before this table the tab bar WAS the session list: every non-sleeping
+ * session was a tab and you could not close one without touching the session.
+ * Tabs are now their own thing — closing one is a view operation, and the
+ * session keeps running and stays in the sidebar.
+ *
+ * Grouping is `(vpsId, path)`. The path level is what makes several projects on
+ * one VPS legible, and it is also the natural home for a file: a file tab and
+ * the session that edits it belong to the same folder.
+ *
+ * `ref` is polymorphic ON PURPOSE rather than four nullable FK columns: with
+ * NULLs, SQLite's UNIQUE would not dedupe (NULL != NULL) and the "one tab per
+ * thing" rule would have to live in application code. Session/shell/install
+ * tabs hold the entity id; file tabs hold the path relative to `path`. There
+ * is no FK — the referent lives in three different tables, and `reconcileTabs`
+ * is what drops rows whose thing is gone.
+ *
+ * A single row holds `active = 1`. Enforced in one transaction hub-side rather
+ * than by a partial unique index, which SQLite would let us create but which
+ * would turn every switch into a constraint dance.
+ */
+export const tabs = sqliteTable('tabs', {
+  id: text('id').primaryKey(),
+  vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
+  // Group key. The session/shell cwd, or the containing folder for a file.
+  // '' for the pathless (installs), which get their own group.
+  path: text('path').notNull(),
+  // 'session' | 'shell' | 'install' | 'file'
+  kind: text('kind').notNull(),
+  ref: text('ref').notNull(),
+  // 0 = temporary (italic, one per group, replaced by the next open),
+  // 1 = pinned. cf. §14.78.
+  pinned: integer('pinned').notNull().default(0),
+  position: integer('position').notNull().default(0),
+  active: integer('active').notNull().default(0),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),
+}, (t) => [
+  index('idx_tabs_vps_id').on(t.vpsId),
+  // One tab per thing per group — what makes "open" idempotent.
+  uniqueIndex('uq_tabs_vps_path_kind_ref').on(t.vpsId, t.path, t.kind, t.ref),
+]);
+
 export const claudeSettings = sqliteTable('claude_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
@@ -399,5 +444,6 @@ export type ClaudePendingQuestion = typeof claudePendingQuestions.$inferSelect;
 export type ClaudeSessionAttachment = typeof claudeSessionAttachments.$inferSelect;
 export type ClaudeSessionLog = typeof claudeSessionLogs.$inferSelect;
 export type Shell = typeof shells.$inferSelect;
+export type TabRow = typeof tabs.$inferSelect;
 export type ClaudeSetting = typeof claudeSettings.$inferSelect;
 export type ClaudePushSub = typeof claudePushSubs.$inferSelect;

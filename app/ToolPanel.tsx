@@ -57,9 +57,9 @@ export type Tab = 'diffs' | 'git' | 'tree' | 'files' | 'calls';
 // the paperclip tab was labelled "files" before the tree existed, and keeping
 // that name for the smaller of the two would have made the new one unfindable.
 const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
-  { id: 'diffs', label: 'diffs', Icon: IconDiff },
-  { id: 'git', label: 'git', Icon: IconGitBranch },
   { id: 'tree', label: 'files', Icon: IconTree },
+  { id: 'git', label: 'git', Icon: IconGitBranch },
+  { id: 'diffs', label: 'diffs', Icon: IconDiff },
   { id: 'files', label: 'attach', Icon: IconPaperclip },
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];
@@ -69,7 +69,7 @@ export default function ToolPanel({
   attachments = [], onRemoveAttachment, onInsertPath,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('diffs');
+  const [tab, setTab] = useState<Tab>('tree');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
   // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
   // has no diff to show; it appears once loadEdits fills its content.
