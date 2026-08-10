@@ -845,11 +845,11 @@
   flex-shrink: 0;
 }
 
-/* "+ Claude" / "+ shell" action buttons, sit at the right of row 2.
-   Mirror the icons used in the sidebar (IconRobot / IconTerminal) +
-   a small "+" badge. Disabled state mirrors the sidebar's logic when
-   the agent isn't OK (only the Claude button is gated; SSH shells
-   work without the agent). */
+/* "+ Claude" / "+ Codex" / "+ shell" action buttons, sit at the right of the
+   tabs row. Mirror the icons used in the sidebar (AgentLogo / IconTerminal) +
+   a small "+" badge. Disabled state comes from the SAME diagnosis as the
+   sidebar's ＋ buttons (vpsHealth § backendAvailability), per backend; the
+   shell button is never gated — SSH works without the agent. */
 .tab-row-actions {
   display: inline-flex; align-items: center;
   gap: 4px;

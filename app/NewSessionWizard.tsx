@@ -115,8 +115,33 @@ export default function NewSessionWizard({
   const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode>('workspace-write');
   const [globalDefaults, setGlobalDefaults] = useState<{ model: string; fallbackModel: string; effort: string } | null>(null);
 
+  // Enter validates the CURRENT step, wherever focus is. Each step's own
+  // control handles Enter itself (search box, path input, name input); this is
+  // the fallback for a focus that ended up nowhere — clicking a suggestion, a
+  // crumb, or arriving on step 2 on a touch device. Kept in a ref so the
+  // listener never re-registers and never captures a stale `custom`/`name`.
+  const enterActionRef = useRef<() => void>(() => {});
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    enterActionRef.current = () => {
+      if (step === 'name') { void launch(); return; }
+      if (step === 'path' && custom.trim()) { void submitCustom(); return; }
+      if (step === 'vps') pickObviousVps();
+    };
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+      // A focused control answers Enter on its own (inputs submit, a button
+      // activates, a <select> opens) — firing on top of it would double-act.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'button' || tag === 'select') return;
+      if (t?.isContentEditable) return;
+      e.preventDefault();
+      enterActionRef.current();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -227,17 +252,12 @@ export default function NewSessionWizard({
     setPath(null); setPathChosen(false);
     setStep('path');
   }
-  // Enter in the search box = "take the obvious one": only when the filter
-  // left EXACTLY one usable VPS (and, for a backend-free agent launch, only
-  // one usable backend) — otherwise typing blind could start a session on the
+  // Enter on step 1 = "take the obvious one": only when the list is down to
+  // EXACTLY one usable VPS (and, for a backend-free agent launch, only one
+  // usable backend) — otherwise typing blind could start a session on the
   // wrong machine.
-  function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Escape' && vpsQuery) {
-      // Clear the filter instead of closing the wizard (the window-level
-      // Escape listener sits behind this stopPropagation).
-      e.stopPropagation(); setVpsQuery(''); return;
-    }
-    if (e.key !== 'Enter' || shownVps.length !== 1) return;
+  function pickObviousVps() {
+    if (shownVps.length !== 1) return;
     const v = shownVps[0];
     if (kind !== 'agent') {
       if (agentAvailability(v).ok) pickVps(v);
@@ -250,6 +270,14 @@ export default function NewSessionWizard({
     const cl = availFor(v, 'claude').ok;
     const cx = availFor(v, 'codex').ok;
     if (cl !== cx) pickVps(v, cl ? 'claude' : 'codex');
+  }
+  function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape' && vpsQuery) {
+      // Clear the filter instead of closing the wizard (the window-level
+      // Escape listener sits behind this stopPropagation).
+      e.stopPropagation(); setVpsQuery(''); return;
+    }
+    if (e.key === 'Enter') pickObviousVps();
   }
 
   function choosePath(p: string | null) {
@@ -321,6 +349,24 @@ export default function NewSessionWizard({
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, vpsId]);
+
+  // Step 2 has to be keyboard-usable the moment it opens — the sidebar's ＋
+  // lands straight here, and with nothing focused Enter did nothing at all
+  // (the tab-bar ＋ passes a cwd, skips to step 3 and its autoFocus'd name
+  // input, which is why it "worked there"). The dropdown stays SHUT: the known
+  // paths are already listed right above, and an overlay covering its own list
+  // on open reads as a glitch. Coarse pointers are skipped (a phone keyboard
+  // would hide the list), same rule as the step-1 search box.
+  useEffect(() => {
+    if (step !== 'path') return;
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia?.('(pointer: coarse)').matches) return;
+    const id = requestAnimationFrame(() => {
+      customRef.current?.focus();
+      setSugOpen(false);   // batched with the focus handler's auto-open
+    });
+    return () => cancelAnimationFrame(id);
+  }, [step]);
 
   // Pre-list a suggested dir while the user hovers/highlights it — by the
   // time they click, the drill-down composes straight from cache.

@@ -33,6 +33,7 @@ import CodexLoginModal from './CodexLoginModal';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
+import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { prefetchAll as sessionCachePrefetchAll } from './sessionCache';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
@@ -1016,14 +1017,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return vps?.defaultPath ?? undefined;
   }
 
-  /** "+ Claude" button on the right of row 2 — open the NewSessionDialog
-   *  pre-filled with the active VPS and the same cwd as the last tab. */
-  function onTabBarNewSession(vpsId: string, path?: string) {
+  /** "+ Claude" / "+ Codex" buttons on the right of row 3 — open the wizard
+   *  pre-filled with the active VPS and the same cwd as the last tab. The
+   *  backend is FIXED by the button that was pressed, so the wizard skips
+   *  straight to path/name. */
+  function onTabBarNewSession(vpsId: string, path?: string, agentKind: AgentKind = 'claude') {
     const cwd = path || defaultCwdFor(vpsId);
-    // The tab-bar "+" is the historical Claude shortcut → fix the backend so
-    // it goes straight to path/name (Codex is launched from the sidebar or the
-    // global "＋ Agent" backend picker).
-    setWizard({ kind: 'agent', vpsId, cwd, agentKind: 'claude' });
+    setWizard({ kind: 'agent', vpsId, cwd, agentKind });
   }
   /** "+ shell" button on the right of row 2 — open the NewShellDialog
    *  pre-filled with the active VPS and the same cwd as the last tab
@@ -1057,19 +1057,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     // double-click, and everything else about a file lives in the tree.
   }
 
-  /** Reason to disable the "+ Claude" button (agent not ready). The
-   *  shell button stays enabled — SSH doesn't need the agent. Mirrors
-   *  the sidebar's `agentReady`/`noAgentReason` logic. */
-  function newSessionDisabledReasonFor(vpsId: string | null): string | null {
-    if (!vpsId) return null;
-    const vps = vpsList.find((v) => v.id === vpsId);
-    if (!vps) return null;
-    const status = (vps as any).agentStatus ?? 'unknown';
-    if (status === 'ok') return null;
-    if (status === 'missing') return 'agent not installed';
-    if (status === 'error') return 'agent in error';
-    return 'agent not yet verified';
-  }
+  /** Reason to disable each of the tab bar's "+ agent" buttons. The shell
+   *  button stays enabled — SSH doesn't need the agent. Uses the SHARED
+   *  diagnosis (app/vpsHealth.tsx § backendAvailability), so a backend the
+   *  sidebar greys out is greyed out here too, with the same wording. */
+  const tabBarNewSessionReasons = useMemo((): Record<AgentKind, string | null> => {
+    const vps = activeVpsId ? vpsList.find((v) => v.id === activeVpsId) : null;
+    if (!vps) return { claude: null, codex: null };
+    const reason = (k: AgentKind) => {
+      const av = backendAvailability(vps, k);
+      return av.ok ? null : av.reason;
+    };
+    return { claude: reason('claude'), codex: reason('codex') };
+  }, [vpsList, activeVpsId]);
 
   // ── Sessions list (poll 15s) ──
   // Before: 4s. But each tick did `setSessions(...)` (same content) which
@@ -1695,7 +1695,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onTabContext={onTabContext}
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
-        newSessionDisabledReason={newSessionDisabledReasonFor(activeVpsId)}
+        newSessionDisabledReason={tabBarNewSessionReasons}
         onReorderVps={(vpsIds) => void reorderWorkspaceTabs({ scope: 'vps', vpsIds })}
         onReorderPaths={(vpsId, paths) => void reorderWorkspaceTabs({ scope: 'groups', vpsId, paths })}
         onReorderTabs={(vpsId, path, ids) => void reorderWorkspaceTabs({ scope: 'tabs', vpsId, path, ids })}
