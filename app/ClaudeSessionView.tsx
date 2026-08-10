@@ -34,6 +34,7 @@ import {
   useSessionAttachments, type PendingUpload,
 } from './sessionAttachments';
 import { IconPaperclip } from './icons';
+import { IconExternal } from './fileIcons';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1126,24 +1127,28 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 /**
- * Dirty-state chip for the session's repo, sitting next to the cwd.
+ * Branch chip for the session's repo, sitting next to the cwd.
  *
- * Deliberately the quietest thing that can carry the signal: it renders
- * NOTHING when the cwd isn't a repo or the tree is clean, so it costs zero
- * pixels in the common case and never pushes the chat around. Clicking it
- * opens the git tab — the chip is an indicator and an entry point, and holds
- * no controls of its own.
+ * Shown for the whole life of a git cwd, not only when dirty: on a clean tree
+ * the branch name is itself the thing worth knowing at a glance (am I on main
+ * or on the feature branch?), and a control that appears and disappears is
+ * harder to rely on than one that is always in the same place. The COUNT is
+ * the notification — it appears only when there is something to see.
  *
- * It also stays silent while the state is merely degraded (agent offline or
- * too old): the git tab explains that, and a header chip is the wrong place to
- * put an error the user can't act on from here.
+ * It stays silent while the state is merely degraded (agent offline or too
+ * old): the git tab explains that, and a header chip is the wrong place for an
+ * error you can't act on from here.
+ *
+ * The forge link is separate on purpose — same row, its own hit target, so
+ * "open source control" and "open GitHub" can't be misclicked for each other.
  */
 function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: () => void }) {
   const { status } = useGitStatus(vpsId || null, cwd || null);
   if (!status?.ok || !status.isRepo) return null;
   const n = status.fileCount ?? status.files.length;
   const ahead = status.ahead ?? 0;
-  if (n === 0 && ahead === 0) return null;
+  const web = status.remoteWebUrl;
+  const host = web ? web.replace(/^https:\/\//, '').split('/')[0] : null;
 
   const title = [
     status.detached ? `detached @ ${status.head ?? '?'}` : `branch ${status.branch ?? '?'}`,
@@ -1153,11 +1158,21 @@ function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: (
   ].filter(Boolean).join('\n');
 
   return (
-    <button type="button" className="git-chip" onClick={onOpen} title={title}>
-      <span className="gc-branch">⎇ {status.detached ? (status.head ?? 'detached') : (status.branch ?? '?')}</span>
-      {n > 0 && <span className="gc-count">{n}</span>}
-      {ahead > 0 && <span className="gc-ahead">↑{ahead}</span>}
-    </button>
+    <span className="git-chip-wrap">
+      <button type="button" className="git-chip" onClick={onOpen} title={title}>
+        <span className="gc-branch">⎇ {status.detached ? (status.head ?? 'detached') : (status.branch ?? '?')}</span>
+        {n > 0 && <span className="gc-count">{n}</span>}
+        {ahead > 0 && <span className="gc-ahead">↑{ahead}</span>}
+      </button>
+      {web && (
+        // noreferrer as well as noopener: this URL comes out of a VPS's git
+        // config, so it is not ours to vouch for.
+        <a className="git-remote" href={web} target="_blank" rel="noopener noreferrer"
+           title={`open this repository on ${host}`}>
+          <IconExternal className="gr-ico" />
+        </a>
+      )}
+    </span>
   );
 }
 

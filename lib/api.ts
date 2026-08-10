@@ -8,7 +8,7 @@ import type {
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
-  GitOpResponse, GitMessageResponse,
+  GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -136,6 +136,17 @@ export const api = {
     send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths }, { timeoutMs: 60_000 }),
   gitMessage: (id: string, cwd: string, sel: { paths?: string[]; all?: boolean }) =>
     send<GitMessageResponse>('POST', `/api/vps/${id}/git/message`, { cwd, ...sel }, { timeoutMs: 120_000 }),
+
+  // ── Read-only file tree (agent >= 0.25.0, §14.77) ─────────────────────────
+  // `root` is the session cwd and the containment boundary. One directory per
+  // call — the tree expands lazily.
+  listFsTree: (id: string, root: string, path: string, withGit: boolean) =>
+    send<FsListResponse>('GET', `/api/vps/${id}/fs/list?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}${withGit ? '&git=1' : ''}`, undefined, { timeoutMs: 20_000 }),
+  readFsFile: (id: string, root: string, path: string) =>
+    send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
+  // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
+  fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
+    `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,
 
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),

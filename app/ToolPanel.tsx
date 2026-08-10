@@ -6,6 +6,8 @@ import type { AgentKind, SessionAttachment } from '@/lib/types/api';
 import SplitDiffModal from './SplitDiffModal';
 import { fmtSize } from './sessionAttachments';
 import GitTab from './GitTab';
+import TreeTab from './TreeTab';
+import { IconTree } from './fileIcons';
 import {
   IconClipboard, IconDiff, IconDownload, IconEye, IconFileEarmark, IconGitBranch,
   IconPaperclip, IconPlusSquare, IconTools, IconTrash,
@@ -44,17 +46,21 @@ type Props = {
   onTabConsumed?: () => void;
 };
 
-export type Tab = 'diffs' | 'git' | 'files' | 'calls';
+export type Tab = 'diffs' | 'git' | 'tree' | 'files' | 'calls';
 
-// Four tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
-// no longer fit. Only the ACTIVE tab is labelled; the others are icon-only and
+// Five tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
+// do not fit. Only the ACTIVE tab is labelled; the others are icon-only and
 // their count shrinks to a corner dot. That is not just a width trick — the
 // panel is a drawer on touch (<=1100px) where `title` tooltips don't exist, so
 // icon-only-everywhere would be undiscoverable. The active label is the legend.
+// `files` is the project explorer and `attach` is the session's attachments —
+// the paperclip tab was labelled "files" before the tree existed, and keeping
+// that name for the smaller of the two would have made the new one unfindable.
 const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
   { id: 'diffs', label: 'diffs', Icon: IconDiff },
   { id: 'git', label: 'git', Icon: IconGitBranch },
-  { id: 'files', label: 'files', Icon: IconPaperclip },
+  { id: 'tree', label: 'files', Icon: IconTree },
+  { id: 'files', label: 'attach', Icon: IconPaperclip },
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];
 
@@ -83,7 +89,8 @@ export default function ToolPanel({
 
   const counts: Record<Tab, number> = {
     diffs: editArr.length,
-    git: 0,   // the git count lives on the chip in the header, not here
+    git: 0,    // the git count lives on the chip in the header, not here
+    tree: 0,   // a file count would be meaningless on a lazily-expanded tree
     files: attachments.length,
     calls: toolCalls.length,
   };
@@ -113,6 +120,7 @@ export default function ToolPanel({
       <div className="tp-body">
         {tab === 'diffs' && <DiffsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
+        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
         {tab === 'files' && (
           <FilesTab

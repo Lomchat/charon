@@ -141,6 +141,16 @@ class GitStatusTest(unittest.TestCase):
         finally:
             shutil.rmtree(empty, ignore_errors=True)
 
+    def test_remote_url_is_carried_for_the_web_link(self):
+        # `remote -v` in place of `remote`: same subprocess, and the URL is what
+        # the hub turns into the "open on GitHub" link next to the chip.
+        self.assertIsNone(G.git_status(self.dir)["remote_url"])
+        sh(self.dir, "remote", "add", "upstream", "https://example.com/u/r.git")
+        sh(self.dir, "remote", "add", "origin", "git@github.com:o/r.git")
+        r = G.git_status(self.dir)
+        self.assertEqual(set(r["remotes"]), {"origin", "upstream"})
+        self.assertEqual(r["remote_url"], "git@github.com:o/r.git")   # origin wins
+
     def test_recent_subjects_are_opt_in(self):
         # The status call is POLLED; paying an extra `git log` on every poll to
         # carry subjects only the commit-message generator wants is waste.

@@ -250,6 +250,11 @@ export type AgentMethodName =
   // semicolon CHARACTER anywhere in comments inside this union —
   // check-protocol-sync.mjs slices the type body at the first one.
   | 'list_dir'
+  // Read-only file tree (agent >= 0.25.0, fsnav.py) - fs_list is ONE directory
+  // per call (lazy expansion) and fs_read returns utf-8 or base64. Both are
+  // contained under the session cwd.
+  | 'fs_list'
+  | 'fs_read'
   // Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
   // to the repo containing a cwd, NOT to a session. No ssh fallback exists on
   // purpose - duplicating the porcelain-v2 parser hub-side is the real cost,

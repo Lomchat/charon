@@ -4156,3 +4156,93 @@
   .split-diff-modal-backdrop { padding: 2vh 2vw; }
   .claude-bar .bar-sub { flex-wrap: wrap; row-gap: 3px; }
 }
+
+/* ── Explorer tree (§14.77) ──────────────────────────────────────────────── */
+.tree-tab { display: flex; flex-direction: column; gap: 6px; }
+.tt-head {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--gold-bright);
+  padding-bottom: 5px; border-bottom: 1px solid var(--gold-deep);
+}
+.tt-root { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tt-rows { list-style: none; margin: 0; padding: 0; }
+.tt-row {
+  width: 100%; display: flex; align-items: center; gap: 5px;
+  background: transparent; border: 0; cursor: pointer; text-align: left;
+  padding: 2px 4px; border-radius: 2px;
+  font-family: var(--mono); font-size: 11px; line-height: 1.55;
+  color: var(--parchment);
+}
+.tt-row:hover { background: rgba(138,180,228,0.10); }
+/* Git-ignored: present but not part of the project's story. Dimmed exactly as
+   VS Code does it, rather than hidden — hiding them makes "why is this file
+   not in the tree?" a mystery. */
+.tt-row.ignored { opacity: 0.42; }
+.tt-caret { flex: none; width: 9px; text-align: center; font-size: 8px; color: var(--parchment-soft); }
+.tt-ico { flex: none; width: 13px; height: 13px; color: var(--parchment-soft); opacity: 0.85; }
+.tt-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-link { flex: none; font-size: 9px; color: var(--parchment-soft); }
+.tt-st { flex: none; font-weight: 700; font-size: 10px; width: 10px; text-align: center; }
+.tt-err { flex: none; color: #e0736b; font-weight: 700; }
+
+/* Git decoration. The colours are VS Code's so the mapping is already known:
+   amber = modified, green = added/untracked, red = deleted, blue = renamed.
+   On a FILE the row text and the letter take the colour; on a FOLDER only the
+   text does — the folder inherits the most significant status inside it, so a
+   collapsed tree still shows where the work is. */
+.tt-row.g-m, .tt-row.g-m .tt-ico { color: #e2c08d; }
+.tt-row.g-a, .tt-row.g-a .tt-ico { color: #81b88b; }
+.tt-row.g-d, .tt-row.g-d .tt-ico { color: #c74e39; }
+.tt-row.g-r, .tt-row.g-r .tt-ico { color: #8ab4e4; }
+.tt-row.g-q, .tt-row.g-q .tt-ico { color: #73c991; }
+.tt-row.g-u, .tt-row.g-u .tt-ico { color: #e4676b; }
+/* Strike through a DELETED FILE only. A folder is red because something inside
+   it was deleted — the folder itself is still there, and striking it out says
+   the opposite. */
+.tt-row.is-file.g-d .tt-name { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* ── File viewer ─────────────────────────────────────────────────────────── */
+.split-diff-modal.fvm .sdm-body { padding: 0; }
+.fvm-size { flex: none; font-family: var(--mono); font-size: 10px; color: var(--parchment-soft); }
+.fvm-dl {
+  flex: none; border: 1px solid var(--gold-deep); border-radius: 3px;
+  color: var(--parchment-soft); text-decoration: none;
+  font-family: var(--display); font-size: 9px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 3px 8px;
+}
+.fvm-dl:hover { color: var(--gold-bright); border-color: var(--gold-bright); }
+.fvm-body { display: flex; flex-direction: column; overflow: auto; background: rgba(0,0,0,0.25); }
+/* Text: two parallel single text nodes (gutter + code) in one scroller. A span
+   per line would be 20k DOM nodes on a big log; this is two. They stay aligned
+   because they share the same font metrics and line-height. */
+.fvm-text { display: flex; align-items: flex-start; min-height: 0; }
+.fvm-gutter, .fvm-code {
+  margin: 0; padding: 10px 0;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  white-space: pre;
+}
+.fvm-gutter {
+  flex: none; padding-left: 12px; padding-right: 10px; text-align: right;
+  color: var(--parchment-soft); opacity: 0.4; user-select: none;
+  border-right: 1px solid rgba(216,168,90,0.15);
+}
+.fvm-code { flex: 1 1 auto; padding-left: 12px; padding-right: 16px; color: var(--parchment); }
+.fvm-media {
+  flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+  padding: 16px; min-height: 0;
+}
+.fvm-media img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.fvm-media video { max-width: 100%; max-height: 100%; }
+.fvm-media audio { width: min(560px, 90%); }
+.fvm-media iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.fvm-body > .dvm-note { padding: 12px 16px; }
+
+.gt-remote { display: inline-flex; align-items: center; padding: 2px 6px; }
+.gt-ext, .gr-ico { width: 11px; height: 11px; }
+.claude-bar .git-chip-wrap { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+.claude-bar .git-remote {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--gold-deep); border-radius: 3px;
+  color: var(--parchment-soft); padding: 2px 4px; text-decoration: none;
+}
+.claude-bar .git-remote:hover { color: var(--gold-bright); border-color: var(--gold-bright); }

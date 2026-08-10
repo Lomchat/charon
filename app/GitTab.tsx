@@ -5,6 +5,7 @@ import type { GitFileEntry } from '@/lib/types/api';
 import DiffViewerModal from './DiffViewerModal';
 import { fileStatusLabel, gitReasonHint, refreshGit, useGitStatus } from './gitStore';
 import { IconSparkle } from './icons';
+import { IconExternal } from './fileIcons';
 
 type Props = {
   vpsId: string | null;
@@ -159,6 +160,12 @@ export default function GitTab({ vpsId, cwd, busy }: Props) {
         {!!status.ahead && <span className="gt-ab up" title={`${status.ahead} commit(s) to push`}>↑{status.ahead}</span>}
         {!!status.behind && <span className="gt-ab down" title={`${status.behind} commit(s) to pull`}>↓{status.behind}</span>}
         <span className="gt-spacer" />
+        {status.remoteWebUrl && (
+          <a className="gt-mini gt-remote" href={status.remoteWebUrl} target="_blank" rel="noopener noreferrer"
+             title={`open on ${status.remoteWebUrl.replace(/^https:\/\//, '').split('/')[0]}`}>
+            <IconExternal className="gt-ext" />
+          </a>
+        )}
         {(!!status.ahead || !!status.behind) && (
           <>
             {!!status.behind && (

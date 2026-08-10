@@ -381,8 +381,25 @@ def git_status(cwd: str, include_recent: bool = False) -> dict[str, Any]:
             total_del += d or 0
 
     entries.sort(key=lambda e: (e["untracked"], e["path"]))
-    code_r, out_r, _ = _run(root, ["remote"])
-    remotes = [r for r in out_r.split("\n") if r.strip()] if code_r == 0 else []
+    # `remote -v` rather than `remote`: same one subprocess, but it also carries
+    # the URLs, which is what the hub turns into the "open on GitHub" link.
+    remotes: list[str] = []
+    origin_url: str | None = None
+    first_url: str | None = None
+    code_r, out_r, _ = _run(root, ["remote", "-v"])
+    if code_r == 0:
+        for line in out_r.split("\n"):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            name, url = parts[0], parts[1]
+            if name not in remotes:
+                remotes.append(name)
+            if name == "origin" and origin_url is None:
+                origin_url = url
+            if first_url is None:
+                first_url = url
+    remote_url = origin_url or first_url
 
     recent: list[str] = []
     if include_recent and has_head:
@@ -402,6 +419,7 @@ def git_status(cwd: str, include_recent: bool = False) -> dict[str, Any]:
         "ahead": ahead,
         "behind": behind,
         "remotes": remotes,
+        "remote_url": remote_url,
         "files": entries[:MAX_FILES],
         "file_count": len(entries),
         "truncated": len(entries) > MAX_FILES,

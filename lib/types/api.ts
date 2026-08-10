@@ -108,6 +108,43 @@ export type VpsFsListResponse = {
   truncated?: boolean;
 };
 
+// ── Read-only file tree (agent >= 0.25.0, agent/charon_agent/fsnav.py) ─────
+// One directory per call: the tree expands lazily, so a node_modules costs
+// nothing until someone opens it.
+export type FsEntry = {
+  name: string;
+  dir: boolean;
+  size: number;
+  mtime: number;
+  symlink: boolean;
+  /** Only present when the caller asked for git decoration (`withGit`). */
+  ignored?: boolean;
+};
+
+export type FsListResponse = {
+  ok: boolean;
+  error?: string;
+  root?: string;
+  /** Path of the listed directory, relative to `root` ('.' at the top). */
+  path?: string;
+  entries: FsEntry[];
+  count?: number;
+  truncated?: boolean;
+};
+
+export type FsReadResponse = {
+  ok: boolean;
+  error?: string;
+  path?: string;
+  size?: number;
+  binary?: boolean;
+  encoding?: 'utf8' | 'base64' | null;
+  content?: string | null;
+  truncated?: boolean;
+  /** Bigger than the viewer will ship — content is null and says so. */
+  tooLarge?: boolean;
+};
+
 // ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────
 // Shapes mirror the RPC results verbatim: the hub routes are a thin
 // auth + cache layer, they never reshape the payload. cf. CLAUDE.md §14.76.
@@ -162,6 +199,10 @@ export type GitStatusResponse = {
   ahead?: number;
   behind?: number;
   remotes?: string[];
+  /** Raw origin URL as git has it (ssh or https). */
+  remoteUrl?: string | null;
+  /** Same remote rebuilt as a browsable https URL, or null when it isn't one. */
+  remoteWebUrl?: string | null;
   // Last few commit subjects — only populated when the caller asked for them
   // (the commit-message generator, never the poll). They are what makes a
   // generated message match the repo's own conventions.

@@ -77,6 +77,13 @@ METHODS = {
     # Filesystem navigation for the hub's path autocomplete - subdirs of a
     # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.
     "list_dir",
+    # Read-only file tree for the ToolPanel explorer (agent >= 0.25.0,
+    # fsnav.py). fs_list is one directory at a time - lazy expansion, so a
+    # node_modules never costs anything until it is opened. fs_read returns
+    # utf-8 for text and base64 for binaries. Both are contained under a
+    # caller-supplied root, which is the session cwd.
+    "fs_list",
+    "fs_read",
     # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
     # to the repo containing a path, not to a session - the hub polls
     # git_status while a session is on screen, so it rides the persistent pipe
