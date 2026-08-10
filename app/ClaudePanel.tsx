@@ -12,7 +12,7 @@ import type { EditSnapshot } from './sessionTypes';
 import FileEditor from './FileEditor';
 import {
   useTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
-  pinTab as pinWorkspaceTab, closeTabGuarded,
+  pinTab as pinWorkspaceTab, closeTabGuarded, reorderTabs as reorderWorkspaceTabs,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import InstallSessionView from './InstallSessionView';
@@ -891,16 +891,49 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     void openWorkspaceTab({ vpsId, path, kind, ref, pin });
   }, []);
 
-  // Row 1: browse to a VPS. Purely navigational — it changes what row 2 and
-  // row 3 show without opening or focusing anything, so glancing at another
-  // machine can't steal focus from what you were doing.
+  /**
+   * Where you were, per group. Browser-side (not the DB): "the tab I was last
+   * looking at in this folder" is a per-screen notion, and syncing it would
+   * make two devices fight over each other's place. Survives a reload.
+   */
+  const lastTabByGroup = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('hub.tabs.lastByGroup.v1');
+      if (raw) lastTabByGroup.current = new Map(JSON.parse(raw) as [string, string][]);
+    } catch { /* corrupt or unavailable — start empty */ }
+  }, []);
+  useEffect(() => {
+    if (!activeTab) return;
+    lastTabByGroup.current.set(`${activeTab.vpsId}\u0000${activeTab.path}`, activeTab.id);
+    lastTabByGroup.current.set(activeTab.vpsId, activeTab.id);
+    try {
+      localStorage.setItem('hub.tabs.lastByGroup.v1',
+        JSON.stringify([...lastTabByGroup.current.entries()].slice(-200)));
+    } catch { /* quota / private mode — the memory just doesn't persist */ }
+  }, [activeTab]);
+
+  /** Focus the tab you were last on in this group, else its first tab. */
+  const focusGroup = useCallback((key: string, candidates: ResolvedTab[]) => {
+    if (candidates.length === 0) return;
+    const remembered = lastTabByGroup.current.get(key);
+    const target = candidates.find((t) => t.id === remembered) ?? candidates[0];
+    setBrowseVpsId(null); setBrowsePath(null);
+    void activateWorkspaceTab(target.id);
+  }, []);
+
+  // Row 1 / row 2: clicking a group SELECTS something in it. Browsing without
+  // selecting left the main pane showing a tab from a folder you were no
+  // longer looking at, which reads as the click having done nothing.
   function onVpsRowClick(vpsId: string) {
     setBrowseVpsId(vpsId);
     setBrowsePath(null);
+    focusGroup(vpsId, resolvedTabs.filter((t) => t.vpsId === vpsId));
   }
   function onPathRowClick(vpsId: string, path: string) {
     setBrowseVpsId(vpsId);
     setBrowsePath(path);
+    focusGroup(`${vpsId}\u0000${path}`, resolvedTabs.filter((t) => t.vpsId === vpsId && t.path === path));
   }
 
   /** Row 3: single click focuses, double click pins. */
@@ -1567,6 +1600,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onSelect={selectClaude}
         onSelectShell={selectShell}
         onSelectInstall={selectInstall}
+        onReorderSessions={(vpsId, ids) => {
+          // Optimistic: the row must land where it was dropped, not snap back
+          // for the length of a request. The 15s list poll is the reconcile.
+          setSessions((prev) => prev.map((s) => (
+            s.vpsId === vpsId && ids.includes(s.id) ? { ...s, position: ids.indexOf(s.id) } : s)));
+          void api.reorderSessions(vpsId, ids).catch(() => refreshSessions());
+        }}
         onNew={(opts) => setWizard({ kind: 'agent', ...opts })}
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
@@ -1615,6 +1655,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
         newSessionDisabledReason={newSessionDisabledReasonFor(activeVpsId)}
+        onReorderVps={(vpsIds) => void reorderWorkspaceTabs({ scope: 'vps', vpsIds })}
+        onReorderPaths={(vpsId, paths) => void reorderWorkspaceTabs({ scope: 'groups', vpsId, paths })}
+        onReorderTabs={(vpsId, path, ids) => void reorderWorkspaceTabs({ scope: 'tabs', vpsId, path, ids })}
       />
 
       {/* Main panel routing: 3 mutually exclusive views.

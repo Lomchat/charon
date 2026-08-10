@@ -1,5 +1,6 @@
 'use client';
 import { useMemo } from 'react';
+import { useReorder } from './useReorder';
 import type { Vps, VpsFolder } from '@/lib/db/schema';
 import type { SessionListItem, ShellInfo, InstallInfo, AgentKind, TabDTO } from '@/lib/types/api';
 import type { PermissionRequest, PendingQuestion, PendingExitPlan } from './sessionTypes';
@@ -123,7 +124,7 @@ function rollUp(list: { state: TabState }[]): TabState {
   return best;
 }
 
-export type PathGroup = { vpsId: string; path: string; tabs: ResolvedTab[]; state: TabState };
+export type PathGroup = { vpsId: string; path: string; tabs: ResolvedTab[]; state: TabState; pos: number };
 
 type Props = {
   resolved: ResolvedTab[];
@@ -141,18 +142,23 @@ type Props = {
   onNewSession: (vpsId: string, path: string) => void;
   onNewShell: (vpsId: string, path: string) => void;
   newSessionDisabledReason: string | null;
+  onReorderVps: (vpsIds: string[]) => void;
+  onReorderPaths: (vpsId: string, paths: string[]) => void;
+  onReorderTabs: (vpsId: string, path: string, ids: string[]) => void;
 };
 
 export default function TabBar({
   resolved, vpsList, vpsFolders, activeVpsId, activePath, activeTabId,
   onVpsClick, onPathClick, onTabClick, onTabDoubleClick, onTabClose, onTabContext,
   onNewSession, onNewShell, newSessionDisabledReason,
+  onReorderVps, onReorderPaths, onReorderTabs,
 }: Props) {
   const { vpsRows, pathRows, tabRows } = useMemo(() => {
-    // Order follows the sidebar: folder.position → vps.position. A tab strip
-    // that sorts differently from the tree beside it is a small, constant tax.
+    // The strip has its OWN order now (`vpsPos` / `groupPos`, dragged by the
+    // user). The sidebar's folder/vps positions are only the tiebreak for
+    // machines that have never been dragged — every row starts at 0.
     const folderPos = new Map(vpsFolders.map((f) => [f.id, f.position]));
-    const vpsOrder = new Map(
+    const sidebarOrder = new Map(
       [...vpsList].sort((a, b) =>
         (folderPos.get(a.folderId ?? 'default') ?? 99) - (folderPos.get(b.folderId ?? 'default') ?? 99)
         || (a.position ?? 0) - (b.position ?? 0)).map((v, i) => [v.id, i]),
@@ -168,9 +174,11 @@ export default function TabBar({
       .map(([vpsId, list]) => ({
         vps: vpsList.find((v) => v.id === vpsId) ?? null,
         vpsId, count: list.length, state: rollUp(list),
+        pos: Math.min(...list.map((t) => t.vpsPos)),
       }))
       .filter((r) => r.vps)
-      .sort((a, b) => (vpsOrder.get(a.vpsId) ?? 99) - (vpsOrder.get(b.vpsId) ?? 99));
+      .sort((a, b) => a.pos - b.pos
+        || (sidebarOrder.get(a.vpsId) ?? 99) - (sidebarOrder.get(b.vpsId) ?? 99));
 
     const here = byVps.get(activeVpsId ?? '') ?? [];
     const byPath = new Map<string, ResolvedTab[]>();
@@ -180,46 +188,60 @@ export default function TabBar({
       byPath.set(t.path, arr);
     }
     const pathRows: PathGroup[] = [...byPath.entries()]
-      .map(([path, list]) => ({ vpsId: activeVpsId!, path, tabs: list, state: rollUp(list) }))
-      .sort((a, b) => a.path.localeCompare(b.path));
+      .map(([path, list]) => ({
+        vpsId: activeVpsId!, path, tabs: list, state: rollUp(list),
+        pos: Math.min(...list.map((t) => t.groupPos)),
+      }))
+      .sort((a, b) => a.pos - b.pos || a.path.localeCompare(b.path));
 
     const tabRows = (byPath.get(activePath ?? '') ?? [])
       .slice().sort((a, b) => a.position - b.position);
     return { vpsRows, pathRows, tabRows };
   }, [resolved, vpsList, vpsFolders, activeVpsId, activePath]);
 
+  // One hook per row. Each commits the FULL new order for that row.
+  const vpsDnd = useReorder(vpsRows.map((r) => r.vpsId), onReorderVps);
+  const pathDnd = useReorder(pathRows.map((g) => g.path),
+    (paths) => activeVpsId && onReorderPaths(activeVpsId, paths));
+  const tabDnd = useReorder(tabRows.map((t) => t.id),
+    (ids) => activeVpsId && onReorderTabs(activeVpsId, activePath ?? '', ids));
+
   if (vpsRows.length === 0) return <div className="claude-tabbar" />;
 
   return (
     <div className="claude-tabbar">
+      {/* The three rows share one shape (`tb-item`) and differ only in size and
+          emphasis. They are the same kind of control at three scales, and
+          giving row 2 its own look made it read as a filter bar rather than as
+          part of the hierarchy. */}
       <div className="tab-row tab-row-vps">
         {vpsRows.map((r) => (
           <button
             key={r.vpsId}
-            className={`vps-tab${r.vpsId === activeVpsId ? ' selected' : ''} state-${r.state}`}
+            className={`tb-item tb-vps${r.vpsId === activeVpsId ? ' selected' : ''} state-${r.state}`}
             onClick={() => onVpsClick(r.vpsId)}
-            title={r.vps!.name}
+            title={`${r.vps!.name}\n${r.count} open · drag to reorder`}
+            {...vpsDnd.itemProps(r.vpsId)}
           >
-            <span className="vps-tab-glyph"><IconTools /></span>
-            <span className="vps-tab-name">{r.vps!.name}</span>
-            <span className="vps-tab-count">{r.count}</span>
+            <span className="tb-dot" />
+            <span className="tb-name">{r.vps!.name}</span>
+            <span className="tb-count">{r.count}</span>
           </button>
         ))}
       </div>
 
-      {/* Row 2 — the folders open on this machine. Shown even when there is
-          only one: its absence would make the row jump as soon as a second
-          project opens, and the label is the fastest "where am I" cue. */}
       <div className="tab-row tab-row-paths">
         {pathRows.map((g) => (
           <button
             key={g.path}
-            className={`path-tab${g.path === activePath ? ' selected' : ''} state-${g.state}`}
+            className={`tb-item tb-path${g.path === activePath ? ' selected' : ''} state-${g.state}`}
             onClick={() => onPathClick(g.vpsId, g.path)}
-            title={g.path || 'no folder'}
+            title={`${g.path || 'no folder'}\n${g.tabs.length} open · drag to reorder`}
+            {...pathDnd.itemProps(g.path)}
           >
-            <span className="path-tab-name">{g.path ? (g.path.split('/').filter(Boolean).pop() || g.path) : '—'}</span>
-            <span className="path-tab-count">{g.tabs.length}</span>
+            <span className="tb-dot" />
+            <span className="tb-name">{g.path ? (g.path.split('/').filter(Boolean).pop() || g.path) : '—'}</span>
+            <span className="tb-count">{g.tabs.length}</span>
           </button>
         ))}
       </div>
@@ -230,28 +252,29 @@ export default function TabBar({
         ) : tabRows.map((t) => (
           <div
             key={t.id}
-            className={`tab${t.id === activeTabId ? ' selected' : ''}${t.pinned ? '' : ' temporary'}`
+            className={`tb-item tb-tab${t.id === activeTabId ? ' selected' : ''}${t.pinned ? '' : ' temporary'}`
               + ` state-${t.state}${t.orphan ? ' orphan' : ''}`}
             onContextMenu={(e) => onTabContext(e, t)}
+            {...tabDnd.itemProps(t.id)}
           >
             <button
-              className="tab-main"
+              className="tb-main"
               onClick={() => onTabClick(t)}
               onDoubleClick={() => onTabDoubleClick(t)}
               title={`${t.title}${t.pinned ? '' : '\n(preview — double-click to keep it open)'}`}
             >
-              <span className="tab-state-dot" />
-              <span className="tab-glyph">
+              <span className="tb-dot" />
+              <span className="tb-glyph">
                 {t.kind === 'session' ? <AgentLogo kind={t.agentKind ?? 'claude'} size={12} />
                   : t.kind === 'shell' ? <IconTerminal />
                   : t.kind === 'install' ? <IconTools />
                   : <IconForKind kind={fileKind(t.label, false)} />}
               </span>
-              <span className="tab-label">{t.label}</span>
-              {t.dirty && <span className="tab-dirty" title="unsaved changes">●</span>}
+              <span className="tb-name">{t.label}</span>
+              {t.dirty && <span className="tb-dirty" title="unsaved changes">●</span>}
             </button>
             <button
-              className="tab-close"
+              className="tb-close"
               onClick={(e) => { e.stopPropagation(); onTabClose(t); }}
               title="close this tab (the session keeps running)"
             >✕</button>

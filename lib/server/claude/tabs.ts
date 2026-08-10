@@ -37,13 +37,67 @@ function toDTO(r: TabRow): TabDTO {
   return {
     id: r.id, vpsId: r.vpsId, path: r.path, kind: r.kind as TabKind, ref: r.ref,
     pinned: r.pinned === 1, position: r.position, active: r.active === 1,
+    vpsPos: r.vpsPos, groupPos: r.groupPos,
   };
 }
 
 export function listTabs(): TabDTO[] {
+  // Ordered the way the three rows read: machine, then folder, then tab.
   return db.select().from(tabs)
-    .orderBy(tabs.vpsId, tabs.path, tabs.position, tabs.createdAt)
+    .orderBy(tabs.vpsPos, tabs.vpsId, tabs.groupPos, tabs.path, tabs.position, tabs.createdAt)
     .all().map(toDTO);
+}
+
+/**
+ * Reorder within one row. Ids not in `orderedIds` keep their relative order
+ * after the listed ones, so a stale client (one that dragged while another
+ * device opened a tab) can never drop a row it didn't know about.
+ */
+export function reorderTabs(vpsId: string, path: string, orderedIds: string[]): void {
+  db.transaction((tx) => {
+    const rows = tx.select().from(tabs)
+      .where(and(eq(tabs.vpsId, vpsId), eq(tabs.path, path)))
+      .orderBy(tabs.position, tabs.createdAt).all();
+    const rank = new Map(orderedIds.map((id, i) => [id, i]));
+    const sorted = [...rows].sort((a, b) =>
+      (rank.get(a.id) ?? orderedIds.length + rows.indexOf(a))
+      - (rank.get(b.id) ?? orderedIds.length + rows.indexOf(b)));
+    sorted.forEach((r, i) => {
+      if (r.position !== i) tx.update(tabs).set({ position: i }).where(eq(tabs.id, r.id)).run();
+    });
+  });
+}
+
+/** Reorder the folder row of one VPS. `groupPos` is shared by every row of a group. */
+export function reorderGroups(vpsId: string, orderedPaths: string[]): void {
+  db.transaction((tx) => {
+    const rows = tx.select().from(tabs).where(eq(tabs.vpsId, vpsId)).all();
+    const present = [...new Set(rows.map((r) => r.path))];
+    const rank = new Map(orderedPaths.map((p, i) => [p, i]));
+    const sorted = present.sort((a, b) =>
+      (rank.get(a) ?? orderedPaths.length) - (rank.get(b) ?? orderedPaths.length)
+      || a.localeCompare(b));
+    sorted.forEach((path, i) => {
+      tx.update(tabs).set({ groupPos: i }).where(and(eq(tabs.vpsId, vpsId), eq(tabs.path, path))).run();
+    });
+  });
+}
+
+/**
+ * Reorder the machine row. This is the TAB BAR's own order, not `vps.position`
+ * — dragging a tab must not reshuffle the sidebar.
+ */
+export function reorderVps(orderedVpsIds: string[]): void {
+  db.transaction((tx) => {
+    const rows = tx.select().from(tabs).all();
+    const present = [...new Set(rows.map((r) => r.vpsId))];
+    const rank = new Map(orderedVpsIds.map((v, i) => [v, i]));
+    const sorted = present.sort((a, b) =>
+      (rank.get(a) ?? orderedVpsIds.length) - (rank.get(b) ?? orderedVpsIds.length));
+    sorted.forEach((vpsId, i) => {
+      tx.update(tabs).set({ vpsPos: i }).where(eq(tabs.vpsId, vpsId)).run();
+    });
+  });
 }
 
 export function getActiveTab(): TabDTO | null {
@@ -109,10 +163,22 @@ export function openTab(input: OpenTabInput): TabDTO {
     }
     const [{ max }] = tx.select({ max: sql<number>`coalesce(max(${tabs.position}), -1)` })
       .from(tabs).where(and(eq(tabs.vpsId, vpsId), eq(tabs.path, path))).all();
+    // Inherit the group's and the machine's rank, or a new tab in an existing
+    // group would jump that whole group to the front of the row.
+    const [{ gp }] = tx.select({ gp: sql<number | null>`min(${tabs.groupPos})` })
+      .from(tabs).where(and(eq(tabs.vpsId, vpsId), eq(tabs.path, path))).all();
+    const [{ vp }] = tx.select({ vp: sql<number | null>`min(${tabs.vpsPos})` })
+      .from(tabs).where(eq(tabs.vpsId, vpsId)).all();
+    const [{ maxG }] = tx.select({ maxG: sql<number>`coalesce(max(${tabs.groupPos}), -1)` })
+      .from(tabs).where(eq(tabs.vpsId, vpsId)).all();
+    const [{ maxV }] = tx.select({ maxV: sql<number>`coalesce(max(${tabs.vpsPos}), -1)` })
+      .from(tabs).all();
     const newId = randomUUID().replace(/-/g, '').slice(0, 16);
     tx.insert(tabs).values({
       id: newId, vpsId, path, kind, ref,
       pinned: pin ? 1 : 0, position: (max ?? -1) + 1, active: 0,
+      groupPos: gp ?? (maxG ?? -1) + 1,
+      vpsPos: vp ?? (maxV ?? -1) + 1,
       createdAt: nowS(), updatedAt: nowS(),
     }).run();
     return newId;

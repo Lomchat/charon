@@ -19,7 +19,7 @@
  */
 import { useCallback, useSyncExternalStore } from 'react';
 import { api } from '@/lib/api';
-import type { TabDTO, TabKind } from '@/lib/types/api';
+import type { ReorderTabsBody, TabDTO, TabKind } from '@/lib/types/api';
 
 type State = {
   tabs: TabDTO[];
@@ -92,6 +92,11 @@ export async function openTab(input: {
       id: `pending:${input.kind}:${input.ref}`, vpsId: input.vpsId, path: input.path,
       kind: input.kind, ref: input.ref, pinned: !!input.pin,
       position: Number.MAX_SAFE_INTEGER, active: true,
+      // Inherit the group's rank so the provisional row doesn't jump its whole
+      // folder to the front of row 2 for the length of one request.
+      vpsPos: state.tabs.find((t) => t.vpsId === input.vpsId)?.vpsPos ?? Number.MAX_SAFE_INTEGER,
+      groupPos: state.tabs.find((t) => t.vpsId === input.vpsId && t.path === input.path)?.groupPos
+        ?? Number.MAX_SAFE_INTEGER,
     };
     const kept = state.tabs.filter((t) => !(
       !input.pin && t.vpsId === input.vpsId && t.path === input.path && !t.pinned));
@@ -120,6 +125,27 @@ export async function pinTab(id: string): Promise<void> {
 export async function closeTab(id: string): Promise<void> {
   setTabs(state.tabs.filter((t) => t.id !== id));
   try { setTabs((await api.closeTab(id)).tabs); } catch { void refreshTabs(); }
+}
+
+/**
+ * Reorder one row. Applied locally first — a drag that snaps back while the
+ * server answers is the single worst thing a sortable list can do.
+ */
+export async function reorderTabs(body: ReorderTabsBody): Promise<void> {
+  const rank = (arr: string[], v: string) => {
+    const i = arr.indexOf(v);
+    return i === -1 ? arr.length : i;
+  };
+  if (body.scope === 'tabs') {
+    setTabs(state.tabs.map((t) => (t.vpsId === body.vpsId && t.path === body.path
+      ? { ...t, position: rank(body.ids, t.id) } : t)));
+  } else if (body.scope === 'groups') {
+    setTabs(state.tabs.map((t) => (t.vpsId === body.vpsId
+      ? { ...t, groupPos: rank(body.paths, t.path) } : t)));
+  } else {
+    setTabs(state.tabs.map((t) => ({ ...t, vpsPos: rank(body.vpsIds, t.vpsId) })));
+  }
+  try { setTabs((await api.reorderTabs(body)).tabs); } catch { void refreshTabs(); }
 }
 
 export async function closeTabsWhere(q: { vpsId?: string; path?: string; exceptId?: string }): Promise<void> {

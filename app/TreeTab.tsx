@@ -8,6 +8,8 @@ import { IconForKind, fileKind } from './fileIcons';
 
 type Props = { vpsId: string | null; cwd: string | null };
 
+type Menu = { x: number; y: number; row: Row | null };
+
 type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsEntry };
 
 /**
@@ -40,6 +42,9 @@ export default function TreeTab({ vpsId, cwd }: Props) {
     void openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: rel, pin });
   }, [vpsId, cwd]);
   const inflight = useRef<Set<string>>(new Set());
+  const [menu, setMenu] = useState<Menu | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [opError, setOpError] = useState<string | null>(null);
 
   const isRepo = !!status?.ok && !!status.isRepo;
   const decorations = useMemo(() => buildGitDecorations(status, cwd), [status, cwd]);
@@ -123,6 +128,76 @@ export default function TreeTab({ vpsId, cwd }: Props) {
     return out;
   }, [children, expanded]);
 
+  /** Directory a menu action should act in: the row's folder, or the row's
+   *  own path when it IS a folder. */
+  const dirOf = (row: Row | null): string => {
+    if (!row) return '';
+    if (row.dir) return row.path;
+    const cut = row.path.lastIndexOf('/');
+    return cut === -1 ? '' : row.path.slice(0, cut);
+  };
+  const reload = (dir: string) => {
+    void load(dir, true);
+    if (dir) void load('', true);
+  };
+
+  async function runOp(fn: () => Promise<{ ok: boolean; error?: string; reason?: string }>, dir: string) {
+    if (!vpsId || !cwd) return;
+    setBusy(true);
+    setOpError(null);
+    try {
+      const r = await fn();
+      if (!r.ok) setOpError(r.error ?? 'failed');
+      else reload(dir);
+    } catch (e: unknown) {
+      setOpError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setMenu(null);
+    }
+  }
+
+  function newFile(row: Row | null) {
+    if (!vpsId || !cwd) return;
+    const dir = dirOf(row);
+    const name = window.prompt(`New file in ${dir || '.'}`, '');
+    if (!name) { setMenu(null); return; }
+    const rel = dir ? `${dir}/${name}` : name;
+    // expectedSha256:'' means "this must not exist yet" — creating a file must
+    // never silently truncate one an agent just wrote.
+    void runOp(() => api.writeFsFile(vpsId, { root: cwd, path: rel, content: '', expectedSha256: '' })
+      .then((r) => (r.reason === 'stale' ? { ok: false, error: 'a file with that name already exists' } : r)),
+      dir);
+  }
+  function newFolder(row: Row | null) {
+    if (!vpsId || !cwd) return;
+    const dir = dirOf(row);
+    const name = window.prompt(`New folder in ${dir || '.'}`, '');
+    if (!name) { setMenu(null); return; }
+    void runOp(() => api.fsOp(vpsId, { root: cwd, op: 'mkdir', path: dir ? `${dir}/${name}` : name }), dir);
+  }
+  function rename(row: Row) {
+    if (!vpsId || !cwd) return;
+    const dir = dirOf(row.dir ? { ...row, dir: false } : row);
+    const next = window.prompt(`Rename "${row.name}" to`, row.name);
+    if (!next || next === row.name) { setMenu(null); return; }
+    void runOp(() => api.fsOp(vpsId, { root: cwd, op: 'rename', path: row.path, to: dir ? `${dir}/${next}` : next }), dir);
+  }
+  function remove(row: Row) {
+    if (!vpsId || !cwd) return;
+    const dir = dirOf(row.dir ? { ...row, dir: false } : row);
+    const what = row.dir ? `the folder "${row.name}" AND EVERYTHING IN IT` : `"${row.name}"`;
+    if (!window.confirm(`Delete ${what} on the VPS?\n\nThis is not undoable from here, and an agent may be working in this tree.`)) {
+      setMenu(null); return;
+    }
+    void runOp(() => api.fsOp(vpsId, { root: cwd, op: 'delete', path: row.path, recursive: row.dir }), dir);
+  }
+  async function copyPath(row: Row, absolute: boolean) {
+    const text = absolute ? `${cwd}/${row.path}` : row.path;
+    try { await navigator.clipboard.writeText(text); } catch { window.prompt('Copy:', text); }
+    setMenu(null);
+  }
+
   if (!vpsId || !cwd) return <div className="tp-empty">no folder for this session</div>;
 
   const rootErr = errors.get('');
@@ -138,13 +213,34 @@ export default function TreeTab({ vpsId, cwd }: Props) {
   if (rows.length === 0 && loading.has('')) return <div className="tp-empty">reading {cwd}…</div>;
 
   return (
-    <div className="tree-tab">
+    <div className="tree-tab"
+         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, row: null }); }}>
       <div className="tt-head">
         <span className="tt-root" title={cwd}>{cwd.split('/').filter(Boolean).pop() ?? cwd}</span>
         <span className="gt-spacer" />
         <button className="gt-mini" onClick={() => { setChildren(new Map()); void load('', true); }}
           title="reload the tree">↻</button>
       </div>
+
+      {opError && <div className="gt-note err">{opError}</div>}
+
+      {menu && (
+        <>
+          <div className="tt-menu-scrim" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
+          <div className="tt-menu" style={{ left: Math.min(menu.x, window.innerWidth - 190), top: Math.min(menu.y, window.innerHeight - 230) }}>
+            <button disabled={busy} onClick={() => newFile(menu.row)}>new file…</button>
+            <button disabled={busy} onClick={() => newFolder(menu.row)}>new folder…</button>
+            {menu.row && <>
+              <div className="tt-menu-sep" />
+              <button onClick={() => copyPath(menu.row!, false)}>copy relative path</button>
+              <button onClick={() => copyPath(menu.row!, true)}>copy full path</button>
+              <div className="tt-menu-sep" />
+              <button disabled={busy} onClick={() => rename(menu.row!)}>rename…</button>
+              <button className="danger" disabled={busy} onClick={() => remove(menu.row!)}>delete</button>
+            </>}
+          </div>
+        </>
+      )}
 
       {rows.length === 0 ? (
         <div className="tp-empty">this folder is empty</div>
@@ -164,6 +260,12 @@ export default function TreeTab({ vpsId, cwd }: Props) {
                   style={{ paddingLeft: 4 + r.depth * 11 }}
                   onClick={() => (r.dir ? toggle(r.path) : openFile(r.path, false))}
                   onDoubleClick={() => { if (!r.dir) openFile(r.path, true); }}
+                  onContextMenu={(e) => {
+                    // stopPropagation, or the container's handler below runs
+                    // straight after and replaces this with a row-less menu.
+                    e.preventDefault(); e.stopPropagation();
+                    setMenu({ x: e.clientX, y: e.clientY, row: r });
+                  }}
                   title={err ? `${r.path} — ${err}` : `${r.path}${st ? ` · ${st.label}` : ''}${r.entry.ignored ? ' · git-ignored' : ''}`}
                 >
                   <span className="tt-caret">{r.dir ? (busy ? '·' : isOpen ? '▾' : '▸') : ''}</span>

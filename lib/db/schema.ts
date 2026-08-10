@@ -127,6 +127,10 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   id: text('id').primaryKey(),
   claudeSessionId: text('claude_session_id'),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
+  // Sidebar order INSIDE a VPS. 0 for every pre-existing row, which sorts
+  // them by createdAt exactly as before — the list only changes once
+  // something is actually dragged.
+  position: integer('position').notNull().default(0),
   cwd: text('cwd').notNull(),
   name: text('name'),
   // Visual marker: color (hex or name) applied to the left border of
@@ -406,7 +410,19 @@ export const tabs = sqliteTable('tabs', {
   // 0 = temporary (italic, one per group, replaced by the next open),
   // 1 = pinned. cf. §14.78.
   pinned: integer('pinned').notNull().default(0),
+  /** Order within the (vpsId, path) group — row 3. */
   position: integer('position').notNull().default(0),
+  /** Order of this VPS in row 1, and of this group in row 2.
+   *
+   *  Denormalised on purpose: every row of a VPS carries the same `vpsPos`,
+   *  every row of a group the same `groupPos`. A second table would need a
+   *  join on every read of a strip that is re-rendered constantly, and both
+   *  values are only ever written by one statement scoped to exactly the rows
+   *  that must agree (`WHERE vps_id = ?` / `… AND path = ?`), so they cannot
+   *  drift. Row 1's order is the TAB BAR's own — dragging a tab must not
+   *  reshuffle the sidebar, which keeps `vps.position`. */
+  vpsPos: integer('vps_pos').notNull().default(0),
+  groupPos: integer('group_pos').notNull().default(0),
   active: integer('active').notNull().default(0),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),

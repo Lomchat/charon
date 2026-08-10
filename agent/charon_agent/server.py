@@ -20,6 +20,9 @@ from .fsnav import (
     fs_list as _fs_list,
     fs_read as _fs_read,
     fs_write as _fs_write,
+    fs_mkdir as _fs_mkdir,
+    fs_rename as _fs_rename,
+    fs_delete as _fs_delete,
 )
 from .git import (
     git_commit as _git_commit,
@@ -371,7 +374,7 @@ class Server:
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
         "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_discard",
-        "fs_list", "fs_read", "fs_write",
+        "fs_list", "fs_read", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -442,6 +445,20 @@ class Server:
                 str(params.get("content") or ""),
                 None if exp is None else str(exp),
             )
+
+        if method == "fs_mkdir":
+            return await asyncio.to_thread(
+                _fs_mkdir, str(params.get("root") or ""), str(params.get("path") or ""))
+
+        if method == "fs_rename":
+            return await asyncio.to_thread(
+                _fs_rename, str(params.get("root") or ""), str(params.get("path") or ""),
+                str(params.get("to") or ""))
+
+        if method == "fs_delete":
+            return await asyncio.to_thread(
+                _fs_delete, str(params.get("root") or ""), str(params.get("path") or ""),
+                bool(params.get("recursive")))
 
         if method.startswith("git_"):
             # Source-control panel backend (agent >= 0.24.0, git.py). Every

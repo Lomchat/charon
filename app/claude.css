@@ -770,69 +770,6 @@
 
 /* Row 1: VPS tabs — slightly more compact, all in caps to look like a
    "tab strip" header rather than a body tab. */
-.tab-row-vps {
-  background: rgba(0,0,0,0.20);
-  padding-top: 5px;
-  padding-bottom: 0;
-  border-bottom: 1px solid var(--gold-deep);
-}
-.vps-tab {
-  display: inline-flex; align-items: center;
-  gap: 7px;
-  background: var(--stone-2);
-  color: var(--parchment);
-  border: 1px solid var(--gold-deep);
-  border-top-width: 2px;
-  border-bottom: none;
-  padding: 5px 11px 6px;
-  margin-bottom: -1px;          /* overlap the row's bottom border when selected */
-  font-family: var(--display);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  cursor: pointer;
-  flex-shrink: 0;
-  max-width: 180px;
-  transition: background .12s ease, border-color .12s ease;
-}
-.vps-tab:hover { background: var(--stone-3); }
-.vps-tab.selected {
-  background: var(--stone-3);
-  border-bottom: 1px solid var(--stone-3);   /* merge into row 2 */
-  color: var(--gold-bright);
-  z-index: 1;
-}
-.vps-tab .vps-tab-glyph {
-  font-size: 12px;
-  color: var(--parchment-soft);
-  opacity: 0.75;
-}
-.vps-tab .vps-tab-name {
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  min-width: 0;
-}
-.vps-tab .vps-tab-count {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid var(--gold-deep);
-  color: var(--parchment-soft);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0;
-  padding: 0 5px;
-  min-width: 16px;
-  height: 14px;
-  border-radius: 7px;
-}
-.vps-tab.selected .vps-tab-count {
-  background: rgba(138,180,228,0.12);
-  border-color: var(--gold);
-  color: var(--gold-bright);
-}
-
-/* Row 2: entity tabs */
 .tab-row-entities {
   background: rgba(0,0,0,0.10);
   padding-bottom: 0;
@@ -1389,9 +1326,13 @@
 .claude-scroll-pill:active { background: var(--stone-3); }
 .claude-scroll-pill .claude-scroll-arrow { display: inline-block; transform: translateY(-1px); }
 
-/* "↑" pill — placed just above the ↓ pill, at the same x-coordinate. Its
-   position stays FIXED regardless of whether the ↓ pill is visible or
-   not. Math: bottom = bottom(↓) + height(↓) + 10px visual gap. */
+/* "↑" pills — stacked just above the ↓ pill, at the same x-coordinate. Their
+   positions stay FIXED regardless of whether the ↓ pill is visible or
+   not. Math: bottom = bottom(↓) + height(↓) + 10px visual gap, then +54 per
+   extra pill. Two of them (§ ClaudeSessionView `scrollUpToRole`):
+     .is-agent (blue,  bottom 70)  → previous AGENT message
+     .is-user  (green, bottom 124) → previous USER message (double chevron =
+                                     the bigger step, one whole turn back) */
 .claude-scroll-up-pill {
   position: absolute;
   right: 20px;
@@ -1417,6 +1358,28 @@
 }
 .claude-scroll-up-pill:active { background: var(--stone-3); }
 .claude-scroll-up-pill .claude-scroll-arrow { display: inline-block; transform: translateY(1px); }
+/* Green "previous user message" pill, one slot higher. Green = the same token
+   the status dots use for "your side / ready" (#a0c87b), so it reads as a
+   different axis from the blue agent pill rather than as a warning. */
+.claude-scroll-up-pill.is-user {
+  bottom: 124px; /* 70 (blue pill bottom) + 44 (height) + 10 (gap) */
+  border-color: #a0c87b;
+  color: #bcdf98;
+}
+.claude-scroll-up-pill.is-user:hover {
+  box-shadow: 0 4px 18px rgba(160, 200, 123, 0.45);
+  border-color: #bcdf98;
+}
+/* Double chevron: two triangles stacked tight (line-height < 1), NOT an emoji
+   glyph — ⏫ renders coloured on most platforms and would fight the palette. */
+.claude-scroll-up-pill .claude-scroll-arrow-dbl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 13px;
+  line-height: 0.62;
+  transform: translateY(1px);
+}
 .claude-scroll-pill .claude-scroll-count {
   position: absolute;
   top: -6px; right: -6px;
@@ -4247,47 +4210,6 @@
 }
 .claude-bar .git-remote:hover { color: var(--gold-bright); border-color: var(--gold-bright); }
 
-/* ── Workspace tabs: the path row + tab states (§14.78) ──────────────────── */
-/* Row 2 — the folders open on the active VPS. Visually lighter than the VPS
-   row above it so the hierarchy reads top-down without a separator. */
-.tab-row-paths {
-  gap: 2px; padding: 2px 6px;
-  background: rgba(0,0,0,0.12);
-  border-bottom: 1px solid var(--gold-deep);
-}
-.path-tab {
-  flex: none; display: inline-flex; align-items: center; gap: 5px;
-  background: transparent; border: 1px solid transparent; border-radius: 3px;
-  color: var(--parchment-soft); cursor: pointer;
-  font-family: var(--mono); font-size: 10px; padding: 2px 8px;
-}
-.path-tab:hover { color: var(--gold-bright); }
-.path-tab.selected {
-  color: var(--gold-bright);
-  border-color: var(--gold-deep);
-  background: rgba(138,180,228,0.10);
-}
-.path-tab-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.path-tab-count {
-  font-size: 9px; opacity: 0.6;
-  background: var(--gold-deep); color: var(--stone);
-  border-radius: 2px; padding: 0 4px;
-}
-.path-tab.state-waiting .path-tab-name,
-.path-tab.state-failed .path-tab-name { color: var(--crimson, #e0736b); }
-.path-tab.state-thinking .path-tab-name { color: var(--gold-bright); }
-
-/* A TEMPORARY tab is italic — the one visual cue that it will be replaced by
-   the next thing opened in this folder. Nothing else distinguishes it, on
-   purpose: a preview must not look broken, just provisional. */
-.tab.temporary .tab-label { font-style: italic; opacity: 0.9; }
-/* Unsaved edits. Deliberately louder than the temporary italic: losing a
-   buffer is the only irreversible thing this bar can do. */
-.tab .tab-dirty { flex: none; color: var(--gold-bright); font-size: 9px; margin-left: 2px; }
-/* The referent is gone (deleted session, missing file) — still closable. */
-.tab.orphan .tab-label { opacity: 0.45; text-decoration: line-through; }
-.tab .tab-glyph svg { width: 12px; height: 12px; }
-
 /* ── File pane: the editor in the main column (§14.78) ───────────────────── */
 .file-editor {
   grid-area: main; min-width: 0; min-height: 0;
@@ -4346,3 +4268,99 @@
   .fe-head { padding: 8px 12px; flex-wrap: wrap; row-gap: 6px; }
   .fe-note, .fe-conflict { margin-left: 12px; margin-right: 12px; padding-left: 10px; }
 }
+
+
+/* ── One tab shape for all three rows (§14.80) ───────────────────────────── */
+/* Row 1 (machine), row 2 (folder) and row 3 (tab) are the same control at
+   three scales. They differ in height, font size and how loud the selected
+   state is — and in nothing else. Giving row 2 its own pill made it read as a
+   filter bar bolted on rather than as the middle of a hierarchy. */
+.tb-item {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  background: var(--stone-2, rgba(0,0,0,0.18));
+  border: 1px solid var(--gold-deep);
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  color: var(--parchment-soft);
+  font-family: var(--mono);
+  cursor: pointer;
+  position: relative;
+  max-width: 260px;
+  user-select: none;
+}
+.tb-item:hover { color: var(--gold-bright); background: rgba(138,180,228,0.08); }
+.tb-item.selected {
+  color: var(--gold-bright);
+  background: rgba(138,180,228,0.14);
+  border-color: var(--gold);
+}
+/* The selected tab bleeds into the row below it — the join that makes a strip
+   read as tabs rather than as buttons. */
+.tb-item.selected::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+  background: rgba(138,180,228,0.14);
+}
+.tb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tb-count {
+  flex: none; font-size: 9px;
+  background: var(--gold-deep); color: var(--stone);
+  border-radius: 2px; padding: 0 4px;
+}
+.tb-item.selected .tb-count { background: var(--gold); }
+.tb-glyph { flex: none; display: inline-flex; }
+.tb-glyph svg { width: 12px; height: 12px; }
+.tb-dirty { flex: none; color: var(--gold-bright); font-size: 9px; }
+/* State is carried by one dot in the same place on all three rows. */
+.tb-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--gold-deep); }
+.state-active .tb-dot { background: #7fbf7f; }
+.state-thinking .tb-dot { background: var(--gold-bright); animation: tb-pulse 1.4s ease-in-out infinite; }
+.state-starting .tb-dot { background: var(--lavender, #8ab4e4); }
+.state-waiting .tb-dot { background: #e2c08d; box-shadow: 0 0 5px rgba(226,192,141,0.8); }
+.state-failed .tb-dot { background: #e0736b; }
+.state-sleeping .tb-dot { background: rgba(230,225,210,0.25); }
+@keyframes tb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Sizes: the only thing that separates the rows. */
+.tb-vps  { padding: 5px 11px; font-size: 10.5px; letter-spacing: 0.05em; }
+.tb-path { padding: 3px 10px; font-size: 10px; }
+.tb-tab  { padding: 0 0 0 9px; font-size: 10.5px; }
+.tb-tab .tb-main {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 0; color: inherit; cursor: pointer;
+  font: inherit; padding: 5px 2px 5px 0; min-width: 0;
+}
+.tb-tab .tb-close {
+  flex: none; background: transparent; border: 0; cursor: pointer;
+  color: transparent; font-size: 10px; padding: 5px 7px 5px 3px;
+}
+.tb-tab:hover .tb-close { color: var(--parchment-soft); }
+.tb-tab .tb-close:hover { color: #e0736b !important; }
+/* A preview is italic — provisional, not broken. */
+.tb-tab.temporary .tb-name { font-style: italic; opacity: 0.9; }
+.tb-tab.orphan .tb-name { opacity: 0.45; text-decoration: line-through; }
+
+/* Drag & drop feedback, shared by the three rows and the sidebar. */
+[data-dragging="true"] { opacity: 0.4; }
+[data-over="true"] { box-shadow: inset 2px 0 0 var(--gold-bright); }
+.cs-card[data-over="true"] { box-shadow: inset 0 2px 0 var(--gold-bright); }
+
+.tab-row-paths { gap: 3px; padding: 2px 6px 0; background: rgba(0,0,0,0.10); }
+.tab-row-entities { gap: 3px; }
+
+/* ── Explorer context menu (§14.80) ──────────────────────────────────────── */
+.tt-menu-scrim { position: fixed; inset: 0; z-index: 400; }
+.tt-menu {
+  position: fixed; z-index: 401; min-width: 178px;
+  display: flex; flex-direction: column;
+  background: var(--stone); border: 1px solid var(--gold-deep);
+  border-radius: 5px; padding: 4px; box-shadow: 0 8px 22px rgba(0,0,0,0.5);
+}
+.tt-menu button {
+  background: transparent; border: 0; text-align: left; cursor: pointer;
+  color: var(--parchment); font-family: var(--mono); font-size: 11px;
+  padding: 6px 9px; border-radius: 3px;
+}
+.tt-menu button:hover:not(:disabled) { background: rgba(138,180,228,0.14); color: var(--gold-bright); }
+.tt-menu button:disabled { opacity: 0.4; cursor: default; }
+.tt-menu button.danger { color: #e0736b; }
+.tt-menu-sep { height: 1px; background: var(--gold-deep); margin: 4px 2px; opacity: 0.6; }

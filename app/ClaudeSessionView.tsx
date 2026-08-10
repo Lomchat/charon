@@ -383,24 +383,33 @@ export default function ClaudeSessionView({
     if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
-  // ── Scroll-up to the previous user message ────────────────────────────
-  // The "↑" button (above the ↓ pill) jumps to the last user message above
-  // the visible area. Repeated click → we keep going message by message.
-  // If there's no more user message above but there's still history to
-  // paginate, we trigger loadMoreHistory. Otherwise (at the very top, nothing
-  // more to load), we jump to the visual top.
+  // ── Scroll-up, message by message ─────────────────────────────────────
+  // TWO up buttons stacked above the ↓ pill, one per role, so the user can
+  // walk back through EITHER side of the conversation:
+  //   green (top, double chevron) → previous USER message  = "previous turn"
+  //   blue  (middle, single)      → previous AGENT message = the agent's own
+  //                                 replies, incl. the intermediate bubbles a
+  //                                 single turn flushes around tool calls.
+  // Same mechanics for both: jump to the closest bubble of that role whose top
+  // sits ABOVE the visible area; repeated clicks keep walking up. If there is
+  // no such bubble left but history remains, paginate instead (a later click
+  // continues into the freshly-loaded rows); at the very top with nothing left
+  // to load, jump to the visual top.
   //
   // We use scrollIntoView({block:'start'}) which aligns the top of the
   // element with the top of the container IN SCREEN COORDS, independently
   // of the sign of scrollTop (Chrome negative, Firefox positive in column-reverse).
-  const onScrollUpClick = useCallback(() => {
+  // Roles come from Message.tsx's `data-msg-role` — only the rendered chat
+  // bubbles carry it (tool/thinking cards don't), which is exactly the set
+  // worth stopping on.
+  const scrollUpToRole = useCallback((role: 'user' | 'assistant') => {
     const el = chatBodyRef.current;
     if (!el) return;
     const containerRect = el.getBoundingClientRect();
-    const userBubbles = Array.from(el.querySelectorAll<HTMLElement>('[data-msg-role="user"]'));
+    const bubbles = Array.from(el.querySelectorAll<HTMLElement>(`[data-msg-role="${role}"]`));
     let target: HTMLElement | null = null;
     let bestGap = Infinity;
-    for (const bubble of userBubbles) {
+    for (const bubble of bubbles) {
       const r = bubble.getBoundingClientRect();
       const gap = containerRect.top - r.top;
       // gap > 4: bubble is at least 4px above the visible top
@@ -413,7 +422,7 @@ export default function ClaudeSessionView({
     if (target) {
       target.scrollIntoView({ block: 'start', behavior: 'smooth' });
     } else if (hasMore && !isLoadingMore) {
-      // No more user message above, but there's still history left:
+      // No more message of that role above, but there's still history left:
       // paginate. Once the older messages are loaded, the user can click
       // again to keep scrolling up.
       loadMoreHistory();
@@ -424,8 +433,10 @@ export default function ClaudeSessionView({
       if (last) last.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
   }, [hasMore, isLoadingMore, loadMoreHistory]);
+  const onScrollUpUserClick = useCallback(() => scrollUpToRole('user'), [scrollUpToRole]);
+  const onScrollUpAgentClick = useCallback(() => scrollUpToRole('assistant'), [scrollUpToRole]);
 
-  // The ↑ button stays visible as long as there's something to scroll up to:
+  // The ↑ buttons stay visible as long as there's something to scroll up to:
   //   - not at the ABSOLUTE visual top, OR
   //   - there's still history left to paginate (hasMore || isLoadingMore).
   const showScrollUpButton = !isAtTop || hasMore || isLoadingMore;
@@ -639,15 +650,30 @@ export default function ClaudeSessionView({
             </button>
           )}
           {/* Fixed area for the scroll buttons. The ↓ pill may disappear
-              (when at the bottom), but the ↑ button keeps its fixed position
-              above, independently. */}
+              (when at the bottom), but the two ↑ buttons keep their fixed
+              positions above, independently — and they show/hide together so
+              the stack never shifts under the cursor. */}
           {showScrollUpButton && (
             <button
               type="button"
-              className="claude-scroll-up-pill"
-              onClick={onScrollUpClick}
-              aria-label="scroll up to last user message"
-              title="scroll up to last user message"
+              className="claude-scroll-up-pill is-user"
+              onClick={onScrollUpUserClick}
+              aria-label="scroll up to the previous user message"
+              title="previous user message"
+            >
+              <span className="claude-scroll-arrow claude-scroll-arrow-dbl" aria-hidden="true">
+                <span>▴</span>
+                <span>▴</span>
+              </span>
+            </button>
+          )}
+          {showScrollUpButton && (
+            <button
+              type="button"
+              className="claude-scroll-up-pill is-agent"
+              onClick={onScrollUpAgentClick}
+              aria-label="scroll up to the previous agent message"
+              title="previous agent message"
             >
               <span className="claude-scroll-arrow">▴</span>
             </button>

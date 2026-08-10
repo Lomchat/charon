@@ -121,9 +121,19 @@ export type TabDTO = {
   ref: string;
   /** false = temporary preview (italic, one per group). */
   pinned: boolean;
+  /** Order inside the (vpsId, path) group — row 3. */
   position: number;
+  /** Order of this VPS in row 1 / of this group in row 2. Denormalised: every
+   *  row of a VPS shares `vpsPos`, every row of a group shares `groupPos`. */
+  vpsPos: number;
+  groupPos: number;
   active: boolean;
 };
+
+export type ReorderTabsBody =
+  | { scope: 'tabs'; vpsId: string; path: string; ids: string[] }
+  | { scope: 'groups'; vpsId: string; paths: string[] }
+  | { scope: 'vps'; vpsIds: string[] };
 
 export type TabsResponse = { tabs: TabDTO[] };
 export type OpenTabBody = {
@@ -184,6 +194,25 @@ export type FsWriteResponse = {
   size?: number;
   /** On success the new sha, on 'stale' the CURRENT one (offer a reload). */
   sha256?: string | null;
+};
+
+// Explorer context menu (agent >= 0.27.0). One route, one shape.
+export type FsOpBody = {
+  root: string;
+  op: 'mkdir' | 'rename' | 'delete';
+  path: string;
+  /** rename only — the destination, relative to `root`. */
+  to?: string;
+  /** delete only — required for a non-empty directory. */
+  recursive?: boolean;
+};
+
+export type FsOpResponse = {
+  ok: boolean;
+  error?: string;
+  /** 'exists' / 'not_empty' are questions for the user, not failures. */
+  reason?: 'bad_path' | 'exists' | 'missing' | 'not_empty' | 'offline' | 'unsupported' | 'error';
+  path?: string;
 };
 
 // ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────

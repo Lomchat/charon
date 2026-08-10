@@ -6,8 +6,9 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   NewSessionWizard autocomplete. Riding the persistent RPC pipe makes it ~1ms;
   the hub falls back to a one-shot ssh `ls` (~0.5s of sshd session setup) for
   older agents.
-- `fs_list` / `fs_read` (agent >= 0.25.0) and `fs_write` (>= 0.26.0) — the
-  file tree in the ToolPanel and its editor. Deliberately separate from
+- `fs_list` / `fs_read` (agent >= 0.25.0), `fs_write` (>= 0.26.0) and
+  `fs_mkdir` / `fs_rename` / `fs_delete` (>= 0.27.0) — the file tree in the
+  ToolPanel, its editor, and its context menu. Deliberately separate from
   `list_dir` rather than an extension of it: that one is on the hot path of
   every keystroke in the wizard and returns directories only, and widening its
   contract would make a typo in the tree break session creation.
@@ -22,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 from typing import Any
@@ -302,6 +304,95 @@ def fs_write(root: str, path: str, content: str, expected_sha256: str | None = N
                     pass
 
         return {"ok": True, "path": path, "size": len(data), "sha256": _file_sha(target)}
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error"}
+    except OSError as e:
+        return {"ok": False, "error": str(e), "reason": "error"}
+
+
+# ── Tree mutations (agent >= 0.27.0) ────────────────────────────────────────
+# The explorer's context menu. Every one of these is contained the same way as
+# the reads, and none of them overwrites silently: creating something that
+# exists, or renaming onto an existing name, is refused rather than resolved.
+# On a box where a coding agent is working in the same tree, "it already
+# existed" is information, not an obstacle to route around.
+
+def fs_mkdir(root: str, path: str) -> dict[str, Any]:
+    """Create a directory (and any missing parents) under `root`."""
+    try:
+        target = _contained(root, path)
+        if target is None:
+            return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        if os.path.exists(target):
+            return {"ok": False, "error": "already exists", "reason": "exists"}
+        os.makedirs(target, exist_ok=False)
+        return {"ok": True, "path": path}
+    except FileExistsError:
+        return {"ok": False, "error": "already exists", "reason": "exists"}
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error"}
+    except OSError as e:
+        return {"ok": False, "error": str(e), "reason": "error"}
+
+
+def fs_rename(root: str, path: str, to: str) -> dict[str, Any]:
+    """Rename / move within the tree. BOTH ends are contained.
+
+    Refuses to clobber an existing destination: `os.replace` would silently
+    delete it, and a rename that eats a file is not something a user can undo
+    from here.
+    """
+    try:
+        src = _contained(root, path)
+        if src is None:
+            return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        if not os.path.exists(src):
+            return {"ok": False, "error": "not found", "reason": "missing"}
+        # The destination does not exist yet, so realpath can't resolve it —
+        # contain its PARENT and rebuild, which is what actually bounds it.
+        dest_rel = (to or "").strip()
+        if not dest_rel or "\0" in dest_rel:
+            return {"ok": False, "error": "invalid destination", "reason": "bad_path"}
+        real_root = os.path.realpath(os.path.expanduser(root))
+        dest_abs = os.path.join(real_root, dest_rel) if not os.path.isabs(dest_rel) else dest_rel
+        parent = _contained(root, os.path.dirname(os.path.relpath(dest_abs, real_root)) or ".")
+        if parent is None or not os.path.isdir(parent):
+            return {"ok": False, "error": "destination folder is outside the root", "reason": "bad_path"}
+        dest = os.path.join(parent, os.path.basename(dest_abs))
+        if os.path.exists(dest):
+            return {"ok": False, "error": "a file with that name already exists", "reason": "exists"}
+        os.rename(src, dest)
+        return {"ok": True, "path": os.path.relpath(dest, real_root)}
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error"}
+    except OSError as e:
+        return {"ok": False, "error": str(e), "reason": "error"}
+
+
+def fs_delete(root: str, path: str, recursive: bool = False) -> dict[str, Any]:
+    """Delete a file, or a directory when `recursive`.
+
+    A non-empty directory without `recursive` is refused with
+    `reason: 'not_empty'` so the caller can ask the question with the real
+    stakes on screen rather than guessing them.
+    """
+    try:
+        target = _contained(root, path)
+        if target is None:
+            return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        # Deleting the root itself would take the session's cwd with it.
+        if target == os.path.realpath(os.path.expanduser(root)):
+            return {"ok": False, "error": "refusing to delete the root folder", "reason": "bad_path"}
+        if not os.path.exists(target) and not os.path.islink(target):
+            return {"ok": False, "error": "not found", "reason": "missing"}
+
+        if os.path.isdir(target) and not os.path.islink(target):
+            if not recursive and os.listdir(target):
+                return {"ok": False, "error": "the folder is not empty", "reason": "not_empty"}
+            shutil.rmtree(target) if recursive else os.rmdir(target)
+        else:
+            os.unlink(target)
+        return {"ok": True, "path": path}
     except PermissionError:
         return {"ok": False, "error": "permission denied", "reason": "error"}
     except OSError as e:

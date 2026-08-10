@@ -4,6 +4,7 @@ import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import AgentLogo from './AgentLogo';
+import { useReorder } from './useReorder';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
@@ -81,6 +82,8 @@ type Props = {
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
+  /** Reorder the sessions of ONE vps (drag & drop). §14.80 */
+  onReorderSessions?: (vpsId: string, ids: string[]) => void;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
@@ -244,7 +247,11 @@ export default function Sidebar({
     return sessions
       .filter((s) => s.vpsId === vpsId)
       .filter((s) => showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+      // `position` first, `createdAt` as the tiebreak: every pre-existing row
+      // is position 0, so an untouched sidebar sorts exactly as it did before
+      // and only a list that was actually dragged looks different.
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)
+        || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
   function shellsFor(vpsId: string): ShellListItem[] {
     return shells
@@ -421,6 +428,8 @@ type VpsRenderOpts = {
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
+  /** Reorder the sessions of ONE vps (drag & drop). §14.80 */
+  onReorderSessions?: (vpsId: string, ids: string[]) => void;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
@@ -444,7 +453,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
-    onSelect, onSelectShell, onSelectInstall,
+    onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
@@ -683,18 +692,20 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             />
           )}
 
-          {vpsSessions.map((s) => (
-            <SessionRow
-              key={s.id} s={s}
-              selected={s.id === selectedId}
-              showDetails={showDetails}
-              onSelect={onSelect}
-              onContext={onContext}
-              editing={editingId === s.id}
-              onRenameSubmit={onRenameSubmit}
-              onRenameCancel={onRenameCancel}
-            />
-          ))}
+          {/* Own component so it can hold the reorder hook — renderVpsBox is a
+              plain function and cannot. */}
+          <SessionList
+            vpsId={v.id}
+            sessions={vpsSessions}
+            selectedId={selectedId}
+            showDetails={showDetails}
+            onSelect={onSelect}
+            onContext={onContext}
+            editingId={editingId}
+            onRenameSubmit={onRenameSubmit}
+            onRenameCancel={onRenameCancel}
+            onReorder={onReorderSessions}
+          />
           {vpsShells.map((sh) => (
             <ShellRow
               key={sh.id} sh={sh}
@@ -762,7 +773,50 @@ const STATUS_TEXT: Record<string, string> = {
   failed: 'error',
 };
 
-function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel }: {
+/**
+ * The session list of ONE vps, drag-reorderable.
+ *
+ * Sessions only, and never across machines: the sidebar groups by VPS, so a
+ * cross-VPS drag would have to mean "move the session to another box", which
+ * is not a thing. Reordering VPSes themselves stays in the « VPS & paths »
+ * modal, which already owns that with @dnd-kit.
+ */
+function SessionList({
+  vpsId, sessions, selectedId, showDetails, onSelect, onContext,
+  editingId, onRenameSubmit, onRenameCancel, onReorder,
+}: {
+  vpsId: string;
+  sessions: SessionListItem[];
+  selectedId: string | null;
+  showDetails: boolean;
+  onSelect: (id: string, pin?: boolean) => void;
+  onContext?: (session: SessionListItem, x: number, y: number) => void;
+  editingId?: string | null;
+  onRenameSubmit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
+  onReorder?: (vpsId: string, ids: string[]) => void;
+}) {
+  const dnd = useReorder(sessions.map((s) => s.id), (ids) => onReorder?.(vpsId, ids));
+  return (
+    <>
+      {sessions.map((s) => (
+        <SessionRow
+          key={s.id} s={s}
+          selected={s.id === selectedId}
+          showDetails={showDetails}
+          onSelect={onSelect}
+          onContext={onContext}
+          editing={editingId === s.id}
+          onRenameSubmit={onRenameSubmit}
+          onRenameCancel={onRenameCancel}
+          dnd={onReorder ? dnd.itemProps(s.id) : undefined}
+        />
+      ))}
+    </>
+  );
+}
+
+function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
   s: SessionListItem;
   selected: boolean;
   showDetails: boolean;
@@ -771,6 +825,7 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
   editing?: boolean;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
+  dnd?: Record<string, unknown>;
 }) {
   // Touch long-press → context menu (mobile has no right-click). Must run
   // before the `editing` early-return to keep hook order stable. §11.
@@ -808,6 +863,7 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
       className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       onClick={() => { if (lp.consume()) return; onSelect(s.id); }}
       onDoubleClick={() => onSelect(s.id, true)}
+      {...(dnd ?? {})}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
       {...lp.handlers}
       title={`${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}

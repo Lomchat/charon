@@ -88,6 +88,11 @@ METHODS = {
     # gated on an expected sha so a save cannot silently clobber a file a
     # coding agent wrote in the meantime.
     "fs_write",
+    # Explorer context menu (agent >= 0.27.0): create, rename, delete. Same
+    # containment as the reads, and none of them clobbers silently.
+    "fs_mkdir",
+    "fs_rename",
+    "fs_delete",
     # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
     # to the repo containing a path, not to a session - the hub polls
     # git_status while a session is on screen, so it rides the persistent pipe

@@ -10,6 +10,7 @@ import type {
   GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
+  ReorderTabsBody, FsOpBody, FsOpResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -145,11 +146,17 @@ export const api = {
     send<FsListResponse>('GET', `/api/vps/${id}/fs/list?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}${withGit ? '&git=1' : ''}`, undefined, { timeoutMs: 20_000 }),
   writeFsFile: (id: string, body: FsWriteBody) =>
     send<FsWriteResponse>('POST', `/api/vps/${id}/fs/write`, body, { timeoutMs: 60_000 }),
+  fsOp: (id: string, body: FsOpBody) =>
+    send<FsOpResponse>('POST', `/api/vps/${id}/fs/op`, body, { timeoutMs: 60_000 }),
   readFsFile: (id: string, root: string, path: string) =>
     send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
   // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
   fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
     `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,
+
+  /** Sidebar order of the sessions inside ONE vps (§14.80). */
+  reorderSessions: (vpsId: string, ids: string[]) =>
+    send<OkResponse>('POST', '/api/claude/sessions/reorder', { vpsId, ids }),
 
   // ── Tabs: the shared workspace layout (§14.78) ────────────────────────────
   listTabs: () => send<TabsResponse>('GET', '/api/tabs'),
@@ -159,6 +166,8 @@ export const api = {
     send<{ tab: TabDTO; tabs: TabDTO[] }>('PATCH', `/api/tabs/${id}`, body),
   closeTab: (id: string) =>
     send<CloseTabResponse & { tabs: TabDTO[] }>('DELETE', `/api/tabs/${id}`),
+  reorderTabs: (body: ReorderTabsBody) =>
+    send<{ ok: boolean; tabs: TabDTO[] }>('POST', '/api/tabs/reorder', body),
   closeTabsWhere: (q: { vpsId?: string; path?: string; exceptId?: string }) => {
     const p = new URLSearchParams();
     if (q.vpsId !== undefined) p.set('vpsId', q.vpsId);

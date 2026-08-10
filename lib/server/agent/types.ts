@@ -257,6 +257,10 @@ export type AgentMethodName =
   | 'fs_read'
   // Text write for the editor (agent >= 0.26.0) - atomic, sha-gated.
   | 'fs_write'
+  // Explorer context menu (agent >= 0.27.0).
+  | 'fs_mkdir'
+  | 'fs_rename'
+  | 'fs_delete'
   // Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
   // to the repo containing a cwd, NOT to a session. No ssh fallback exists on
   // purpose - duplicating the porcelain-v2 parser hub-side is the real cost,
