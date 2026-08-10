@@ -2130,6 +2130,49 @@
   background: rgba(216,117,127,0.14); border: 1px solid var(--crimson-deep); color: var(--crimson);
 }
 .confirm-btn.danger:hover:not(:disabled) { background: rgba(216,117,127,0.28); border-color: var(--crimson); color: #f0b7bd; }
+.confirm-btn.danger:focus-visible { outline: 1px solid var(--crimson); outline-offset: 2px; }
+/* Non-destructive primary (PromptModal: create / rename). */
+.confirm-btn.primary {
+  background: rgba(138,180,228,0.12); border: 1px solid var(--gold); color: var(--gold-bright);
+}
+.confirm-btn.primary:hover:not(:disabled) { background: rgba(138,180,228,0.24); box-shadow: 0 0 14px rgba(138,180,228,0.22); }
+.confirm-btn.primary:focus-visible { outline: 1px solid var(--gold-bright); outline-offset: 2px; }
+/* Why a submit was refused, under the input that has to change (ConfirmModal
+   + PromptModal). The dialog stays open, so this is the whole error surface. */
+.confirm-err {
+  margin: 12px 0 0; padding: 8px 11px; border-radius: 8px;
+  background: rgba(216,117,127,0.12); border: 1px solid var(--crimson-deep);
+  color: var(--crimson); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* single-input dialog (PromptModal — new file / new folder / rename) */
+.claude-modal.prompt {
+  max-width: 430px; border-radius: 14px;
+  padding: 26px 26px 20px;
+  animation: confirm-pop .16s ease-out;
+}
+/* The tinted circle again, minus the destructive read. */
+.confirm-ico.neutral {
+  background: rgba(138,180,228,0.12); border-color: var(--gold-deep); color: var(--gold);
+}
+.prompt-hint {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  color: var(--parchment-soft); margin: -8px 0 12px;
+  overflow-wrap: anywhere;
+}
+.prompt-hint b { color: var(--gold-bright); font-weight: 600; }
+.prompt-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--shadow); border: 1px solid var(--gold-deep); border-radius: 8px;
+  color: var(--parchment); font-family: var(--mono); font-size: 13px;
+  padding: 10px 12px; outline: none;
+  transition: border-color .12s;
+}
+.prompt-input:focus { border-color: var(--gold); }
+.prompt-input:disabled { opacity: 0.55; }
+.prompt-input[readonly] { color: var(--parchment-soft); }
+.claude-modal.prompt .confirm-actions { margin-top: 18px; }
 .claude-modal.data-modal {
   /* Fixed size so the modal doesn't jump when switching tabs */
   width: 1060px; max-width: 94vw;
@@ -4355,17 +4398,31 @@
 /* ── Explorer context menu (§14.80) ──────────────────────────────────────── */
 .tt-menu-scrim { position: fixed; inset: 0; z-index: 400; }
 .tt-menu {
-  position: fixed; z-index: 401; min-width: 178px;
+  position: fixed; z-index: 401; min-width: 196px;
   display: flex; flex-direction: column;
   background: var(--stone); border: 1px solid var(--gold-deep);
   border-radius: 5px; padding: 4px; box-shadow: 0 8px 22px rgba(0,0,0,0.5);
 }
+/* What the menu acts on. NOT uppercased, unlike `.session-ctx-menu .ctx-head`:
+   this one holds a real filename, and `Route.ts` → `ROUTE.TS` misreads a
+   case-sensitive path as something you could type back. */
+.tt-menu-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 9px 7px; margin-bottom: 3px;
+  border-bottom: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 10.5px; color: var(--gold-bright);
+}
+.tt-menu-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-menu-head svg { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.85; }
 .tt-menu button {
+  display: flex; align-items: center; gap: 8px;
   background: transparent; border: 0; text-align: left; cursor: pointer;
   color: var(--parchment); font-family: var(--mono); font-size: 11px;
   padding: 6px 9px; border-radius: 3px;
 }
+.tt-menu button svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; }
 .tt-menu button:hover:not(:disabled) { background: rgba(138,180,228,0.14); color: var(--gold-bright); }
+.tt-menu button:hover:not(:disabled) svg { opacity: 1; }
 .tt-menu button:disabled { opacity: 0.4; cursor: default; }
 .tt-menu button.danger { color: #e0736b; }
 .tt-menu-sep { height: 1px; background: var(--gold-deep); margin: 4px 2px; opacity: 0.6; }

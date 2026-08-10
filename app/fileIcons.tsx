@@ -96,6 +96,42 @@ export const IconTree = (p: P) => (
   </svg>
 );
 
+// ── Context-menu actions ────────────────────────────────────────────────────
+// Same stroke weight as the glyphs above, because the menu opens ON the tree:
+// the app-wide fill set (`icons.tsx`) sitting a few pixels from a stroke row
+// reads as two icon packs at once. Named for the ACTION, not the shape, both
+// because that is how the call site reads and because `IconPencil`/`IconTrash`
+// already mean the filled ones in `icons.tsx`.
+export const IconFilePlus = (p: P) => (
+  <Sheet {...p}><path d="M8 8v4.4M5.8 10.2h4.4" /></Sheet>
+);
+export const IconFolderPlus = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M1.5 12.5V3.5A1 1 0 0 1 2.5 2.5h3.2l1.4 1.8h5.4a1 1 0 0 1 1 1v7.2a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1Z" />
+    <path d="M7.5 7.3v4M5.5 9.3h4" />
+  </svg>
+);
+// Two stacked sheets — "copy", the one glyph everyone reads without a label.
+export const IconCopy = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M5.5 10.5h-2a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+    <path d="M6.5 5.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" />
+  </svg>
+);
+export const IconRename = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M11.2 2.8a1.4 1.4 0 0 1 2 2L6.4 11.6l-2.6.6.6-2.6z" />
+  </svg>
+);
+export const IconDelete = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M2.5 4.5h11" />
+    <path d="M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5" />
+    <path d="M3.8 4.5l.75 8.7a1 1 0 0 0 1 .9h4.9a1 1 0 0 0 1-.9l.75-8.7" />
+    <path d="M6.6 7v4.2M9.4 7v4.2" />
+  </svg>
+);
+
 // ── Extension → glyph ───────────────────────────────────────────────────────
 const CODE = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'rb', 'go', 'rs', 'java',
   'kt', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'swift', 'sh', 'bash', 'zsh', 'fish',
