@@ -494,6 +494,29 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     openEntityTab('shell', sh.id, sh.vpsId, sh.cwd ?? '', true);
   }
   /**
+   * Same for a session — and it takes the created row rather than an id on
+   * purpose: `sessions` has not been refreshed yet, so a lookup by id here
+   * finds nothing and the session the user just created opens nowhere.
+   */
+  function applyCreatedSession(c: { id: string; vpsId: string; cwd: string }) {
+    openEntityTab('session', c.id, c.vpsId, c.cwd, true);
+    refreshSessions();
+    closeDrawers();
+  }
+  /**
+   * Open a session by id from somewhere that isn't the sidebar (a
+   * notification, the search modal, the resume list). Pass `hint` whenever the
+   * caller already knows the folder — a bare id can only be resolved against
+   * `sessions`, and every one of these paths can run before that list has
+   * caught up. Without a tab the main pane would show a session the bar
+   * doesn't list, and the next tab switch would silently drop it.
+   */
+  function openSessionById(id: string, pin: boolean, hint?: { vpsId: string; cwd: string }) {
+    const s = hint ?? sessions.find((x) => x.id === id);
+    if (s) openEntityTab('session', id, s.vpsId, (s as any).cwd ?? '', pin);
+    else setSelectedId(id);
+  }
+  /**
    * Sidebar → open as a PREVIEW (single click) or pinned (double click).
    * §14.78: a click is browsing, and browsing must not accumulate tabs.
    */
@@ -1164,7 +1187,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           const n = new Notification(title, { body, tag: 'claude-' + s.id });
           n.onclick = () => {
             window.focus();
-            setSelectedId(s.id);
+            openSessionById(s.id, false, { vpsId: s.vpsId, cwd: s.cwd ?? '' });
             n.close();
           };
         }
@@ -1251,7 +1274,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     const onMsg = (e: MessageEvent) => {
       if (e.data?.type === 'open-session' && e.data.sessionId) {
         const sid = e.data.sessionId as string;
-        setSelectedId(sid);
+        openSessionById(sid, false);
         // Tell the (possibly already-mounted) session hook to force an
         // immediate resync — the pending question/permission that the
         // notification is about may have arrived while this tab wasn't the
@@ -1827,7 +1850,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         queue={permQueue}
         currentSessionId={selectedId}
         onRespond={respondPermissionCrossSession}
-        onSwitchSession={(id) => setSelectedId(id)}
+        onSwitchSession={(id) => openSessionById(id, false)}
       />
 
       <InstallNotificationPopup
@@ -1846,7 +1869,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           initialVpsId={wizard.vpsId}
           initialCwd={wizard.cwd}
           onClose={() => setWizard(null)}
-          onCreatedSession={(id) => { setWizard(null); selectClaude(id); refreshSessions(); }}
+          onCreatedSession={(c) => { setWizard(null); applyCreatedSession(c); }}
           onCreatedShell={(sh) => { setWizard(null); applyCreatedShell(sh); }}
           onFix={handleVpsFix}
           refreshingAgentVpsIds={refreshingAgentVpsIds}
@@ -1860,12 +1883,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           dbSessions={sessions}
           initialVpsId={resumeOpen.vpsId}
           onClose={() => setResumeOpen(null)}
-          onImported={(id) => { setResumeOpen(null); setSelectedId(id); refreshSessions(); }}
+          onImported={(c) => { setResumeOpen(null); applyCreatedSession(c); }}
           onResumed={async (id) => {
             setResumeOpen(null);
             try { await api.resumeClaudeSession(id); }
             catch (e: any) { setError({ msg: String(e?.message ?? e) }); return; }
-            setSelectedId(id);
+            openSessionById(id, true);
             refreshSessions();
           }}
         />
@@ -1874,7 +1897,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       {searchOpen && (
         <SearchModal
           onClose={() => setSearchOpen(false)}
-          onPick={(id) => { setSearchOpen(false); setSelectedId(id); }}
+          onPick={(id) => { setSearchOpen(false); openSessionById(id, false); }}
         />
       )}
 

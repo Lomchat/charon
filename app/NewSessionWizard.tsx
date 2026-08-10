@@ -43,7 +43,10 @@ type Props = {
   initialVpsId?: string;
   initialCwd?: string | null;
   onClose: () => void;
-  onCreatedSession?: (id: string) => void;
+  // The whole created row, not just the id: the caller has to open its tab
+  // NOW, and the session list it would look the id up in is refreshed a beat
+  // later (a lookup that misses = a session created and never selected).
+  onCreatedSession?: (created: { id: string; vpsId: string; cwd: string }) => void;
   onCreatedShell?: (shell: ShellInfo) => void;
   // Repair button on an unavailable VPS row (cf. app/vpsHealth.tsx). The
   // parent decides what closes the wizard (install / claude-login do; a
@@ -426,7 +429,7 @@ export default function NewSessionWizard({
           fallbackModel: isCodex ? null : (fallbackModel.trim() || null),
           effort: effort || null,
         });
-        onCreatedSession?.(r.id);
+        onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: path!.trim() });
       } else {
         const shell = await api.startShell(vps.id, {
           cwd: path ? path.trim() : null,   // null = user home

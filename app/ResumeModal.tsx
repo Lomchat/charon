@@ -18,7 +18,9 @@ type Props = {
   dbSessions: ClaudeSession[];
   initialVpsId?: string;
   onClose: () => void;
-  onImported: (id: string) => void;
+  // vpsId + cwd travel with the id: the caller opens its tab immediately and
+  // the session list it would look them up in is a beat behind.
+  onImported: (created: { id: string; vpsId: string; cwd: string }) => void;
   onResumed: (id: string) => void;
 };
 
@@ -98,7 +100,7 @@ export default function ResumeModal({
         vpsId, kind, claudeSessionId: s.sessionId, cwd: s.cwd,
         name: title ? title.slice(0, 60) : null,
       });
-      onImported(r.id);
+      onImported({ id: r.id, vpsId, cwd: s.cwd });
     } catch (e: any) {
       alert('import: ' + (e?.message ?? e));
     } finally { setBusy(null); }

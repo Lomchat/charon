@@ -1,6 +1,6 @@
 import 'server-only';
 import crypto from 'node:crypto';
-import { and, desc, eq, inArray, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import {
   db, claudeSessions, claudeSessionMessages,
   claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
@@ -1663,6 +1663,24 @@ export function listStreams(): SessionStream[] {
 // ── Session lifecycle (create/resume/sleep/kill/import) ─────────────────────
 
 /**
+ * Where a brand-new session goes in the sidebar: at the END of its VPS.
+ *
+ * `position` defaults to 0 and an untouched list sorts by `createdAt` (§14.80),
+ * so a new row LOOKS last until you drag something — at which point that VPS's
+ * rows become 0..n-1 and the next session, still at 0, jumps to the TOP of a
+ * list it has nothing to do with. Stamping max+1 makes "new goes last" true in
+ * both worlds, and costs one query.
+ */
+function nextSessionPosition(vpsId: string): number {
+  const [row] = db
+    .select({ max: sql<number | null>`max(${claudeSessions.position})` })
+    .from(claudeSessions)
+    .where(eq(claudeSessions.vpsId, vpsId))
+    .all();
+  return (row?.max ?? -1) + 1;
+}
+
+/**
  * Create a DB row for a Claude session that already exists SDK-side (e.g.
  * found by /api/vps/[id]/claude/scan). The session is born 'sleeping' with
  * its claude_session_id; a later resume materializes it on the agent side
@@ -1690,6 +1708,7 @@ export async function importExistingSession(opts: {
     kind,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? defaultMode,
+    position: nextSessionPosition(opts.vpsId),
   }).run();
   // Live-announce the imported session (appears on every tab/device). §14.52.
   emitGlobalSessionListChanged(sessionId);
@@ -1743,6 +1762,7 @@ export async function startNewSession(opts: {
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
     lastUsedAt: Math.floor(Date.now() / 1000),
+    position: nextSessionPosition(opts.vpsId),
   }).run();
 
   const stream = new SessionStream({
