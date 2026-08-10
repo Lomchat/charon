@@ -1,12 +1,14 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { AgentKind, SessionAttachment } from '@/lib/types/api';
 import SplitDiffModal from './SplitDiffModal';
 import { fmtSize } from './sessionAttachments';
+import GitTab from './GitTab';
 import {
-  IconClipboard, IconDownload, IconEye, IconFileEarmark, IconPlusSquare, IconTrash,
+  IconClipboard, IconDiff, IconDownload, IconEye, IconFileEarmark, IconGitBranch,
+  IconPaperclip, IconPlusSquare, IconTools, IconTrash,
 } from './icons';
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
@@ -31,13 +33,35 @@ type Props = {
   onRemoveAttachment?: (id: string) => void;
   // Re-insert a path into the message being composed.
   onInsertPath?: (path: string) => void;
+  // Source control (§14.76). Scoped to the REPO containing `cwd`, not to the
+  // session — which is why it takes (vpsId, cwd) and not sessionId.
+  vpsId?: string | null;
+  cwd?: string | null;
+  /** A session is mid-turn in this repo: warn before committing, never block. */
+  repoBusy?: boolean;
+  /** One-shot "open on this tab" request (from the header's dirty chip). */
+  requestedTab?: Tab | null;
+  onTabConsumed?: () => void;
 };
 
-type Tab = 'diffs' | 'calls' | 'files';
+export type Tab = 'diffs' | 'git' | 'files' | 'calls';
+
+// Four tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
+// no longer fit. Only the ACTIVE tab is labelled; the others are icon-only and
+// their count shrinks to a corner dot. That is not just a width trick — the
+// panel is a drawer on touch (<=1100px) where `title` tooltips don't exist, so
+// icon-only-everywhere would be undiscoverable. The active label is the legend.
+const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
+  { id: 'diffs', label: 'diffs', Icon: IconDiff },
+  { id: 'git', label: 'git', Icon: IconGitBranch },
+  { id: 'files', label: 'files', Icon: IconPaperclip },
+  { id: 'calls', label: 'tools', Icon: IconTools },
+];
 
 export default function ToolPanel({
   sessionId, kind = 'claude', toolCalls, edits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath,
+  vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
 }: Props) {
   const [tab, setTab] = useState<Tab>('diffs');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
@@ -48,21 +72,47 @@ export default function ToolPanel({
     [edits],
   );
 
+  // The dirty chip in the chat header opens this panel ON the git tab. It's a
+  // one-shot request rather than a controlled prop so the user can switch tabs
+  // afterwards without the parent yanking them back.
+  useEffect(() => {
+    if (!requestedTab) return;
+    setTab(requestedTab);
+    onTabConsumed?.();
+  }, [requestedTab, onTabConsumed]);
+
+  const counts: Record<Tab, number> = {
+    diffs: editArr.length,
+    git: 0,   // the git count lives on the chip in the header, not here
+    files: attachments.length,
+    calls: toolCalls.length,
+  };
+
   return (
     <aside className="tool-panel">
       <nav className="tp-tabs">
-        <button className={tab === 'diffs' ? 'on' : ''} onClick={() => setTab('diffs')}>
-          diffs {editArr.length > 0 && <span className="badge">{editArr.length}</span>}
-        </button>
-        <button className={tab === 'files' ? 'on' : ''} onClick={() => setTab('files')}>
-          files {attachments.length > 0 && <span className="badge">{attachments.length}</span>}
-        </button>
-        <button className={tab === 'calls' ? 'on' : ''} onClick={() => setTab('calls')}>
-          tools {toolCalls.length > 0 && <span className="badge">{toolCalls.length}</span>}
-        </button>
+        {TABS.map(({ id, label, Icon }) => {
+          const on = tab === id;
+          const n = counts[id];
+          return (
+            <button
+              key={id}
+              className={`${on ? 'on' : ''}${n > 0 ? ' has-badge' : ''}`}
+              onClick={() => setTab(id)}
+              title={label}
+              aria-label={label}
+              aria-current={on ? 'page' : undefined}
+            >
+              <Icon className="tp-ico" />
+              {on && <span className="tp-label">{label}</span>}
+              {n > 0 && <span className="badge">{n}</span>}
+            </button>
+          );
+        })}
       </nav>
       <div className="tp-body">
         {tab === 'diffs' && <DiffsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
+        {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
         {tab === 'files' && (
           <FilesTab

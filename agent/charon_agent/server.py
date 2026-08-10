@@ -16,6 +16,14 @@ from typing import Any, Awaitable
 
 from . import __version__
 from .fsnav import list_dir as fs_list_dir
+from .git import (
+    git_commit as _git_commit,
+    git_diff as _git_diff,
+    git_discard as _git_discard,
+    git_pull as _git_pull,
+    git_push as _git_push,
+    git_status as _git_status,
+)
 
 
 def _compute_pyz_sha() -> str:
@@ -357,6 +365,7 @@ class Server:
         "list_codex_models", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
+        "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_discard",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -406,6 +415,29 @@ class Server:
             # off the event loop; ~1ms over the persistent pipe vs ~0.5s for
             # a one-shot ssh exec (sshd session setup). Agent >= 0.17.0.
             return await asyncio.to_thread(fs_list_dir, str(params.get("path") or ""))
+
+        if method.startswith("git_"):
+            # Source-control panel backend (agent >= 0.24.0, git.py). Every
+            # entry point shells out to git, so it runs off the event loop —
+            # a slow `git status` on a huge repo, a pre-commit hook or a push
+            # over a bad network must never stall session I/O. The functions
+            # never raise: failures come back as {ok: False, reason} for the
+            # UI to turn into an actionable message.
+            cwd = str(params.get("cwd") or "")
+            if method == "git_status":
+                return await asyncio.to_thread(
+                    _git_status, cwd, bool(params.get("include_recent"))
+                )
+            if method == "git_diff":
+                return await asyncio.to_thread(_git_diff, cwd, str(params.get("path") or ""))
+            if method == "git_commit":
+                return await asyncio.to_thread(_git_commit, cwd, params)
+            if method == "git_push":
+                return await asyncio.to_thread(_git_push, cwd)
+            if method == "git_pull":
+                return await asyncio.to_thread(_git_pull, cwd)
+            if method == "git_discard":
+                return await asyncio.to_thread(_git_discard, cwd, params)
 
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]

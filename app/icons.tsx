@@ -167,6 +167,55 @@ export const IconFileEarmark = (p: Props) => (
   </svg>
 );
 
+// Git branch — the source-control tab and the dirty chip next to the cwd.
+// Hand-drawn (stroked) rather than a bootstrap fill path: the tab strip mixes
+// it with IconDiff below, and the two have to share a weight.
+export const IconGitBranch = (p: Props) => (
+  <svg
+    {...base}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...p}
+  >
+    <circle cx="4.5" cy="3" r="1.75" />
+    <circle cx="4.5" cy="13" r="1.75" />
+    <circle cx="11.5" cy="3" r="1.75" />
+    <path d="M4.5 4.75v6.5" />
+    <path d="M11.5 4.75v1.25a3 3 0 0 1-3 3H7.5a3 3 0 0 0-3 3" />
+  </svg>
+);
+
+// Diff — a square split on the diagonal with a + and a −, the conventional
+// "changes" mark. Same stroke weight as IconGitBranch.
+export const IconDiff = (p: Props) => (
+  <svg
+    {...base}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...p}
+  >
+    <rect x="1.75" y="1.75" width="12.5" height="12.5" rx="2.5" />
+    <path d="M12.5 3.5 3.5 12.5" />
+    <path d="M4 5.75h3M5.5 4.25v3" />
+    <path d="M9 10.25h3" />
+  </svg>
+);
+
+// Sparkle — "draft this with a model". An SVG rather than the ✨ emoji, which
+// renders as tofu in the display/mono stack this UI uses.
+export const IconSparkle = (p: Props) => (
+  <svg {...base} {...p}>
+    <path d="M6.5 1.2 7.7 5.3 11.8 6.5 7.7 7.7 6.5 11.8 5.3 7.7 1.2 6.5 5.3 5.3Z" />
+    <path d="M12.2 9.4 12.8 11.2 14.6 11.8 12.8 12.4 12.2 14.2 11.6 12.4 9.8 11.8 11.6 11.2Z" />
+  </svg>
+);
+
 // Eye — "open this attachment in a new tab".
 export const IconEye = (p: Props) => (
   <svg {...base} {...p}>

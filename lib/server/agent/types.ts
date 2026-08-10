@@ -250,6 +250,18 @@ export type AgentMethodName =
   // semicolon CHARACTER anywhere in comments inside this union —
   // check-protocol-sync.mjs slices the type body at the first one.
   | 'list_dir'
+  // Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
+  // to the repo containing a cwd, NOT to a session. No ssh fallback exists on
+  // purpose - duplicating the porcelain-v2 parser hub-side is the real cost,
+  // so an older agent degrades to the unsupported reason. cf. CLAUDE.md §14.76.
+  // NB: no quoted words in comments here - check-protocol-sync.mjs reads every
+  // quoted token in this type body as a method name.
+  | 'git_status'
+  | 'git_diff'
+  | 'git_commit'
+  | 'git_push'
+  | 'git_pull'
+  | 'git_discard'
   | 'start_session'
   | 'resume_session'
   | 'subscribe'

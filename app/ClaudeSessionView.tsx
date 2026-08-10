@@ -7,7 +7,8 @@ import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
 import { api } from '@/lib/api';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import Message, { type Msg, summarizeToolInput } from './Message';
-import ToolPanel from './ToolPanel';
+import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
+import { refreshGit, useGitStatus } from './gitStore';
 import BgTasksBar from './BgTasksBar';
 import UsageMeter from './UsageMeter';
 import QuestionCard from './QuestionCard';
@@ -76,6 +77,10 @@ type Props = {
   // widget). Subscribed/held in ClaudePanel (account-scoped, LOW_VOLUME). §14.58.
   usage?: AccountUsage | null;
   onUsageRefresh?: () => void;
+  // Opens the ToolPanel drawer on narrow screens (<=1100px it's hidden behind
+  // a transform). Used by the git chip, which must reveal the panel it points
+  // at — on desktop the panel is always visible and this is a no-op.
+  onOpenTools?: () => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -90,6 +95,7 @@ const sharedCacheRef: StreamCache = {
 export default function ClaudeSessionView({
   sessionId, selected, selectedVps,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
+  onOpenTools,
 }: Props) {
   const stream = useClaudeSessionStream(sessionId, {
     cache: sharedCacheRef,
@@ -116,6 +122,28 @@ export default function ClaudeSessionView({
   // deferred "apply now ↻" badge (Codex applies on the next turn → no badge).
   const sessionKind: AgentKind = (selected.kind as AgentKind) === 'codex' ? 'codex' : 'claude';
   const vpsId = selectedVps?.id ?? '';
+
+  // ── Source control (§14.76) ───────────────────────────────────────────────
+  // The chip next to the cwd opens the ToolPanel on the git tab (and reveals
+  // the drawer on narrow screens). One-shot so the user can move tabs after.
+  const [requestedToolTab, setRequestedToolTab] = useState<ToolTab | null>(null);
+  const clearRequestedToolTab = useCallback(() => setRequestedToolTab(null), []);
+  const openGitTab = useCallback(() => {
+    setRequestedToolTab('git');
+    onOpenTools?.();
+  }, [onOpenTools]);
+
+  // A finished turn is the moment an agent has just stopped writing files, so
+  // it's the highest-value refresh there is — worth far more than a faster
+  // background poll. Fires on the thinking → anything-else edge only.
+  const prevStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const was = prevStatusRef.current;
+    prevStatusRef.current = status ?? null;
+    if (was === 'thinking' && status !== 'thinking' && vpsId && selected.cwd) {
+      refreshGit(vpsId, selected.cwd);
+    }
+  }, [status, vpsId, selected.cwd]);
 
   // ── Session attachments ───────────────────────────────────────────────────
   // One list, two consumers: <ChatInputBar> (underline + insert on upload) and
@@ -466,7 +494,16 @@ export default function ClaudeSessionView({
               share a name (or have none). */}
           <div className="bar-ident">
             <span className="bar-name">{selected.name || '(unnamed)'}</span>
-            {selected.cwd && <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />}
+            {selected.cwd && (
+              <span className="bar-sub">
+                <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />
+                {/* Source-control state, pinned to the thing it describes: the
+                    cwd IS the repo. A bar in the message column would compete
+                    with ThinkingBar + BgTasksBar exactly during a turn, which
+                    is when the tree is dirtiest. §14.76 */}
+                <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
+              </span>
+            )}
           </div>
           {/* Account-usage gauges (5h / 7d) for this session's VPS account —
               leftmost of the right-aligned control cluster (between the title
@@ -693,6 +730,11 @@ export default function ClaudeSessionView({
         attachments={attachments}
         onRemoveAttachment={removeAttachment}
         onInsertPath={requestInsertPath}
+        vpsId={vpsId || null}
+        cwd={selected.cwd || null}
+        repoBusy={status === 'thinking'}
+        requestedTab={requestedToolTab}
+        onTabConsumed={clearRequestedToolTab}
       />
     </>
   );
@@ -1080,6 +1122,42 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
       {head && <span className="c-head">{head}</span>}
       <span className="c-tail">{tail}</span>
     </span>
+  );
+}
+
+/**
+ * Dirty-state chip for the session's repo, sitting next to the cwd.
+ *
+ * Deliberately the quietest thing that can carry the signal: it renders
+ * NOTHING when the cwd isn't a repo or the tree is clean, so it costs zero
+ * pixels in the common case and never pushes the chat around. Clicking it
+ * opens the git tab — the chip is an indicator and an entry point, and holds
+ * no controls of its own.
+ *
+ * It also stays silent while the state is merely degraded (agent offline or
+ * too old): the git tab explains that, and a header chip is the wrong place to
+ * put an error the user can't act on from here.
+ */
+function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: () => void }) {
+  const { status } = useGitStatus(vpsId || null, cwd || null);
+  if (!status?.ok || !status.isRepo) return null;
+  const n = status.fileCount ?? status.files.length;
+  const ahead = status.ahead ?? 0;
+  if (n === 0 && ahead === 0) return null;
+
+  const title = [
+    status.detached ? `detached @ ${status.head ?? '?'}` : `branch ${status.branch ?? '?'}`,
+    n > 0 ? `${n} changed file${n > 1 ? 's' : ''} (+${status.added ?? 0} −${status.deleted ?? 0})` : 'working tree clean',
+    ahead > 0 ? `${ahead} commit${ahead > 1 ? 's' : ''} to push` : '',
+    'click to open source control',
+  ].filter(Boolean).join('\n');
+
+  return (
+    <button type="button" className="git-chip" onClick={onOpen} title={title}>
+      <span className="gc-branch">⎇ {status.detached ? (status.head ?? 'detached') : (status.branch ?? '?')}</span>
+      {n > 0 && <span className="gc-count">{n}</span>}
+      {ahead > 0 && <span className="gc-ahead">↑{ahead}</span>}
+    </button>
   );
 }
 

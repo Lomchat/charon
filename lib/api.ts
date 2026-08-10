@@ -7,6 +7,8 @@ import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
+  GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
+  GitOpResponse, GitMessageResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -117,6 +119,24 @@ export const api = {
   // + cached client-side) and existence check on submit.
   listVpsDirs: (id: string, path: string) =>
     send<VpsFsListResponse>('GET', `/api/vps/${id}/fs?path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 15_000 }),
+  // ── Source control (agent >= 0.24.0, §14.76) ──────────────────────────────
+  // Keyed on (vpsId, cwd), never on a session: two sessions in the same repo
+  // are two views of one working tree and share the hub-side cache.
+  getGitStatus: (id: string, cwd: string, force = false) =>
+    send<GitStatusResponse>('GET', `/api/vps/${id}/git/status?cwd=${encodeURIComponent(cwd)}${force ? '&force=1' : ''}`, undefined, { timeoutMs: 20_000 }),
+  getGitDiff: (id: string, cwd: string, path: string) =>
+    send<GitDiffResponse>('GET', `/api/vps/${id}/git/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 30_000 }),
+  gitCommit: (id: string, body: GitCommitBody) =>
+    send<GitCommitResponse>('POST', `/api/vps/${id}/git/commit`, body, { timeoutMs: 200_000 }),
+  gitPush: (id: string, cwd: string) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/push`, { cwd }, { timeoutMs: 200_000 }),
+  gitPull: (id: string, cwd: string) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd }, { timeoutMs: 200_000 }),
+  gitDiscard: (id: string, cwd: string, paths: string[]) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths }, { timeoutMs: 60_000 }),
+  gitMessage: (id: string, cwd: string, sel: { paths?: string[]; all?: boolean }) =>
+    send<GitMessageResponse>('POST', `/api/vps/${id}/git/message`, { cwd, ...sel }, { timeoutMs: 120_000 }),
+
   getLocalAgentStatus: () =>
     send<LocalAgentStatus>('GET', '/api/local-agent/status'),
   updateLocalAgent: () =>

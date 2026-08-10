@@ -77,6 +77,17 @@ METHODS = {
     # Filesystem navigation for the hub's path autocomplete - subdirs of a
     # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.
     "list_dir",
+    # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
+    # to the repo containing a path, not to a session - the hub polls
+    # git_status while a session is on screen, so it rides the persistent pipe
+    # instead of one ssh per poll. Writes are an allow-list: add+commit, push,
+    # pull --rebase, per-file discard. No reset, no force push.
+    "git_status",
+    "git_diff",
+    "git_commit",
+    "git_push",
+    "git_pull",
+    "git_discard",
     "start_session",
     "resume_session",
     "subscribe",

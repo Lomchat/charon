@@ -108,6 +108,119 @@ export type VpsFsListResponse = {
   truncated?: boolean;
 };
 
+// ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────
+// Shapes mirror the RPC results verbatim: the hub routes are a thin
+// auth + cache layer, they never reshape the payload. cf. CLAUDE.md §14.76.
+
+// Why an operation failed, in a form the UI can turn into a fix. Anything
+// unrecognized collapses to 'error' — GitFailureReason must stay exhaustive
+// on the CONSUMING side (vpsHealth-style), never on the producing one.
+export type GitFailureReason =
+  | 'ownership'   // dubious ownership → git config --global --add safe.directory
+  | 'identity'    // user.name / user.email unset on the VPS
+  | 'auth'        // no credentials for the remote
+  | 'no_remote'
+  | 'rejected'    // non-fast-forward → pull --rebase
+  | 'conflict'
+  | 'no_changes'
+  | 'no_message'
+  | 'bad_paths'
+  | 'bad_path'
+  | 'no_cwd'
+  | 'no_git'      // git not installed on the VPS
+  | 'timeout'
+  | 'hook'
+  | 'unsupported' // HUB-side: agent older than 0.24.0
+  | 'offline'     // HUB-side: no agent connection for this VPS
+  | 'error';
+
+export type GitFileEntry = {
+  path: string;
+  origPath?: string | null;   // rename source
+  x: string;                  // index status letter (porcelain v2)
+  y: string;                  // worktree status letter
+  status: string;             // one-letter summary: M A D R U ?
+  untracked: boolean;
+  conflict?: boolean;
+  binary?: boolean;
+  added: number | null;       // null = binary / not counted
+  deleted: number | null;
+};
+
+export type GitStatusResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  // false is the NORMAL answer for a non-git cwd — the UI renders nothing at
+  // all, so it must never be treated as a failure.
+  isRepo: boolean;
+  root?: string | null;
+  branch?: string | null;
+  detached?: boolean;
+  head?: string | null;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+  remotes?: string[];
+  // Last few commit subjects — only populated when the caller asked for them
+  // (the commit-message generator, never the poll). They are what makes a
+  // generated message match the repo's own conventions.
+  recentSubjects?: string[];
+  files: GitFileEntry[];
+  fileCount?: number;
+  truncated?: boolean;
+  added?: number;
+  deleted?: number;
+  conflicts?: number;
+};
+
+export type GitDiffResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  path?: string;
+  patch?: string;
+  truncated?: boolean;
+  tracked?: boolean;
+};
+
+export type GitCommitBody = {
+  cwd: string;
+  message: string;
+  paths?: string[];
+  all?: boolean;
+  push?: boolean;
+};
+
+export type GitCommitResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  committed?: boolean;
+  sha?: string | null;
+  subject?: string;
+  // A failed push after a SUCCESSFUL commit keeps ok:true — reporting the
+  // whole thing as failed would push the user to commit twice.
+  pushed?: boolean;
+  pushError?: string;
+  pushReason?: GitFailureReason;
+  pushOutput?: string;
+};
+
+export type GitOpResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  output?: string;
+  discarded?: string[];
+};
+
+export type GitMessageResponse = {
+  ok: boolean;
+  error?: string;
+  message?: string;
+};
+
 export type UpdateVpsAgentResponse = {
   ok: boolean;
   error?: string;
