@@ -229,6 +229,65 @@ export type FsOpResponse = {
   path?: string;
 };
 
+// ── Search across the tree (agent >= 0.29.0, §14.84) ───────────────────────
+// Two searches behind one shape: `text` greps inside files, `file` matches
+// path names. They share every parameter that makes a search precise, so
+// splitting them into two RPCs would have duplicated all of it.
+export type FsSearchMode = 'text' | 'file';
+
+export type FsSearchQuery = {
+  root: string;
+  query: string;
+  mode: FsSearchMode;
+  regex?: boolean;
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  /** Comma-separated globs, VS Code spelling: `*.ts, src/**`. */
+  include?: string;
+  exclude?: string;
+  /** Skip node_modules & co. On by default; the UI exposes the switch. */
+  useDefaultExcludes?: boolean;
+};
+
+export type FsSearchMatch = {
+  /** 1-based, and what the editor scrolls to when the row is clicked. */
+  line: number;
+  col: number;
+  /** The line, windowed around the first hit — a minified bundle is one line. */
+  text: string;
+  /** [start, end) offsets INTO `text`, already rebased onto the window. */
+  ranges: [number, number][];
+  /** True when `text` starts mid-line, so the UI can show the ellipsis. */
+  clipped?: boolean;
+};
+
+export type FsSearchFile = {
+  path: string;
+  size: number;
+  mtime: number;
+  count: number;
+  matches: FsSearchMatch[];
+  /** This file hit the per-file cap — there are more matches in it. */
+  truncated?: boolean;
+};
+
+export type FsSearchResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: 'bad_query' | 'bad_path' | 'offline' | 'unsupported' | 'error';
+  root?: string;
+  mode?: FsSearchMode;
+  files: FsSearchFile[];
+  totalFiles?: number;
+  totalMatches?: number;
+  scanned?: number;
+  /** A bound was hit. Never silently: an empty-looking search must say why. */
+  truncated?: boolean;
+  elapsedMs?: number;
+  /** 'git' = .gitignore decided what is in scope, 'walk' = the default list. */
+  source?: 'git' | 'walk';
+};
+
 // ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────
 // Shapes mirror the RPC results verbatim: the hub routes are a thin
 // auth + cache layer, they never reshape the payload. cf. CLAUDE.md §14.76.
@@ -247,6 +306,11 @@ export type GitFailureReason =
   | 'no_message'
   | 'bad_paths'
   | 'bad_path'
+  | 'bad_branch'  // a branch name we refuse to hand to git
+  | 'dirty'       // the switch would overwrite local changes — never forced
+  | 'exists'      // create hit an existing branch
+  | 'unmerged'    // branch -d refused: commits live nowhere else
+  | 'current'     // that branch is checked out
   | 'no_cwd'
   | 'no_git'      // git not installed on the VPS
   | 'timeout'
@@ -297,6 +361,94 @@ export type GitStatusResponse = {
   added?: number;
   deleted?: number;
   conflicts?: number;
+  /** Path of `root` relative to the session cwd — '' when they are the same. */
+  rel?: string;
+  /** Basename of the repo root, for the section header of a multi-repo folder. */
+  name?: string;
+};
+
+/**
+ * Every checkout a session can see, in one answer (agent >= 0.29.0).
+ *
+ * `mode`:
+ *  - `single` — the cwd is inside a checkout. One repo, scoped to its
+ *    toplevel; exactly the pre-0.29.0 behaviour.
+ *  - `multi`  — the cwd is NOT a checkout but contains some (a folder of
+ *    projects: /srv, /var/www/html). One entry per discovered repo, reported
+ *    even when there is one, because the panel then has to name the folder.
+ *  - `none`   — a plain folder with nothing underneath it.
+ */
+export type GitWorkspaceResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  mode: 'single' | 'multi' | 'none';
+  repos: GitStatusResponse[];
+  /** Repos found by the downward scan (multi only). */
+  scanned?: number;
+  /** The scan hit its depth/count/dir budget — the list may be incomplete. */
+  truncated?: boolean;
+};
+
+/** One branch, local or remote-only (agent >= 0.31.0, §14.85). */
+export type GitBranch = {
+  /** Full short ref: `main`, or `origin/main` for a remote-only branch. */
+  name: string;
+  /** What to display and what to switch to — `origin/` stripped. */
+  short: string;
+  remote: boolean;
+  current: boolean;
+  upstream?: string | null;
+  /** Drift vs its UPSTREAM: what the push / pull buttons are about. */
+  ahead: number;
+  behind: number;
+  /** The upstream is gone (branch deleted on the remote). */
+  gone?: boolean;
+  /**
+   * Drift vs the branch you are ON — what switching would cost you. null on
+   * git < 2.41, which has no `ahead-behind` field.
+   */
+  aheadHead?: number | null;
+  behindHead?: number | null;
+  committedAt?: number | null;
+  subject?: string;
+  /** Checked out in this worktree — git will refuse a second checkout of it. */
+  worktree?: string | null;
+};
+
+export type GitBranchesResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  root?: string | null;
+  current?: string | null;
+  detached?: boolean;
+  branches: GitBranch[];
+  truncated?: boolean;
+};
+
+export type GitCheckoutBody = {
+  cwd: string;
+  repo?: string | null;
+  branch: string;
+  create?: boolean;
+  /** Base for a new branch. Defaults to the current HEAD. */
+  startPoint?: string | null;
+  /** Publish a newly created branch with `push -u`. */
+  push?: boolean;
+};
+
+export type GitCheckoutResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  branch?: string;
+  created?: boolean;
+  pushed?: boolean;
+  pushError?: string;
+  pushReason?: GitFailureReason;
+  /** Paths a switch would have overwritten (reason: 'dirty'). */
+  conflicts?: string[];
 };
 
 export type GitDiffResponse = {
@@ -311,6 +463,12 @@ export type GitDiffResponse = {
 
 export type GitCommitBody = {
   cwd: string;
+  /**
+   * Repo to act on, when the cwd holds several. Absolute, and validated
+   * server-side to sit inside the cwd. `cwd` stays the CACHE key (one
+   * workspace = one poll), `repo` is the git target.
+   */
+  repo?: string | null;
   message: string;
   paths?: string[];
   all?: boolean;

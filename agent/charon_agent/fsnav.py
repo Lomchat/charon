@@ -13,6 +13,10 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   `list_dir` rather than an extension of it: that one is on the hot path of
   every keystroke in the wizard and returns directories only, and widening its
   contract would make a typo in the tree break session creation.
+- `fs_search` (agent >= 0.29.0) — grep across the tree, and find a file by
+  name. One RPC for both because they share every parameter that makes a
+  search precise (the globs, the case/word/regex switches) and differ only in
+  what the pattern is matched against.
 
 All tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
 The ssh user can already read anything — the hub hands out shells — so this is
@@ -24,9 +28,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import shutil
+import stat
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 MAX_ENTRIES = 400
@@ -438,3 +445,436 @@ def fs_delete(root: str, path: str, recursive: bool = False) -> dict[str, Any]:
         return {"ok": False, "error": "permission denied", "reason": "error"}
     except OSError as e:
         return {"ok": False, "error": str(e), "reason": "error"}
+
+
+# ── Search (agent >= 0.29.0) ────────────────────────────────────────────────
+# Every bound here exists so that one search can never become the reason a
+# session stops answering: the hub gives up on an RPC after 60s, the walk runs
+# in a thread, and a repo with a 40MB bundle in it is a normal repo.
+SEARCH_BUDGET_S = 20.0
+SEARCH_MAX_FILE_BYTES = 1024 * 1024
+SEARCH_HEAD_BYTES = 8000
+# Enumeration is cheap — 20k paths off a warm cache is under a second — so the
+# real bound is the clock, not this. It is set high enough that a folder OF
+# projects (/srv, /var/www) still gets a complete answer, because a cap hit
+# during enumeration truncates in DIRECTORY order, which is nobody's idea of
+# relevance: the first 20k version of this returned zero hits on a tree whose
+# matches all lived past the cut.
+SEARCH_MAX_SCAN = 200_000          # candidate files enumerated
+SEARCH_MAX_FILES = 500             # files carried back in the answer
+SEARCH_MAX_RESULTS = 2000          # matches carried back in the answer
+SEARCH_MAX_PER_FILE = 100
+SEARCH_MAX_PER_LINE = 20
+SEARCH_LINE_CHARS = 320            # a minified bundle is one 2MB line
+SEARCH_LEAD_CHARS = 40
+
+# What a search means by "the project", when git is not there to say. Not a
+# security list — a relevance one: nobody looking for their own code wants the
+# first 2000 hits to come from a dependency they never wrote.
+DEFAULT_EXCLUDE_DIRS = frozenset({
+    ".git", ".hg", ".svn", "node_modules", "bower_components", ".next",
+    "dist", "build", "out", "target", "vendor", "__pycache__", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", ".cache", ".venv", "venv", "env",
+    "site-packages", "coverage", ".nyc_output", ".idea", ".gradle",
+    ".terraform", ".turbo", ".parcel-cache", ".svelte-kit",
+})
+# `.git` is excluded even with the defaults off: its contents are not text a
+# human ever wants back from a search, and a packed repo alone would eat the
+# whole scan budget.
+ALWAYS_SKIP_DIRS = frozenset({".git"})
+
+
+def _glob_to_regex(pat: str) -> str:
+    """One glob segment → regex source (unanchored), `/`-aware.
+
+    `*` and `?` stop at a separator, `**` crosses them: the rule from
+    .gitignore and VS Code, which is the only one users have already learned.
+    """
+    out: list[str] = []
+    i, n = 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if pat.startswith("**", i):
+                j = i + 2
+                if j < n and pat[j] == "/":
+                    out.append("(?:[^/]+/)*")
+                    i = j + 1
+                else:
+                    out.append(".*")
+                    i = j
+                continue
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "{":
+            j = pat.find("}", i)
+            if j == -1:
+                out.append(re.escape(c))
+                i += 1
+                continue
+            alts = pat[i + 1:j].split(",")
+            out.append("(?:" + "|".join(_glob_to_regex(a) for a in alts) + ")")
+            i = j + 1
+        elif c == "[":
+            j = pat.find("]", i + 1)
+            if j == -1:
+                out.append(re.escape(c))
+                i += 1
+                continue
+            body = pat[i + 1:j]
+            body = ("^" + body[1:]) if body.startswith("!") else body
+            out.append("[" + body.replace("\\", "\\\\") + "]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+def _split_globs(spec: str) -> list[str]:
+    """Split a glob list on the separators, NOT on the commas inside `{a,b}`.
+
+    Both spellings are things people type — `*.ts, *.tsx` and `*.{ts,tsx}` —
+    and a naive split turns the second one into two patterns that match
+    nothing, which looks exactly like "your search found nothing".
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in (spec or "").replace("\n", ","):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            out.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    out.append("".join(buf))
+    return out
+
+
+def _compile_globs(spec: str) -> list[re.Pattern[str]]:
+    """Comma- or newline-separated globs → matchers against a root-relative path.
+
+    Two conveniences that are load-bearing for the field to feel like VS
+    Code's: a pattern with no `/` matches at any depth (`*.ts`), and a pattern
+    that names a folder also covers everything under it (`tests` finds
+    `tests/a/b.py`). A malformed glob degrades to a literal and is never fatal
+    — the user is still in the middle of typing it.
+    """
+    pats: list[re.Pattern[str]] = []
+    for raw in _split_globs(spec):
+        p = raw.strip().strip("/")
+        if not p:
+            continue
+        body = _glob_to_regex(p)
+        if "/" not in p:
+            body = "(?:[^/]+/)*" + body
+        try:
+            pats.append(re.compile("(?s:" + body + r")(?:/.*)?\Z"))
+        except re.error:
+            continue
+    return pats
+
+
+def _matches_any(rel: str, pats: list[re.Pattern[str]]) -> bool:
+    return any(p.match(rel) for p in pats)
+
+
+def _walk_search_files(root: str, skip: frozenset[str],
+                       deadline: float) -> tuple[list[str], set[str], bool]:
+    """Every candidate file under `root`, plus the repo roots seen on the way.
+
+    The walk is the ONLY enumeration, deliberately. `git ls-files` was the
+    obvious shortcut and it is wrong here: it does not descend into a nested
+    checkout, so a folder OF projects (/srv, /var/www — a normal cwd on these
+    boxes, cf. §14.83) answered with the handful of files that happened to live
+    outside the sub-repos. A search that quietly skips 95% of the tree is worse
+    than a slow one.
+
+    Repo roots are picked up for free — a directory holding a `.git` entry is
+    one — and gitignore is applied afterwards, per repo, by `_drop_gitignored`.
+
+    Symlinks are neither followed nor returned: a search that walks into a link
+    either leaves the root or loops, and neither is worth a duplicate hit.
+    """
+    out: list[str] = []
+    repos: set[str] = set()
+    stack = [root]
+    truncated = False
+    while stack:
+        if len(out) >= SEARCH_MAX_SCAN or time.monotonic() > deadline:
+            truncated = True
+            break
+        d = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if e.name == ".git":
+                            # A file here means a worktree/submodule; both are
+                            # repos as far as check-ignore is concerned.
+                            repos.add(os.path.relpath(d, root))
+                            continue
+                        if e.is_dir(follow_symlinks=False):
+                            if e.name in skip:
+                                continue
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False):
+                            out.append(os.path.relpath(e.path, root))
+                            if len(out) >= SEARCH_MAX_SCAN:
+                                truncated = True
+                                break
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return out, repos, truncated
+
+
+def _check_ignore_batch(repo: str, rels: list[str], timeout: float) -> set[str] | None:
+    """Which of `rels` git ignores in `repo`, or None when it can't answer."""
+    if not rels:
+        return set()
+    try:
+        env = os.environ.copy()
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        env["LC_ALL"] = "C"
+        p = subprocess.run(
+            ["git", "-C", repo, "check-ignore", "--stdin", "-z"],
+            input="\0".join(rels).encode("utf-8", "surrogateescape") + b"\0",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=env, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode not in (0, 1):  # 128 = not a repo, 127 = no git
+        return None
+    return {n for n in p.stdout.decode("utf-8", "replace").split("\0") if n}
+
+
+def _nearest_repo(rel_dir: str, repos: set[str]) -> str | None:
+    """The innermost repo containing `rel_dir` ('' = the search root itself)."""
+    cur = rel_dir
+    while True:
+        if cur in repos:
+            return cur
+        if cur in ("", "."):
+            return None
+        nxt = os.path.dirname(cur)
+        if nxt == cur:
+            return None
+        cur = nxt
+
+
+def _drop_gitignored(root: str, rels: list[str], repos: set[str],
+                     deadline: float) -> tuple[list[str], bool]:
+    """Remove what git ignores, one `check-ignore` per repo. (kept, applied?)
+
+    Applied AFTER the walk rather than instead of it: the walk is what
+    guarantees completeness, and this is what makes a search inside a project
+    return the code somebody wrote instead of whatever a build step left
+    behind. .gitignore is the answer the project already gave to "what is
+    mine", so it is not this feature's business to invent a second one.
+
+    Any failure (no git, a timeout, a directory that stopped being a repo
+    between the walk and now) keeps everything: dropping files because a
+    subprocess misbehaved would be an invisible way to lose results.
+    """
+    if not repos or not rels:
+        return rels, False
+    # "" (the root is itself a repo) normalises out of relpath as "."
+    repos = {("" if r in (".", "") else r) for r in repos}
+    by_repo: dict[str, list[str]] = {}
+    for rel in rels:
+        repo = _nearest_repo(os.path.dirname(rel), repos)
+        if repo is None:
+            continue
+        by_repo.setdefault(repo, []).append(rel)
+    if not by_repo:
+        return rels, False
+
+    ignored: set[str] = set()
+    applied = False
+    for repo, paths in by_repo.items():
+        left = deadline - time.monotonic()
+        if left <= 0.5:
+            break
+        abs_repo = os.path.join(root, repo) if repo else root
+        # check-ignore speaks the repo's own relative paths.
+        inner = [p[len(repo) + 1:] if repo else p for p in paths]
+        got = _check_ignore_batch(abs_repo, inner, min(left, 20.0))
+        if got is None:
+            continue
+        applied = True
+        if not got:
+            continue
+        prefix = f"{repo}/" if repo else ""
+        ignored.update(prefix + n for n in got)
+    if not applied:
+        return rels, False
+    return [r for r in rels if r not in ignored], True
+
+
+def _build_matcher(query: str, regex: bool, case_sensitive: bool,
+                   whole_word: bool) -> re.Pattern[str] | str:
+    """Compiled pattern, or the error string to hand back to the user."""
+    body = query if regex else re.escape(query)
+    if whole_word:
+        body = r"\b(?:" + body + r")\b"
+    try:
+        return re.compile(body, 0 if case_sensitive else re.IGNORECASE)
+    except re.error as e:
+        return f"invalid regular expression: {e}"
+
+
+def _line_matches(line: str, rx: re.Pattern[str], lineno: int) -> dict[str, Any] | None:
+    """One transcript line for the result list, windowed around the first hit."""
+    cols: list[tuple[int, int]] = []
+    for m in rx.finditer(line):
+        if m.end() == m.start():
+            continue  # a zero-width pattern would report every column
+        cols.append((m.start(), m.end()))
+        if len(cols) >= SEARCH_MAX_PER_LINE:
+            break
+    if not cols:
+        return None
+    start = max(0, cols[0][0] - SEARCH_LEAD_CHARS)
+    end = start + SEARCH_LINE_CHARS
+    return {
+        "line": lineno,
+        "col": cols[0][0] + 1,
+        "text": line[start:end],
+        "ranges": [[a - start, b - start] for a, b in cols if a >= start and b <= end],
+        "clipped": start > 0,
+    }
+
+
+def fs_search(root: str, query: str, mode: str = "text", regex: bool = False,
+              case_sensitive: bool = False, whole_word: bool = False,
+              include: str = "", exclude: str = "",
+              use_default_excludes: bool = True,
+              max_results: int = SEARCH_MAX_RESULTS) -> dict[str, Any]:
+    """Search the tree under `root`: text inside files, or file names.
+
+    Contained exactly like the rest of this module, and read-only by
+    construction. Everything it returns is bounded and every bound is reported,
+    because a silently truncated search reads as "there is nothing else" — the
+    one answer a search must never give by accident.
+    """
+    started = time.monotonic()
+    deadline = started + SEARCH_BUDGET_S
+    mode = "file" if mode == "file" else "text"
+
+    def done(**extra: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "ok": True, "mode": mode, "files": [], "total_files": 0,
+            "total_matches": 0, "scanned": 0, "truncated": False,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+        base.update(extra)
+        return base
+
+    try:
+        real_root = _contained(root, "")
+        if real_root is None or not os.path.isdir(real_root):
+            return {"ok": False, "error": "the folder is not readable",
+                    "reason": "bad_path", "files": []}
+        if not query:
+            return done(root=real_root)
+
+        rx = _build_matcher(query, regex, case_sensitive, whole_word)
+        if isinstance(rx, str):
+            return {"ok": False, "error": rx, "reason": "bad_query", "files": []}
+
+        inc = _compile_globs(include)
+        exc = _compile_globs(exclude)
+        skip = (DEFAULT_EXCLUDE_DIRS if use_default_excludes else frozenset()) | ALWAYS_SKIP_DIRS
+
+        names, repos, truncated = _walk_search_files(real_root, skip, deadline)
+        names, ignores_applied = _drop_gitignored(real_root, names, repos, deadline)
+        source = "git" if ignores_applied else "walk"
+        names.sort()
+
+        cap = max(1, min(int(max_results or SEARCH_MAX_RESULTS), SEARCH_MAX_RESULTS))
+        files: list[dict[str, Any]] = []
+        total_matches = 0
+        scanned = 0
+
+        for rel in names:
+            if rel.startswith(".." + os.sep) or rel.startswith("../"):
+                continue
+            if inc and not _matches_any(rel, inc):
+                continue
+            if exc and _matches_any(rel, exc):
+                continue
+            if time.monotonic() > deadline:
+                truncated = True
+                break
+            if len(files) >= SEARCH_MAX_FILES or total_matches >= cap:
+                truncated = True
+                break
+
+            target = os.path.join(real_root, rel)
+            try:
+                st = os.stat(target, follow_symlinks=False)
+            except OSError:
+                continue
+            # lstat, so a symlink is not a regular file here — deliberate: a
+            # link either points back inside (a duplicate hit) or outside the
+            # root (a hit the caller never asked for).
+            if not stat.S_ISREG(st.st_mode):
+                continue
+
+            if mode == "file":
+                scanned += 1
+                if rx.search(rel):
+                    files.append({"path": rel, "size": st.st_size,
+                                  "mtime": int(st.st_mtime), "count": 0,
+                                  "matches": [], "truncated": False})
+                    total_matches += 1
+                continue
+
+            if st.st_size > SEARCH_MAX_FILE_BYTES or st.st_size == 0:
+                continue
+            try:
+                with open(target, "rb") as f:
+                    head = f.read(SEARCH_HEAD_BYTES)
+                    if _looks_binary(head):
+                        continue
+                    data = head + f.read(SEARCH_MAX_FILE_BYTES - len(head))
+            except OSError:
+                continue
+            scanned += 1
+            text = data.decode("utf-8", "replace")
+            if not rx.search(text):
+                continue  # one scan of the blob before paying for the split
+
+            matches: list[dict[str, Any]] = []
+            file_truncated = False
+            for lineno, line in enumerate(text.splitlines(), 1):
+                hit = _line_matches(line, rx, lineno)
+                if hit is None:
+                    continue
+                matches.append(hit)
+                total_matches += len(hit["ranges"]) or 1
+                if len(matches) >= SEARCH_MAX_PER_FILE or total_matches >= cap:
+                    file_truncated = len(matches) >= SEARCH_MAX_PER_FILE
+                    break
+            if matches:
+                files.append({"path": rel, "size": st.st_size,
+                              "mtime": int(st.st_mtime), "count": len(matches),
+                              "matches": matches, "truncated": file_truncated})
+
+        return done(root=real_root, files=files, total_files=len(files),
+                    total_matches=total_matches, scanned=scanned,
+                    truncated=truncated, source=source)
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error", "files": []}
+    except (OSError, ValueError, re.error) as e:
+        return {"ok": False, "error": str(e), "reason": "error", "files": []}

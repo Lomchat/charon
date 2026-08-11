@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getSetting } from '@/lib/server/claude/settings';
-import { getGitDiff, getGitStatus } from '@/lib/server/claude/git';
+import { getGitDiff, getGitWorkspace } from '@/lib/server/claude/git';
 import type { GitMessageResponse } from '@/lib/types/api';
 
 // POST /api/vps/[id]/git/message  { cwd, paths[] | all }
@@ -42,11 +42,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   let cwd = '';
   let paths: string[] = [];
   let all = false;
+  let repo: string | null = null;
   try {
     const body = await req.json();
     cwd = String(body?.cwd ?? '');
     paths = Array.isArray(body?.paths) ? body.paths.map(String) : [];
     all = !!body?.all;
+    // Which checkout, when the cwd holds several (§14.83).
+    repo = body?.repo ? String(body.repo) : null;
   } catch { /* empty */ }
   if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
 
@@ -58,10 +61,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
   }
 
-  const status = await getGitStatus(id, cwd, { includeRecent: true });
-  if (!status.ok || !status.isRepo) {
+  const ws = await getGitWorkspace(id, cwd, { includeRecent: true });
+  // With several checkouts under one cwd the draft is for ONE of them: match
+  // the caller's repo, and fall back to the only entry when there is one.
+  const status = (repo && ws.repos.find((r) => r.root === repo)) || (ws.repos.length === 1 ? ws.repos[0] : null);
+  if (!ws.ok || !status?.isRepo) {
     return NextResponse.json<GitMessageResponse>({
-      ok: false, error: status.error || 'not a git repository',
+      ok: false, error: ws.error || status?.error || 'not a git repository',
     });
   }
   const selected = all
@@ -81,7 +87,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   for (const f of selected.slice(0, MAX_FILES_DIFFED)) {
     if (budget <= 0) break;
     if (f.binary) continue;
-    const d = await getGitDiff(id, cwd, f.path);
+    const d = await getGitDiff(id, cwd, f.path, status.root);
     if (!d.ok || !d.patch) continue;
     const patch = d.patch.length > MAX_PER_FILE_CHARS
       ? d.patch.slice(0, MAX_PER_FILE_CHARS) + '\n… (diff truncated)\n'

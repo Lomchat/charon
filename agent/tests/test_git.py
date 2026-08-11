@@ -391,3 +391,241 @@ class PureHelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+@unittest.skipUnless(HAS_GIT, "git binary not available")
+class GitWorkspaceTest(unittest.TestCase):
+    """A folder OF projects is a normal cwd, and used to answer "not a repo".
+
+    `rev-parse --show-toplevel` only walks UP, so /srv with ten checkouts under
+    it reported nothing at all. `git_workspace` scans DOWN, bounded.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="charon-ws-test-")
+        self.roots = []
+        for rel in ("alpha", "nest/beta"):
+            p = os.path.join(self.dir, rel)
+            os.makedirs(p, exist_ok=True)
+            sh(p, "init", "-q", "-b", "main")
+            sh(p, "config", "user.email", "t@e")
+            sh(p, "config", "user.name", "T")
+            sh(p, "config", "commit.gpgsign", "false")
+            write(p, "a.txt", "one\n")
+            sh(p, "add", "-A")
+            sh(p, "commit", "-qm", "init")
+            write(p, "a.txt", "one\ntwo\n")
+            write(p, "new.txt", "x\n")
+            self.roots.append(p)
+        G._scan_cache.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+        G._scan_cache.clear()
+
+    def test_finds_every_repo_below_a_plain_folder(self):
+        w = G.git_workspace(self.dir)
+        self.assertTrue(w["ok"])
+        self.assertEqual(w["mode"], "multi")
+        self.assertEqual(sorted(r["root"] for r in w["repos"]), sorted(self.roots))
+        # Each entry is a full git_status payload, so the panel needs nothing else.
+        for r in w["repos"]:
+            self.assertTrue(r["is_repo"])
+            self.assertEqual(r["branch"], "main")
+            self.assertEqual({f["status"] for f in r["files"]}, {"M", "?"})
+        # …plus the two display keys the hub would otherwise recompute.
+        by_name = {r["name"]: r for r in w["repos"]}
+        self.assertEqual(by_name["alpha"]["rel"], "alpha")
+        self.assertEqual(by_name["beta"]["rel"], os.path.join("nest", "beta"))
+
+    def test_a_cwd_inside_a_repo_is_still_single_and_scoped_to_the_toplevel(self):
+        # The pre-existing contract: a session started in a subdirectory sees
+        # the whole changeset, and no scan happens at all.
+        sub = os.path.join(self.roots[0], "deeper")
+        os.makedirs(sub, exist_ok=True)
+        w = G.git_workspace(sub)
+        self.assertEqual(w["mode"], "single")
+        self.assertEqual(len(w["repos"]), 1)
+        self.assertEqual(w["repos"][0]["root"], self.roots[0])
+        self.assertEqual(w["repos"][0]["rel"], os.path.relpath(self.roots[0], sub))
+
+    def test_a_plain_folder_with_nothing_in_it_is_none_not_an_error(self):
+        empty = tempfile.mkdtemp(prefix="charon-ws-empty-")
+        try:
+            w = G.git_workspace(empty)
+            self.assertTrue(w["ok"])
+            self.assertEqual(w["mode"], "none")
+            self.assertEqual(w["repos"], [])
+            self.assertIsNone(w.get("reason"))
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_depth_is_a_real_bound(self):
+        deep = os.path.join(self.dir, "a/b/c/d/repo")
+        os.makedirs(deep, exist_ok=True)
+        sh(deep, "init", "-q", "-b", "main")
+        found, _ = G._discover_repos(self.dir, 3)
+        self.assertNotIn(deep, found)
+        found6, _ = G._discover_repos(self.dir, 6)
+        self.assertIn(deep, found6)
+
+    def test_never_descends_into_a_checkout_or_a_junk_dir(self):
+        # A vendored repo inside node_modules is not one of your projects, and
+        # a submodule is the parent repo's business — both would be noise, and
+        # walking them is where a recursive scan goes to die.
+        for rel in ("alpha/node_modules/dep", "alpha/vendor/lib", "alpha/sub/inner"):
+            p = os.path.join(self.dir, rel)
+            os.makedirs(p, exist_ok=True)
+            sh(p, "init", "-q", "-b", "main")
+        found, _ = G._discover_repos(self.dir, 6)
+        self.assertEqual(sorted(found), sorted(self.roots))
+
+    def test_a_symlink_loop_cannot_hang_the_scan(self):
+        try:
+            os.symlink(self.dir, os.path.join(self.dir, "loop"))
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        found, _ = G._discover_repos(self.dir, 6)
+        self.assertEqual(sorted(found), sorted(self.roots))
+
+    def test_discovery_is_cached_until_refresh(self):
+        G.git_workspace(self.dir)
+        extra = os.path.join(self.dir, "gamma")
+        os.makedirs(extra, exist_ok=True)
+        sh(extra, "init", "-q", "-b", "main")
+        self.assertEqual(len(G.git_workspace(self.dir)["repos"]), 2)      # cached
+        self.assertEqual(len(G.git_workspace(self.dir, refresh=True)["repos"]), 3)
+
+    def test_the_repo_cap_is_reported_not_silently_applied(self):
+        for i in range(G.MAX_REPOS + 3):
+            p = os.path.join(self.dir, f"r{i:03d}")
+            os.makedirs(p, exist_ok=True)
+            sh(p, "init", "-q", "-b", "main")
+        found, truncated = G._discover_repos(self.dir, 3)
+        self.assertEqual(len(found), G.MAX_REPOS)
+        self.assertTrue(truncated)
+
+    def test_a_broken_dot_git_at_the_base_does_not_hide_the_projects(self):
+        # Measured on a real /srv: a `.git` that git itself rejects (empty,
+        # half-created, a stale worktree pointer, ownership it refuses) used
+        # to read as "this IS the checkout", so the scan stopped dead at the
+        # top and reported zero repos with several right underneath.
+        os.makedirs(os.path.join(self.dir, ".git"), exist_ok=True)
+        G._scan_cache.clear()
+        w = G.git_workspace(self.dir)
+        self.assertEqual(w["mode"], "multi")
+        self.assertEqual(sorted(r["root"] for r in w["repos"]), sorted(self.roots))
+
+
+@unittest.skipUnless(HAS_GIT, "git binary not available")
+class GitBranchTest(unittest.TestCase):
+    """Branch listing + switching (agent >= 0.31.0).
+
+    A branch list is only a navigation tool if it says how far each branch has
+    drifted, and a switch is the one write here that can lose work — hence
+    `git switch` with no --force and no autostash: a dirty tree comes back as
+    reason='dirty' and the user decides.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="charon-branch-test-")
+        sh(self.dir, "init", "-q", "-b", "main")
+        sh(self.dir, "config", "user.email", "t@e")
+        sh(self.dir, "config", "user.name", "T")
+        sh(self.dir, "config", "commit.gpgsign", "false")
+        write(self.dir, "a.txt", "one\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "first")
+        sh(self.dir, "branch", "feature/x")
+        sh(self.dir, "checkout", "-q", "feature/x")
+        write(self.dir, "b.txt", "two\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "second")
+        sh(self.dir, "checkout", "-q", "main")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_lists_branches_with_drift_and_marks_the_current_one(self):
+        r = G.git_branches(self.dir)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["current"], "main")
+        self.assertFalse(r["detached"])
+        by = {b["short"]: b for b in r["branches"]}
+        self.assertEqual(set(by), {"main", "feature/x"})
+        self.assertTrue(by["main"]["current"])
+        self.assertFalse(by["feature/x"]["remote"])
+        # feature/x is one commit ahead of where we stand. That number is the
+        # whole point: it says what switching would bring.
+        if by["feature/x"]["ahead_head"] is not None:      # git >= 2.41
+            self.assertEqual(by["feature/x"]["ahead_head"], 1)
+            self.assertEqual(by["feature/x"]["behind_head"], 0)
+        self.assertIsNotNone(by["feature/x"]["committed_at"])
+        self.assertEqual(by["feature/x"]["subject"], "second")
+
+    def test_a_branch_checked_out_here_reports_its_worktree(self):
+        by = {b["short"]: b for b in G.git_branches(self.dir)["branches"]}
+        self.assertTrue(by["main"]["worktree"])
+
+    def test_switch_moves_head(self):
+        r = G.git_checkout(self.dir, {"branch": "feature/x"})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(G.git_branches(self.dir)["current"], "feature/x")
+
+    def test_create_carries_the_working_tree_over(self):
+        # The "I started editing on the wrong branch" recovery — allowed dirty
+        # on purpose, because nothing is lost.
+        write(self.dir, "a.txt", "one\nedited\n")
+        r = G.git_checkout(self.dir, {"branch": "wip/thing", "create": True})
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["created"])
+        self.assertEqual(G.git_branches(self.dir)["current"], "wip/thing")
+        st = G.git_status(self.dir)
+        self.assertEqual([f["path"] for f in st["files"]], ["a.txt"])
+
+    def test_creating_an_existing_branch_is_refused_not_silently_reused(self):
+        r = G.git_checkout(self.dir, {"branch": "feature/x", "create": True})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "exists")
+
+    def test_a_switch_that_would_lose_work_is_refused_with_the_paths(self):
+        # b.txt exists only on feature/x, so an uncommitted b.txt on main is
+        # exactly the collision git protects against. We never --force it.
+        write(self.dir, "b.txt", "mine\n")
+        r = G.git_checkout(self.dir, {"branch": "feature/x"})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "dirty")
+        self.assertEqual(G.git_branches(self.dir)["current"], "main")   # unmoved
+        with open(os.path.join(self.dir, "b.txt")) as f:
+            self.assertEqual(f.read(), "mine\n")                        # unharmed
+
+    def test_a_bad_branch_name_never_reaches_git(self):
+        for bad in ("", "--force", "a/../b", "x/"):
+            r = G.git_checkout(self.dir, {"branch": bad})
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["reason"], "bad_branch")
+
+    def test_delete_is_the_safe_one_only(self):
+        # feature/x holds a commit main does not: -d refuses, and we never
+        # reach for -D on the user's behalf.
+        r = G.git_delete_branch(self.dir, {"branch": "feature/x"})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "unmerged")
+        self.assertIn("feature/x", {b["short"] for b in G.git_branches(self.dir)["branches"]})
+        # A merged branch goes without argument.
+        sh(self.dir, "branch", "spare")
+        self.assertTrue(G.git_delete_branch(self.dir, {"branch": "spare"})["ok"])
+
+    def test_deleting_the_branch_you_are_on_is_refused(self):
+        r = G.git_delete_branch(self.dir, {"branch": "main"})
+        self.assertFalse(r["ok"])
+        self.assertIn(r["reason"], ("current", "error"))
+
+    def test_a_plain_folder_answers_is_repo_false_not_a_crash(self):
+        plain = tempfile.mkdtemp(prefix="charon-branch-plain-")
+        try:
+            r = G.git_branches(plain)
+            self.assertTrue(r["ok"])
+            self.assertFalse(r["is_repo"])
+        finally:
+            shutil.rmtree(plain, ignore_errors=True)

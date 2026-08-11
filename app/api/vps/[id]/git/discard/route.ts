@@ -21,15 +21,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   let cwd = '';
   let paths: string[] = [];
+  // Which checkout, when the cwd holds several (§14.83). Validated in git.ts.
+  let repo: string | null = null;
   try {
     const body = await req.json();
     cwd = String(body?.cwd ?? '');
     paths = Array.isArray(body?.paths) ? body.paths.map(String) : [];
+    repo = body?.repo ? String(body.repo) : null;
   } catch { /* empty */ }
   if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
   if (paths.length === 0) {
     return NextResponse.json({ ok: false, error: 'no files selected', reason: 'bad_paths' });
   }
 
-  return NextResponse.json(await gitDiscard(id, cwd, paths));
+  return NextResponse.json(await gitDiscard(id, cwd, paths, repo));
 }

@@ -7,6 +7,7 @@ import { fileKind, isMediaName } from './fileIcons';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
 import { refreshGit } from './gitStore';
+import { subscribeReveal } from './revealLine';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -52,6 +53,10 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
   // `docKey` identifies the buffer the editor was built from; bumping it is
   // what makes CodeMirror take a new document (after a reload or a save).
   const [docKey, setDocKey] = useState(0);
+  // Where a search hit wants the caret. The nonce is what lets the same line
+  // be asked for twice — clicking one result, scrolling away, clicking it
+  // again has to move the editor the second time too.
+  const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null);
 
   const name = path.split('/').pop() || path;
   const media = isMediaName(name);
@@ -105,6 +110,17 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
   // Leaving the file behind must clear its badge, or a closed editor keeps a
   // dot on a tab nobody can save.
   useEffect(() => () => setTabDirty(tabId, false), [tabId]);
+
+  // "Open at line 412" from a search hit (§14.84). Subscribing rather than
+  // reading a prop is what makes the already-open case work: the pane does not
+  // remount when the file is already the active tab, so a click on a second
+  // result in the same file has to arrive as an event.
+  useEffect(() => {
+    if (media) return;
+    return subscribeReveal(vpsId, root, path, (line) => {
+      setReveal({ line, nonce: Date.now() });
+    });
+  }, [media, vpsId, root, path]);
 
   const save = useCallback(async (force = false) => {
     if (saving || media) return;
@@ -288,6 +304,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
               readOnly={!!res.truncated}
               onChange={onChange}
               onSave={() => void save()}
+              reveal={reveal}
             />
           </>
         )}

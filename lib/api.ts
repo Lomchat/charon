@@ -7,10 +7,11 @@ import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
-  GitStatusResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
+  GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
+  GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
-  ReorderTabsBody, FsOpBody, FsOpResponse,
+  ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -124,20 +125,32 @@ export const api = {
   // ── Source control (agent >= 0.24.0, §14.76) ──────────────────────────────
   // Keyed on (vpsId, cwd), never on a session: two sessions in the same repo
   // are two views of one working tree and share the hub-side cache.
-  getGitStatus: (id: string, cwd: string, force = false) =>
-    send<GitStatusResponse>('GET', `/api/vps/${id}/git/status?cwd=${encodeURIComponent(cwd)}${force ? '&force=1' : ''}`, undefined, { timeoutMs: 20_000 }),
-  getGitDiff: (id: string, cwd: string, path: string) =>
-    send<GitDiffResponse>('GET', `/api/vps/${id}/git/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 30_000 }),
+  // `cwd` is the session's folder and the CACHE key; `repo` names one checkout
+  // inside it, for the folder-of-projects case (§14.83). Omitting `repo` keeps
+  // the pre-0.29.0 behaviour: act on the repo containing the cwd.
+  getGitWorkspace: (id: string, cwd: string, force = false) =>
+    send<GitWorkspaceResponse>('GET', `/api/vps/${id}/git/status?cwd=${encodeURIComponent(cwd)}${force ? '&force=1' : ''}`, undefined, { timeoutMs: 30_000 }),
+  getGitDiff: (id: string, cwd: string, path: string, repo?: string | null) =>
+    send<GitDiffResponse>('GET', `/api/vps/${id}/git/diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`, undefined, { timeoutMs: 30_000 }),
   gitCommit: (id: string, body: GitCommitBody) =>
     send<GitCommitResponse>('POST', `/api/vps/${id}/git/commit`, body, { timeoutMs: 200_000 }),
-  gitPush: (id: string, cwd: string) =>
-    send<GitOpResponse>('POST', `/api/vps/${id}/git/push`, { cwd }, { timeoutMs: 200_000 }),
-  gitPull: (id: string, cwd: string) =>
-    send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd }, { timeoutMs: 200_000 }),
-  gitDiscard: (id: string, cwd: string, paths: string[]) =>
-    send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths }, { timeoutMs: 60_000 }),
-  gitMessage: (id: string, cwd: string, sel: { paths?: string[]; all?: boolean }) =>
-    send<GitMessageResponse>('POST', `/api/vps/${id}/git/message`, { cwd, ...sel }, { timeoutMs: 120_000 }),
+  gitPush: (id: string, cwd: string, repo?: string | null) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/push`, { cwd, repo }, { timeoutMs: 200_000 }),
+  gitPull: (id: string, cwd: string, repo?: string | null) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd, repo }, { timeoutMs: 200_000 }),
+  gitDiscard: (id: string, cwd: string, paths: string[], repo?: string | null) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths, repo }, { timeoutMs: 60_000 }),
+  // ── Branches (agent >= 0.31.0, §14.85) ────────────────────────────────────
+  getGitBranches: (id: string, cwd: string, repo?: string | null) =>
+    send<GitBranchesResponse>('GET', `/api/vps/${id}/git/branches?cwd=${encodeURIComponent(cwd)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`, undefined, { timeoutMs: 30_000 }),
+  gitCheckout: (id: string, body: GitCheckoutBody) =>
+    send<GitCheckoutResponse>('POST', `/api/vps/${id}/git/checkout`, body, { timeoutMs: 200_000 }),
+  gitFetch: (id: string, cwd: string, repo?: string | null) =>
+    send<GitOpResponse>('POST', `/api/vps/${id}/git/fetch`, { cwd, repo }, { timeoutMs: 200_000 }),
+  gitDeleteBranch: (id: string, cwd: string, branch: string, repo?: string | null) =>
+    send<GitOpResponse>('DELETE', `/api/vps/${id}/git/checkout?cwd=${encodeURIComponent(cwd)}&branch=${encodeURIComponent(branch)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`, undefined, { timeoutMs: 60_000 }),
+  gitMessage: (id: string, cwd: string, sel: { paths?: string[]; all?: boolean }, repo?: string | null) =>
+    send<GitMessageResponse>('POST', `/api/vps/${id}/git/message`, { cwd, repo, ...sel }, { timeoutMs: 120_000 }),
 
   // ── Read-only file tree (agent >= 0.25.0, §14.77) ─────────────────────────
   // `root` is the session cwd and the containment boundary. One directory per
@@ -152,6 +165,14 @@ export const api = {
     send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
   statFsFile: (id: string, root: string, path: string) =>
     send<FsStatResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&stat=1`, undefined, { timeoutMs: 15_000 }),
+  /**
+   * Search the tree (§14.83). POST because the parameters are a form, not a
+   * path — and because a regex full of `&` and `#` has no business being
+   * URL-encoded twice. The timeout sits above the agent's own 20s budget so
+   * a bounded search always reports its bound instead of looking offline.
+   */
+  searchFs: (id: string, body: FsSearchQuery) =>
+    send<FsSearchResponse>('POST', `/api/vps/${id}/fs/search`, body, { timeoutMs: 45_000 }),
   // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
   fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
     `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,

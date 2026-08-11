@@ -2532,28 +2532,32 @@
 .tp-tabs {
   display: flex; border-bottom: 1px solid var(--gold-deep);
 }
-/* Four tabs in 340px. Inactive ones are icon-only and DON'T grow (flex:0 0
+/* Six tabs in 340px. Inactive ones are icon-only and DON'T grow (flex:0 0
    auto); the active one takes the remaining width and shows its label, which
    is what keeps the strip legible on touch where `title` tooltips don't
-   exist. Without the `flex:1` asymmetry the labels would not fit. */
+   exist. Without the `flex:1` asymmetry the labels would not fit — and the
+   horizontal padding is what pays for each new tab: five inactive icons at
+   10px of padding leave just enough for the longest label. */
 .tp-tabs button {
   flex: 0 0 auto;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
   background: transparent; border: 0;
   border-right: 1px solid var(--gold-deep);
   color: var(--parchment-soft);
   font-family: var(--display); font-size: 10px;
   letter-spacing: 0.16em; text-transform: uppercase;
-  padding: 9px 12px;
+  padding: 9px 10px;
   cursor: pointer;
   position: relative;
 }
-.tp-tabs button.on { flex: 1 1 auto; }
+.tp-tabs button.on { flex: 1 1 auto; min-width: 0; }
 .tp-tabs button:last-child { border-right: 0; }
 .tp-tabs button:hover { color: var(--gold-bright); }
 .tp-tabs button.on { color: var(--gold-bright); background: rgba(138,180,228,0.08); }
 .tp-tabs .tp-ico { width: 14px; height: 14px; flex: none; }
-.tp-tabs .tp-label { white-space: nowrap; }
+/* The label is the only legend on touch, so it never wraps — it ellipsizes,
+   which still reads, where a wrap would change the height of the whole strip. */
+.tp-tabs .tp-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tp-tabs .badge {
   font-family: var(--mono); font-size: 9px;
   background: var(--gold-deep); color: var(--stone);
@@ -3155,6 +3159,45 @@
 .sdm-body {
   flex: 1; min-height: 0; overflow: auto;
   background: var(--stone);
+}
+
+/* ── The shared split view (§14.86) ───────────────────────────────────────
+   One renderer for the session's edits and for a git diff. The scroller lives
+   HERE rather than on .sdm-body so the ▲/▼ can float over it: they have to
+   stay put while the diff scrolls under them, which they can't do inside the
+   thing that scrolls. */
+.sdv-wrap {
+  position: relative; flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.sdv-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* Between the two panes, where your eyes already are when reading a diff. */
+.sdv-nav {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 4px 3px; border-radius: 9px;
+  background: rgba(18,20,27,0.92); border: 1px solid var(--gold-deep);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+  z-index: 3;
+}
+.sdv-navbtn {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--parchment-soft); font-size: 11px; line-height: 1;
+  padding: 3px 5px; border-radius: 5px;
+}
+.sdv-navbtn:hover:not(:disabled) { color: var(--gold-bright); background: rgba(138,180,228,0.14); }
+.sdv-navbtn:disabled { opacity: 0.3; cursor: default; }
+.sdv-navpos {
+  font-family: var(--mono); font-size: 9px; color: var(--parchment-soft);
+  letter-spacing: 0.04em;
+}
+/* The jump between two hunks. Stated, never silent: line numbers leaping from
+   40 to 300 with no marker reads as a rendering bug. */
+.sdm-table tr.row-gap td { background: rgba(0,0,0,0.22); }
+.sdm-table td.code.gap {
+  color: var(--parchment-soft); opacity: 0.65;
+  font-size: 10.5px; letter-spacing: 0.06em; padding: 3px 6px;
 }
 .sdm-table {
   width: 100%; border-collapse: collapse;
@@ -3993,6 +4036,54 @@
 /* The git tab body. A control surface: list + message + buttons. Reading a
    diff happens in DiffViewerModal, never in this column. */
 .git-tab { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── A folder OF projects: one section per checkout (§14.83) ──────────────
+   With a single repo none of this renders and the panel is byte-identical to
+   what it was — the sections only exist to keep eight projects legible in a
+   340px column. */
+.git-tab.multi { gap: 4px; }
+.gt-wshead {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
+  padding-bottom: 6px; border-bottom: 1px solid var(--gold-deep);
+}
+.gt-wscount { color: var(--gold-bright); }
+.gt-wsdirty {
+  padding: 0 5px; border-radius: 7px; font-size: 9.5px;
+  background: rgba(138,180,228,0.14); color: var(--gold-bright);
+}
+.gt-repo.sectioned {
+  border: 1px solid var(--gold-deep); border-radius: 8px;
+  padding: 6px 8px 8px; background: rgba(0,0,0,0.12);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.gt-repo.sectioned.collapsed { padding-bottom: 6px; }
+/* The whole header is the fold control — a caret-sized hit target in a
+   drawer you may be using on a phone is not one. */
+.gt-repohead {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: none; padding: 2px 0; cursor: pointer; text-align: left;
+  font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
+}
+.gt-repohead:hover .gt-reponame { color: var(--gold-bright); }
+.gt-caret { flex: none; width: 10px; opacity: 0.75; }
+.gt-reponame {
+  color: var(--parchment); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.gt-repobranch { color: var(--gold); opacity: 0.85; flex: none; }
+.gt-repobranch::before { content: '⎇ '; opacity: 0.7; }
+.gt-repodirty {
+  flex: none; padding: 0 5px; border-radius: 7px; font-size: 9.5px;
+  background: rgba(138,180,228,0.14); color: var(--gold-bright);
+}
+.gt-repohead .gt-ab.up { color: var(--gold-bright); }
+.gt-repohead .gt-ab.down { color: var(--lavender, #8ab4e4); }
+/* One unreadable checkout (dubious ownership, usually) must cost its own
+   section and nothing else. */
+.gt-repo.broken { border-color: rgba(224,115,107,0.4); }
+.gt-repo.sectioned .gt-branch { border-bottom: none; padding-bottom: 0; }
+.gt-repo.sectioned .gt-branch:empty { display: none; }
 .gt-branch {
   display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
@@ -4005,6 +4096,81 @@
 .gt-branch .gt-ab.up { color: var(--gold-bright); }
 .gt-branch .gt-ab.down { color: var(--lavender, #8ab4e4); }
 .gt-spacer { flex: 1 1 auto; min-width: 0; }
+/* ── Branch modal (§14.84) ────────────────────────────────────────────────
+   A switcher, not a report: the two drift columns are the whole reason it
+   exists, so they get colour and the subject line gets none. */
+.claude-modal.branches {
+  max-width: 620px; width: min(620px, calc(100vw - 32px));
+  max-height: min(78vh, 760px); display: flex; flex-direction: column; gap: 10px;
+  padding: 22px 22px 16px;
+}
+/* padding-right clears the absolutely-positioned ✕ of .claude-modal. */
+.bm-head { display: flex; align-items: baseline; gap: 10px; padding-right: 26px; }
+.bm-title { font-family: var(--display); font-size: 15px; letter-spacing: 0.08em; color: var(--gold-bright); }
+.bm-repo {
+  font-family: var(--mono); font-size: 11px; color: var(--parchment-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.bm-tools, .bm-create { display: flex; align-items: center; gap: 8px; }
+.bm-search {
+  flex: 1 1 auto; min-width: 0;
+  background: rgba(0,0,0,0.28); border: 1px solid var(--gold-deep); border-radius: 7px;
+  color: var(--parchment); font-family: var(--mono); font-size: 12px; padding: 7px 10px;
+}
+.bm-search:focus { outline: none; border-color: var(--gold); }
+.bm-publish {
+  display: flex; align-items: center; gap: 5px; flex: none; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--parchment-soft);
+}
+.bm-list {
+  list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.bm-list > li {
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  border-bottom: 1px solid rgba(138,180,228,0.08); padding: 2px 0;
+}
+.bm-list > li.current { background: rgba(138,180,228,0.07); }
+.bm-pick {
+  display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0;
+  background: none; border: none; padding: 7px 6px; cursor: pointer; text-align: left;
+  font-family: var(--mono); font-size: 12px; color: var(--parchment);
+}
+.bm-pick:disabled { cursor: default; }
+.bm-pick:hover:not(:disabled) .bm-name { color: var(--gold-bright); text-decoration: underline; }
+.bm-mark { flex: none; width: 12px; color: var(--gold); }
+.bm-list > li.remote .bm-mark { color: var(--parchment-soft); }
+.bm-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bm-tag {
+  flex: none; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 6px; color: var(--parchment-soft);
+  border: 1px solid var(--gold-deep);
+}
+.bm-tag.gone { color: #e0736b; border-color: rgba(224,115,107,0.45); }
+.bm-drift, .bm-up { flex: none; display: flex; gap: 5px; font-size: 10.5px; }
+.bm-drift .up, .bm-up .up { color: #7fbf7f; }
+.bm-drift .down, .bm-up .down { color: #e0736b; }
+.bm-drift .same { color: var(--parchment-soft); opacity: 0.6; }
+.bm-up { padding-left: 8px; border-left: 1px solid var(--gold-deep); }
+.bm-sub {
+  grid-column: 1 / -1; padding: 0 6px 7px 25px; margin-top: -4px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The branch name in the panel is the door to all of the above. */
+.gt-ref.as-button, .gt-repobranch.as-button {
+  background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+  text-align: left; min-width: 0;
+}
+.gt-ref.as-button:hover, .gt-repobranch.as-button:hover {
+  color: var(--gold-bright); text-decoration: underline;
+}
+.gt-mini.primary { color: var(--gold-bright); border-color: var(--gold); }
+/* The unified/split toggle needs room for a word. */
+.dvm-nav.wide { width: auto; padding: 0 8px; font-size: 10px; letter-spacing: 0.08em; }
+
+/* No single branch to name, so the chip counts checkouts instead. */
+.claude-bar .git-chip.multi .gc-branch { color: var(--parchment-soft); }
 .gt-mini, .gt-retry {
   flex: none; background: transparent; border: 1px solid var(--gold-deep);
   color: var(--parchment-soft); border-radius: 3px;
@@ -4180,6 +4346,16 @@
   color: var(--parchment);
 }
 .tt-row:hover { background: rgba(138,180,228,0.10); }
+/* The file the main pane is showing. Its folders are opened for it, so the
+   tree always answers "where am I" without being searched. The left bar is
+   what survives the git colours: a changed open file is already amber or
+   green, so a text colour could not carry "selected" as well. */
+.tt-row.active {
+  background: rgba(138,180,228,0.16);
+  box-shadow: inset 2px 0 0 var(--gold-bright);
+}
+.tt-row.active .tt-name { color: var(--gold-bright); }
+.tt-row.active.ignored { opacity: 0.75; }
 /* Git-ignored: present but not part of the project's story. Dimmed exactly as
    VS Code does it, rather than hidden — hiding them makes "why is this file
    not in the tree?" a mystery. */
@@ -4206,6 +4382,154 @@
    it was deleted — the folder itself is still there, and striking it out says
    the opposite. */
 .tt-row.is-file.g-d .tt-name { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* Being dragged into the chat to insert its path. Dimmed rather than hidden:
+   the row is the drag's origin and seeing where it came from is what makes the
+   gesture legible while the cursor is somewhere over the messages. */
+.tt-row[data-dragging] { opacity: 0.4; }
+
+/* ── Search tab (§14.84) ─────────────────────────────────────────────────── */
+.search-tab { display: flex; flex-direction: column; gap: 7px; }
+
+/* Text vs file names. A segmented pair rather than a dropdown: it is the first
+   decision and it has exactly two answers, so it should cost no clicks to
+   read and one to change. */
+.sr-modes {
+  display: flex; border: 1px solid var(--gold-deep); border-radius: 4px;
+  overflow: hidden;
+}
+.sr-modes button {
+  flex: 1 1 0; min-width: 0;
+  background: transparent; border: 0; border-right: 1px solid var(--gold-deep);
+  color: var(--parchment-soft); cursor: pointer;
+  font-family: var(--display); font-size: 9.5px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 4px;
+}
+.sr-modes button:last-child { border-right: 0; }
+.sr-modes button:hover { color: var(--gold-bright); }
+.sr-modes button.on { color: var(--gold-bright); background: rgba(138,180,228,0.12); }
+
+.sr-query {
+  display: flex; align-items: center; gap: 4px;
+  border: 1px solid var(--gold-deep); border-radius: 4px;
+  padding: 2px 4px 2px 6px;
+  background: rgba(0,0,0,0.2);
+}
+.sr-query:focus-within { border-color: var(--gold); }
+.sr-qico { width: 12px; height: 12px; flex: none; color: var(--parchment-soft); }
+.sr-query input {
+  flex: 1 1 auto; min-width: 0;
+  background: transparent; border: 0; outline: none;
+  color: var(--parchment); font-family: var(--mono); font-size: 11.5px;
+  padding: 4px 0;
+}
+.sr-query input::placeholder { color: var(--parchment-soft); opacity: 0.7; }
+
+/* Aa / ab / .* — the three switches everyone already knows from VS Code, in
+   the same order and inside the field, so the query and its meaning stay one
+   object rather than a form spread over two rows. */
+.sr-flags { display: flex; gap: 2px; flex: none; }
+.sr-flags button, .sr-more {
+  flex: none; background: transparent; border: 1px solid transparent;
+  border-radius: 3px; cursor: pointer;
+  color: var(--parchment-soft);
+  font-family: var(--mono); font-size: 10px; line-height: 1;
+  padding: 4px 4px; min-width: 20px;
+}
+.sr-flags button:hover, .sr-more:hover { color: var(--gold-bright); border-color: var(--gold-deep); }
+.sr-flags button.on, .sr-more.on {
+  color: var(--gold-bright); border-color: var(--gold);
+  background: rgba(138,180,228,0.14);
+}
+.sr-more { font-size: 12px; padding: 2px 5px 5px; }
+
+.sr-globs { display: flex; flex-direction: column; gap: 5px; }
+.sr-globs label { display: flex; flex-direction: column; gap: 2px; }
+.sr-globs label > span {
+  font-family: var(--display); font-size: 8.5px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--parchment-soft);
+}
+.sr-globs input[type="text"], .sr-globs label > input {
+  background: rgba(0,0,0,0.2); border: 1px solid var(--gold-deep); border-radius: 3px;
+  color: var(--parchment); font-family: var(--mono); font-size: 10.5px;
+  padding: 4px 6px; outline: none; min-width: 0;
+}
+.sr-globs label > input:focus { border-color: var(--gold); }
+.sr-globs .sr-check {
+  flex-direction: row; align-items: center; gap: 6px; cursor: pointer;
+  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
+}
+.sr-globs .sr-check input { flex: none; margin: 0; cursor: pointer; }
+.sr-globs .sr-check > span { text-transform: none; letter-spacing: 0; font-size: 10px; }
+
+.sr-status, .sr-summary {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
+  padding-bottom: 5px; border-bottom: 1px solid var(--gold-deep);
+}
+.sr-status { border-bottom: 0; font-style: italic; }
+.sr-src {
+  margin-left: auto; flex: none;
+  border: 1px solid var(--gold-deep); border-radius: 3px;
+  padding: 1px 5px; font-size: 9px;
+}
+.sr-root { display: block; font-family: var(--mono); font-size: 10px; margin-top: 6px; word-break: break-all; }
+
+.sr-file { display: flex; flex-direction: column; }
+.sr-fhead { display: flex; align-items: center; gap: 3px; }
+.sr-caret {
+  flex: none; width: 12px; padding: 0; background: transparent; border: 0;
+  color: var(--parchment-soft); font-size: 8px; cursor: pointer;
+}
+.sr-fopen {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: baseline; gap: 5px;
+  background: transparent; border: 0; padding: 2px 0; cursor: pointer; text-align: left;
+  font-family: var(--mono); font-size: 11px; color: var(--parchment);
+}
+.sr-fopen:hover .sr-fname { color: var(--gold-bright); text-decoration: underline; }
+.sr-fico { flex: none; width: 12px; height: 12px; align-self: center; color: var(--parchment-soft); }
+.sr-fname { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The folder is the disambiguator, not the identity — so it is the part that
+   gets cut, and it is cut at the FRONT (direction:rtl) because the tail of a
+   path is what tells two `index.ts` apart. */
+.sr-fdir {
+  flex: 1 1 auto; min-width: 0; font-size: 9.5px; color: var(--parchment-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+}
+.sr-fcount {
+  flex: none; font-family: var(--mono); font-size: 9px;
+  color: var(--stone); background: var(--gold-deep);
+  border-radius: 8px; padding: 1px 6px;
+}
+.sr-finsert {
+  flex: none; background: transparent; border: 0; padding: 2px; cursor: pointer;
+  color: var(--parchment-soft); display: flex; opacity: 0; transition: opacity 0.12s;
+}
+.sr-fhead:hover .sr-finsert { opacity: 1; }
+.sr-finsert:hover { color: var(--gold-bright); }
+
+.sr-hits { list-style: none; margin: 0 0 4px; padding: 0; }
+.sr-hit {
+  width: 100%; display: flex; align-items: baseline; gap: 7px;
+  background: transparent; border: 0; cursor: pointer; text-align: left;
+  padding: 1px 4px 1px 15px; border-radius: 2px;
+  font-family: var(--mono); font-size: 10.5px; line-height: 1.5;
+  color: var(--parchment-soft);
+}
+.sr-hit:hover { background: rgba(138,180,228,0.10); color: var(--parchment); }
+.sr-ln { flex: none; min-width: 26px; text-align: right; opacity: 0.55; font-size: 9.5px; }
+/* One line, clipped. A search result is a pointer to a place in a file, not a
+   reader — wrapping three of them makes the list unscannable, and the file is
+   one click away. */
+.sr-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.sr-ell { opacity: 0.4; }
+.sr-text mark {
+  background: rgba(216,168,90,0.28); color: var(--gold-bright);
+  border-radius: 2px; padding: 0 1px;
+}
 
 /* ── File viewer ─────────────────────────────────────────────────────────── */
 .split-diff-modal.fvm .sdm-body { padding: 0; }
@@ -4303,9 +4627,89 @@
 .fe-conflict-actions button:hover { color: var(--gold-bright); border-color: var(--gold-bright); }
 .fe-conflict-actions button.danger { color: #e0736b; border-color: rgba(224,115,107,0.5); }
 /* CodeMirror fills what's left; its own scroller does the scrolling. */
-.cm-host { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.cm-host { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative; }
+.cm-mount { height: 100%; }
 .cm-host .cm-editor { height: 100%; }
 .cm-host .cm-editor.cm-focused { outline: none; }
+
+/* ── Find / replace: floating, top right (§14.84) ────────────────────────── */
+/* Over the text rather than docked under it. A panel that takes layout space
+   reflows the line you were reading the instant you press Ctrl+F, which is the
+   one moment you were looking at it. Right-aligned because that is where the
+   scrollbar is and where the code is not. */
+.cm-find {
+  position: absolute; top: 6px; right: 16px; z-index: 5;
+  display: flex; align-items: flex-start; gap: 2px;
+  padding: 4px 4px 4px 2px;
+  background: rgba(22,25,33,0.97);
+  border: 1px solid var(--gold-deep); border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+  max-width: min(520px, calc(100% - 32px));
+}
+.cmf-expand {
+  flex: none; align-self: stretch; background: transparent; border: 0;
+  color: var(--parchment-soft); cursor: pointer; padding: 0 2px;
+  display: flex; align-items: center;
+}
+.cmf-expand:hover { color: var(--gold-bright); }
+/* Grid, so the find and replace inputs are exactly as wide as each other even
+   though one has three buttons and a counter beside it and the other has two.
+   Laying the rows out independently is what makes a copy of this widget read
+   as a copy. */
+.cmf-rows {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 4px 3px; min-width: 0;
+}
+.cmf-actions { display: flex; align-items: center; gap: 3px; justify-content: flex-end; }
+.cmf-field {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 3px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--gold-deep); border-radius: 3px;
+  padding: 0 3px 0 6px;
+}
+.cmf-field:focus-within { border-color: var(--gold); }
+.cmf-field.bad { border-color: var(--crimson); }
+.cmf-field input {
+  flex: 1 1 auto; min-width: 90px; width: 150px;
+  background: transparent; border: 0; outline: none;
+  color: var(--parchment); font-family: var(--mono); font-size: 11.5px;
+  padding: 4px 0;
+}
+.cmf-field input::placeholder { color: var(--parchment-soft); opacity: 0.7; }
+.cmf-flags { display: flex; gap: 1px; flex: none; }
+.cmf-flags button {
+  background: transparent; border: 1px solid transparent; border-radius: 2px;
+  color: var(--parchment-soft); cursor: pointer;
+  font-family: var(--mono); font-size: 10px; line-height: 1;
+  padding: 3px 3px; min-width: 19px;
+}
+.cmf-flags button:hover { color: var(--gold-bright); border-color: var(--gold-deep); }
+.cmf-flags button.on {
+  color: var(--gold-bright); border-color: var(--gold); background: rgba(138,180,228,0.16);
+}
+/* Fixed width so the buttons beside it don't shuffle sideways between
+   "No results" and "3 of 12" while someone is aiming at them. */
+.cmf-count {
+  flex: none; width: 74px; text-align: right;
+  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmf-btn {
+  flex: none; background: transparent; border: 1px solid transparent; border-radius: 2px;
+  color: var(--parchment-soft); cursor: pointer; padding: 3px;
+  display: flex; align-items: center; justify-content: center;
+}
+.cmf-btn:hover:not(:disabled) { color: var(--gold-bright); border-color: var(--gold-deep); }
+.cmf-btn:disabled { opacity: 0.3; cursor: default; }
+
+@media (max-width: 620px) {
+  /* On a phone the widget would cover the text it is searching. Full width,
+     under the header, is the only honest place left. */
+  .cm-find { left: 8px; right: 8px; max-width: none; }
+  .cmf-field input { width: auto; min-width: 0; }
+  .cmf-count { width: 56px; }
+}
 
 @media (max-width: 820px) {
   .fe-head { padding: 8px 12px; flex-wrap: wrap; row-gap: 6px; }

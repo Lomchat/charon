@@ -21,11 +21,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const url = new URL(req.url);
   const cwd = url.searchParams.get('cwd') ?? '';
   const path = url.searchParams.get('path') ?? '';
+  // Which checkout, when the cwd holds several (§14.83). Validated in git.ts.
+  const repo = url.searchParams.get('repo');
   if (!cwd || !path || cwd.length > 4096 || path.length > 4096) {
     return NextResponse.json({ ok: false, error: 'cwd and path are required' });
   }
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  return NextResponse.json(await getGitDiff(id, cwd, path));
+  return NextResponse.json(await getGitDiff(id, cwd, path, repo));
 }

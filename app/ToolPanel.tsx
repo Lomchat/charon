@@ -7,10 +7,12 @@ import SplitDiffModal from './SplitDiffModal';
 import { fmtSize } from './sessionAttachments';
 import GitTab from './GitTab';
 import TreeTab from './TreeTab';
+import SearchTab from './SearchTab';
+import { useGitStatus, workspaceDirtyCount } from './gitStore';
 import { IconTree } from './fileIcons';
 import {
   IconClipboard, IconDiff, IconDownload, IconEye, IconFileEarmark, IconGitBranch,
-  IconPaperclip, IconPlusSquare, IconTools, IconTrash,
+  IconPaperclip, IconPlusSquare, IconSearch, IconTools, IconTrash,
 } from './icons';
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
@@ -44,22 +46,30 @@ type Props = {
   /** One-shot "open on this tab" request (from the header's dirty chip). */
   requestedTab?: Tab | null;
   onTabConsumed?: () => void;
+  /** Reveal the panel — it is a drawer below 1100px, where switching a tab
+   *  nobody can see is the same as doing nothing. */
+  onReveal?: () => void;
 };
 
-export type Tab = 'diffs' | 'git' | 'tree' | 'files' | 'calls';
+export type Tab = 'edits' | 'git' | 'tree' | 'search' | 'files' | 'calls';
 
-// Five tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
+// Six tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
 // do not fit. Only the ACTIVE tab is labelled; the others are icon-only and
 // their count shrinks to a corner dot. That is not just a width trick — the
 // panel is a drawer on touch (<=1100px) where `title` tooltips don't exist, so
-// icon-only-everywhere would be undiscoverable. The active label is the legend.
+// icon-only-everywhere would be undiscoverable. The active label is the legend,
+// which is also why every label has to stay SHORT: five icons plus one long
+// label is what fits. `edits` is the SESSION's edits — what an agent changed
+// in this conversation — and `git` is the working tree; they were both called
+// some flavour of "diff" and got confused for each other constantly.
 // `files` is the project explorer and `attach` is the session's attachments —
 // the paperclip tab was labelled "files" before the tree existed, and keeping
 // that name for the smaller of the two would have made the new one unfindable.
 const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React.ReactElement }[] = [
   { id: 'tree', label: 'files', Icon: IconTree },
+  { id: 'search', label: 'search', Icon: IconSearch },
   { id: 'git', label: 'git', Icon: IconGitBranch },
-  { id: 'diffs', label: 'diffs (session)', Icon: IconDiff },
+  { id: 'edits', label: 'edits', Icon: IconDiff },
   { id: 'files', label: 'attach', Icon: IconPaperclip },
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];
@@ -68,6 +78,7 @@ function ToolPanel({
   sessionId, kind = 'claude', toolCalls, edits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
+  onReveal,
 }: Props) {
   const [tab, setTab] = useState<Tab>('tree');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
@@ -87,10 +98,34 @@ function ToolPanel({
     onTabConsumed?.();
   }, [requestedTab, onTabConsumed]);
 
+  // Ctrl/Cmd+Shift+F — search across files. Bound here rather than in either
+  // parent because this component is the only thing both call sites have in
+  // common, and it already owns the active tab.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey) return;
+      if (e.key.toLowerCase() !== 'f') return;
+      e.preventDefault();
+      setTab('search');
+      onReveal?.();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onReveal]);
+
+  // Same poll the chip and the git tab already share — keyed on (vpsId, cwd),
+  // so asking for it here costs nothing extra (§14.76).
+  const { workspace } = useGitStatus(vpsId, cwd);
+  const gitDirty = workspaceDirtyCount(workspace);
+
   const counts: Record<Tab, number> = {
-    diffs: editArr.length,
-    git: 0,    // the git count lives on the chip in the header, not here
+    edits: editArr.length,
+    // The working tree's dirty count, same badge as the others — the chip in
+    // the header is only visible next to a chat, and this panel also renders
+    // beside a file editor.
+    git: gitDirty,
     tree: 0,   // a file count would be meaningless on a lazily-expanded tree
+    search: 0, // the hit count is the answer, and it belongs above the results
     files: attachments.length,
     calls: toolCalls.length,
   };
@@ -118,9 +153,10 @@ function ToolPanel({
         })}
       </nav>
       <div className="tp-body">
-        {tab === 'diffs' && <DiffsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
+        {tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
-        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} />}
+        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
+        {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
         {tab === 'files' && (
           <FilesTab
@@ -137,7 +173,7 @@ function ToolPanel({
 
 export default memo(ToolPanel);
 
-function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | null; kind: AgentKind; edits: EditSnapshot[]; onRevert: () => void }) {
+function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | null; kind: AgentKind; edits: EditSnapshot[]; onRevert: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<EditSnapshot | null>(null);
 
@@ -166,7 +202,7 @@ function DiffsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
 
   return (
     <>
-      <div className="tp-diffs">
+      <div className="tp-edits">
         {prepared.map(({ edit: e, patch, stats }) => {
           return (
             <div key={e.toolUseId + e.filePath} className="diff-card">

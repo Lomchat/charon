@@ -26,7 +26,8 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
 import type {
   GitCommitResponse, GitDiffResponse, GitFailureReason, GitFileEntry,
-  GitOpResponse, GitStatusResponse,
+  GitOpResponse, GitStatusResponse, GitWorkspaceResponse,
+  GitBranch, GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
 } from '@/lib/types/api';
 
 // Long enough to merge the near-simultaneous polls of several tabs/sessions
@@ -41,9 +42,27 @@ const CACHE_MAX_AGE_MS = 10 * 60_000;
 // actionable rather than letting the request vanish into a timeout.
 const MAX_REQUEST_BYTES = 48_000;
 
-type Entry = { at: number; value?: GitStatusResponse; inflight?: Promise<GitStatusResponse> };
+type Entry = { at: number; value?: GitWorkspaceResponse; inflight?: Promise<GitWorkspaceResponse> };
 const g = globalThis as unknown as { __charonGitStatusCache?: Map<string, Entry> };
 const cache = (g.__charonGitStatusCache ??= new Map<string, Entry>());
+
+/**
+ * A write targets ONE repo, which may be a subfolder of the session's cwd.
+ * `repo` wins as the git target; `cwd` remains the cache key, so a commit in
+ * one project still refreshes the workspace the panel is showing.
+ *
+ * Containment is checked here and not only agent-side: `repo` arrives from a
+ * query string, and "the repo you are committing to" is not something a
+ * client should be able to point anywhere on the VPS.
+ */
+function gitTarget(cwd: string, repo?: string | null): string {
+  const r = (repo ?? '').trim();
+  if (!r || !r.startsWith('/')) return cwd;
+  const base = cwd.replace(/\/+$/, '');
+  const clean = r.replace(/\/+$/, '');
+  if (clean.includes('/../') || clean.endsWith('/..')) return cwd;
+  return clean === base || clean.startsWith(base + '/') ? clean : cwd;
+}
 
 const keyOf = (vpsId: string, cwd: string) => `${vpsId}\u0000${cwd}`;
 
@@ -178,6 +197,8 @@ function toStatus(raw: Record<string, unknown>): GitStatusResponse {
     added: (raw.added as number) ?? 0,
     deleted: (raw.deleted as number) ?? 0,
     conflicts: (raw.conflicts as number) ?? 0,
+    rel: (raw.rel as string) ?? '',
+    name: (raw.name as string) ?? '',
   };
 }
 
@@ -185,13 +206,20 @@ function statusFailure(error: string, reason: GitFailureReason): GitStatusRespon
   return { ok: false, error, reason, isRepo: false, files: [] };
 }
 
+function wsFailure(error: string, reason: GitFailureReason): GitWorkspaceResponse {
+  return { ok: false, error, reason, mode: 'none', repos: [] };
+}
+
 /**
- * Working-tree status for the repo containing `cwd`.
- * `force` bypasses the TTL (used right after a write and by the ↻ button).
+ * Every repo visible from `cwd`, cached per `(vpsId, cwd)`.
+ *
+ * `force` bypasses the TTL (after a write, and for the ↻ button) and also
+ * bypasses the AGENT's discovery cache, so ↻ is how you make a freshly cloned
+ * project appear rather than waiting a minute for it.
  */
-export async function getGitStatus(
+export async function getGitWorkspace(
   vpsId: string, cwd: string, opts: { force?: boolean; includeRecent?: boolean } = {},
-): Promise<GitStatusResponse> {
+): Promise<GitWorkspaceResponse> {
   const key = keyOf(vpsId, cwd);
   const hit = cache.get(key);
   if (hit?.inflight) return hit.inflight;            // dedup, even when forced
@@ -202,14 +230,30 @@ export async function getGitStatus(
   const force = opts.force || opts.includeRecent;
   if (!force && hit?.value && Date.now() - hit.at < STATUS_TTL_MS) return hit.value;
 
-  const inflight = (async (): Promise<GitStatusResponse> => {
-    const r = await rpc<{ ok: boolean }>(vpsId, 'git_status', {
-      cwd, include_recent: !!opts.includeRecent,
+  const inflight = (async (): Promise<GitWorkspaceResponse> => {
+    const r = await rpc<{ ok: boolean }>(vpsId, 'git_workspace', {
+      cwd, include_recent: !!opts.includeRecent, refresh: !!opts.force,
     });
-    const out = r.ok === false && 'reason' in r && !('is_repo' in r)
-      ? statusFailure((r as { error: string }).error, (r as { reason: GitFailureReason }).reason)
-      : toStatus(r as unknown as Record<string, unknown>);
-    return out;
+    // Agents 0.24.0–0.28.x have git but no workspace scan. Fall back to the
+    // single-repo call rather than showing "update your agent" on a fleet
+    // where git already works — the folder-of-projects case is the only thing
+    // they miss, and it is exactly the case that used to show nothing anyway.
+    if (r.ok === false && 'reason' in r && r.reason === 'unsupported') {
+      const one = await rpc<{ ok: boolean }>(vpsId, 'git_status', {
+        cwd, include_recent: !!opts.includeRecent,
+      });
+      if (one.ok === false && 'reason' in one && !('is_repo' in one)) {
+        return wsFailure((one as { error: string }).error, (one as { reason: GitFailureReason }).reason);
+      }
+      const st = toStatus(one as unknown as Record<string, unknown>);
+      return st.isRepo
+        ? { ok: true, mode: 'single', repos: [st] }
+        : { ok: st.ok, mode: 'none', repos: [], error: st.error, reason: st.reason };
+    }
+    if (r.ok === false && 'reason' in r && !('repos' in r)) {
+      return wsFailure((r as { error: string }).error, (r as { reason: GitFailureReason }).reason);
+    }
+    return toWorkspace(r as unknown as Record<string, unknown>);
   })();
 
   cache.set(key, { at: Date.now(), value: hit?.value, inflight });
@@ -224,21 +268,37 @@ export async function getGitStatus(
     return value;
   } catch {
     cache.set(key, { at: Date.now(), value: hit?.value });
-    return statusFailure('git status failed', 'error');
+    return wsFailure('git status failed', 'error');
   }
 }
 
-export async function getGitDiff(vpsId: string, cwd: string, path: string): Promise<GitDiffResponse> {
-  const r = await rpc<{ ok: boolean }>(vpsId, 'git_diff', { cwd, path });
+function toWorkspace(raw: Record<string, unknown>): GitWorkspaceResponse {
+  const rawRepos = Array.isArray(raw.repos) ? (raw.repos as Record<string, unknown>[]) : [];
+  const mode = raw.mode === 'single' || raw.mode === 'multi' ? raw.mode : 'none';
+  return {
+    ok: raw.ok !== false,
+    error: raw.error as string | undefined,
+    reason: raw.reason as GitFailureReason | undefined,
+    mode,
+    repos: rawRepos.map(toStatus),
+    scanned: raw.scanned as number | undefined,
+    truncated: raw.truncated === true,
+  };
+}
+
+export async function getGitDiff(
+  vpsId: string, cwd: string, path: string, repo?: string | null,
+): Promise<GitDiffResponse> {
+  const r = await rpc<{ ok: boolean }>(vpsId, 'git_diff', { cwd: gitTarget(cwd, repo), path });
   return r as unknown as GitDiffResponse;
 }
 
 export async function gitCommit(
   vpsId: string, cwd: string,
-  body: { message: string; paths?: string[]; all?: boolean; push?: boolean },
+  body: { message: string; paths?: string[]; all?: boolean; push?: boolean; repo?: string | null },
 ): Promise<GitCommitResponse> {
   const params: Record<string, unknown> = {
-    cwd, message: body.message, push: !!body.push,
+    cwd: gitTarget(cwd, body.repo), message: body.message, push: !!body.push,
   };
   if (body.all) params.all = true;
   else params.paths = body.paths ?? [];
@@ -267,10 +327,11 @@ export async function gitCommit(
 }
 
 async function op(
-  vpsId: string, cwd: string, method: 'git_push' | 'git_pull' | 'git_discard',
+  vpsId: string, cwd: string, repo: string | null | undefined,
+  method: 'git_push' | 'git_pull' | 'git_discard' | 'git_fetch' | 'git_delete_branch',
   extra: Record<string, unknown> = {},
 ): Promise<GitOpResponse> {
-  const params = { cwd, ...extra };
+  const params = { cwd: gitTarget(cwd, repo), ...extra };
   if (JSON.stringify(params).length > MAX_REQUEST_BYTES) {
     return { ok: false, reason: 'bad_paths', error: 'too many files selected for one request' };
   }
@@ -279,7 +340,7 @@ async function op(
   // A network op can outlive AgentClient's 60s RPC timeout while the agent
   // keeps going (it allows 170s). We lost the ANSWER, not the push — saying
   // "timed out" would read as "it failed" and invite a pointless retry.
-  if (r.reason === 'timeout' && method !== 'git_discard') {
+  if (r.reason === 'timeout' && (method === 'git_push' || method === 'git_pull' || method === 'git_fetch')) {
     return {
       ok: false, reason: 'timeout',
       error: 'still running on the VPS — refresh in a moment to see the result',
@@ -294,7 +355,86 @@ async function op(
   };
 }
 
-export const gitPush = (vpsId: string, cwd: string) => op(vpsId, cwd, 'git_push');
-export const gitPull = (vpsId: string, cwd: string) => op(vpsId, cwd, 'git_pull');
-export const gitDiscard = (vpsId: string, cwd: string, paths: string[]) =>
-  op(vpsId, cwd, 'git_discard', { paths });
+// ── Branches (agent >= 0.31.0, §14.85) ─────────────────────────────────────
+// Not cached: the modal is opened deliberately, and a stale branch list is
+// worse than a 200ms wait — you are about to switch onto one of these.
+export async function getGitBranches(
+  vpsId: string, cwd: string, repo?: string | null,
+): Promise<GitBranchesResponse> {
+  const r = await rpc<{ ok: boolean }>(vpsId, 'git_branches', { cwd: gitTarget(cwd, repo) }) as Record<string, unknown>;
+  if (r.ok === false) {
+    return {
+      ok: false, error: r.error as string, reason: r.reason as GitFailureReason, branches: [],
+    };
+  }
+  const raw = Array.isArray(r.branches) ? (r.branches as Record<string, unknown>[]) : [];
+  return {
+    ok: true,
+    root: (r.root as string) ?? null,
+    current: (r.current as string) ?? null,
+    detached: r.detached === true,
+    truncated: r.truncated === true,
+    branches: raw.map((b): GitBranch => ({
+      name: String(b.name ?? ''),
+      short: String(b.short ?? b.name ?? ''),
+      remote: b.remote === true,
+      current: b.current === true,
+      upstream: (b.upstream as string | null) ?? null,
+      ahead: (b.ahead as number) ?? 0,
+      behind: (b.behind as number) ?? 0,
+      gone: b.gone === true,
+      aheadHead: (b.ahead_head as number | null) ?? null,
+      behindHead: (b.behind_head as number | null) ?? null,
+      committedAt: (b.committed_at as number | null) ?? null,
+      subject: (b.subject as string) ?? '',
+      worktree: (b.worktree as string | null) ?? null,
+    })),
+  };
+}
+
+export async function gitCheckout(
+  vpsId: string, cwd: string, body: Omit<GitCheckoutBody, 'cwd'>,
+): Promise<GitCheckoutResponse> {
+  const r = await rpc<{ ok: boolean }>(vpsId, 'git_checkout', {
+    cwd: gitTarget(cwd, body.repo),
+    branch: body.branch,
+    create: !!body.create,
+    start_point: body.startPoint ?? '',
+    push: !!body.push,
+  }) as Record<string, unknown>;
+  // A switch changes every number in the panel — branch, ahead/behind, and
+  // usually the file list. Drop the workspace snapshot rather than let one
+  // poll interval show the old branch's state under the new name.
+  invalidateGitStatus(vpsId, cwd);
+  return {
+    ok: r.ok !== false,
+    error: r.error as string | undefined,
+    reason: r.reason as GitFailureReason | undefined,
+    branch: r.branch as string | undefined,
+    created: r.created === true,
+    pushed: r.pushed === true,
+    pushError: r.push_error as string | undefined,
+    pushReason: r.push_reason as GitFailureReason | undefined,
+    conflicts: Array.isArray(r.conflicts) ? (r.conflicts as string[]) : undefined,
+  };
+}
+
+/**
+ * `git fetch` — what makes `behind` a real number.
+ *
+ * Ahead/behind compare a local ref to its tracking ref, and that only moves on
+ * a fetch. Without this the pull button never appeared, because nothing on the
+ * VPS had learned the remote moved.
+ */
+export const gitFetch = (vpsId: string, cwd: string, repo?: string | null) =>
+  op(vpsId, cwd, repo, 'git_fetch');
+
+export const gitDeleteBranch = (vpsId: string, cwd: string, branch: string, repo?: string | null) =>
+  op(vpsId, cwd, repo, 'git_delete_branch', { branch });
+
+export const gitPush = (vpsId: string, cwd: string, repo?: string | null) =>
+  op(vpsId, cwd, repo, 'git_push');
+export const gitPull = (vpsId: string, cwd: string, repo?: string | null) =>
+  op(vpsId, cwd, repo, 'git_pull');
+export const gitDiscard = (vpsId: string, cwd: string, paths: string[], repo?: string | null) =>
+  op(vpsId, cwd, repo, 'git_discard', { paths });

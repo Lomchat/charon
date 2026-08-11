@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from typing import Any, Iterable
 
 # Read ops are local and fast; a commit may run hooks; push/pull hit the
@@ -44,6 +45,31 @@ MAX_PATCH_BYTES = 1_500_000  # per-file patch cap (git_diff)
 MAX_MESSAGE_CHARS = 8000
 MAX_UNTRACKED_SCAN = 500     # untracked files we bother line-counting
 MAX_UNTRACKED_SCAN_BYTES = 1_000_000
+
+# ── Multi-repo workspace (git_workspace) ────────────────────────────────────
+# A session is frequently opened on a folder OF projects (`/srv`,
+# `/var/www/html`) rather than on a checkout. `rev-parse --show-toplevel` only
+# walks UP, so that folder answered "not a repo" with ten repos underneath it.
+# These bound the scan that fixes it — the panel polls every 30s, so the cost
+# has to be a known constant, not "however big this tree is".
+SCAN_MAX_DEPTH = 3           # levels below cwd we look for a .git
+SCAN_MAX_DIRS = 4000         # hard stop on directories visited per scan
+MAX_REPOS = 20               # repos reported for one workspace
+MULTI_MAX_FILES = 400        # per-repo file entries when there are several
+SCAN_TTL_S = 60.0            # discovery is cached; `refresh` bypasses it
+
+# Directories never worth descending into looking for a project. Not a
+# correctness boundary (a repo inside node_modules is a vendored copy, not
+# your work) — a cost one: these are where a recursive walk goes to die.
+SCAN_SKIP_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "env", "__pycache__",
+    ".next", ".nuxt", "dist", "build", "target", "vendor", "bower_components",
+    ".cache", ".terraform", ".gradle", ".tox", ".mypy_cache", ".pytest_cache",
+    "site-packages", ".svn", ".hg",
+})
+
+# cwd -> (deadline, [roots], truncated)
+_scan_cache: dict[str, tuple[float, list[str], bool]] = {}
 
 
 def _env() -> dict[str, str]:
@@ -264,7 +290,8 @@ def _count_untracked_lines(abs_path: str) -> tuple[int | None, bool]:
 
 
 # ── RPCs ────────────────────────────────────────────────────────────────────
-def git_status(cwd: str, include_recent: bool = False) -> dict[str, Any]:
+def git_status(cwd: str, include_recent: bool = False,
+               max_files: int = MAX_FILES) -> dict[str, Any]:
     """Working-tree summary for the repo containing `cwd`.
 
     One `git status --porcelain=v2 -b -z -uall` + one `git diff --numstat`.
@@ -420,13 +447,144 @@ def git_status(cwd: str, include_recent: bool = False) -> dict[str, Any]:
         "behind": behind,
         "remotes": remotes,
         "remote_url": remote_url,
-        "files": entries[:MAX_FILES],
+        "files": entries[:max_files],
         "file_count": len(entries),
-        "truncated": len(entries) > MAX_FILES,
+        "truncated": len(entries) > max_files,
         "added": total_add,
         "deleted": total_del,
         "conflicts": conflicts,
     }
+
+
+def _discover_repos(base: str, max_depth: int) -> tuple[list[str], bool]:
+    """Repo toplevels at most `max_depth` levels BELOW `base`.
+
+    Returns (roots, truncated). Sorted, so the panel's order is stable between
+    polls instead of following directory-entry order.
+
+    Deliberate rules:
+      * a directory containing `.git` is a root and we DO NOT descend into it.
+        Its submodules are its business; listing them as peers of the projects
+        you opened the folder for is noise, and it is what makes the walk cheap.
+      * symlinked directories are never followed — one loop back up the tree
+        would turn a bounded scan into an unbounded one.
+      * `SCAN_SKIP_DIRS` and `SCAN_MAX_DIRS` bound the cost; hitting the latter
+        sets `truncated` so the UI can say the list may be incomplete rather
+        than quietly pretending it is exhaustive.
+    """
+    roots: list[str] = []
+    visited = 0
+    truncated = False
+    # (path, depth). Iterative: a deep tree must not depend on the recursion
+    # limit, and the caps are easier to read as loop conditions.
+    stack: list[tuple[str, int]] = [(base, 0)]
+    while stack:
+        path, depth = stack.pop()
+        if visited >= SCAN_MAX_DIRS:
+            truncated = True
+            break
+        visited += 1
+        try:
+            with os.scandir(path) as it:
+                children: list[str] = []
+                is_repo = False
+                for e in it:
+                    name = e.name
+                    if name == ".git":
+                        # A file named .git is a worktree/submodule pointer —
+                        # still a checkout as far as `git -C` is concerned.
+                        is_repo = True
+                        continue
+                    if depth >= max_depth or name in SCAN_SKIP_DIRS:
+                        continue
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            children.append(e.path)
+                    except OSError:
+                        continue
+        except (OSError, PermissionError):
+            continue
+        if is_repo and path != base:
+            roots.append(path)
+            if len(roots) >= MAX_REPOS:
+                truncated = True
+                break
+            continue                    # never descend into a checkout
+        # A `.git` at the BASE is not a stop sign: `_root()` is the authority
+        # there and it already said no, so this marker is one git itself
+        # rejected (an empty or half-created .git, a stale worktree pointer, a
+        # repo whose ownership git refuses). Treating it as a checkout hid
+        # every project underneath — measured on a real /srv.
+        stack.extend((c, depth + 1) for c in children)
+    roots.sort()
+    return roots, truncated
+
+
+def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
+                  include_recent: bool = False, refresh: bool = False) -> dict[str, Any]:
+    """Every repo this session can see, as ONE answer.
+
+    `mode`:
+      * `single` — `cwd` is inside a checkout. Exactly today's behaviour, one
+        entry, scoped to the toplevel (a session started in `src/` still sees
+        the whole changeset).
+      * `multi`  — `cwd` is NOT a checkout but contains some. One entry per
+        discovered repo. Reported even when there is exactly one, because the
+        panel then has to say WHICH folder it is talking about.
+      * `none`   — a plain folder with nothing underneath it.
+
+    One RPC rather than "discover, then N status calls": the hub polls this
+    while a session is on screen, and N round trips per tick over one ssh pipe
+    is N chances to half-fail. The per-repo payload is the `git_status` shape
+    verbatim, so the hub reuses one decoder.
+    """
+    path = os.path.expanduser((cwd or "").strip())
+    if not path or not os.path.isdir(path):
+        return {"ok": True, "mode": "none", "repos": [],
+                "reason": "no_cwd", "error": "directory not found"}
+
+    root, bail = _root(path)
+    if root:
+        st = git_status(root, include_recent=include_recent)
+        st["root"] = st.get("root") or root
+        return {"ok": True, "mode": "single", "repos": [_tag(st, path)]}
+    # A real failure (git missing, dubious ownership on the cwd itself) is not
+    # "no repo here" — scanning would just repeat it once per subdirectory.
+    if bail is not None and bail.get("ok") is False:
+        return {"ok": False, "mode": "none", "repos": [],
+                "error": bail.get("error"), "reason": bail.get("reason")}
+
+    depth = max(1, min(int(scan_depth or SCAN_MAX_DEPTH), 6))
+    now = time.monotonic()
+    hit = _scan_cache.get(path)
+    if refresh or hit is None or hit[0] < now:
+        roots, truncated = _discover_repos(path, depth)
+        _scan_cache[path] = (now + SCAN_TTL_S, roots, truncated)
+        if len(_scan_cache) > 200:      # bounded: one entry per watched cwd
+            for k in [k for k, v in _scan_cache.items() if v[0] < now]:
+                _scan_cache.pop(k, None)
+    else:
+        roots, truncated = hit[1], hit[2]
+
+    if not roots:
+        return {"ok": True, "mode": "none", "repos": []}
+
+    repos = []
+    for r in roots:
+        st = git_status(r, include_recent=include_recent, max_files=MULTI_MAX_FILES)
+        st["root"] = st.get("root") or r
+        repos.append(_tag(st, path))
+    return {"ok": True, "mode": "multi", "repos": repos,
+            "scanned": len(roots), "truncated": truncated}
+
+
+def _tag(status: dict[str, Any], base: str) -> dict[str, Any]:
+    """Add the two display keys the hub would otherwise recompute per render."""
+    root = status.get("root") or base
+    rel = os.path.relpath(root, base)
+    status["rel"] = "" if rel == "." else rel
+    status["name"] = os.path.basename(root.rstrip("/")) or root
+    return status
 
 
 def git_diff(cwd: str, path: str) -> dict[str, Any]:
@@ -581,6 +739,236 @@ def git_pull(cwd: str) -> dict[str, Any]:
     if code != 0:
         return _fail(_first_line(err) or _first_line(out) or "git pull failed", _classify(err, out))
     return {"ok": True, "output": (_first_line(out) or _first_line(err) or "up to date")}
+
+
+# ── Branches (agent >= 0.31.0) ──────────────────────────────────────────────
+# The panel used to show a branch NAME and nothing else: you could see you were
+# on `main`, not what else existed, how far it had drifted, or how to move. A
+# checkout is also the one write here that is not an allow-listed edit of the
+# working tree — hence the rules below.
+MAX_BRANCHES = 200
+
+# One call for everything the modal shows. \x1f between fields and \x1e between
+# records because a commit subject can contain anything, tabs and pipes
+# included, and a branch listing that breaks on somebody's subject line is
+# worse than no listing.
+_BR_FIELDS = (
+    "%(refname:short)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f"
+    "%(ahead-behind:HEAD)%1f%(committerdate:unix)%1f%(HEAD)%1f%(worktreepath)%1f"
+    "%(contents:subject)%1e"
+)
+# Same, minus ahead-behind: that field needs git >= 2.41 and a whole `git
+# for-each-ref` fails with 128 on an unknown field, so an old VPS would get an
+# empty branch list rather than one missing a column.
+_BR_FIELDS_OLD = _BR_FIELDS.replace("%(ahead-behind:HEAD)", "")
+
+
+def _parse_track(track: str) -> tuple[int, int, bool]:
+    """`upstream:track,nobracket` → (ahead, behind, gone)."""
+    t = (track or "").strip()
+    if t == "gone":
+        return 0, 0, True
+    ahead = behind = 0
+    for part in t.split(","):
+        part = part.strip()
+        if part.startswith("ahead "):
+            ahead = int(part[6:] or 0)
+        elif part.startswith("behind "):
+            behind = int(part[7:] or 0)
+    return ahead, behind, False
+
+
+def git_branches(cwd: str, include_remote: bool = True) -> dict[str, Any]:
+    """Every branch, with how far each one has drifted.
+
+    Two different ahead/behind pairs, because they answer different questions:
+      * vs UPSTREAM  — "is my branch in sync with the remote" (what the pull
+        and push buttons are about);
+      * vs HEAD      — "what would switching to this cost me", which is the
+        only number that turns a branch list into a navigation tool rather
+        than a list of names.
+    """
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+
+    # Local names first: it is what tells a remote-only branch (offer it) from
+    # a remote ref that merely mirrors a branch you already have (hide it, or
+    # the list shows `main` twice and picking the wrong one detaches HEAD).
+    code, out, _ = _run(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+    local_names = {ln.strip() for ln in out.split("\n") if ln.strip()} if code == 0 else set()
+
+    refs = ["refs/heads/"] + (["refs/remotes/"] if include_remote else [])
+    args = ["for-each-ref", "--format=" + _BR_FIELDS, "--sort=-committerdate",
+            f"--count={MAX_BRANCHES * 2}", *refs]
+    code, out, err = _run(root, args)
+    if code != 0:
+        # `ahead-behind` needs git >= 2.41 and an unknown field fails the WHOLE
+        # command with 128 — an old VPS would get an empty list instead of one
+        # missing a column.
+        args[1] = "--format=" + _BR_FIELDS_OLD
+        code, out, err = _run(root, args)
+        if code != 0:
+            return _fail(_first_line(err) or "git for-each-ref failed", None,
+                         branches=[], current=None)
+
+    branches: list[dict[str, Any]] = []
+    for rec in out.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec:
+            continue
+        f = rec.split("\x1f")
+        if len(f) < 8:
+            continue
+        name, upstream, track, ahead_behind, cdate, head, worktree, subject = f[:8]
+        if not name or name.endswith("/HEAD"):
+            continue
+        is_remote = name not in local_names
+        short = name.split("/", 1)[1] if (is_remote and "/" in name) else name
+        if is_remote and short in local_names:
+            continue                      # already checked out locally
+        ahead, behind, gone = _parse_track(track)
+        ah = bh = None
+        bits = ahead_behind.split()
+        if len(bits) == 2:
+            try:
+                ah, bh = int(bits[0]), int(bits[1])
+            except ValueError:
+                ah = bh = None
+        branches.append({
+            "name": name,
+            "short": short,
+            "remote": is_remote,
+            "current": head.strip() == "*",
+            "upstream": upstream or None,
+            "ahead": ahead, "behind": behind, "gone": gone,
+            "ahead_head": ah, "behind_head": bh,
+            "committed_at": int(cdate) if cdate.isdigit() else None,
+            "subject": subject[:200],
+            # A branch checked out in another worktree cannot be switched to;
+            # saying so beats letting git refuse with a puzzling message.
+            "worktree": worktree or None,
+        })
+        if len(branches) >= MAX_BRANCHES:
+            break
+
+    current = next((b["name"] for b in branches if b["current"]), None)
+    return {
+        "ok": True, "root": root, "current": current, "detached": current is None,
+        "branches": branches,
+        "truncated": len(branches) >= MAX_BRANCHES,
+    }
+
+
+def git_fetch(cwd: str, prune: bool = False) -> dict[str, Any]:
+    """`git fetch --all` — what makes `behind` a real number.
+
+    Ahead/behind come from comparing a local ref to its tracking ref, and that
+    tracking ref only moves on a fetch. Without this the pull button never
+    appears, because nothing ever told the VPS the remote had moved.
+    """
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+    args = ["fetch", "--all", "--quiet"]
+    if prune:
+        args.append("--prune")
+    code, out, err = _run(root, args, timeout=NET_TIMEOUT_S)
+    if code != 0:
+        return _fail(_first_line(err) or _first_line(out) or "git fetch failed", _classify(err, out))
+    return {"ok": True, "output": _first_line(out) or _first_line(err) or "fetched"}
+
+
+def git_checkout(cwd: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Switch to a branch, optionally creating it.
+
+    `git switch`, not `git checkout`: switch refuses to touch a path by
+    accident, and it refuses outright when the move would overwrite local
+    changes — which is the behaviour we want, since another agent may be
+    writing here. NEVER `--force`, NEVER `--discard-changes`: a dirty tree
+    comes back as reason='dirty' with the paths git named, and the user
+    decides. No autostash either — stashing a tree an agent is mid-write in is
+    a silent way to lose work.
+
+    Creating carries the working tree over, which is the normal "I started
+    editing on the wrong branch" recovery, so create is allowed while dirty.
+    """
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+
+    name = str(params.get("branch") or "").strip()
+    if not name or name.startswith("-") or ".." in name or name.endswith("/"):
+        return _fail("invalid branch name", "bad_branch")
+    create = bool(params.get("create"))
+    start = str(params.get("start_point") or "").strip()
+    if start.startswith("-"):
+        return _fail("invalid start point", "bad_branch")
+
+    if create:
+        args = ["switch", "--create", name]
+        if start:
+            args.append(start)
+    else:
+        # A name that only exists on a remote: create the local branch that
+        # tracks it (what `switch <name>` does on its own when exactly one
+        # remote has it), rather than detaching HEAD onto the remote ref.
+        short = name.split("/", 1)[1] if name.startswith("origin/") else name
+        args = ["switch", short]
+        if short != name:
+            args = ["switch", "--create", short, "--track", name]
+
+    code, out, err = _run(root, args, timeout=COMMIT_TIMEOUT_S)
+    if code != 0:
+        text = (err + "\n" + out).lower()
+        if "would be overwritten" in text or "local changes" in text or "please commit" in text:
+            files = [ln.strip() for ln in (err + "\n" + out).splitlines()
+                     if ln.startswith("\t") or ln.startswith("        ")]
+            return _fail(_first_line(err) or "local changes would be overwritten",
+                         "dirty", conflicts=[f for f in files][:40])
+        if "already exists" in text:
+            return _fail(_first_line(err) or "branch already exists", "exists")
+        return _fail(_first_line(err) or _first_line(out) or "git switch failed", _classify(err, out))
+
+    if create and bool(params.get("push")):
+        pcode, pout, perr = _run(root, ["push", "--set-upstream", "origin", name],
+                                 timeout=NET_TIMEOUT_S)
+        if pcode != 0:
+            # The branch EXISTS and we are on it; only the publish failed.
+            return {"ok": True, "branch": name, "created": True, "pushed": False,
+                    "push_error": _first_line(perr) or "push failed",
+                    "push_reason": _classify(perr, pout)}
+        return {"ok": True, "branch": name, "created": True, "pushed": True}
+    return {"ok": True, "branch": name, "created": create, "pushed": False}
+
+
+def git_delete_branch(cwd: str, params: dict[str, Any]) -> dict[str, Any]:
+    """`git branch -d` — the SAFE delete, never `-D`.
+
+    -d refuses a branch whose commits are not merged anywhere, which is exactly
+    the guard we want; reason='unmerged' tells the user why instead of quietly
+    dropping work. Remote branches are not deletable from here at all: that is
+    a push to someone else's server.
+    """
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+    name = str(params.get("branch") or "").strip()
+    if not name or name.startswith("-"):
+        return _fail("invalid branch name", "bad_branch")
+    code, out, err = _run(root, ["branch", "--delete", "--", name])
+    if code != 0:
+        text = (err + out).lower()
+        if "not fully merged" in text:
+            return _fail(f"{name} has commits that are not merged anywhere", "unmerged")
+        if "checked out" in text:
+            return _fail(_first_line(err) or "that branch is checked out", "current")
+        return _fail(_first_line(err) or "git branch -d failed", _classify(err, out))
+    return {"ok": True, "deleted": name}
 
 
 def git_discard(cwd: str, params: dict[str, Any]) -> dict[str, Any]:

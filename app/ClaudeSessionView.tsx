@@ -8,7 +8,7 @@ import { api } from '@/lib/api';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
-import { refreshGit, useGitStatus } from './gitStore';
+import { refreshGit, useGitStatus, workspaceAheadBehind, workspaceDirtyCount } from './gitStore';
 import BgTasksBar from './BgTasksBar';
 import UsageMeter from './UsageMeter';
 import QuestionCard from './QuestionCard';
@@ -30,6 +30,8 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
+import { isPathDrag, readPathDrag } from './pathDrag';
+import { IconInsert } from './fileIcons';
 import {
   useSessionAttachments, type PendingUpload,
 } from './sessionAttachments';
@@ -763,6 +765,7 @@ export default function ClaudeSessionView({
         repoBusy={status === 'thinking'}
         requestedTab={requestedToolTab}
         onTabConsumed={clearRequestedToolTab}
+        onReveal={onOpenTools}
       />
     </>
   );
@@ -846,7 +849,10 @@ const ChatInputBar = memo(function ChatInputBar({
   const inputRef = useRef(input);
   useEffect(() => { inputRef.current = input; }, [input]);
 
-  const [dragging, setDragging] = useState(false);
+  // What is being dragged over the page, or null. Two kinds land in the same
+  // place (the caret) but do very different things on the way: 'files' uploads
+  // to the VPS first, 'path' is already there and only needs splicing.
+  const [dragKind, setDragKind] = useState<'files' | 'path' | null>(null);
 
   // Drain prefill_input: copy into the textarea then clear. If this bar is
   // unmounted when a prefill arrives (pending interaction / sleeping session),
@@ -915,33 +921,50 @@ const ChatInputBar = memo(function ChatInputBar({
     // Depth counter, because dragenter/dragleave fire for every child element
     // the pointer crosses; a naive boolean flickers the overlay constantly.
     let depth = 0;
-    const isFileDrag = (e: DragEvent) => {
-      const types = e.dataTransfer?.types;
-      if (!types) return false;
-      return Array.prototype.indexOf.call(types, 'Files') !== -1;
+    // Which of the app's three HTML5 drags this is — see app/pathDrag.ts. A
+    // tab or sidebar REORDER carries only 'text/plain' and matches neither, so
+    // dragging a tab must never light up the chat's drop overlay.
+    const kindOf = (e: DragEvent): 'files' | 'path' | null => {
+      const dt = e.dataTransfer;
+      if (!dt) return null;
+      if (Array.prototype.indexOf.call(dt.types, 'Files') !== -1) return 'files';
+      return isPathDrag(dt) ? 'path' : null;
     };
     const onEnter = (e: DragEvent) => {
-      if (!isFileDrag(e)) return;
+      const kind = kindOf(e);
+      if (!kind) return;
       depth++;
-      setDragging(true);
+      setDragKind(kind);
     };
     const onOver = (e: DragEvent) => {
-      if (!isFileDrag(e)) return;
+      if (!kindOf(e)) return;
       // MANDATORY: without preventDefault the drop event never fires and the
       // browser navigates away to the dropped file instead.
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     };
     const onLeave = (e: DragEvent) => {
-      if (!isFileDrag(e)) return;
+      if (!kindOf(e)) return;
       depth = Math.max(0, depth - 1);
-      if (depth === 0) setDragging(false);
+      if (depth === 0) setDragKind(null);
     };
     const onDrop = (e: DragEvent) => {
-      if (!isFileDrag(e)) return;
+      const kind = kindOf(e);
+      if (!kind) return;
       e.preventDefault();
       depth = 0;
-      setDragging(false);
+      setDragKind(null);
+      if (kind === 'path') {
+        // Dropping back onto the explorer is how a drag gets CANCELLED — the
+        // panel is both the source and, being fixed on the right, the easiest
+        // place to let go by accident. Everywhere else is a valid target.
+        if (e.target instanceof Element && e.target.closest('.tool-panel')) return;
+        const p = readPathDrag(e.dataTransfer);
+        // No upload: this path already exists on the VPS, so it goes straight
+        // to the caret and `pending` stays empty (no blocking upload overlay).
+        if (p) insertAtCaret(p);
+        return;
+      }
       const files = Array.from(e.dataTransfer?.files ?? []);
       handleFiles(files);
     };
@@ -955,7 +978,7 @@ const ChatInputBar = memo(function ChatInputBar({
       window.removeEventListener('dragleave', onLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [handleFiles]);
+  }, [handleFiles, insertAtCaret]);
 
   // Paste a screenshot straight into the message (Cmd/Ctrl+V). Same pipeline as
   // a drop — on desktop this is how screenshots actually reach a chat.
@@ -1100,11 +1123,18 @@ const ChatInputBar = memo(function ChatInputBar({
           ))}
         </div>
       )}
-      {dragging && (
+      {dragKind && (
         <div className="ci-drop-overlay">
           <div className="ci-drop-card">
-            <IconPaperclip />
-            <span>drop to attach — the file lands in the session workspace</span>
+            {dragKind === 'path' ? <IconInsert /> : <IconPaperclip />}
+            <span>
+              {dragKind === 'path'
+                // Saying "the path" and not "the file" is the whole point:
+                // nothing is copied anywhere, the agent is simply told where
+                // to look on its own disk.
+                ? 'drop to put this path in the message'
+                : 'drop to attach — the file lands in the session workspace'}
+            </span>
           </div>
         </div>
       )}
@@ -1191,24 +1221,44 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
  * "open source control" and "open GitHub" can't be misclicked for each other.
  */
 function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: () => void }) {
-  const { status } = useGitStatus(vpsId || null, cwd || null);
-  if (!status?.ok || !status.isRepo) return null;
-  const n = status.fileCount ?? status.files.length;
-  const ahead = status.ahead ?? 0;
-  const web = status.remoteWebUrl;
+  const { workspace } = useGitStatus(vpsId || null, cwd || null);
+  if (!workspace?.ok || workspace.mode === 'none' || workspace.repos.length === 0) return null;
+
+  const n = workspaceDirtyCount(workspace);
+  const { ahead } = workspaceAheadBehind(workspace);
+
+  // A folder OF projects (§14.83) has no single branch to name, so the chip
+  // counts the checkouts instead and the badge sums their changes — the number
+  // is what makes it worth glancing at, and the tab has the breakdown. The
+  // forge link only makes sense when there is exactly one place to go.
+  const multi = workspace.mode === 'multi' && workspace.repos.length > 1;
+  const one = multi ? null : workspace.repos[0];
+  const web = one?.remoteWebUrl;
   const host = web ? web.replace(/^https:\/\//, '').split('/')[0] : null;
 
-  const title = [
-    status.detached ? `detached @ ${status.head ?? '?'}` : `branch ${status.branch ?? '?'}`,
-    n > 0 ? `${n} changed file${n > 1 ? 's' : ''} (+${status.added ?? 0} −${status.deleted ?? 0})` : 'working tree clean',
-    ahead > 0 ? `${ahead} commit${ahead > 1 ? 's' : ''} to push` : '',
-    'click to open source control',
-  ].filter(Boolean).join('\n');
+  const label = multi
+    ? `▤ ${workspace.repos.length} repos`
+    : `⎇ ${one!.detached ? (one!.head ?? 'detached') : (one!.branch ?? '?')}`;
+
+  const title = (multi
+    ? [
+      `${workspace.repos.length} repositories under this folder`,
+      ...workspace.repos.map((r) => {
+        const c = r.fileCount ?? r.files.length;
+        return `  ${r.rel || r.name}${r.branch ? ` (${r.branch})` : ''}${c ? ` — ${c} changed` : ''}`;
+      }),
+    ]
+    : [
+      one!.detached ? `detached @ ${one!.head ?? '?'}` : `branch ${one!.branch ?? '?'}`,
+      n > 0 ? `${n} changed file${n > 1 ? 's' : ''} (+${one!.added ?? 0} −${one!.deleted ?? 0})` : 'working tree clean',
+      ahead > 0 ? `${ahead} commit${ahead > 1 ? 's' : ''} to push` : '',
+    ]
+  ).concat('click to open source control').filter(Boolean).join('\n');
 
   return (
     <span className="git-chip-wrap">
-      <button type="button" className="git-chip" onClick={onOpen} title={title}>
-        <span className="gc-branch">⎇ {status.detached ? (status.head ?? 'detached') : (status.branch ?? '?')}</span>
+      <button type="button" className={`git-chip${multi ? ' multi' : ''}`} onClick={onOpen} title={title}>
+        <span className="gc-branch">{label}</span>
         {n > 0 && <span className="gc-count">{n}</span>}
         {ahead > 0 && <span className="gc-ahead">↑{ahead}</span>}
       </button>

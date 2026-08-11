@@ -95,12 +95,27 @@ METHODS = {
     "fs_mkdir",
     "fs_rename",
     "fs_delete",
+    # Search across the tree for the ToolPanel search tab (agent >= 0.29.0):
+    # text inside files, or file names, with include/exclude globs. Read-only,
+    # bounded in files, matches and wall clock - and it reports every bound it
+    # hit, because a silently truncated search reads as an empty one.
+    "fs_search",
     # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
     # to the repo containing a path, not to a session - the hub polls
     # git_status while a session is on screen, so it rides the persistent pipe
     # instead of one ssh per poll. Writes are an allow-list: add+commit, push,
     # pull --rebase, per-file discard. No reset, no force push.
     "git_status",
+    # A folder OF projects is a normal cwd (/srv, /var/www/html): one call
+    # returns every checkout at or below it, since --show-toplevel only walks
+    # up (agent >= 0.29.0).
+    "git_workspace",
+    # Branches (agent >= 0.31.0): list with drift vs upstream AND vs HEAD,
+    # switch/create, fetch (what makes `behind` a real number), safe delete.
+    "git_branches",
+    "git_checkout",
+    "git_fetch",
+    "git_delete_branch",
     "git_diff",
     "git_commit",
     "git_push",

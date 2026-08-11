@@ -114,8 +114,8 @@ and truncated reads are read-only on purpose.
 
 **Source control**, scoped to the repository the session is working in:
 
-<img src="./docs/img/git.png" alt="The git panel: branch and ahead count, changed files with status and ± counts, selection checkboxes, commit message with an AI draft button" width="49%"></img>
-<img src="./docs/img/diff.png" alt="The full-screen diff reader: file rail on the left, unified patch on the right" width="49%"></img>
+<img src="./docs/img/git.png" alt="The git panel: branch with fetch and push, changed files with status and ± counts, selection checkboxes, commit message with an AI draft button" width="49%"></img>
+<img src="./docs/img/diff.png" alt="The full-screen diff reader: file rail on the left, HEAD and working tree side by side, and the change stepper between the two panes" width="49%"></img>
 
 - A **branch chip** next to the working directory — branch, changed-file count,
   commits to push — plus a link that opens the repo on its forge (GitHub,
@@ -126,9 +126,28 @@ and truncated reads are read-only on purpose.
   **Nothing is ticked by default** and commits are **path-scoped** — in a tree
   where an agent may be writing right now, a pre-selected "everything" is how
   you commit someone else's half-finished work by accident.
-- **commit**, **commit & push**, **pull** (`--rebase --autostash`). No reset, no
-  force push, no repo-wide discard — deliberately: nothing here is locally
-  undoable the way it is in an editor.
+- **commit**, **commit & push**, **fetch**, **pull** (`--rebase --autostash`).
+  No reset, no force push, no repo-wide discard — deliberately: nothing here is
+  locally undoable the way it is in an editor.
+- **Branches.** Click the branch name for the full list: every branch with its
+  drift **vs its upstream** (what push/pull would do) *and* **vs the branch you
+  are on** (what switching would cost), its last commit, remote-only branches
+  you can check out, worktree locks. Switch, create (with an optional
+  `push -u`), delete. A switch is **never forced** — no `--force`, no autostash:
+  if it would overwrite local changes, Charon says so *and names the files*,
+  and HEAD does not move. Creating a branch is allowed on a dirty tree, because
+  it carries your work over.
+- **A folder of projects is a normal working directory.** Open a session on
+  `/srv` and Charon finds every checkout underneath it (bounded scan) and gives
+  each one its own section — branch, changes, commit box — with the file tree's
+  git decorations merged across all of them. `git rev-parse` only ever looks
+  *up*, which is why that case used to report "not a git repository" with ten
+  repos in plain sight.
+- **A side-by-side diff reader.** HEAD on the left, working tree on the right,
+  hunk gaps stated rather than silently skipped, and a **▲/▼ between the panes**
+  that steps change by change (Alt+arrows). The same renderer draws the
+  session's own edits, so both readers behave identically; the raw unified
+  patch stays one click away.
 - ✨ **Draft a commit message** from the selected changes. This one runs hub-side
   on your `claude.api_key` (Settings) and reads the repo's recent commit
   subjects, so the message matches local convention. It's the only button in
@@ -187,14 +206,17 @@ notify-on-event window over your whole fleet.
   your devices, drag to reorder.
 - **File explorer + editor** — browse the project, open files, edit and save with
   conflict detection, create/rename/delete, inline media preview.
-- **Source control** — branch chip, changed files, per-file diffs, path-scoped
-  commit, push, pull, per-file discard, AI-drafted commit messages.
+- **Source control** — branch chip, branch switcher (drift vs upstream *and* vs
+  HEAD, create, fetch), changed files, side-by-side diffs, path-scoped commit,
+  push, pull, per-file discard, AI-drafted commit messages; a working directory
+  holding several repositories gets a section each.
 - **File attachments** — drag & drop / 📎 / paste; the file lands in the session's
   workspace and the agent reads it with its own tools.
 - **Persistent shells** — detached-holder PTYs that outlive the hub and the agent.
 - **One SSH connection per VPS**, JSON-RPC multiplexed — no per-session SSH
   spawns.
-- **Streaming chat UI**, **permission flow / sandbox modes**, **diff & revert**,
+- **Streaming chat UI**, **permission flow / sandbox modes**, **edits & revert**
+  (what the agent changed in *this* session, side by side, revertable),
   **todo / plan panel**, **full-text search**, **per-session model & effort**.
 - **Account-usage gauges** — the `/usage` quota (5-hour, weekly, per-model caps)
   for each session's Claude or Codex account, polled once per account.

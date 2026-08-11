@@ -262,6 +262,10 @@ export type AgentMethodName =
   | 'fs_mkdir'
   | 'fs_rename'
   | 'fs_delete'
+  // Search across the tree (agent >= 0.29.0) - grep inside files, or match
+  // file names. Bounded in files, matches and wall clock, and every bound it
+  // hits comes back as truncated. cf. CLAUDE.md §14.84.
+  | 'fs_search'
   // Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
   // to the repo containing a cwd, NOT to a session. No ssh fallback exists on
   // purpose - duplicating the porcelain-v2 parser hub-side is the real cost,
@@ -269,6 +273,15 @@ export type AgentMethodName =
   // NB: no quoted words in comments here - check-protocol-sync.mjs reads every
   // quoted token in this type body as a method name.
   | 'git_status'
+  // A folder OF projects is a normal cwd: one call returns every checkout at
+  // or below it, since --show-toplevel only walks up (agent >= 0.29.0, §14.83).
+  | 'git_workspace'
+  // Branches (agent >= 0.31.0): list with drift vs upstream AND vs HEAD,
+  // switch/create, fetch (what makes behind a real number), safe delete.
+  | 'git_branches'
+  | 'git_checkout'
+  | 'git_fetch'
+  | 'git_delete_branch'
   | 'git_diff'
   | 'git_commit'
   | 'git_push'

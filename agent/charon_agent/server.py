@@ -24,6 +24,7 @@ from .fsnav import (
     fs_mkdir as _fs_mkdir,
     fs_rename as _fs_rename,
     fs_delete as _fs_delete,
+    fs_search as _fs_search,
 )
 from .git import (
     git_commit as _git_commit,
@@ -32,6 +33,11 @@ from .git import (
     git_pull as _git_pull,
     git_push as _git_push,
     git_status as _git_status,
+    git_workspace as _git_workspace,
+    git_branches as _git_branches,
+    git_checkout as _git_checkout,
+    git_fetch as _git_fetch,
+    git_delete_branch as _git_delete_branch,
 )
 
 
@@ -374,8 +380,11 @@ class Server:
         "list_codex_models", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
-        "git_status", "git_diff", "git_commit", "git_push", "git_pull", "git_discard",
+        "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
+        "git_pull", "git_discard",
+        "git_branches", "git_checkout", "git_fetch", "git_delete_branch",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
+        "fs_search",
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -466,6 +475,25 @@ class Server:
                 _fs_delete, str(params.get("root") or ""), str(params.get("path") or ""),
                 bool(params.get("recursive")))
 
+        if method == "fs_search":
+            # Tree-wide search (agent >= 0.29.0). The heaviest read this daemon
+            # serves — a whole-repo walk plus a regex over every text file — so
+            # it goes off the event loop like the rest, and bounds itself well
+            # under the hub's 60s RPC timeout rather than relying on it.
+            try:
+                cap = int(params.get("max_results") or 0)
+            except (TypeError, ValueError):
+                cap = 0
+            return await asyncio.to_thread(
+                _fs_search, str(params.get("root") or ""), str(params.get("query") or ""),
+                str(params.get("mode") or "text"),
+                bool(params.get("regex")), bool(params.get("case_sensitive")),
+                bool(params.get("whole_word")),
+                str(params.get("include") or ""), str(params.get("exclude") or ""),
+                params.get("use_default_excludes") is not False,
+                cap,
+            )
+
         if method.startswith("git_"):
             # Source-control panel backend (agent >= 0.24.0, git.py). Every
             # entry point shells out to git, so it runs off the event loop —
@@ -478,6 +506,23 @@ class Server:
                 return await asyncio.to_thread(
                     _git_status, cwd, bool(params.get("include_recent"))
                 )
+            if method == "git_workspace":
+                return await asyncio.to_thread(
+                    _git_workspace, cwd,
+                    int(params.get("scan_depth") or 3),
+                    bool(params.get("include_recent")),
+                    bool(params.get("refresh")),
+                )
+            if method == "git_branches":
+                return await asyncio.to_thread(
+                    _git_branches, cwd, params.get("include_remote", True) is not False
+                )
+            if method == "git_checkout":
+                return await asyncio.to_thread(_git_checkout, cwd, params)
+            if method == "git_fetch":
+                return await asyncio.to_thread(_git_fetch, cwd, bool(params.get("prune")))
+            if method == "git_delete_branch":
+                return await asyncio.to_thread(_git_delete_branch, cwd, params)
             if method == "git_diff":
                 return await asyncio.to_thread(_git_diff, cwd, str(params.get("path") or ""))
             if method == "git_commit":

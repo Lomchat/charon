@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getGitStatus } from '@/lib/server/claude/git';
+import { getGitWorkspace } from '@/lib/server/claude/git';
 
 // GET /api/vps/[id]/git/status?cwd=<path>[&force=1]
 //
@@ -28,5 +28,5 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
-  return NextResponse.json(await getGitStatus(id, cwd, { force }));
+  return NextResponse.json(await getGitWorkspace(id, cwd, { force }));
 }

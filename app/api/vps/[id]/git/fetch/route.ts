@@ -2,17 +2,13 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitPush } from '@/lib/server/claude/git';
+import { gitFetch } from '@/lib/server/claude/git';
 
-// POST /api/vps/[id]/git/push  { cwd }
-// `git push` (or `push -u <remote> HEAD` on a branch with no upstream).
-// Never forced: a rejected push comes back as reason='rejected' and the UI
-// offers pull --rebase.
+// POST /api/vps/[id]/git/fetch  { cwd, repo? }
 //
-// The agent allows a push up to 170s but AgentClient's RPC timeout is 60s, so
-// a slow push loses the ANSWER, not the push — it keeps running on the VPS.
-// `op()` says exactly that instead of "timeout", and the next status poll
-// (ahead → 0) is what confirms it landed.
+// The call that makes `behind` mean something: ahead/behind compare a local
+// ref to its tracking ref, and that ref only moves on a fetch. Without it the
+// pull button never appeared on a VPS nobody had fetched on. §14.85
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -25,10 +21,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     const body = await req.json();
     cwd = String(body?.cwd ?? '');
-    // Which checkout, when the cwd holds several (§14.83). Validated in git.ts.
     repo = body?.repo ? String(body.repo) : null;
   } catch { /* empty */ }
   if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
 
-  return NextResponse.json(await gitPush(id, cwd, repo));
+  return NextResponse.json(await gitFetch(id, cwd, repo));
 }

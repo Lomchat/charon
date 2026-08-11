@@ -45,8 +45,11 @@ export async function POST(req: Request) {
   // Opening/focusing a session counts as "reading" it: clear the durable
   // "finished, unread" marker (CLAUDE.md §14.47) and mirror it live to every
   // tab/device. Done regardless of `ok` (the focus filter and the unread flag
-  // are independent) and no-op when the session wasn't unread.
-  if (result.ok && result.focus === sessionId && typeof sessionId === 'string' && sessionId.length > 0) {
+  // are independent) and no-op when the session wasn't unread. In particular,
+  // a focus POST is allowed to race the SSE registration: `result.ok=false`
+  // must not leave SQLite unread while the browser has already cleared the
+  // green marker optimistically.
+  if (typeof sessionId === 'string' && sessionId.length > 0) {
     try { markSessionRead(sessionId); } catch {}
   }
 

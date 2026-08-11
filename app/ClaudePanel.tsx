@@ -19,7 +19,7 @@ import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
 import { useInstallNotifications } from './useInstallNotifications';
-import { subscribeAll } from './globalEventStream';
+import { setFocus, subscribeAll } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
@@ -473,7 +473,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (ev.type !== 'session_unread') return;
       const id = ev.sessionId;
       if (!id) return;
-      const next = ev.unread ? 1 : 0;
+      // A session visible in this tab is read by definition. A stale server
+      // focus (typically during SSE reconnect) may briefly classify its stop
+      // as background; acknowledge it immediately and never paint a false
+      // green marker locally.
+      const visibleHere = id === selectedId;
+      const next = ev.unread && !visibleHere ? 1 : 0;
+      if (ev.unread && visibleHere) void setFocus(id);
       setSessions((prev) => {
         let changed = false;
         const out = prev.map((s) => {
@@ -486,16 +492,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       });
     });
     return () => unsub();
-  }, []);
+  }, [selectedId]);
 
   // Opening a session marks it read locally the instant you select it. The
   // authoritative cross-device clear is server-side (POST /focus →
-  // markSessionRead, fired by useClaudeSessionStream); this just prevents a
-  // flash of the green marker on the very card you just opened. Keyed on
+  // markSessionRead). Re-POST here as well as in useClaudeSessionStream so the
+  // acknowledgement does not depend on that view mounting, and so selecting
+  // an already-active session heals a prior SSE-registration race. Keyed on
   // selectedId so it covers EVERY open path (sidebar, tab bar, deep link,
   // push-notification click).
   useEffect(() => {
     if (!selectedId) return;
+    void setFocus(selectedId);
     setSessions((prev) => {
       const s = prev.find((x) => x.id === selectedId);
       if (!s || !s.unreadStop) return prev;
@@ -1686,6 +1694,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onRevert={() => {}}
           vpsId={selectedFile.vpsId}
           cwd={selectedFile.path}
+          onReveal={() => setToolsOpen(true)}
         />
         </>
       ) : selectedInstallId ? (() => {

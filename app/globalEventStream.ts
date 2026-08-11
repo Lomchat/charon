@@ -545,14 +545,20 @@ export function subscribeAll(cb: GlobalListener): () => void {
  * high-volume events (assistant_text, tool_use, etc.) for this session
  * without closing/reopening the SSE.
  *
- * If `sessionId` matches the current focus, no-op.
+ * If `sessionId` matches the current focus, re-POST it anyway. Besides routing
+ * the stream, POST /focus is the durable read acknowledgement; a repeated
+ * selection must therefore heal an earlier POST that raced SSE registration.
  *
  * Idempotent: if several setFocus calls fire at the same time (rapid
  * navigation), the monotonic sequence makes the last one win server-side
  * even when an older POST response arrives later.
  */
 export async function setFocus(sessionId: string | null): Promise<void> {
-  if (currentFocus === sessionId) { ensureStream(); return; }
+  if (currentFocus === sessionId) {
+    ensureStream();
+    if (currentFocusSeq > 0) await postFocus(sessionId, currentFocusSeq);
+    return;
+  }
   // Set the desired focus BEFORE opening the EventSource so its initial URL is
   // already correct. The sequence also makes concurrent POSTs latest-wins.
   currentFocus = sessionId;

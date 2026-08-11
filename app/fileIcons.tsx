@@ -118,6 +118,15 @@ export const IconCopy = (p: P) => (
     <path d="M6.5 5.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" />
   </svg>
 );
+// Arrow dropping onto a line — "insert this into the message below". Reads as
+// a destination rather than a creation, which is what separates it from the
+// two plus-badged glyphs above.
+export const IconInsert = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M8 2.5v7.4M5.1 7l2.9 2.9L10.9 7" />
+    <path d="M3 13.3h10" />
+  </svg>
+);
 export const IconRename = (p: P) => (
   <svg {...stroke} {...p}>
     <path d="M11.2 2.8a1.4 1.4 0 0 1 2 2L6.4 11.6l-2.6.6.6-2.6z" />

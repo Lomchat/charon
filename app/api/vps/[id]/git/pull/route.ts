@@ -20,8 +20,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   let cwd = '';
-  try { cwd = String((await req.json())?.cwd ?? ''); } catch { /* empty */ }
+  let repo: string | null = null;
+  try {
+    const body = await req.json();
+    cwd = String(body?.cwd ?? '');
+    // Which checkout, when the cwd holds several (§14.83). Validated in git.ts.
+    repo = body?.repo ? String(body.repo) : null;
+  } catch { /* empty */ }
   if (!cwd) return NextResponse.json({ ok: false, error: 'cwd required' }, { status: 400 });
 
-  return NextResponse.json(await gitPull(id, cwd));
+  return NextResponse.json(await gitPull(id, cwd, repo));
 }

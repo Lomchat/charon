@@ -22,7 +22,7 @@
  */
 import { useCallback, useSyncExternalStore } from 'react';
 import { api } from '@/lib/api';
-import type { GitStatusResponse } from '@/lib/types/api';
+import type { GitStatusResponse, GitWorkspaceResponse } from '@/lib/types/api';
 
 const POLL_MS = 30_000;
 // A cwd that isn't a repo essentially never becomes one mid-session, and
@@ -31,9 +31,14 @@ const IDLE_POLL_MS = 300_000;
 const DEGRADED_POLL_MS = 120_000;
 
 export type GitView = {
-  status: GitStatusResponse | null;
+  /**
+   * Every checkout visible from this cwd — one when the cwd IS a checkout,
+   * several when it is a folder of projects (§14.83), none for a plain
+   * folder. `null` until the first answer arrives.
+   */
+  workspace: GitWorkspaceResponse | null;
   loading: boolean;
-  /** Transport-level failure (the route itself). Agent-level ones ride `status.reason`. */
+  /** Transport-level failure (the route itself). Agent-level ones ride `workspace.reason`. */
   error: string | null;
 };
 
@@ -45,7 +50,7 @@ type Entry = {
   lastAt: number;
 };
 
-const EMPTY: GitView = Object.freeze({ status: null, loading: false, error: null });
+const EMPTY: GitView = Object.freeze({ workspace: null, loading: false, error: null });
 
 const g = globalThis as unknown as { __charonGitStore?: Map<string, Entry> };
 const store = (g.__charonGitStore ??= new Map<string, Entry>());
@@ -68,10 +73,13 @@ function emit(e: Entry, view: GitView) {
 
 /** How long to wait before the next background poll, given what we last saw. */
 function nextDelay(view: GitView): number {
-  const s = view.status;
-  if (!s) return POLL_MS;
-  if (s.ok && !s.isRepo) return IDLE_POLL_MS;
-  if (!s.ok && (s.reason === 'unsupported' || s.reason === 'offline' || s.reason === 'no_git')) {
+  const w = view.workspace;
+  if (!w) return POLL_MS;
+  // A folder with no checkout under it does not sprout one mid-session — and
+  // this is the state that costs a directory SCAN on the VPS, so it is the one
+  // that most deserves the long timer.
+  if (w.ok && w.mode === 'none') return IDLE_POLL_MS;
+  if (!w.ok && (w.reason === 'unsupported' || w.reason === 'offline' || w.reason === 'no_git')) {
     return DEGRADED_POLL_MS;
   }
   return POLL_MS;
@@ -100,15 +108,15 @@ async function fetchGit(vpsId: string, cwd: string, force = false): Promise<void
   emit(e, { ...e.view, loading: true });
   const p = (async () => {
     try {
-      const status = await api.getGitStatus(vpsId, cwd, force);
+      const workspace = await api.getGitWorkspace(vpsId, cwd, force);
       e.lastAt = Date.now();
-      emit(e, { status, loading: false, error: null });
+      emit(e, { workspace, loading: false, error: null });
     } catch (err: unknown) {
       // Keep the last good snapshot on screen rather than blanking real
       // numbers over one failed request (same rule as the usage gauges,
       // §14.72e) — the error rides alongside it.
       emit(e, {
-        status: e.view.status,
+        workspace: e.view.workspace,
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -242,37 +250,64 @@ const DIR_RANK: Record<string, number> = { U: 5, M: 4, D: 3, R: 2, C: 2, T: 4, A
 
 /**
  * `path relative to cwd` → git status letter, for every changed file AND every
- * directory above it.
+ * directory above it, across EVERY checkout in the workspace.
  *
- * Git speaks in paths relative to the REPO ROOT while the tree is rooted at the
- * session's cwd, and the two are frequently different (a session started in
- * `src/`). Everything is rebased here, once per status change, and anything
- * outside the cwd is dropped — it exists in the repo but not in this tree.
+ * Git speaks in paths relative to a REPO ROOT while the tree is rooted at the
+ * session's cwd, and the two are frequently different — a session started in
+ * `src/`, or a folder holding several projects (§14.83). Everything is rebased
+ * here, once per status change, and anything outside the cwd is dropped: it
+ * exists in the repo but not in this tree.
+ *
+ * Merging is safe precisely because the repos are disjoint subtrees — the scan
+ * never descends into a checkout, so no two of them can claim the same path.
  */
 export function buildGitDecorations(
-  status: GitStatusResponse | null | undefined, cwd: string | null | undefined,
+  workspace: GitWorkspaceResponse | null | undefined, cwd: string | null | undefined,
 ): Map<string, string> {
   const out = new Map<string, string>();
-  const root = status?.root;
-  if (!status?.ok || !status.isRepo || !root || !cwd) return out;
-
+  if (!workspace?.ok || !cwd) return out;
   const base = cwd.replace(/\/+$/, '');
-  const rootBase = root.replace(/\/+$/, '');
-  for (const f of status.files) {
-    const abs = `${rootBase}/${f.path}`;
-    let rel: string;
-    if (abs === base) continue;
-    if (abs.startsWith(base + '/')) rel = abs.slice(base.length + 1);
-    else continue;                       // in the repo, outside this tree
-    out.set(rel, f.status);
-    // Fold up the ancestors.
-    let cut = rel.lastIndexOf('/');
-    while (cut > 0) {
-      const dir = rel.slice(0, cut);
-      const cur = out.get(dir);
-      if (cur === undefined || (DIR_RANK[f.status] ?? 0) > (DIR_RANK[cur] ?? 0)) out.set(dir, f.status);
-      cut = dir.lastIndexOf('/');
+
+  for (const repo of workspace.repos) {
+    if (!repo.ok || !repo.isRepo || !repo.root) continue;
+    const rootBase = repo.root.replace(/\/+$/, '');
+    for (const f of repo.files) {
+      const abs = `${rootBase}/${f.path}`;
+      if (abs === base) continue;
+      if (!abs.startsWith(base + '/')) continue;   // in the repo, outside this tree
+      const rel = abs.slice(base.length + 1);
+      out.set(rel, f.status);
+      // Fold up the ancestors.
+      let cut = rel.lastIndexOf('/');
+      while (cut > 0) {
+        const dir = rel.slice(0, cut);
+        const cur = out.get(dir);
+        if (cur === undefined || (DIR_RANK[f.status] ?? 0) > (DIR_RANK[cur] ?? 0)) out.set(dir, f.status);
+        cut = dir.lastIndexOf('/');
+      }
     }
   }
   return out;
+}
+
+// ── Workspace summaries, shared by the chip and the panel ───────────────────
+
+/** Repos with something to show — a failed one still counts, it needs a fix. */
+export function workspaceRepos(w: GitWorkspaceResponse | null | undefined): GitStatusResponse[] {
+  return w?.ok ? w.repos : [];
+}
+
+/** Changed files across every checkout — what the chip's badge counts. */
+export function workspaceDirtyCount(w: GitWorkspaceResponse | null | undefined): number {
+  let n = 0;
+  for (const r of workspaceRepos(w)) n += r.fileCount ?? r.files.length;
+  return n;
+}
+
+/** Commits waiting to be pushed / pulled, summed across the workspace. */
+export function workspaceAheadBehind(w: GitWorkspaceResponse | null | undefined): { ahead: number; behind: number } {
+  let ahead = 0;
+  let behind = 0;
+  for (const r of workspaceRepos(w)) { ahead += r.ahead ?? 0; behind += r.behind ?? 0; }
+  return { ahead, behind };
 }

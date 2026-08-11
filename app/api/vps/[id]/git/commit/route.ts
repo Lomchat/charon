@@ -37,5 +37,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const paths = Array.isArray(body?.paths) ? body.paths.map(String) : undefined;
   return NextResponse.json(await gitCommit(id, cwd, {
     message, paths, all: !!body?.all, push: !!body?.push,
+    repo: body?.repo ? String(body.repo) : null,
   }));
 }
