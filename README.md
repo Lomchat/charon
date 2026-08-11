@@ -111,8 +111,11 @@ the server's objection appears under the input, your draft survives it).
 `typescript-language-server`, `gopls`, `rust-analyzer`, `clangd` — run **on the
 VPS**, next to the `node_modules` and the venv they need, hosted by the same
 daemon and reached over the same SSH connection. You get **error squiggles as
-you type**, **hover** for types and docs, **go-to-definition** (Ctrl/Cmd+click
-or F12) and **completion that knows your project**. Nothing is installed for
+you type**, **hover** for types and docs, **go-to-definition**, **find all
+references**, **rename across the project**, **format**, go-to-symbol and
+problem stepping. Holding Ctrl/Cmd underlines the symbol under the pointer, and
+a click that finds several definitions opens a **picker showing the source line
+of each** rather than guessing for you. Nothing is installed for
 you: when a language has no server on that box, the editor says so and gives
 you the command. Bounded by construction — at most four servers per VPS, idle
 ones stop, and every request is capped.
@@ -224,7 +227,9 @@ notify-on-event window over your whole fleet.
   conflict detection, create/rename/delete, inline media preview, and live
   markers for the files an agent is touching right now.
 - **Code intelligence** — language servers running on the VPS: diagnostics,
-  hover, go-to-definition, project-aware completion.
+  hover, go-to-definition and references (with a picker when there are
+  several), project-wide rename, format, go-to-symbol, project-aware
+  completion.
 - **Source control** — branch chip, branch switcher (drift vs upstream *and* vs
   HEAD, create, fetch), changed files, side-by-side diffs, path-scoped commit,
   push, pull, per-file discard, commit history (repo or single file), AI-drafted
