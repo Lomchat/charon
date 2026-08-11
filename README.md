@@ -98,11 +98,24 @@ same workspace**; every row is drag-to-reorder.
 **A file explorer** rooted at the session's working directory: lazy per-folder
 expansion, per-type icons, symlink markers, and **git decorations** — status
 letters on files, folded up onto collapsed folders so you can see where the
-work is; ignored files are dimmed, never hidden. Right-click for **New file /
+work is; ignored files are dimmed, never hidden. It also shows **which files an
+agent is reading or writing right now** — with several sessions on one machine,
+two of them in the same file used to be entirely silent; click the marker to
+jump to the session doing it. Right-click for **New file /
 New folder / Copy path / Rename / Delete**, in real dialogs (Enter validates,
 the server's objection appears under the input, your draft survives it).
 
 <img src="./docs/img/explorer.png" alt="The file explorer's context menu — new file, new folder, copy path, rename, delete — over a git-decorated tree" width="70%"></img>
+
+**Code intelligence.** Real **language servers** — `pyright`,
+`typescript-language-server`, `gopls`, `rust-analyzer`, `clangd` — run **on the
+VPS**, next to the `node_modules` and the venv they need, hosted by the same
+daemon and reached over the same SSH connection. You get **error squiggles as
+you type**, **hover** for types and docs, **go-to-definition** (Ctrl/Cmd+click
+or F12) and **completion that knows your project**. Nothing is installed for
+you: when a language has no server on that box, the editor says so and gives
+you the command. Bounded by construction — at most four servers per VPS, idle
+ones stop, and every request is capped.
 
 **A real editor.** CodeMirror 6 with syntax highlighting for whatever you open,
 `Ctrl/Cmd+S` to save, a dirty marker on the tab. Saves are **sha-gated**: if the
@@ -143,6 +156,9 @@ and truncated reads are read-only on purpose.
   git decorations merged across all of them. `git rev-parse` only ever looks
   *up*, which is why that case used to report "not a git repository" with ten
   repos in plain sight.
+- **History.** `git log` for the repository or for **one file** (right-click →
+  *File History*), paged, with each commit's own files and diff in the same
+  side-by-side reader.
 - **A side-by-side diff reader.** HEAD on the left, working tree on the right,
   hunk gaps stated rather than silently skipped, and a **▲/▼ between the panes**
   that steps change by change (Alt+arrows). The same renderer draws the
@@ -205,11 +221,15 @@ notify-on-event window over your whole fleet.
 - **Workspace tabs** — machine → folder → tabs, preview vs pinned, shared across
   your devices, drag to reorder.
 - **File explorer + editor** — browse the project, open files, edit and save with
-  conflict detection, create/rename/delete, inline media preview.
+  conflict detection, create/rename/delete, inline media preview, and live
+  markers for the files an agent is touching right now.
+- **Code intelligence** — language servers running on the VPS: diagnostics,
+  hover, go-to-definition, project-aware completion.
 - **Source control** — branch chip, branch switcher (drift vs upstream *and* vs
   HEAD, create, fetch), changed files, side-by-side diffs, path-scoped commit,
-  push, pull, per-file discard, AI-drafted commit messages; a working directory
-  holding several repositories gets a section each.
+  push, pull, per-file discard, commit history (repo or single file), AI-drafted
+  commit messages; a working directory holding several repositories gets a
+  section each.
 - **File attachments** — drag & drop / 📎 / paste; the file lands in the session's
   workspace and the agent reads it with its own tools.
 - **Persistent shells** — detached-holder PTYs that outlive the hub and the agent.
