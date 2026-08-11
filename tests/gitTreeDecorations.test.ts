@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildGitDecorations } from '../app/gitStore';
+import { buildGitDecorations, repoForPath } from '../app/gitStore';
 import type { GitFileEntry, GitStatusResponse, GitWorkspaceResponse } from '../lib/types/api';
 
 // Git speaks in paths relative to the REPO ROOT; the explorer tree is rooted at
@@ -116,5 +116,41 @@ describe('buildGitDecorations', () => {
     // /srv/app-old must not be read as being inside /srv/app.
     const d = buildGitDecorations(st('/srv/app-old', [f('a.ts', 'M')]), '/srv/app');
     expect(d.size).toBe(0);
+  });
+});
+
+describe('repoForPath', () => {
+  it('finds the checkout that owns a file, and its path inside it', () => {
+    const r = repoForPath(ws(repo('/srv/a', []), repo('/srv/b', [])), '/srv/b/src/x.ts');
+    expect(r).toEqual({ repo: '/srv/b', rel: 'src/x.ts' });
+  });
+
+  it('a sibling with a shared prefix owns nothing', () => {
+    // /srv/app must not claim /srv/app-old/x.ts — the separator is the test.
+    expect(repoForPath(st('/srv/app', []), '/srv/app-old/x.ts')).toBeNull();
+  });
+
+  it('the deepest root wins when one contains another', () => {
+    // `single` mode reports the checkout ABOVE the cwd, so an ancestor and a
+    // nested repo can both match; `git log` has to run in the nested one.
+    const r = repoForPath(ws(repo('/srv', []), repo('/srv/vendor/lib', [])), '/srv/vendor/lib/a.ts');
+    expect(r?.repo).toBe('/srv/vendor/lib');
+    expect(r?.rel).toBe('a.ts');
+  });
+
+  it('a checkout git could not read answers nothing', () => {
+    // git log in it would fail the same way — better no button than one that
+    // can only report the same breakage.
+    const broken: GitWorkspaceResponse = {
+      ok: true, mode: 'multi',
+      repos: [{ ok: false, isRepo: false, reason: 'ownership', root: '/srv/bad', files: [] }],
+    };
+    expect(repoForPath(broken, '/srv/bad/x.ts')).toBeNull();
+  });
+
+  it('no workspace, no repos, and the root itself', () => {
+    expect(repoForPath(null, '/srv/x.ts')).toBeNull();
+    expect(repoForPath({ ok: false, mode: 'none', repos: [] }, '/srv/x.ts')).toBeNull();
+    expect(repoForPath(st('/srv/app', []), '/srv/app')).toEqual({ repo: '/srv/app', rel: '' });
   });
 });

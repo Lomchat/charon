@@ -6,7 +6,7 @@ import type { FsReadResponse } from '@/lib/types/api';
 import { fileKind, isMediaName } from './fileIcons';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
-import { refreshGit, useGitStatus } from './gitStore';
+import { refreshGit, repoForPath, useGitStatus } from './gitStore';
 import { subscribeReveal } from './revealLine';
 import { lspLabel, useLsp } from './useLsp';
 import {
@@ -272,14 +272,10 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   // `git log` has to run there.
   const { workspace } = useGitStatus(vpsId, root);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const history = useMemo(() => {
-    const abs = `${root.replace(/\/+$/, '')}/${path}`;
-    const owner = (workspace?.repos ?? [])
-      .filter((r) => r.ok && r.root && (abs === r.root || abs.startsWith(r.root + '/')))
-      .sort((a2, b2) => (b2.root?.length ?? 0) - (a2.root?.length ?? 0))[0];
-    if (!owner?.root) return null;
-    return { repo: owner.root, rel: abs.slice(owner.root.length + 1) };
-  }, [workspace, root, path]);
+  const history = useMemo(
+    () => repoForPath(workspace, `${root.replace(/\/+$/, '')}/${path}`),
+    [workspace, root, path],
+  );
 
   const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null && !media;
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;

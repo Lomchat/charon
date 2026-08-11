@@ -304,6 +304,28 @@ export function workspaceDirtyCount(w: GitWorkspaceResponse | null | undefined):
   return n;
 }
 
+/**
+ * Which checkout owns an ABSOLUTE path, and what that path is called inside it.
+ *
+ * Both history entry points need it — the explorer's right-click and the file
+ * view's header button (§14.87) — and two copies of a containment test drift,
+ * so there is one. With several checkouts under one cwd (§14.83) the deepest
+ * root wins: the scan makes them disjoint, but a `single`-mode root is an
+ * ancestor of the cwd and would otherwise tie with nothing to break it. A repo
+ * git could not read answers nothing here: `git log` in it fails the same way.
+ */
+export function repoForPath(
+  w: GitWorkspaceResponse | null | undefined,
+  abs: string,
+): { repo: string; rel: string } | null {
+  const owner = workspaceRepos(w)
+    // `/srv/a` must not own `/srv/abc/x` — the separator is the whole test.
+    .filter((r) => r.ok && r.root && (abs === r.root || abs.startsWith(r.root + '/')))
+    .sort((a, b) => (b.root?.length ?? 0) - (a.root?.length ?? 0))[0];
+  if (!owner?.root) return null;
+  return { repo: owner.root, rel: abs === owner.root ? '' : abs.slice(owner.root.length + 1) };
+}
+
 /** Commits waiting to be pushed / pulled, summed across the workspace. */
 export function workspaceAheadBehind(w: GitWorkspaceResponse | null | undefined): { ahead: number; behind: number } {
   let ahead = 0;

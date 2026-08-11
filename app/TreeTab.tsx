@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry } from '@/lib/types/api';
-import { buildGitDecorations, fileStatusLabel, useGitStatus } from './gitStore';
+import { buildGitDecorations, fileStatusLabel, repoForPath, useGitStatus } from './gitStore';
 import HistoryModal from './HistoryModal';
 import { IconClockHistory, IconEye } from './icons';
 import { activityLabel, useFileActivity } from './fileActivityStore';
@@ -282,14 +282,9 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
    * belongs to whichever root contains it, and `git log` has to run there.
    */
   const openHistory = (row: Row) => {
-    const abs = absPathOf(row);
-    const owner = (workspace?.repos ?? [])
-      .filter((r) => r.root && (abs === r.root || abs.startsWith(r.root + '/')))
-      // Deepest root wins if two ever nested (the scan makes them disjoint,
-      // but a `single`-mode root can be an ancestor of the cwd).
-      .sort((a2, b2) => (b2.root?.length ?? 0) - (a2.root?.length ?? 0))[0];
-    if (!owner?.root) return;
-    setHistory({ path: abs.slice(owner.root.length + 1), repo: owner.root });
+    const owner = repoForPath(workspace, absPathOf(row));
+    if (!owner) return;
+    setHistory({ path: owner.rel, repo: owner.repo });
   };
 
   async function copyPath(row: Row, absolute: boolean) {
