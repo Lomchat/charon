@@ -81,6 +81,29 @@ class _Conn:
                 self.events.append(msg)
         raise TimeoutError("no response to %s" % method)
 
+    def call_raw(self, method, params=None, timeout=10.0):
+        """Like `call`, but hands back the whole envelope instead of raising.
+
+        Used to ask "does the router know this method" without caring what the
+        answer is.
+        """
+        self._nid += 1
+        mid = self._nid
+        self.s.sendall(
+            (json.dumps({"id": mid, "method": method, "params": params or {}}) + "\n").encode()
+        )
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = self._readline(deadline - time.time())
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            if msg.get("id") == mid:
+                return msg
+            if "event" in msg:
+                self.events.append(msg)
+        raise TimeoutError("no response to %s" % method)
+
     def drain_events(self, duration):
         deadline = time.time() + duration
         while time.time() < deadline:
@@ -145,6 +168,31 @@ class TestDaemonIntegration(unittest.TestCase):
         try:
             r = c.call("ping")
             self.assertTrue(r.get("pong"))
+        finally:
+            c.close()
+
+    def test_every_method_in_the_protocol_actually_dispatches(self):
+        """METHODS listing a method is not the same as the daemon serving it.
+
+        `test_protocol` proves the two LISTS agree by scanning for
+        `method == "..."` — which cannot see that a whole block ended up nested
+        inside `if method.startswith("git_")`, where nothing ever reaches it.
+        That happened, and only a real dispatch caught it. So: call every
+        method against the live daemon and assert none answers -32601.
+
+        Anything else — bad params, no such session, a refusal — is fine here;
+        the only failure mode under test is "the router does not know you".
+        """
+        from charon_agent import protocol
+        c = _Conn(self.sock)
+        try:
+            unknown = []
+            for method in sorted(protocol.METHODS):
+                r = c.call_raw(method, {})
+                err = (r or {}).get("error") or {}
+                if err.get("code") == -32601:
+                    unknown.append(method)
+            self.assertEqual(unknown, [], f"in METHODS but never dispatched: {unknown}")
         finally:
             c.close()
 

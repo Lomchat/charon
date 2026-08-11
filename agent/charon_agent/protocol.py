@@ -114,6 +114,16 @@ METHODS = {
     # switch/create, fetch (what makes `behind` a real number), safe delete.
     # History (agent >= 0.32.0): paged log for a repo or one file, and one
     # commit's patch. Read-only.
+    # Language servers hosted on the VPS (agent >= 0.33.0, lsp.py). Diagnostics,
+    # hover, go-to-definition and completion for the in-hub editor; the server
+    # runs next to the code because that is where its node_modules and its
+    # venv are. cf. CLAUDE.md §14.89.
+    "lsp_status",
+    "lsp_open",
+    "lsp_close",
+    "lsp_diagnostics",
+    "lsp_request",
+    "lsp_stop",
     "git_log",
     "git_show",
     "git_branches",

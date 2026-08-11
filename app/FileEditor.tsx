@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 import type { FsReadResponse } from '@/lib/types/api';
@@ -8,6 +8,8 @@ import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
 import { refreshGit } from './gitStore';
 import { subscribeReveal } from './revealLine';
+import { lspLabel, useLsp } from './useLsp';
+import type { LspDiagnostic } from '@/lib/types/api';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -26,9 +28,14 @@ type Props = {
   path: string;
   /** Called on the first edit and on a save: both mean "this is not a preview". */
   onInteract: () => void;
+  /** Go-to-definition landed in another file: open it there (§14.89). */
+  onOpenLocation?: (absPath: string, line: number) => void;
 };
 
 type Conflict = { serverSha: string | null };
+
+/** Stable identity: a fresh [] every render would re-dispatch on every render. */
+const EMPTY_DIAGS: LspDiagnostic[] = [];
 
 /**
  * The file pane: read, edit, Ctrl+S.
@@ -42,7 +49,7 @@ type Conflict = { serverSha: string | null };
  * Media and binaries stay read-only: an editor for bytes is a different
  * feature, and pretending otherwise would let someone corrupt a PNG by typing.
  */
-export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Props) {
+export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpenLocation }: Props) {
   const [res, setRes] = useState<FsReadResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -225,10 +232,36 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
     return () => window.removeEventListener('keydown', onKey);
   }, [save]);
 
+  // A version counter, not the text: the buffer lives in a ref so typing never
+  // goes through React (§14.79). One tick per quiet 600ms is what the language
+  // server needs, and nothing more. §14.89
+  const [textVersion, setTextVersion] = useState(0);
+  const tickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (tickTimer.current) clearTimeout(tickTimer.current); }, []);
+
   const onChange = useCallback((next: string) => {
     buf.current = next;
     if (!dirty) { markDirty(true); onInteract(); }
+    if (tickTimer.current) clearTimeout(tickTimer.current);
+    tickTimer.current = setTimeout(() => setTextVersion((n) => n + 1), 600);
   }, [dirty, markDirty, onInteract]);
+
+  const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null && !media;
+  const absPath = `${root.replace(/\/+$/, '')}/${path}`;
+  const lsp = useLsp({
+    vpsId: canLsp ? vpsId : null,
+    root: canLsp ? root : null,
+    path: canLsp ? absPath : null,
+    enabled: canLsp,
+    getText: () => buf.current,
+    textVersion,
+  });
+  const lspTarget = useMemo(
+    () => (canLsp && lsp.live ? { vpsId, root, path: absPath } : null),
+    [canLsp, lsp.live, vpsId, root, absPath],
+  );
+  const lspText = lspLabel(lsp.status, lsp.live, lsp.diagnostics.length);
+
 
   const readOnly = !!res?.tooLarge || !!res?.binary;
 
@@ -305,7 +338,15 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract }: Pro
               onChange={onChange}
               onSave={() => void save()}
               reveal={reveal}
+              lsp={lspTarget}
+              diagnostics={lsp.live ? lsp.diagnostics : EMPTY_DIAGS}
+              onOpenLocation={onOpenLocation}
             />
+            {lspText && (
+              <div className={`fe-lsp${lsp.live ? ' on' : ''}`} title={lsp.status?.install ?? undefined}>
+                {lspText}
+              </div>
+            )}
           </>
         )}
       </div>

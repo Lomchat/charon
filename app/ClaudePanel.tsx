@@ -26,6 +26,7 @@ import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
+import { revealLine } from './revealLine';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
@@ -1682,6 +1683,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // Editing or saving is a real interaction: the tab stops being a
           // preview so the next file opened here can't evict unsaved work.
           onInteract={() => { if (!selectedFile.pinned) void pinWorkspaceTab(selectedFile.id); }}
+          // Go-to-definition. The target is an ABSOLUTE path from the language
+          // server; a tab is (group path, path relative to it), so anything
+          // outside this group's folder cannot be opened as a tab here.
+          onOpenLocation={(abs, line) => {
+            const base = selectedFile.path.replace(/\/+$/, '');
+            if (abs !== base && !abs.startsWith(base + '/')) return;
+            const rel = abs.slice(base.length + 1);
+            revealLine(selectedFile.vpsId, selectedFile.path, rel, line);
+            void openWorkspaceTab({
+              vpsId: selectedFile.vpsId, path: selectedFile.path, kind: 'file', ref: rel,
+            });
+          }}
         />
         {/* The explorer has to stay: opening a file from the tree and losing
             the tree in the same gesture is how you end up clicking back and

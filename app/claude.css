@@ -4166,6 +4166,30 @@
   color: var(--gold-bright); text-decoration: underline;
 }
 .gt-mini.primary { color: var(--gold-bright); border-color: var(--gold); }
+/* ── Code intelligence (§14.89) ───────────────────────────────────────────
+   One line under the editor: which server is running, and how many problems.
+   It is also the only place that says "there is no server for this language,
+   here is the command" — an editor that silently has no squiggles is
+   indistinguishable from one whose code is fine. */
+.fe-lsp {
+  flex: none; padding: 4px 12px; border-top: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
+  background: rgba(0,0,0,0.18);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fe-lsp.on { color: var(--gold); }
+/* A type signature, so it is preformatted — and bounded, because some servers
+   return an essay. */
+.cm-lsp-hover {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; padding: 6px 9px;
+  max-width: 620px; max-height: 320px; overflow: auto;
+  color: var(--parchment); background: var(--stone-2);
+  border: 1px solid var(--gold-deep); border-radius: 7px;
+}
+.cm-tooltip { border: none !important; background: transparent !important; }
+.cm-diagnostic { font-family: var(--mono); font-size: 11.5px; }
+
 /* An agent is in this file RIGHT NOW (§14.88). A liveness light, so it sits
    where the eye already is — at the end of the row, next to the git letter —
    and it is clickable: the useful next move is "show me that session". */

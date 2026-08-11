@@ -26,6 +26,15 @@ from .fsnav import (
     fs_delete as _fs_delete,
     fs_search as _fs_search,
 )
+from .lsp import (
+    lsp_status as _lsp_status,
+    lsp_open as _lsp_open,
+    lsp_close as _lsp_close,
+    lsp_diagnostics as _lsp_diagnostics,
+    lsp_request as _lsp_request,
+    lsp_stop as _lsp_stop,
+    shutdown_all as _lsp_shutdown_all,
+)
 from .git import (
     git_commit as _git_commit,
     git_diff as _git_diff,
@@ -386,6 +395,8 @@ class Server:
         "git_pull", "git_discard",
         "git_branches", "git_checkout", "git_fetch", "git_delete_branch",
         "git_log", "git_show",
+        "lsp_status", "lsp_open", "lsp_close", "lsp_diagnostics", "lsp_request",
+        "lsp_stop",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
         "fs_search",
     })
@@ -496,6 +507,24 @@ class Server:
                 params.get("use_default_excludes") is not False,
                 cap,
             )
+
+        # Language servers (agent >= 0.33.0, lsp.py). OUTSIDE the git branch:
+        # nesting them under `startswith("git_")` made every one of them
+        # unreachable, and the METHODS-vs-dispatch test could not see it —
+        # it scans for the literal `method == "..."`, not for where it sits.
+        # Each blocks on a subprocess, so it runs off the event loop.
+        if method == "lsp_status":
+            return await asyncio.to_thread(_lsp_status, params)
+        if method == "lsp_open":
+            return await asyncio.to_thread(_lsp_open, params)
+        if method == "lsp_close":
+            return await asyncio.to_thread(_lsp_close, params)
+        if method == "lsp_diagnostics":
+            return await asyncio.to_thread(_lsp_diagnostics, params)
+        if method == "lsp_request":
+            return await asyncio.to_thread(_lsp_request, params)
+        if method == "lsp_stop":
+            return await asyncio.to_thread(_lsp_stop, params)
 
         if method.startswith("git_"):
             # Source-control panel backend (agent >= 0.24.0, git.py). Every
@@ -1191,6 +1220,12 @@ class Server:
                     await s.stop(mark="sleeping")
                 except Exception:
                     pass
+            # A language server must not outlive the daemon that spawned it
+            # (they are the heaviest thing here, §14.89).
+            try:
+                _lsp_shutdown_all()
+            except Exception:
+                pass
             try:
                 self.socket_path.unlink()
             except OSError:

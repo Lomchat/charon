@@ -5,6 +5,8 @@ import { Compartment, EditorState, Prec, RangeSetBuilder } from '@codemirror/sta
 import { Decoration, ViewPlugin, keymap } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
+import { applyDiagnostics, lspExtensions, type LspTarget } from './lspClient';
+import type { LspDiagnostic } from '@/lib/types/api';
 import { LanguageDescription } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -24,6 +26,12 @@ type Props = {
   /** Scroll to a line (1-based). The nonce is what makes the SAME line twice
    *  in a row still move the caret — two clicks on one search hit. */
   reveal?: { line: number; nonce: number } | null;
+  /** Where the language server for this file lives, when there is one (§14.89). */
+  lsp?: LspTarget | null;
+  /** Problems the server reported, rendered as squiggles + gutter marks. */
+  diagnostics?: LspDiagnostic[];
+  /** Go-to-definition landed somewhere: open it. */
+  onOpenLocation?: (path: string, line: number) => void;
 };
 
 type Find = {
@@ -113,7 +121,9 @@ function queryOf(f: Find): SearchQuery {
  * corner and hides its replace row until asked. The COMMANDS are still the
  * library's — only the surface changed.
  */
-export default function CodeEditor({ doc, docKey, filename, readOnly, onChange, onSave, reveal }: Props) {
+export default function CodeEditor({
+  doc, docKey, filename, readOnly, onChange, onSave, reveal, lsp, diagnostics, onOpenLocation,
+}: Props) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
   const language = useRef(new Compartment());
@@ -127,6 +137,13 @@ export default function CodeEditor({ doc, docKey, filename, readOnly, onChange, 
   findRef.current = find;
   const cbs = useRef({ onChange, onSave });
   cbs.current = { onChange, onSave };
+  // The LSP target is read through a ref: the extensions are installed once
+  // (reconfiguring CodeMirror per keystroke is worse than anything they buy)
+  // and each of them no-ops while there is no server. §14.89
+  const lspRef = useRef<LspTarget | null>(lsp ?? null);
+  lspRef.current = lsp ?? null;
+  const openLocRef = useRef(onOpenLocation);
+  openLocRef.current = onOpenLocation;
 
   const openFind = useCallback((withReplace: boolean) => {
     const v = view.current;
@@ -201,6 +218,10 @@ export default function CodeEditor({ doc, docKey, filename, readOnly, onChange, 
           // first `setSearchQuery` is a no-op.
           search({ literal: true }),
           matchHighlighter,
+          ...lspExtensions({
+            target: () => lspRef.current,
+            onOpenLocation: (p, line) => openLocRef.current?.(p, line),
+          }),
           // Highest precedence: these have to win over the bindings basicSetup
           // already made for Mod-f and Escape, or the docked panel we replaced
           // opens underneath ours.
@@ -267,6 +288,14 @@ export default function CodeEditor({ doc, docKey, filename, readOnly, onChange, 
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorView.editable.of(!readOnly)) });
   }, [readOnly]);
+
+  // The language server's problems. CodeMirror owns the view, so this is the
+  // one place they cross over — and it is keyed on the array identity, so a
+  // poll that answered "nothing changed" costs no dispatch. §14.89
+  useEffect(() => {
+    const v = view.current;
+    if (v) applyDiagnostics(v, diagnostics ?? []);
+  }, [diagnostics, docKey]);
 
   // Ctrl+F belongs to the PANE, not to the text area — the same reasoning as
   // Ctrl+S below it. Clicking the header, the save button or the tab and then

@@ -10,6 +10,7 @@ import type {
   GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
   GitLogResponse, GitShowResponse, FileActivityResponse,
+  LspStatusResponse, LspOpenResponse, LspDiagnosticsResponse, LspRequestResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
@@ -141,6 +142,20 @@ export const api = {
     send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd, repo }, { timeoutMs: 200_000 }),
   gitDiscard: (id: string, cwd: string, paths: string[], repo?: string | null) =>
     send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths, repo }, { timeoutMs: 60_000 }),
+  // ── Code intelligence (agent >= 0.33.0, §14.89) ───────────────────────────
+  lspStatus: (id: string, root: string, path: string) =>
+    send<LspStatusResponse>('GET', `/api/vps/${id}/lsp?op=status&root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 15_000 }),
+  lspOpen: (id: string, root: string, path: string, text: string) =>
+    send<LspOpenResponse>('POST', `/api/vps/${id}/lsp`, { op: 'open', root, path, text }, { timeoutMs: 90_000 }),
+  lspClose: (id: string, root: string, path: string) =>
+    send<{ ok: boolean }>('POST', `/api/vps/${id}/lsp`, { op: 'close', root, path }, { timeoutMs: 15_000 }),
+  // Long poll: returns as soon as the server pushes something, or after
+  // `wait` seconds with changed:false. Never an error on a timeout.
+  lspDiagnostics: (id: string, root: string, path: string, since: number, wait = 20) =>
+    send<LspDiagnosticsResponse>('GET', `/api/vps/${id}/lsp?op=diagnostics&root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&since=${since}&wait=${wait}`, undefined, { timeoutMs: (wait + 15) * 1000 }),
+  lspRequest: (id: string, body: { root: string; path: string; method: string; position?: unknown; extra?: unknown; item?: unknown }) =>
+    send<LspRequestResponse>('POST', `/api/vps/${id}/lsp`, { op: 'request', ...body }, { timeoutMs: 30_000 }),
+
   // Who is reading/writing which file on this VPS, right now (§14.88).
   getFileActivity: (id: string) =>
     send<FileActivityResponse>('GET', `/api/vps/${id}/activity`, undefined, { timeoutMs: 10_000 }),

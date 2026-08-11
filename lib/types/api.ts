@@ -428,6 +428,61 @@ export type GitBranchesResponse = {
   truncated?: boolean;
 };
 
+// ── Code intelligence (agent >= 0.33.0, §14.89) ────────────────────────────
+/** An LSP diagnostic, verbatim from the language server. */
+export type LspDiagnostic = {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  /** 1 error · 2 warning · 3 information · 4 hint. */
+  severity?: number;
+  message: string;
+  source?: string;
+  code?: string | number;
+};
+
+export type LspStatusResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: string;
+  /** LSP language id for the file, or null when nothing maps to it. */
+  language?: string | null;
+  /** A server binary exists on the VPS for this language. */
+  available: boolean;
+  /** One is running for this root right now. */
+  running: boolean;
+  server?: string | null;
+  /** The command that would install one, when there is none. */
+  install?: string | null;
+};
+
+export type LspOpenResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: string;
+  install?: string | null;
+  version?: number;
+  diagnostics: LspDiagnostic[];
+  diagVersion: number;
+  server?: string | null;
+};
+
+export type LspDiagnosticsResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: string;
+  diagnostics: LspDiagnostic[];
+  diagVersion: number;
+  /** Something changed since `since` — false means the long poll simply expired. */
+  changed: boolean;
+  running: boolean;
+};
+
+export type LspRequestResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: string;
+  result?: unknown;
+};
+
 /** An agent touching a file, right now (§14.88). */
 export type FileActivityEntry = {
   vpsId: string;
