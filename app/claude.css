@@ -4166,6 +4166,79 @@
   color: var(--gold-bright); text-decoration: underline;
 }
 .gt-mini.primary { color: var(--gold-bright); border-color: var(--gold); }
+/* ── History modal (§14.87) ───────────────────────────────────────────────
+   Commits on the left, the commit's diff on the right — the same shell and
+   the same split renderer as the working-tree reader, so "read a change"
+   looks identical wherever the change came from. */
+.split-diff-modal.hm { max-width: 1500px; }
+.hm-scope { color: var(--parchment-soft); font-size: 11.5px; }
+.hm-meta {
+  display: flex; align-items: baseline; gap: 10px; flex: none;
+  font-family: var(--mono); font-size: 11px; color: var(--parchment-soft);
+}
+.hm-body { display: grid; grid-template-columns: 330px 1fr; min-height: 0; overflow: hidden; }
+.hm-rail {
+  border-right: 1px solid var(--gold-deep); overflow-y: auto; min-height: 0;
+  display: flex; flex-direction: column; background: rgba(0,0,0,0.16);
+}
+.hm-commit {
+  display: flex; flex-direction: column; gap: 3px; align-items: stretch;
+  background: none; border: none; border-bottom: 1px solid rgba(138,180,228,0.07);
+  padding: 8px 10px; cursor: pointer; text-align: left; width: 100%; min-width: 0;
+}
+.hm-commit:hover { background: rgba(138,180,228,0.06); }
+.hm-commit.on { background: rgba(138,180,228,0.12); }
+.hm-line1 { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.hm-line2 { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-size: 10px; }
+.hm-sha {
+  flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--gold);
+}
+.hm-subject {
+  font-family: var(--sans, inherit); font-size: 12px; color: var(--parchment);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.hm-author, .hm-age {
+  font-family: var(--mono); color: var(--parchment-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hm-age { flex: none; }
+.hm-ref {
+  flex: none; font-family: var(--mono); font-size: 9px; padding: 0 4px;
+  border-radius: 5px; border: 1px solid var(--gold-deep); color: var(--gold);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px;
+}
+.hm-ref.tag { color: #a0c87b; border-color: rgba(160,200,123,0.4); }
+.hm-more {
+  margin: 8px auto; padding: 5px 12px; background: transparent;
+  border: 1px solid var(--gold-deep); border-radius: 7px; cursor: pointer;
+  color: var(--parchment-soft); font-family: var(--mono); font-size: 10.5px;
+}
+.hm-more:hover:not(:disabled) { color: var(--gold-bright); border-color: var(--gold-bright); }
+.hm-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* The commit's files. A strip, not a rail: most commits touch two or three,
+   and stealing a third column for them is worse than wrapping. */
+.hm-files {
+  display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px; flex: none;
+  border-bottom: 1px solid var(--gold-deep); background: var(--stone-3);
+  max-height: 96px; overflow-y: auto;
+}
+.hm-file {
+  display: flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid var(--gold-deep); border-radius: 7px;
+  padding: 2px 7px; cursor: pointer;
+  font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
+}
+.hm-file:hover { border-color: var(--gold); color: var(--parchment); }
+.hm-file.on { border-color: var(--gold-bright); color: var(--gold-bright); background: rgba(138,180,228,0.1); }
+.hm-file .add { color: #7fbf7f; }
+.hm-file .del { color: #e0736b; }
+.hm-fname { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hm-n { opacity: 0.7; }
+@media (max-width: 900px) {
+  .hm-body { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+  .hm-rail { border-right: none; border-bottom: 1px solid var(--gold-deep); }
+}
+
 /* The unified/split toggle needs room for a word. */
 .dvm-nav.wide { width: auto; padding: 0 8px; font-size: 10px; letter-spacing: 0.08em; }
 

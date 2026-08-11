@@ -278,6 +278,10 @@ export type AgentMethodName =
   | 'git_workspace'
   // Branches (agent >= 0.31.0): list with drift vs upstream AND vs HEAD,
   // switch/create, fetch (what makes behind a real number), safe delete.
+  // History (agent >= 0.32.0): paged log for a repo or one file, and one
+  // commit's patch. Read-only.
+  | 'git_log'
+  | 'git_show'
   | 'git_branches'
   | 'git_checkout'
   | 'git_fetch'

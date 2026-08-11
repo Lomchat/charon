@@ -4,6 +4,7 @@ import { api } from '@/lib/api';
 import type { GitFileEntry, GitStatusResponse } from '@/lib/types/api';
 import DiffViewerModal from './DiffViewerModal';
 import BranchModal from './BranchModal';
+import HistoryModal from './HistoryModal';
 import { fileStatusLabel, gitReasonHint, refreshGit, useGitStatus, workspaceDirtyCount } from './gitStore';
 import { IconSparkle } from './icons';
 import { IconExternal } from './fileIcons';
@@ -149,6 +150,7 @@ function RepoPanel({
   const [note, setNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [branchesOpen, setBranchesOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const msgRef = useRef<HTMLTextAreaElement | null>(null);
   // The repo this section acts on. `cwd` stays the cache key (one workspace,
   // one poll) while `root` is the git target — see §14.83.
@@ -303,6 +305,8 @@ function RepoPanel({
                 <IconExternal className="gt-ext" />
               </a>
             )}
+            <button className="gt-mini" onClick={() => setHistoryOpen(true)}
+              title="commit history for this repository">log</button>
             <button className="gt-mini" disabled={!!working}
               onClick={() => run('fetch', () => api.gitFetch(vpsId, cwd, root), 'fetched')}
               title="git fetch --all — refreshes how far ahead/behind this branch is">
@@ -406,6 +410,16 @@ function RepoPanel({
 
           {note && <div className={`gt-note ${note.kind}`}>{note.text}</div>}
         </>
+      )}
+
+      {historyOpen && (
+        <HistoryModal
+          vpsId={vpsId}
+          cwd={cwd}
+          repo={root}
+          label={repo.rel || repo.name || (repo.root ?? '')}
+          onClose={() => setHistoryOpen(false)}
+        />
       )}
 
       {branchesOpen && (

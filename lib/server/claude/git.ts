@@ -28,6 +28,7 @@ import type {
   GitCommitResponse, GitDiffResponse, GitFailureReason, GitFileEntry,
   GitOpResponse, GitStatusResponse, GitWorkspaceResponse,
   GitBranch, GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
+  GitCommit, GitLogResponse, GitShowResponse,
 } from '@/lib/types/api';
 
 // Long enough to merge the near-simultaneous polls of several tabs/sessions
@@ -352,6 +353,72 @@ async function op(
     reason: r.reason as GitFailureReason | undefined,
     output: r.output as string | undefined,
     discarded: r.discarded as string[] | undefined,
+  };
+}
+
+// ── History (agent >= 0.32.0, §14.87) ──────────────────────────────────────
+// Not cached either: it is read on demand, it pages, and a commit list that
+// silently came from a minute ago is worse than a round trip.
+function toCommit(c: Record<string, unknown>): GitCommit {
+  return {
+    sha: String(c.sha ?? ''),
+    short: String(c.short ?? '').slice(0, 12),
+    author: String(c.author ?? ''),
+    email: (c.email as string) ?? '',
+    at: (c.at as number | null) ?? null,
+    refs: Array.isArray(c.refs) ? (c.refs as string[]) : [],
+    subject: String(c.subject ?? ''),
+    body: (c.body as string) ?? '',
+  };
+}
+
+export async function getGitLog(
+  vpsId: string, cwd: string,
+  opts: { repo?: string | null; path?: string | null; limit?: number; skip?: number } = {},
+): Promise<GitLogResponse> {
+  const r = await rpc<{ ok: boolean }>(vpsId, 'git_log', {
+    cwd: gitTarget(cwd, opts.repo),
+    path: opts.path ?? '',
+    limit: opts.limit ?? 60,
+    skip: opts.skip ?? 0,
+  }) as Record<string, unknown>;
+  if (r.ok === false) {
+    return { ok: false, error: r.error as string, reason: r.reason as GitFailureReason, commits: [] };
+  }
+  const raw = Array.isArray(r.commits) ? (r.commits as Record<string, unknown>[]) : [];
+  return {
+    ok: true,
+    root: (r.root as string) ?? null,
+    path: (r.path as string | null) ?? null,
+    commits: raw.map(toCommit),
+    hasMore: r.has_more === true,
+  };
+}
+
+export async function getGitShow(
+  vpsId: string, cwd: string, sha: string, opts: { repo?: string | null; path?: string | null } = {},
+): Promise<GitShowResponse> {
+  const r = await rpc<{ ok: boolean }>(vpsId, 'git_show', {
+    cwd: gitTarget(cwd, opts.repo), sha, path: opts.path ?? '',
+  }) as Record<string, unknown>;
+  if (r.ok === false) {
+    return { ok: false, error: r.error as string, reason: r.reason as GitFailureReason, files: [] };
+  }
+  const files = Array.isArray(r.files) ? (r.files as Record<string, unknown>[]) : [];
+  return {
+    ok: true,
+    commit: r.commit ? toCommit(r.commit as Record<string, unknown>) : undefined,
+    files: files.map((f) => ({
+      path: String(f.path ?? ''),
+      origPath: null,
+      x: 'M', y: 'M', status: 'M',
+      untracked: false, conflict: false,
+      binary: f.binary === true,
+      added: (f.added as number | null) ?? null,
+      deleted: (f.deleted as number | null) ?? null,
+    })),
+    patch: (r.patch as string) ?? '',
+    truncated: r.truncated === true,
   };
 }
 

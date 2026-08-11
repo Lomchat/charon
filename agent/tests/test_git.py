@@ -629,3 +629,98 @@ class GitBranchTest(unittest.TestCase):
             self.assertFalse(r["is_repo"])
         finally:
             shutil.rmtree(plain, ignore_errors=True)
+
+
+@unittest.skipUnless(HAS_GIT, "git binary not available")
+class GitHistoryTest(unittest.TestCase):
+    """`git_log` / `git_show` (agent >= 0.32.0) — the read-only half of history."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="charon-hist-test-")
+        sh(self.dir, "init", "-q", "-b", "main")
+        sh(self.dir, "config", "user.email", "t@e")
+        sh(self.dir, "config", "user.name", "T")
+        sh(self.dir, "config", "commit.gpgsign", "false")
+        write(self.dir, "a.txt", "one\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "first: it's a subject, with a comma")
+        write(self.dir, "b.txt", "bee\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "second")
+        write(self.dir, "a.txt", "one\ntwo\n")
+        sh(self.dir, "add", "-A")
+        sh(self.dir, "commit", "-qm", "third: touches a.txt")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_lists_commits_newest_first_with_their_metadata(self):
+        r = G.git_log(self.dir, {"limit": 10})
+        self.assertTrue(r["ok"])
+        self.assertEqual([c["subject"] for c in r["commits"]],
+                         ["third: touches a.txt", "second", "first: it's a subject, with a comma"])
+        top = r["commits"][0]
+        # `sh()` forces GIT_AUTHOR_NAME, which outranks the repo config.
+        self.assertEqual(top["author"], "T")
+        # The subject above holds both an apostrophe and a comma — the record
+        # separators are \x1f/\x1e precisely so neither splits a field.
+        self.assertIn("it's a subject, with a comma", r["commits"][2]["subject"])
+        self.assertTrue(top["sha"].startswith(top["short"]))
+        self.assertIsInstance(top["at"], int)
+        # `%D` is a comma-joined decoration string; splitting it here means the
+        # UI never has to parse a display string.
+        self.assertIn("HEAD -> main", top["refs"])
+        self.assertFalse(r["has_more"])
+
+    def test_pages(self):
+        first = G.git_log(self.dir, {"limit": 2})
+        self.assertEqual(len(first["commits"]), 2)
+        self.assertTrue(first["has_more"])          # an exact fill may have more
+        second = G.git_log(self.dir, {"limit": 2, "skip": 2})
+        self.assertEqual([c["subject"] for c in second["commits"]],
+                         ["first: it's a subject, with a comma"])
+        self.assertFalse(second["has_more"])
+
+    def test_file_history_only_shows_commits_touching_that_file(self):
+        r = G.git_log(self.dir, {"path": "b.txt"})
+        self.assertEqual([c["subject"] for c in r["commits"]], ["second"])
+
+    def test_a_path_outside_the_repo_is_refused(self):
+        r = G.git_log(self.dir, {"path": "../../etc/passwd"})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "bad_path")
+
+    def test_show_returns_metadata_files_and_patch(self):
+        sha = G.git_log(self.dir, {"limit": 1})["commits"][0]["sha"]
+        r = G.git_show(self.dir, {"sha": sha})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["commit"]["subject"], "third: touches a.txt")
+        self.assertEqual([f["path"] for f in r["files"]], ["a.txt"])
+        self.assertEqual(r["files"][0]["added"], 1)
+        self.assertEqual(r["files"][0]["deleted"], 0)
+        self.assertIn("+two", r["patch"])
+
+    def test_show_can_be_narrowed_to_one_path(self):
+        sha = G.git_log(self.dir, {"limit": 1})["commits"][0]["sha"]
+        r = G.git_show(self.dir, {"sha": sha, "path": "b.txt"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["files"], [])            # that commit didn't touch b.txt
+        self.assertEqual(r["patch"].strip(), "")
+
+    def test_a_ref_that_is_really_an_option_never_reaches_git(self):
+        # `git show --upload-pack=…` is a remote-code-execution shape; the
+        # allow-list of characters is what keeps argv honest.
+        for bad in ("", "--upload-pack=x", "a;b", "$(id)"):
+            r = G.git_show(self.dir, {"sha": bad})
+            self.assertFalse(r["ok"], bad)
+            self.assertEqual(r["reason"], "bad_ref")
+
+    def test_an_empty_repo_is_an_empty_list_not_an_error(self):
+        empty = tempfile.mkdtemp(prefix="charon-hist-empty-")
+        try:
+            sh(empty, "init", "-q", "-b", "main")
+            r = G.git_log(empty)
+            self.assertTrue(r["ok"])
+            self.assertEqual(r["commits"], [])
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)

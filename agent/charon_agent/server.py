@@ -35,6 +35,8 @@ from .git import (
     git_status as _git_status,
     git_workspace as _git_workspace,
     git_branches as _git_branches,
+    git_log as _git_log,
+    git_show as _git_show,
     git_checkout as _git_checkout,
     git_fetch as _git_fetch,
     git_delete_branch as _git_delete_branch,
@@ -383,6 +385,7 @@ class Server:
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
         "git_pull", "git_discard",
         "git_branches", "git_checkout", "git_fetch", "git_delete_branch",
+        "git_log", "git_show",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
         "fs_search",
     })
@@ -513,6 +516,10 @@ class Server:
                     bool(params.get("include_recent")),
                     bool(params.get("refresh")),
                 )
+            if method == "git_log":
+                return await asyncio.to_thread(_git_log, cwd, params)
+            if method == "git_show":
+                return await asyncio.to_thread(_git_show, cwd, params)
             if method == "git_branches":
                 return await asyncio.to_thread(
                     _git_branches, cwd, params.get("include_remote", True) is not False

@@ -307,6 +307,7 @@ export type GitFailureReason =
   | 'bad_paths'
   | 'bad_path'
   | 'bad_branch'  // a branch name we refuse to hand to git
+  | 'bad_ref'     // a commit-ish we refuse to hand to git
   | 'dirty'       // the switch would overwrite local changes — never forced
   | 'exists'      // create hit an existing branch
   | 'unmerged'    // branch -d refused: commits live nowhere else
@@ -424,6 +425,40 @@ export type GitBranchesResponse = {
   current?: string | null;
   detached?: boolean;
   branches: GitBranch[];
+  truncated?: boolean;
+};
+
+/** One commit in the history list (agent >= 0.32.0, §14.87). */
+export type GitCommit = {
+  sha: string;
+  short: string;
+  author: string;
+  email?: string;
+  at?: number | null;
+  /** Decorations git puts on the commit: `HEAD -> main`, `origin/main`, `tag: v1`. */
+  refs?: string[];
+  subject: string;
+  body?: string;
+};
+
+export type GitLogResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  root?: string | null;
+  commits: GitCommit[];
+  /** Repo-relative path this history was scoped to, if any. */
+  path?: string | null;
+  hasMore?: boolean;
+};
+
+export type GitShowResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: GitFailureReason;
+  commit?: GitCommit;
+  files: GitFileEntry[];
+  patch?: string;
   truncated?: boolean;
 };
 

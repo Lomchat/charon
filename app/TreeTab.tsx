@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry } from '@/lib/types/api';
 import { buildGitDecorations, fileStatusLabel, useGitStatus } from './gitStore';
+import HistoryModal from './HistoryModal';
+import { IconClockHistory } from './icons';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import {
   IconForKind, fileKind, IconFolder,
@@ -72,6 +74,8 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
   }, [vpsId, cwd]);
   const inflight = useRef<Set<string>>(new Set());
   const [menu, setMenu] = useState<Menu | null>(null);
+  // File history — the repo that owns the file is resolved from the workspace.
+  const [history, setHistory] = useState<{ path: string; repo: string | null } | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   // Row being dragged, for the dimmed styling only — the payload itself rides
   // in the dataTransfer, so nothing here is load-bearing for the drop.
@@ -267,6 +271,21 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
   /** What the agent needs to act on this row: the path as it exists ON the VPS.
    *  `row.path` is relative to the session cwd. */
   const absPathOf = (row: Row): string => `${cwd}/${row.path}`;
+  /**
+   * Open one file's history. The repo is resolved from the workspace snapshot
+   * we already poll: with several checkouts under one cwd (§14.83) the file
+   * belongs to whichever root contains it, and `git log` has to run there.
+   */
+  const openHistory = (row: Row) => {
+    const abs = absPathOf(row);
+    const owner = (workspace?.repos ?? [])
+      .filter((r) => r.root && (abs === r.root || abs.startsWith(r.root + '/')))
+      // Deepest root wins if two ever nested (the scan makes them disjoint,
+      // but a `single`-mode root can be an ancestor of the cwd).
+      .sort((a2, b2) => (b2.root?.length ?? 0) - (a2.root?.length ?? 0))[0];
+    if (!owner?.root) return;
+    setHistory({ path: abs.slice(owner.root.length + 1), repo: owner.root });
+  };
 
   async function copyPath(row: Row, absolute: boolean) {
     const text = absolute ? absPathOf(row) : row.path;
@@ -334,6 +353,11 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
               {onInsertPath && (
                 <button onClick={() => { onInsertPath(absPathOf(menu.row!)); setMenu(null); }}>
                   <IconInsert />Insert Into Message
+                </button>
+              )}
+              {!menu.row.dir && (
+                <button onClick={() => { openHistory(menu.row!); setMenu(null); }}>
+                  <IconClockHistory />File History…
                 </button>
               )}
               <button onClick={() => copyPath(menu.row!, false)}><IconCopy />Copy Relative Path</button>
@@ -470,6 +494,16 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
         </ul>
       )}
 
+      {history && (
+        <HistoryModal
+          vpsId={vpsId!}
+          cwd={cwd!}
+          repo={history.repo}
+          path={history.path}
+          label={history.path}
+          onClose={() => setHistory(null)}
+        />
+      )}
     </div>
   );
 }

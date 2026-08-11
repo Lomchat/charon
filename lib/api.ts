@@ -9,6 +9,7 @@ import type {
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
+  GitLogResponse, GitShowResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
@@ -140,6 +141,19 @@ export const api = {
     send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd, repo }, { timeoutMs: 200_000 }),
   gitDiscard: (id: string, cwd: string, paths: string[], repo?: string | null) =>
     send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths, repo }, { timeoutMs: 60_000 }),
+  // ── History (agent >= 0.32.0, §14.87) ─────────────────────────────────────
+  getGitLog: (id: string, cwd: string, o: { repo?: string | null; path?: string | null; limit?: number; skip?: number } = {}) =>
+    send<GitLogResponse>('GET', `/api/vps/${id}/git/log?cwd=${encodeURIComponent(cwd)}`
+      + `${o.repo ? `&repo=${encodeURIComponent(o.repo)}` : ''}`
+      + `${o.path ? `&path=${encodeURIComponent(o.path)}` : ''}`
+      + `${o.limit ? `&limit=${o.limit}` : ''}${o.skip ? `&skip=${o.skip}` : ''}`,
+      undefined, { timeoutMs: 30_000 }),
+  getGitShow: (id: string, cwd: string, sha: string, o: { repo?: string | null; path?: string | null } = {}) =>
+    send<GitShowResponse>('GET', `/api/vps/${id}/git/show?cwd=${encodeURIComponent(cwd)}&sha=${encodeURIComponent(sha)}`
+      + `${o.repo ? `&repo=${encodeURIComponent(o.repo)}` : ''}`
+      + `${o.path ? `&path=${encodeURIComponent(o.path)}` : ''}`,
+      undefined, { timeoutMs: 40_000 }),
+
   // ── Branches (agent >= 0.31.0, §14.85) ────────────────────────────────────
   getGitBranches: (id: string, cwd: string, repo?: string | null) =>
     send<GitBranchesResponse>('GET', `/api/vps/${id}/git/branches?cwd=${encodeURIComponent(cwd)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`, undefined, { timeoutMs: 30_000 }),

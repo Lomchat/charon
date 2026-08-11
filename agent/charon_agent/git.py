@@ -861,6 +861,152 @@ def git_branches(cwd: str, include_remote: bool = True) -> dict[str, Any]:
     }
 
 
+# ── History (agent >= 0.32.0) ───────────────────────────────────────────────
+MAX_LOG = 200
+# Same \x1f/\x1e records as the branch list, for the same reason: a commit
+# subject or an author name contains anything, and a history that breaks on
+# someone's apostrophe is worse than no history.
+_LOG_FIELDS = "%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%D%x1f%s%x1f%b%x1e"
+
+
+def git_log(cwd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Commits, newest first — for the whole repo or for ONE path.
+
+    Paged (`skip`/`limit`) rather than "the whole history": a repo with 40k
+    commits would otherwise ship megabytes into a modal nobody scrolled.
+    `path` is the file-history case, and goes through `_safe_rel` like every
+    other caller-supplied path.
+    """
+    p = params or {}
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+
+    limit = max(1, min(int(p.get("limit") or 60), MAX_LOG))
+    skip = max(0, int(p.get("skip") or 0))
+    args = ["log", f"--max-count={limit}", f"--skip={skip}", "--date-order",
+            "--no-color", "--format=" + _LOG_FIELDS]
+    rel = None
+    raw_path = str(p.get("path") or "").strip()
+    if raw_path:
+        rel = _safe_rel(root, raw_path)
+        if rel is None:
+            return _fail(f"path outside the repository: {raw_path[:120]}", "bad_path", commits=[])
+    ref = str(p.get("ref") or "").strip()
+    if ref:
+        if ref.startswith("-"):
+            return _fail("invalid ref", "bad_branch", commits=[])
+        args.append(ref)
+    args.append("--")
+    if rel:
+        args.append(rel)
+
+    code, out, err = _run(root, args, timeout=READ_TIMEOUT_S)
+    if code != 0:
+        low = (err or "").lower()
+        if "does not have any commits" in low or "unknown revision" in low:
+            return {"ok": True, "root": root, "commits": [], "has_more": False}
+        return _fail(_first_line(err) or "git log failed", None, commits=[])
+
+    commits: list[dict[str, Any]] = []
+    for rec in out.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec:
+            continue
+        f = rec.split("\x1f")
+        if len(f) < 8:
+            continue
+        sha, short, author, email, at, refs, subject, body = f[:8]
+        commits.append({
+            "sha": sha,
+            "short": short,
+            "author": author,
+            "email": email,
+            "at": int(at) if at.isdigit() else None,
+            # "HEAD -> main, origin/main, tag: v1.2" — the decorations git puts
+            # on a commit. Split here so the UI doesn't parse a display string.
+            "refs": [x.strip() for x in refs.split(",") if x.strip()],
+            "subject": subject[:300],
+            "body": body[:2000],
+        })
+    return {
+        "ok": True, "root": root, "commits": commits,
+        "path": rel,
+        # An exact page fill is the only honest "there may be more".
+        "has_more": len(commits) >= limit,
+    }
+
+
+def git_show(cwd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One commit: its metadata, the files it touched, and its patch.
+
+    The patch is capped like `git_diff` (§14.41 is an egress rule, not a git
+    one) and can be narrowed to a single `path`, which is what the file-history
+    reader asks for.
+    """
+    p = params or {}
+    root, bail = _root(cwd)
+    if bail is not None:
+        return bail
+    assert root is not None
+
+    sha = str(p.get("sha") or "").strip()
+    if not sha or sha.startswith("-") or not all(c.isalnum() or c in "-_./^~" for c in sha):
+        return _fail("invalid commit", "bad_ref", files=[])
+    rel = None
+    raw_path = str(p.get("path") or "").strip()
+    if raw_path:
+        rel = _safe_rel(root, raw_path)
+        if rel is None:
+            return _fail(f"path outside the repository: {raw_path[:120]}", "bad_path", files=[])
+
+    meta_args = ["show", "--no-patch", "--no-color", "--format=" + _LOG_FIELDS, sha]
+    code, out, err = _run(root, meta_args)
+    if code != 0:
+        return _fail(_first_line(err) or "no such commit", "bad_ref", files=[])
+    f = out.split("\x1e")[0].strip("\n").split("\x1f")
+    meta: dict[str, Any] = {}
+    if len(f) >= 8:
+        meta = {
+            "sha": f[0], "short": f[1], "author": f[2], "email": f[3],
+            "at": int(f[4]) if f[4].isdigit() else None,
+            "refs": [x.strip() for x in f[5].split(",") if x.strip()],
+            "subject": f[6][:300], "body": f[7][:4000],
+        }
+
+    # The touched files, with their +/- counts, in one numstat pass.
+    ns_args = ["show", "--numstat", "--format=", "--no-color", sha, "--"]
+    if rel:
+        ns_args.append(rel)
+    _, ns_out, _ = _run(root, ns_args)
+    files: list[dict[str, Any]] = []
+    for ln in ns_out.split("\n"):
+        parts = ln.rstrip("\n").split("\t")
+        if len(parts) < 3 or not parts[2]:
+            continue
+        add, dele, path = parts[0], parts[1], parts[2]
+        files.append({
+            "path": path,
+            # "-" is git's marker for a binary file, not a zero.
+            "added": None if add == "-" else int(add or 0),
+            "deleted": None if dele == "-" else int(dele or 0),
+            "binary": add == "-" and dele == "-",
+        })
+
+    patch_args = ["show", "--patch", "--format=", "--no-color", sha, "--"]
+    if rel:
+        patch_args.append(rel)
+    code, patch, perr = _run(root, patch_args, timeout=READ_TIMEOUT_S)
+    if code != 0:
+        return _fail(_first_line(perr) or "git show failed", None, files=files, commit=meta)
+    truncated = len(patch.encode("utf-8", "replace")) > MAX_PATCH_BYTES
+    if truncated:
+        patch = patch[: MAX_PATCH_BYTES // 2]
+    return {"ok": True, "root": root, "commit": meta, "files": files[:MAX_FILES],
+            "patch": patch, "truncated": truncated}
+
+
 def git_fetch(cwd: str, prune: bool = False) -> dict[str, Any]:
     """`git fetch --all` — what makes `behind` a real number.
 
