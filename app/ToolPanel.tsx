@@ -37,6 +37,8 @@ type Props = {
   onRemoveAttachment?: (id: string) => void;
   // Re-insert a path into the message being composed.
   onInsertPath?: (path: string) => void;
+  /** Jump to the session touching a file, from the explorer (§14.88). */
+  onOpenSession?: (sessionId: string) => void;
   // Source control (§14.76). Scoped to the REPO containing `cwd`, not to the
   // session — which is why it takes (vpsId, cwd) and not sessionId.
   vpsId?: string | null;
@@ -76,7 +78,7 @@ const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React
 
 function ToolPanel({
   sessionId, kind = 'claude', toolCalls, edits, onRevert,
-  attachments = [], onRemoveAttachment, onInsertPath,
+  attachments = [], onRemoveAttachment, onInsertPath, onOpenSession,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal,
 }: Props) {
@@ -155,7 +157,7 @@ function ToolPanel({
       <div className="tp-body">
         {tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
-        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
+        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
         {tab === 'calls' && <CallsTab calls={toolCalls} />}
         {tab === 'files' && (

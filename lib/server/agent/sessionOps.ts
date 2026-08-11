@@ -25,6 +25,9 @@ import { classifyTerminalClaudeError } from '@/lib/terminalClaudeError';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 import { dropTabsForRef } from '@/lib/server/claude/tabs';
 import {
+  clearSessionActivity, fileFromToolUse, noteActivity, type FileActivity,
+} from '@/lib/server/claude/fileActivity';
+import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
 
@@ -234,6 +237,21 @@ export function emitGlobalSessionListChanged(sessionId: string): void {
  */
 export function emitGlobalTabsChanged(): void {
   emitGlobalSession({ type: 'tabs_changed', sessionId: 'tabs' } as GlobalSessionEvent);
+}
+
+/**
+ * Fan "an agent is touching this file" onto the global bus (sessionId = vpsId).
+ *
+ * LOW_VOLUME because the explorer that renders it is frequently NOT the
+ * focused session's — with several agents on one machine, seeing what the
+ * others are doing is the entire point. §14.88
+ */
+export function emitGlobalFileActivity(a: FileActivity): void {
+  emitGlobalSession({
+    type: 'file_activity', sessionId: a.vpsId,
+    path: a.path, kind: a.kind, activitySessionId: a.sessionId,
+    sessionName: a.sessionName, at: a.at,
+  } as unknown as GlobalSessionEvent);
 }
 
 /**
@@ -753,6 +771,18 @@ export class SessionStream {
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownToolUseIds.has(String(ev.id))) break;
         this._persist('tool_use', { type: 'tool_use', id: ev.id, name: ev.name, input: ev.input });
+        // Live "who is touching what" for the explorer. Never during replay:
+        // a reconnect would relight files an agent read an hour ago. §14.88
+        if (!this.isReplaying) {
+          const touched = fileFromToolUse(String(ev.name ?? ''), ev.input, this.cwd ?? '');
+          if (touched) {
+            const fresh = noteActivity({
+              vpsId: this.vpsId, path: touched.path, kind: touched.kind,
+              sessionId: this.id, sessionName: this.name, at: Date.now(),
+            });
+            if (fresh) emitGlobalFileActivity(fresh);
+          }
+        }
         this._broadcast({
           type: 'tool_use', id: ev.id, name: ev.name,
           input: compactToolInputForWire(ev.input),
@@ -2154,6 +2184,8 @@ export async function deleteSession(sessionId: string): Promise<void> {
   // the session is already gone as far as the user is concerned, and a failed
   // unlink must not turn a delete into an error.
   void purgeSessionBlobs(sessionId);
+  // Nothing is happening in a session that no longer exists. §14.88
+  clearSessionActivity(sessionId);
   // The tab is a view of the session, so it goes with it — but only the tab:
   // closing a tab never deletes a session, and this is the one direction that
   // does propagate. §14.78

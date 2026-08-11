@@ -56,6 +56,11 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // so every tab's header widget must update regardless of which session the SSE
   // is focused on. Source: usagePoll.ts → emitGlobalAccountUsage. §14.58.
   'account_usage',
+  // Who is reading/writing which file, right now (sessionId = vpsId). The
+  // explorer showing it is not necessarily the focused session's — with
+  // several agents on one machine, the whole point is seeing the OTHERS.
+  // One event per tool call, deduped hub-side. §14.88
+  'file_activity',
 ]);
 
 function isLowVolume(type: string): boolean {

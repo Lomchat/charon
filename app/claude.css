@@ -4166,6 +4166,23 @@
   color: var(--gold-bright); text-decoration: underline;
 }
 .gt-mini.primary { color: var(--gold-bright); border-color: var(--gold); }
+/* An agent is in this file RIGHT NOW (§14.88). A liveness light, so it sits
+   where the eye already is — at the end of the row, next to the git letter —
+   and it is clickable: the useful next move is "show me that session". */
+.tt-act {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 4px; cursor: pointer;
+  opacity: 0.85;
+}
+.tt-act svg { width: 11px; height: 11px; }
+.tt-act.read { color: var(--lavender, #8ab4e4); }
+.tt-act.write { color: var(--gold-bright); }
+.tt-act:hover { background: rgba(138,180,228,0.18); opacity: 1; }
+/* A write is the one worth catching out of the corner of an eye. */
+.tt-act.write { animation: tt-act-pulse 2.4s ease-in-out infinite; }
+@keyframes tt-act-pulse { 0%,100% { opacity: 0.9; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .tt-act.write { animation: none; } }
+
 /* ── History modal (§14.87) ───────────────────────────────────────────────
    Commits on the left, the commit's diff on the right — the same shell and
    the same split renderer as the working-tree reader, so "read a change"

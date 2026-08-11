@@ -4,7 +4,8 @@ import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry } from '@/lib/types/api';
 import { buildGitDecorations, fileStatusLabel, useGitStatus } from './gitStore';
 import HistoryModal from './HistoryModal';
-import { IconClockHistory } from './icons';
+import { IconClockHistory, IconEye } from './icons';
+import { activityLabel, useFileActivity } from './fileActivityStore';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import {
   IconForKind, fileKind, IconFolder,
@@ -22,6 +23,8 @@ type Props = {
    *  explorer also renders beside the file editor) — which is exactly the
    *  signal for whether a row is draggable at all. */
   onInsertPath?: (text: string) => void;
+  /** Jump to the session that is touching a file (§14.88). */
+  onOpenSession?: (sessionId: string) => void;
 };
 
 type Menu = { x: number; y: number; row: Row | null };
@@ -60,8 +63,10 @@ type Dialog =
  * path, its sha precondition and its conflict handling all live in FileEditor,
  * so there is exactly one place that can modify a file from the browser.
  */
-export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
+export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Props) {
   const { workspace } = useGitStatus(vpsId, cwd);
+  // Who is reading/writing what on this machine, right now (§14.88).
+  const activity = useFileActivity(vpsId);
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
@@ -446,6 +451,8 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
             const isOpen = r.dir && expanded.has(r.path);
             const busy = loading.has(r.path);
             const err = errors.get(r.path);
+            // Absolute path: the activity map is per VPS, not per tree root.
+            const act = r.dir ? undefined : activity.get(`${cwd}/${r.path}`);
             const isActive = !r.dir && r.path === activeFile;
             return (
               <li key={r.path}>
@@ -486,6 +493,21 @@ export default function TreeTab({ vpsId, cwd, onInsertPath }: Props) {
                   {/* Files carry the letter; folders carry only the colour, so
                       the gutter stays a single column of real changes. */}
                   {st && !r.dir && <span className="tt-st">{deco}</span>}
+                  {/* An agent is in this file RIGHT NOW. A span, not a nested
+                      <button> (invalid inside the row's button): the click is
+                      intercepted before the row's own handler runs. */}
+                  {act && (
+                    <span
+                      className={`tt-act ${act.kind}`}
+                      role="button"
+                      tabIndex={-1}
+                      title={activityLabel(act)}
+                      onClick={(e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        if (act.sessionId) onOpenSession?.(act.sessionId);
+                      }}
+                    >{act.kind === 'write' ? <IconPencil /> : <IconEye />}</span>
+                  )}
                   {err && <span className="tt-err" title={err}>!</span>}
                 </button>
               </li>

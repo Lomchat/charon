@@ -9,7 +9,7 @@ import type {
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
   GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
-  GitLogResponse, GitShowResponse,
+  GitLogResponse, GitShowResponse, FileActivityResponse,
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
@@ -141,6 +141,10 @@ export const api = {
     send<GitOpResponse>('POST', `/api/vps/${id}/git/pull`, { cwd, repo }, { timeoutMs: 200_000 }),
   gitDiscard: (id: string, cwd: string, paths: string[], repo?: string | null) =>
     send<GitOpResponse>('POST', `/api/vps/${id}/git/discard`, { cwd, paths, repo }, { timeoutMs: 60_000 }),
+  // Who is reading/writing which file on this VPS, right now (§14.88).
+  getFileActivity: (id: string) =>
+    send<FileActivityResponse>('GET', `/api/vps/${id}/activity`, undefined, { timeoutMs: 10_000 }),
+
   // ── History (agent >= 0.32.0, §14.87) ─────────────────────────────────────
   getGitLog: (id: string, cwd: string, o: { repo?: string | null; path?: string | null; limit?: number; skip?: number } = {}) =>
     send<GitLogResponse>('GET', `/api/vps/${id}/git/log?cwd=${encodeURIComponent(cwd)}`

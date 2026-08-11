@@ -428,6 +428,19 @@ export type GitBranchesResponse = {
   truncated?: boolean;
 };
 
+/** An agent touching a file, right now (§14.88). */
+export type FileActivityEntry = {
+  vpsId: string;
+  /** Absolute path on the VPS. */
+  path: string;
+  kind: 'read' | 'write';
+  sessionId: string;
+  sessionName: string | null;
+  at: number;
+};
+
+export type FileActivityResponse = { activity: FileActivityEntry[] };
+
 /** One commit in the history list (agent >= 0.32.0, §14.87). */
 export type GitCommit = {
   sha: string;

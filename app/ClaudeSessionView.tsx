@@ -84,6 +84,8 @@ type Props = {
   // a transform). Used by the git chip, which must reveal the panel it points
   // at — on desktop the panel is always visible and this is a no-op.
   onOpenTools?: () => void;
+  /** Jump to another session, from the explorer's activity icons (§14.88). */
+  onOpenSession?: (sessionId: string) => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -99,6 +101,7 @@ export default function ClaudeSessionView({
   sessionId, selected, selectedVps,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
+  onOpenSession,
 }: Props) {
   const stream = useClaudeSessionStream(sessionId, {
     cache: sharedCacheRef,
@@ -765,6 +768,7 @@ export default function ClaudeSessionView({
         repoBusy={status === 'thinking'}
         requestedTab={requestedToolTab}
         onTabConsumed={clearRequestedToolTab}
+        onOpenSession={onOpenSession}
         onReveal={onOpenTools}
       />
     </>
