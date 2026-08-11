@@ -312,11 +312,18 @@ export function lspExtensions(opts: {
         }
         const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
         const range = pos == null ? null : wordRangeAt(view, pos);
-        // Only dispatch when the range actually moved, or a mousemove storm
-        // becomes a transaction storm.
+        // Only dispatch when something actually changes, or a mousemove storm
+        // becomes a transaction storm: over whitespace with the key held, the
+        // naive version fires a transaction per pixel for no visible reason.
+        const lit = !!cur && cur.size > 0;
+        if (!range) {
+          if (!lit) return false;
+          view.dispatch({ effects: setLinkRange.of(null) });
+          return false;
+        }
         let same = false;
-        if (cur) cur.between(range?.from ?? -1, range?.to ?? -1, () => { same = true; });
-        if (range && same) return false;
+        if (cur) cur.between(range.from, range.to, () => { same = true; });
+        if (same) return false;
         view.dispatch({ effects: setLinkRange.of(range) });
         return false;
       },
