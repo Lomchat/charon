@@ -6,13 +6,15 @@ import type { FsReadResponse } from '@/lib/types/api';
 import { fileKind, isMediaName } from './fileIcons';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
-import { refreshGit } from './gitStore';
+import { refreshGit, useGitStatus } from './gitStore';
 import { subscribeReveal } from './revealLine';
 import { lspLabel, useLsp } from './useLsp';
 import {
   flattenSymbols, requestFormat, requestRename, type FlatSymbol,
 } from './lspClient';
 import LspPicker from './LspPicker';
+import HistoryModal from './HistoryModal';
+import { IconClockHistory } from './icons';
 import PromptModal from './PromptModal';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 
@@ -262,6 +264,23 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
     tickTimer.current = setTimeout(() => setTextVersion((n) => n + 1), 600);
   }, [dirty, markDirty, onInteract]);
 
+  // ── History for THIS file (§14.87) ────────────────────────────────────────
+  // The tree's right-click had it; the pane it opens into did not, which is
+  // the one place you are actually reading the file. The owning checkout comes
+  // from the workspace snapshot the panel already polls: with several repos
+  // under one cwd (§14.83) the file belongs to whichever root contains it, and
+  // `git log` has to run there.
+  const { workspace } = useGitStatus(vpsId, root);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const history = useMemo(() => {
+    const abs = `${root.replace(/\/+$/, '')}/${path}`;
+    const owner = (workspace?.repos ?? [])
+      .filter((r) => r.ok && r.root && (abs === r.root || abs.startsWith(r.root + '/')))
+      .sort((a2, b2) => (b2.root?.length ?? 0) - (a2.root?.length ?? 0))[0];
+    if (!owner?.root) return null;
+    return { repo: owner.root, rel: abs.slice(owner.root.length + 1) };
+  }, [workspace, root, path]);
+
   const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null && !media;
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;
   const lsp = useLsp({
@@ -364,6 +383,14 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         <span className="fe-path" title={`${root}/${path}`}>{path}</span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
+        {/* Only when a checkout actually owns this file — a button that can
+            only answer "not tracked" is worse than no button. */}
+        {history && (
+          <button className="fe-hist" onClick={() => setHistoryOpen(true)}
+                  title={`commit history for ${history.rel}`}>
+            <IconClockHistory /> history
+          </button>
+        )}
         {!media && !readOnly && (
           <button className="fe-save" onClick={() => save()} disabled={saving || !dirty}
                   title="save to the VPS (Ctrl+S)">
@@ -462,6 +489,17 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
           </>
         )}
       </div>
+
+      {historyOpen && history && (
+        <HistoryModal
+          vpsId={vpsId}
+          cwd={root}
+          repo={history.repo}
+          path={history.rel}
+          label={history.rel}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
 
       {picker?.kind === 'locations' && (
         <LspPicker

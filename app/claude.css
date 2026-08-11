@@ -4817,14 +4817,24 @@
 }
 .fe-dirty { flex: none; color: var(--gold-bright); font-size: 10px; }
 .fe-size { flex: none; font-family: var(--mono); font-size: 10px; color: var(--parchment-soft); }
-.fe-save, .fe-dl {
+.fe-save, .fe-dl, .fe-hist {
   flex: none; background: var(--shadow); border: 1px solid var(--gold-deep);
   color: var(--gold); border-radius: 3px; text-decoration: none;
   font-family: var(--display); font-size: 9.5px; letter-spacing: 0.14em;
   text-transform: uppercase; padding: 5px 10px; cursor: pointer;
 }
-.fe-save:hover:not(:disabled), .fe-dl:hover { color: var(--gold-bright); border-color: var(--gold); }
+.fe-save:hover:not(:disabled), .fe-dl:hover, .fe-hist:hover {
+  color: var(--gold-bright); border-color: var(--gold);
+}
 .fe-save:disabled { opacity: 0.35; cursor: default; }
+/* Sits with save/get, but reading is not writing: quieter until hovered. */
+.fe-hist {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--parchment-soft); border-color: rgba(216,168,90,0.22);
+}
+.fe-hist svg { width: 11px; height: 11px; }
+/* Under 700px the header has to choose: the path and saving win. */
+@media (max-width: 700px) { .fe-hist span, .fe-hist { font-size: 0; padding: 5px 7px; } .fe-hist svg { width: 13px; height: 13px; } }
 .fe-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .fe-note {
   font-family: var(--mono); font-size: 10.5px; padding: 5px 26px;
