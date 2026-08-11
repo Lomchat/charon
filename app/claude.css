@@ -4238,17 +4238,65 @@
   flex: none; font-family: var(--mono); font-size: 9.5px;
   color: var(--parchment-soft); opacity: 0.6; padding-top: 2px;
 }
+/* ── Editor tooltips (§14.90) ─────────────────────────────────────────────
+   ONE surface for all of them. CodeMirror MERGES a diagnostic and a hover at
+   the same position into a single `.cm-tooltip-hover` box with two sections,
+   so neither may bring its own background: styling them separately left the
+   shared box transparent and the warning text floating unreadably over the
+   code. The box is solid here; the sections only bring typography. */
+.cm-tooltip {
+  background: var(--stone-2) !important;
+  border: 1px solid var(--gold-deep) !important;
+  border-radius: 7px;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.55);
+  overflow: hidden;
+  max-width: 640px;
+}
+.cm-tooltip .cm-tooltip-section + .cm-tooltip-section,
+.cm-tooltip .cm-tooltip-section + .cm-lsp-hover,
+.cm-tooltip .cm-lsp-hover + .cm-tooltip-section {
+  border-top: 1px solid rgba(138,180,228,0.16);
+}
+/* CodeMirror draws the little arrow with two borders of its own. */
+.cm-tooltip .cm-tooltip-arrow:before { border-top-color: var(--gold-deep) !important; }
+.cm-tooltip .cm-tooltip-arrow:after { border-top-color: var(--stone-2) !important; }
+
 /* A type signature, so it is preformatted — and bounded, because some servers
    return an essay. */
 .cm-lsp-hover {
   font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
-  white-space: pre-wrap; padding: 6px 9px;
-  max-width: 620px; max-height: 320px; overflow: auto;
-  color: var(--parchment); background: var(--stone-2);
-  border: 1px solid var(--gold-deep); border-radius: 7px;
+  white-space: pre-wrap; padding: 7px 10px;
+  max-height: 320px; overflow: auto;
+  color: var(--parchment); background: transparent;
 }
-.cm-tooltip { border: none !important; background: transparent !important; }
-.cm-diagnostic { font-family: var(--mono); font-size: 11.5px; }
+/* The problem itself — on the squiggle and on the gutter marker. A colour bar
+   rather than coloured text: the message has to stay readable, and the
+   severity is a property of the whole entry. */
+.cm-tooltip-lint { margin: 0; padding: 0; list-style: none; max-height: 320px; overflow: auto; }
+.cm-diagnostic {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  color: var(--parchment);
+  white-space: pre-wrap; word-break: break-word;
+  padding: 7px 10px 7px 11px;
+  margin: 0; border: none; background: transparent;
+  border-left: 3px solid var(--gold-deep);
+}
+.cm-diagnostic + .cm-diagnostic { border-top: 1px solid rgba(138,180,228,0.12); }
+/* Two classes deep on purpose: CodeMirror's own theme carries these at one
+   class and is injected after our stylesheet, so a flat selector loses the
+   tie and the bar comes out pure #d11. */
+.cm-tooltip .cm-diagnostic-error,
+.cm-panel .cm-diagnostic-error { border-left-color: #e0736b; }
+.cm-tooltip .cm-diagnostic-warning,
+.cm-panel .cm-diagnostic-warning { border-left-color: var(--gold-bright); }
+.cm-tooltip .cm-diagnostic-info,
+.cm-panel .cm-diagnostic-info { border-left-color: var(--lavender, #8ab4e4); }
+.cm-tooltip .cm-diagnostic-hint,
+.cm-panel .cm-diagnostic-hint { border-left-color: var(--parchment-soft); }
+/* The completion popup rides the same surface. */
+.cm-tooltip-autocomplete > ul { font-family: var(--mono); font-size: 11.5px; max-height: 260px; }
+.cm-tooltip-autocomplete > ul > li[aria-selected] { background: rgba(138,180,228,0.18); color: var(--parchment); }
+.cm-completionDetail { color: var(--parchment-soft); font-style: normal; opacity: 0.8; }
 
 /* An agent is in this file RIGHT NOW (§14.88). A liveness light, so it sits
    where the eye already is — at the end of the row, next to the git letter —
