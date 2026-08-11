@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { lspClose, lspDiagnostics, lspOpen, lspRequest, lspStatus } from '@/lib/server/claude/lsp';
+import { lspApplyEdit, lspClose, lspDiagnostics, lspOpen, lspRequest, lspStatus } from '@/lib/server/claude/lsp';
 
 // Code intelligence — ONE route with an `op`, not five files. Every call is
 // the same shape (a root, a file, and something to ask about it) and the
@@ -11,7 +11,7 @@ import { lspClose, lspDiagnostics, lspOpen, lspRequest, lspStatus } from '@/lib/
 //
 //   GET  ?op=status&root=&path=
 //   GET  ?op=diagnostics&root=&path=&since=&wait=     (long poll)
-//   POST { op: 'open'|'close'|'request', root, path, … }
+//   POST { op: 'open'|'close'|'request'|'apply', root, path, … }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
@@ -60,6 +60,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json(await lspOpen(id, root, path, text));
   }
   if (op === 'close') return NextResponse.json(await lspClose(id, root, path));
+  if (op === 'apply') {
+    const changes = body.changes;
+    if (!changes || typeof changes !== 'object') {
+      return NextResponse.json({ ok: false, error: 'changes required' }, { status: 400 });
+    }
+    return NextResponse.json(await lspApplyEdit(id, root, changes as Record<string, unknown>));
+  }
   if (op === 'request') {
     return NextResponse.json(await lspRequest(id, {
       root, path,

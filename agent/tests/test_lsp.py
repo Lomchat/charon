@@ -228,3 +228,102 @@ class LspTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApplyEditTest(unittest.TestCase):
+    """`lsp_apply_edit` — the write half of rename and format (§14.90).
+
+    Same hazard as `fs_write` (§14.79): an agent may be writing these files
+    right now, so nothing is clobbered blind and nothing is half-written.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="charon-edit-test-")
+        self.a = os.path.join(self.dir, "a.py")
+        self.b = os.path.join(self.dir, "b.py")
+        with open(self.a, "w") as f:
+            f.write("alpha = 1\nbeta = 2\ngamma = 3\n")
+        with open(self.b, "w") as f:
+            f.write("from a import alpha\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def _edit(l1, c1, l2, c2, text):
+        return {"range": {"start": {"line": l1, "character": c1},
+                          "end": {"line": l2, "character": c2}}, "newText": text}
+
+    def test_applies_edits_back_to_front_so_offsets_stay_valid(self):
+        # Two edits on the same line: applied front-to-back the second one
+        # lands in the wrong place. This is THE bug in a naive implementation.
+        r = L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [
+                self._edit(0, 0, 0, 5, "FIRST"),
+                self._edit(2, 0, 2, 5, "THIRD"),
+            ],
+        }})
+        self.assertTrue(r["ok"], r)
+        with open(self.a) as f:
+            self.assertEqual(f.read(), "FIRST = 1\nbeta = 2\nTHIRD = 3\n")
+
+    def test_edits_several_files_in_one_call(self):
+        r = L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [self._edit(0, 0, 0, 5, "renamed")],
+            L.path_to_uri(self.b): [self._edit(0, 14, 0, 19, "renamed")],
+        }})
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(r["changed"]), 2)
+        with open(self.b) as f:
+            self.assertEqual(f.read(), "from a import renamed\n")
+
+    def test_refuses_to_touch_anything_outside_the_root(self):
+        outside = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+        outside.write("secret = 1\n")
+        outside.close()
+        try:
+            r = L.lsp_apply_edit({"root": self.dir, "changes": {
+                L.path_to_uri(outside.name): [self._edit(0, 0, 0, 6, "hacked")],
+            }})
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["reason"], "outside_root")
+            with open(outside.name) as f:
+                self.assertEqual(f.read(), "secret = 1\n")     # untouched
+        finally:
+            os.unlink(outside.name)
+
+    def test_validates_every_file_before_writing_any(self):
+        # A rename that touches six files and dies on the fourth is the worst
+        # possible outcome: the bad target is caught before anything lands.
+        r = L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [self._edit(0, 0, 0, 5, "renamed")],
+            L.path_to_uri(os.path.join(self.dir, "nope.py")): [self._edit(0, 0, 0, 1, "x")],
+        }})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "read")
+        with open(self.a) as f:
+            self.assertEqual(f.read(), "alpha = 1\nbeta = 2\ngamma = 3\n")
+
+    def test_preserves_the_file_mode(self):
+        os.chmod(self.a, 0o750)
+        L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [self._edit(0, 0, 0, 5, "renamed")],
+        }})
+        self.assertEqual(os.stat(self.a).st_mode & 0o777, 0o750)
+
+    def test_a_no_op_edit_changes_nothing(self):
+        r = L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [self._edit(0, 0, 0, 5, "alpha")],
+        }})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["changed"], [])
+
+    def test_empty_input_is_refused_not_silently_successful(self):
+        self.assertFalse(L.lsp_apply_edit({"root": self.dir, "changes": {}})["ok"])
+        self.assertFalse(L.lsp_apply_edit({"root": "/does/not/exist", "changes": {"x": []}})["ok"])
+
+    def test_no_temp_file_is_left_behind(self):
+        L.lsp_apply_edit({"root": self.dir, "changes": {
+            L.path_to_uri(self.a): [self._edit(0, 0, 0, 5, "renamed")],
+        }})
+        self.assertEqual([f for f in os.listdir(self.dir) if "tmp" in f], [])

@@ -153,6 +153,11 @@ export const api = {
   // `wait` seconds with changed:false. Never an error on a timeout.
   lspDiagnostics: (id: string, root: string, path: string, since: number, wait = 20) =>
     send<LspDiagnosticsResponse>('GET', `/api/vps/${id}/lsp?op=diagnostics&root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&since=${since}&wait=${wait}`, undefined, { timeoutMs: (wait + 15) * 1000 }),
+  // Apply a WorkspaceEdit (rename, format). The agent writes atomically and
+  // refuses anything outside the project root (§14.90).
+  lspApplyEdit: (id: string, root: string, changes: Record<string, unknown[]>) =>
+    send<{ ok: boolean; error?: string; reason?: string; changed?: string[] }>(
+      'POST', `/api/vps/${id}/lsp`, { op: 'apply', root, path: root, changes }, { timeoutMs: 60_000 }),
   lspRequest: (id: string, body: { root: string; path: string; method: string; position?: unknown; extra?: unknown; item?: unknown }) =>
     send<LspRequestResponse>('POST', `/api/vps/${id}/lsp`, { op: 'request', ...body }, { timeoutMs: 30_000 }),
 

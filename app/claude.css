@@ -4172,12 +4172,72 @@
    here is the command" — an editor that silently has no squiggles is
    indistinguishable from one whose code is fine. */
 .fe-lsp {
-  flex: none; padding: 4px 12px; border-top: 1px solid var(--gold-deep);
+  flex: none; display: flex; align-items: center; gap: 6px;
+  padding: 3px 12px; border-top: 1px solid var(--gold-deep);
   font-family: var(--mono); font-size: 10.5px; color: var(--parchment-soft);
   background: rgba(0,0,0,0.18);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; white-space: nowrap;
 }
-.fe-lsp.on { color: var(--gold); }
+.fe-lsp.on .fe-lsp-text { color: var(--gold); }
+.fe-lsp-text { overflow: hidden; text-overflow: ellipsis; }
+.fe-lsp-btn {
+  flex: none; background: transparent; border: 1px solid transparent;
+  color: var(--parchment-soft); cursor: pointer; border-radius: 5px;
+  padding: 1px 5px; font-size: 9.5px; line-height: 1.4;
+}
+.fe-lsp-btn.wide { border-color: var(--gold-deep); letter-spacing: 0.06em; }
+.fe-lsp-btn:hover:not(:disabled) { color: var(--gold-bright); border-color: var(--gold-bright); }
+.fe-lsp-btn:disabled { opacity: 0.35; cursor: default; }
+/* The shortcuts, once, quietly — the affordance itself is the underline. */
+.fe-lsp-hint { flex: none; opacity: 0.5; }
+@media (max-width: 1100px) { .fe-lsp-hint { display: none; } }
+
+/* Ctrl/Cmd held over a symbol: it looks like the link it is (§14.90). */
+.cm-lsp-link {
+  text-decoration: underline;
+  text-decoration-color: var(--gold-bright);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.cm-editor .cm-content:has(.cm-lsp-link) { cursor: pointer; }
+
+/* The chooser for "this symbol lives in three places" (§14.90). */
+.claude-modal.lsp-picker {
+  max-width: 760px; width: min(760px, calc(100vw - 32px));
+  max-height: min(72vh, 640px); display: flex; flex-direction: column; gap: 9px;
+  padding: 20px 20px 12px;
+}
+.lp-head { display: flex; align-items: baseline; gap: 9px; padding-right: 26px; }
+.lp-title { font-family: var(--display); font-size: 14px; letter-spacing: 0.08em; color: var(--gold-bright); }
+.lp-count {
+  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
+  border: 1px solid var(--gold-deep); border-radius: 7px; padding: 0 5px;
+}
+.lp-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+.lp-list > li { border-bottom: 1px solid rgba(138,180,228,0.07); }
+.lp-list > li.on { background: rgba(138,180,228,0.12); }
+.lp-row {
+  display: flex; align-items: baseline; gap: 9px; width: 100%; min-width: 0;
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 6px 8px; font-family: var(--mono); font-size: 11.5px; color: var(--parchment);
+}
+.lp-where { flex: none; color: var(--gold); }
+.lp-line { color: var(--parchment-soft); }
+/* The source line is the reason this list is choosable at all. */
+.lp-preview {
+  color: var(--parchment-soft); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0;
+}
+.lp-kind {
+  flex: none; width: 74px; font-size: 9.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--parchment-soft); opacity: 0.75;
+}
+.lp-name { color: var(--parchment); }
+.lp-detail { color: var(--parchment-soft); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lp-foot {
+  flex: none; font-family: var(--mono); font-size: 9.5px;
+  color: var(--parchment-soft); opacity: 0.6; padding-top: 2px;
+}
 /* A type signature, so it is preformatted — and bounded, because some servers
    return an essay. */
 .cm-lsp-hover {

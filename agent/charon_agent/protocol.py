@@ -123,6 +123,7 @@ METHODS = {
     "lsp_close",
     "lsp_diagnostics",
     "lsp_request",
+    "lsp_apply_edit",
     "lsp_stop",
     "git_log",
     "git_show",

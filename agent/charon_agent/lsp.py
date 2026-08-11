@@ -507,7 +507,16 @@ def lsp_request(params: dict[str, Any]) -> dict[str, Any]:
         "textDocument/completion",
         "textDocument/documentSymbol",
         "textDocument/signatureHelp",
+        "textDocument/prepareRename",
+        "textDocument/rename",
+        "textDocument/formatting",
         "completionItem/resolve",
+    }
+    # Results that are lists of Locations get a preview line attached below;
+    # `rename` and `formatting` come back as edits the caller then applies.
+    LOCATIONS = {
+        "textDocument/definition", "textDocument/typeDefinition",
+        "textDocument/implementation", "textDocument/references",
     }
     method = str(params.get("method") or "")
     if method not in ALLOWED:
@@ -531,10 +540,168 @@ def lsp_request(params: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": "item required", "reason": "bad_params"}
         body = item
 
-    r = s.request(method, body)
+    # `references` needs its own flag, and servers differ on whether the
+    # declaration itself belongs in the list. Include it: "where is this used"
+    # with the definition missing reads as a bug.
+    if method == "textDocument/references":
+        body.setdefault("context", {"includeDeclaration": True})
+
+    timeout = REQUEST_TIMEOUT_S * 2 if method in ("textDocument/rename", "textDocument/formatting") else REQUEST_TIMEOUT_S
+    r = s.request(method, body, timeout=timeout)
     if not r.get("ok"):
         return r
-    return {"ok": True, "result": r.get("result"), "server": s.spec["bin"]}
+    result = r.get("result")
+    if method in LOCATIONS:
+        result = _with_previews(result)
+    return {"ok": True, "result": result, "server": s.spec["bin"]}
+
+
+# Reading one line off disk is microseconds here and a whole round trip from
+# the browser, so the preview rides along with the locations.
+MAX_PREVIEWS = 200
+_preview_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _lines_of(path: str) -> list[str]:
+    hit = _preview_cache.get(path)
+    now = time.monotonic()
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        if os.path.getsize(path) > 4_000_000:
+            return []
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        lines = []
+    _preview_cache[path] = (now + 20.0, lines)
+    if len(_preview_cache) > 100:
+        for k in [k for k, v in _preview_cache.items() if v[0] < now]:
+            _preview_cache.pop(k, None)
+    return lines
+
+
+def _with_previews(result: Any) -> Any:
+    """Attach `preview` (the source line) to every Location in a result.
+
+    A list of `file:line` with no code in it is a list nobody can choose from —
+    the whole reason a picker beats jumping to the first hit.
+    """
+    if result is None:
+        return None
+    items = result if isinstance(result, list) else [result]
+    out = []
+    for raw in items[:MAX_PREVIEWS]:
+        if not isinstance(raw, dict):
+            continue
+        loc = dict(raw)
+        uri = str(loc.get("uri") or loc.get("targetUri") or "")
+        rng = loc.get("range") or loc.get("targetSelectionRange") or loc.get("targetRange") or {}
+        line_no = int(((rng or {}).get("start") or {}).get("line") or 0)
+        if uri.startswith("file://"):
+            lines = _lines_of(uri_to_path(uri))
+            if 0 <= line_no < len(lines):
+                loc["preview"] = lines[line_no].strip()[:200]
+        out.append(loc)
+    return out if isinstance(result, list) else (out[0] if out else None)
+
+
+def _apply_text_edits(text: str, edits: list[dict[str, Any]]) -> str:
+    """Apply LSP TextEdits to a string.
+
+    Applied back-to-front so earlier offsets stay valid — the one detail that
+    makes a naive implementation corrupt every edit after the first.
+    """
+    lines = text.split("\n")
+
+    def offset(pos: dict[str, Any]) -> int:
+        ln = max(0, min(len(lines) - 1, int(pos.get("line") or 0)))
+        base = sum(len(x) + 1 for x in lines[:ln])
+        return base + max(0, min(len(lines[ln]), int(pos.get("character") or 0)))
+
+    ordered = sorted(
+        (e for e in edits if isinstance(e, dict) and e.get("range") is not None),
+        key=lambda e: (offset(e["range"]["start"]), offset(e["range"]["end"])),
+        reverse=True,
+    )
+    out = text
+    for e in ordered:
+        a2, b2 = offset(e["range"]["start"]), offset(e["range"]["end"])
+        if a2 > b2:
+            a2, b2 = b2, a2
+        out = out[:a2] + str(e.get("newText") or "") + out[b2:]
+    return out
+
+
+def lsp_apply_edit(params: dict[str, Any]) -> dict[str, Any]:
+    """Write a WorkspaceEdit (or a plain edit list for one file) to disk.
+
+    This is the write half of rename and format. Rules, all of them the same
+    ones `fs_write` lives by (§14.79) because the hazard is identical — an
+    agent may be writing these files right now:
+
+      * every path is CONTAINED under `root`, realpath'd on both sides;
+      * each file is read, patched, and written tmp+fsync+rename, preserving
+        the mode. A half-written source file is worse than an unwritten one;
+      * it is ALL-OR-NOTHING in intent: every target is validated and patched
+        in memory first, and nothing is written until all of them succeed.
+        A rename that touches six files and dies on the fourth is the worst
+        possible outcome.
+    """
+    root = os.path.realpath(os.path.expanduser(str(params.get("root") or "")))
+    if not root or not os.path.isdir(root):
+        return {"ok": False, "error": "root not found", "reason": "bad_params"}
+    changes = params.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        return {"ok": False, "error": "nothing to apply", "reason": "no_changes"}
+
+    staged: list[tuple[str, str, int]] = []          # (path, new text, mode)
+    for uri, edits in changes.items():
+        path = uri_to_path(str(uri))
+        real = os.path.realpath(path)
+        if real != root and not real.startswith(root + os.sep):
+            return {"ok": False, "reason": "outside_root",
+                    "error": f"refusing to edit outside the project: {path}"}
+        if not isinstance(edits, list) or not edits:
+            continue
+        try:
+            with open(real, "r", encoding="utf-8") as f:
+                before = f.read()
+            mode = os.stat(real).st_mode & 0o777
+        except (OSError, UnicodeDecodeError) as ex:
+            return {"ok": False, "reason": "read", "error": f"{path}: {ex}"}
+        after = _apply_text_edits(before, edits)
+        if after != before:
+            staged.append((real, after, mode))
+
+    if not staged:
+        return {"ok": True, "changed": [], "note": "nothing to change"}
+
+    written: list[str] = []
+    for real, after, mode in staged:
+        tmp = real + ".charon-lsp.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(after)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, mode)
+            os.replace(tmp, real)
+            written.append(real)
+        except OSError as ex:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return {"ok": False, "reason": "write", "error": f"{real}: {ex}",
+                    "changed": written, "partial": True}
+    # The open documents are now stale in every server watching this root.
+    with _servers_lock:
+        for srv in _servers.values():
+            if srv.root == root:
+                for real in written:
+                    srv.open_docs.pop(path_to_uri(real), None)
+    return {"ok": True, "changed": written}
 
 
 def lsp_stop(params: dict[str, Any]) -> dict[str, Any]:

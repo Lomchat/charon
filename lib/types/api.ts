@@ -439,6 +439,16 @@ export type LspDiagnostic = {
   code?: string | number;
 };
 
+/** One place a symbol lives, with the source line so a list is choosable. */
+export type LspLocation = {
+  path: string;
+  /** 1-based, ready for `revealLine`. */
+  line: number;
+  character?: number;
+  /** The source line, attached agent-side — a bare file:line is unusable. */
+  preview?: string;
+};
+
 export type LspStatusResponse = {
   ok: boolean;
   error?: string;

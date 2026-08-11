@@ -9,7 +9,12 @@ import { setTabDirty } from './tabStore';
 import { refreshGit } from './gitStore';
 import { subscribeReveal } from './revealLine';
 import { lspLabel, useLsp } from './useLsp';
-import type { LspDiagnostic } from '@/lib/types/api';
+import {
+  flattenSymbols, requestFormat, requestRename, type FlatSymbol,
+} from './lspClient';
+import LspPicker from './LspPicker';
+import PromptModal from './PromptModal';
+import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -64,6 +69,10 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   // be asked for twice — clicking one result, scrolling away, clicking it
   // again has to move the editor the second time too.
   const [reveal, setReveal] = useState<{ line: number; nonce: number } | null>(null);
+  // Where the last jump landed — the problem stepper needs a cursor.
+  const stepProblemRef = useRef<(d: number) => void>(() => {});
+  const revealRef = useRef<number>(0);
+  revealRef.current = reveal?.line ?? 0;
 
   const name = path.split('/').pop() || path;
   const media = isMediaName(name);
@@ -226,6 +235,13 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void save();
+        return;
+      }
+      // F8 walks the problems, like every editor. Pane-level for the same
+      // reason as Ctrl+S: it must work with the header focused.
+      if (e.key === 'F8') {
+        e.preventDefault();
+        stepProblemRef.current(e.shiftKey ? -1 : 1);
       }
     }
     window.addEventListener('keydown', onKey);
@@ -261,6 +277,83 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
     [canLsp, lsp.live, vpsId, root, absPath],
   );
   const lspText = lspLabel(lsp.status, lsp.live, lsp.diagnostics.length);
+
+  // ── Code-intelligence interactions (§14.90) ───────────────────────────────
+  const [picker, setPicker] = useState<
+    | { kind: 'locations'; title: string; locations: LspLocation[] }
+    | { kind: 'symbols'; title: string; symbols: FlatSymbol[] }
+    | null
+  >(null);
+  const [rename, setRename] = useState<
+    { word: string; pos: { line: number; character: number } } | null
+  >(null);
+  const [busyLsp, setBusyLsp] = useState<string | null>(null);
+
+  /** One result: go. Several: let the user choose — that is the whole point. */
+  const showLocations = useCallback((locs: LspLocation[], title: string) => {
+    if (locs.length === 1) { goTo(locs[0]); return; }
+    setPicker({ kind: 'locations', title, locations: locs });
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const goTo = useCallback((loc: LspLocation) => {
+    setPicker(null);
+    if (loc.path === absPath) { setReveal({ line: loc.line, nonce: Date.now() }); return; }
+    onOpenLocation?.(loc.path, loc.line);
+  }, [absPath, onOpenLocation]);
+
+  const askRename = useCallback((pos: { line: number; character: number }, word: string) => {
+    setRename({ word, pos });
+  }, []);
+
+  /** Rename across the project, then reload — the buffer on screen is stale. */
+  const doRename = useCallback(async (next: string) => {
+    if (!rename || !lspTarget) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === rename.word) { setRename(null); return; }
+    setBusyLsp('rename');
+    try {
+      const r = await requestRename(lspTarget, rename.pos, trimmed);
+      if (!r.ok || !r.changes) throw new Error(r.error ?? 'rename failed');
+      const applied = await api.lspApplyEdit(vpsId, root, r.changes as Record<string, unknown[]>);
+      if (!applied.ok) throw new Error(applied.error ?? 'could not write the changes');
+      const n = applied.changed?.length ?? 0;
+      setNote({ kind: 'ok', text: `renamed to ${trimmed} in ${n} file${n === 1 ? '' : 's'}` });
+      setRename(null);
+      await load();                    // our own buffer is now out of date
+    } catch (e: unknown) {
+      // Thrown, so PromptModal keeps the dialog open with the reason (§14.80).
+      throw e instanceof Error ? e : new Error(String(e));
+    } finally {
+      setBusyLsp(null);
+    }
+  }, [rename, lspTarget, vpsId, root]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const doFormat = useCallback(async () => {
+    if (!lspTarget) return;
+    setBusyLsp('format');
+    try {
+      const r = await requestFormat(lspTarget);
+      if (!r.ok) { setNote({ kind: 'err', text: r.error ?? 'format failed' }); return; }
+      if (!r.edits?.length) { setNote({ kind: 'ok', text: 'already formatted' }); return; }
+      const applied = await api.lspApplyEdit(vpsId, root, { [`file://${absPath}`]: r.edits });
+      if (!applied.ok) { setNote({ kind: 'err', text: applied.error ?? 'could not write' }); return; }
+      setNote({ kind: 'ok', text: 'formatted' });
+      await load();
+    } finally {
+      setBusyLsp(null);
+    }
+  }, [lspTarget, vpsId, root, absPath]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Walk the problems, F8 style. */
+  const stepProblem = useCallback((delta: number) => {
+    const list = [...lsp.diagnostics].sort((a3, b3) => a3.range.start.line - b3.range.start.line);
+    if (!list.length) return;
+    const cur = revealRef.current;
+    const idx = list.findIndex((d) => d.range.start.line + 1 === cur);
+    const next = list[((idx < 0 ? (delta > 0 ? -1 : 0) : idx) + delta + list.length) % list.length];
+    if (next) setReveal({ line: next.range.start.line + 1, nonce: Date.now() });
+  }, [lsp.diagnostics]);
+  stepProblemRef.current = stepProblem;
 
 
   const readOnly = !!res?.tooLarge || !!res?.binary;
@@ -340,16 +433,67 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
               reveal={reveal}
               lsp={lspTarget}
               diagnostics={lsp.live ? lsp.diagnostics : EMPTY_DIAGS}
-              onOpenLocation={onOpenLocation}
+              onLocations={showLocations}
+              onRename={askRename}
+              onSymbols={(r) => {
+                const list = flattenSymbols(r);
+                if (list.length) setPicker({ kind: 'symbols', title: 'Go to symbol', symbols: list });
+              }}
             />
             {lspText && (
               <div className={`fe-lsp${lsp.live ? ' on' : ''}`} title={lsp.status?.install ?? undefined}>
-                {lspText}
+                <span className="fe-lsp-text">{lspText}</span>
+                {lsp.live && lsp.diagnostics.length > 0 && (
+                  <>
+                    <button className="fe-lsp-btn" onClick={() => stepProblem(-1)} title="previous problem (Shift+F8)">▲</button>
+                    <button className="fe-lsp-btn" onClick={() => stepProblem(1)} title="next problem (F8)">▼</button>
+                  </>
+                )}
+                <span className="gt-spacer" />
+                {lsp.live && (
+                  <button className="fe-lsp-btn wide" disabled={!!busyLsp || readOnly}
+                    onClick={() => void doFormat()} title="format this file with the language server">
+                    {busyLsp === 'format' ? '…' : 'format'}
+                  </button>
+                )}
+                {lsp.live && <span className="fe-lsp-hint">⌘/Ctrl+click → definition · Shift → references · F2 rename</span>}
               </div>
             )}
           </>
         )}
       </div>
+
+      {picker?.kind === 'locations' && (
+        <LspPicker
+          kind="locations"
+          title={picker.title}
+          items={picker.locations}
+          currentPath={absPath}
+          onPick={goTo}
+          onClose={() => setPicker(null)}
+        />
+      )}
+      {picker?.kind === 'symbols' && (
+        <LspPicker
+          kind="symbols"
+          title={picker.title}
+          items={picker.symbols}
+          currentPath={absPath}
+          onPick={(sym) => { setPicker(null); setReveal({ line: sym.line, nonce: Date.now() }); }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+      {rename && (
+        <PromptModal
+          title="Rename symbol"
+          hint={`Every reference to ${rename.word} in this project is rewritten on the VPS. There is no undo — commit or stash first if you want one.`}
+          initial={rename.word}
+          confirmLabel="Rename"
+          busyLabel="renaming…"
+          onSubmit={doRename}
+          onClose={() => setRename(null)}
+        />
+      )}
     </div>
   );
 }

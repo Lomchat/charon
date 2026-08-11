@@ -6,7 +6,7 @@ import { Decoration, ViewPlugin, keymap } from '@codemirror/view';
 import type { DecorationSet, ViewUpdate } from '@codemirror/view';
 import { indentWithTab } from '@codemirror/commands';
 import { applyDiagnostics, lspExtensions, type LspTarget } from './lspClient';
-import type { LspDiagnostic } from '@/lib/types/api';
+import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 import { LanguageDescription } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -30,8 +30,12 @@ type Props = {
   lsp?: LspTarget | null;
   /** Problems the server reported, rendered as squiggles + gutter marks. */
   diagnostics?: LspDiagnostic[];
-  /** Go-to-definition landed somewhere: open it. */
-  onOpenLocation?: (path: string, line: number) => void;
+  /** Definition / references came back — one place or several (§14.90). */
+  onLocations?: (locations: LspLocation[], title: string) => void;
+  /** F2 on a symbol. */
+  onRename?: (pos: { line: number; character: number }, word: string) => void;
+  /** Ctrl+Shift+O — the document's symbols. */
+  onSymbols?: (result: unknown) => void;
 };
 
 type Find = {
@@ -122,7 +126,8 @@ function queryOf(f: Find): SearchQuery {
  * library's — only the surface changed.
  */
 export default function CodeEditor({
-  doc, docKey, filename, readOnly, onChange, onSave, reveal, lsp, diagnostics, onOpenLocation,
+  doc, docKey, filename, readOnly, onChange, onSave, reveal, lsp, diagnostics,
+  onLocations, onRename, onSymbols,
 }: Props) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
@@ -142,8 +147,10 @@ export default function CodeEditor({
   // and each of them no-ops while there is no server. §14.89
   const lspRef = useRef<LspTarget | null>(lsp ?? null);
   lspRef.current = lsp ?? null;
-  const openLocRef = useRef(onOpenLocation);
-  openLocRef.current = onOpenLocation;
+  // Every LSP callback through one ref: the extensions are built once, so a
+  // new closure per render must not mean rebuilding the editor.
+  const lspCbs = useRef({ onLocations, onRename, onSymbols });
+  lspCbs.current = { onLocations, onRename, onSymbols };
 
   const openFind = useCallback((withReplace: boolean) => {
     const v = view.current;
@@ -220,7 +227,9 @@ export default function CodeEditor({
           matchHighlighter,
           ...lspExtensions({
             target: () => lspRef.current,
-            onOpenLocation: (p, line) => openLocRef.current?.(p, line),
+            onLocations: (locs, title) => lspCbs.current.onLocations?.(locs, title),
+            onRename: (pos, word) => lspCbs.current.onRename?.(pos, word),
+            onSymbols: (r) => lspCbs.current.onSymbols?.(r),
           }),
           // Highest precedence: these have to win over the bindings basicSetup
           // already made for Mod-f and Escape, or the docked panel we replaced

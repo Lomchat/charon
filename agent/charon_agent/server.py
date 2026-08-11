@@ -32,6 +32,7 @@ from .lsp import (
     lsp_close as _lsp_close,
     lsp_diagnostics as _lsp_diagnostics,
     lsp_request as _lsp_request,
+    lsp_apply_edit as _lsp_apply_edit,
     lsp_stop as _lsp_stop,
     shutdown_all as _lsp_shutdown_all,
 )
@@ -396,7 +397,7 @@ class Server:
         "git_branches", "git_checkout", "git_fetch", "git_delete_branch",
         "git_log", "git_show",
         "lsp_status", "lsp_open", "lsp_close", "lsp_diagnostics", "lsp_request",
-        "lsp_stop",
+        "lsp_apply_edit", "lsp_stop",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
         "fs_search",
     })
@@ -523,6 +524,8 @@ class Server:
             return await asyncio.to_thread(_lsp_diagnostics, params)
         if method == "lsp_request":
             return await asyncio.to_thread(_lsp_request, params)
+        if method == "lsp_apply_edit":
+            return await asyncio.to_thread(_lsp_apply_edit, params)
         if method == "lsp_stop":
             return await asyncio.to_thread(_lsp_stop, params)
 

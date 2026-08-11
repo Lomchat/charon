@@ -115,6 +115,19 @@ export async function lspDiagnostics(
   };
 }
 
+export async function lspApplyEdit(
+  vpsId: string, root: string, changes: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string; reason?: string; changed?: string[] }> {
+  const r = await rpc<Record<string, unknown>>(vpsId, 'lsp_apply_edit', { root, changes });
+  const x = r as Record<string, unknown>;
+  return {
+    ok: x.ok !== false,
+    error: x.error as string | undefined,
+    reason: x.reason as string | undefined,
+    changed: Array.isArray(x.changed) ? (x.changed as string[]) : [],
+  };
+}
+
 export async function lspRequest(
   vpsId: string, body: { root: string; path: string; method: string; position?: unknown; extra?: unknown; item?: unknown },
 ): Promise<LspRequestResponse> {
