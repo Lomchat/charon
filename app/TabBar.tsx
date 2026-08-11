@@ -43,6 +43,13 @@ export type ResolvedTab = TabDTO & {
   dirty: boolean;
   /** The thing is gone (a file that was deleted, a session mid-removal). */
   orphan: boolean;
+  /**
+   * The tab points at something that RUNS, so `state` means something and the
+   * status dot is drawn. A file doesn't run: a green dot next to it claimed a
+   * liveness it can't have, and made the whole strip look busy as soon as you
+   * opened one. Files carry their icon and their unsaved dot, nothing else.
+   */
+  live: boolean;
 };
 
 type Args = {
@@ -83,7 +90,7 @@ export function resolveTabs({
         : waiting.has(s.id) ? 'waiting'
         : (s.status as TabState) ?? 'active';
       return {
-        ...t, dirty, orphan: !s,
+        ...t, dirty, orphan: !s, live: true,
         label: s?.name || '(unnamed)',
         title: `${s?.name || '(unnamed)'}\n${t.path}`,
         state: STATE_PRIORITY[state] === undefined ? 'active' : state,
@@ -93,7 +100,7 @@ export function resolveTabs({
     if (t.kind === 'shell') {
       const sh = shellById.get(t.ref);
       return {
-        ...t, dirty, orphan: !sh,
+        ...t, dirty, orphan: !sh, live: true,
         label: sh?.name || 'shell',
         title: `shell\n${t.path}`,
         state: sh ? 'active' : 'sleeping',
@@ -102,7 +109,9 @@ export function resolveTabs({
     if (t.kind === 'install') {
       const i = installById.get(t.ref);
       return {
-        ...t, dirty, orphan: !i,
+        // An install IS a running remote process — running/error is exactly
+        // what its dot is for.
+        ...t, dirty, orphan: !i, live: true,
         label: 'install',
         title: `agent install\n${i?.vpsName ?? ''}`,
         state: i?.status === 'running' ? 'thinking' : i?.status === 'error' ? 'failed' : 'active',
@@ -110,17 +119,22 @@ export function resolveTabs({
     }
     const name = t.ref.split('/').pop() || t.ref;
     return {
-      ...t, dirty, orphan: false,
+      ...t, dirty, orphan: false, live: false,
       label: name,
       title: `${t.path}/${t.ref}${dirty ? '\nunsaved changes' : ''}`,
-      state: 'active',
+      state: 'sleeping',
     };
   });
 }
 
-function rollUp(list: { state: TabState }[]): TabState {
+/** The state of a group is the loudest state among the things in it that RUN —
+ *  open files are skipped, or a folder you are only reading files in would
+ *  report itself as active. A group with nothing live rolls up to 'sleeping'. */
+function rollUp(list: { state: TabState; live: boolean }[]): TabState {
   let best: TabState = 'sleeping';
-  for (const x of list) if (STATE_PRIORITY[x.state] > STATE_PRIORITY[best]) best = x.state;
+  for (const x of list) {
+    if (x.live && STATE_PRIORITY[x.state] > STATE_PRIORITY[best]) best = x.state;
+  }
   return best;
 }
 
@@ -275,7 +289,7 @@ export default function TabBar({
               onDoubleClick={() => onTabDoubleClick(t)}
               title={`${t.title}${t.pinned ? '' : '\n(preview — double-click to keep it open)'}`}
             >
-              <span className="tb-dot" />
+              {t.live && <span className="tb-dot" />}
               <span className="tb-glyph">
                 {t.kind === 'session' ? <AgentLogo kind={t.agentKind ?? 'claude'} size={12} />
                   : t.kind === 'shell' ? <IconTerminal />
