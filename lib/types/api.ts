@@ -625,6 +625,12 @@ export type UpdateVpsAgentResponse = {
   // claude-agent-sdk version confirmed in the venv by the unified update
   // (null when the SDK sub-step failed — the pyz update may still be ok).
   sdkVersion?: string | null;
+  // openai-codex version, same contract. Load-bearing for the badge: the
+  // sidebar's `outdated` is agent OR claude-sdk OR CODEX (Sidebar §
+  // codexOutdatedOf), so a VPS stale only on codex kept its "⇪ update" lit
+  // after a successful update — the initiating tab patches from THIS response
+  // and had no codex field to patch with.
+  codexSdkVersion?: string | null;
   builtPyzSha: string;
   detail: string;
   // Non-fatal sub-step failures on an ok update ("sdk upgrade failed: …",

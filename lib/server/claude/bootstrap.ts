@@ -6,6 +6,9 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { sshExec, openSshSession, closeSshSession, type SshResult, type SshSession } from './sshExec';
 import { parseVerifyOutput, isVenvPython } from './verifyParse';
+// Live mirror of the vps-row persists below (no cycle: sessionOps imports
+// neither bootstrap nor agentUpdate).
+import { emitGlobalVpsStatus } from '../agent/sessionOps';
 import {
   AGENT_DIR_NAME,
   AGENT_DIR_TILDE,
@@ -1058,6 +1061,16 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
       ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
+    // Mirror onto the live bus: the install SSE only reaches the tab that
+    // launched it, so without this every OTHER tab/device keeps "not
+    // installed" over a freshly bootstrapped VPS until F5.
+    emitGlobalVpsStatus(vps.id, 'ok', {
+      agentVersion: pingR.version ?? null,
+      agentPyzSha: pingR.pyzSha ?? null,
+      agentLastError: null,
+      ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
+      ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
+    });
   } catch {}
 
   // Phase 5: check claude login (warn-only).
@@ -1094,6 +1107,12 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000),
       ...(codexLoggedIn !== null ? { codexLoggedIn: codexLoggedIn ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
+    // Same mirror as above — this is what hides the "claude login" button on
+    // the other devices once the bootstrap proved the VPS is signed in.
+    emitGlobalVpsStatus(vps.id, 'ok', {
+      claudeLoggedIn: isLoggedIn ? 1 : 0,
+      ...(codexLoggedIn !== null ? { codexLoggedIn: codexLoggedIn ? 1 : 0 } : {}),
+    });
   } catch {}
   if (isLoggedIn) {
     yield { phase: 'check_login', status: 'ok' };

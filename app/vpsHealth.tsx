@@ -79,7 +79,10 @@ function lastContactSuffix(v: Vps): string {
 
 export function diagnoseVps(
   v: Vps,
-  opts?: { builtAgentVersion?: string | null; sdkLatestVersion?: string | null },
+  // codexLatestVersion completes the trio: the sidebar's "⇪ update" ORs agent,
+  // claude-sdk AND codex, so leaving codex out here made the health chip say
+  // "agent ✓" beside a lit update button on the very same VPS.
+  opts?: { builtAgentVersion?: string | null; sdkLatestVersion?: string | null; codexLatestVersion?: string | null },
 ): VpsHealth {
   const status = ((v as any).agentStatus as string | undefined) ?? 'unknown';
   const { code, detail } = parseAgentLastError(v);
@@ -127,10 +130,12 @@ export function diagnoseVps(
     const rel = agentBuildRelation(agentVersion, opts?.builtAgentVersion ?? null);
     const pyzOutdated = rel === 'outdated';
     const sdkOutdated = isVersionOutdated(sdkVersion, opts?.sdkLatestVersion ?? null);
-    if (pyzOutdated || sdkOutdated) {
+    const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
+    const codexOutdated = isVersionOutdated(codexSdkVersion, opts?.codexLatestVersion ?? null);
+    if (pyzOutdated || sdkOutdated || codexOutdated) {
       axes.push({
         key: 'agent', state: 'warn', label: 'agent ⇪',
-        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${pyzOutdated ? ` (agent v${agentVersion} → v${opts?.builtAgentVersion})` : ''}${sdkOutdated && sdkVersion ? ` (sdk ${sdkVersion} → ${opts?.sdkLatestVersion})` : ''}`,
+        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${pyzOutdated ? ` (agent v${agentVersion} → v${opts?.builtAgentVersion})` : ''}${sdkOutdated && sdkVersion ? ` (sdk ${sdkVersion} → ${opts?.sdkLatestVersion})` : ''}${codexOutdated && codexSdkVersion ? ` (codex ${codexSdkVersion} → ${opts?.codexLatestVersion})` : ''}`,
         fixes: [{ action: 'update', label: '⇪ update', title: 'redeploy the agent + update the SDKs', primary: false }],
       });
     } else if (rel === 'ahead') {

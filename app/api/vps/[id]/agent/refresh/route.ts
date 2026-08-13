@@ -6,6 +6,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { ensureAgentRunning } from '@/lib/server/claude/bootstrap';
+import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 
 export const runtime = 'nodejs';
@@ -93,6 +94,13 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   try {
     db.update(vpsTable).set({ agentStatus: status, agentLastError: lastError }).where(eq(vpsTable.id, v.id)).run();
   } catch {}
+  // Mirror the persist onto the live bus — every DB write of agentStatus owes
+  // the browsers one (the success path gets it free from the hello emit, this
+  // one had nothing). Without it a refresh that FAILS only reaches the tab
+  // that clicked: everyone else keeps a green badge over a dead agent until
+  // F5. Status+reason only — no version keys, so the no-clobber contract
+  // leaves whatever version we last knew intact.
+  try { emitGlobalVpsStatus(v.id, status as 'ok' | 'missing' | 'error', { agentLastError: lastError }); } catch {}
   return NextResponse.json({
     ok: false,
     agentStatus: status,

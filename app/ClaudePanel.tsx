@@ -752,6 +752,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               agentVersion: r?.newVersion ?? v.agentVersion,
               agentPyzSha: r?.newPyzSha ?? v.agentPyzSha,
               sdkVersion: r?.sdkVersion ?? v.sdkVersion,
+              // Codex too, or a VPS stale ONLY on the codex axis keeps the
+              // badge its own update just cleared (the sidebar ORs the three).
+              codexSdkVersion: (r as any)?.codexSdkVersion ?? (v as any).codexSdkVersion,
               agentStatus: 'ok',
             } as Vps)
           : v
@@ -1950,6 +1953,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           liveVps={vpsList}
           builtAgentVersion={buildMeta.builtAgentVersion}
           sdkLatestVersion={buildMeta.sdkLatestVersion}
+          codexLatestVersion={buildMeta.codexLatestVersion}
         />
       )}
 

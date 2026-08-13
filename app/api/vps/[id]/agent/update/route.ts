@@ -37,6 +37,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     newVersion: result.newVersion ?? null,
     newPyzSha: result.newPyzSha ?? null,
     sdkVersion: result.sdkVersion ?? null,
+    // Codex too — the badge ORs all three axes (§ UpdateVpsAgentResponse).
+    codexSdkVersion: result.codexSdkVersion ?? null,
     builtPyzSha: getBuiltPyzSha(),
     detail: result.detail,
     // Partial failures (pip sub-steps are non-fatal): the client toasts these
