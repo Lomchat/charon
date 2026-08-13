@@ -117,7 +117,7 @@ export function autoConnectAgentsIfNeeded(): void {
       active = db.select({ id: claudeSessions.id, vpsId: claudeSessions.vpsId })
         .from(claudeSessions)
         .where(or(
-          inArray(claudeSessions.status, ['active', 'thinking', 'starting']),
+          inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'background']),
           // Durable POST-UPDATE resume intent (§14.62): an agent update put
           // these to sleep and the fire-and-forget resume died with a hub
           // restart — finish the job at boot. (sleepRequested can't coexist

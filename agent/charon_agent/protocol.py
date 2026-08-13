@@ -143,6 +143,12 @@ METHODS = {
     "send_input",
     "interrupt",
     "force_stop",
+    # Stop ONE background task without touching the session (agent >= 0.35.0).
+    # The SDK's `stop_task` control request - unlike interrupt/force_stop it
+    # targets a single task_id, so the sub-agent dies and the main agent keeps
+    # working. Terminal state arrives on the normal stream as a bg_task with a
+    # terminal status. Claude-kind only; Codex has no equivalent.
+    "stop_bg_task",
     "set_permission_mode",
     "set_model",
     "set_effort",

@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, eq, gt, inArray, like } from 'drizzle-orm';
+import { and, eq, gt, inArray } from 'drizzle-orm';
 import { db, vps as vpsTable, claudeSessions, claudeSessionMessages, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
@@ -9,6 +9,7 @@ import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPy
 import { runAgentUpdateFlow } from './agentUpdate';
 import { sendPlainToTelegram } from './telegram';
 import { sendPushToAll } from './webPush';
+import { runningBgTasksFromDb, pruneStaleBgTasks } from './bgTaskState';
 
 /**
  * Fleet-wide `claude-agent-sdk` + `openai-codex` auto-update tick.
@@ -87,39 +88,12 @@ export function armSdkAutoUpdate(): void {
 //      user is actively working this VPS, don't restart under their feet
 //      even between turns.
 const QUIET_WINDOW_S = 30 * 60;
-// Ignore "running" bg tasks whose start is older than this — a lost
-// 'finished' event would otherwise wedge the VPS as forever-busy.
-const BG_TASK_MAX_AGE_S = 24 * 60 * 60;
-
-/** True if any bg task of this session looks currently RUNNING (per the
- *  persisted bg_task event rows, same semantics as app/bgTasks.ts). */
+/** True if any bg task of this session looks currently RUNNING. The reducer
+ *  (and the max-age rule that keeps a lost `finished` from wedging the VPS as
+ *  forever-busy) is shared with the session's own `background` status — the two
+ *  must not drift, cf. bgTaskState.ts. */
 function hasRunningBgTask(sessionId: string, nowS: number): boolean {
-  const rows = db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt })
-    .from(claudeSessionMessages)
-    .where(and(
-      eq(claudeSessionMessages.sessionId, sessionId),
-      eq(claudeSessionMessages.role, 'event'),
-      like(claudeSessionMessages.content, '%"bg_task"%'),
-    ))
-    .orderBy(asc(claudeSessionMessages.id))
-    .all();
-  const running = new Map<string, number>(); // taskId → startedAt
-  for (const r of rows) {
-    try {
-      const ev = JSON.parse(r.content);
-      if (ev?.type !== 'bg_task' || !ev.taskId) continue;
-      if (ev.kind === 'finished'
-          || (ev.kind === 'updated' && /kill|fail|complet|cancel|abort|done|success/i.test(ev.status ?? ''))) {
-        running.delete(ev.taskId);
-      } else {
-        if (!running.has(ev.taskId)) running.set(ev.taskId, r.createdAt);
-      }
-    } catch {}
-  }
-  for (const startedAt of running.values()) {
-    if (nowS - startedAt < BG_TASK_MAX_AGE_S) return true;
-  }
-  return false;
+  return pruneStaleBgTasks(runningBgTasksFromDb(sessionId), nowS);
 }
 
 function isVpsBusy(vpsId: string): boolean {
@@ -151,7 +125,7 @@ function isVpsBusy(vpsId: string): boolean {
     .from(claudeSessions)
     .where(and(
       eq(claudeSessions.vpsId, vpsId),
-      inArray(claudeSessions.status, ['active', 'failed']),
+      inArray(claudeSessions.status, ['active', 'failed', 'background']),
     ))
     .all();
   if (live.length === 0) return false;

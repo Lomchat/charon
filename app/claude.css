@@ -16,6 +16,9 @@
   --crimson:         #d8757f;  /* danger / kill / error         */
   --crimson-deep:    #944f57;
   --lavender:        #a8b8e0;  /* thinking / plan / tool glyph  */
+  --violet-bright:   #ac8fe0;  /* idle, background tasks running (§14.91)
+                                  — a real purple, NOT --lavender: that one is
+                                  bluish and already means starting/thinking  */
   --shadow:          #181b24;  /* very dark background for inputs */
   --display:         'Inter', system-ui, -apple-system, sans-serif;
   --body:            'Inter', system-ui, -apple-system, sans-serif;
@@ -164,6 +167,9 @@
 .status-orange-pulse { color: #f0a060; animation: cpulse 0.9s infinite ease-in-out; }
 .status-gray        { color: var(--parchment-soft); }
 .status-red         { color: var(--crimson); }
+/* Idle, but background tasks are still running (§14.91). Violet is the one
+   hue no other state uses, so it can never be misread as ready/working/error. */
+.status-violet-pulse { color: var(--violet-bright); animation: cpulse 1.6s infinite ease-in-out; }
 @keyframes cpulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
 
 /* ── Sidebar ── */
@@ -412,6 +418,7 @@
 }
 .dot-gray        { color: var(--parchment-soft); opacity: 0.5; }
 .dot-red         { color: var(--crimson); }
+.dot-violet-pulse { color: var(--violet-bright); animation: cpulse 1.6s infinite ease-in-out; }
 
 /* ══ V1 sidebar: boxed-VPS folder tree (cs-* namespace) ══════════════════════
    Replaces the old path-tree sidebar. Shows only VPSes that have a
@@ -666,6 +673,7 @@
 .cs-state.failed, .cs-state.error { color: var(--crimson); border-color: var(--crimson-deep); }
 .cs-state.thinking, .cs-state.starting { color: var(--gold-bright); }
 .cs-state.waiting { color: #f0a060; border-color: rgba(240,160,96,0.5); }
+.cs-state.background { color: var(--violet-bright); border-color: rgba(178,148,232,0.45); }
 .cs-card-preview {
   font-size: 11.5px; line-height: 1.4; color: var(--parchment); opacity: 0.75;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -1290,8 +1298,20 @@
   overflow-y: auto; overflow-x: hidden;
   padding: 18px 26px;
   /* column-reverse: DOM[0] = visual bottom, scrollTop=0 = truly at the bottom.
-     The browser natively handles "stick to bottom" + scroll anchoring. */
+     The layout itself is what keeps the view stable — the bottom origin means
+     content appended at either end doesn't move what you're reading. */
   display: flex; flex-direction: column-reverse; gap: 10px;
+  /* ⚠ Load-bearing, do not drop (CLAUDE.md §14.92). Scroll anchoring computes
+     its correction in the BLOCK FLOW direction, against the block-start edge of
+     the scrolling content (css-scroll-anchoring-1 §2.2) — and column-reverse
+     flips the scroll ORIGIN, not block flow. So the browser "corrects" for a
+     shift the bottom origin already absorbed, i.e. it corrects twice. Measured
+     (scripts/scroll-anchor-test.mjs): a bubble growing BELOW the reader — a
+     turn ending and swapping plain text for markdown, an image landing —
+     shoved the scroll position 292px; with anchoring off, 0px. Sticking to the
+     bottom is unaffected either way, because that comes from the origin, not
+     from anchoring. */
+  overflow-anchor: none;
   overscroll-behavior: contain;
   /* Override the body's global user-select: none so you can
      copy text / code blocks from the chat. */
@@ -1564,6 +1584,23 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* "stop this task, not the session" (§14.91). Deliberately quiet — it sits on
+   every running row, and the common case is honest work you must not kill by
+   reflex; it only warms up on hover. `bgtask-time` owns the margin-left:auto,
+   so this stays pinned right after it. */
+.bgtask-kill {
+  margin-left: 8px; flex: none; font-size: 9.5px; letter-spacing: 0.04em;
+  padding: 1px 7px; border-radius: 10px; cursor: pointer;
+  background: transparent; color: var(--parchment-soft); opacity: 0.55;
+  border: 1px solid rgba(230, 122, 122, 0.35);
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.bgtask-kill:hover:not(:disabled) {
+  opacity: 1; color: #e67a7a; background: rgba(230, 122, 122, 0.12);
+}
+.bgtask-kill:disabled { cursor: default; opacity: 0.4; }
+.bgtask-killerr { font-size: 10.5px; margin-top: 5px; color: #e67a7a; }
+
 /* Workflow-tool run badge + live token counter (bg_task_progress, §14.54). */
 .bgtask-badge.workflow {
   font-size: 9.5px; letter-spacing: 0.02em; padding: 1px 6px; border-radius: 10px;
@@ -1671,6 +1708,17 @@
   background: currentColor;
 }
 .bubble.tool-use.running { border-left: 2px solid var(--gold-bright); }
+/* The tool never returned and never will: its CLI died under it (restart,
+   sleep, kill — §14.91). Same slot as "running", but static and muted — a
+   pulsing badge on dead work is what made a restarted session look busy. */
+.bubble.tool-use .tu-orphan {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--parchment); opacity: 0.55;
+  font-family: var(--display); font-size: 9px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  cursor: help;
+}
+.bubble.tool-use.interrupted { border-left: 2px solid rgba(212, 196, 168, 0.25); }
 .bubble.tool-use .tu-detail {
   font-family: var(--mono); font-size: 11px; color: var(--parchment);
   white-space: pre-wrap; max-height: 280px; overflow: auto;
@@ -2116,6 +2164,15 @@
   font-family: var(--body); font-size: 13px; line-height: 1.55;
   color: var(--parchment-soft); margin: 0 0 20px;
 }
+/* The things about to be lost, named. Scrolls rather than pushing the buttons
+   off the screen: closing a machine can put a dozen files in here. */
+.confirm-list {
+  list-style: none; margin: 0 0 13px; padding: 0 0 0 2px;
+  max-height: 132px; overflow-y: auto;
+  font-family: var(--mono); font-size: 11px; color: var(--gold-bright);
+}
+.confirm-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.confirm-list li::before { content: '● '; color: var(--crimson); }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .confirm-btn {
   padding: 9px 16px; border-radius: 8px; cursor: pointer;
@@ -4552,7 +4609,12 @@
 }
 
 /* ── Explorer tree (§14.77) ──────────────────────────────────────────────── */
-.tree-tab { display: flex; flex-direction: column; gap: 6px; }
+/* Fills the scroller even when the listing is three rows long: the blank space
+   under the tree is where you right-click to create something at the root, and
+   a container sized to its content hands that click to the browser's own menu
+   instead. `.tt-rows` takes the slack so the empty area belongs to the list. */
+.tree-tab { display: flex; flex-direction: column; gap: 6px; min-height: 100%; }
+.tree-tab > .tt-rows, .tree-tab > .tp-empty { flex: 1 1 auto; }
 .tt-head {
   display: flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: 10.5px; color: var(--gold-bright);
@@ -4996,24 +5058,33 @@
 .state-starting .tb-dot { background: var(--lavender, #8ab4e4); }
 .state-waiting .tb-dot { background: #e2c08d; box-shadow: 0 0 5px rgba(226,192,141,0.8); }
 .state-failed .tb-dot { background: #e0736b; }
+.state-background .tb-dot { background: var(--violet-bright); animation: tb-pulse 2s ease-in-out infinite; }
 .state-sleeping .tb-dot { background: rgba(230,225,210,0.25); }
 @keyframes tb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-/* Sizes: the only thing that separates the rows. */
-.tb-vps  { padding: 5px 11px; font-size: 10.5px; letter-spacing: 0.05em; }
-.tb-path { padding: 3px 10px; font-size: 10px; }
+/* Sizes: the only thing that separates the rows. Every row is
+   `tb-item > tb-main + tb-close`, so the padding lives on the label button
+   and the item only keeps its left inset. */
+.tb-vps  { padding: 0 0 0 11px; font-size: 10.5px; letter-spacing: 0.05em; }
+.tb-path { padding: 0 0 0 10px; font-size: 10px; }
 .tb-tab  { padding: 0 0 0 9px; font-size: 10.5px; }
-.tb-tab .tb-main {
+.tb-main {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; border: 0; color: inherit; cursor: pointer;
   font: inherit; padding: 5px 2px 5px 0; min-width: 0;
 }
-.tb-tab .tb-close {
+.tb-path .tb-main { padding: 3px 2px 3px 0; }
+.tb-close {
   flex: none; background: transparent; border: 0; cursor: pointer;
   color: transparent; font-size: 10px; padding: 5px 7px 5px 3px;
 }
-.tb-tab:hover .tb-close { color: var(--parchment-soft); }
-.tb-tab .tb-close:hover { color: #e0736b !important; }
+.tb-path .tb-close { padding: 3px 7px 3px 3px; }
+/* Hidden until the item is hovered — three permanent ✕ per row is a lot of
+   noise for an action taken once in a while. A coarse pointer has no hover,
+   so there it stays visible: the tablet has no other way to close a group. */
+.tb-item:hover .tb-close { color: var(--parchment-soft); }
+.tb-close:hover { color: #e0736b !important; }
+@media (hover: none) { .tb-close { color: var(--parchment-soft); } }
 /* A preview is italic — provisional, not broken. */
 .tb-tab.temporary .tb-name { font-style: italic; opacity: 0.9; }
 .tb-tab.orphan .tb-name { opacity: 0.45; text-decoration: line-through; }
@@ -5067,10 +5138,9 @@
   overflow-wrap: anywhere;
 }
 
-/* Completed history can become very tall after pagination. Let the browser
-   skip layout/paint for off-screen bubbles while retaining a stable estimated
-   height for scroll anchoring. The live bubble stays fully laid out. */
-.bubble:not(.streaming) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
-}
+/* ⚠ `content-visibility: auto` on chat bubbles is REMOVED and must not come
+   back — it is what made scrolling back through history crawl and snap
+   backwards (CLAUDE.md §14.92). It was here to keep a long transcript cheap;
+   measured against 2334 bubbles it does not (scripts/scroll-perf.mjs), because
+   the rendering work it defers lands DURING the scroll it was meant to protect.
+   Bubbles are plain flow content on purpose. */

@@ -307,6 +307,8 @@ export type AgentMethodName =
   | 'send_input'
   | 'interrupt'
   | 'force_stop'
+  // Stop ONE background task, leaving the session running (agent >= 0.35.0).
+  | 'stop_bg_task'
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'

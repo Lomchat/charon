@@ -28,10 +28,13 @@ import AgentLogo from './AgentLogo';
 // something is a preview, and the next preview in that folder replaces it.
 // Double-click (or any real interaction) pins.
 
-export type TabState = 'active' | 'thinking' | 'waiting' | 'starting' | 'failed' | 'sleeping';
+export type TabState =
+  | 'active' | 'thinking' | 'waiting' | 'starting' | 'failed' | 'background' | 'sleeping';
 
+// 'background' outranks 'active': a folder holding one session that still has
+// tasks running is not a folder where everything is done (§14.91).
 const STATE_PRIORITY: Record<TabState, number> = {
-  waiting: 5, failed: 4, thinking: 3, starting: 2, active: 1, sleeping: 0,
+  waiting: 6, failed: 5, thinking: 4, starting: 3, background: 2, active: 1, sleeping: 0,
 };
 
 /** A tab plus everything the strip needs to draw it. */
@@ -86,9 +89,14 @@ export function resolveTabs({
     const dirty = dirtyIds.has(t.id);
     if (t.kind === 'session') {
       const s = sessionById.get(t.ref);
+      // liveStatus first: it is patched from the LOW_VOLUME status bus the
+      // moment anything moves, while `status` is the DB row and only refreshes
+      // with the list poll — the strip was showing a minute-old dot. Anything
+      // outside TabState (e.g. the client-only 'reconnecting') falls back to
+      // 'active' just below.
       const state: TabState = !s ? 'sleeping'
         : waiting.has(s.id) ? 'waiting'
-        : (s.status as TabState) ?? 'active';
+        : ((s.liveStatus ?? s.status) as TabState) ?? 'active';
       return {
         ...t, dirty, orphan: !s, live: true,
         label: s?.name || '(unnamed)',
@@ -152,6 +160,11 @@ type Props = {
   onTabClick: (tab: ResolvedTab) => void;
   onTabDoubleClick: (tab: ResolvedTab) => void;
   onTabClose: (tab: ResolvedTab) => void;
+  /** Close every tab of a machine / of a folder. A group is a view, so this
+   *  closes tabs and nothing else — the sessions and shells underneath keep
+   *  running and stay in the sidebar. */
+  onVpsClose: (vpsId: string, tabs: ResolvedTab[]) => void;
+  onPathClose: (vpsId: string, path: string, tabs: ResolvedTab[]) => void;
   onTabContext: (e: React.MouseEvent, tab: ResolvedTab) => void;
   onNewSession: (vpsId: string, path: string, agentKind: AgentKind) => void;
   onNewShell: (vpsId: string, path: string) => void;
@@ -167,6 +180,7 @@ type Props = {
 export default function TabBar({
   resolved, vpsList, vpsFolders, activeVpsId, activePath, activeTabId,
   onVpsClick, onPathClick, onTabClick, onTabDoubleClick, onTabClose, onTabContext,
+  onVpsClose, onPathClose,
   onNewSession, onNewShell, newSessionDisabledReason,
   onReorderVps, onReorderPaths, onReorderTabs,
 }: Props) {
@@ -190,7 +204,7 @@ export default function TabBar({
     const vpsRows = [...byVps.entries()]
       .map(([vpsId, list]) => ({
         vps: vpsList.find((v) => v.id === vpsId) ?? null,
-        vpsId, count: list.length, state: rollUp(list),
+        vpsId, tabs: list, count: list.length, state: rollUp(list),
         pos: Math.min(...list.map((t) => t.vpsPos)),
       }))
       .filter((r) => r.vps)
@@ -231,35 +245,57 @@ export default function TabBar({
           emphasis. They are the same kind of control at three scales, and
           giving row 2 its own look made it read as a filter bar rather than as
           part of the hierarchy. */}
+      {/* Rows 1 and 2 close too, and closing one closes everything under it.
+          Same shape as row 3 for that reason: the item is a DIV holding a
+          `tb-main` button and a `tb-close` button — a button inside a button
+          is invalid HTML, and the close has to be its own click target. */}
       <div className="tab-row tab-row-vps">
         {vpsRows.map((r) => (
-          <button
+          <div
             key={r.vpsId}
             className={`tb-item tb-vps${r.vpsId === activeVpsId ? ' selected' : ''} state-${r.state}`}
-            onClick={() => onVpsClick(r.vpsId)}
-            title={`${r.vps!.name}\n${r.count} open · drag to reorder`}
             {...vpsDnd.itemProps(r.vpsId)}
           >
-            <span className="tb-dot" />
-            <span className="tb-name">{r.vps!.name}</span>
-            <span className="tb-count">{r.count}</span>
-          </button>
+            <button
+              className="tb-main"
+              onClick={() => onVpsClick(r.vpsId)}
+              title={`${r.vps!.name}\n${r.count} open · drag to reorder`}
+            >
+              <span className="tb-dot" />
+              <span className="tb-name">{r.vps!.name}</span>
+              <span className="tb-count">{r.count}</span>
+            </button>
+            <button
+              className="tb-close"
+              onClick={(e) => { e.stopPropagation(); onVpsClose(r.vpsId, r.tabs); }}
+              title={`close all ${r.count} tabs on ${r.vps!.name} (nothing stops running)`}
+            >✕</button>
+          </div>
         ))}
       </div>
 
       <div className="tab-row tab-row-paths">
         {pathRows.map((g) => (
-          <button
+          <div
             key={g.path}
             className={`tb-item tb-path${g.path === activePath ? ' selected' : ''} state-${g.state}`}
-            onClick={() => onPathClick(g.vpsId, g.path)}
-            title={`${g.path || 'no folder'}\n${g.tabs.length} open · drag to reorder`}
             {...pathDnd.itemProps(g.path)}
           >
-            <span className="tb-dot" />
-            <span className="tb-name">{g.path ? (g.path.split('/').filter(Boolean).pop() || g.path) : '—'}</span>
-            <span className="tb-count">{g.tabs.length}</span>
-          </button>
+            <button
+              className="tb-main"
+              onClick={() => onPathClick(g.vpsId, g.path)}
+              title={`${g.path || 'no folder'}\n${g.tabs.length} open · drag to reorder`}
+            >
+              <span className="tb-dot" />
+              <span className="tb-name">{g.path ? (g.path.split('/').filter(Boolean).pop() || g.path) : '—'}</span>
+              <span className="tb-count">{g.tabs.length}</span>
+            </button>
+            <button
+              className="tb-close"
+              onClick={(e) => { e.stopPropagation(); onPathClose(g.vpsId, g.path, g.tabs); }}
+              title={`close the ${g.tabs.length} tabs of this folder (nothing stops running)`}
+            >✕</button>
+          </div>
         ))}
       </div>
 

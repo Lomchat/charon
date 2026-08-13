@@ -47,7 +47,7 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       .from(claudeSessions)
       .where(and(
         eq(claudeSessions.vpsId, vps.id),
-        inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed']),
+        inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
         eq(claudeSessions.sleepRequested, 0),
       ))
       .all()

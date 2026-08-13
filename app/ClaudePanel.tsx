@@ -11,7 +11,8 @@ import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
 import type { EditSnapshot } from './sessionTypes';
 import {
   useTabs, hydrateTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
-  pinTab as pinWorkspaceTab, closeTabGuarded, reorderTabs as reorderWorkspaceTabs,
+  pinTab as pinWorkspaceTab, closeTab as closeWorkspaceTab,
+  closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import ConfirmModal from './ConfirmModal';
@@ -27,6 +28,7 @@ import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
+import { requestChatFocus } from './focusChat';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
@@ -81,6 +83,7 @@ const STATUS_LABEL: Record<WorkerStatus, string> = {
   active: 'active',
   thinking: 'thinking',
   failed: 'error',
+  background: 'background',
   sleeping: 'sleeping',
   killed: 'killed',
   error: 'error',
@@ -91,6 +94,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
   active: 'green',
   thinking: 'amber-pulse',
   failed: 'red',
+  background: 'violet-pulse',
   sleeping: 'gray',
   killed: 'gray',
   error: 'red',
@@ -169,6 +173,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // "Delete permanently" confirmation — styled modal instead of the native
   // confirm(). Holds the target session while the dialog is open.
   const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
+  // "You are about to discard an unsaved buffer" — the ONLY close that asks.
+  // `run` is the close that was requested (one tab, a folder, a machine), held
+  // until the answer comes back so the dialog can't do a different thing than
+  // the ✕ that opened it.
+  const [closeAsk, setCloseAsk] = useState<
+    { what: string; count: number; dirty: ResolvedTab[]; run: () => Promise<void> } | null
+  >(null);
   // Interactive claude login console
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
 
@@ -533,6 +544,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    */
   function applyCreatedSession(c: { id: string; vpsId: string; cwd: string }) {
     openEntityTab('session', c.id, c.vpsId, c.cwd, true);
+    // …and put the caret in its message box: creating a session is an intent to
+    // talk, and the wizard already had the keyboard. Parked, because the input
+    // bar mounts a beat later with the pane (app/focusChat.ts).
+    requestChatFocus(c.id);
     refreshSessions();
     closeDrawers();
   }
@@ -956,12 +971,41 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     void pinWorkspaceTab(t.id);
   }
   /**
-   * Closing a tab is a VIEW operation: the session keeps running and stays in
-   * the sidebar. A tab with unsaved edits asks first — the buffer only exists
-   * in this browser.
+   * Closing is a VIEW operation at all three scales: one tab, a whole folder
+   * (row 2) or a whole machine (row 1). Sessions and shells keep running and
+   * stay in the sidebar — the only thing that can actually be LOST is an
+   * unsaved editor buffer, which lives in this browser and nowhere else, so
+   * that is the one case that asks first (`<ConfirmModal>`, §14.80).
    */
+  function closeTabsOrAsk(what: string, targets: ResolvedTab[], run: () => Promise<void>) {
+    if (targets.length === 0) return;
+    const dirty = targets.filter((t) => t.dirty);
+    if (dirty.length === 0) { void run(); return; }
+    setCloseAsk({ what, count: targets.length, dirty, run });
+  }
   function onTabCloseClick(t: ResolvedTab) {
-    void closeTabGuarded(t.id, t.label);
+    closeTabsOrAsk(t.label, [t], () => closeWorkspaceTab(t.id));
+  }
+  // Both group closes drop the browse override when it pointed at what was
+  // just closed — the server picks the next active tab, and an override left
+  // behind would hold the strip on a machine or folder with nothing in it.
+  // `wasBrowsing` is read when the ✕ is pressed, which is the truth: the
+  // dialog is modal, so nothing can move the selection while it is open.
+  function onPathRowClose(vpsId: string, path: string, tabs: ResolvedTab[]) {
+    const name = path ? (path.split('/').filter(Boolean).pop() || path) : 'no folder';
+    const wasBrowsing = browseVpsId === vpsId && browsePath === path;
+    closeTabsOrAsk(name, tabs, async () => {
+      await closeWorkspaceTabsWhere({ vpsId, path });
+      if (wasBrowsing) setBrowsePath(null);
+    });
+  }
+  function onVpsRowClose(vpsId: string, tabs: ResolvedTab[]) {
+    const name = vpsList.find((v) => v.id === vpsId)?.name ?? 'this machine';
+    const wasBrowsing = browseVpsId === vpsId;
+    closeTabsOrAsk(name, tabs, async () => {
+      await closeWorkspaceTabsWhere({ vpsId });
+      if (wasBrowsing) { setBrowseVpsId(null); setBrowsePath(null); }
+    });
   }
 
   /**
@@ -1658,6 +1702,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onTabClick={onTabClick}
         onTabDoubleClick={onTabDoubleClick}
         onTabClose={onTabCloseClick}
+        onVpsClose={onVpsRowClose}
+        onPathClose={onPathRowClose}
         onTabContext={onTabContext}
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
@@ -1937,7 +1983,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
           onSleep={
-            ['active', 'thinking', 'starting', 'failed'].includes(ctxMenu.session.status)
+            ['active', 'thinking', 'starting', 'failed', 'background'].includes(ctxMenu.session.status)
               ? () => sleepOne(ctxMenu.session.id)
               : undefined
           }
@@ -1988,6 +2034,36 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onKill={() => killInstallOne(ctxMenu.install.id)}
           onClose={() => setCtxMenu(null)}
         />
+      )}
+
+      {closeAsk && (
+        <ConfirmModal
+          title={closeAsk.dirty.length === 1 ? 'Unsaved changes' : `${closeAsk.dirty.length} files with unsaved changes`}
+          confirmLabel="close and discard"
+          busyLabel="closing…"
+          onConfirm={async () => {
+            await closeAsk.run();
+            setCloseAsk(null);
+          }}
+          onClose={() => setCloseAsk(null)}
+        >
+          <div className="confirm-target">
+            <span className="ct-name">{closeAsk.what}</span>
+            <span className="ct-sub">
+              {closeAsk.count === 1 ? '1 tab' : `${closeAsk.count} tabs`} · nothing stops running
+            </span>
+          </div>
+          <ul className="confirm-list">
+            {closeAsk.dirty.map((t) => <li key={t.id}>{t.ref || t.label}</li>)}
+          </ul>
+          <p className="confirm-text">
+            {closeAsk.dirty.length === 1
+              ? 'This file has edits that were never saved. They exist only in this browser, so closing the tab throws them away — cancel and press Ctrl+S to keep them.'
+              : 'These files have edits that were never saved. They exist only in this browser, so closing throws them away — cancel and press Ctrl+S in each to keep them.'}
+            {closeAsk.count > closeAsk.dirty.length
+              && ' The other tabs just close: sessions and shells keep running and stay in the sidebar.'}
+          </p>
+        </ConfirmModal>
       )}
 
       {confirmDelete && (

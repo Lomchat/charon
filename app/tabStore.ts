@@ -227,23 +227,14 @@ export function setTabDirty(id: string, isDirty: boolean) {
 }
 export const isTabDirty = (id: string) => state.dirty.has(id);
 export const hasDirtyTabs = () => state.dirty.size > 0;
-
 /**
  * A dirty tab must not vanish silently — the buffer only exists in this
- * browser, so closing the tab is the moment the work is lost.
+ * browser, so closing the tab is the moment the work is lost. The ASKING is
+ * the caller's (ClaudePanel renders `<ConfirmModal>`; a store can't render,
+ * and `confirm()` is out for the reasons in §14.80), this only answers
+ * "would anything be lost". Closing then discards by construction: the buffer
+ * dies with the editor that owned it.
  */
-export async function closeTabGuarded(id: string, label: string): Promise<boolean> {
-  if (state.dirty.has(id)) {
-    const ok = window.confirm(
-      `"${label}" has unsaved changes.\n\n`
-      + 'They only exist in this browser — closing the tab discards them. '
-      + 'Save with Ctrl+S first if you want to keep them.\n\nClose anyway?',
-    );
-    if (!ok) return false;
-  }
-  await closeTab(id);
-  return true;
-}
 
 // The browser-level backstop for the same thing. Registered once.
 if (typeof window !== 'undefined') {

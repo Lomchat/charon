@@ -331,7 +331,13 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
       {menu && (
         <>
           <div className="tt-menu-scrim" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
-          <div className="tt-menu" style={{ left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 250) }}>
+          {/* Clamped by the menu's OWN height: the root menu is two entries and
+              flipping it 250px up the screen would leave it nowhere near the
+              click that opened it. */}
+          <div className="tt-menu" style={{
+            left: Math.min(menu.x, window.innerWidth - 210),
+            top: Math.min(menu.y, window.innerHeight - (menu.row ? 250 : 120)),
+          }}>
             {/* What the menu acts on. Without it the row-less menu (right-click
                 on the empty space below the rows) gave no clue that "New File"
                 lands in the ROOT and not in whatever was last clicked. */}

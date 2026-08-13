@@ -380,6 +380,31 @@ class AgentSession:
         except Exception as e:
             self._emit("error", msg=f"interrupt: {e}")
 
+    async def stop_bg_task(self, task_id: str) -> None:
+        """Stop ONE background task, leaving the session itself alone.
+
+        This is the SDK's `stop_task` control request, NOT `interrupt`: it
+        targets a single task_id and the turn/session keeps running. The whole
+        point of the button it backs is "kill the sub-task, not the agent".
+
+        The terminal state comes back through the NORMAL event stream, so the
+        hub needs no special-casing: the CLI answers with a `task_updated`
+        patch whose status is terminal (raw `killed`) and usually — but per the
+        SDK docs NOT always — a `task_notification` (`stopped`). That is
+        exactly why both hub-side reducers clear a task on a terminal status
+        from EITHER message (`app/bgTasks.ts § isTerminalBgStatus`); a kill
+        that only produced a `task_updated` would otherwise look like a
+        no-op forever.
+        """
+        if self._client is None:
+            raise RuntimeError("session is not running")
+        stop = getattr(self._client, "stop_task", None)
+        if stop is None:
+            # Older claude-agent-sdk: the control request doesn't exist. Say so
+            # rather than failing opaquely — the fix is a fleet SDK bump.
+            raise RuntimeError("claude-agent-sdk too old: no stop_task support")
+        await stop(task_id)
+
     async def set_permission_mode(self, mode: str) -> None:
         if mode not in ("normal", "acceptEdits", "auto", "plan"):
             mode = "normal"

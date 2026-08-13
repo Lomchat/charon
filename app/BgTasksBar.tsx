@@ -1,5 +1,7 @@
 'use client';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { api } from '@/lib/api';
+import { effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 
 // Per-sub-agent state glyphs for a Workflow run's fan-out (bg_task_progress).
@@ -52,11 +54,34 @@ function taskTitle(t: BgTask): string {
   return t.description || t.workflowName || t.command || t.taskId;
 }
 
-function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
+function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: string }) {
   const [open, setOpen] = useState(false);
   const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000));
+  // taskId → in-flight/failed kill. Pessimistic (§14.18): the row keeps saying
+  // "running" until the CLI's own terminal event arrives, because only the CLI
+  // knows whether the task actually died.
+  const [killing, setKilling] = useState<Record<string, 'pending' | string>>({});
 
-  const running = useMemo(() => tasks.filter((t) => t.status === 'running'), [tasks]);
+  const kill = useCallback(async (taskId: string) => {
+    setKilling((k) => ({ ...k, [taskId]: 'pending' }));
+    try {
+      await api.stopClaudeBgTask(sessionId, taskId);
+    } catch (e: any) {
+      setKilling((k) => ({ ...k, [taskId]: e?.message ?? 'failed' }));
+    }
+  }, [sessionId]);
+
+  // Age-capped view of the registry: a task running past the cap is `stale`,
+  // not live work (`effectiveBgStatus`). Recomputed off the 1s ticker, so a
+  // task that ages out while the bar is open stops claiming to be running.
+  const view = useMemo(
+    () => tasks.map((t) => ({ t, status: effectiveBgStatus(t, nowS) })),
+    [tasks, nowS],
+  );
+  const running = useMemo(
+    () => view.filter((v) => v.status === 'running').map((v) => v.t),
+    [view],
+  );
   const lastEndedAt = useMemo(
     () => tasks.reduce((m, t) => Math.max(m, t.endedAt ?? 0), 0),
     [tasks],
@@ -102,7 +127,7 @@ function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
             {isWorkflow(newest) && <span className="bgtask-badge workflow" aria-hidden>⚙</span>}
             {taskTitle(newest)}
             {newest.agents && newest.agents.length > 0 && ` · ${agentsDone(newest)}/${newest.agents.length} agents`}
-            {newest.status === 'running' && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
+            {running.length > 0 && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
           </span>
         )}
         <span className="bgtasks-more" aria-hidden>▸ details</span>
@@ -119,9 +144,10 @@ function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
               into the chat — no need to send a message.
             </p>
             <div className="bgtasks-list">
-              {tasks.map((t) => {
-                const meta = STATUS_META[t.status] ?? STATUS_META.stale;
+              {view.map(({ t, status }) => {
+                const meta = STATUS_META[status] ?? STATUS_META.stale;
                 const end = t.endedAt ?? nowS;
+                const kstate = killing[t.taskId];
                 return (
                   <div key={t.taskId} className={`bgtask-row ${meta.cls}`}>
                     <div className="bgtask-head">
@@ -133,12 +159,29 @@ function BgTasksBarImpl({ tasks }: { tasks: BgTask[] }) {
                       )}
                       <span className="bgtask-id" title={`task id: ${t.taskId}${t.taskType ? ` · type: ${t.taskType}` : ''}`}>{t.taskId}</span>
                       <span className="bgtask-time">
-                        {t.status === 'running'
+                        {status === 'running'
                           ? `running for ${fmtElapsed(t.startedAt, nowS)}`
                           : `${fmtElapsed(t.startedAt, end)} · ended ${new Date(end * 1000).toLocaleTimeString()}`}
                         {t.usage && (t.usage.tokens ?? 0) > 0 && <span className="bgtask-usage"> · ↑{t.usage.tokens} tok</span>}
                       </span>
+                      {status === 'running' && (
+                        // Kills the TASK, not the session — the agent keeps
+                        // working. The row stays "running" until the CLI's own
+                        // terminal event lands (§14.18).
+                        <button
+                          type="button"
+                          className="bgtask-kill"
+                          disabled={kstate === 'pending'}
+                          onClick={() => kill(t.taskId)}
+                          title="stop this background task — the session keeps running"
+                        >
+                          {kstate === 'pending' ? 'stopping…' : '⊘ stop'}
+                        </button>
+                      )}
                     </div>
+                    {kstate && kstate !== 'pending' && (
+                      <div className="bgtask-killerr">could not stop: {kstate}</div>
+                    )}
                     {t.description && <div className="bgtask-desc">{t.description}</div>}
                     {t.command && <pre className="bgtask-cmd">{t.command}</pre>}
                     {t.summary && <div className="bgtask-summary">{t.summary}</div>}

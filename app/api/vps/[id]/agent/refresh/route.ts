@@ -83,6 +83,13 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   // (ssh-auth / ssh-unreachable / daemon-down — cf. schema.ts agentLastError).
   const status = client.lastClassified ?? 'error';
   const lastError = status === 'error' ? (client.lastErrorDetail ?? null) : null;
+  // Arm the hooks on the FAILING path too. `tryConnect` dropped the old client,
+  // so this fresh one is the pool's — and it keeps retrying on its own backoff.
+  // Left hook-less it would eventually connect with nothing re-attaching the
+  // sessions' streams: the exact "agent fine, chat silent" trap of §14.51/53,
+  // whose rule is that EVERY dropAgentClient caller re-arms, failure included.
+  // Idempotent per client instance (WeakSet), so this costs nothing.
+  try { armAgentClientHooks(client, v.id); } catch {}
   try {
     db.update(vpsTable).set({ agentStatus: status, agentLastError: lastError }).where(eq(vpsTable.id, v.id)).run();
   } catch {}

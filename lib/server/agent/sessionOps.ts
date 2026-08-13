@@ -30,6 +30,12 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
+import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
+
+// How long after the last background task finishes before the session is
+// declared done. Long enough for the model's automatic follow-up turn (§14.54)
+// to claim the session, short enough to feel immediate. cf. §14.91.
+const BG_FINISH_GRACE_MS = 5_000;
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
@@ -416,6 +422,16 @@ export class SessionStream {
   // for the MAX-gate to swallow it. A max proves nothing about the seqs
   // below it precisely in the failure case the holdback exists for.)
   private replayPersistedSeqs: Set<number> | null = null;
+  // Background tasks still running (taskId → startedAt), lazily rebuilt from
+  // the persisted bg_task rows and then maintained live. `null` = not loaded
+  // yet. This is what makes a session `background` instead of green-and-done
+  // (§14.91), so it must survive a hub restart — hence derived from the rows,
+  // not from the events this process happened to witness.
+  private bgRunning: Map<string, number> | null = null;
+  // Pending "the background work is now really finished" notification. Delayed,
+  // because a finishing task usually re-invokes the model (§14.54) — firing
+  // "done" a beat before a new turn starts would be a lie.
+  private bgFinishTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
@@ -690,8 +706,22 @@ export class SessionStream {
         if (ev.status === 'active' && this.terminalErrorLatched) {
           break;
         }
+        // Same shape for background work: the daemon goes idle the moment the
+        // turn ends and knows nothing about the tasks it left running, so its
+        // `active` would repaint the session green a few ms after `stop` set it
+        // to `background` (§14.91). Only the last task finishing clears it —
+        // see _trackBgTask.
+        if (ev.status === 'active' && this.status === 'background' && this.hasRunningBgTasks()) {
+          break;
+        }
         if (ev.status === 'thinking' || ev.status === 'starting') {
           this.clearTerminalErrorLatch();
+          // A new turn owns the session now: whatever "background work is
+          // done" notice was queued belongs to this turn's stop instead.
+          this._cancelBgFinish();
+        }
+        if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') {
+          this._expireBgTasks();
         }
         this.status = ev.status as WorkerStatus;
         this._broadcast({ type: 'status', status: this.status });
@@ -721,9 +751,31 @@ export class SessionStream {
           console.error(`[sessionOps] ${this.id} status db.update('${ev.status}') failed:`, (e as Error)?.message ?? e);
         }
         break;
-      case 'ready':
+      case 'ready': {
+        // The agent emits `ready` exactly once per ClaudeSDKClient
+        // construction (`session.py`): a BRAND-NEW CLI process owns the
+        // session now. Everything the previous one was running died with it —
+        // including its background children, whose `finished` can never arrive
+        // (§14.91). Bury them here exactly as sleep/error does: left alone the
+        // ghost pins the session `background` and keeps sdkWatch's quiet gate
+        // believing the VPS is busy until the 24h age cap, so that VPS is
+        // never auto-updated.
+        // NOT live-only: the restart that matters is usually the one that also
+        // dropped the SSH connection, so this `ready` arrives inside the
+        // reconnect replay. Tasks started AFTER it are persisted and tracked
+        // further down that same replay, so they survive the burial — but a
+        // SECOND replay of the same range would find them already persisted
+        // (hence untracked) and bury them wrongly. The gate is the ordinary
+        // identity one (§14.31): the killed rows are stamped with the READY's
+        // seq, so "a row with my seq exists" means this ready was already
+        // dealt with. Seq-less agents (<0.4.0) can't be gated → live only.
+        const readySeq = typeof ev.seq === 'number' ? ev.seq : null;
+        if (readySeq == null ? !this.isReplaying : !this._replayAlreadyPersisted(ev)) {
+          this._expireBgTasks(readySeq);
+        }
         this._broadcast({ type: 'ready' });
         break;
+      }
       case 'session_id':
         this.claudeSessionId = ev.claude_session_id;
         try {
@@ -935,6 +987,10 @@ export class SessionStream {
         };
         this._persist('event', payload);
         this._broadcast(payload);
+        // …and keep the running-task registry current: it decides whether the
+        // NEXT stop means "finished" or "still has background work" (§14.91),
+        // and whether an already-stopped session is done now.
+        this._trackBgTask(payload.taskId, payload);
         break;
       }
       case 'bg_task_progress': {
@@ -1060,32 +1116,39 @@ export class SessionStream {
           !terminalError && turnSawAssistant && this.status === 'failed';
         this.pendingTerminalAssistantError = null;
         this.pendingTurnAssistantSeen = false;
+        // The turn ended, but background work it launched may outlive it: that
+        // session is neither working nor finished, and calling it finished is
+        // what put a green "done" on sessions that were still busy (§14.91). A
+        // failed turn still wins — it is the more urgent thing to report.
+        const bgPending = !terminalError && this.hasRunningBgTasks();
         if (terminalError) {
           this.terminalErrorLatched = true;
           this.terminalErrorText = terminalError.text;
           this.terminalErrorKind = terminalError.kind;
           this.status = 'failed';
-        } else if (recoveredFromFailed) {
-          // During replay, historical status frames (including `thinking`) are
-          // intentionally ignored. A later genuine assistant answer + stop is
-          // therefore the durable proof that the old failed turn recovered.
-          this.clearTerminalErrorLatch();
-          this.status = 'active';
+        } else {
+          if (recoveredFromFailed) {
+            // During replay, historical status frames (including `thinking`) are
+            // intentionally ignored. A later genuine assistant answer + stop is
+            // therefore the durable proof that the old failed turn recovered.
+            this.clearTerminalErrorLatch();
+          }
+          if (bgPending) this.status = 'background';
+          else if (recoveredFromFailed) this.status = 'active';
         }
+        const stopStatus: WorkerStatus | null = terminalError ? 'failed'
+          : bgPending ? 'background'
+          : recoveredFromFailed ? 'active' : null;
         try {
           db.update(claudeSessions).set({
             lastUsedAt: Math.floor(Date.now() / 1000),
-            ...(terminalError
-              ? { status: 'failed' }
-              : recoveredFromFailed ? { status: 'active' } : {}),
+            ...(stopStatus ? { status: stopStatus } : {}),
           })
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'stop', subtype: ev.subtype });
-        if (terminalError) {
-          this._broadcast({ type: 'status', status: 'failed' });
-        } else if (recoveredFromFailed) {
-          this._broadcast({ type: 'status', status: 'active' });
+        if (stopStatus) {
+          this._broadcast({ type: 'status', status: stopStatus });
         }
         // A turn finished → the account quota just moved; refresh the usage
         // gauges (debounced + endpoint-rate-limit-aware in usagePoll). Live
@@ -1111,7 +1174,12 @@ export class SessionStream {
           const isNewFinish = stopSeq == null
             ? !this.isReplaying
             : (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq);
-          if (!this.isReplaying && isNewFinish) {
+          // A stop with background work still running is NOT a finish: no
+          // push, no Telegram, no green unread marker. The notification is
+          // not lost, only DEFERRED — _scheduleBgFinishNotice sends it when
+          // the last task ends, or the next real stop does (§14.91). The seq
+          // marker below still advances: this stop has been dealt with.
+          if (!this.isReplaying && isNewFinish && !bgPending) {
             const terminalError = this.terminalErrorLatched;
             const terminalErrorLabel = this.terminalErrorKind === 'authentication'
               ? 'an authentication error'
@@ -1146,7 +1214,7 @@ export class SessionStream {
           // agent finished) is a real unread finish, and a silent DB flag has
           // no notification-storm concern. The seq dedup in `isNewFinish` + the
           // advance below keep later reconnect-replays from re-marking it.
-          if (isNewFinish) {
+          if (isNewFinish && !bgPending) {
             const beingViewed = sessionFocusChecker?.(this.id) ?? false;
             if (!beingViewed) {
               try {
@@ -1527,6 +1595,119 @@ export class SessionStream {
   /** Public variant for graceful shutdown: persists without broadcasting. */
   flushPendingAssistant(): void {
     this._flushAssistant();
+  }
+
+  // ── Background work (§14.91) ─────────────────────────────────────────────
+  //
+  // A turn that ends while `Bash run_in_background` / a Task subagent is still
+  // running is NOT finished: the session goes `background` instead of green,
+  // and the "finished" notification waits for the real end. The registry is
+  // derived from the persisted bg_task rows (bgTaskState.ts) so it survives a
+  // hub restart, then maintained from the live events.
+
+  /** True while background work launched by this session is still running. */
+  hasRunningBgTasks(): boolean {
+    if (this.bgRunning == null) this.bgRunning = runningBgTasksFromDb(this.id);
+    return pruneStaleBgTasks(this.bgRunning, Math.floor(Date.now() / 1000));
+  }
+
+  /** Apply one live bg_task event to the registry. Replayed events are NOT fed
+   *  here: the lazy DB load already contains them, and re-applying a
+   *  started/finished PAIR in order would transiently resurrect a task that
+   *  finished long ago. */
+  private _trackBgTask(taskId: string | undefined, ev: { kind?: unknown; status?: unknown }): void {
+    if (!taskId) return;
+    this.hasRunningBgTasks();                       // ensure loaded
+    const running = this.bgRunning!;
+    const before = running.size > 0;
+    if (isBgTaskDone(ev)) running.delete(taskId);
+    else if (!running.has(taskId)) running.set(taskId, Math.floor(Date.now() / 1000));
+    if (running.size > 0) {
+      // More work started — whatever "it's done" we had queued is void.
+      this._cancelBgFinish();
+      return;
+    }
+    if (!before) return;                            // nothing was running anyway
+    // The last one just ended. If the turn already stopped, the session was
+    // sitting in `background`: it is now genuinely idle again.
+    if (this.status === 'background') {
+      this.status = 'active';
+      try {
+        db.update(claudeSessions).set({ status: 'active' })
+          .where(eq(claudeSessions.id, this.id)).run();
+      } catch {}
+      this._broadcast({ type: 'status', status: 'active' });
+      this._scheduleBgFinishNotice();
+    }
+  }
+
+  /**
+   * The CLI process died or was paused: its background children died with it
+   * (`app/bgTasks.ts § markRunningBgTasksStale` says the same thing to the
+   * chat view). Write the terminal row for each, because the registry is
+   * REBUILT from those rows — without it a slept session comes back from every
+   * agent update believing it still has work running, and would sit `background`
+   * until the 24h age cap while blocking the auto-update quiet gate.
+   */
+  private _expireBgTasks(stampSeq: number | null = null): void {
+    this._cancelBgFinish();
+    if (!this.hasRunningBgTasks()) return;
+    const running = this.bgRunning!;
+    for (const taskId of running.keys()) {
+      // 'killed', not 'stale': `app/bgTasks.ts § normStatus` only understands
+      // terminal words, and an unknown one lands on 'completed' — claiming a
+      // task succeeded when its process was cut is the one wrong answer.
+      const payload = { type: 'bg_task' as const, kind: 'finished' as const, taskId, status: 'killed' };
+      // `stampSeq` (the `ready` path) makes these rows the identity receipt of
+      // the event that ordered the burial, so replaying it is a no-op. The
+      // status paths pass null: they are already replay-guarded upstream.
+      this._persist('event', payload, { seq: stampSeq });
+      this._broadcast(payload);
+    }
+    running.clear();
+  }
+
+  private _cancelBgFinish(): void {
+    if (this.bgFinishTimer == null) return;
+    clearTimeout(this.bgFinishTimer);
+    this.bgFinishTimer = null;
+  }
+
+  /**
+   * Notify "really finished" a few seconds after the last background task —
+   * the delay is the whole point. A finished background task typically
+   * re-invokes the model (§14.54), so the session is about to go `thinking`
+   * again; announcing completion in that gap is exactly the false "done" this
+   * feature exists to remove. If a new turn does start, its own `stop` sends
+   * the normal notification instead.
+   */
+  private _scheduleBgFinishNotice(): void {
+    this._cancelBgFinish();
+    const t = setTimeout(() => {
+      this.bgFinishTimer = null;
+      if (this.status !== 'active') return;         // a new turn / sleep took over
+      if (this.hasRunningBgTasks()) return;         // more work showed up
+      this._maybePush({
+        title: `✓ ${this.vpsName} · ${this._label()}`,
+        body: 'background tasks finished',
+        tag: `stop-${this.id}`,
+      });
+      sendPlainToTelegram(
+        `✓ ${this.vpsName} · ${this._label()}\nbackground tasks finished`,
+        `/?session=${this.id}`,
+      ).catch(() => {});
+      // Same passive marker as a normal finish (§14.47) — this IS the finish.
+      if (!(sessionFocusChecker?.(this.id) ?? false)) {
+        try {
+          db.update(claudeSessions).set({ unreadStop: 1 })
+            .where(eq(claudeSessions.id, this.id)).run();
+        } catch {}
+        this._broadcast({ type: 'session_unread', unread: true });
+      }
+    }, BG_FINISH_GRACE_MS);
+    // Never hold the process open for a notification.
+    (t as unknown as { unref?: () => void }).unref?.();
+    this.bgFinishTimer = t;
   }
 
   /** Explicit user/lifecycle recovery permits the daemon's active status again. */
@@ -2093,7 +2274,7 @@ export async function restartSession(sessionId: string): Promise<SessionStream> 
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) throw new Error(`session ${sessionId} not found`);
 
-  const wasRunning = ['active', 'thinking', 'starting', 'failed'].includes(row.status);
+  const wasRunning = ['active', 'thinking', 'starting', 'failed', 'background'].includes(row.status);
   if (wasRunning) {
     const client = getAgentClientForVpsId(row.vpsId);
     try {
@@ -2137,6 +2318,39 @@ export async function forceStopSession(sessionId: string): Promise<void> {
     } catch {
       // Agent down: DB is already 'sleeping', user can resume later
     }
+  }
+}
+
+/**
+ * Kill ONE background task, leaving the session itself alone (§14.91).
+ *
+ * The escape hatch for the case the registry cannot detect: a task that is
+ * genuinely still running but can no longer finish — a `Bash
+ * run_in_background` wait-loop whose guard never becomes true, say. Nothing
+ * hub-side can tell that apart from slow honest work, so this is a decision
+ * only the user can make; the 24h age cap is a backstop, not an answer.
+ *
+ * Deliberately NOT a DB write: the hub does not mark the task dead, it asks
+ * the CLI to stop it and lets the resulting terminal `bg_task` event flow back
+ * through the normal path (`case 'bg_task'` → `_trackBgTask`) — which is what
+ * clears the registry, drops the session out of `background` and, once the
+ * last task is gone, fires the deferred "finished" notice. Writing a burial
+ * row here would be a hub-side guess that the kill worked.
+ */
+export async function stopBackgroundTask(sessionId: string, taskId: string): Promise<void> {
+  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  if (!row) throw new Error('session not found');
+  const client = getAgentClientForVpsId(row.vpsId);
+  try {
+    await client.call('stop_bg_task', { session_id: sessionId, task_id: taskId });
+  } catch (e) {
+    // -32601: the agent predates 0.35.0. Detected from the RPC error rather
+    // than from vps.agentVersion, which lags a rollout (§14.76). Say what to
+    // do — "no such method" in a toast is not an instruction.
+    if (e instanceof AgentRpcError && e.code === -32601) {
+      throw new Error("this VPS's agent is too old to stop a task — update it (needs 0.35.0)");
+    }
+    throw e;
   }
 }
 
@@ -2320,6 +2534,16 @@ export async function reconcileVpsAgentState(
         (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting')) {
       continue;
     }
+    // Same for background work (§14.91): the daemon reports the SESSION as
+    // idle-active while the tasks it spawned are still running, so adopting
+    // its answer here would repaint the session green on every reconnect.
+    // The registry is derived from the persisted rows, so it is still true
+    // after a hub restart — and if the tasks did end meanwhile, this falls
+    // through and the realign below fixes the row.
+    if (row.status === 'background' && agentStatus === 'active' && stream.hasRunningBgTasks()) {
+      stream.status = 'background';
+      continue;
+    }
     // Realign when the agent's status diverges from EITHER the DB row OR the
     // in-memory stream. Checking the in-memory stream too matters: a prior
     // desync can leave the stream stuck (e.g. 'sleeping') while the DB has
@@ -2354,7 +2578,7 @@ export async function reconcileVpsAgentState(
       .where(and(
         eq(claudeSessions.vpsId, vpsId),
         or(
-          inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed']),
+          inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
           and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),
         ),
       ))

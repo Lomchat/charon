@@ -251,6 +251,14 @@ export type ClaudeSessionStreamActions = {
    * toward the top of the chat (near the visual limit).
    */
   loadMoreHistory(): Promise<void>;
+  /**
+   * Declares whether the user is currently reading back through history
+   * (i.e. scrolled away from the bottom). While held, the safety-net poll
+   * defers its clean full reload — which would otherwise discard every
+   * paginated page and yank the scroll position. Releasing flushes any held
+   * reload immediately. cf. CLAUDE.md §14 gotcha 24.
+   */
+  setHistoryHold(hold: boolean): void;
   /** Resets the displayed error. */
   clearError(): void;
 };
@@ -308,6 +316,21 @@ export function useClaudeSessionStream(
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const oldestChatIdRef = useRef<number | null>(null);
   const loadMoreInflightRef = useRef(false);
+
+  // ── "The user is reading history" hold (CLAUDE.md §14 gotcha 24) ────────
+  // The safety-net poll escalates to a CLEAN FULL RELOAD whenever the cheap
+  // `?since=` probe reports new rows, and that reload resets the window to
+  // the latest 200 rows: every page the user paginated in vanishes, the
+  // browser clamps scrollTop to the now-much-shorter range, and the reader is
+  // yanked back toward the bottom — every 5s while a turn runs. So while the
+  // user is scrolled away from the bottom we HOLD the reload instead of
+  // dropping it: everything else in the poll (status, pending gates, the
+  // streaming preview) still reconciles on every tick, live SSE still appends
+  // at the bottom, and the held reload runs the instant the user comes back
+  // down. Polling is untouched — only the destructive part is deferred, and
+  // it is never abandoned.
+  const historyHoldRef = useRef(false);
+  const pendingReloadRef = useRef(false);
 
   // (banner-state work removed — replaced by auto-reload-on-recovery in
   // globalEventStream.ts. When the SSE silence > AUTO_RELOAD_THRESHOLD_MS
@@ -533,6 +556,19 @@ export function useClaudeSessionStream(
     }
   }, [sessionId, cache, applyApiData]);
 
+  // Declare/release the "reading history" hold described above. Called by the
+  // view's scroll handler with `!isAtBottom`. Releasing runs a held reload
+  // immediately — waiting for the next 5s tick would let the user watch the
+  // stale tail for a beat after they scrolled back down.
+  const setHistoryHold = useCallback((hold: boolean) => {
+    if (historyHoldRef.current === hold) return;
+    historyHoldRef.current = hold;
+    if (!hold && pendingReloadRef.current) {
+      pendingReloadRef.current = false;
+      refetchHistory();
+    }
+  }, [refetchHistory]);
+
   // ── Lazy edit-content loader (CLAUDE.md §14 gotcha 41) ──────────────────
   // Fetches the latest before/after content per file from the dedicated
   // /edits endpoint and fills the (content-stripped) skeleton entries for
@@ -682,11 +718,18 @@ export function useClaudeSessionStream(
         // `rebuildStateFromMessages` rebuilds the whole chat from scratch
         // and sets the cursor to the authoritative `maxMessageId`, so the
         // next poll returns 0. cf. CLAUDE.md §14 gotcha 24.
-        if (typeof console !== 'undefined') {
-          // eslint-disable-next-line no-console
-          console.info(`[charon] poll ${sessionId.slice(0, 8)}: +${n} row(s) since ${since} → clean reload`);
+        // …unless the user is reading history right now, in which case the
+        // reload is HELD (not dropped) — it would destroy the paginated pages
+        // under them. Released the moment they scroll back to the bottom.
+        if (historyHoldRef.current) {
+          pendingReloadRef.current = true;
+        } else {
+          if (typeof console !== 'undefined') {
+            // eslint-disable-next-line no-console
+            console.info(`[charon] poll ${sessionId.slice(0, 8)}: +${n} row(s) since ${since} → clean reload`);
+          }
+          await refetchHistory();
         }
-        await refetchHistory();
       }
     } catch (e) {
       // Network errors are silent — the next tick will retry. We don't
@@ -1349,7 +1392,7 @@ export function useClaudeSessionStream(
     send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
+    clearPrefillInput, refetchHistory, loadMoreHistory, setHistoryHold, clearError,
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
@@ -1361,6 +1404,6 @@ export function useClaudeSessionStream(
     send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart, doDelete,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, refetchHistory, loadMoreHistory, clearError,
+    clearPrefillInput, refetchHistory, loadMoreHistory, setHistoryHold, clearError,
   ]);
 }

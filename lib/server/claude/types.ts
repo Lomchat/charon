@@ -180,8 +180,11 @@ export type WorkerEvent = BridgeEvent | SyntheticEvent;
 // `failed` is connected/idle: the last Claude turn ended in a synthetic
 // API/auth error, but the SDK session is still alive and accepts input.
 // `error` is reserved for an actually broken/stopped SDK session.
+// `background` is idle-but-not-done: the turn ended, yet background tasks it
+// launched are still running, so the session is neither working nor finished
+// (§14.91). Hub-only, like `failed` — the daemon never emits either.
 export type WorkerStatus =
-  | 'starting' | 'active' | 'thinking' | 'failed'
+  | 'starting' | 'active' | 'thinking' | 'failed' | 'background'
   | 'sleeping' | 'killed' | 'error' | 'reconnecting';
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';

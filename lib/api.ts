@@ -467,6 +467,10 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { type: 'interrupt' }),
   forceStopClaude: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/force-stop`),
+  // Kill one BACKGROUND task, not the session (§14.91). The bar clears on the
+  // terminal bg_task event the CLI sends back, not on this ack.
+  stopClaudeBgTask: (id: string, taskId: string) =>
+    send<OkResponse>('POST', `/api/claude/sessions/${id}/bg-tasks/${encodeURIComponent(taskId)}/stop`),
   // Responses to interactions
   respondClaudePermission: (id: string, permId: string, allow: boolean, always = false) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/permission`, { id: permId, allow, always } as RespondPermissionBody),

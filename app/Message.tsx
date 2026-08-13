@@ -29,6 +29,13 @@ type Props = {
   streaming?: boolean;
   // If provided, the tool_result linked to this tool_use is rendered inline below (⎿ style)
   attachedResult?: Msg;
+  // TRUE when this session can still produce a tool_result — i.e. a turn is in
+  // flight. A tool_use with no result is only "running" while that holds: once
+  // the session is idle, the turn that owned it is over and the result can
+  // never come (the CLI was restarted, slept or killed under it, §14.91). The
+  // parent computes it per message, so only the unresolved tool cards see the
+  // value flip (memo, §14.38).
+  orphaned?: boolean;
   // Which backend produced this session (Claude vs Codex). Drives the small
   // per-message agent logo next to the model chip so it's clear who's speaking.
   kind?: AgentKind;
@@ -46,8 +53,8 @@ type Props = {
   onContinue?: () => void;
 };
 
-function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue }: Props) {
-  if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} />;
+function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, orphaned = false }: Props) {
+  if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
   // user_question and exit_plan_request are already represented by the
@@ -168,7 +175,7 @@ function ThinkingBubble({ m }: { m: Msg }) {
   );
 }
 
-function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
+function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attachedResult?: Msg; orphaned?: boolean }) {
   const [openInput, setOpenInput] = useState(false);
   const [openResult, setOpenResult] = useState(false);
   let parsed: any = null;
@@ -197,13 +204,18 @@ function ToolUseCard({ m, attachedResult }: { m: Msg; attachedResult?: Msg }) {
   const resultIsLong = resultObj && (resultObj.content.length > 200 || resultObj.content.split('\n').length > 3);
 
   return (
-    <div className={`bubble tool-use ${resultObj ? 'has-result' : 'running'}${resultObj?.isError ? ' err' : ''}`}>
+    <div className={`bubble tool-use ${resultObj ? 'has-result' : orphaned ? 'interrupted' : 'running'}${resultObj?.isError ? ' err' : ''}`}>
       <header className="bubble-h" onClick={() => setOpenInput((v) => !v)}>
         <span className="caret">{openInput ? '▾' : '▸'}</span>
         <span className="tu-glyph">⚒</span>
         <span className="tu-name">{name}</span>
         <span className="tu-summary">{summary}</span>
-        {!resultObj && <span className="tu-running"><span className="dot" /> running</span>}
+        {/* A pulsing "running" on a tool whose CLI is gone is the single most
+            misleading thing the chat can show — it reads as work in progress
+            on a session the sidebar calls ready. Same card, honest label. */}
+        {!resultObj && (orphaned
+          ? <span className="tu-orphan" title="the session ended before this tool returned — its result can never arrive">⚠ interrupted</span>
+          : <span className="tu-running"><span className="dot" /> running</span>)}
         {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
       </header>
       {openInput && <pre className="tu-detail">{JSON.stringify(input, null, 2)}</pre>}

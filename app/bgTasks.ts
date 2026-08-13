@@ -90,9 +90,18 @@ export type BgTaskProgressEventLike = {
 // tool_use id, consumed by the matching 'started' event.
 export type BgLaunchCandidate = { command: string | null; description: string | null };
 
+// The SDK's own vocabulary spans TWO lifecycles that must be read the same
+// way: `task_notification` reports completed|failed|stopped, `task_updated`
+// reports pending|running|paused|completed|failed|killed (the CLI maps killed
+// → stopped only on the notification). Terminal-ness is therefore a matter of
+// the WORD, not of which message carried it — the SDK documents that a
+// terminal state can arrive on either, and that a task stopped via stop_task
+// reports `killed` on task_updated with the notification suppressed. Hence
+// `stop` sits in the killed branch: without it the kill button would look
+// like a no-op forever.
 function normStatus(raw: string | undefined, fallback: BgTaskStatus): BgTaskStatus {
   const s = (raw ?? '').toLowerCase();
-  if (s.includes('kill') || s.includes('cancel') || s.includes('abort')) return 'killed';
+  if (s.includes('kill') || s.includes('stop') || s.includes('cancel') || s.includes('abort')) return 'killed';
   if (s.includes('fail') || s.includes('error') || s.includes('timeout')) return 'failed';
   if (s.includes('complet') || s.includes('success') || s.includes('done')) return 'completed';
   if (s.includes('run') || s.includes('start') || s.includes('pending')) return 'running';
@@ -100,6 +109,33 @@ function normStatus(raw: string | undefined, fallback: BgTaskStatus): BgTaskStat
 }
 
 const TERMINAL: ReadonlySet<BgTaskStatus> = new Set(['completed', 'failed', 'killed']);
+
+/** THE terminal-word oracle, shared with the server reducer
+ *  (`lib/server/claude/bgTaskState.ts § isBgTaskDone`) so the two cannot
+ *  drift. They used to keep separate lists and disagreed on `error`/`timeout`:
+ *  the client ended the task while the hub kept the session pinned violet
+ *  `background` forever — and on `stop`, the mirror image. One list, one
+ *  answer, because that answer decides both what the bar shows AND whether a
+ *  VPS may be restarted from under a running task. */
+export function isTerminalBgStatus(raw: unknown): boolean {
+  return TERMINAL.has(normStatus(typeof raw === 'string' ? raw : undefined, 'running'));
+}
+
+/** A "running" task older than this is no longer believed: a lost terminal
+ *  event would otherwise wedge the bar (and the session) forever. Shared with
+ *  the server prune — the cap used to exist ONLY server-side, so past 24h the
+ *  hub had quietly buried the task (session green, auto-update unblocked)
+ *  while the bar still counted up "running for 30h12m" on nothing. */
+export const BG_TASK_MAX_AGE_S = 24 * 60 * 60;
+
+/** Display status: a running task past the age cap reads as `stale`, i.e.
+ *  "unknown (session restarted)", never as live work. Derived at render time
+ *  rather than written into the map, because nothing re-runs the reducer just
+ *  because time passed. */
+export function effectiveBgStatus(t: BgTask, nowS: number): BgTaskStatus {
+  if (t.status === 'running' && nowS - t.startedAt >= BG_TASK_MAX_AGE_S) return 'stale';
+  return t.status;
+}
 
 /** Apply one bg_task event to the registry (mutates `map`). Returns true if
  *  anything changed — callers use it to decide whether to refresh state. */

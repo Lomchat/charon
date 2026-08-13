@@ -21,7 +21,7 @@ export type { InstallInfo };
 
 const PAUSED_KEY = 'hub.claude.showPaused.v1';
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
-const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed']);
+const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed', 'background']);
 
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
@@ -760,6 +760,7 @@ const DOT_CLASS: Record<string, string> = {
   killed: 'dot-gray',
   error: 'dot-red',
   failed: 'dot-red',
+  background: 'dot-violet-pulse',
   waiting: 'dot-orange-pulse',
 };
 
@@ -771,6 +772,9 @@ const STATUS_TEXT: Record<string, string> = {
   waiting: 'needs you',
   error: 'error',
   failed: 'error',
+  // Idle, but the tasks it launched are still running (§14.91) — the one
+  // state that is neither working nor done.
+  background: 'background',
 };
 
 /**
@@ -853,7 +857,10 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
   // question is the more urgent, orange cue), and while the session is actively
   // WORKING (thinking/starting) — a turn in progress isn't "finished, unread"
   // even if the DB marker hasn't been cleared yet. cf. CLAUDE.md §14.47.
-  const working = baseStatus === 'thinking' || baseStatus === 'starting';
+  // …and 'background' counts as working: the turn is over but the tasks it
+  // launched are not, which is the whole point of that state (§14.91).
+  const working = baseStatus === 'thinking' || baseStatus === 'starting'
+    || baseStatus === 'background';
   const unread = !!s.unreadStop && !selected && !needsAttention && !working;
   const colorToken = (s as any).color as string | null | undefined;
   return (

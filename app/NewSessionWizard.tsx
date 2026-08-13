@@ -391,20 +391,35 @@ export default function NewSessionWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sugIdx]);
 
+  // Focus the path input with the caret AFTER the text: the whole point of
+  // filling it from a row is to keep typing DEEPER into that path. `.focus()`
+  // alone lands at offset 0 on an input that wasn't focused (and mid-string on
+  // one that was), so the path ends up behind the cursor. The rAF is
+  // load-bearing: React must commit the controlled `value` first, or the
+  // re-render wipes the selection we just set.
+  function focusCustomAtEnd(p: string) {
+    requestAnimationFrame(() => {
+      const el = customRef.current;
+      if (!el) return;
+      el.focus();
+      try { el.setSelectionRange(p.length, p.length); } catch { /* detached */ }
+    });
+  }
+
   // The ⧉ button on a known-path row: put the path in the input AS-IS —
   // no validation, no step change — so it can be edited / drilled into.
   function copyToInput(p: string) {
     setCustom(p);
     setPathError(null); setAllowForce(false);
     setSugOpen(true);
-    requestAnimationFrame(() => customRef.current?.focus());
+    focusCustomAtEnd(p);
   }
 
   function applySuggestion(s: Suggestion) {
     setCustom(s.path);
     setPathError(null); setAllowForce(false);
     setSugOpen(true);
-    customRef.current?.focus();
+    focusCustomAtEnd(s.path);
   }
 
   function onCustomKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {

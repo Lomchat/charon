@@ -405,7 +405,7 @@ class Server:
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
-        "sleep_session", "force_stop", "kill_session",
+        "sleep_session", "force_stop", "kill_session", "stop_bg_task",
     })
     _SHELL_METHODS = frozenset({
         "shell_list", "shell_start", "shell_input", "shell_resize",
@@ -773,6 +773,22 @@ class Server:
             sid = self._require_sid(params)
             s = self._require_session(sid)
             await s.interrupt()
+            return {"ok": True}
+
+        # NB: top-level branch on purpose - a dispatch nested under another
+        # method's `if` is unreachable and the METHODS-vs-dispatch test cannot
+        # see it (that shipped once, CLAUDE.md §14.89).
+        if method == "stop_bg_task":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            task_id = params.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                raise RpcError(ERR_INVALID_PARAMS, "task_id must be a non-empty string")
+            fn = getattr(s, "stop_bg_task", None)
+            if fn is None:  # Codex session: no per-task stop in that SDK
+                raise RpcError(ERR_INVALID_PARAMS,
+                               "stop_bg_task is not supported for this session kind")
+            await fn(task_id)
             return {"ok": True}
 
         if method == "set_permission_mode":

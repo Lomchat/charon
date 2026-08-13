@@ -30,6 +30,7 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
+import { consumeChatFocus } from './focusChat';
 import { isPathDrag, readPathDrag } from './pathDrag';
 import { IconInsert } from './fileIcons';
 import {
@@ -119,7 +120,7 @@ export default function ClaudeSessionView({
     send: streamSend, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart,
     respondPermission, respondQuestion, respondExitPlan,
-    clearPrefillInput, loadMoreHistory, clearError,
+    clearPrefillInput, loadMoreHistory, setHistoryHold, clearError,
   } = stream;
 
   // Backend of this session (Claude vs Codex). Drives the mode selector
@@ -338,8 +339,11 @@ export default function ClaudeSessionView({
   //   scrollTop ≈ 0           → visually at the bottom (newest message)
   //   |scrollTop| ≈ scrollHeight - clientHeight → visually at the top (oldest)
   // So distance from VISUAL TOP = scrollHeight - clientHeight - |scrollTop|.
-  // loadMore threshold: 400px ≈ 2-3 messages before the end → gives the
-  // backend time to respond before the user is visually stuck.
+  // loadMore threshold: ~one screenful before the end, so the fetch is already
+  // in flight by the time the user gets there. It used to be 400px, which a
+  // wheel flick crosses in a single frame: the reader hit the actual top and
+  // sat there waiting for the round trip, which is most of what "scrolling
+  // back is hard work" was.
   // `isAtTop` = at the ABSOLUTE top (used to decide whether the ↑ button
   // should disappear; it stays as long as there's something to scroll back up to).
   const [isAtTop, setIsAtTop] = useState(false);
@@ -348,7 +352,7 @@ export default function ClaudeSessionView({
   // scrolled out of view above — i.e. the user is inside/below a long final
   // message and wants to jump back to its beginning.
   const [showJumpToMsgStart, setShowJumpToMsgStart] = useState(false);
-  const handleChatScroll = useCallback(() => {
+  const measureChatScroll = useCallback(() => {
     const el = chatBodyRef.current;
     if (!el) return;
     const atBottom = Math.abs(el.scrollTop) < 80;
@@ -357,13 +361,22 @@ export default function ClaudeSessionView({
       setIsAtBottom(atBottom);
     }
     if (atBottom) setNewCount(0);
+    // Scrolled away from the bottom = the user is reading back through the
+    // transcript. Hold the poll's clean full reload until they return, or it
+    // discards the paginated pages mid-read (CLAUDE.md §14 gotcha 24).
+    setHistoryHold(!atBottom);
     // Near-top detect → loadMore. The hook guards against concurrent calls
     // and hasMore=false. The browser does scroll anchoring natively when
     // we append to the end of the DOM (= visual top in column-reverse),
     // so the position is preserved without manually fiddling with scrollTop.
     const max = el.scrollHeight - el.clientHeight;
     const distFromTop = max - Math.abs(el.scrollTop);
-    if (distFromTop < 400 && hasMore && !isLoadingMore) {
+    // One screenful of lead time, so a wheel flick doesn't outrun the fetch.
+    const loadAhead = Math.max(400, el.clientHeight);
+    // `max > 0` guard: when the content is shorter than the container there is
+    // nothing to scroll, distFromTop is 0, and this would otherwise paginate
+    // the whole history in a loop on every commit.
+    if (max > 0 && distFromTop < loadAhead && hasMore && !isLoadingMore) {
       loadMoreHistory();
     }
     setIsAtTop(max <= 0 || distFromTop < 4);
@@ -380,7 +393,25 @@ export default function ClaudeSessionView({
       jumpable = gap > 4;
     }
     setShowJumpToMsgStart(jumpable);
-  }, [hasMore, isLoadingMore, loadMoreHistory]);
+  }, [hasMore, isLoadingMore, loadMoreHistory, setHistoryHold]);
+  // rAF-coalesced scroll handler. The measurement above reads scrollHeight /
+  // clientHeight and two getBoundingClientRect — each one forces a synchronous
+  // layout, and with `content-visibility: auto` on every bubble that layout has
+  // to materialize the sizes of the nodes coming into view. Running it on every
+  // wheel event (which browsers fire far faster than they paint) made scrolling
+  // back through a long transcript visibly stutter. One measurement per frame
+  // is all the pills and the loadMore trigger can act on anyway.
+  const scrollRafRef = useRef<number | null>(null);
+  const handleChatScroll = useCallback(() => {
+    if (scrollRafRef.current != null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      measureChatScroll();
+    });
+  }, [measureChatScroll]);
+  useEffect(() => () => {
+    if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+  }, []);
   // Recompute isAtTop when the content changes (new messages → max moves).
   useEffect(() => { handleChatScroll(); }, [messages.length, handleChatScroll]);
   const onPillClick = useCallback(() => {
@@ -538,7 +569,7 @@ export default function ClaudeSessionView({
           <button
             className="kill"
             onClick={forceStop}
-            disabled={!['thinking', 'active', 'starting', 'failed'].includes(status ?? '')}
+            disabled={!['thinking', 'active', 'starting', 'failed', 'background'].includes(status ?? '')}
             title="Force cancel (SDK stuck) — session goes to sleeping, resume possible"
           >force stop</button>
           {/*
@@ -622,6 +653,11 @@ export default function ClaudeSessionView({
                   onReauth={onReauth}
                   continuableMsgId={continuableMsgId}
                   onContinue={sendContinue}
+                  // Conservative on purpose: `reconnecting` means we don't
+                  // know yet, and a wrong "interrupted" is worse than a
+                  // late one.
+                  turnInFlight={status === 'thinking' || status === 'starting'
+                    || status === 'reconnecting' || !!currentAssistant}
                 />
                 {/* "Loading older" / "start of history" indicator.
                     In column-reverse, the last DOM child renders visually at
@@ -705,7 +741,7 @@ export default function ClaudeSessionView({
         {/* Background tasks (Bash run_in_background / bg subagents): slim
             status line above the input, click → details modal. Renders null
             when the session has no live/recent background work. */}
-        <BgTasksBar tasks={bgTasks} />
+        <BgTasksBar tasks={bgTasks} sessionId={sessionId} />
 
         {/* Input area — replaced by resume CTA if disconnected, or
             QuestionCard/ExitPlanCard/PermissionCard if pending. */}
@@ -781,19 +817,26 @@ export default function ClaudeSessionView({
 // inside a memoized child means a delta no longer creates/reconciles hundreds
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
-  renderable, kind, onReauth, continuableMsgId, onContinue,
+  renderable, kind, onReauth, continuableMsgId, onContinue, turnInFlight,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
   kind: AgentKind;
   onReauth?: () => void;
   continuableMsgId: string | null;
   onContinue: () => void;
+  // Is a turn in flight right now? A tool_use with no tool_result can only
+  // still be running while one is: outside a turn nothing can produce that
+  // result anymore (§14.91). Only the unresolved tool cards receive the
+  // derived `orphaned`, so a turn boundary re-runs this map but re-renders
+  // at most those few messages (memo, §14.38).
+  turnInFlight: boolean;
 }) {
   return [...renderable].reverse().map(({ msg, attached }) => (
     <Message
       key={msg.id} m={msg} attachedResult={attached} kind={kind}
       onReauth={onReauth}
       onContinue={msg.id === continuableMsgId ? onContinue : undefined}
+      orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
     />
   ));
 });
@@ -868,6 +911,20 @@ const ChatInputBar = memo(function ChatInputBar({
       clearPrefillInput();
     }
   }, [prefillInput, clearPrefillInput, setInput]);
+
+  // A session the user just created opens ready to type into — starting one is
+  // an intent to talk, and the wizard already took the keyboard. The request is
+  // parked by ClaudePanel (app/focusChat.ts) because this bar does not exist
+  // yet at creation time. Consume it FIRST, then decide: on a coarse pointer we
+  // decline, since a soft keyboard would cover the transcript before there is
+  // anything in it (same rule as the wizard's path box and the search tab).
+  useEffect(() => {
+    if (!consumeChatFocus(sessionId)) return;
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia?.('(pointer: coarse)').matches) return;
+    const id = requestAnimationFrame(() => taRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [sessionId]);
 
   const rememberCaret = useCallback(() => {
     const ta = taRef.current;
