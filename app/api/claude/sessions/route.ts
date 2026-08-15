@@ -3,6 +3,7 @@ import { desc, eq, and, sql } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
+import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, getCodexLatestVersion } from '@/lib/server/claude/sdkSync';
@@ -59,6 +60,14 @@ export async function GET(req: Request) {
     `) as Array<{ sessionId: string; content: string }>;
     const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
+    // The ADDRESSABLE name each session really has, straight from the CLI.
+    // One call per VPS (cached 60s), never per session. Unknown → the client
+    // marks its @handle unconfirmed rather than presenting a guess as an
+    // address (§14.93).
+    const vpsIds = [...new Set(rows.map((r) => r.vpsId))];
+    const cliNameByVps = new Map(await Promise.all(
+      vpsIds.map(async (v) => [v, await cliNamesForVps(v)] as const)));
+
     const annotated = rows.map((r) => {
       const stream = streams.get(r.id);
       const perms = pendingBySession.get(r.id) ?? 0;
@@ -67,6 +76,10 @@ export async function GET(req: Request) {
       return {
         ...r,
         liveStatus: stream ? stream.status : r.status,
+        // What Claude itself calls this session. Null = not known (agent too
+        // old, VPS offline, or session not running).
+        cliName: (r.claudeSessionId
+          ? cliNameByVps.get(r.vpsId)?.get(r.claudeSessionId) : null) ?? null,
         subscribers: focusCountFor(r.id),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,

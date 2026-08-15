@@ -5249,3 +5249,11 @@
   font-size: 11px; line-height: 1.45; opacity: 0.85; }
 
 .si-diverged { color: var(--gold-bright, #e0b96a); opacity: 0.85; margin-top: 4px; }
+
+/* A handle we PREDICT but have not read back from the CLI: the session was
+   started before --name was passed, or renamed since (the flag is fixed at
+   startup). Dimmed + a `?` — an address you cannot rely on must not look like
+   one you can. */
+.bar-handle.unconfirmed, .cs-card-handle.unconfirmed, .cim-handle.unconfirmed {
+  opacity: 0.45; font-style: italic;
+}

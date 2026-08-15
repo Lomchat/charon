@@ -145,12 +145,31 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // is the form you can type after an `@` and hand to another agent as "who to
   // talk to". Derived here rather than server-side so every surface that shows
   // it — chat header, sidebar details, the @ menu — agrees by construction.
-  const sessionHandles = useMemo(
-    () => assignHandlesByVps(sessions.map((s) => ({
+  // ⚠ The @ must be what CLAUDE answers to, not what we wish it answered to.
+  //
+  // `cliName` is the addressable identity read from the CLI itself (`claude
+  // agents`), set by --name at session START. The derived handle is only a
+  // PREDICTION of it: correct for anything started since agent 0.42.0, wrong
+  // for a session started before, and stale for one renamed since (--name is
+  // fixed at startup, so a rename lands at the next resume).
+  //
+  // So the real name wins whenever it is known, and the prediction is marked
+  // unconfirmed rather than presented as an address — showing @migration for a
+  // session every tool on the box calls eleven-duel-dev-87 is exactly the bug
+  // this replaces.
+  const sessionHandles = useMemo(() => {
+    const predicted = assignHandlesByVps(sessions.map((s) => ({
       id: s.id, name: s.name, cwd: s.cwd, vpsId: s.vpsId, createdAt: s.createdAt,
-    }))),
-    [sessions],
-  );
+    })));
+    const out = new Map<string, { handle: string; confirmed: boolean }>();
+    for (const s of sessions) {
+      const real = (s as { cliName?: string | null }).cliName;
+      out.set(s.id, real
+        ? { handle: real, confirmed: true }
+        : { handle: predicted.get(s.id) ?? s.id.slice(0, 6), confirmed: false });
+    }
+    return out;
+  }, [sessions]);
   const initialActiveTab = initialTabs.find((t) => t.active) ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(queryParamShell
     ? null
@@ -1824,14 +1843,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           key={selectedId}
           sessionId={selected.id}
           selected={selected}
-          handle={sessionHandles.get(selected.id) ?? null}
+          handle={sessionHandles.get(selected.id)?.handle ?? null}
+          handleConfirmed={sessionHandles.get(selected.id)?.confirmed ?? false}
           // Other sessions on the SAME machine — the ones this session can
           // actually address (cross-session messaging is filesystem-scoped).
           siblings={sessions
             .filter((s) => s.vpsId === selected.vpsId && s.id !== selected.id)
             .map((s) => ({
               id: s.id, name: s.name,
-              handle: sessionHandles.get(s.id) ?? s.id.slice(0, 6),
+              handle: sessionHandles.get(s.id)?.handle ?? s.id.slice(0, 6),
+              confirmed: sessionHandles.get(s.id)?.confirmed ?? false,
               status: (s.liveStatus ?? s.status) as string,
             }))}
           selectedVps={selectedVps}

@@ -59,6 +59,18 @@ except ImportError as e:  # pragma: no cover - depends on the remote env
     TERMINAL_TASK_STATUSES = None
 
 
+def _bundled_claude_path() -> str | None:
+    """The CLI binary the SDK bundles — the same one that runs our sessions.
+    Resolved from the installed package rather than $PATH: the standalone
+    `claude` may be absent or a different version (§14.53)."""
+    try:
+        import claude_agent_sdk as _m
+        p = os.path.join(os.path.dirname(_m.__file__), "_bundled", "claude")
+        return p if os.path.isfile(p) else None
+    except Exception:
+        return None
+
+
 EmitCallback = Callable[[dict[str, Any]], None]
 StateSaveCallback = Callable[[], Awaitable[None] | None]
 
@@ -414,6 +426,14 @@ class AgentSession:
         # converge: any difference is re-asserted at the next turn end, and an
         # unchanged name writes nothing.
         self._cli_title_value: str | None = None
+        # The ADDRESSABLE name, passed to the CLI as --name at startup.
+        #
+        # Distinct from `self.name` (Charon's display name) and from the
+        # transcript title: this is what `claude agents` lists and what another
+        # agent types to reach this session. Unset → the CLI invents one from
+        # the directory (`eleven-duel-dev-87`), which is what made the
+        # dashboard's @handle and the real address disagree.
+        self.cli_name: str | None = None
         self._pending_perms: dict[str, asyncio.Future] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
@@ -1694,6 +1714,14 @@ class AgentSession:
             # _build_options_with_fallback on an SDK too old to know the kwarg →
             # graceful degradation (no live counter, final ResultMessage usage
             # still works).
+            # --name: the addressable identity. A start-time flag, so it only
+            # changes on a session restart — a rename applies at the next
+            # sleep+resume, never mid-flight.
+            if self.cli_name:
+                options_kwargs["extra_args"] = {
+                    **(options_kwargs.get("extra_args") or {}),
+                    "name": self.cli_name,
+                }
             options_kwargs["include_partial_messages"] = True
             # Raise the CLI-stdout NDJSON framing cap well above the SDK's 1 MiB
             # default so a single big tool_result doesn't overflow the buffer and

@@ -161,6 +161,7 @@ METHODS = {
     "list_subagents",
     "get_subagent_messages",
     "session_identity",
+    "cli_agents",
     "respond_permission",
     "respond_question",
     "respond_exit_plan",

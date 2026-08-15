@@ -413,6 +413,9 @@ export type AgentMethodName =
   // What Charon calls this session vs what the CLI calls it — so a divergence
   // is visible rather than something the UI asks you to trust (§14.93).
   | 'session_identity'
+  // VPS-level: what the CLI itself calls each live session — the ADDRESSABLE
+  // name another agent types, which is NOT the transcript title (§14.93).
+  | 'cli_agents'
   | 'shell_list'
   | 'shell_start'
   | 'shell_input'

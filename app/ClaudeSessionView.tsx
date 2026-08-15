@@ -66,9 +66,13 @@ type Props = {
   /** This session's addressable handle (unique on its VPS). Shown in the
    *  header so the user knows what other agents type to reach it. */
   handle?: string | null;
+  /** True when `handle` was read from the CLI itself; false when it is only
+   *  what the session WILL be called after its next restart (--name is a
+   *  start-time flag, so a rename cannot reach a running CLI). */
+  handleConfirmed?: boolean;
   /** Other sessions on the SAME machine — the ones this one can address.
    *  Feeds the `@` menu in the composer. */
-  siblings?: Array<{ id: string; name: string | null; handle: string; status: string }>;
+  siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
   selectedVps: Vps | null;
   // Opens the Claude sign-in modal for this session's VPS — handed down to
   // <Message> so an "OAuth token expired" bubble carries its own fix (§14.65).
@@ -105,7 +109,7 @@ const sharedCacheRef: StreamCache = {
 };
 
 export default function ClaudeSessionView({
-  sessionId, selected, selectedVps, handle, siblings,
+  sessionId, selected, selectedVps, handle, handleConfirmed, siblings,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
   onOpenSession,
@@ -580,9 +584,11 @@ export default function ClaudeSessionView({
                 reach this session — knowing it requires seeing it. */}
             {handle && (
               <span
-                className="bar-handle"
-                title={`Other sessions on ${selectedVps?.name ?? 'this machine'} address this one as @${handle}`}
-              >@{handle}</span>
+                className={`bar-handle${handleConfirmed ? '' : ' unconfirmed'}`}
+                title={handleConfirmed
+                  ? `Claude answers to @${handle} on ${selectedVps?.name ?? 'this machine'} — this is the name it really has`
+                  : `@${handle} is what this session WILL be called; --name is fixed at startup, so it applies after the next resume`}
+              >@{handle}{handleConfirmed ? '' : '?'}</span>
             )}
             {selected.cwd && (
               <span className="bar-sub">
@@ -937,8 +943,9 @@ const ChatInputBar = memo(function ChatInputBar({
   // so clicking + in the tab while a permission card is showing isn't lost.
   insertRequest: { text: string; nonce: number } | null;
   clearInsertRequest: () => void;
-  /** Other sessions on the same machine, for the `@` menu. */
-  siblings?: Array<{ id: string; name: string | null; handle: string; status: string }>;
+  /** Other sessions on the same machine, for the `@` menu. `confirmed:false`
+   *  = the handle is predicted, not yet what the CLI answers to. */
+  siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
 }) {
   const isCodex = kind === 'codex';
   // `input` is wired to `inputDraftStore` so the draft survives session
@@ -1252,7 +1259,7 @@ const ChatInputBar = memo(function ChatInputBar({
               onMouseDown={(e) => { e.preventDefault(); applyMention(x.handle); }}
               onMouseEnter={() => setMentionIdx(i)}
             >
-              <span className="cim-handle">@{x.handle}</span>
+              <span className={`cim-handle${x.confirmed === false ? ' unconfirmed' : ''}`}>@{x.handle}{x.confirmed === false ? '?' : ''}</span>
               {x.name && x.name !== x.handle && <span className="cim-name">{x.name}</span>}
               <span className={`cim-state ${x.status}`}>{x.status}</span>
             </button>

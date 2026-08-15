@@ -302,6 +302,7 @@ class Server:
         model: str | None = None,
         fallback_model: str | None = None,
         effort: str | None = None,
+        cli_name: str | None = None,
     ) -> Any:
         s = self._make_session(
             kind=kind,
@@ -314,6 +315,12 @@ class Server:
             fallback_model=fallback_model,
             effort=effort,
         )
+        # The ADDRESSABLE name — what `claude agents`/the peer list shows and
+        # what another agent types to reach this session. It is a START-time
+        # CLI flag (--name), not the transcript title, so it must be set before
+        # start() builds the options. Claude only; Codex has no peer surface.
+        if cli_name and hasattr(s, "cli_name"):
+            s.cli_name = cli_name
         self.sessions[session_id] = s
         self.rings.setdefault(session_id, deque(maxlen=RING_SIZE))
         await s.start()
@@ -388,6 +395,7 @@ class Server:
     # (same params, return shapes, error codes, and event emission). The set
     # of methods is unchanged (cf. protocol.METHODS).
     _META_METHODS = frozenset({
+        "cli_agents",
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
@@ -577,6 +585,41 @@ class Server:
             if method == "git_discard":
                 return await asyncio.to_thread(_git_discard, cwd, params)
 
+        if method == "cli_agents":
+            # What the CLI itself calls each live session — the ADDRESSABLE
+            # name, the one another agent types. The dashboard derives its
+            # @handle from Charon's own name, which is a different string and
+            # was silently wrong whenever the two had not been aligned.
+            # VPS-level (no session_id): one CLI invocation answers for every
+            # session on the box, so this must never be per-session.
+            import subprocess
+            from .session import _bundled_claude_path
+            exe = _bundled_claude_path()
+            if not exe:
+                return {"ok": False, "error": "bundled CLI not found"}
+            try:
+                r = subprocess.run([exe, "agents", "--json"], capture_output=True,
+                                   text=True, timeout=20)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+            if r.returncode != 0:
+                return {"ok": False, "error": (r.stderr or "")[-300:]}
+            try:
+                rows = json.loads(r.stdout or "[]")
+            except Exception as e:
+                return {"ok": False, "error": f"bad json: {e}"}
+            out = []
+            for x in rows if isinstance(rows, list) else []:
+                if not isinstance(x, dict):
+                    continue
+                sid = x.get("sessionId") or x.get("session_id")
+                if isinstance(sid, str) and sid:
+                    out.append({"claude_session_id": sid,
+                                "name": x.get("name"),
+                                "cwd": x.get("cwd"),
+                                "kind": x.get("kind")})
+            return {"ok": True, "agents": out}
+
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]
 
@@ -639,6 +682,7 @@ class Server:
                 model=params.get("model"),
                 fallback_model=params.get("fallback_model"),
                 effort=params.get("effort"),
+                cli_name=params.get("cli_name"),
             )
             return {"session_id": session_id, "kind": kind}
 

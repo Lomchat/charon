@@ -30,6 +30,7 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
+import { assignHandlesByVps } from '@/lib/sessionHandle';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
 
 // How long after the last background task finishes before the session is
@@ -2155,6 +2156,36 @@ export function listStreams(): SessionStream[] {
  * list it has nothing to do with. Stamping max+1 makes "new goes last" true in
  * both worlds, and costs one query.
  */
+
+/**
+ * The ADDRESSABLE name to hand the CLI as `--name` for a session on this VPS.
+ *
+ * Same derivation the dashboard uses (`assignHandlesByVps`) so the @handle and
+ * the real address are the same string BY CONSTRUCTION rather than by
+ * coincidence. Computed over the whole VPS because uniqueness is per-machine —
+ * that is the scope cross-session messaging works in.
+ *
+ * ⚠ `--name` is a START-time flag. A rename therefore only reaches the CLI at
+ * the next sleep+resume; until then the dashboard shows what Claude actually
+ * answers to, not what we wish it answered to.
+ */
+function cliNameFor(vpsId: string, sessionId: string, override?: { id: string; name: string | null; cwd: string; createdAt?: number | null }): string | undefined {
+  try {
+    const rows = db.select({
+      id: claudeSessions.id, name: claudeSessions.name,
+      cwd: claudeSessions.cwd, createdAt: claudeSessions.createdAt,
+    }).from(claudeSessions).where(eq(claudeSessions.vpsId, vpsId)).all();
+    const list = rows.map((r) => ({ ...r, vpsId }));
+    // A session being CREATED is not in the table yet at call time.
+    if (override && !list.some((r) => r.id === override.id)) {
+      list.push({ ...override, createdAt: override.createdAt ?? Math.floor(Date.now() / 1000), vpsId });
+    }
+    return assignHandlesByVps(list).get(sessionId);
+  } catch {
+    return undefined;
+  }
+}
+
 export function nextSessionPosition(vpsId: string): number {
   const [row] = db
     .select({ max: sql<number | null>`max(${claudeSessions.position})` })
@@ -2283,6 +2314,9 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
+      // What another agent on this machine types to reach it (agent >= 0.42.0).
+      cli_name: cliNameFor(opts.vpsId, sessionId,
+        { id: sessionId, name: opts.name ?? null, cwd: opts.cwd }),
     });
   } catch (e: any) {
     streams.delete(sessionId);
@@ -2384,6 +2418,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
+          // Re-asserted on every resume: this is the only moment a rename can
+          // reach the CLI, since --name is fixed at startup.
+          cli_name: cliNameFor(row.vpsId, sessionId),
         });
       } catch (startErr: any) {
         // If another concurrent call just created it (race between

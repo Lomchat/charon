@@ -124,7 +124,7 @@ type Props = {
   /** sessionId → addressable handle, unique per VPS. Computed by ClaudePanel
    *  over the FULL session list: deriving it here would let a display filter
    *  (hide paused) silently re-point `@name` at a different session. */
-  sessionHandles?: Map<string, string>;
+  sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
 };
 
 export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
@@ -413,7 +413,7 @@ export default function Sidebar({
 
 // ── VPS box (the V1 "boxed VPS" design) ───────────────────────────────────
 type VpsRenderOpts = {
-  sessionHandles?: Map<string, string>;
+  sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   vpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
   vpsInstall: InstallInfo | null;
@@ -802,7 +802,7 @@ function SessionList({
   sessions: SessionListItem[];
   selectedId: string | null;
   showDetails: boolean;
-  sessionHandles?: Map<string, string>;
+  sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   onSelect: (id: string, pin?: boolean) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editingId?: string | null;
@@ -833,8 +833,9 @@ function SessionList({
 
 function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
   s: SessionListItem;
-  /** Addressable handle — what another agent on this VPS types to reach it. */
-  handle?: string | null;
+  /** Addressable handle — what another agent on this VPS types to reach it.
+   *  `confirmed` = read from the CLI itself; false = predicted, not yet applied. */
+  handle?: { handle: string; confirmed: boolean } | null;
   selected: boolean;
   showDetails: boolean;
   onSelect: (id: string, pin?: boolean) => void;
@@ -910,8 +911,13 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
       {showDetails && (
         <div className="cs-card-foot">
           {handle && (
-            <span className="cs-card-handle" title={`Address this session from another one on the same machine: @${handle}`}>
-              @{handle}
+            <span
+              className={`cs-card-handle${handle.confirmed ? '' : ' unconfirmed'}`}
+              title={handle.confirmed
+                ? `Claude answers to @${handle.handle} on this machine`
+                : `@${handle.handle} is what it WILL be named — not applied until this session restarts`}
+            >
+              @{handle.handle}{handle.confirmed ? '' : '?'}
             </span>
           )}
           <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
