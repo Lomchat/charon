@@ -160,7 +160,7 @@ function ToolPanel({
       <div className="tp-body">
         {tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
-        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
+        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
         {tab === 'calls' && (
           <>

@@ -15,10 +15,14 @@ import { IconClipboard, IconFileEarmark, IconPencil } from './icons';
 import ConfirmModal from './ConfirmModal';
 import PromptModal from './PromptModal';
 import { setPathDrag } from './pathDrag';
+import { readExpanded, treeScope, writeExpanded } from './treeExpansion';
 
 type Props = {
   vpsId: string | null;
   cwd: string | null;
+  /** Whose tree this is — the open folders are remembered per session
+   *  (§14.77). Null beside the file editor, where the folder is the identity. */
+  sessionId?: string | null;
   /** Splice a path into the chat message. Absent when no chat is open (the
    *  explorer also renders beside the file editor) — which is exactly the
    *  signal for whether a row is draggable at all. */
@@ -63,12 +67,16 @@ type Dialog =
  * path, its sha precondition and its conflict handling all live in FileEditor,
  * so there is exactly one place that can modify a file from the browser.
  */
-export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Props) {
+export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, onOpenSession }: Props) {
   const { workspace } = useGitStatus(vpsId, cwd);
   // Who is reading/writing what on this machine, right now (§14.88).
   const activity = useFileActivity(vpsId);
+  // Identity of THIS tree's open-folder memory. Recomputed rather than stored:
+  // it is the only thing the persistence needs, and deriving it keeps the
+  // reset effect below honest about what it is resetting to.
+  const scope = treeScope(sessionId, vpsId ?? '', cwd ?? '');
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
+  const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(scope));
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
   const [errors, setErrors] = useState<Map<string, string>>(() => new Map());
   // Single click previews (italic tab, replaced by the next preview in this
@@ -97,6 +105,10 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
     return t.vpsId === vpsId && t.path === cwd ? t.ref : null;
   }, [tabs, vpsId, cwd]);
   const revealedRef = useRef<string | null>(null);
+  /** The file whose ancestors have already been opened. Separate from
+   *  `revealedRef` (which tracks the SCROLL): the expansion happens as soon as
+   *  the file is known, the scroll only once its row exists. */
+  const expandedForRef = useRef<string | null>(null);
   const activeRowRef = useRef<HTMLButtonElement | null>(null);
 
   // Ask for the gitignore flags whenever ANY checkout is in play — with a
@@ -132,29 +144,47 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
     }
   }, [vpsId, cwd, isRepo, children]);
 
-  // Root listing. Keyed on (vps, cwd) so switching session resets the tree.
+  // Switching tree: drop the listings (they belong to the old folder) but
+  // RESTORE the folders that were open here last time rather than collapsing
+  // everything, which is what made coming back to a session feel like starting
+  // over. Paths, so a listing that gained or lost entries changes nothing.
   useEffect(() => {
     setChildren(new Map());
-    setExpanded(new Set(['']));
+    setExpanded(readExpanded(scope));
     setErrors(new Map());
     inflight.current.clear();
-  }, [vpsId, cwd]);
+    revealedRef.current = null;
+    expandedForRef.current = null;
+  }, [scope]);
   useEffect(() => { void load(''); }, [load]);
+
+  // List what was restored. Without this the tree would claim those folders
+  // are open and show nothing under them until each was clicked again.
+  // Converges: every listing adds a key to `children`, a failure adds one to
+  // `errors`, and both are checked here.
+  useEffect(() => {
+    for (const p of expanded) {
+      if (p && !children.has(p) && !errors.has(p)) void load(p);
+    }
+  }, [expanded, children, errors, load]);
 
   // Reveal the open file: every folder on the way to it opens, so the tree
   // always shows where you are instead of making you find it again. Each
   // ancestor is listed directly — `fs_list` takes any path under the root, so
   // there is no need to walk down one level at a time.
+  //
+  // ONCE per file, tracked in a ref. Re-running it on every listing would
+  // re-open the ancestors of the open file a beat after someone collapsed
+  // them, which makes that folder impossible to close.
   useEffect(() => {
-    if (!activeFile) return;
+    if (!activeFile || expandedForRef.current === activeFile) return;
+    expandedForRef.current = activeFile;
     const parts = activeFile.split('/');
     parts.pop();
+    if (!parts.length) return;
     const dirs: string[] = [];
     let acc = '';
     for (const p of parts) { acc = acc ? `${acc}/${p}` : p; dirs.push(acc); }
-    // Returning the SAME set when nothing is missing matters: this effect
-    // re-runs whenever `load` is re-created (it closes over `children`), and a
-    // new Set every time would re-render the whole tree on every listing.
     setExpanded((s) => {
       let next = s;
       for (const d of dirs) {
@@ -162,10 +192,15 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
         if (next === s) next = new Set(s);
         next.add(d);
       }
+      // Same memory as a manual expansion: arriving from a search hit and
+      // arriving by clicking through the tree leave the same trail.
+      if (next !== s) writeExpanded(scope, next);
       return next;
     });
     for (const d of dirs) void load(d);
-  }, [activeFile, load]);
+    // `load` is deliberately not a dependency — see the once-per-file guard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFile, scope]);
 
   // Scroll to it — but only when the file CHANGES. Doing it on every render
   // would yank the tree back while someone is scrolling through it.
@@ -197,13 +232,16 @@ export default function TreeTab({ vpsId, cwd, onInsertPath, onOpenSession }: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [changeSig]);
 
+  // Not the updater form: this runs from a click, so `expanded` is current,
+  // and the persistence belongs next to the decision rather than in an effect
+  // that would also fire on the reset commit — where `expanded` is still the
+  // PREVIOUS tree's and `scope` is already the new one.
   const toggle = (path: string) => {
-    setExpanded((s) => {
-      const n = new Set(s);
-      if (n.has(path)) n.delete(path);
-      else { n.add(path); void load(path); }
-      return n;
-    });
+    const next = new Set(expanded);
+    if (next.has(path)) next.delete(path);
+    else { next.add(path); void load(path); }
+    setExpanded(next);
+    writeExpanded(scope, next);
   };
 
   // Flatten the open subtree into rows. A flat list keeps the render cheap and
