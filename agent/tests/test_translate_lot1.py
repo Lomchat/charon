@@ -42,6 +42,13 @@ def _fake_self():
         _usage_committed_out=0,
         _usage_cur_out=0,
         _usage_last_emit=0.0,
+        # The stop branch retries the CLI title write (agent 0.38.1), so the
+        # double needs these too — _translate wraps everything in a try/except,
+        # so a missing attribute would silently swallow the whole `stop` event
+        # rather than raise, which is exactly how this was caught.
+        name=None,
+        cwd="/tmp",
+        _cli_title_written=True,
     )
 
 

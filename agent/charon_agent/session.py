@@ -1014,13 +1014,6 @@ class AgentSession:
         arrives, and a late `turn_end` corrects the status a beat later instead
         of racing it.
         """
-        # A session's transcript file does not exist until it has produced
-        # something, so the title write attempted at session_id time can fail on
-        # a brand-new session. Turn end is the first moment it is guaranteed to
-        # be there — retry until it sticks, then stop trying.
-        if self.name and not self._cli_title_written:
-            self._cli_title_written = self.write_cli_title(self.name)
-
         d = input_data if isinstance(input_data, dict) else {}
         payload: dict[str, Any] = {"event": "turn_end"}
         bg = d.get("background_tasks")
@@ -1331,6 +1324,15 @@ class AgentSession:
                 # when the API is what failed. The hub layers these ABOVE the
                 # assistant-text regexes of §14.65/68 — it does not replace them,
                 # because an older CLI still reports failures only as prose.
+                # A brand-new session has no transcript file yet, so the
+                # title write attempted at session_id time fails. Retry here:
+                # by the end of a turn the file exists. Deliberately NOT in the
+                # Stop hook — that hook does not fire on a turn that ended in
+                # error, and was observed silent on some VPSes entirely, so a
+                # session would keep its uuid as a title forever.
+                if self.name and not self._cli_title_written:
+                    self._cli_title_written = self.write_cli_title(self.name)
+
                 stop_ev: dict[str, Any] = {"event": "stop", "subtype": subtype or ""}
                 for key, wire in (
                     ("terminal_reason", "terminal_reason"),
