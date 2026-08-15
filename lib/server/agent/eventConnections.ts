@@ -69,6 +69,10 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // a session that just lost its credentials must light up everywhere, not
   // only in whichever tab happened to be focused. §14.65/68.
   'turn_error',
+  // Rate-limit state off the stream. The limit is ACCOUNT-wide, so every tab
+  // wants it regardless of which session it is focused on — same reasoning as
+  // account_usage, which it complements rather than replaces (§14.72).
+  'rate_limit',
 ]);
 
 function isLowVolume(type: string): boolean {

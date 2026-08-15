@@ -200,5 +200,31 @@ class AssistantMessageError(unittest.TestCase):
         self.assertIsNone(one(translate(_ev("AssistantMessage", content=[])), "turn_error"))
 
 
+
+class RateLimitTranslation(unittest.TestCase):
+    """§14.72 hinges on this: the event does NOT carry `utilization` on a
+    subscription account (measured on the fleet, 2026-08), so it can never
+    replace the /api/oauth/usage poll behind the percentage gauges. What it
+    does carry — limited-now + window reset — must survive translation."""
+
+    def test_reads_the_nested_rate_limit_info(self):
+        info = types.SimpleNamespace(status="allowed", rate_limit_type="five_hour",
+                                     resets_at=1786833600, utilization=None,
+                                     overage_status="rejected")
+        ev = one(translate(_ev("RateLimitEvent", rate_limit_info=info)), "rate_limit")
+        self.assertEqual(ev["status"], "allowed")
+        self.assertEqual(ev["window"], "five_hour")
+        self.assertEqual(ev["resets_at"], 1786833600)
+
+    def test_null_utilization_is_omitted_not_zeroed(self):
+        # A missing percentage must never render as 0% — that would read as
+        # "you have used nothing" on a possibly-exhausted account.
+        info = types.SimpleNamespace(status="allowed", utilization=None)
+        ev = one(translate(_ev("RateLimitEvent", rate_limit_info=info)), "rate_limit")
+        self.assertNotIn("utilization", ev)
+
+    def test_emits_nothing_when_there_is_nothing_to_say(self):
+        self.assertEqual(translate(_ev("RateLimitEvent", rate_limit_info=None)), [])
+
 if __name__ == "__main__":
     unittest.main()

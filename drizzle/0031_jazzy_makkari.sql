@@ -1,0 +1,1 @@
+ALTER TABLE `claude_sessions` ADD `always_allow_tools` text;

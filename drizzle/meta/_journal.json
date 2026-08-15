@@ -218,6 +218,13 @@
       "when": 1786365012700,
       "tag": "0030_cold_cerebro",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1786817851792,
+      "tag": "0031_jazzy_makkari",
+      "breakpoints": true
     }
   ]
 }

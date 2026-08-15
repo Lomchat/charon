@@ -210,6 +210,19 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // hub restart mid-update and left sessions asleep forever (real incident:
   // WS_MASTER 2026-07-22). cf. CLAUDE.md §14.62.
   resumePending: integer('resume_pending').notNull().default(0),
+  // Tools the user answered "always allow" for, as a JSON array of tool names.
+  //
+  // §14.8 recorded this set as in-memory "by design", the permanent escape
+  // hatch being permission_mode='auto'. In practice the hub restarts far more
+  // often than a session's lifetime (every deploy), so the answer was re-asked
+  // for work the user had already approved minutes earlier.
+  //
+  // Deliberately NOT the SDK's `updated_permissions`: its only persistent
+  // destination is `localSettings`, i.e. `.claude/settings.local.json` inside
+  // the user's repo — which Charon does not even load (setting_sources is
+  // ['project']), so the rule would be written and never read again. Keeping
+  // the authority hub-side also keeps it revocable from the UI.
+  alwaysAllowTools: text('always_allow_tools'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 });

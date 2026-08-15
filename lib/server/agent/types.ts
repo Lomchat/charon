@@ -251,6 +251,34 @@ export type AgentEvent = (
       event: 'session_info'; session_id: string;
       capabilities?: string[]; slash_commands?: string[]; tools?: string[];
       plugins?: string[]; model_efforts?: Record<string, string[]>;
+      // The account's REAL model catalog with per-model effort support, read
+      // from get_server_info() at start (agent >= 0.37.0). Solves what §14.43
+      // could not: a live catalog with no api key. `resolved` expands aliases
+      // ('default' → 'claude-opus-5[1m]').
+      models?: Array<{
+        id: string; resolved?: string; label?: string; hint?: string;
+        efforts?: string[]; supports_effort?: boolean;
+        supports_adaptive_thinking?: boolean;
+      }>;
+    }
+  // turn_end (agent >= 0.37.0): the Stop hook's verdict at the moment the turn
+  // ended — which background tasks are STILL ALIVE, straight from the process
+  // that owns them, plus the final assistant text. Replaces §14.91's
+  // reconstruction of the same fact. Ordering vs `stop` is not guaranteed, so
+  // the hub reconciles rather than assuming it arrives first.
+  | {
+      event: 'turn_end'; session_id: string;
+      background_tasks?: string[]; session_crons?: number;
+      last_assistant_message?: string;
+    }
+  // rate_limit (agent >= 0.37.0): from the SDK's RateLimitEvent. ⚠ `utilization`
+  // is NULL on subscription accounts (measured, still true) — this does NOT
+  // replace the /api/oauth/usage poll behind the percentage gauges (§14.72). It
+  // carries the "limited right now / resets at" half for free.
+  | {
+      event: 'rate_limit'; session_id: string;
+      status?: string; window?: string; resets_at?: number;
+      utilization?: number; overage_status?: string;
     }
   // external_message (agent >= 0.36.0): a user turn that did NOT come from the
   // human — currently only the agent-to-agent kinds (`peer`, `coordinator`).

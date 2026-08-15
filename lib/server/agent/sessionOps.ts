@@ -335,6 +335,11 @@ export class SessionStream {
   sessionInfo: {
     capabilities?: string[]; slashCommands?: string[]; tools?: string[];
     plugins?: string[]; modelEfforts?: Record<string, string[]>;
+    models?: Array<{
+      id: string; resolved?: string; label?: string; hint?: string;
+      efforts?: string[]; supports_effort?: boolean;
+      supports_adaptive_thinking?: boolean;
+    }>;
   } | null = null;
 
   private currentAssistant = '';
@@ -357,6 +362,15 @@ export class SessionStream {
   // events are dropped by the new client (no subscriber), the UI freezes and
   // the DB status sticks. cf. CLAUDE.md §14.51.
   private attachedClient: AgentClient | null = null;
+  /**
+   * Tools the user answered "always allow" for.
+   *
+   * Was in-memory only and documented as by-design (§14.8), with
+   * permission_mode='auto' as the permanent escape hatch. But the hub restarts
+   * on every deploy — far more often than a session lives — so the question
+   * came back for work already approved minutes earlier. Now mirrored to
+   * `claudeSessions.alwaysAllowTools` and hydrated on stream creation.
+   */
   private alwaysAllow = new Set<string>();
   // True while we're processing events replayed by the agent (between
   // replay_begin and replay_end). During this window, we dedupe each event
@@ -1154,11 +1168,15 @@ export class SessionStream {
         // "does this CLI support X" (CLI >= 2.1.205) instead of comparing
         // version strings.
         this.sessionInfo = {
-          capabilities: ev.capabilities,
-          slashCommands: ev.slash_commands,
-          tools: ev.tools,
-          plugins: ev.plugins,
-          modelEfforts: ev.model_efforts,
+          ...(this.sessionInfo ?? {}),
+          // Merge, don't replace: the init frame and the model catalog arrive
+          // as two separate emissions of the same event.
+          ...(ev.capabilities !== undefined ? { capabilities: ev.capabilities } : {}),
+          ...(ev.slash_commands !== undefined ? { slashCommands: ev.slash_commands } : {}),
+          ...(ev.tools !== undefined ? { tools: ev.tools } : {}),
+          ...(ev.plugins !== undefined ? { plugins: ev.plugins } : {}),
+          ...(ev.model_efforts !== undefined ? { modelEfforts: ev.model_efforts } : {}),
+          ...(ev.models !== undefined ? { models: ev.models } : {}),
         };
         this._broadcast({ type: 'session_info', ...this.sessionInfo });
         break;
@@ -1177,6 +1195,42 @@ export class SessionStream {
         this._broadcast(payload);
         break;
       }
+      case 'turn_end': {
+        // The Stop hook's verdict on what is STILL RUNNING (agent >= 0.37.0).
+        // §14.91's registry is a RECONSTRUCTION — burial rows, three triggers,
+        // a 24h age cap, two terminal-word lists — of a fact the process that
+        // owns those tasks can simply state. Treat it as authoritative and
+        // reconcile: anything we still believe is running but the CLI did not
+        // list has ended without us seeing its terminal event, which is exactly
+        // the case that pinned sessions violet forever.
+        if (Array.isArray(ev.background_tasks)) {
+          this.hasRunningBgTasks();                    // ensure loaded
+          const alive = new Set(ev.background_tasks);
+          const running = this.bgRunning!;
+          let changed = false;
+          for (const taskId of [...running.keys()]) {
+            if (!alive.has(taskId)) { running.delete(taskId); changed = true; }
+          }
+          // Order between the hook and the ResultMessage is not guaranteed. If
+          // `stop` already ran and parked us in `background`, correct it now;
+          // if it has not, it will simply read a registry that is already right.
+          if (changed && running.size === 0) this._onLastBgTaskEnded();
+        }
+        break;
+      }
+      case 'rate_limit':
+        // Free rate-limit state off the stream (agent >= 0.37.0). ⚠ It does NOT
+        // carry `utilization` on a subscription account (measured), so it does
+        // NOT replace the /api/oauth/usage poll behind the percentage gauges —
+        // §14.72's pacing stays. What it adds is the "am I limited right now,
+        // and when does the window reset" half, at zero network cost.
+        this._broadcast({
+          type: 'rate_limit',
+          status: ev.status, window: ev.window,
+          resets_at: ev.resets_at, utilization: ev.utilization,
+          overage_status: ev.overage_status,
+        });
+        break;
       case 'turn_error':
         // Typed failure (agent >= 0.36.0), the same fact §14.65 infers from
         // prose. Layered, not substituted: the regex path still runs for older
@@ -1429,7 +1483,10 @@ export class SessionStream {
     try {
       const [row] = db.select().from(claudePendingPermissions)
         .where(eq(claudePendingPermissions.id, permId)).all();
-      if (row && always && allow) this.alwaysAllow.add(row.toolName);
+      if (row && always && allow) {
+        this.alwaysAllow.add(row.toolName);
+        this._persistAlwaysAllow();
+      }
       db.update(claudePendingPermissions)
         .set({ status: allow ? 'allowed' : 'denied', respondedAt: Math.floor(Date.now() / 1000) })
         .where(eq(claudePendingPermissions.id, permId)).run();
@@ -1662,6 +1719,28 @@ export class SessionStream {
    * the regex stays for older agents on the fleet, so this must remain
    * idempotent — it is called from whichever arrives first.
    */
+  /** Mirror the in-memory allow set to the DB. Best-effort and idempotent:
+   *  losing the write costs one re-asked permission, never correctness. */
+  private _persistAlwaysAllow(): void {
+    try {
+      db.update(claudeSessions)
+        .set({ alwaysAllowTools: JSON.stringify([...this.alwaysAllow]) })
+        .where(eq(claudeSessions.id, this.id)).run();
+    } catch {}
+  }
+
+  /** Restore it on stream creation. Tolerates any garbage in the column —
+   *  a corrupt value must not stop a session from starting. */
+  hydrateAlwaysAllow(raw: string | null | undefined): void {
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const t of parsed) if (typeof t === 'string' && t) this.alwaysAllow.add(t);
+      }
+    } catch {}
+  }
+
   private _flagClaudeLoggedOut(): void {
     // Codex sessions carry their own credentials — never touch the claude flag.
     if (this.kind !== 'claude') return;
@@ -1717,17 +1796,22 @@ export class SessionStream {
       return;
     }
     if (!before) return;                            // nothing was running anyway
-    // The last one just ended. If the turn already stopped, the session was
-    // sitting in `background`: it is now genuinely idle again.
-    if (this.status === 'background') {
-      this.status = 'active';
-      try {
-        db.update(claudeSessions).set({ status: 'active' })
-          .where(eq(claudeSessions.id, this.id)).run();
-      } catch {}
-      this._broadcast({ type: 'status', status: 'active' });
-      this._scheduleBgFinishNotice();
-    }
+    this._onLastBgTaskEnded();
+  }
+
+  /** The last background task just ended. If the turn had already stopped, the
+   *  session was parked in `background` — it is genuinely idle now. Shared with
+   *  the `turn_end` reconciliation, which can reach this state by learning that
+   *  a task we never saw finish is gone. */
+  private _onLastBgTaskEnded(): void {
+    if (this.status !== 'background') return;
+    this.status = 'active';
+    try {
+      db.update(claudeSessions).set({ status: 'active' })
+        .where(eq(claudeSessions.id, this.id)).run();
+    } catch {}
+    this._broadcast({ type: 'status', status: 'active' });
+    this._scheduleBgFinishNotice();
   }
 
   /**
@@ -2010,6 +2094,8 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     // `effective_model` unless it changes).
     effectiveModel: row.effectiveModel ?? null,
   });
+  // "Always allow" answers survive the hub restart that used to forget them.
+  s.hydrateAlwaysAllow(row.alwaysAllowTools);
   streams.set(sessionId, s);
   return s;
 }
@@ -2226,6 +2312,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         effectiveModel: row.effectiveModel ?? null,
         effort: row.effort ?? null,
       });
+      stream.hydrateAlwaysAllow(row.alwaysAllowTools);
       streams.set(sessionId, stream);
     } else {
     }

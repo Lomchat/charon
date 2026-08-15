@@ -915,6 +915,100 @@ class AgentSession:
                 self._snapshot_file(fp, "after", tool_use_id)
         return {}
 
+    async def _emit_model_catalog(self, client) -> None:
+        """Report the model catalog THIS ACCOUNT actually has, with per-model
+        effort support.
+
+        Replaces three hand-maintained sources of the same truth: `VALID_EFFORTS`
+        here, `isKnownEffort` in TS, and the "ultracode only on xhigh-capable
+        models" rule in knownModels.ts (§14.35/§14.56). Those lists lie whenever
+        Anthropic moves the levels — offering `max` on a model that 400s on it.
+
+        Also solves what §14.43 could not: a live catalog with NO api key. The
+        OAuth token cannot call GET /v1/models, but the CLI already knows, and
+        `resolvedModel` resolves aliases for us (`default` →
+        `claude-opus-5[1m]`, hence the `[1m]` handling in isPlausibleModelId).
+
+        Best-effort and out of band: a session must never fail to start because
+        the catalog could not be read.
+        """
+        try:
+            info = await client.get_server_info()
+        except Exception:
+            return
+        if not isinstance(info, dict):
+            return
+        models = info.get("models")
+        if not isinstance(models, list):
+            return
+        out = []
+        for m in models[:60]:
+            mid = _field(m, "value", "id", "model")
+            if not isinstance(mid, str) or not mid:
+                continue
+            entry: dict[str, Any] = {"id": mid}
+            for src, dst in (("resolvedModel", "resolved"),
+                             ("displayName", "label"),
+                             ("description", "hint")):
+                v = _field(m, src)
+                if isinstance(v, str) and v:
+                    entry[dst] = v
+            lv = _field(m, "supportedEffortLevels", "supported_effort_levels")
+            if isinstance(lv, list):
+                entry["efforts"] = [x for x in lv if isinstance(x, str)]
+            for src, dst in (("supportsEffort", "supports_effort"),
+                             ("supportsAdaptiveThinking", "supports_adaptive_thinking")):
+                v = _field(m, src)
+                if isinstance(v, bool):
+                    entry[dst] = v
+            out.append(entry)
+        if out:
+            try:
+                self._emit("session_info", models=out)
+            except Exception:
+                pass
+
+    async def _on_stop_hook(self, input_data, tool_use_id, context):
+        """The turn ended — report what is STILL RUNNING, authoritatively.
+
+        §14.91 exists because "the turn ended" and "the session is done" are
+        different facts, and the hub could only tell them apart by rebuilding a
+        registry from persisted `bg_task` rows: burial rows when the CLI dies,
+        three triggers, a 24h age cap, and two terminal-word lists that drifted.
+
+        The Stop hook (CLI >= 2.1.145) simply hands us `background_tasks` — what
+        is alive at this instant, from the process that owns them. Emitted as
+        its own durable event rather than folded into `stop`, because hook and
+        ResultMessage ordering is not guaranteed: the hub applies whichever
+        arrives, and a late `turn_end` corrects the status a beat later instead
+        of racing it.
+        """
+        d = input_data if isinstance(input_data, dict) else {}
+        payload: dict[str, Any] = {"event": "turn_end"}
+        bg = d.get("background_tasks")
+        if isinstance(bg, list):
+            # Ids only: the hub already holds the descriptions, and a hook
+            # payload is not a place to re-ship them.
+            ids = []
+            for t in bg:
+                tid = _field(t, "task_id", "taskId", "id")
+                if isinstance(tid, str) and tid:
+                    ids.append(tid)
+            payload["background_tasks"] = ids
+        crons = d.get("session_crons")
+        if isinstance(crons, list):
+            payload["session_crons"] = len(crons)
+        last = d.get("last_assistant_message")
+        if isinstance(last, str) and last:
+            # Bounded: this is a classification signal (§14.68), not content —
+            # the real text already arrived as assistant_text.
+            payload["last_assistant_message"] = last[:2000]
+        try:
+            self._emit(payload.pop("event"), **payload)
+        except Exception:
+            pass
+        return {}
+
     # ── Translate SDK events → our protocol ──────────────────────────────────
     def _translate(self, ev) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -1209,6 +1303,30 @@ class AgentSession:
                 if getattr(ev, "is_error", None) is True:
                     stop_ev["is_error"] = True
                 out.append(stop_ev)
+            elif ev_type == "RateLimitEvent":
+                # Rate-limit state, free and out-of-band-free.
+                #
+                # ⚠ It does NOT carry `utilization` on a subscription account
+                # (measured: None) — §14.58's note still holds, so this can NOT
+                # replace the /api/oauth/usage poll that feeds the percentage
+                # gauges, and §14.72's pacing machinery stays. What it DOES give
+                # is the part that machinery pays the most for: whether we are
+                # limited right now and when the window resets, at zero network
+                # cost and with no 429 to escalate against.
+                info = getattr(ev, "rate_limit_info", None) or ev
+                payload: dict[str, Any] = {"event": "rate_limit"}
+                for attr, wire in (
+                    ("status", "status"),
+                    ("rate_limit_type", "window"),
+                    ("resets_at", "resets_at"),
+                    ("utilization", "utilization"),
+                    ("overage_status", "overage_status"),
+                ):
+                    v = _field(info, attr)
+                    if isinstance(v, (str, int, float)):
+                        payload[wire] = v
+                if len(payload) > 1:
+                    out.append(payload)
             elif ev_type == "SystemMessage":
                 # Everything the CLI tells us about itself arrives here and used
                 # to be discarded wholesale.
@@ -1297,6 +1415,11 @@ class AgentSession:
                 hooks={
                     "PreToolUse": [HookMatcher(hooks=[self._pre_tool_use])],
                     "PostToolUse": [HookMatcher(hooks=[self._post_tool_use])],
+                    # Stop carries the answer the hub used to REBUILD: which
+                    # background tasks are still alive at the moment the turn
+                    # ends (§14.91), plus the final assistant text. Native
+                    # Python event — no mcp_tool indirection needed.
+                    "Stop": [HookMatcher(hooks=[self._on_stop_hook])],
                 },
                 stderr=self._on_claude_stderr,
                 can_use_tool=self._can_use_tool,
@@ -1356,6 +1479,7 @@ class AgentSession:
                 self._emit("mode_changed", mode=self.permission_mode)
                 self._emit("status", status="active")
                 self._ready_evt.set()
+                asyncio.create_task(self._emit_model_catalog(client))
 
                 # ── Continuous stream reader ─────────────────────────────────
                 # The CLI can start a turn WITHOUT user input: when a

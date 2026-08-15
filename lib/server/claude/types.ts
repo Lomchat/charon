@@ -98,6 +98,18 @@ export type BridgeEvent =
       type: 'session_info';
       capabilities?: string[]; slashCommands?: string[]; tools?: string[];
       plugins?: string[]; modelEfforts?: Record<string, string[]>;
+      models?: Array<{
+        id: string; resolved?: string; label?: string; hint?: string;
+        efforts?: string[]; supports_effort?: boolean;
+        supports_adaptive_thinking?: boolean;
+      }>;
+    }
+  // rate_limit (agent >= 0.37.0) — "am I limited right now / when does the
+  // window reset", free off the stream. NOT a replacement for the usage poll:
+  // `utilization` is null on subscription accounts (§14.72 stays).
+  | {
+      type: 'rate_limit'; status?: string; window?: string;
+      resets_at?: number; utilization?: number; overage_status?: string;
     }
   // external_message (agent >= 0.36.0) = a turn driven by ANOTHER agent
   // (origin 'peer' | 'coordinator'). It arrives as plain-string user content,
