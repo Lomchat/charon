@@ -121,6 +121,10 @@ type Props = {
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
   refreshingAgentVpsIds?: Set<string>;
+  /** sessionId → addressable handle, unique per VPS. Computed by ClaudePanel
+   *  over the FULL session list: deriving it here would let a display filter
+   *  (hide paused) silently re-point `@name` at a different session. */
+  sessionHandles?: Map<string, string>;
 };
 
 export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
@@ -139,6 +143,7 @@ export default function Sidebar({
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
   builtAgentVersion, sdkLatestVersion, codexLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
+  sessionHandles,
 }: Props) {
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
@@ -378,6 +383,7 @@ export default function Sidebar({
             {!folderCollapsed && (
               <div className="cs-folder-body">
                 {visibleVps.map((x) => renderVpsBox(x.vps, {
+                  sessionHandles,
                   vpsSessions: x.vpsSessions,
                   vpsShells: x.vpsShells,
                   vpsInstall: x.install,
@@ -407,6 +413,7 @@ export default function Sidebar({
 
 // ── VPS box (the V1 "boxed VPS" design) ───────────────────────────────────
 type VpsRenderOpts = {
+  sessionHandles?: Map<string, string>;
   vpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
   vpsInstall: InstallInfo | null;
@@ -450,6 +457,7 @@ type VpsRenderOpts = {
 
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
+    sessionHandles,
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
@@ -698,7 +706,8 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             vpsId={v.id}
             sessions={vpsSessions}
             selectedId={selectedId}
-            showDetails={showDetails}
+            sessionHandles={sessionHandles}
+          showDetails={showDetails}
             onSelect={onSelect}
             onContext={onContext}
             editingId={editingId}
@@ -786,13 +795,14 @@ const STATUS_TEXT: Record<string, string> = {
  * modal, which already owns that with @dnd-kit.
  */
 function SessionList({
-  vpsId, sessions, selectedId, showDetails, onSelect, onContext,
+  vpsId, sessions, selectedId, showDetails, sessionHandles, onSelect, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
 }: {
   vpsId: string;
   sessions: SessionListItem[];
   selectedId: string | null;
   showDetails: boolean;
+  sessionHandles?: Map<string, string>;
   onSelect: (id: string, pin?: boolean) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editingId?: string | null;
@@ -806,6 +816,7 @@ function SessionList({
       {sessions.map((s) => (
         <SessionRow
           key={s.id} s={s}
+          handle={sessionHandles?.get(s.id) ?? null}
           selected={s.id === selectedId}
           showDetails={showDetails}
           onSelect={onSelect}
@@ -820,8 +831,10 @@ function SessionList({
   );
 }
 
-function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
+function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
   s: SessionListItem;
+  /** Addressable handle — what another agent on this VPS types to reach it. */
+  handle?: string | null;
   selected: boolean;
   showDetails: boolean;
   onSelect: (id: string, pin?: boolean) => void;
@@ -896,6 +909,11 @@ function SessionRow({ s, selected, showDetails, onSelect, onContext, editing, on
       {showDetails && showPreview && <div className="cs-card-preview">{preview}</div>}
       {showDetails && (
         <div className="cs-card-foot">
+          {handle && (
+            <span className="cs-card-handle" title={`Address this session from another one on the same machine: @${handle}`}>
+              @{handle}
+            </span>
+          )}
           <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
           {age && <span className="cs-card-age" suppressHydrationWarning>{age}</span>}
         </div>

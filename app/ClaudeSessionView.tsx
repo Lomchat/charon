@@ -63,6 +63,12 @@ import { IconExternal } from './fileIcons';
 type Props = {
   sessionId: string;
   selected: SessionListItem;
+  /** This session's addressable handle (unique on its VPS). Shown in the
+   *  header so the user knows what other agents type to reach it. */
+  handle?: string | null;
+  /** Other sessions on the SAME machine — the ones this one can address.
+   *  Feeds the `@` menu in the composer. */
+  siblings?: Array<{ id: string; name: string | null; handle: string; status: string }>;
   selectedVps: Vps | null;
   // Opens the Claude sign-in modal for this session's VPS — handed down to
   // <Message> so an "OAuth token expired" bubble carries its own fix (§14.65).
@@ -99,7 +105,7 @@ const sharedCacheRef: StreamCache = {
 };
 
 export default function ClaudeSessionView({
-  sessionId, selected, selectedVps,
+  sessionId, selected, selectedVps, handle, siblings,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
   onOpenSession,
@@ -543,6 +549,15 @@ export default function ClaudeSessionView({
               share a name (or have none). */}
           <div className="bar-ident">
             <span className="bar-name">{selected.name || '(unnamed)'}</span>
+            {/* The addressing form of the same identity. Shown next to the
+                name because it is what ANOTHER agent on this machine types to
+                reach this session — knowing it requires seeing it. */}
+            {handle && (
+              <span
+                className="bar-handle"
+                title={`Other sessions on ${selectedVps?.name ?? 'this machine'} address this one as @${handle}`}
+              >@{handle}</span>
+            )}
             {selected.cwd && (
               <span className="bar-sub">
                 <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />
@@ -786,6 +801,7 @@ export default function ClaudeSessionView({
             onDismissPending={dismissPendingUpload}
             insertRequest={insertRequest}
             clearInsertRequest={clearInsertRequest}
+            siblings={siblings}
           />
         )}
       </main>
@@ -858,7 +874,7 @@ const CODEX_MODE_META: Record<CodexSandboxMode, { glyph: string; label: string; 
 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
-  pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest,
+  pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings,
 }: {
   sessionId: string;
   kind: AgentKind;
@@ -875,6 +891,8 @@ const ChatInputBar = memo(function ChatInputBar({
   // so clicking + in the tab while a permission card is showing isn't lost.
   insertRequest: { text: string; nonce: number } | null;
   clearInsertRequest: () => void;
+  /** Other sessions on the same machine, for the `@` menu. */
+  siblings?: Array<{ id: string; name: string | null; handle: string; status: string }>;
 }) {
   const isCodex = kind === 'codex';
   // `input` is wired to `inputDraftStore` so the draft survives session
@@ -958,6 +976,52 @@ const ChatInputBar = memo(function ChatInputBar({
       try { ta.setSelectionRange(caret, caret); } catch { /* detached */ }
     });
   }, [setInput]);
+
+  // ── `@` mention menu ────────────────────────────────────────────────────
+  // Naming a session is only half of addressing it: you also have to know what
+  // the others are called. Typing `@` lists the sessions on THIS machine — the
+  // ones this session can actually reach, since cross-session messaging is
+  // filesystem-scoped — and picking one inserts its handle, so "tell @api to
+  // regenerate the types" names a real, resolvable target instead of a guess.
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
+
+  const mentionMatches = useMemo(() => {
+    if (!mention || !siblings?.length) return [];
+    const q = mention.query.toLowerCase();
+    return siblings
+      .filter((x) => !q || x.handle.toLowerCase().includes(q)
+        || (x.name ?? '').toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [mention, siblings]);
+
+  /** Re-derive the pending mention from the text and caret. `@` only opens a
+   *  menu at a word boundary — an email address or a decorator must not. */
+  const syncMention = useCallback((value: string, caret: number) => {
+    const upto = value.slice(0, caret);
+    const m = /(?:^|\s)@([a-zA-Z0-9-]*)$/.exec(upto);
+    if (!m) { setMention(null); return; }
+    setMention({ start: caret - m[1].length - 1, query: m[1] });
+    setMentionIdx(0);
+  }, []);
+
+  const applyMention = useCallback((handle: string) => {
+    if (!mention) return;
+    const cur = inputRef.current;
+    const caret = Math.min(caretRef.current ?? cur.length, cur.length);
+    const next = cur.slice(0, mention.start) + '@' + handle + ' ' + cur.slice(caret);
+    const pos = mention.start + handle.length + 2;
+    inputRef.current = next;
+    setInput(next);
+    caretRef.current = pos;
+    setMention(null);
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      try { ta.setSelectionRange(pos, pos); } catch { /* detached */ }
+    });
+  }, [mention, setInput]);
 
   // Drain "insert this path" from the Files tab.
   useEffect(() => {
@@ -1128,10 +1192,35 @@ const ChatInputBar = memo(function ChatInputBar({
           </button>
         </div>
       )}
+      {mention && mentionMatches.length > 0 && (
+        <div className="ci-mentions" role="listbox" aria-label="sessions on this machine">
+          {mentionMatches.map((x, i) => (
+            <button
+              key={x.id}
+              type="button"
+              role="option"
+              aria-selected={i === mentionIdx}
+              className={`ci-mention${i === mentionIdx ? ' on' : ''}`}
+              // mousedown, not click: click fires after blur, and the blur has
+              // already torn the menu down.
+              onMouseDown={(e) => { e.preventDefault(); applyMention(x.handle); }}
+              onMouseEnter={() => setMentionIdx(i)}
+            >
+              <span className="cim-handle">@{x.handle}</span>
+              {x.name && x.name !== x.handle && <span className="cim-name">{x.name}</span>}
+              <span className={`cim-state ${x.status}`}>{x.status}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
         ref={taRef}
         value={input}
-        onChange={(e) => { setInput(e.target.value); caretRef.current = e.target.selectionStart; }}
+        onChange={(e) => {
+          setInput(e.target.value);
+          caretRef.current = e.target.selectionStart;
+          syncMention(e.target.value, e.target.selectionStart ?? 0);
+        }}
         onPaste={onPaste}
         onSelect={rememberCaret}
         onClick={rememberCaret}
@@ -1139,6 +1228,24 @@ const ChatInputBar = memo(function ChatInputBar({
         onBlur={rememberCaret}
         placeholder={`message to ${isCodex ? 'Codex' : 'Claude'} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`}
         onKeyDown={(e) => {
+          // While the @ menu is open it owns the navigation keys — otherwise
+          // Enter would send a half-typed handle instead of completing it.
+          if (mention && mentionMatches.length > 0) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setMentionIdx((i) => {
+                const n = mentionMatches.length;
+                return (i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+              });
+              return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              applyMention(mentionMatches[mentionIdx]!.handle);
+              return;
+            }
+            if (e.key === 'Escape') { e.preventDefault(); setMention(null); return; }
+          }
           if (e.key !== 'Enter') return;
           if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
           e.preventDefault();

@@ -152,6 +152,7 @@ METHODS = {
     "set_permission_mode",
     "set_model",
     "set_effort",
+    "set_session_name",
     "respond_permission",
     "respond_question",
     "respond_exit_plan",

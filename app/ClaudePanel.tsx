@@ -24,6 +24,7 @@ import { setFocus, subscribeAll } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
+import { assignHandlesByVps } from '@/lib/sessionHandle';
 import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
@@ -138,6 +139,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // a notification tap lands on the shell, not the first chat.
   const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
+
+  // Addressable handles, one per session, unique WITHIN a VPS (§ sessionHandle).
+  // A session's `name` is free-form and may be null or duplicated; the handle
+  // is the form you can type after an `@` and hand to another agent as "who to
+  // talk to". Derived here rather than server-side so every surface that shows
+  // it — chat header, sidebar details, the @ menu — agrees by construction.
+  const sessionHandles = useMemo(
+    () => assignHandlesByVps(sessions.map((s) => ({
+      id: s.id, name: s.name, cwd: s.cwd, vpsId: s.vpsId, createdAt: s.createdAt,
+    }))),
+    [sessions],
+  );
   const initialActiveTab = initialTabs.find((t) => t.active) ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(queryParamShell
     ? null
@@ -1642,6 +1655,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       </header>
 
       <Sidebar
+        sessionHandles={sessionHandles}
         vpsList={vpsList}
         vpsFolders={vpsFolders}
         vpsPaths={vpsPaths}
@@ -1810,6 +1824,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           key={selectedId}
           sessionId={selected.id}
           selected={selected}
+          handle={sessionHandles.get(selected.id) ?? null}
+          // Other sessions on the SAME machine — the ones this session can
+          // actually address (cross-session messaging is filesystem-scoped).
+          siblings={sessions
+            .filter((s) => s.vpsId === selected.vpsId && s.id !== selected.id)
+            .map((s) => ({
+              id: s.id, name: s.name,
+              handle: sessionHandles.get(s.id) ?? s.id.slice(0, 6),
+              status: (s.liveStatus ?? s.status) as string,
+            }))}
           selectedVps={selectedVps}
           usage={usageFor(selectedVps?.id, selected.kind as AgentKind | undefined)}
           onUsageRefresh={() => refreshUsage(selectedVps?.id)}

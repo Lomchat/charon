@@ -403,7 +403,8 @@ class Server:
     })
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
-        "set_permission_mode", "set_model", "set_effort", "respond_permission",
+        "set_permission_mode", "set_model", "set_effort", "set_session_name",
+        "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
     })
@@ -816,6 +817,25 @@ class Server:
                 "fallback_model": s.fallback_model,
                 "applied_at_next_start": deferred,
             }
+
+        if method == "set_session_name":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            name = params.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
+            s.name = name
+            # Mirror it into the CLI's own transcript so `claude --resume <name>`
+            # and the CLI's cross-session addressing agree with what Charon
+            # displays. Never fatal: the hub keeps the name either way.
+            written = False
+            fn = getattr(s, "write_cli_title", None)   # Claude sessions only
+            if callable(fn):
+                try:
+                    written = bool(fn(name))
+                except Exception:
+                    written = False
+            return {"ok": True, "name": name, "cli_title": written}
 
         if method == "set_effort":
             sid = self._require_sid(params)

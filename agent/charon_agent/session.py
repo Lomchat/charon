@@ -404,6 +404,9 @@ class AgentSession:
         self._client_ctx: Any = None
         self._main_task: asyncio.Task | None = None
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
+        # Whether Charon's name has been mirrored into the CLI's transcript
+        # (write_cli_title). Retried at turn end until it lands.
+        self._cli_title_written = False
         self._pending_perms: dict[str, asyncio.Future] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
@@ -600,6 +603,34 @@ class AgentSession:
         fut = self._pending_perms.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"decision": decision, "feedback": feedback})
+
+    def write_cli_title(self, name: str) -> bool:
+        """Mirror Charon's session name into the CLI's OWN transcript.
+
+        The CLI keeps its own notion of a session title (what `/rename` sets,
+        what `--resume <name>` matches, and what the cross-session addressing
+        surfaces as the session's name). Charon has always kept its name purely
+        hub-side, so the two disagreed: a session called "frontend" in the
+        dashboard was an unnamed uuid to everything running on the VPS.
+
+        `rename_session` appends a custom-title entry, so repeated calls are
+        safe — the last one wins. Returns False rather than raising when the
+        SDK is too old to export it or the transcript does not exist yet (a
+        session that has not produced its first message has no file to title).
+        """
+        if not self.claude_session_id:
+            return False
+        try:
+            from claude_agent_sdk import rename_session  # type: ignore
+        except Exception:
+            return False
+        try:
+            rename_session(self.claude_session_id, name, directory=self.cwd)
+            return True
+        except Exception:
+            # FileNotFoundError (no transcript yet), ValueError (bad title) —
+            # all non-fatal: the hub remains the source of truth for the name.
+            return False
 
     def to_info(self) -> dict[str, Any]:
         return {
@@ -983,6 +1014,13 @@ class AgentSession:
         arrives, and a late `turn_end` corrects the status a beat later instead
         of racing it.
         """
+        # A session's transcript file does not exist until it has produced
+        # something, so the title write attempted at session_id time can fail on
+        # a brand-new session. Turn end is the first moment it is guaranteed to
+        # be there — retry until it sticks, then stop trying.
+        if self.name and not self._cli_title_written:
+            self._cli_title_written = self.write_cli_title(self.name)
+
         d = input_data if isinstance(input_data, dict) else {}
         payload: dict[str, Any] = {"event": "turn_end"}
         bg = d.get("background_tasks")
@@ -1022,6 +1060,8 @@ class AgentSession:
                         self.claude_session_id = sid
                         out.append({"event": "session_id", "claude_session_id": sid})
                         self._session_id_emitted = True
+                        if self.name and not self._cli_title_written:
+                            self._cli_title_written = self.write_cli_title(self.name)
                         # Save async — fire and forget
                         asyncio.create_task(self._save_state())
             except Exception:

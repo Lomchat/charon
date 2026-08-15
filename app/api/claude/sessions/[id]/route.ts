@@ -6,7 +6,7 @@ import {
   type ClaudeSessionMessage,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { deleteSession, peekStream } from '@/lib/server/agent/sessionOps';
+import { deleteSession, peekStream, emitGlobalSessionListChanged } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
@@ -323,6 +323,27 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   db.update(claudeSessions).set(update).where(eq(claudeSessions.id, id)).run();
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
+
+  // Mirror the name into the CLI's own transcript (agent >= 0.38.0). Until
+  // now Charon's name lived only in the dashboard: a session called
+  // "frontend" here was an unnamed uuid to everything on the VPS, including
+  // `claude --resume <name>` and the CLI's cross-session addressing.
+  // Fire-and-forget on purpose — a rename must not fail because a VPS is
+  // unreachable, and the agent retries the write at the next turn end.
+  if ('name' in update && typeof update.name === 'string' && update.name) {
+    const name = update.name;
+    void (async () => {
+      try {
+        const client = getAgentClientForVpsId(before.vpsId);
+        await client.call('set_session_name', { session_id: id, name });
+      } catch {}
+    })();
+  }
+
+  // The sidebar/tab bar show the name, and handles are derived from it, so a
+  // rename must reach every device rather than waiting for the 15s poll.
+  if ('name' in update) emitGlobalSessionListChanged(id);
+
   return NextResponse.json(relocateNote ? { ...row, _relocateNote: relocateNote } : row);
 }
 

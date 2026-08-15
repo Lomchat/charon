@@ -392,6 +392,10 @@ export type AgentMethodName =
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'
+  // Mirror Charon's session name into the CLI's own transcript (agent >=
+  // 0.38.0) so `claude --resume <name>` and the CLI's cross-session addressing
+  // agree with what the dashboard shows.
+  | 'set_session_name'
   | 'shell_list'
   | 'shell_start'
   | 'shell_input'

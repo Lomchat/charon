@@ -1928,6 +1928,9 @@
      input row. The three real items each carry their own basis/shrink, so
      enabling wrap doesn't move anything as long as they fit — which they do. */
   flex-wrap: wrap;
+  /* Positioning context for the `@` mention menu, which opens UPWARD (the
+     composer is already at the bottom of the viewport). */
+  position: relative;
 }
 .claude-input-bar .mode-switch {
   display: flex; flex-direction: column;
@@ -5166,3 +5169,41 @@
    measured against 2334 bubbles it does not (scripts/scroll-perf.mjs), because
    the rendering work it defers lands DURING the scroll it was meant to protect.
    Bubbles are plain flow content on purpose. */
+
+
+/* ── Addressable session handles (@name) ──────────────────────────────────
+   A session's name is what a human reads; the handle is what ANOTHER agent on
+   the same machine types to reach it. Shown wherever the name is, because a
+   handle nobody can see is a handle nobody can use. */
+.bar-handle {
+  margin-left: 6px; font-size: 11px; color: var(--violet-bright);
+  opacity: 0.85; white-space: nowrap; cursor: default;
+}
+.cs-card-handle {
+  color: var(--violet-bright); opacity: 0.8; margin-right: 6px;
+  white-space: nowrap; flex: none;
+}
+
+/* The `@` menu above the composer. Positioned over the input rather than
+   below: the composer already sits at the bottom of the viewport, so a
+   dropdown would open off-screen. */
+.ci-mentions {
+  position: absolute; bottom: calc(100% + 6px); left: 8px; right: 8px;
+  max-height: 220px; overflow-y: auto; z-index: 30;
+  display: flex; flex-direction: column;
+  background: var(--panel, #14161d);
+  border: 1px solid rgba(106,115,136,0.45); border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+}
+.ci-mention {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 7px 10px; background: none; border: 0; cursor: pointer;
+  text-align: left; font: inherit; color: inherit;
+}
+.ci-mention.on { background: rgba(172,143,224,0.14); }
+.ci-mention .cim-handle { color: var(--violet-bright); font-size: 12px; flex: none; }
+.ci-mention .cim-name {
+  flex: 1 1 auto; min-width: 0; font-size: 12px; opacity: 0.75;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-mention .cim-state { flex: none; font-size: 10px; opacity: 0.6; }
