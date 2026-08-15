@@ -792,6 +792,11 @@ export type SessionListItem = ClaudeSession & {
   subscribers: number;
   pendingPermissions: number;
   firstUserMessage: string | null;
+  /** What the CLI itself calls this session — the ADDRESSABLE name another
+   *  agent types after an `@`. Null when unknown (agent too old, VPS offline,
+   *  session not running), in which case the UI shows its derived handle as an
+   *  unconfirmed prediction rather than asserting an address. §14.93 */
+  cliName?: string | null;
 };
 export type ClaudeSessionsListResponse = {
   sessions: SessionListItem[];

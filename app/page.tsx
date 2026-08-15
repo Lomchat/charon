@@ -5,6 +5,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { asc, desc } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { listTabs } from '@/lib/server/claude/tabs';
+import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale } from '@/lib/server/claude/sdkSync';
 
@@ -22,9 +23,24 @@ export default async function CharonPage() {
   // by folderId and the intra-folder order is preserved.
   const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
   const pathRows = db.select().from(vpsPathsTable).all();
-  const sessionRows = db.select().from(claudeSessions)
+  const sessionRowsRaw = db.select().from(claudeSessions)
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
+  // The ADDRESSABLE name each session really has, on the FIRST paint.
+  //
+  // Without this the SSR snapshot has no `cliName` at all, so every @handle
+  // renders as an unconfirmed prediction until a later list poll replaces the
+  // whole array — and "the name is wrong for the first N seconds, then right"
+  // is indistinguishable from "the name is wrong", which is exactly the bug
+  // this feature exists to kill. Cached per VPS (60s), so this costs one RPC
+  // per machine at most. §14.93
+  const cliNamesByVps = new Map(await Promise.all(
+    [...new Set(sessionRowsRaw.map((r) => r.vpsId))]
+      .map(async (v) => [v, await cliNamesForVps(v)] as const)));
+  const sessionRows = sessionRowsRaw.map((r) => ({
+    ...r,
+    cliName: cliNamesByVps.get(r.vpsId)?.get(r.id) ?? null,
+  }));
   const builtPyzSha = getBuiltPyzSha();
   // Version-ordered staleness baseline (§14.6) — the sha is display-only now.
   const builtAgentVersion = getBuiltAgentVersion();

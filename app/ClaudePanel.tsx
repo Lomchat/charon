@@ -163,7 +163,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     })));
     const out = new Map<string, { handle: string; confirmed: boolean }>();
     for (const s of sessions) {
-      const real = (s as { cliName?: string | null }).cliName;
+      const real = s.cliName;
       out.set(s.id, real
         ? { handle: real, confirmed: true }
         : { handle: predicted.get(s.id) ?? s.id.slice(0, 6), confirmed: false });
