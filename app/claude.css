@@ -1674,12 +1674,20 @@
 .bubble.role-assistant.streaming::after {
   content: '▍'; color: var(--gold-bright); animation: cpulse 1s infinite ease-in-out;
 }
-/* A turn driven by ANOTHER agent, not by the user. Deliberately close to
-   role-user (it does drive the turn the same way) but violet, the colour that
-   already means "something other than you is working" (§14.91). */
-.bubble.role-external { border-color: rgba(178,148,232,0.45); background: rgba(172,143,224,0.07); }
-.bubble.role-external .tag { color: var(--violet-bright); }
-.bubble.role-external .tag::after { content: ' (agent)'; opacity: 0.7; }
+/* A turn driven by ANOTHER session. It drives the turn exactly like something
+   the user typed, so it wears the user's shape — same border, same tag. Only
+   the sender chip distinguishes it, which is the one thing that actually
+   differs. Reading it as a user message is CORRECT: that is what it is, from
+   this session's point of view. */
+.bubble.role-external { border-color: var(--teal-deep); background: rgba(134,197,216,0.07); }
+.bubble.role-external .tag { color: var(--teal); }
+/* Sender chip — same slot and weight as the model chip on an assistant
+   bubble, because it answers the same question: who produced this. */
+.bubble .from-chip {
+  font-size: 10px; color: var(--violet-bright); opacity: 0.85;
+  border: 1px solid rgba(178,148,232,0.35); border-radius: 3px;
+  padding: 0 4px; white-space: nowrap;
+}
 
 /* Compaction boundary — a rule across the column, not a bubble: it marks a
    border between two regions of the conversation rather than something anyone

@@ -64,13 +64,28 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   if (m.role === 'compaction') return <CompactionMarker m={m} />;
 
   const isAssistant = m.role === 'assistant';
+  // A message relayed from ANOTHER session drives the turn exactly like one the
+  // user typed, so it gets the user's shape rather than a category of its own —
+  // what changes is WHO sent it, and that belongs next to the role, the same
+  // way an assistant bubble carries the model that produced it.
+  const isExternal = m.role === 'external';
   return (
     <div
       className={`bubble role-${m.role}${streaming ? ' streaming' : ''}`}
       data-msg-role={m.role}
     >
       <header className="bubble-h">
-        <span className="tag">{m.role}</span>
+        <span className="tag">{isExternal ? 'user' : m.role}</span>
+        {isExternal && (
+          <span
+            className="from-chip"
+            title={m.from
+              ? `Sent by the session @${m.from} on this machine — not typed by you`
+              : 'Sent by another session on this machine — not typed by you'}
+          >
+            {m.from ? `via @${m.from}` : 'via another session'}
+          </span>
+        )}
         {/* Per-message agent attribution (assistant only): a small Claude/Codex
             logo so it's always clear which backend is speaking, next to the
             API-confirmed model id (from AssistantMessage.model, NOT the model's

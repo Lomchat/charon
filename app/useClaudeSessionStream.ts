@@ -1056,6 +1056,7 @@ export function useClaudeSessionStream(
           setMessages((prev) => [...prev, {
             id: 'ex' + Date.now() + Math.random(), role: 'external',
             content: ev.text, createdAt: Math.floor(Date.now() / 1000),
+            from: (ev as { from?: string }).from ?? null,
           }]);
           break;
         case 'mode_changed':

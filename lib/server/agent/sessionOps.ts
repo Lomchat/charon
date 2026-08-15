@@ -1201,6 +1201,9 @@ export class SessionStream {
           type: 'external_message' as const,
           origin: ev.origin,
           text: ev.text,
+          // Who sent it. The transcript's first question about a message
+          // nobody in this session typed is "who asked me this".
+          ...(ev.from ? { from: ev.from } : {}),
         };
         this._persist('event', payload);
         this._broadcast(payload);

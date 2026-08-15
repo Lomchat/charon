@@ -109,6 +109,7 @@ export function rebuildStateFromMessages(
           out.messages.push({
             id: 'm' + m.id, role: 'external',
             content: String(ev.text ?? ''), createdAt: m.createdAt,
+            from: typeof ev.from === 'string' ? ev.from : null,
           });
         }
       } catch {}

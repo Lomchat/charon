@@ -287,7 +287,11 @@ export type AgentEvent = (
   // human — currently only the agent-to-agent kinds (`peer`, `coordinator`).
   // It arrives as plain-string content, which the tool-result branch drops, so
   // without this the session acts on a message nobody can see.
-  | { event: 'external_message'; session_id: string; origin: string; text: string }
+  // `from` (agent >= 0.44.0) is the SENDER's addressable name, pulled from the
+  // `<cross-session-message from-name=…>` envelope. ⚠ These messages carry NO
+  // `origin` field — the envelope inside plain string content is the only
+  // signal, which is why the first implementation caught nothing.
+  | { event: 'external_message'; session_id: string; origin: string; text: string; from?: string }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
   // regexing prose, stated.

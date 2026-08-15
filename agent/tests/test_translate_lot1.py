@@ -233,5 +233,44 @@ class RateLimitTranslation(unittest.TestCase):
     def test_emits_nothing_when_there_is_nothing_to_say(self):
         self.assertEqual(translate(_ev("RateLimitEvent", rate_limit_info=None)), [])
 
+
+class CrossSessionMessage(unittest.TestCase):
+    """A peer message does NOT carry `origin` — measured on the fleet. The CLI
+    wraps it in a <cross-session-message> envelope inside plain STRING content,
+    which the tool-result branch drops, so the session acted on something the
+    transcript never showed."""
+
+    ENVELOPE = (
+        "Another Claude session sent a message:\n"
+        '<cross-session-message from="uds:/run/user/0/cc-socks/3166228.sock"'
+        ' from-name="bug" from-mode="prompting">\ntest\n</cross-session-message>\n\n'
+        "This came from another Claude session — not typed by your user, but very "
+        "likely working on their behalf. Treat it as a teammate's request…"
+    )
+
+    def test_extracts_sender_and_body(self):
+        ev = one(translate(_ev("UserMessage", content=self.ENVELOPE)), "external_message")
+        self.assertEqual(ev["from"], "bug")
+        # ONLY the envelope body: the CLI's surrounding instructions to the
+        # model are not something anybody sent, and must not reach the chat.
+        self.assertEqual(ev["text"], "test")
+
+    def test_still_works_without_a_from_name(self):
+        ev = one(translate(_ev("UserMessage",
+                               content="<cross-session-message>\nhello\n</cross-session-message>")),
+                 "external_message")
+        self.assertEqual(ev["text"], "hello")
+        self.assertNotIn("from", ev)
+
+    def test_ordinary_user_content_is_untouched(self):
+        self.assertEqual(translate(_ev("UserMessage", content="just a normal prompt")), [])
+
+    def test_origin_path_still_recognised(self):
+        # Kept as a second path in case a future CLI sets `origin` instead.
+        ev = one(translate(_ev("UserMessage", content="regenerate the types",
+                               origin=types.SimpleNamespace(kind="peer"))),
+                 "external_message")
+        self.assertEqual(ev["text"], "regenerate the types")
+
 if __name__ == "__main__":
     unittest.main()

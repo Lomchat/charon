@@ -168,6 +168,27 @@ def _nested_cache_creation(usage: dict[str, Any]) -> int:
     return int(sum(_num(v) for v in nested.values()))
 
 
+_CROSS_RE = re.compile(
+    r"<cross-session-message\b([^>]*)>(.*?)</cross-session-message>", re.S)
+_FROM_NAME_RE = re.compile(r'from-name="([^"]*)"')
+
+
+def _parse_cross_session(text: str) -> dict[str, Any] | None:
+    """Pull the sender and body out of a `<cross-session-message>` envelope.
+
+    The CLI wraps a peer message in that envelope and surrounds it with several
+    paragraphs of instructions to the model (permission-laundering warnings and
+    the like). Only the envelope is a message anybody sent; forwarding the rest
+    would put the CLI's boilerplate in the user's transcript.
+    """
+    m = _CROSS_RE.search(text or "")
+    if not m:
+        return None
+    attrs, body = m.group(1), m.group(2)
+    fm = _FROM_NAME_RE.search(attrs or "")
+    return {"from": (fm.group(1) if fm else None) or None, "text": (body or "").strip()}
+
+
 def _extract_effort_support(sdata: dict[str, Any]) -> dict[str, list[str]] | None:
     """Pull per-model effort support out of the init frame.
 
@@ -1439,15 +1460,33 @@ class AgentSession:
                 # appears to act on nothing. Only the agent-to-agent kinds are
                 # surfaced — `task-notification` is already modelled as bg_task
                 # (§14.54) and the rest are CLI bookkeeping.
-                origin_kind = _field(getattr(ev, "origin", None), "kind", "type")
-                if isinstance(origin_kind, str) and origin_kind in ("peer", "coordinator"):
-                    text = content_attr if isinstance(content_attr, str) else "".join(
-                        getattr(b, "text", "") for b in (content_attr or [])
-                        if type(b).__name__ == "TextBlock"
-                    )
-                    if text.strip():
-                        out.append({"event": "external_message",
-                                    "origin": origin_kind, "text": text})
+                # A message relayed from ANOTHER session.
+                #
+                # ⚠ It does NOT carry `origin` — measured on the fleet. The CLI
+                # wraps it in a `<cross-session-message>` envelope inside plain
+                # STRING content, which the tool-result branch below drops, so
+                # the session visibly acted on nothing. `from-name` is the
+                # sender's addressable name, which is the whole point: "who
+                # asked me this" is the first question the transcript has to
+                # answer. The `origin` check stays as a second path in case a
+                # future CLI does set it.
+                raw = content_attr if isinstance(content_attr, str) else "".join(
+                    getattr(b, "text", "") for b in (content_attr or [])
+                    if type(b).__name__ == "TextBlock"
+                )
+                peer = _parse_cross_session(raw) if raw else None
+                if peer is None:
+                    origin_kind = _field(getattr(ev, "origin", None), "kind", "type")
+                    if isinstance(origin_kind, str) and origin_kind in ("peer", "coordinator") \
+                            and raw.strip():
+                        peer = {"from": None, "text": raw}
+                if peer and peer["text"].strip():
+                    out.append({
+                        "event": "external_message",
+                        "origin": "peer",
+                        "text": peer["text"],
+                        **({"from": peer["from"]} if peer["from"] else {}),
+                    })
                 if isinstance(content_attr, str):
                     # Plain-string user content (synthetic CLI injections,
                     # system reminders) — nothing to forward; iterating a str

@@ -115,7 +115,7 @@ export type BridgeEvent =
   // (origin 'peer' | 'coordinator'). It arrives as plain-string user content,
   // which the tool-result path drops — so without this the session visibly
   // acts on nothing.
-  | { type: 'external_message'; origin: string; text: string }
+  | { type: 'external_message'; origin: string; text: string; from?: string }
   // turn_error (agent >= 0.36.0) = typed turn failure off AssistantMessage
   // .error (authentication_failed, billing_error, …). The same fact §14.65
   // infers by regexing prose; layered over it, not replacing it.
