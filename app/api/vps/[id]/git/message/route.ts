@@ -130,6 +130,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       // leak <thinking> tags into the visible answer, and this answer is
       // pasted verbatim into a commit.
       output_config: { effort: 'low' },
+      // STRUCTURED, not prose. The answer is pasted verbatim into a commit, so
+      // "the model wrapped it in a fence" or "the model added a preamble" used
+      // to land in the repository history — hence the strip-the-fence
+      // belt-and-braces below. A forced tool call makes the shape a contract
+      // instead of a hope: subject and body come back as fields.
+      tools: [{
+        name: 'commit_message',
+        description: 'Return the commit message for this change.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'Under 72 chars, imperative mood, says WHY.' },
+            body: { type: 'string', description: 'Optional. One to three short lines, or empty.' },
+          },
+          required: ['subject'],
+        },
+      }],
+      tool_choice: { type: 'tool', name: 'commit_message' },
       system: [
         'You write git commit messages. Output ONLY the commit message — no preamble,',
         'no code fences, no commentary.',
@@ -144,15 +162,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (res.stop_reason === 'refusal') {
       return NextResponse.json<GitMessageResponse>({ ok: false, error: 'the model declined this diff' });
     }
-    const text = res.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('')
-      .trim()
-      // Belt and braces: a fenced answer would otherwise be committed verbatim.
-      .replace(/^```[a-z]*\n?/i, '')
-      .replace(/\n?```$/, '')
-      .trim();
+    // Validated fields first. Text is the fallback for a model that answered
+    // in prose anyway (or an older API that ignored tool_choice) — and it
+    // keeps the fence-stripping, because that path is exactly the one that
+    // used to commit a code fence into the repo.
+    const toolUse = res.content.find(
+      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'commit_message');
+    let text = '';
+    if (toolUse && toolUse.input && typeof toolUse.input === 'object') {
+      const { subject, body } = toolUse.input as { subject?: unknown; body?: unknown };
+      const subj = typeof subject === 'string' ? subject.trim() : '';
+      const rest = typeof body === 'string' ? body.trim() : '';
+      text = rest ? `${subj}\n\n${rest}` : subj;
+    }
+    if (!text) {
+      text = res.content
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('')
+        .trim()
+        .replace(/^```[a-z]*\n?/i, '')
+        .replace(/\n?```$/, '')
+        .trim();
+    }
     if (!text) return NextResponse.json<GitMessageResponse>({ ok: false, error: 'empty response' });
     return NextResponse.json<GitMessageResponse>({ ok: true, message: text });
   } catch (e: unknown) {

@@ -1,0 +1,15 @@
+import { NextResponse } from 'next/server';
+import { requireApiSession } from '@/lib/server/session';
+import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+
+/** GET /api/claude/sessions/[id]/context — how full the context window is.
+ *
+ *  Charon had a live token counter (§14.50) but no notion of the WINDOW, so
+ *  "why did my session suddenly forget things" had no answer until the
+ *  compaction marker, which arrives after the fact. This answers it before. */
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireApiSession();
+  if (auth instanceof Response) return auth;
+  const { id } = await params;
+  return NextResponse.json(await callSessionRpc(id, 'get_context_usage'));
+}

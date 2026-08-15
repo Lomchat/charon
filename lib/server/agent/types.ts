@@ -402,6 +402,14 @@ export type AgentMethodName =
   // Branch a transcript into a NEW session, optionally cutting at a message
   // (agent >= 0.39.0). Pure file work — the original session keeps running.
   | 'fork_session'
+  // Live context-window usage, MCP server health, and the sub-agent
+  // transcripts this session spawned (agent >= 0.40.0). All Claude-only.
+  | 'get_context_usage'
+  | 'mcp_status'
+  | 'mcp_toggle'
+  | 'mcp_reconnect'
+  | 'list_subagents'
+  | 'get_subagent_messages'
   | 'shell_list'
   | 'shell_start'
   | 'shell_input'

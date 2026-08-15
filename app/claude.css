@@ -5215,3 +5215,35 @@
   font-size: 11px; color: var(--crimson, #d98b8b); cursor: pointer;
   max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ── Session insight (context window / MCP / sub-agents) ──────────────────
+   Three things the session knew and never told anyone. Grouped in the tools
+   tab rather than each taking a label, because six already do not fit. */
+.session-insight { display: flex; flex-direction: column; gap: 14px; padding: 10px 12px; }
+.si-head { display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
+.si-head button { background: none; border: 0; color: inherit; cursor: pointer; font-size: 13px; }
+.si-sec h4 { margin: 0 0 6px; font-size: 11px; font-weight: 600; opacity: 0.75; }
+.si-none, .si-empty { margin: 0; font-size: 11px; opacity: 0.5; }
+.si-bar { height: 6px; border-radius: 3px; background: rgba(106,115,136,0.28); overflow: hidden; }
+.si-bar-fill { display: block; height: 100%; background: var(--teal, #86c5d8); }
+/* Past ~75% the session is close to compacting — the one number acted on. */
+.si-bar-fill.hot { background: var(--gold-bright, #e0b96a); }
+.si-line { margin-top: 4px; font-size: 11px; opacity: 0.7; }
+.si-cats { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11px; }
+.si-cats li { display: flex; justify-content: space-between; gap: 8px; opacity: 0.65; }
+.si-mcp, .si-agents { list-style: none; margin: 0; padding: 0; font-size: 11px; }
+.si-mcp-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 3px 0; }
+.si-mcp-name { font-weight: 600; }
+.si-mcp-status { opacity: 0.6; }
+.si-mcp-row.failed .si-mcp-name, .si-mcp-err { color: var(--crimson, #d98b8b); }
+.si-mcp-row button { background: none; border: 1px solid rgba(106,115,136,0.4);
+  border-radius: 4px; color: inherit; cursor: pointer; font-size: 10px; padding: 1px 5px; }
+.si-agent { background: none; border: 0; color: inherit; cursor: pointer;
+  font-size: 11px; padding: 3px 0; text-align: left; width: 100%; }
+.si-transcript { max-height: 320px; overflow-y: auto; margin: 4px 0 8px 10px;
+  border-left: 2px solid rgba(106,115,136,0.35); padding-left: 8px; }
+.si-msg { margin-bottom: 6px; }
+.si-msg-role { font-size: 10px; opacity: 0.55; text-transform: uppercase; }
+.si-msg pre { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word;
+  font-size: 11px; line-height: 1.45; opacity: 0.85; }

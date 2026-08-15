@@ -1,5 +1,6 @@
 'use client';
 import { memo, useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { AgentKind, SessionAttachment } from '@/lib/types/api';
@@ -52,6 +53,8 @@ type Props = {
    *  nobody can see is the same as doing nothing. */
   onReveal?: () => void;
 };
+
+const SessionInsight = dynamic(() => import('./SessionInsight'), { ssr: false });
 
 export type Tab = 'edits' | 'git' | 'tree' | 'search' | 'files' | 'calls';
 
@@ -157,9 +160,18 @@ function ToolPanel({
       <div className="tp-body">
         {tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab vpsId={vpsId} cwd={cwd} busy={repoBusy} />}
-        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
+        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
-        {tab === 'calls' && <CallsTab calls={toolCalls} />}
+        {tab === 'calls' && (
+          <>
+            {/* Context window, MCP health and sub-agent transcripts share this
+                tab rather than each taking their own: six tab labels already
+                do not fit in 340px (§11), and all three answer "what is the
+                state of this session, beyond the transcript". */}
+            {sessionId && <SessionInsight sessionId={sessionId} isCodex={kind === 'codex'} />}
+            <CallsTab calls={toolCalls} />
+          </>
+        )}
         {tab === 'files' && (
           <FilesTab
             sessionId={sessionId}

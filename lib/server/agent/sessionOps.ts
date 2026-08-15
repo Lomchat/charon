@@ -1249,7 +1249,23 @@ export class SessionStream {
         break;
       case 'stop': {
         this._flushAssistant();
-        const terminalError = this.pendingTerminalAssistantError;
+        // The typed outcome (agent >= 0.36.0) OUTRANKS the prose classifier.
+        // Measured on the fleet: a failed turn still reports
+        // subtype='success' while is_error is true and terminal_reason is
+        // 'api_error' — so `subtype`, the only non-prose signal the hub used
+        // to have, actively lies. When the CLI says the turn errored, that is
+        // the answer, whether or not the model happened to phrase it in a way
+        // §14.65's regex recognises. The prose path stays for older agents and
+        // supplies the human-readable text when it did match.
+        const typedFailure = ev.is_error === true || ev.terminal_reason === 'api_error';
+        const terminalError = this.pendingTerminalAssistantError
+          ?? (typedFailure
+            ? {
+                text: this.terminalErrorText
+                  ?? `The turn ended with an API error${ev.api_error_status ? ` (${ev.api_error_status})` : ''}.`,
+                kind: (String(ev.api_error_status) === '401' ? 'authentication' : 'api') as 'authentication' | 'api',
+              }
+            : null);
         const turnSawAssistant = this.pendingTurnAssistantSeen;
         const recoveredFromFailed =
           !terminalError && turnSawAssistant && this.status === 'failed';

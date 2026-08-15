@@ -554,20 +554,35 @@ class AgentSession:
     async def set_model(self, model: str | None, fallback_model: str | None = None) -> None:
         """Update the model for this session.
 
-        Takes effect at the NEXT SDK start (sleep + resume, or next time the
-        client is recreated). The live ClaudeSDKClient cannot swap models
-        mid-flight — the underlying Claude session UUID is bound to a model.
-        The event payload announces this with applied_at_next_start=true so the
-        UI can label the change as deferred.
+        Applied LIVE when the SDK supports it (`client.set_model`, streaming
+        mode — which is the only mode we run). §14.35 recorded this as
+        impossible; it is not, and the deferred sleep+resume dance it described
+        was working around a limitation that no longer exists.
+
+        ⚠ The cost is real though: model and effort are part of the prompt-cache
+        key, so the next turn re-reads the whole history uncached. That is a
+        price to warn about, not a reason to refuse — the CLI itself just shows
+        a confirmation dialog. `applied_at_next_start` stays true only when the
+        live call is unavailable (no client yet, or an SDK too old).
         """
         self.model = model or None
         if fallback_model is not None:
             self.fallback_model = fallback_model or None
+        deferred = self._client is not None
+        if self._client is not None:
+            setter = getattr(self._client, "set_model", None)
+            if callable(setter):
+                try:
+                    await setter(self.model)
+                    deferred = False
+                except Exception as e:
+                    # Stay deferred rather than lie: the next start applies it.
+                    self._emit("error", msg=f"set_model live: {e}")
         self._emit(
             "model_changed",
             model=self.model,
             fallback_model=self.fallback_model,
-            applied_at_next_start=self._client is not None,
+            applied_at_next_start=deferred,
         )
         await self._save_state()
 
@@ -603,6 +618,140 @@ class AgentSession:
         fut = self._pending_perms.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"decision": decision, "feedback": feedback})
+
+    async def context_usage(self) -> dict[str, Any]:
+        """How full the context window is, right now.
+
+        The hub had a live TOKEN counter (§14.50) but no notion of the window:
+        "why did my session suddenly forget things" had no answer in the UI
+        until the compaction marker, which arrives only after the fact. This
+        answers it before.
+        """
+        if self._client is None:
+            return {"ok": False, "error": "session not running"}
+        fn = getattr(self._client, "get_context_usage", None)
+        if not callable(fn):
+            return {"ok": False, "error": "SDK too old for get_context_usage"}
+        try:
+            r = await fn()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if not isinstance(r, dict):
+            r = {k: getattr(r, k, None) for k in
+                 ("totalTokens", "maxTokens", "percentage", "model",
+                  "autoCompactThreshold", "categories")}
+        out: dict[str, Any] = {"ok": True}
+        for src, dst in (("totalTokens", "total_tokens"), ("maxTokens", "max_tokens"),
+                         ("percentage", "percentage"), ("model", "model"),
+                         ("autoCompactThreshold", "auto_compact_threshold"),
+                         ("total_tokens", "total_tokens"), ("max_tokens", "max_tokens")):
+            v = r.get(src)
+            if isinstance(v, (int, float, str)):
+                out[dst] = v
+        cats = r.get("categories")
+        if isinstance(cats, list):
+            out["categories"] = [
+                {"name": _field(c, "name", "category"), "tokens": _field(c, "tokens", "count")}
+                for c in cats[:20]
+            ]
+        return out
+
+    async def mcp_status(self) -> dict[str, Any]:
+        """Per-server MCP health. Charon exposed no MCP surface at all, so a
+        server that failed to connect was invisible — the tools simply were not
+        there and nothing said why."""
+        if self._client is None:
+            return {"ok": False, "error": "session not running"}
+        fn = getattr(self._client, "get_mcp_status", None)
+        if not callable(fn):
+            return {"ok": False, "error": "SDK too old for get_mcp_status"}
+        try:
+            r = await fn()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        servers = r.get("servers") if isinstance(r, dict) else getattr(r, "servers", None)
+        out = []
+        for sv in (servers or [])[:50]:
+            out.append({
+                "name": _field(sv, "name"),
+                "status": _field(sv, "status", "state"),
+                "tool_count": _field(sv, "tool_count", "toolCount"),
+                "error": _field(sv, "error", "message"),
+            })
+        return {"ok": True, "servers": out}
+
+    async def mcp_toggle(self, name: str, enabled: bool) -> dict[str, Any]:
+        if self._client is None:
+            return {"ok": False, "error": "session not running"}
+        fn = getattr(self._client, "toggle_mcp_server", None)
+        if not callable(fn):
+            return {"ok": False, "error": "SDK too old for toggle_mcp_server"}
+        try:
+            await fn(name, enabled)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    async def mcp_reconnect(self, name: str) -> dict[str, Any]:
+        if self._client is None:
+            return {"ok": False, "error": "session not running"}
+        fn = getattr(self._client, "reconnect_mcp_server", None)
+        if not callable(fn):
+            return {"ok": False, "error": "SDK too old for reconnect_mcp_server"}
+        try:
+            await fn(name)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def subagents(self) -> dict[str, Any]:
+        """Which sub-agents this session spawned, and their transcripts.
+
+        A Workflow run showed as "Agent: … — 4m12s — done" and everything the
+        sub-agent actually read, searched and concluded was thrown away. The
+        transcripts have been sitting on the VPS the whole time
+        (`.../subagents/agent-<id>.jsonl`, workflows/<runId>/ included).
+        """
+        if not self.claude_session_id:
+            return {"ok": True, "agents": []}
+        try:
+            from claude_agent_sdk import list_subagents
+        except Exception as e:
+            return {"ok": False, "error": f"SDK too old: {e}"}
+        try:
+            ids = list_subagents(self.claude_session_id, directory=self.cwd)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "agents": [i for i in (ids or []) if isinstance(i, str)][:200]}
+
+    def subagent_messages(self, agent_id: str, limit: int = 400) -> dict[str, Any]:
+        if not self.claude_session_id:
+            return {"ok": False, "error": "no transcript"}
+        try:
+            from claude_agent_sdk import get_subagent_messages
+        except Exception as e:
+            return {"ok": False, "error": f"SDK too old: {e}"}
+        try:
+            msgs = get_subagent_messages(self.claude_session_id, agent_id,
+                                         directory=self.cwd, limit=limit)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        out = []
+        for m in (msgs or []):
+            content = _field(m, "content", "text")
+            if not isinstance(content, str):
+                try:
+                    content = json.dumps(content, default=str)
+                except Exception:
+                    content = str(content)
+            out.append({
+                "role": _field(m, "role", "type") or "assistant",
+                # Bounded: this is a reader, not an export. A runaway sub-agent
+                # must not be able to push megabytes through one RPC line.
+                "content": content[:8000],
+                "uuid": _field(m, "uuid"),
+            })
+        return {"ok": True, "messages": out}
 
     def write_cli_title(self, name: str) -> bool:
         """Mirror Charon's session name into the CLI's OWN transcript.

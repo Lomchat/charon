@@ -404,7 +404,8 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
-        "fork_session",
+        "fork_session", "get_context_usage", "mcp_status", "mcp_toggle",
+        "mcp_reconnect", "list_subagents", "get_subagent_messages",
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
@@ -818,6 +819,42 @@ class Server:
                 "fallback_model": s.fallback_model,
                 "applied_at_next_start": deferred,
             }
+
+        if method in ("get_context_usage", "mcp_status", "mcp_toggle",
+                      "mcp_reconnect", "list_subagents", "get_subagent_messages"):
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            # All Claude-only: Codex has no equivalent surface (§14.59). Report
+            # it rather than pretending the feature is merely empty.
+            if getattr(s_, "kind", "claude") == "codex":
+                return {"ok": False, "error": "not available on Codex sessions"}
+            if method == "get_context_usage":
+                return await s_.context_usage()
+            if method == "mcp_status":
+                return await s_.mcp_status()
+            if method == "mcp_toggle":
+                name = params.get("name")
+                enabled = params.get("enabled")
+                if not isinstance(name, str) or not isinstance(enabled, bool):
+                    raise RpcError(ERR_INVALID_PARAMS, "name (str) and enabled (bool) required")
+                return await s_.mcp_toggle(name, enabled)
+            if method == "mcp_reconnect":
+                name = params.get("name")
+                if not isinstance(name, str) or not name:
+                    raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
+                return await s_.mcp_reconnect(name)
+            if method == "list_subagents":
+                return s_.subagents()
+            # Explicit rather than a fall-through: the protocol test scans for
+            # the literal `method == "..."`, and §14.89 is the incident where a
+            # branch it could not see shipped unreachable.
+            if method == "get_subagent_messages":
+                agent_id = params.get("agent_id")
+                if not isinstance(agent_id, str) or not agent_id:
+                    raise RpcError(ERR_INVALID_PARAMS, "agent_id must be a non-empty string")
+                limit = params.get("limit")
+                return s_.subagent_messages(agent_id, int(limit) if isinstance(limit, int) else 400)
+            raise RpcError(ERR_INTERNAL, f"unhandled: {method}")
 
         if method == "fork_session":
             # Branch a session's transcript into a NEW one, optionally cutting
