@@ -69,6 +69,8 @@ export type BgTaskEventLike = {
   outputFile?: string;
   summary?: string;
   workflowName?: string;
+  /** The SDK's own terminal verdict (agent >= 0.36.0). See eventIsTerminal. */
+  terminal?: boolean;
 };
 
 // Transient bg_task_progress payload (broadcast-only; never persisted).
@@ -119,6 +121,22 @@ const TERMINAL: ReadonlySet<BgTaskStatus> = new Set(['completed', 'failed', 'kil
  *  VPS may be restarted from under a running task. */
 export function isTerminalBgStatus(raw: unknown): boolean {
   return TERMINAL.has(normStatus(typeof raw === 'string' ? raw : undefined, 'running'));
+}
+
+/** Terminal-ness of ONE event, preferring the SDK's own verdict.
+ *
+ *  agent >= 0.36.0 stamps `terminal` on the wire, read from the SDK's exported
+ *  `TERMINAL_TASK_STATUSES`. That is the real oracle; the word list below is a
+ *  reimplementation of it and only exists for older agents on the fleet. When
+ *  the flag is present it WINS — including when it disagrees with us, which is
+ *  the entire point (a status word we never anticipated is exactly the case
+ *  that wedged the bar). `fallback` is the already-normalised status. */
+export function eventIsTerminal(
+  ev: { terminal?: boolean },
+  fallback: BgTaskStatus,
+): boolean {
+  if (typeof ev.terminal === 'boolean') return ev.terminal;
+  return TERMINAL.has(fallback);
 }
 
 /** A "running" task older than this is no longer believed: a lost terminal
@@ -184,11 +202,11 @@ export function applyBgTaskEvent(
   }
   if (ev.kind === 'finished') {
     t.status = normStatus(ev.status, 'completed');
-    if (!TERMINAL.has(t.status)) t.status = 'completed';
+    if (!eventIsTerminal(ev, t.status)) t.status = 'completed';
     t.endedAt = at;
   } else if (ev.kind === 'updated') {
     const next = normStatus(ev.status, t.status);
-    if (TERMINAL.has(next) && !TERMINAL.has(t.status)) t.endedAt = at;
+    if (eventIsTerminal(ev, next) && !TERMINAL.has(t.status)) t.endedAt = at;
     t.status = next;
   } else if (ev.kind === 'started') {
     if (!TERMINAL.has(t.status)) t.status = 'running';

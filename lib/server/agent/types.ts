@@ -185,6 +185,11 @@ export type AgentEvent = (
       status?: string; output_file?: string; summary?: string;
       // Workflow-tool runs (task_type 'local_workflow') carry the script name.
       workflow_name?: string;
+      // agent >= 0.36.0: the SDK's OWN verdict (TERMINAL_TASK_STATUSES) on
+      // whether this status ends the task. Absent on older agents, where the
+      // hub falls back to its word-list normaliser. Prefer this when present:
+      // the two hand-written lists drifted in opposite directions (§14.91).
+      terminal?: boolean;
     }
   // bg_task_progress (agent >= 0.13.1): high-frequency progress for a running
   // background task. TRANSIENT (broadcast-only, no seq, not replayed — like
@@ -206,9 +211,56 @@ export type AgentEvent = (
   // usage (agent >= 0.11.0): live token counter for the CURRENT turn, emitted
   // broadcast-only (transient, no seq) and throttled (~0.6s). `final:true`
   // carries the turn totals (duration_ms, cost_usd) from the ResultMessage. §14.50.
-  | { event: 'usage'; session_id: string; output_tokens: number; input_tokens?: number; cache_read_tokens?: number; final?: boolean; duration_ms?: number; cost_usd?: number | null }
+  // `tree` (agent >= 0.36.0) is the WHOLE-TREE total from ResultMessage
+  // .model_usage — subagents included. The flat fields count the main thread
+  // only, which under-reports every ultracode/Workflow session; the CLI had
+  // the same bug in its own /stats until 2.1.89. Absent on older agents.
+  | {
+      event: 'usage'; session_id: string; output_tokens: number;
+      input_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
+      final?: boolean; duration_ms?: number; cost_usd?: number | null;
+      tree?: {
+        input_tokens: number; output_tokens: number;
+        cache_read_tokens: number; cache_write_tokens: number;
+        cost_usd: number | null; models: string[];
+      };
+    }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
-  | { event: 'stop'; session_id: string; subtype?: string }
+  // stop (agent >= 0.36.0 adds the typed outcome): `terminal_reason` says WHY
+  // the turn ended (completed | max_turns | aborted_streaming | aborted_tools),
+  // `api_error_status` the HTTP status when the API is what failed. These layer
+  // OVER the assistant-prose classifiers of §14.65/68 — they do not replace
+  // them, because an older CLI reports failures only as prose.
+  | {
+      event: 'stop'; session_id: string; subtype?: string;
+      terminal_reason?: string; stop_reason?: string;
+      api_error_status?: number | string; is_error?: boolean;
+    }
+  // compaction (agent >= 0.36.0): the CLI replaced the conversation with a
+  // summary. Charon's own transcript is untouched (it lives in SQLite, not in
+  // the CLI's file), so nothing is lost — but from here on the model no longer
+  // remembers what is above, which is invisible without a marker. Durable:
+  // persisted as a role='event' row so it survives a refetch and keeps its
+  // place in history.
+  | { event: 'compaction'; session_id: string; trigger?: string; pre_tokens?: number; post_tokens?: number }
+  // session_info (agent >= 0.36.0): the CLI's init frame. `capabilities` is the
+  // sanctioned feature-detection channel (CLI >= 2.1.205) — prefer it to
+  // comparing version strings. `model_efforts` is per-model effort support,
+  // which the hub otherwise hard-codes in three places (§14.35).
+  | {
+      event: 'session_info'; session_id: string;
+      capabilities?: string[]; slash_commands?: string[]; tools?: string[];
+      plugins?: string[]; model_efforts?: Record<string, string[]>;
+    }
+  // external_message (agent >= 0.36.0): a user turn that did NOT come from the
+  // human — currently only the agent-to-agent kinds (`peer`, `coordinator`).
+  // It arrives as plain-string content, which the tool-result branch drops, so
+  // without this the session acts on a message nobody can see.
+  | { event: 'external_message'; session_id: string; origin: string; text: string }
+  // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
+  // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
+  // regexing prose, stated.
+  | { event: 'turn_error'; session_id: string; kind: string }
   | { event: 'error'; session_id: string; msg: string; fatal?: boolean }
   // ── Persistent PTY shells (agent >= 0.7.0) ───────────────────────────────
   // Routed through the same `session_id` channel as Claude sessions (the

@@ -94,6 +94,23 @@ export function rebuildStateFromMessages(
             content: String(ev.text ?? ''), createdAt: m.createdAt,
           });
         }
+        // The CLI summarised everything above this point away. Our rows are
+        // all still here — that is the difference worth showing: the history
+        // is intact, the MODEL's memory of it is not.
+        if (ev.type === 'compaction') {
+          out.messages.push({
+            id: 'm' + m.id, role: 'compaction',
+            content: typeof ev.trigger === 'string' ? ev.trigger : '',
+            createdAt: m.createdAt,
+          });
+        }
+        // A turn driven by another agent, not by the user.
+        if (ev.type === 'external_message') {
+          out.messages.push({
+            id: 'm' + m.id, role: 'external',
+            content: String(ev.text ?? ''), createdAt: m.createdAt,
+          });
+        }
       } catch {}
       continue;
     }

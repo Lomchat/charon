@@ -1040,6 +1040,24 @@ export function useClaudeSessionStream(
             content: ev.text, createdAt: Math.floor(Date.now() / 1000),
           }]);
           break;
+        case 'compaction':
+          // Flush first: the marker must land AFTER the text it follows, or a
+          // buffered delta would sort below the boundary and read as "the
+          // model still remembered this".
+          flushAssistantBuf();
+          setMessages((prev) => [...prev, {
+            id: 'cp' + Date.now() + Math.random(), role: 'compaction',
+            content: typeof ev.trigger === 'string' ? ev.trigger : '',
+            createdAt: Math.floor(Date.now() / 1000),
+          }]);
+          break;
+        case 'external_message':
+          flushAssistantBuf();
+          setMessages((prev) => [...prev, {
+            id: 'ex' + Date.now() + Math.random(), role: 'external',
+            content: ev.text, createdAt: Math.floor(Date.now() / 1000),
+          }]);
+          break;
         case 'mode_changed':
           setPermissionMode(ev.mode);
           break;

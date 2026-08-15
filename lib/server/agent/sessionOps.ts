@@ -323,6 +323,20 @@ export class SessionStream {
   // aliases resolve, fallback_model can kick in, SDK may pick a default.
   effectiveModel: string | null = null;
 
+  /**
+   * What the CLI said about itself in its init frame (agent >= 0.36.0).
+   *
+   * In memory only, on purpose: it describes the CURRENTLY RUNNING CLI
+   * process, so a persisted copy would outlive the thing it describes and
+   * claim capabilities the restarted process may not have. Null until the
+   * first init frame of the current process — treat absence as "unknown",
+   * never as "unsupported".
+   */
+  sessionInfo: {
+    capabilities?: string[]; slashCommands?: string[]; tools?: string[];
+    plugins?: string[]; modelEfforts?: Record<string, string[]>;
+  } | null = null;
+
   private currentAssistant = '';
   // Agent deltas may arrive one token at a time. Forwarding each one through
   // the global bus/SSE made Node serialize tens of events per second and made
@@ -984,6 +998,10 @@ export class SessionStream {
           ...(ev.output_file !== undefined ? { outputFile: ev.output_file } : {}),
           ...(ev.summary !== undefined ? { summary: ev.summary } : {}),
           ...(ev.workflow_name !== undefined ? { workflowName: ev.workflow_name } : {}),
+          // The SDK's own terminal verdict (agent >= 0.36.0). Persisted with
+          // the row so a rebuild-from-history gets the same answer the live
+          // path did — the whole point of §14.91's "one oracle".
+          ...(ev.terminal !== undefined ? { terminal: ev.terminal } : {}),
         };
         this._persist('event', payload);
         this._broadcast(payload);
@@ -1103,10 +1121,68 @@ export class SessionStream {
           output_tokens: ev.output_tokens,
           input_tokens: ev.input_tokens,
           cache_read_tokens: ev.cache_read_tokens,
+          cache_write_tokens: ev.cache_write_tokens,
           final: ev.final,
           duration_ms: ev.duration_ms,
           cost_usd: ev.cost_usd,
+          // Whole-tree totals (agent >= 0.36.0): the flat fields above are the
+          // main thread only, so a Workflow session's real spend was invisible.
+          tree: ev.tree,
         });
+        break;
+      case 'compaction': {
+        if (this._replayAlreadyPersisted(ev)) break;
+        // The CLI just summarised the conversation away. Our transcript keeps
+        // every message, so this is not a loss — but from here the model no
+        // longer remembers what is above, and without a marker that reads as
+        // "the session went stupid". Durable (role='event', already listed in
+        // NON_PAGINATED_ROLES) so it keeps its place after a refetch.
+        const payload = {
+          type: 'compaction' as const,
+          ...(ev.trigger !== undefined ? { trigger: ev.trigger } : {}),
+          ...(ev.pre_tokens !== undefined ? { preTokens: ev.pre_tokens } : {}),
+          ...(ev.post_tokens !== undefined ? { postTokens: ev.post_tokens } : {}),
+        };
+        this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
+      case 'session_info':
+        // The CLI's init frame. Kept in memory only: it describes the CURRENT
+        // CLI process, so persisting it would let a stale snapshot outlive the
+        // process it described. `capabilities` is the sanctioned way to ask
+        // "does this CLI support X" (CLI >= 2.1.205) instead of comparing
+        // version strings.
+        this.sessionInfo = {
+          capabilities: ev.capabilities,
+          slashCommands: ev.slash_commands,
+          tools: ev.tools,
+          plugins: ev.plugins,
+          modelEfforts: ev.model_efforts,
+        };
+        this._broadcast({ type: 'session_info', ...this.sessionInfo });
+        break;
+      case 'external_message': {
+        if (this._replayAlreadyPersisted(ev)) break;
+        // A message relayed from ANOTHER agent (§14.x cross-session). It is a
+        // real turn driver — the session acts on it — so it belongs in the
+        // transcript, but it must not look like something the user typed:
+        // `origin` is carried through and the bubble is rendered distinctly.
+        const payload = {
+          type: 'external_message' as const,
+          origin: ev.origin,
+          text: ev.text,
+        };
+        this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
+      case 'turn_error':
+        // Typed failure (agent >= 0.36.0), the same fact §14.65 infers from
+        // prose. Layered, not substituted: the regex path still runs for older
+        // agents, and both converge on the idempotent flag write.
+        if (/auth/i.test(ev.kind)) this._flagClaudeLoggedOut();
+        this._broadcast({ type: 'turn_error', kind: ev.kind });
         break;
       case 'stop': {
         this._flushAssistant();
@@ -1573,9 +1649,22 @@ export class SessionStream {
    * Cheap + idempotent: no write unless the DB still believes we're signed in.
    */
   private _noteAuthExpired(text: string): void {
+    if (!isClaudeAuthExpired(text)) return;
+    this._flagClaudeLoggedOut();
+  }
+
+  /**
+   * The DB half of the above, callable without the prose detector.
+   *
+   * agent >= 0.36.0 also delivers this as a TYPED field
+   * (AssistantMessage.error.type === 'authentication_failed' → `turn_error`),
+   * which is the same fact stated rather than inferred. Both paths land here;
+   * the regex stays for older agents on the fleet, so this must remain
+   * idempotent — it is called from whichever arrives first.
+   */
+  private _flagClaudeLoggedOut(): void {
     // Codex sessions carry their own credentials — never touch the claude flag.
     if (this.kind !== 'claude') return;
-    if (!isClaudeAuthExpired(text)) return;
     try {
       const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
       if (!v || v.claudeLoggedIn === 0) return;

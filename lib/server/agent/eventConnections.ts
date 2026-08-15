@@ -61,6 +61,14 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // several agents on one machine, the whole point is seeing the OTHERS.
   // One event per tool call, deduped hub-side. §14.88
   'file_activity',
+  // What the running CLI can do (agent >= 0.36.0, sessionId = session id).
+  // Drives capability-gated affordances, so every tab showing that session
+  // must agree — and it is emitted once per CLI start, not per turn.
+  'session_info',
+  // Typed turn failure (auth/billing). Same cross-tab reasoning as `error`:
+  // a session that just lost its credentials must light up everywhere, not
+  // only in whichever tab happened to be focused. §14.65/68.
+  'turn_error',
 ]);
 
 function isLowVolume(type: string): boolean {

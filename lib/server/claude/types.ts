@@ -53,6 +53,10 @@ export type BridgeEvent =
       description?: string; toolUseId?: string; taskType?: string;
       status?: string; outputFile?: string; summary?: string;
       workflowName?: string;
+      // agent >= 0.36.0: the SDK's own terminal verdict for this status word,
+      // read from its exported TERMINAL_TASK_STATUSES. Outranks the hub's
+      // word-list normaliser when present (§14.91).
+      terminal?: boolean;
     }
   // bg_task_progress = transient (broadcast-only, focused conn) per-task
   // progress. `agents[]` = a Workflow run's per-sub-agent fan-out. Never
@@ -68,8 +72,42 @@ export type BridgeEvent =
   // usage = live token counter for the current turn (§14.50). Transient
   // (broadcast-only, high-volume → focused conn). `final:true` = turn totals
   // (duration_ms, cost_usd from the ResultMessage).
-  | { type: 'usage'; output_tokens: number; input_tokens?: number; cache_read_tokens?: number; final?: boolean; duration_ms?: number; cost_usd?: number | null }
+  // `tree` (agent >= 0.36.0) is the whole-tree total from model_usage —
+  // subagents included. The flat fields count the main thread only, which
+  // under-reports every ultracode/Workflow session.
+  | {
+      type: 'usage'; output_tokens: number; input_tokens?: number;
+      cache_read_tokens?: number; cache_write_tokens?: number;
+      final?: boolean; duration_ms?: number; cost_usd?: number | null;
+      tree?: {
+        input_tokens: number; output_tokens: number;
+        cache_read_tokens: number; cache_write_tokens: number;
+        cost_usd: number | null; models: string[];
+      };
+    }
   | { type: 'stop'; subtype?: string }
+  // compaction (agent >= 0.36.0) = the CLI replaced the conversation with a
+  // summary. Charon's own rows are untouched, so this marks a boundary rather
+  // than a loss: above it is still readable, but the model no longer remembers
+  // it. Persisted as a role='event' row so it keeps its place after a refetch.
+  | { type: 'compaction'; trigger?: string; preTokens?: number; postTokens?: number }
+  // session_info (agent >= 0.36.0) = the CLI's init frame. `capabilities` is
+  // the sanctioned feature-detection channel (CLI >= 2.1.205). Broadcast-only:
+  // it describes the running CLI process, so it must not outlive it.
+  | {
+      type: 'session_info';
+      capabilities?: string[]; slashCommands?: string[]; tools?: string[];
+      plugins?: string[]; modelEfforts?: Record<string, string[]>;
+    }
+  // external_message (agent >= 0.36.0) = a turn driven by ANOTHER agent
+  // (origin 'peer' | 'coordinator'). It arrives as plain-string user content,
+  // which the tool-result path drops — so without this the session visibly
+  // acts on nothing.
+  | { type: 'external_message'; origin: string; text: string }
+  // turn_error (agent >= 0.36.0) = typed turn failure off AssistantMessage
+  // .error (authentication_failed, billing_error, …). The same fact §14.65
+  // infers by regexing prose; layered over it, not replacing it.
+  | { type: 'turn_error'; kind: string }
   | { type: 'error'; msg: string; fatal?: boolean };
 
 // Mirror of claude_agent_sdk.EffortLevel. Re-exported from

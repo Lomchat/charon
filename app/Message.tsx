@@ -61,6 +61,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   // AskUserQuestion / ExitPlanMode tool_use above — we don't render the raw duplicate.
   if (m.role === 'user_question' || m.role === 'exit_plan_request') return null;
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
+  if (m.role === 'compaction') return <CompactionMarker m={m} />;
 
   const isAssistant = m.role === 'assistant';
   return (
@@ -154,6 +155,30 @@ function ContinueCta({ onContinue }: { onContinue: () => void }) {
 // in the parent, so their references stay stable until the message actually
 // changes, letting memo's shallow compare skip the re-render. See CLAUDE.md §11.
 export default memo(Message);
+
+/**
+ * Full-width rule marking where the CLI compacted the conversation.
+ *
+ * The distinction it draws is the whole point: everything ABOVE is still here
+ * and still readable — Charon's transcript lives in its own SQLite, not in the
+ * CLI's file — but the MODEL no longer remembers it. Without this, a session
+ * that suddenly stops knowing what was agreed ten minutes ago just reads as
+ * broken, and the user's next move is to re-explain into a void.
+ *
+ * A rule rather than a bubble: it is a boundary between two regions of the
+ * conversation, not something anyone said.
+ */
+function CompactionMarker({ m }: { m: Msg }) {
+  const auto = m.content === 'auto';
+  return (
+    <div className="compaction-marker" role="separator">
+      <span className="cm-label">
+        Conversation compactée{auto ? ' automatiquement' : ''} — Claude ne se
+        souvient plus des messages au-dessus
+      </span>
+    </div>
+  );
+}
 
 function ThinkingBubble({ m }: { m: Msg }) {
   const [open, setOpen] = useState(false);

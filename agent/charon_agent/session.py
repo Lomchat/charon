@@ -38,6 +38,17 @@ try:
             SDK_VERSION = _pkg_version("claude-agent-sdk")
     except Exception:  # pragma: no cover
         SDK_VERSION = None
+    # THE terminal-task-status oracle, straight from the SDK. The hub used to
+    # keep two hand-written word lists (app/bgTasks.ts and bgTaskState.ts) which
+    # drifted in OPPOSITE directions (§14.91). Read it once here and stamp the
+    # answer on the wire so nothing downstream has to guess.
+    try:
+        from claude_agent_sdk import TERMINAL_TASK_STATUSES as _TERMINAL  # type: ignore
+        TERMINAL_TASK_STATUSES: frozenset[str] | None = frozenset(
+            str(s).lower() for s in _TERMINAL
+        )
+    except Exception:  # pragma: no cover - SDK too old to export it
+        TERMINAL_TASK_STATUSES = None
 except ImportError as e:  # pragma: no cover - depends on the remote env
     ClaudeAgentOptions = None  # type: ignore
     ClaudeSDKClient = None  # type: ignore
@@ -45,20 +56,30 @@ except ImportError as e:  # pragma: no cover - depends on the remote env
     SDK_AVAILABLE = False
     SDK_IMPORT_ERROR = str(e)
     SDK_VERSION = None
+    TERMINAL_TASK_STATUSES = None
 
 
 EmitCallback = Callable[[dict[str, Any]], None]
 StateSaveCallback = Callable[[], Awaitable[None] | None]
 
 
-# Tools auto-allowed universally (all modes)
-AUTO_ALLOW_TOOLS = {"TodoWrite", "ExitPlanMode"}
+# Tools auto-allowed universally (all modes).
+# TodoWrite is off by default since CLI 2.1.142 and was superseded by the Task*
+# family (TaskCreate/TaskUpdate/TaskGet/TaskList). Both spellings stay listed:
+# the pyz runs against whatever CLI the SDK bundles, and an old bundle still
+# emits TodoWrite. These are bookkeeping tools with no side effect outside the
+# transcript — gating them behind a permission card is pure noise.
+AUTO_ALLOW_TOOLS = {
+    "TodoWrite", "ExitPlanMode",
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+}
 
 # Tools auto-allowed in plan mode only
 PLAN_MODE_SAFE_TOOLS = {
     "Read", "Grep", "Glob", "LS", "NotebookRead",
     "WebFetch", "WebSearch",
     "TodoWrite",
+    "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
 }
 
 # Read-only Bash commands auto-allowed in plan mode (first word after stripping path)
@@ -66,6 +87,10 @@ PLAN_MODE_SAFE_BASH = {
     "ls", "dir", "cat", "head", "tail", "more", "less", "find",
     "pwd", "echo", "printf", "date", "whoami", "hostname", "id", "uname",
     "grep", "egrep", "fgrep", "rg", "ag",
+    # Native macOS/Linux CLI builds (>= 2.1.117) drop the dedicated Glob/Grep
+    # tools and expose embedded `bfs`/`ugrep` through Bash instead. Without
+    # these two, plan mode asks permission for what used to be a free read.
+    "bfs", "ugrep",
     "wc", "file", "du", "df", "stat", "basename", "dirname", "realpath", "readlink",
     "ps", "top", "free", "uptime", "env", "printenv",
     "which", "type", "command", "whereis",
@@ -96,6 +121,107 @@ DANGEROUS_PATTERNS = (
 # Snapshot tools before/after edit (the UI client displays a diff)
 SNAPSHOT_TOOLS = {"Edit", "Write", "MultiEdit"}
 SNAPSHOT_MAX = 256 * 1024  # 256KB per snapshot
+
+
+def _field(obj: Any, *names: str) -> Any:
+    """Read the first present field from a dict OR a dataclass, trying each
+    name in order. SDK payloads arrive as either, and switched between snake
+    and camel spellings across versions — so never bind to one shape."""
+    for n in names:
+        if isinstance(obj, dict):
+            if n in obj:
+                return obj[n]
+        else:
+            v = getattr(obj, n, None)
+            if v is not None:
+                return v
+    return None
+
+
+def _num(v: Any) -> float:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+
+
+def _nested_cache_creation(usage: dict[str, Any]) -> int:
+    """Cache-write tokens when the API reports them ONLY under a nested
+    `cache_creation` breakdown ({ephemeral_5m_input_tokens, …}) instead of the
+    flat `cache_creation_input_tokens`."""
+    nested = usage.get("cache_creation")
+    if not isinstance(nested, dict):
+        return 0
+    return int(sum(_num(v) for v in nested.values()))
+
+
+def _extract_effort_support(sdata: dict[str, Any]) -> dict[str, list[str]] | None:
+    """Pull per-model effort support out of the init frame.
+
+    The CLI reports `supportedEffortLevels` per model (SDK >= 0.1.49) but has
+    moved where it hangs it more than once, so search the plausible containers
+    rather than binding to one path — a miss costs a feature, a wrong guess
+    costs a crash. Charon otherwise hard-codes these levels in three separate
+    places (§14.35) and offers `max` on models that 400 on it.
+    """
+    def levels_of(entry: Any) -> list[str] | None:
+        v = _field(entry, "supportedEffortLevels", "supported_effort_levels")
+        if isinstance(v, list):
+            out = [x for x in v if isinstance(x, str) and x]
+            return out or None
+        # A model that supports effort but doesn't enumerate: report nothing
+        # rather than inventing a list.
+        return None
+
+    for container_key in ("model_info", "modelInfo", "models", "model"):
+        container = sdata.get(container_key)
+        if isinstance(container, dict):
+            # Either {modelId: {...}} or a single model's info dict.
+            direct = levels_of(container)
+            if direct:
+                mid = _field(container, "id", "model", "name")
+                return {mid if isinstance(mid, str) and mid else "*": direct}
+            found: dict[str, list[str]] = {}
+            for mid, entry in container.items():
+                lv = levels_of(entry)
+                if isinstance(mid, str) and lv:
+                    found[mid] = lv
+            if found:
+                return found
+        elif isinstance(container, list):
+            found = {}
+            for entry in container:
+                lv = levels_of(entry)
+                mid = _field(entry, "id", "model", "name")
+                if isinstance(mid, str) and mid and lv:
+                    found[mid] = lv
+            if found:
+                return found
+    return None
+
+
+def _sum_model_usage(mu: Any) -> dict[str, Any] | None:
+    """Collapse ResultMessage.model_usage (dict keyed by model id) into one
+    whole-tree total. Returns None when the SDK is too old to provide it, so
+    the caller can fall back to the main-thread `usage`."""
+    if not isinstance(mu, dict) or not mu:
+        return None
+    tot = {"input_tokens": 0, "output_tokens": 0,
+           "cache_read_tokens": 0, "cache_write_tokens": 0}
+    cost = 0.0
+    models: list[str] = []
+    for model_id, entry in mu.items():
+        if isinstance(model_id, str) and model_id:
+            models.append(model_id)
+        tot["input_tokens"] += int(_num(_field(entry, "input_tokens", "inputTokens")))
+        tot["output_tokens"] += int(_num(_field(entry, "output_tokens", "outputTokens")))
+        tot["cache_read_tokens"] += int(_num(
+            _field(entry, "cache_read_input_tokens", "cacheReadInputTokens")))
+        tot["cache_write_tokens"] += int(_num(
+            _field(entry, "cache_creation_input_tokens", "cacheCreationInputTokens")))
+        cost += _num(_field(entry, "cost_usd", "costUSD", "costUsd"))
+    if not any(tot.values()) and cost <= 0:
+        return None
+    tot["cost_usd"] = round(cost, 6) if cost > 0 else None
+    tot["models"] = sorted(set(models))
+    return tot
 
 # file_path always auto-allowed on Write/Edit (Claude plans, /tmp)
 AUTO_ALLOW_WRITE_PREFIXES = (
@@ -825,6 +951,15 @@ class AgentSession:
                 if isinstance(msg_model, str) and msg_model and msg_model != self._effective_model:
                     self._effective_model = msg_model
                     out.append({"event": "effective_model", "model": msg_model})
+                # Typed failure (SDK >= 0.2.126): authentication_failed,
+                # billing_error, … The hub has been inferring exactly this by
+                # regexing the assistant's prose for "API Error: 401" (§14.65),
+                # with a documented pile of anti-false-positive guards. This is
+                # the same fact, stated. It LAYERS over the regex rather than
+                # replacing it: an older CLI still only says it in prose.
+                err_kind = _field(getattr(ev, "error", None), "type", "kind", "code")
+                if isinstance(err_kind, str) and err_kind:
+                    out.append({"event": "turn_error", "kind": err_kind})
                 for block in getattr(ev, "content", []) or []:
                     bt = type(block).__name__
                     if bt == "TextBlock":
@@ -872,6 +1007,17 @@ class AgentSession:
                 if isinstance(_data, dict) and _data.get("workflow_name"):
                     payload["workflow_name"] = _data["workflow_name"]
                 if payload.get("task_id"):
+                    # Stamp the SDK's own verdict on terminal-ness. A kill emits
+                    # BOTH vocabularies (updated:killed AND finished:stopped),
+                    # so the WORD is what matters, not which message carried it
+                    # — and the word list belongs to the SDK, not to us. Absent
+                    # on an SDK too old to export it, in which case the hub
+                    # falls back to its own normaliser.
+                    st = payload.get("status")
+                    if TERMINAL_TASK_STATUSES is not None and isinstance(st, str):
+                        payload["terminal"] = st.lower() in TERMINAL_TASK_STATUSES
+                    elif kind == "finished" and not isinstance(st, str):
+                        payload["terminal"] = True
                     out.append({"event": "bg_task", **payload})
             elif ev_type == "TaskProgressMessage" or (
                 ev_type == "SystemMessage"
@@ -938,6 +1084,22 @@ class AgentSession:
                     out.append(prog)
             elif ev_type == "UserMessage":
                 content_attr = getattr(ev, "content", None)
+                # Where this user turn came from (SDK >= 0.2.137). Anything other
+                # than a human typing is invisible otherwise: a message relayed
+                # from ANOTHER session (`peer`) arrives as plain-string content,
+                # which the branch below drops on the floor, so the session
+                # appears to act on nothing. Only the agent-to-agent kinds are
+                # surfaced — `task-notification` is already modelled as bg_task
+                # (§14.54) and the rest are CLI bookkeeping.
+                origin_kind = _field(getattr(ev, "origin", None), "kind", "type")
+                if isinstance(origin_kind, str) and origin_kind in ("peer", "coordinator"):
+                    text = content_attr if isinstance(content_attr, str) else "".join(
+                        getattr(b, "text", "") for b in (content_attr or [])
+                        if type(b).__name__ == "TextBlock"
+                    )
+                    if text.strip():
+                        out.append({"event": "external_message",
+                                    "origin": origin_kind, "text": text})
                 if isinstance(content_attr, str):
                     # Plain-string user content (synthetic CLI injections,
                     # system reminders) — nothing to forward; iterating a str
@@ -1006,17 +1168,92 @@ class AgentSession:
                 def _u(key: str, fallback: int) -> int:
                     v = ru.get(key)
                     return int(v) if isinstance(v, (int, float)) else fallback
-                out.append({
+                # `usage` counts the MAIN thread only. `model_usage` (SDK >=
+                # 0.2.126) is the whole-tree total, subagents included — which is
+                # every ultracode/Workflow session (§14.56). Reporting `usage`
+                # there under-counts by however much the fan-out spent; the CLI
+                # had the identical bug in its own /stats until 2.1.89. Prefer the
+                # tree total, fall back to the main-thread one on older SDKs.
+                tree = _sum_model_usage(getattr(ev, "model_usage", None))
+                usage_ev: dict[str, Any] = {
                     "event": "usage", "final": True,
                     "output_tokens": _u("output_tokens", self._usage_committed_out + self._usage_cur_out),
                     "input_tokens": _u("input_tokens", self._usage_in),
                     "cache_read_tokens": _u("cache_read_input_tokens", self._usage_cache),
+                    # Cache WRITES: the API may report them only under a nested
+                    # `cache_creation` breakdown (CLI 2.1.152 fixed the same
+                    # zero-reporting bug), so read the flat key then the nested one.
+                    "cache_write_tokens": _u("cache_creation_input_tokens",
+                                             _nested_cache_creation(ru)),
                     "duration_ms": int(getattr(ev, "duration_ms", 0) or 0),
                     "cost_usd": getattr(ev, "total_cost_usd", None),
-                })
-                out.append({"event": "stop", "subtype": subtype or ""})
+                }
+                if tree:
+                    usage_ev["tree"] = tree
+                out.append(usage_ev)
+                # Typed turn outcome (SDK >= 0.2.126). `terminal_reason` says WHY
+                # the turn ended (completed | max_turns | aborted_streaming |
+                # aborted_tools) and `api_error_status` carries the HTTP status
+                # when the API is what failed. The hub layers these ABOVE the
+                # assistant-text regexes of §14.65/68 — it does not replace them,
+                # because an older CLI still reports failures only as prose.
+                stop_ev: dict[str, Any] = {"event": "stop", "subtype": subtype or ""}
+                for key, wire in (
+                    ("terminal_reason", "terminal_reason"),
+                    ("stop_reason", "stop_reason"),
+                    ("api_error_status", "api_error_status"),
+                ):
+                    v = getattr(ev, key, None)
+                    if isinstance(v, (str, int)):
+                        stop_ev[wire] = v
+                if getattr(ev, "is_error", None) is True:
+                    stop_ev["is_error"] = True
+                out.append(stop_ev)
             elif ev_type == "SystemMessage":
-                pass  # already handled above
+                # Everything the CLI tells us about itself arrives here and used
+                # to be discarded wholesale.
+                sub = getattr(ev, "subtype", None)
+                sdata = getattr(ev, "data", None)
+                sdata = sdata if isinstance(sdata, dict) else {}
+                if sub == "compact_boundary":
+                    # The CLI just replaced the conversation with a summary. Our
+                    # OWN transcript keeps every message (it lives in the hub's
+                    # SQLite, not in the CLI's), so nothing is lost — but from
+                    # here on the model no longer remembers what is above. That
+                    # is invisible without a marker, and reads as "the session
+                    # went stupid". Durable on purpose: it must survive a
+                    # refetch and sit at the right place in history.
+                    ev_out: dict[str, Any] = {"event": "compaction"}
+                    trig = sdata.get("trigger") or sdata.get("compact_trigger")
+                    if isinstance(trig, str) and trig:
+                        ev_out["trigger"] = trig
+                    for k in ("pre_tokens", "post_tokens"):
+                        v = sdata.get(k)
+                        if isinstance(v, (int, float)):
+                            ev_out[k] = int(v)
+                    out.append(ev_out)
+                elif sub == "init":
+                    # Feature detection, the sanctioned way (CLI >= 2.1.205):
+                    # `capabilities[]` instead of comparing version strings.
+                    # Also carries the real tool list (native builds swap
+                    # Glob/Grep for embedded bfs/ugrep) and the per-model effort
+                    # support, which we otherwise hard-code in three places
+                    # (§14.35) and get wrong whenever Anthropic moves the levels.
+                    info: dict[str, Any] = {}
+                    for key, wire in (
+                        ("capabilities", "capabilities"),
+                        ("slash_commands", "slash_commands"),
+                        ("tools", "tools"),
+                        ("plugins", "plugins"),
+                    ):
+                        v = sdata.get(key)
+                        if isinstance(v, list):
+                            info[wire] = [x for x in v if isinstance(x, (str, int))]
+                    efforts = _extract_effort_support(sdata)
+                    if efforts:
+                        info["model_efforts"] = efforts
+                    if info:
+                        out.append({"event": "session_info", **info})
         except Exception as e:
             out.append({"event": "error", "msg": f"translate: {e}"})
         return out

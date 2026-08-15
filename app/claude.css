@@ -1674,6 +1674,28 @@
 .bubble.role-assistant.streaming::after {
   content: '▍'; color: var(--gold-bright); animation: cpulse 1s infinite ease-in-out;
 }
+/* A turn driven by ANOTHER agent, not by the user. Deliberately close to
+   role-user (it does drive the turn the same way) but violet, the colour that
+   already means "something other than you is working" (§14.91). */
+.bubble.role-external { border-color: rgba(178,148,232,0.45); background: rgba(172,143,224,0.07); }
+.bubble.role-external .tag { color: var(--violet-bright); }
+.bubble.role-external .tag::after { content: ' (agent)'; opacity: 0.7; }
+
+/* Compaction boundary — a rule across the column, not a bubble: it marks a
+   border between two regions of the conversation rather than something anyone
+   said. Everything above it is still readable; only the model's memory of it
+   is gone, which is exactly what the label has to convey. */
+.compaction-marker {
+  display: flex; align-items: center; gap: 10px;
+  margin: 14px 2px; color: var(--muted-2, #6a7388);
+  font-size: 11px; letter-spacing: 0.01em;
+}
+.compaction-marker::before,
+.compaction-marker::after {
+  content: ''; flex: 1 1 auto; height: 1px;
+  background: linear-gradient(to right, transparent, rgba(106,115,136,0.45), transparent);
+}
+.compaction-marker .cm-label { flex: 0 1 auto; text-align: center; }
 /* tool_use card — terminal style */
 .bubble.tool-use {
   background: rgba(28,31,41,0.45);

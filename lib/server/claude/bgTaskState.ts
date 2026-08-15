@@ -28,8 +28,15 @@ export { BG_TASK_MAX_AGE_S };
  *  `background`), and `stop` — the word a stop_task kill reports — ended it
  *  nowhere. `updated` carries a free-form status string from the SDK, hence
  *  matching on the word rather than on an enum. */
-export function isBgTaskDone(ev: { kind?: unknown; status?: unknown }): boolean {
+export function isBgTaskDone(
+  ev: { kind?: unknown; status?: unknown; terminal?: unknown },
+): boolean {
   if (ev.kind === 'finished') return true;
+  // agent >= 0.36.0 ships the SDK's own verdict on the event. It outranks our
+  // word list: that list is a reimplementation of the SDK constant, and the
+  // failure it was written about is precisely "a status word we didn't think
+  // of". Older agents omit the flag → fall through to the words.
+  if (typeof ev.terminal === 'boolean') return ev.kind === 'updated' && ev.terminal;
   return ev.kind === 'updated' && isTerminalBgStatus(ev.status);
 }
 
