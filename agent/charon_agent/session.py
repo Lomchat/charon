@@ -63,6 +63,10 @@ def _bundled_claude_path() -> str | None:
     """The CLI binary the SDK bundles — the same one that runs our sessions.
     Resolved from the installed package rather than $PATH: the standalone
     `claude` may be absent or a different version (§14.53)."""
+    # `os` imported locally: this module does not import it at top level, and
+    # the surrounding except would have swallowed the NameError into a silent
+    # "CLI not found" — which is exactly how this shipped once.
+    import os
     try:
         import claude_agent_sdk as _m
         p = os.path.join(os.path.dirname(_m.__file__), "_bundled", "claude")
@@ -862,6 +866,11 @@ class AgentSession:
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
+            # The ADDRESSABLE name (--name). Persisted because it is a
+            # START-time flag: a restored session that forgets it comes back
+            # under the CLI's auto-generated `<dir>-<hash>`, silently breaking
+            # every address another agent had for it.
+            "cli_name": self.cli_name,
             "permission_mode": self.permission_mode,
             "status": persist_status,
             "model": self.model,

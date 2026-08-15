@@ -31,6 +31,7 @@ import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
 import { assignHandlesByVps } from '@/lib/sessionHandle';
+import { invalidateCliNames } from '@/lib/server/claude/cliNames';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
 
 // How long after the last background task finishes before the session is
@@ -2318,6 +2319,10 @@ export async function startNewSession(opts: {
       cli_name: cliNameFor(opts.vpsId, sessionId,
         { id: sessionId, name: opts.name ?? null, cwd: opts.cwd }),
     });
+    // The addressable name only exists once the CLI is up, and the cached map
+    // was read before that — without this the new session shows an unconfirmed
+    // handle for a full TTL despite already answering to the real one.
+    invalidateCliNames(opts.vpsId);
   } catch (e: any) {
     streams.delete(sessionId);
     db.update(claudeSessions).set({ status: 'error' })
@@ -2394,7 +2399,13 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // gotcha 36.
     let resolvedStatus: WorkerStatus = 'starting';
     try {
-      const rpcRes = await client.call('resume_session', { session_id: sessionId });
+      // A resume is the ONLY moment --name can reach the CLI (start-time flag),
+      // so a rename made while the session ran is applied here.
+      const rpcRes = await client.call('resume_session', {
+        session_id: sessionId,
+        cli_name: cliNameFor(row.vpsId, sessionId),
+      });
+      invalidateCliNames(row.vpsId);
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
         resolvedStatus = agentStatus;
@@ -2422,6 +2433,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           // reach the CLI, since --name is fixed at startup.
           cli_name: cliNameFor(row.vpsId, sessionId),
         });
+        // A resume is the only moment --name can change (start-time flag), so
+        // it is also the only moment the cached answer can go stale.
+        invalidateCliNames(row.vpsId);
       } catch (startErr: any) {
         // If another concurrent call just created it (race between
         // two resume paths), the agent replies "already exists". In that

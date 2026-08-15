@@ -365,6 +365,7 @@ class Server:
                     model=row.get("model"),
                     fallback_model=row.get("fallback_model"),
                     effort=row.get("effort"),
+                    cli_name=row.get("cli_name"),
                 )
             except Exception as e:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
@@ -608,16 +609,28 @@ class Server:
                 rows = json.loads(r.stdout or "[]")
             except Exception as e:
                 return {"ok": False, "error": f"bad json: {e}"}
-            out = []
+            by_claude = {}
             for x in rows if isinstance(rows, list) else []:
-                if not isinstance(x, dict):
-                    continue
-                sid = x.get("sessionId") or x.get("session_id")
-                if isinstance(sid, str) and sid:
-                    out.append({"claude_session_id": sid,
-                                "name": x.get("name"),
-                                "cwd": x.get("cwd"),
-                                "kind": x.get("kind")})
+                if isinstance(x, dict):
+                    sid = x.get("sessionId") or x.get("session_id")
+                    if isinstance(sid, str) and sid:
+                        by_claude[sid] = x.get("name")
+            # Report OUR session id alongside, keyed from the sessions we own.
+            # Joining on claude_session_id alone was fragile: the hub's copy of
+            # that id can be missing or stale right after a resume, and the
+            # whole feature then silently shows nothing. The agent holds both
+            # halves, so it is the right place to bind them.
+            out = []
+            for sess in self.sessions.values():
+                csid = getattr(sess, "claude_session_id", None)
+                cli = by_claude.get(csid) if csid else None
+                out.append({
+                    "session_id": getattr(sess, "session_id", None),
+                    "claude_session_id": csid,
+                    # Live name when the CLI is up; else the one we asked for.
+                    "name": cli or getattr(sess, "cli_name", None),
+                    "live": cli is not None,
+                })
             return {"ok": True, "agents": out}
 
         if method == "list_sessions":
@@ -1015,6 +1028,13 @@ class Server:
             s = self._require_session(sid)
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
+            # A resume is the ONLY moment --name can change: it is a start-time
+            # flag, so a rename made while the session ran reaches the CLI here
+            # or not at all. Accept an updated value; keep the old one when the
+            # caller does not supply one.
+            cn = params.get("cli_name")
+            if isinstance(cn, str) and cn and hasattr(s, "cli_name"):
+                s.cli_name = cn
             # Reset internal state so we can restart cleanly
             s.status = "starting"
             s._stopped.clear()

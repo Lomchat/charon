@@ -27,10 +27,13 @@ export async function cliNamesForVps(vpsId: string): Promise<Map<string, string>
     const client = getAgentClientForVpsId(vpsId);
     if (client.status === 'connected') {
       const r = await client.call('cli_agents', {}) as
-        { ok?: boolean; agents?: Array<{ claude_session_id?: string; name?: string }> };
+        { ok?: boolean; agents?: Array<{ session_id?: string; name?: string }> };
+      // Keyed on CHARON's session id, which the agent supplies: joining on
+      // claude_session_id was fragile — the hub's copy can be missing right
+      // after a resume, and the feature then silently showed nothing.
       for (const a of r?.agents ?? []) {
-        if (a?.claude_session_id && typeof a.name === 'string' && a.name) {
-          names.set(a.claude_session_id, a.name);
+        if (a?.session_id && typeof a.name === 'string' && a.name) {
+          names.set(a.session_id, a.name);
         }
       }
     }

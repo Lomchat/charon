@@ -78,8 +78,7 @@ export async function GET(req: Request) {
         liveStatus: stream ? stream.status : r.status,
         // What Claude itself calls this session. Null = not known (agent too
         // old, VPS offline, or session not running).
-        cliName: (r.claudeSessionId
-          ? cliNameByVps.get(r.vpsId)?.get(r.claudeSessionId) : null) ?? null,
+        cliName: cliNameByVps.get(r.vpsId)?.get(r.id) ?? null,
         subscribers: focusCountFor(r.id),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
