@@ -404,6 +404,7 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
+        "fork_session",
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
@@ -817,6 +818,42 @@ class Server:
                 "fallback_model": s.fallback_model,
                 "applied_at_next_start": deferred,
             }
+
+        if method == "fork_session":
+            # Branch a session's transcript into a NEW one, optionally cutting
+            # at a message. Pure file work (the SDK copies the transcript and
+            # remaps every uuid) — it does NOT touch the live session, so the
+            # original keeps running untouched, which is the whole point.
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            csid = getattr(s_, "claude_session_id", None)
+            if not csid:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               "session has no transcript yet — nothing to fork")
+            up_to = params.get("up_to_message_id")
+            if up_to is not None and not isinstance(up_to, str):
+                raise RpcError(ERR_INVALID_PARAMS, "up_to_message_id must be a string")
+            title = params.get("title")
+            if title is not None and not isinstance(title, str):
+                raise RpcError(ERR_INVALID_PARAMS, "title must be a string")
+            try:
+                from claude_agent_sdk import fork_session as _fork
+            except Exception as e:
+                raise RpcError(ERR_SDK_UNAVAILABLE,
+                               f"this SDK cannot fork sessions: {e}")
+            try:
+                res = _fork(csid, directory=getattr(s_, "cwd", None),
+                            up_to_message_id=up_to, title=title)
+            except FileNotFoundError as e:
+                raise RpcError(ERR_INVALID_PARAMS, f"transcript not found: {e}")
+            except ValueError as e:
+                # Bad uuid, or a message id that is not in this transcript.
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            new_id = getattr(res, "session_id", None) or (
+                res.get("session_id") if isinstance(res, dict) else None)
+            if not isinstance(new_id, str) or not new_id:
+                raise RpcError(ERR_INTERNAL, "fork returned no session id")
+            return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
 
         if method == "set_session_name":
             sid = self._require_sid(params)

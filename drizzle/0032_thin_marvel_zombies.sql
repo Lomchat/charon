@@ -1,0 +1,1 @@
+ALTER TABLE `claude_session_messages` ADD `cli_uuid` text;

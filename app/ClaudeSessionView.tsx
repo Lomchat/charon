@@ -180,6 +180,32 @@ export default function ClaudeSessionView({
   // at the bottom of this file). Keeping it out of this component is what stops
   // a keystroke from re-rendering the whole session view — and therefore the
   // (expensive) message list. See CLAUDE.md §11 / §14.
+  // Fork = branch this transcript into a NEW session (agent >= 0.39.0). The
+  // model is bound to the Anthropic-side session, so this is also the only
+  // real answer to "I want this conversation on another model" — which the
+  // model badge could previously only warn about (§14.35).
+  const [forking, setForking] = useState(false);
+  const [forkError, setForkError] = useState<string | null>(null);
+  const doFork = useCallback(async () => {
+    if (forking) return;
+    setForking(true);
+    try {
+      const r = await fetch(`/api/claude/sessions/${sessionId}/fork`, { method: 'POST' });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.session?.id) {
+        setForkError(j?.error || 'fork failed');
+        return;
+      }
+      // Open the branch straight away: the point of forking is to work in it.
+      setForkError(null);
+      onOpenSession?.(j.session.id);
+    } catch (e: any) {
+      setForkError(String(e?.message || e));
+    } finally {
+      setForking(false);
+    }
+  }, [forking, sessionId, onOpenSession]);
+
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
 
@@ -581,6 +607,26 @@ export default function ClaudeSessionView({
             <button onClick={doSleep}>sleep</button>
           )}
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
+          {/* Branch the conversation. Claude-only (Codex threads have no fork
+              primitive, §14.59) and pointless before the first turn, when
+              there is no transcript to copy. The source session is untouched —
+              the fork is a file copy on the VPS — which is what makes this
+              safe to offer mid-conversation rather than as a destructive
+              "start over". */}
+          {sessionKind !== 'codex' && (
+            <button
+              onClick={doFork}
+              disabled={forking || !selected.claudeSessionId}
+              title={selected.claudeSessionId
+                ? 'Branch this conversation into a new session — this one keeps running untouched'
+                : 'Nothing to fork yet — send a message first'}
+            >{forking ? 'forking…' : 'fork'}</button>
+          )}
+          {forkError && (
+            <span className="bar-fork-err" title={forkError} onClick={() => setForkError(null)}>
+              fork: {forkError.slice(0, 60)}
+            </span>
+          )}
           <button
             className="kill"
             onClick={forceStop}

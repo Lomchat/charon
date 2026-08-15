@@ -22,6 +22,9 @@ export const publicMessageColumns = {
   model: claudeSessionMessages.model,
   seq: claudeSessionMessages.seq,
   tsMs: claudeSessionMessages.tsMs,
+  // The CLI transcript entry this row came from — the anchor "fork from here"
+  // branches at. Cheap (a uuid string) and only ever set on assistant rows.
+  cliUuid: claudeSessionMessages.cliUuid,
   createdAt: claudeSessionMessages.createdAt,
 };
 

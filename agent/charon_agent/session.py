@@ -1087,12 +1087,20 @@ class AgentSession:
                 err_kind = _field(getattr(ev, "error", None), "type", "kind", "code")
                 if isinstance(err_kind, str) and err_kind:
                     out.append({"event": "turn_error", "kind": err_kind})
+                # The transcript's own uuid for THIS message. Forking branches
+                # at a transcript entry and the SDK identifies it by this id, so
+                # without it the only possible fork is "the whole conversation".
+                msg_uuid = getattr(ev, "uuid", None)
+                msg_uuid = msg_uuid if isinstance(msg_uuid, str) and msg_uuid else None
                 for block in getattr(ev, "content", []) or []:
                     bt = type(block).__name__
                     if bt == "TextBlock":
                         text = getattr(block, "text", "")
                         if text:
-                            out.append({"event": "assistant_text", "delta": text})
+                            ev_txt: dict[str, Any] = {"event": "assistant_text", "delta": text}
+                            if msg_uuid:
+                                ev_txt["uuid"] = msg_uuid
+                            out.append(ev_txt)
                     elif bt == "ThinkingBlock":
                         thinking = getattr(block, "thinking", "")
                         if thinking:

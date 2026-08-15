@@ -278,6 +278,14 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // Backfilled from `created_at * 1000` by migration 0026, so no row is NULL
   // in practice; the column stays nullable only so the backfill and any
   // pre-0026 writer degrade instead of failing.
+  // The CLI transcript's own UUID for this message (assistant rows only).
+  //
+  // Forking branches at a transcript entry, and the SDK identifies that entry
+  // by ITS uuid — not by anything Charon assigns. Without this column the only
+  // possible fork is "the whole conversation"; with it, "fork from here" is a
+  // per-message action. Null on user rows, side-channel rows, and everything
+  // persisted before agent 0.39.0.
+  cliUuid: text('cli_uuid'),
   tsMs: integer('ts_ms'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [

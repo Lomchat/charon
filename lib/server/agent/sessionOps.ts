@@ -424,6 +424,11 @@ export class SessionStream {
   // assistant STARTED speaking, not when the boundary event closed the
   // buffer, or a long turn's text sorts after the tools it preceded.
   private pendingAssistantTsMs: number | null = null;
+  // The CLI transcript's uuid for the message being accumulated (agent >=
+  // 0.39.0). Stamped on the flush row so "fork from here" can name the exact
+  // transcript entry to branch at — the SDK identifies it by ITS uuid, not by
+  // anything Charon assigns. First delta wins, like the seq and ts above.
+  private pendingAssistantUuid: string | null = null;
   // Some Claude CLI failures are delivered as a synthetic assistant bubble
   // followed by a perfectly ordinary stop→active sequence. Remember the
   // classified final bubble until `stop`, then latch the session in `failed`;
@@ -674,6 +679,7 @@ export class SessionStream {
       this.currentAssistant = '';
       this.pendingAssistantSince = null;
       this.pendingAssistantTsMs = null;
+      this.pendingAssistantUuid = null;
     }
   }
 
@@ -822,6 +828,9 @@ export class SessionStream {
         // starts — the durable cursor never advances past it (P0.2).
         if (this.pendingAssistantSince == null && typeof ev.seq === 'number') {
           this.pendingAssistantSince = ev.seq;
+        }
+        if (this.pendingAssistantUuid == null && typeof ev.uuid === 'string' && ev.uuid) {
+          this.pendingAssistantUuid = ev.uuid;
         }
         // …and WHEN it starts, so the flush row is dated from the first
         // delta rather than from the boundary that closes it (§14.71).
@@ -1598,9 +1607,12 @@ export class SessionStream {
     // assistant STARTED speaking. Stamping it with the boundary event's ts
     // would sort a long answer after the tool calls it actually preceded.
     const flushTsMs = this.pendingAssistantTsMs;
+    // The transcript entry this row corresponds to — the fork anchor.
+    const flushUuid = this.pendingAssistantUuid;
     this.currentAssistant = '';
     this.pendingAssistantSince = null;
     this.pendingAssistantTsMs = null;
+    this.pendingAssistantUuid = null;
 
     if (this.isReplaying) {
       if (flushSeq != null && this.replayPersistedSeqs != null && this.replayPersistedSeqs.size > 0) {
@@ -1674,7 +1686,7 @@ export class SessionStream {
     // Stamp the row with the model that actually produced this text (per-
     // message attribution — the effective_model handler flushes BEFORE
     // switching, so buffered text never gets relabeled by a newer model).
-    const ok = this._persist('assistant', finalContent, { model: this.effectiveModel, seq: flushSeq, tsMs: flushTsMs });
+    const ok = this._persist('assistant', finalContent, { model: this.effectiveModel, seq: flushSeq, tsMs: flushTsMs, cliUuid: flushUuid });
     if (!ok) {
       // RESTORE (Codex 13.2.B): keep the text in the buffer — the next
       // boundary retries the flush with possibly more text (chronology
@@ -1964,7 +1976,7 @@ export class SessionStream {
     } catch {}
   }
 
-  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null }): boolean {
+  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null; cliUuid?: string | null }): boolean {
     // Stamp the row with the seq of the event being dispatched (null for
     // hub-originated rows like 'user' — sendUserMessage runs outside
     // dispatch). Flush rows override with the FIRST DELTA's seq via
@@ -1989,6 +2001,8 @@ export class SessionStream {
         // Only assistant rows carry a model stamp (see _flushAssistant).
         ...(extra?.model ? { model: extra.model } : {}),
         ...(seq != null ? { seq } : {}),
+        // Fork anchor: the CLI transcript entry this row corresponds to.
+        ...(extra?.cliUuid ? { cliUuid: extra.cliUuid } : {}),
         tsMs,
       }).run();
       return true;
@@ -2125,7 +2139,7 @@ export function listStreams(): SessionStream[] {
  * list it has nothing to do with. Stamping max+1 makes "new goes last" true in
  * both worlds, and costs one query.
  */
-function nextSessionPosition(vpsId: string): number {
+export function nextSessionPosition(vpsId: string): number {
   const [row] = db
     .select({ max: sql<number | null>`max(${claudeSessions.position})` })
     .from(claudeSessions)

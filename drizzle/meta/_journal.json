@@ -225,6 +225,13 @@
       "when": 1786817851792,
       "tag": "0031_jazzy_makkari",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1786820419948,
+      "tag": "0032_thin_marvel_zombies",
+      "breakpoints": true
     }
   ]
 }

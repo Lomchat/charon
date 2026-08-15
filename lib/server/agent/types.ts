@@ -141,7 +141,10 @@ export type AgentEvent = (
   | { event: 'status'; session_id: string; status: AgentSessionStatus }
   | { event: 'ready'; session_id: string }
   | { event: 'session_id'; session_id: string; claude_session_id: string }
-  | { event: 'assistant_text'; session_id: string; delta: string }
+  // `uuid` (agent >= 0.39.0) is the CLI transcript's own id for the message
+  // these deltas belong to — the anchor a fork branches at. First delta of a
+  // message carries it; the hub stamps it on the flush row.
+  | { event: 'assistant_text'; session_id: string; delta: string; uuid?: string }
   | { event: 'thinking'; session_id: string; text: string }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
@@ -396,6 +399,9 @@ export type AgentMethodName =
   // 0.38.0) so `claude --resume <name>` and the CLI's cross-session addressing
   // agree with what the dashboard shows.
   | 'set_session_name'
+  // Branch a transcript into a NEW session, optionally cutting at a message
+  // (agent >= 0.39.0). Pure file work — the original session keeps running.
+  | 'fork_session'
   | 'shell_list'
   | 'shell_start'
   | 'shell_input'

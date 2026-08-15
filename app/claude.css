@@ -5207,3 +5207,11 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ci-mention .cim-state { flex: none; font-size: 10px; opacity: 0.6; }
+
+/* Fork failure, inline next to the button that caused it — a toast would
+   detach the reason ("that message is not in this transcript") from the
+   action. Click to dismiss. */
+.bar-fork-err {
+  font-size: 11px; color: var(--crimson, #d98b8b); cursor: pointer;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
