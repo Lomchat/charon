@@ -48,7 +48,7 @@ def _fake_self():
         # rather than raise, which is exactly how this was caught.
         name=None,
         cwd="/tmp",
-        _cli_title_written=True,
+        _cli_title_value=None,
     )
 
 

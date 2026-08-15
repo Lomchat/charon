@@ -21,6 +21,7 @@ type Ctx = {
   total_tokens?: number; max_tokens?: number; percentage?: number;
   auto_compact_threshold?: number; model?: string;
   categories?: Array<{ name?: string | null; tokens?: number | null }>;
+  identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
 };
 
 type McpServer = { name?: string | null; status?: string | null; tool_count?: number | null; error?: string | null };
@@ -85,6 +86,27 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         <span>session</span>
         <button type="button" onClick={() => void load()} disabled={busy} title="refresh">↻</button>
       </div>
+
+      <section className="si-sec">
+        <h4>names</h4>
+        {/* The violet @handle is derived from CHARON's name. What every tool on
+            the VPS knows the session as is the CLI's own title — the two are
+            mirrored (agent >= 0.38.0, re-asserted on any difference) but a
+            session on an older agent, or one that has not taken a turn since,
+            can still disagree. Showing both is cheaper than asking anyone to
+            trust that they converged. */}
+        <ul className="si-cats">
+          <li><span>Charon</span><b>{ctx?.identity?.name || '(unnamed)'}</b></li>
+          <li><span>Claude</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
+        </ul>
+        {ctx?.identity && ctx.identity.cli_title
+          && ctx.identity.cli_title !== ctx.identity.name && (
+          <p className="si-none si-diverged">
+            The CLI still knows this session under a different name — it is
+            re-asserted at the next turn.
+          </p>
+        )}
+      </section>
 
       <section className="si-sec">
         <h4>context window</h4>

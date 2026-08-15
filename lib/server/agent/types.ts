@@ -410,6 +410,9 @@ export type AgentMethodName =
   | 'mcp_reconnect'
   | 'list_subagents'
   | 'get_subagent_messages'
+  // What Charon calls this session vs what the CLI calls it — so a divergence
+  // is visible rather than something the UI asks you to trust (§14.93).
+  | 'session_identity'
   | 'shell_list'
   | 'shell_start'
   | 'shell_input'

@@ -406,6 +406,7 @@ class Server:
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
         "fork_session", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
+        "session_identity",
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
@@ -821,13 +822,16 @@ class Server:
             }
 
         if method in ("get_context_usage", "mcp_status", "mcp_toggle",
-                      "mcp_reconnect", "list_subagents", "get_subagent_messages"):
+                      "mcp_reconnect", "list_subagents", "get_subagent_messages",
+                      "session_identity"):
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
             # All Claude-only: Codex has no equivalent surface (§14.59). Report
             # it rather than pretending the feature is merely empty.
             if getattr(s_, "kind", "claude") == "codex":
                 return {"ok": False, "error": "not available on Codex sessions"}
+            if method == "session_identity":
+                return s_.identity()
             if method == "get_context_usage":
                 return await s_.context_usage()
             if method == "mcp_status":
@@ -909,6 +913,11 @@ class Server:
                     written = bool(fn(name))
                 except Exception:
                     written = False
+            # Record what actually landed. On failure the value stays stale, so
+            # the turn-end comparison retries — that is the whole point of
+            # tracking the value rather than a "done" flag.
+            if written:
+                s._cli_title_value = name
             return {"ok": True, "name": name, "cli_title": written}
 
         if method == "set_effort":

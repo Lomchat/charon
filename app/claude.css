@@ -5247,3 +5247,5 @@
 .si-msg-role { font-size: 10px; opacity: 0.55; text-transform: uppercase; }
 .si-msg pre { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word;
   font-size: 11px; line-height: 1.45; opacity: 0.85; }
+
+.si-diverged { color: var(--gold-bright, #e0b96a); opacity: 0.85; margin-top: 4px; }

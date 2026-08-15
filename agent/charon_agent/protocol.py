@@ -160,6 +160,7 @@ METHODS = {
     "mcp_reconnect",
     "list_subagents",
     "get_subagent_messages",
+    "session_identity",
     "respond_permission",
     "respond_question",
     "respond_exit_plan",

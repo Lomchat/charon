@@ -404,9 +404,16 @@ class AgentSession:
         self._client_ctx: Any = None
         self._main_task: asyncio.Task | None = None
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
-        # Whether Charon's name has been mirrored into the CLI's transcript
-        # (write_cli_title). Retried at turn end until it lands.
-        self._cli_title_written = False
+        # The name we LAST mirrored into the CLI's transcript, or None.
+        #
+        # Deliberately the value and not a "done" boolean: a boolean latches on
+        # the first success, so a later rename whose write failed (VPS blip,
+        # transcript not yet on disk) was never retried and the two names
+        # diverged silently — Charon showing one thing, `claude --resume` and
+        # cross-session addressing another. Comparing values instead makes it
+        # converge: any difference is re-asserted at the next turn end, and an
+        # unchanged name writes nothing.
+        self._cli_title_value: str | None = None
         self._pending_perms: dict[str, asyncio.Future] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
@@ -752,6 +759,33 @@ class AgentSession:
                 "uuid": _field(m, "uuid"),
             })
         return {"ok": True, "messages": out}
+
+    def identity(self) -> dict[str, Any]:
+        """What Charon calls this session vs what the CLI calls it.
+
+        The dashboard derives its handle from ITS OWN name, so it can display
+        `@c8-arene` for a session every tool on the VPS knows as "Développer
+        l'arène…". They converge on their own now (write_cli_title re-asserts
+        on any difference), but "trust me, it converged" is not something a UI
+        should ask of anyone — so report both and let the panel show the gap.
+        """
+        out: dict[str, Any] = {"ok": True, "name": self.name,
+                               "claude_session_id": self.claude_session_id}
+        if not self.claude_session_id:
+            return out
+        try:
+            from claude_agent_sdk import list_sessions
+            for si in list_sessions(directory=self.cwd) or []:
+                if getattr(si, "session_id", None) == self.claude_session_id:
+                    for attr in ("custom_title", "title", "summary"):
+                        v = getattr(si, attr, None)
+                        if isinstance(v, str) and v:
+                            out["cli_title"] = v
+                            break
+                    break
+        except Exception as e:
+            out["cli_error"] = str(e)
+        return out
 
     def write_cli_title(self, name: str) -> bool:
         """Mirror Charon's session name into the CLI's OWN transcript.
@@ -1202,8 +1236,9 @@ class AgentSession:
                         self.claude_session_id = sid
                         out.append({"event": "session_id", "claude_session_id": sid})
                         self._session_id_emitted = True
-                        if self.name and not self._cli_title_written:
-                            self._cli_title_written = self.write_cli_title(self.name)
+                        if self.name and self.name != self._cli_title_value:
+                            if self.write_cli_title(self.name):
+                                self._cli_title_value = self.name
                         # Save async — fire and forget
                         asyncio.create_task(self._save_state())
             except Exception:
@@ -1487,8 +1522,14 @@ class AgentSession:
                 # Stop hook — that hook does not fire on a turn that ended in
                 # error, and was observed silent on some VPSes entirely, so a
                 # session would keep its uuid as a title forever.
-                if self.name and not self._cli_title_written:
-                    self._cli_title_written = self.write_cli_title(self.name)
+                # Re-assert on any DIFFERENCE, not once: this is what makes a
+                # rename converge even if its RPC never reached the agent, and
+                # what back-fills every session that predates 0.38.0 on the
+                # first turn after an agent update. A matching name writes
+                # nothing, so the transcript does not grow per turn.
+                if self.name and self.name != self._cli_title_value:
+                    if self.write_cli_title(self.name):
+                        self._cli_title_value = self.name
 
                 stop_ev: dict[str, Any] = {"event": "stop", "subtype": subtype or ""}
                 for key, wire in (

@@ -11,5 +11,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
   const { id } = await params;
-  return NextResponse.json(await callSessionRpc(id, 'get_context_usage'));
+  // Identity rides along: the panel shows both names side by side, and one
+  // round trip is enough for two facts that are always read together.
+  const [usage, identity] = await Promise.all([
+    callSessionRpc(id, 'get_context_usage'),
+    callSessionRpc(id, 'session_identity'),
+  ]);
+  return NextResponse.json({ ...usage, identity });
 }
