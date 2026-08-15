@@ -1232,6 +1232,29 @@ class AgentSession:
             except Exception:
                 pass
 
+    async def _on_user_prompt(self, input_data, tool_use_id, context):
+        """Surface a prompt this session did not receive from its user.
+
+        Only cross-session messages are forwarded: an ordinary prompt is
+        already in the transcript (the hub appends it optimistically when it
+        sends one), so echoing every submission here would duplicate them all.
+        The envelope is the discriminator, and it is also the only place the
+        sender's name exists.
+        """
+        d = input_data if isinstance(input_data, dict) else {}
+        raw = d.get("prompt")
+        if not isinstance(raw, str) or "cross-session-message" not in raw:
+            return {}
+        peer = _parse_cross_session(raw)
+        if not peer or not peer["text"].strip():
+            return {}
+        try:
+            self._emit("external_message", origin="peer", text=peer["text"],
+                       **({"from": peer["from"]} if peer["from"] else {}))
+        except Exception:
+            pass
+        return {}
+
     async def _on_stop_hook(self, input_data, tool_use_id, context):
         """The turn ended — report what is STILL RUNNING, authoritatively.
 
@@ -1728,6 +1751,13 @@ class AgentSession:
                     # ends (§14.91), plus the final assistant text. Native
                     # Python event — no mcp_tool indirection needed.
                     "Stop": [HookMatcher(hooks=[self._on_stop_hook])],
+                    # THE only channel that sees a peer message. The SDK does
+                    # NOT surface cross-session prompts on receive_messages():
+                    # measured on the fleet, the stream went session_id →
+                    # session_info → assistant_text with no UserMessage at all,
+                    # while the CLI transcript held the envelope. The hook fires
+                    # on every submitted prompt, peer-injected ones included.
+                    "UserPromptSubmit": [HookMatcher(hooks=[self._on_user_prompt])],
                 },
                 stderr=self._on_claude_stderr,
                 can_use_tool=self._can_use_tool,

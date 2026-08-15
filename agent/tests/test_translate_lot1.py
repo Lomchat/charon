@@ -272,5 +272,36 @@ class CrossSessionMessage(unittest.TestCase):
                  "external_message")
         self.assertEqual(ev["text"], "regenerate the types")
 
+
+class UserPromptSubmitHook(unittest.TestCase):
+    """⚠ The SDK does NOT surface a peer message on receive_messages(). Measured
+    on the fleet: the stream went session_id → session_info → assistant_text with
+    no UserMessage at all, while the CLI transcript held the envelope. The
+    UserPromptSubmit hook is the only channel that sees it."""
+
+    ENV = ('Another Claude session sent a message:\n'
+           '<cross-session-message from="uds:/x.sock" from-name="bug" from-mode="prompting">\n'
+           'bonjour\n</cross-session-message>\n\nThis came from another Claude session…')
+
+    def _run(self, prompt):
+        import asyncio
+        out = []
+        fake = types.SimpleNamespace(_emit=lambda ev, **kw: out.append((ev, kw)))
+        asyncio.run(AgentSession._on_user_prompt(fake, {"prompt": prompt}, None, None))
+        return out
+
+    def test_peer_message_is_emitted_with_its_sender(self):
+        self.assertEqual(self._run(self.ENV),
+                         [("external_message",
+                           {"origin": "peer", "text": "bonjour", "from": "bug"})])
+
+    def test_an_ordinary_prompt_stays_silent(self):
+        # The hub already appends what IT sent; echoing every submission here
+        # would duplicate every user message in the transcript.
+        self.assertEqual(self._run("un prompt normal"), [])
+
+    def test_malformed_input_is_not_fatal(self):
+        self.assertEqual(self._run(None), [])
+
 if __name__ == "__main__":
     unittest.main()
