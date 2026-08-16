@@ -310,6 +310,42 @@ async def fetch_codex_threads() -> dict[str, Any]:
                 pass
 
 
+async def codex_login_api_key(api_key: str) -> dict[str, Any]:
+    if not CODEX_AVAILABLE:
+        return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
+    client = None
+    try:
+        client = AsyncCodex(CodexConfig())
+        await client.login_api_key(api_key)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.close(), timeout=5.0)
+            except Exception:
+                pass
+
+
+async def codex_logout() -> dict[str, Any]:
+    if not CODEX_AVAILABLE:
+        return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
+    client = None
+    try:
+        client = AsyncCodex(CodexConfig())
+        await client.logout()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.close(), timeout=5.0)
+            except Exception:
+                pass
+
+
 def _rate_window(rl: Any) -> dict[str, Any] | None:
     """Normalize one Codex rate-limit window → the shape the hub UsageMeter
     understands (utilization %, resets_at seconds)."""
@@ -854,19 +890,9 @@ class CodexSession:
             return {"ok": False, "error": "Codex thread is not running"}
         from pydantic import BaseModel, ConfigDict, Field
 
-        class _Terminal(BaseModel):
-            model_config = ConfigDict(populate_by_name=True)
-            item_id: str | None = Field(default=None, alias="itemId")
-            process_id: str = Field(alias="processId")
-            command: str
-            cwd: str
-            os_pid: int | None = Field(default=None, alias="osPid")
-            cpu_percent: float | None = Field(default=None, alias="cpuPercent")
-            rss_kb: int | None = Field(default=None, alias="rssKb")
-
         class _List(BaseModel):
             model_config = ConfigDict(populate_by_name=True)
-            data: list[_Terminal]
+            data: list[dict[str, Any]]
             next_cursor: str | None = Field(default=None, alias="nextCursor")
 
         rows: list[dict[str, Any]] = []
@@ -949,6 +975,46 @@ class CodexSession:
         self._pending_request_meta[request_id] = {"method": method, "params": params}
 
         try:
+            if method == "mcpServer/elicitation/request" and params.get("mode") in ("form", "openai/form"):
+                schema = params.get("requestedSchema") or {}
+                properties = schema.get("properties") if isinstance(schema, dict) else {}
+                questions = []
+                key_by_question: dict[str, str] = {}
+                for key, spec in (properties.items() if isinstance(properties, dict) else []):
+                    spec = spec if isinstance(spec, dict) else {}
+                    question = str(spec.get("title") or key)
+                    key_by_question[question] = str(key)
+                    enum = spec.get("enum") if isinstance(spec.get("enum"), list) else []
+                    questions.append({
+                        "question": question,
+                        "header": str(params.get("serverName") or "MCP"),
+                        "multiSelect": spec.get("type") == "array",
+                        "options": [{"label": str(v), "description": ""} for v in enum],
+                    })
+                if not questions:
+                    questions = [{
+                        "question": str(params.get("message") or "Approve this MCP request?"),
+                        "header": str(params.get("serverName") or "MCP"),
+                        "multiSelect": False,
+                        "options": [{"label": "Accept"}, {"label": "Decline"}],
+                    }]
+                self._emit("user_question", id=request_id, questions=questions)
+                answers = await asyncio.wait_for(fut, timeout=1800.0)
+                if not isinstance(answers, dict):
+                    return {"action": "decline", "content": None}
+                if key_by_question:
+                    content = {
+                        key: answers[question]
+                        for question, key in key_by_question.items()
+                        if isinstance(answers.get(question), str)
+                    }
+                else:
+                    accepted = next(iter(answers.values()), "")
+                    if str(accepted).lower() != "accept":
+                        return {"action": "decline", "content": None}
+                    content = {}
+                return {"action": "accept", "content": content}
+
             if method == "item/tool/requestUserInput":
                 raw_questions = params.get("questions") or []
                 questions = []

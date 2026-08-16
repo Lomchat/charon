@@ -28,6 +28,9 @@ export default function CodexLoginModal({ vps, onClose }: {
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'starting' });
   const [copied, setCopied] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   // Refs so the unmount cleanup can cancel the RIGHT attempt without
   // re-running the effect on each phase change.
   const loginIdRef = useRef<string | null>(null);
@@ -106,6 +109,40 @@ export default function CodexLoginModal({ vps, onClose }: {
     } catch {}
   }
 
+  async function loginWithApiKey() {
+    if (!apiKey.trim() || accountBusy) return;
+    setAccountBusy(true); setAccountError(null);
+    try {
+      if (loginIdRef.current && !doneRef.current) {
+        await api.cancelCodexLogin(vps.id, loginIdRef.current).catch(() => {});
+      }
+      doneRef.current = true;
+      const r = await fetch(`/api/vps/${vps.id}/codex/account`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: apiKey.trim() }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'API-key login failed');
+      setApiKey(''); setPhase({ kind: 'success' });
+    } catch (e: any) { setAccountError(String(e?.message || e)); }
+    finally { setAccountBusy(false); }
+  }
+
+  async function logout() {
+    if (accountBusy) return;
+    setAccountBusy(true); setAccountError(null);
+    try {
+      if (loginIdRef.current && !doneRef.current) {
+        await api.cancelCodexLogin(vps.id, loginIdRef.current).catch(() => {});
+      }
+      doneRef.current = true;
+      const r = await fetch(`/api/vps/${vps.id}/codex/account`, { method: 'DELETE' });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'logout failed');
+      onClose(false);
+    } catch (e: any) { setAccountError(String(e?.message || e)); setAccountBusy(false); }
+  }
+
   return (
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(phase.kind === 'success'); }}>
       <div className="claude-modal codex-login-modal">
@@ -132,6 +169,12 @@ export default function CodexLoginModal({ vps, onClose }: {
               {phase.code}{copied ? <span className="cxl-copied">copied ✓</span> : null}
             </button>
             <div className="cxl-status">⟳ waiting for you to finish signing in… (the VPS saves its own credentials)</div>
+            <div className="cxl-step">or sign in directly with an API key (Charon does not store it):</div>
+            <input className="nw-input mono" type="text" autoComplete="off"
+              value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" />
+            <button className="wiz-btn ghost" disabled={accountBusy || !apiKey.trim()}
+              onClick={() => void loginWithApiKey()}>{accountBusy ? 'signing in…' : 'Use API key'}</button>
+            {accountError && <div className="cxl-status err">⚠ {accountError}</div>}
           </div>
         )}
 
@@ -139,6 +182,14 @@ export default function CodexLoginModal({ vps, onClose }: {
           <div className="cxl-body">
             <div className="cxl-status ok">✓ signed in — Codex is ready on {vps.name}</div>
             <button className="wiz-btn primary" onClick={() => onClose(true)}>Done</button>
+          </div>
+        )}
+
+        {vps.codexLoggedIn === 1 && phase.kind !== 'success' && (
+          <div className="cxl-body">
+            <button className="wiz-btn ghost" disabled={accountBusy} onClick={() => void logout()}>
+              {accountBusy ? 'signing out…' : 'Sign out Codex on this VPS'}
+            </button>
           </div>
         )}
 

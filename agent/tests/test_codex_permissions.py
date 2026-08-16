@@ -85,6 +85,21 @@ class TestCodexPermissions(unittest.TestCase):
 
         asyncio.run(main())
 
+    def test_mcp_form_uses_question_card_and_returns_content(self):
+        async def main():
+            s, emitted = session()
+            task = asyncio.create_task(s._await_sdk_request(
+                "mcpServer/elicitation/request",
+                {"requestId": "mcp-1", "mode": "form", "serverName": "docs",
+                 "requestedSchema": {"properties": {"project": {"title": "Project"}}}},
+            ))
+            await asyncio.sleep(0)
+            self.assertEqual(emitted[0]["event"], "user_question")
+            s.respond_question("mcp-1", {"Project": "Charon"})
+            self.assertEqual(await task, {"action": "accept", "content": {"project": "Charon"}})
+
+        asyncio.run(main())
+
 
 if __name__ == "__main__":
     unittest.main()

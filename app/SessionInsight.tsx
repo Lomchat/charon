@@ -28,7 +28,7 @@ type Ctx = {
 type McpServer = { name?: string | null; status?: string | null; tool_count?: number | null; error?: string | null };
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
-type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; rss_kb?: number | null };
+type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; cpuPercent?: number | null; rss_kb?: number | null; rssKb?: number | null };
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -181,11 +181,13 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         {terminals?.length ? <ul className="si-mcp">
           {terminals.map((term, i) => {
             const processId = term.process_id ?? term.processId ?? '';
+            const cpu = term.cpu_percent ?? term.cpuPercent;
+            const rss = term.rss_kb ?? term.rssKb;
             return <li key={processId || i} className="si-mcp-row ready">
               <span className="si-mcp-name" title={term.cwd}>{term.command || processId}</span>
               <span className="si-mcp-status">pid {processId}
-                {term.cpu_percent != null ? ` · ${term.cpu_percent}%` : ''}
-                {term.rss_kb != null ? ` · ${Math.round(term.rss_kb / 1024)} MB` : ''}
+                {cpu != null ? ` · ${cpu}%` : ''}
+                {rss != null ? ` · ${Math.round(rss / 1024)} MB` : ''}
               </span>
               <button type="button" onClick={async () => {
                 await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {

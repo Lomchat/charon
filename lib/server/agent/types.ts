@@ -339,6 +339,8 @@ export type AgentMethodName =
   | 'codex_login_start'
   | 'codex_login_status'
   | 'codex_login_cancel'
+  | 'codex_login_api_key'
+  | 'codex_logout'
   // Subdirs of a path — hub path autocomplete (agent >= 0.17.0, fsnav.py).
   // The fs route falls back to a one-shot ssh ls on older agents. NB: no
   // semicolon CHARACTER anywhere in comments inside this union —

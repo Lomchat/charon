@@ -97,6 +97,8 @@ from .codex_session import (
     fetch_codex_models,
     fetch_codex_threads,
     fetch_codex_usage,
+    codex_login_api_key,
+    codex_logout,
 )
 from .shell import AgentShell
 from .state import load_state, save_state
@@ -415,6 +417,7 @@ class Server:
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
+        "codex_login_api_key", "codex_logout",
         "list_dir",
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
         "git_pull", "git_discard",
@@ -684,6 +687,13 @@ class Server:
         if method == "codex_login_cancel":
             from . import codex_login
             return await codex_login.cancel(str(params.get("login_id") or ""))
+        if method == "codex_login_api_key":
+            api_key = params.get("api_key")
+            if not isinstance(api_key, str) or not api_key.strip():
+                raise RpcError(ERR_INVALID_PARAMS, "api_key required")
+            return await codex_login_api_key(api_key.strip())
+        if method == "codex_logout":
+            return await codex_logout()
 
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 
