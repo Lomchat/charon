@@ -63,6 +63,41 @@ class CodexNotificationTranslation(unittest.TestCase):
         diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
         self.assertEqual(CodexSession._split_turn_diff(diff)[0][0], "a.txt")
 
+    def test_dynamic_tool_is_rendered(self):
+        s = session()
+        item = ev("DynamicToolCallThreadItem", id="d1", tool="lookup", namespace="repo",
+                  arguments={"q": "x"}, success=True, content_items=[{"text": "ok"}])
+        out = []
+        s._on_item(item, phase="started", out=out)
+        s._on_item(item, phase="completed", out=out)
+        self.assertEqual(out[0]["name"], "repo/lookup")
+        self.assertEqual(out[1]["event"], "tool_result")
+
+    def test_collab_agents_have_visible_lifecycle(self):
+        s = session()
+        item = ev("CollabAgentToolCallThreadItem", id="c1", tool=types.SimpleNamespace(value="spawn"),
+                  receiver_thread_ids=["child"], sender_thread_id="parent", prompt="inspect",
+                  model="gpt", agents_states={"child": {"status": "completed", "message": "done"}},
+                  status=types.SimpleNamespace(value="completed"))
+        out = []
+        s._on_item(item, phase="started", out=out)
+        s._on_item(item, phase="completed", out=out)
+        self.assertTrue(any(e.get("event") == "bg_task" and e.get("kind") == "started" for e in out))
+        self.assertTrue(any(e.get("event") == "bg_task" and e.get("kind") == "finished" for e in out))
+
+    def test_review_image_sleep_and_hook_prompt_are_not_dropped(self):
+        s = session()
+        items = [
+            ev("EnteredReviewModeThreadItem", id="r", review="changes"),
+            ev("ImageGenerationThreadItem", id="i", status="completed", saved_path="/tmp/i.png", result=""),
+            ev("SleepThreadItem", id="s", duration_ms=50),
+            ev("HookPromptThreadItem", id="h", fragments=[types.SimpleNamespace(text="rule")]),
+        ]
+        out = []
+        for item in items:
+            s._on_item(item, phase="completed", out=out)
+        self.assertEqual([e["event"] for e in out], ["tool_activity", "tool_result", "tool_activity", "tool_activity"])
+
 
 if __name__ == "__main__":
     unittest.main()

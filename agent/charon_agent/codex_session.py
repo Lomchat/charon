@@ -967,6 +967,116 @@ class CodexSession:
                 if text:
                     out.append({"event": "assistant_text", "delta": text})
 
+        elif it == "UserMessageThreadItem":
+            # Live user input is already durably written by the hub before
+            # send_input. Keep the item understood (and available to thread
+            # readers/importers) without echoing a duplicate chat bubble.
+            return
+
+        elif it == "DynamicToolCallThreadItem":
+            name = str(getattr(item, "tool", "dynamic_tool") or "dynamic_tool")
+            namespace = getattr(item, "namespace", None)
+            if namespace:
+                name = f"{namespace}/{name}"
+            if phase == "started":
+                out.append({
+                    "event": "tool_use", "id": item_id, "name": name,
+                    "input": self._json_safe(getattr(item, "arguments", None)),
+                })
+            else:
+                success = getattr(item, "success", None)
+                content = self._stringify(self._json_safe(
+                    getattr(item, "content_items", None) or []
+                ))
+                out.append({
+                    "event": "tool_result", "tool_use_id": item_id,
+                    "content": content, "is_error": success is False,
+                })
+
+        elif it == "CollabAgentToolCallThreadItem":
+            tool = str(_enum_val(getattr(item, "tool", "collab_agent")))
+            receivers = list(getattr(item, "receiver_thread_ids", None) or [])
+            states = self._json_safe(getattr(item, "agents_states", None) or {})
+            if phase == "started":
+                out.append({
+                    "event": "tool_use", "id": item_id, "name": f"agents/{tool}",
+                    "input": {
+                        "sender": getattr(item, "sender_thread_id", None),
+                        "receivers": receivers, "prompt": getattr(item, "prompt", None),
+                        "model": getattr(item, "model", None),
+                    },
+                })
+                for receiver in receivers:
+                    out.append({
+                        "event": "bg_task", "kind": "started", "task_id": receiver,
+                        "description": f"Codex agent {receiver}", "tool_use_id": item_id,
+                        "task_type": "codex_collab",
+                    })
+            else:
+                status = str(_enum_val(getattr(item, "status", "")))
+                out.append({
+                    "event": "tool_result", "tool_use_id": item_id,
+                    "content": self._stringify(states),
+                    "is_error": status in ("failed", "error", "cancelled"),
+                })
+                for receiver in receivers:
+                    state = states.get(receiver, {}) if isinstance(states, dict) else {}
+                    out.append({
+                        "event": "bg_task", "kind": "finished", "task_id": receiver,
+                        "description": f"Codex agent {receiver}",
+                        "status": str(state.get("status", status)) if isinstance(state, dict) else status,
+                        "summary": str(state.get("message", "")) if isinstance(state, dict) else "",
+                        "task_type": "codex_collab", "terminal": True,
+                    })
+
+        elif it == "ImageGenerationThreadItem":
+            if phase == "started":
+                out.append({
+                    "event": "tool_use", "id": item_id, "name": "image_generation",
+                    "input": {"prompt": getattr(item, "revised_prompt", None)},
+                })
+            else:
+                path = self._path_str(getattr(item, "saved_path", None))
+                result = getattr(item, "result", "") or ""
+                out.append({
+                    "event": "tool_result", "tool_use_id": item_id,
+                    "content": path or str(result),
+                    "is_error": str(getattr(item, "status", "")) in ("failed", "error"),
+                })
+
+        elif it in ("EnteredReviewModeThreadItem", "ExitedReviewModeThreadItem"):
+            if phase == "completed":
+                entered = it == "EnteredReviewModeThreadItem"
+                out.append({
+                    "event": "tool_activity", "kind": "review",
+                    "id": item_id or "review", "status": "entered" if entered else "exited",
+                    "detail": {"review": getattr(item, "review", "")},
+                })
+
+        elif it == "SleepThreadItem":
+            if phase == "completed":
+                duration = int(getattr(item, "duration_ms", 0) or 0)
+                out.append({
+                    "event": "tool_activity", "kind": "sleep", "id": item_id or "sleep",
+                    "status": "completed", "detail": {"duration_ms": duration},
+                })
+
+        elif it == "HookPromptThreadItem":
+            if phase == "completed":
+                fragments = getattr(item, "fragments", None) or []
+                text = "\n".join(
+                    str(getattr(fragment, "text", "") or "") for fragment in fragments
+                    if getattr(fragment, "text", None)
+                )
+                out.append({
+                    "event": "tool_activity", "kind": "hook_prompt",
+                    "id": item_id or "hook-prompt", "status": "injected",
+                    "detail": {"text": text},
+                })
+
+        elif phase == "completed":
+            print(f"codex: unhandled thread item {it}", file=sys.stderr)
+
     @staticmethod
     def _path_str(v: Any) -> str | None:
         """Codex path fields (cwd, change.path) are pydantic RootModel wrappers
