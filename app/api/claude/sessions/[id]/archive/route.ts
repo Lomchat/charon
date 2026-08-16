@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
-import { db, claudeSessions } from '@/lib/db';
+import { db, claudeSessions, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { emitGlobalSessionListChanged, emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
@@ -37,8 +37,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       thread_id: row.claudeSessionId,
     });
     if (!result?.ok) throw new Error(result?.error || 'Codex archive failed');
-    db.update(claudeSessions).set({ archived: 1 })
-      .where(eq(claudeSessions.id, id)).run();
+    db.transaction((tx) => {
+      tx.update(claudeSessions).set({ archived: 1 })
+        .where(eq(claudeSessions.id, id)).run();
+      // Sleeping the worker invalidates every outstanding interaction. Keep
+      // no invisible approval/question capable of marking the VPS busy or of
+      // being answered after the thread has left the workspace.
+      tx.delete(claudePendingPermissions)
+        .where(eq(claudePendingPermissions.sessionId, id)).run();
+      tx.delete(claudePendingQuestions)
+        .where(eq(claudePendingQuestions.sessionId, id)).run();
+    });
     if (dropTabsForRef('session', id)) emitGlobalTabsChanged();
     emitGlobalSessionListChanged(id);
     return NextResponse.json({ ok: true, archived: true });

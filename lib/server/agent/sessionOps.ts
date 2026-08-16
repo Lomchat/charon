@@ -2254,7 +2254,10 @@ function cliNameFor(vpsId: string, sessionId: string, override?: { id: string; n
     const rows = db.select({
       id: claudeSessions.id, name: claudeSessions.name,
       cwd: claudeSessions.cwd, createdAt: claudeSessions.createdAt,
-    }).from(claudeSessions).where(eq(claudeSessions.vpsId, vpsId)).all();
+    }).from(claudeSessions).where(and(
+      eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
+    )).all();
     const list = rows.map((r) => ({ ...r, vpsId }));
     // A session being CREATED is not in the table yet at call time.
     if (override && !list.some((r) => r.id === override.id)) {
@@ -2270,7 +2273,10 @@ export function nextSessionPosition(vpsId: string): number {
   const [row] = db
     .select({ max: sql<number | null>`max(${claudeSessions.position})` })
     .from(claudeSessions)
-    .where(eq(claudeSessions.vpsId, vpsId))
+    .where(and(
+      eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
+    ))
     .all();
   return (row?.max ?? -1) + 1;
 }
@@ -2443,6 +2449,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
+    if (row.archived) throw new Error('session is archived; unarchive it before resuming');
     // Note: the `status === 'killed'` guard was removed with the kill→delete
     // merge. A killed session no longer exists in DB; this path is dead.
 
@@ -2799,6 +2806,14 @@ export async function reconcileVpsAgentState(
         .where(eq(claudeSessions.id, sid)).all();
     } catch { continue; }
     if (!row) continue;            // session unknown to Charon, we don't invent
+    if (row.archived) {
+      // An archived thread is intentionally absent from the live workspace.
+      // A stale daemon state must never make it reappear after a reconnect.
+      try {
+        getAgentClientForVpsId(vpsId).call('sleep_session', { session_id: sid }).catch(() => {});
+      } catch {}
+      continue;
+    }
     // (the old `row.status === 'killed'` guard is obsolete: the
     // kill→delete merge removed this persistent status; an existing DB
     // session is by construction non-killed.)
@@ -2920,6 +2935,7 @@ export async function reconcileVpsAgentState(
       .from(claudeSessions)
       .where(and(
         eq(claudeSessions.vpsId, vpsId),
+        eq(claudeSessions.archived, 0),
         or(
           inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
           and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),

@@ -102,6 +102,7 @@ function isVpsBusy(vpsId: string): boolean {
     .from(claudeSessions)
     .where(and(
       eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
       inArray(claudeSessions.status, ['thinking', 'starting']),
     ))
     .limit(1).all();
@@ -110,13 +111,21 @@ function isVpsBusy(vpsId: string): boolean {
   const perm = db.select({ sid: claudePendingPermissions.sessionId })
     .from(claudePendingPermissions)
     .innerJoin(claudeSessions, eq(claudePendingPermissions.sessionId, claudeSessions.id))
-    .where(and(eq(claudeSessions.vpsId, vpsId), eq(claudePendingPermissions.status, 'pending')))
+    .where(and(
+      eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
+      eq(claudePendingPermissions.status, 'pending'),
+    ))
     .limit(1).all();
   if (perm.length > 0) return true;
   const q = db.select({ sid: claudePendingQuestions.sessionId })
     .from(claudePendingQuestions)
     .innerJoin(claudeSessions, eq(claudePendingQuestions.sessionId, claudeSessions.id))
-    .where(and(eq(claudeSessions.vpsId, vpsId), eq(claudePendingQuestions.status, 'pending')))
+    .where(and(
+      eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
+      eq(claudePendingQuestions.status, 'pending'),
+    ))
     .limit(1).all();
   if (q.length > 0) return true;
   // 3./4. probes only concern LIVE sessions (a sleeping session's bg tasks
@@ -125,6 +134,7 @@ function isVpsBusy(vpsId: string): boolean {
     .from(claudeSessions)
     .where(and(
       eq(claudeSessions.vpsId, vpsId),
+      eq(claudeSessions.archived, 0),
       inArray(claudeSessions.status, ['active', 'failed', 'background']),
     ))
     .all();
