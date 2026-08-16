@@ -428,7 +428,9 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
-        "fork_session", "compact_session", "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
+        "fork_session", "compact_session", "rollback_session", "review_session",
+        "list_background_terminals", "stop_background_terminal",
+        "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
         "session_identity",
         "respond_permission",
@@ -902,9 +904,21 @@ class Server:
                       "session_identity"):
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
-            # All Claude-only: Codex has no equivalent surface (§14.59). Report
-            # it rather than pretending the feature is merely empty.
+            # Codex now exposes context/status, identity and MCP inventory
+            # through the SDK typed client. Sub-agent transcript browsing and
+            # config mutation remain Claude-only.
             if getattr(s_, "kind", "claude") == "codex":
+                if method == "session_identity":
+                    return s_.identity()
+                if method == "get_context_usage":
+                    return await s_.context_usage()
+                if method == "mcp_status":
+                    return await s_.mcp_status()
+                if method == "mcp_reconnect":
+                    name = params.get("name")
+                    if not isinstance(name, str) or not name:
+                        raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
+                    return await s_.mcp_reconnect(name)
                 return {"ok": False, "error": "not available on Codex sessions"}
             if method == "session_identity":
                 return s_.identity()
@@ -990,6 +1004,63 @@ class Server:
             await s_.send_input("/compact")
             return {"ok": True}
 
+        if method == "rollback_session":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "rewind is only supported for Codex sessions")
+            num_turns = params.get("num_turns")
+            if not isinstance(num_turns, int) or isinstance(num_turns, bool) or not 1 <= num_turns <= 100:
+                raise RpcError(ERR_INVALID_PARAMS, "num_turns must be an integer from 1 to 100")
+            try:
+                return await s_.rollback(num_turns)
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex rewind failed: {e}")
+
+        if method == "review_session":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "native review is only supported for Codex sessions")
+            target = params.get("target")
+            delivery = params.get("delivery", "inline")
+            if not isinstance(target, dict) or target.get("type") not in (
+                "uncommittedChanges", "baseBranch", "commit", "custom"
+            ):
+                raise RpcError(ERR_INVALID_PARAMS, "invalid review target")
+            if delivery not in ("inline", "detached"):
+                raise RpcError(ERR_INVALID_PARAMS, "delivery must be inline or detached")
+            try:
+                return await s_.review(target, delivery)
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex review failed: {e}")
+
+        if method == "list_background_terminals":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                return {"ok": False, "error": "Codex-only surface"}
+            return await s_.background_terminals()
+
+        if method == "stop_background_terminal":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
+            process_id = params.get("process_id")
+            if not isinstance(process_id, str) or not process_id:
+                raise RpcError(ERR_INVALID_PARAMS, "process_id required")
+            try:
+                return await s_.stop_background_terminal(process_id)
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"stop background terminal failed: {e}")
+
         if method == "inject_history":
             # Cross-provider fork primitive (agent >= 0.46.0).  Only Codex has
             # an app-server history-injection API; Claude uses fork_session's
@@ -1060,7 +1131,13 @@ class Server:
             perm_id = params.get("perm_id") or params.get("id")
             if not isinstance(perm_id, str):
                 raise RpcError(ERR_INVALID_PARAMS, "perm_id required")
-            s.respond_permission(perm_id, bool(params.get("allow")))
+            always = bool(params.get("always"))
+            try:
+                s.respond_permission(perm_id, bool(params.get("allow")), always)
+            except TypeError:
+                # Claude sessions on older SDK-compatible code keep the
+                # two-argument method; Charon persists its alwaysAllow rule.
+                s.respond_permission(perm_id, bool(params.get("allow")))
             return {"ok": True}
 
         if method == "respond_question":

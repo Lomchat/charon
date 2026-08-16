@@ -23,6 +23,8 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import ForkModal from './ForkModal';
+import RewindModal from './RewindModal';
+import ReviewModal from './ReviewModal';
 
 // A session's mode is a Claude permission mode OR a Codex sandbox level.
 type SessionMode = PermissionMode | CodexSandboxMode;
@@ -199,6 +201,12 @@ export default function ClaudeSessionView({
   const [forkError, setForkError] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [compactError, setCompactError] = useState<string | null>(null);
+  const [rewindOpen, setRewindOpen] = useState(false);
+  const [rewinding, setRewinding] = useState(false);
+  const [rewindError, setRewindError] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const doCompact = useCallback(async () => {
     if (compacting || status === 'thinking') return;
     setCompacting(true);
@@ -210,6 +218,38 @@ export default function ClaudeSessionView({
       setCompactError(String(e?.message || e));
     } finally { setCompacting(false); }
   }, [compacting, sessionId, status]);
+  const doRewind = useCallback(async (numTurns: number) => {
+    if (rewinding || status === 'thinking') return;
+    setRewinding(true); setRewindError(null);
+    try {
+      const r = await fetch(`/api/claude/sessions/${sessionId}/rollback`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ numTurns }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(j?.error || 'rewind failed');
+      // The local hook intentionally never deletes historical rows during an
+      // SSE stream. Reload once after this explicit destructive action so its
+      // cache is rebuilt from the now-rewound SQLite transcript.
+      window.location.reload();
+    } catch (e: any) {
+      setRewindError(String(e?.message || e)); setRewinding(false);
+    }
+  }, [rewinding, sessionId, status]);
+  const doReview = useCallback(async (target: Record<string, unknown>) => {
+    if (reviewing || status === 'thinking') return;
+    setReviewing(true); setReviewError(null);
+    try {
+      const r = await fetch(`/api/claude/sessions/${sessionId}/review`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target, delivery: 'inline' }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) throw new Error(j?.error || 'review failed');
+      setReviewOpen(false);
+    } catch (e: any) { setReviewError(String(e?.message || e)); }
+    finally { setReviewing(false); }
+  }, [reviewing, sessionId, status]);
   const doFork = useCallback(async (targetKind: AgentKind) => {
     if (forking) return;
     setForking(targetKind);
@@ -649,8 +689,15 @@ export default function ClaudeSessionView({
           <button onClick={doCompact} disabled={compacting || status === 'thinking'}
             title="Compact the model context now">{compacting ? 'compacting…' : 'compact'}</button>
           {compactError && <span className="confirm-err" title={compactError}>compact failed</span>}
-          {/* Same-provider forks are native. Claude → Codex imports model-visible
-              history; Codex → Claude stays disabled until an SDK exposes it. */}
+          {sessionKind === 'codex' && <>
+            <button onClick={() => { setReviewError(null); setReviewOpen(true); }}
+              disabled={reviewing || status === 'thinking'} title="Run Codex code review">review</button>
+            <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
+              disabled={rewinding || status === 'thinking'} title="Remove recent turns from Codex history">rewind</button>
+          </>}
+          {/* Same-provider forks are native. Cross-provider forks import a
+              portable model-visible transcript; Codex → Claude uses bounded
+              VPS handoff files because Claude exposes no injection API. */}
           <button
               onClick={() => { setForkError(null); setForkModalOpen(true); }}
               disabled={!!forking || !selected.claudeSessionId}
@@ -912,6 +959,12 @@ export default function ClaudeSessionView({
           onClose={() => { if (!forking) setForkModalOpen(false); }}
         />
       )}
+      {rewindOpen && <RewindModal busy={rewinding} error={rewindError}
+        onConfirm={(turns) => { void doRewind(turns); }}
+        onClose={() => { if (!rewinding) setRewindOpen(false); }} />}
+      {reviewOpen && <ReviewModal busy={reviewing} error={reviewError}
+        onConfirm={(target) => { void doReview(target); }}
+        onClose={() => { if (!reviewing) setReviewOpen(false); }} />}
     </>
   );
 }

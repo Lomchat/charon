@@ -656,7 +656,7 @@ class AgentSession:
         )
         await self._save_state()
 
-    def respond_permission(self, perm_id: str, allow: bool) -> None:
+    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
         fut = self._pending_perms.pop(perm_id, None)
         if fut is not None and not fut.done():
             fut.set_result(bool(allow))

@@ -25,22 +25,23 @@ Transport model (differs from Claude, cf. CLAUDE.md §14.59):
     so a mid-session change applies on the NEXT turn WITHOUT a sleep+resume
     (unlike Claude, whose model is bound at client construction — §14.35).
 
-Permissions (THE incompatibility, see CLAUDE.md §14.59): the SDK exposes only
-``ApprovalMode.auto_review`` (a server-side guardian sub-agent auto-decides
-escalations) or ``ApprovalMode.deny_all`` — there is NO human-in-the-loop
-approval callback like Claude's ``can_use_tool``. Charon's interactive
-permission cards / exit-plan / alwaysAllow do NOT apply to Codex sessions; the
-sandbox is the guardrail. We map Charon's per-session "mode" to Codex's sandbox
-level + approval mode.
+Permissions: the high-level SDK enum only exposes auto-review/deny-all, but the
+SDK's typed client deliberately accepts an ``approval_handler`` and the modern
+thread/turn params accept ``approvalsReviewer=user``.  We use those SDK
+surfaces (not a second transport) and bridge the synchronous reader callback to
+the agent's asyncio loop, so Codex shares Charon's durable permission/question
+cards and session-scoped grants.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import re
 import sys
 import time
 import traceback
+import uuid
 from typing import Any, Awaitable, Callable
 
 try:
@@ -84,10 +85,8 @@ StateSaveCallback = Callable[[], Awaitable[None] | None]
 
 
 # ── Charon per-session "mode" → Codex sandbox + approval ─────────────────────
-# Codex has no interactive human approval, so a Charon "permission mode" for a
-# Codex session picks a SANDBOX level. approval_mode stays auto_review (the
-# guardian sub-agent auto-decides escalations within the sandbox) for the
-# permissive modes, and deny_all for the read-only "safe" mode.
+# A Charon "permission mode" for a Codex session picks a SANDBOX level. Human
+# review is enabled independently through approvalsReviewer=user below.
 #   read-only     → the agent can read/analyze but not modify or run mutating
 #                   commands (sandbox read-only + deny escalations).
 #   workspace-write→ (DEFAULT) read + write the workspace + run commands,
@@ -105,6 +104,36 @@ def _mode_to_sandbox_approval(mode: str):
         return Sandbox.full_access, ApprovalMode.auto_review
     # workspace-write (default) + anything unknown
     return Sandbox.workspace_write, ApprovalMode.auto_review
+
+
+def _sandbox_mode_wire(mode: str) -> str:
+    if mode == "read-only":
+        return "read-only"
+    if mode == "full-access":
+        return "danger-full-access"
+    return "workspace-write"
+
+
+def _sandbox_policy_wire(mode: str) -> dict[str, Any]:
+    if mode == "read-only":
+        return {"type": "readOnly"}
+    if mode == "full-access":
+        return {"type": "dangerFullAccess"}
+    return {"type": "workspaceWrite"}
+
+
+# These streams are unrelated to Charon's text chat and can be very large.
+# Suppress them at initialize rather than receiving and discarding them.
+CODEX_OPT_OUT_NOTIFICATIONS = (
+    "externalAgentConfig/import/progress",
+    "fuzzyFileSearch/sessionUpdated",
+    "process/outputDelta",
+    "remoteControl/status/changed",
+    "thread/realtime/itemAdded",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/transcript/delta",
+)
 
 
 def _coerce_effort(effort: str | None):
@@ -307,16 +336,21 @@ async def fetch_codex_usage() -> dict[str, Any]:
     from openai_codex.generated.v2_all import GetAccountRateLimitsResponse
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
-        # account() primes the lazily-spawned app-server process AND yields the
-        # plan type; the raw rate-limits request below needs the process live.
-        acct = await client.account(refresh_token=False)
+        # Use the SDK's public typed low-level client directly. This replaces
+        # the old AsyncCodex._client reach-through that silently broke when the
+        # wrapper layout changed.
+        from openai_codex.async_client import AsyncCodexClient
+        from openai_codex.generated.v2_all import GetAccountParams
+        client = AsyncCodexClient(CodexConfig())
+        await client.start()
+        await client.initialize()
+        acct = await client.account_read(GetAccountParams(refresh_token=False))
         plan = None
         a = getattr(acct, "account", None)
         root = getattr(a, "root", a)
         if root is not None:
             plan = getattr(root, "plan_type", None) or getattr(root, "planType", None)
-        resp = await client._client.request(
+        resp = await client.request(
             "account/rateLimits/read", {},
             response_model=GetAccountRateLimitsResponse,
         )
@@ -351,9 +385,7 @@ async def fetch_codex_usage() -> dict[str, Any]:
     finally:
         if client is not None:
             try:
-                res = client.close()
-                if asyncio.iscoroutine(res):
-                    await asyncio.wait_for(res, timeout=5.0)
+                await asyncio.wait_for(client.close(), timeout=5.0)
             except Exception:
                 pass
 
@@ -428,9 +460,14 @@ class CodexSession:
         self._active_turn: Any = None       # AsyncTurnHandle (live turn)
         self._main_task: asyncio.Task | None = None
         self._global_task: asyncio.Task | None = None
+        self._external_turn_task: asyncio.Task | None = None
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
-        # Contract-parity attrs poked by server.py (resume_session):
-        self._pending_perms: dict[str, asyncio.Future] = {}   # unused (no human gate)
+        # Server-initiated SDK requests run on the SDK reader thread. Futures
+        # below live on the agent loop; the callback blocks only that reader
+        # until the dashboard responds, exactly as app-server expects.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._pending_perms: dict[str, asyncio.Future] = {}
+        self._pending_request_meta: dict[str, dict[str, Any]] = {}
         self._session_id_emitted = False
         self._stopped = asyncio.Event()
         self._ready_evt = asyncio.Event()
@@ -440,6 +477,9 @@ class CodexSession:
         self._effective_model: str | None = None
         self._streamed_items: set[str] = set()   # item ids that got text deltas
         self._last_usage: dict[str, int] | None = None
+        self._last_thread_usage: dict[str, Any] | None = None
+        self._thread_status: dict[str, Any] | None = None
+        self._mcp_startup: dict[str, dict[str, Any]] = {}
         self._codex_stderr_lines: list[str] = []
         self._plan_deltas: dict[str, str] = {}
 
@@ -459,6 +499,7 @@ class CodexSession:
     async def stop(self, *, mark: str = "sleeping") -> None:
         self.status = mark
         self._emit("status", status=mark)
+        self._cancel_pending_requests()
         # Interrupt a live turn so the stream unblocks quickly.
         turn = self._active_turn
         if turn is not None:
@@ -469,6 +510,9 @@ class CodexSession:
             except Exception:
                 pass
         await self._stdin_queue.put(None)  # EOF
+        external = getattr(self, "_external_turn_task", None)
+        if external is not None and not external.done():
+            external.cancel()
         if self._main_task is not None:
             try:
                 await asyncio.wait_for(self._main_task, timeout=5.0)
@@ -482,7 +526,12 @@ class CodexSession:
         self.status = "sleeping"
         self._emit("status", status="sleeping")
         self._emit("interrupted", forced=True)
+        self._cancel_pending_requests()
         old_task = self._main_task
+        external = getattr(self, "_external_turn_task", None)
+        if external is not None and not external.done():
+            external.cancel()
+        self._external_turn_task = None
         self._main_task = None
         self._client = None
         self._thread = None
@@ -646,22 +695,449 @@ class CodexSession:
         result = await self._thread.compact()
         return {"ok": True, "result": self._json_safe(result)}
 
-    # No human-in-the-loop gates for Codex — these are no-ops kept for the
-    # uniform server.py dispatch contract.
-    def respond_permission(self, perm_id: str, allow: bool) -> None:
+    async def context_usage(self) -> dict[str, Any]:
+        if self._thread is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        try:
+            read = await self._thread.read(include_turns=False)
+            thread = getattr(read, "thread", None)
+            status = self._json_safe(getattr(thread, "status", None))
+            root = status.get("root", status) if isinstance(status, dict) else status
+            self._thread_status = root if isinstance(root, dict) else {"type": str(root)}
+        except Exception as e:
+            return {"ok": False, "error": f"thread/read: {e}"}
+        usage = self._last_thread_usage or {}
+        total = usage.get("total") if isinstance(usage, dict) else None
+        total_tokens = (
+            total.get("totalTokens", total.get("total_tokens"))
+            if isinstance(total, dict) else None
+        )
+        max_tokens = usage.get("modelContextWindow", usage.get("model_context_window")) if isinstance(usage, dict) else None
+        percentage = (
+            float(total_tokens) * 100.0 / float(max_tokens)
+            if isinstance(total_tokens, (int, float)) and isinstance(max_tokens, (int, float)) and max_tokens
+            else None
+        )
+        return {
+            "ok": True,
+            "provider": "codex",
+            "status": self._thread_status,
+            "total_tokens": total_tokens,
+            "max_tokens": max_tokens,
+            "percentage": percentage,
+            "usage": usage or None,
+            "model": self._effective_model or self.model,
+        }
+
+    def identity(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "name": self.name,
+            "cli_title": self.name,
+            "thread_id": self.claude_session_id,
+            "addressable": False,
+        }
+
+    async def mcp_status(self) -> dict[str, Any]:
+        if self._client is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        try:
+            from openai_codex.generated.v2_all import ListMcpServerStatusResponse
+            cursor = None
+            servers: list[dict[str, Any]] = []
+            while True:
+                response = await self._client._client.request(
+                    "mcpServerStatus/list",
+                    {
+                        "threadId": self.claude_session_id,
+                        "detail": "toolsAndAuthOnly",
+                        "limit": 100,
+                        **({"cursor": cursor} if cursor else {}),
+                    },
+                    response_model=ListMcpServerStatusResponse,
+                )
+                for server in getattr(response, "data", None) or []:
+                    auth = _enum_val(getattr(server, "auth_status", None))
+                    tools = getattr(server, "tools", None) or {}
+                    startup = getattr(self, "_mcp_startup", {}).get(str(getattr(server, "name", "")), {})
+                    servers.append({
+                        "name": getattr(server, "name", None),
+                        "status": startup.get("status") or ("auth required" if auth == "notLoggedIn" else "ready"),
+                        "auth_status": auth,
+                        "tool_count": len(tools),
+                        "tools": list(tools.keys())[:100],
+                        "server_info": self._json_safe(getattr(server, "server_info", None)),
+                        "error": startup.get("error"),
+                    })
+                cursor = getattr(response, "next_cursor", None)
+                if not cursor:
+                    break
+            return {"ok": True, "servers": servers}
+        except Exception as e:
+            return {"ok": False, "error": f"mcpServerStatus/list: {e}",
+                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+
+    async def mcp_reconnect(self, _name: str) -> dict[str, Any]:
+        if self._client is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        try:
+            from pydantic import BaseModel
+
+            class _ReloadResponse(BaseModel):
+                pass
+            result = await self._client._client.request(
+                "config/mcpServer/reload", {}, response_model=_ReloadResponse,
+            )
+            return {"ok": True, "result": self._json_safe(result)}
+        except Exception as e:
+            return {"ok": False, "error": f"config/mcpServer/reload: {e}",
+                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+
+    async def rollback(self, num_turns: int) -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            raise RuntimeError("Codex thread is not ready")
+        if self._active_turn is not None:
+            raise RuntimeError("cannot rewind while a Codex turn is running")
+        from openai_codex.generated.v2_all import ThreadRollbackResponse
+        response = await self._client._client.request(
+            "thread/rollback",
+            {"threadId": self.claude_session_id, "numTurns": num_turns},
+            response_model=ThreadRollbackResponse,
+        )
+        return {"ok": True, "thread": self._json_safe(getattr(response, "thread", None))}
+
+    async def _consume_external_turn(self, handle: Any) -> None:
+        self._active_turn = handle
+        self._begin_turn()
+        try:
+            async for note in handle.stream():
+                payload = getattr(note, "payload", note)
+                for event in self._translate(payload):
+                    self._emit_to_server({"session_id": self.session_id, **event})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._emit("error", msg=self._format_err("review", e))
+            self._emit("stop", subtype="error")
+        finally:
+            self._active_turn = None
+            self._external_turn_task = None
+            self._end_turn()
+
+    async def review(self, target: dict[str, Any], delivery: str = "inline") -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            raise RuntimeError("Codex thread is not ready")
+        if self._active_turn is not None:
+            raise RuntimeError("cannot start review while a turn is running")
+        from openai_codex.api import AsyncTurnHandle
+        from openai_codex.generated.v2_all import ReviewStartResponse
+        response = await self._client._client.request(
+            "review/start",
+            {"threadId": self.claude_session_id, "target": target, "delivery": delivery},
+            response_model=ReviewStartResponse,
+        )
+        turn = getattr(response, "turn", None)
+        review_thread_id = getattr(response, "review_thread_id", None)
+        if delivery == "inline" and turn is not None:
+            handle = AsyncTurnHandle(self._client, self.claude_session_id, turn.id)
+            self._external_turn_task = asyncio.create_task(
+                self._consume_external_turn(handle), name=f"codex-review-{self.session_id}"
+            )
+        return {
+            "ok": True,
+            "turn_id": getattr(turn, "id", None),
+            "review_thread_id": review_thread_id,
+        }
+
+    async def background_terminals(self) -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            return {"ok": False, "error": "Codex thread is not running"}
+        from pydantic import BaseModel, ConfigDict, Field
+
+        class _Terminal(BaseModel):
+            model_config = ConfigDict(populate_by_name=True)
+            item_id: str | None = Field(default=None, alias="itemId")
+            process_id: str = Field(alias="processId")
+            command: str
+            cwd: str
+            os_pid: int | None = Field(default=None, alias="osPid")
+            cpu_percent: float | None = Field(default=None, alias="cpuPercent")
+            rss_kb: int | None = Field(default=None, alias="rssKb")
+
+        class _List(BaseModel):
+            model_config = ConfigDict(populate_by_name=True)
+            data: list[_Terminal]
+            next_cursor: str | None = Field(default=None, alias="nextCursor")
+
+        rows: list[dict[str, Any]] = []
+        cursor = None
+        try:
+            while True:
+                response = await self._client._client.request(
+                    "thread/backgroundTerminals/list",
+                    {"threadId": self.claude_session_id, "limit": 100,
+                     **({"cursor": cursor} if cursor else {})},
+                    response_model=_List,
+                )
+                rows.extend(self._json_safe(x) for x in response.data)
+                cursor = response.next_cursor
+                if not cursor:
+                    break
+            return {"ok": True, "terminals": rows}
+        except Exception as e:
+            return {"ok": False, "error": f"backgroundTerminals/list: {e}",
+                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+
+    async def stop_background_terminal(self, process_id: str) -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            return {"ok": False, "error": "Codex thread is not running"}
+        from pydantic import BaseModel
+
+        class _Terminated(BaseModel):
+            terminated: bool
+        response = await self._client._client.request(
+            "thread/backgroundTerminals/terminate",
+            {"threadId": self.claude_session_id, "processId": process_id},
+            response_model=_Terminated,
+        )
+        return {"ok": True, "terminated": response.terminated}
+
+    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
         fut = self._pending_perms.pop(perm_id, None)
+        self._pending_request_meta.pop(perm_id, None)
         if fut is not None and not fut.done():
-            fut.set_result(bool(allow))
+            fut.set_result({"allow": bool(allow), "always": bool(always)})
 
     def respond_question(self, q_id: str, answers: dict | None) -> None:
         fut = self._pending_perms.pop(q_id, None)
+        self._pending_request_meta.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result(answers)
 
     def respond_exit_plan(self, q_id: str, decision: str, feedback: str = "") -> None:
         fut = self._pending_perms.pop(q_id, None)
+        self._pending_request_meta.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"decision": decision, "feedback": feedback})
+
+    def _cancel_pending_requests(self) -> None:
+        """Unblock the SDK reader before interrupt/close.
+
+        The SDK invokes approval_handler synchronously from its only reader
+        thread. Leaving one future pending would prevent that reader from
+        routing the interrupt response and make shutdown wait for the 30 minute
+        card timeout.
+        """
+        pending = getattr(self, "_pending_perms", {})
+        for fut in list(pending.values()):
+            if not fut.done():
+                fut.set_result(None)
+        pending.clear()
+        getattr(self, "_pending_request_meta", {}).clear()
+
+    async def _await_sdk_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(
+            params.get("requestId") or params.get("itemId")
+            or params.get("turnId") or uuid.uuid4().hex
+        )
+        # An item may issue more than one gate (notably managed network after a
+        # command gate), so never let a repeated item id steal the first future.
+        if request_id in self._pending_perms:
+            request_id = f"{request_id}-{uuid.uuid4().hex[:8]}"
+        fut = asyncio.get_running_loop().create_future()
+        self._pending_perms[request_id] = fut
+        self._pending_request_meta[request_id] = {"method": method, "params": params}
+
+        try:
+            if method == "item/tool/requestUserInput":
+                raw_questions = params.get("questions") or []
+                questions = []
+                for i, q in enumerate(raw_questions if isinstance(raw_questions, list) else []):
+                    if not isinstance(q, dict):
+                        continue
+                    options = []
+                    for opt in q.get("options") or []:
+                        if isinstance(opt, dict):
+                            options.append({
+                                "label": str(opt.get("label") or ""),
+                                "description": str(opt.get("description") or ""),
+                            })
+                    questions.append({
+                        "question": str(q.get("question") or q.get("id") or f"Question {i + 1}"),
+                        "header": str(q.get("header") or "Codex"),
+                        "multiSelect": bool(q.get("multiSelect")),
+                        "options": options,
+                    })
+                self._emit("user_question", id=request_id, questions=questions)
+                timeout_ms = params.get("autoResolutionMs")
+                timeout = max(1.0, float(timeout_ms) / 1000.0) if isinstance(timeout_ms, int) else 1800.0
+                answers = await asyncio.wait_for(fut, timeout=timeout)
+                if not isinstance(answers, dict):
+                    return {"answers": {}}
+                wire_answers: dict[str, Any] = {}
+                for i, q in enumerate(raw_questions if isinstance(raw_questions, list) else []):
+                    if not isinstance(q, dict):
+                        continue
+                    qid = str(q.get("id") or i)
+                    text = str(q.get("question") or qid)
+                    value = answers.get(text)
+                    if isinstance(value, str) and value:
+                        wire_answers[qid] = {"answers": [v.strip() for v in value.split(",") if v.strip()]}
+                return {"answers": wire_answers}
+
+            tool = {
+                "item/commandExecution/requestApproval": "Codex command",
+                "item/fileChange/requestApproval": "Codex file changes",
+                "item/permissions/requestApproval": "Codex permissions",
+                "mcpServer/elicitation/request": "MCP elicitation",
+            }.get(method, method)
+            preview = dict(params)
+            # Thread/turn ids are routing metadata, not useful card content.
+            preview.pop("threadId", None)
+            preview.pop("turnId", None)
+            self._emit("permission_request", id=request_id, tool=tool, input=preview)
+            answer = await asyncio.wait_for(fut, timeout=1800.0)
+            allow = bool(answer and answer.get("allow")) if isinstance(answer, dict) else False
+            always = bool(answer and answer.get("always")) if isinstance(answer, dict) else False
+            if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+                return {"decision": "acceptForSession" if allow and always else "accept" if allow else "decline"}
+            if method == "item/permissions/requestApproval":
+                return {
+                    "permissions": params.get("permissions") if allow else {},
+                    "scope": "session" if allow and always else "turn",
+                }
+            if method == "mcpServer/elicitation/request":
+                return {"action": "accept" if allow else "decline", "content": {} if allow else None}
+            return {}
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+                return {"decision": "cancel"}
+            if method == "item/permissions/requestApproval":
+                return {"permissions": {}, "scope": "turn"}
+            if method == "mcpServer/elicitation/request":
+                return {"action": "cancel", "content": None}
+            return {"answers": {}} if method == "item/tool/requestUserInput" else {}
+        finally:
+            self._pending_perms.pop(request_id, None)
+            self._pending_request_meta.pop(request_id, None)
+
+    def _sdk_approval_handler(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
+        """SDK reader-thread callback → dashboard future on the agent loop."""
+        if method not in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+            "item/tool/requestUserInput",
+            "mcpServer/elicitation/request",
+        }:
+            return {}
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return {"decision": "cancel"}
+        pending = asyncio.run_coroutine_threadsafe(
+            self._await_sdk_request(method, dict(params or {})), loop
+        )
+        try:
+            return pending.result(timeout=1810.0)
+        except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+            pending.cancel()
+            return {"decision": "cancel"}
+
+    async def _initialize_sdk(self, client: Any) -> None:
+        """Initialize through the SDK client with egress capabilities.
+
+        AsyncCodex's convenience initializer currently hard-codes only
+        experimentalApi. The wrapped typed client exposes request/notify, so we
+        can advertise notification opt-outs while remaining on the SDK-owned
+        process, router and models.
+        """
+        from openai_codex._initialize_metadata import validate_initialize_metadata
+        from openai_codex.models import InitializeResponse
+
+        raw = client._client
+        await raw.start()
+        payload = await raw.request(
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": raw._sync.config.client_name,
+                    "title": raw._sync.config.client_title,
+                    "version": raw._sync.config.client_version,
+                },
+                "capabilities": {
+                    "experimentalApi": True,
+                    "mcpServerOpenaiFormElicitation": True,
+                    "optOutNotificationMethods": list(CODEX_OPT_OUT_NOTIFICATIONS),
+                },
+            },
+            response_model=InitializeResponse,
+        )
+        await asyncio.to_thread(raw._sync.notify, "initialized", None)
+        client._init = validate_initialize_metadata(payload)
+        client._initialized = True
+
+    async def _sdk_thread_start(self, client: Any, *, resume: bool) -> Any:
+        params: dict[str, Any] = {
+            "cwd": self.cwd,
+            "sandbox": _sandbox_mode_wire(self.permission_mode),
+            "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
+            "approvalsReviewer": "user",
+        }
+        if self.model:
+            params["model"] = self.model
+        for src, dst in (
+            ("base_instructions", "baseInstructions"),
+            ("developer_instructions", "developerInstructions"),
+            ("personality", "personality"),
+            ("service_tier", "serviceTier"),
+            ("model_provider", "modelProvider"),
+        ):
+            value = self.codex_config.get(src)
+            if value is not None:
+                params[dst] = _enum_val(value)
+        if not resume and self.codex_config.get("ephemeral"):
+            params["ephemeral"] = True
+        # Lightweight test doubles and older SDKs retain the high-level path;
+        # production 0.144.x takes the typed-client branch below.
+        if not hasattr(client, "_client"):
+            sandbox, approval = _mode_to_sandbox_approval(self.permission_mode)
+            common = {
+                "cwd": self.cwd, "sandbox": sandbox, "approval_mode": approval,
+                **({"model": self.model} if self.model else {}),
+            }
+            if resume:
+                return await client.thread_resume(self.claude_session_id, **common)
+            return await client.thread_start(**common)
+        from openai_codex.api import AsyncThread
+        if resume:
+            result = await client._client.thread_resume(self.claude_session_id, params)
+        else:
+            result = await client._client.thread_start(params)
+        return AsyncThread(client, result.thread.id)
+
+    async def _sdk_turn(self, thread: Any, content: str) -> Any:
+        from openai_codex.api import AsyncTurnHandle
+
+        params: dict[str, Any] = {
+            "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
+            "approvalsReviewer": "user",
+            "sandboxPolicy": _sandbox_policy_wire(self.permission_mode),
+        }
+        if self.model:
+            params["model"] = self.model
+        if self.effort:
+            params["effort"] = self.effort
+        for src, dst in (
+            ("output_schema", "outputSchema"),
+            ("personality", "personality"),
+            ("service_tier", "serviceTier"),
+            ("summary", "summary"),
+        ):
+            value = self.codex_config.get(src)
+            if value is not None:
+                params[dst] = _enum_val(value)
+        result = await self._client._client.turn_start(thread.id, content, params=params)
+        return AsyncTurnHandle(self._client, thread.id, result.turn.id)
 
     def to_info(self) -> dict[str, Any]:
         return {
@@ -846,6 +1322,7 @@ class CodexSession:
 
             elif pt == "ThreadTokenUsageUpdatedNotification":
                 tu = getattr(payload, "token_usage", None)
+                self._last_thread_usage = self._json_safe(tu)
                 u = self._usage_from(tu)
                 if u is not None:
                     self._last_usage = u
@@ -855,6 +1332,7 @@ class CodexSession:
                 status = self._json_safe(getattr(payload, "status", None))
                 root = status.get("root", status) if isinstance(status, dict) else status
                 status_type = root.get("type", "unknown") if isinstance(root, dict) else str(root)
+                self._thread_status = root if isinstance(root, dict) else {"type": status_type}
                 out.append({
                     "event": "codex_signal", "kind": "thread_status",
                     "id": getattr(payload, "thread_id", None) or "thread",
@@ -871,9 +1349,19 @@ class CodexSession:
 
             elif pt == "McpServerStatusUpdatedNotification":
                 status = _enum_val(getattr(payload, "status", "updated"))
+                name = getattr(payload, "name", None) or "mcp"
+                startup_cache = getattr(self, "_mcp_startup", None)
+                if startup_cache is None:
+                    startup_cache = self._mcp_startup = {}
+                startup_cache[str(name)] = {
+                    "status": str(status),
+                    "error": getattr(payload, "error", None) or self._stringify(
+                        self._json_safe(getattr(payload, "failure_reason", None))
+                    ),
+                }
                 out.append({
                     "event": "codex_signal", "kind": "mcp_status",
-                    "id": getattr(payload, "name", None) or "mcp",
+                    "id": name,
                     "status": str(status),
                     "detail": {
                         "name": getattr(payload, "name", None),
@@ -1395,12 +1883,18 @@ class CodexSession:
 
     async def _run(self) -> None:
         try:
+            self._loop = asyncio.get_running_loop()
             client = AsyncCodex(CodexConfig(
                 cwd=self.cwd,
                 config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
                 env=self.codex_config.get("env") or None,
                 codex_bin=self.codex_config.get("codex_bin") or None,
             ))
+            # Install before start(): app-server may issue a server request as
+            # soon as initialization completes.
+            if hasattr(client, "_client"):
+                client._client._sync._approval_handler = self._sdk_approval_handler
+                await self._initialize_sdk(client)
             self._client = client
         except Exception as e:
             self.status = "error"
@@ -1409,19 +1903,6 @@ class CodexSession:
             self._emit("status", status="error")
             await self._save_state()
             return
-
-        sandbox, approval = _mode_to_sandbox_approval(self.permission_mode)
-        start_kw: dict[str, Any] = {"cwd": self.cwd, "sandbox": sandbox,
-                                    "approval_mode": approval}
-        if self.model:
-            start_kw["model"] = self.model
-        for key in ("base_instructions", "developer_instructions", "personality",
-                    "service_tier", "model_provider"):
-            value = self.codex_config.get(key)
-            if value is not None:
-                start_kw[key] = value
-        if self.codex_config.get("ephemeral"):
-            start_kw["ephemeral"] = True
 
         try:
             thread = None
@@ -1440,14 +1921,7 @@ class CodexSession:
                 last_err: Exception | None = None
                 for attempt in (1, 2, 3):
                     try:
-                        thread = await client.thread_resume(
-                            self.claude_session_id, cwd=self.cwd,
-                            approval_mode=approval, sandbox=sandbox,
-                            **({"model": self.model} if self.model else {}),
-                            **{k: v for k, v in start_kw.items()
-                               if k in ("base_instructions", "developer_instructions", "personality",
-                                        "service_tier", "model_provider")},
-                        )
+                        thread = await self._sdk_thread_start(client, resume=True)
                         last_err = None
                         break
                     except Exception as e:
@@ -1470,7 +1944,7 @@ class CodexSession:
                     self._ready_evt.set()   # unblock any waiter, else it hangs
                     return                  # _run's finally closes + persists
             if thread is None:
-                thread = await client.thread_start(**start_kw)
+                thread = await self._sdk_thread_start(client, resume=False)
             self._thread = thread
 
             tid = getattr(thread, "id", None)
@@ -1506,7 +1980,7 @@ class CodexSession:
                     self._effective_model = self.model
                     self._emit("effective_model", model=self.model)
                 try:
-                    handle = await thread.turn(content, **self._turn_overrides())
+                    handle = await self._sdk_turn(thread, content)
                     self._active_turn = handle
                     async for note in handle.stream():
                         payload = getattr(note, "payload", note)
@@ -1546,6 +2020,7 @@ class CodexSession:
                 self._client = None
                 self._thread = None
                 self._active_turn = None
+                self._loop = None
                 if self.status not in ("error", "killed", "sleeping"):
                     self.status = "sleeping"
                     self._emit("status", status="sleeping")

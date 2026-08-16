@@ -414,6 +414,10 @@ export type AgentMethodName =
   // (agent >= 0.39.0). Pure file work — the original session keeps running.
   | 'fork_session'
   | 'compact_session'
+  | 'rollback_session'
+  | 'review_session'
+  | 'list_background_terminals'
+  | 'stop_background_terminal'
   // Append bounded Responses message items to a loaded Codex thread's durable
   // model-visible history (agent >= 0.46.0). Used by Claude -> Codex forks.
   | 'inject_history'

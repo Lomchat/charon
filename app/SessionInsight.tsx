@@ -11,8 +11,8 @@ import { useCallback, useEffect, useState } from 'react';
  * labels already do not fit in 340px (§11) — and they answer the same kind of
  * question: "what is the state of this session, beyond the transcript".
  *
- * Everything here degrades to a sentence. These are Claude-only surfaces on an
- * agent that may predate them, on a VPS that may be unreachable, for a session
+ * Everything here degrades to a sentence. Some surfaces differ by provider on
+ * an agent that may predate them, on a VPS that may be unreachable, for a session
  * that may be asleep — so `reason` is rendered, never thrown.
  */
 
@@ -20,6 +20,7 @@ type Ctx = {
   ok?: boolean; error?: string; reason?: string;
   total_tokens?: number; max_tokens?: number; percentage?: number;
   auto_compact_threshold?: number; model?: string;
+  status?: { type?: string; activeFlags?: string[]; active_flags?: string[] };
   categories?: Array<{ name?: string | null; tokens?: number | null }>;
   identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
 };
@@ -27,6 +28,7 @@ type Ctx = {
 type McpServer = { name?: string | null; status?: string | null; tool_count?: number | null; error?: string | null };
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
+type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; rss_kb?: number | null };
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -43,18 +45,23 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [terminals, setTerminals] = useState<BgTerminal[] | null>(null);
 
   const load = useCallback(async () => {
-    if (isCodex) return;
     setBusy(true);
     try {
-      const [c, m, a] = await Promise.all([
+      const [c, m, a, bt] = await Promise.all([
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
-        fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
+        isCodex ? Promise.resolve(null)
+          : fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
+        isCodex
+          ? fetch(`/api/claude/sessions/${sessionId}/background-terminals`).then((r) => r.json()).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setCtx(c); setMcp(m);
       setAgents(Array.isArray(a?.agents) ? a.agents : null);
+      setTerminals(Array.isArray(bt?.terminals) ? bt.terminals : null);
     } finally {
       setBusy(false);
     }
@@ -71,10 +78,6 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       .then((x) => x.json()).catch(() => null);
     setAgentMsgs(Array.isArray(r?.messages) ? r.messages : []);
   }, [openAgent, sessionId]);
-
-  if (isCodex) {
-    return <div className="si-empty">Context, MCP and sub-agents are Claude-only surfaces.</div>;
-  }
 
   const pct = typeof ctx?.percentage === 'number'
     ? ctx.percentage
@@ -97,7 +100,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
             trust that they converged. */}
         <ul className="si-cats">
           <li><span>Charon</span><b>{ctx?.identity?.name || '(unnamed)'}</b></li>
-          <li><span>Claude</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
+          <li><span>{isCodex ? 'Codex' : 'Claude'}</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
         </ul>
         {ctx?.identity && ctx.identity.cli_title
           && ctx.identity.cli_title !== ctx.identity.name && (
@@ -110,6 +113,12 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
 
       <section className="si-sec">
         <h4>context window</h4>
+        {isCodex && ctx?.status?.type && (
+          <div className="si-line">status: {ctx.status.type}
+            {(ctx.status.activeFlags ?? ctx.status.active_flags)?.length
+              ? ` · ${(ctx.status.activeFlags ?? ctx.status.active_flags)?.join(', ')}` : ''}
+          </div>
+        )}
         {ctx?.ok && pct != null ? (
           <>
             <div className="si-bar" title={`${ctx.total_tokens ?? '?'} / ${ctx.max_tokens ?? '?'} tokens`}>
@@ -167,7 +176,30 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         )}
       </section>
 
-      <section className="si-sec">
+      {isCodex && <section className="si-sec">
+        <h4>background terminals{terminals?.length ? ` (${terminals.length})` : ''}</h4>
+        {terminals?.length ? <ul className="si-mcp">
+          {terminals.map((term, i) => {
+            const processId = term.process_id ?? term.processId ?? '';
+            return <li key={processId || i} className="si-mcp-row ready">
+              <span className="si-mcp-name" title={term.cwd}>{term.command || processId}</span>
+              <span className="si-mcp-status">pid {processId}
+                {term.cpu_percent != null ? ` · ${term.cpu_percent}%` : ''}
+                {term.rss_kb != null ? ` · ${Math.round(term.rss_kb / 1024)} MB` : ''}
+              </span>
+              <button type="button" onClick={async () => {
+                await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
+                  method: 'POST', headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ processId }),
+                }).catch(() => {});
+                void load();
+              }}>stop</button>
+            </li>;
+          })}
+        </ul> : <p className="si-none">none running</p>}
+      </section>}
+
+      {!isCodex && <section className="si-sec">
         <h4>sub-agents{agents?.length ? ` (${agents.length})` : ''}</h4>
         {agents?.length ? (
           <ul className="si-agents">
@@ -194,7 +226,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         ) : (
           <p className="si-none">none spawned</p>
         )}
-      </section>
+      </section>}
     </div>
   );
 }

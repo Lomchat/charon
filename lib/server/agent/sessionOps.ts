@@ -1581,7 +1581,9 @@ export class SessionStream {
         .set({ status: allow ? 'allowed' : 'denied', respondedAt: Math.floor(Date.now() / 1000) })
         .where(eq(claudePendingPermissions.id, permId)).run();
     } catch {}
-    await client.call('respond_permission', { session_id: this.id, perm_id: permId, allow });
+    await client.call('respond_permission', {
+      session_id: this.id, perm_id: permId, allow, always,
+    });
     this._broadcast({ type: 'interaction_resolved', kind: 'permission', id: permId });
     markInteractionResolvedInTelegram('permission', permId);
   }
