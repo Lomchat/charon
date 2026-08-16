@@ -23,6 +23,7 @@ const PYPI_URL = 'https://pypi.org/pypi/claude-agent-sdk/json';
 // openai-codex-cli-bin, that actually runs Codex sessions). Compared against
 // each VPS's `vps.codexSdkVersion` (hello ≥0.15.0). Mirror of the SDK cache.
 const PYPI_CODEX_URL = 'https://pypi.org/pypi/openai-codex/json';
+const NPM_CODEX_URL = 'https://registry.npmjs.org/@openai%2Fcodex/latest';
 const TTL_MS = 12 * 60 * 60 * 1000; // 12h
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -111,4 +112,46 @@ export function refreshCodexLatestIfStale(): void {
   codexInflight = refreshCodexLatest()
     .catch(() => {})
     .finally(() => { codexInflight = null; });
+}
+
+// ── Standalone Codex CLI (npm) ─────────────────────────────────────────────
+
+export function getCodexCliLatestVersion(): string | null {
+  return getSetting('codex.cli_latest_version') || null;
+}
+
+export async function refreshCodexCliLatest(): Promise<SdkRefreshResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(NPM_CODEX_URL, {
+      signal: ctrl.signal,
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!res.ok) return { ok: false, error: `npm registry http ${res.status}` };
+    const data: any = await res.json();
+    const version = String(data?.version ?? '').trim();
+    if (!VERSION_RE.test(version)) return { ok: false, error: `unexpected npm version shape: ${JSON.stringify(version).slice(0, 60)}` };
+    const now = Date.now();
+    setSetting('codex.cli_latest_version', version);
+    setSetting('codex.cli_latest_version_at', String(now));
+    return { ok: true, version, syncedAt: now };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let codexCliInflight: Promise<unknown> | null = null;
+
+/** Best-effort background refresh of the standalone CLI latest version. */
+export function refreshCodexCliLatestIfStale(): void {
+  const at = Number(getSetting('codex.cli_latest_version_at') || '0');
+  if (Number.isFinite(at) && Date.now() - at < TTL_MS) return;
+  if (codexCliInflight) return;
+  codexCliInflight = refreshCodexCliLatest()
+    .catch(() => {})
+    .finally(() => { codexCliInflight = null; });
 }

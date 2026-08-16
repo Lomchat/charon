@@ -66,7 +66,7 @@ for (const [id, name, pos] of folders)
 // (codex_available=1, codex_logged_in=1) → the +Codex launch button is enabled
 // and the health chips read "claude ✓ / codex ✓".
 //
-// Keep AGENT_V/PYZ/SDK_V/CODEX_V in sync with what the demo agent really
+// Keep AGENT_V/PYZ/SDK_V/CODEX_V/CODEX_CLI_V in sync with what the demo agent really
 // answers to `hello` — it OVERWRITES these on connect (§14.53), and a stale
 // value here means the sidebar shows an "update agent" bar mid-capture:
 //   printf '{"id":1,"method":"hello"}\n' | ssh charondemo@127.0.0.1 \
@@ -75,6 +75,7 @@ const PYZ = 'be3f76c851fe';           // first 12 of sha256(agent/dist/charon-ag
 const AGENT_V = '0.27.0';
 const SDK_V = '0.2.134';              // claude-agent-sdk in the venv
 const CODEX_V = '0.144.4';            // openai-codex in the venv
+const CODEX_CLI_V = '0.147.0';        // standalone @openai/codex
 // [id, name, ip, user, folder, pos, dual]  dual=false → Claude-only / shells-only
 const vpses = [
   // prod-eu-1 → the REAL isolated localhost agent (scripts/demo-agent-setup.sh).
@@ -91,13 +92,14 @@ const insVps = db.prepare(`INSERT INTO vps
   (id,name,ip,ssh_user,ssh_port,default_path,created_at,agent_status,agent_version,
    agent_pyz_sha,sdk_version,agent_last_seen_at,folder_id,position,
    claude_logged_in,claude_logged_in_checked_at,
-   codex_available,codex_sdk_version,codex_logged_in,codex_logged_in_checked_at)
-  VALUES (?,?,?,?,22,?,?,'ok',?,?,?,?,?,?,?,?,?,?,?,?)`);
+   codex_available,codex_sdk_version,codex_cli_version,codex_logged_in,codex_logged_in_checked_at)
+  VALUES (?,?,?,?,22,?,?,'ok',?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 for (const [id, name, ip, user, folder, pos, dual] of vpses)
   insVps.run(id, name, ip, user, id === 'v_eu1' ? REPO : '/srv/app', now, AGENT_V, PYZ,
     dual ? SDK_V : null, now, folder, pos,
     dual ? 1 : null, dual ? now : null,
-    dual ? 1 : null, dual ? CODEX_V : null, dual ? 1 : null, dual ? now : null);
+    dual ? 1 : null, dual ? CODEX_V : null, dual ? CODEX_CLI_V : null,
+    dual ? 1 : null, dual ? now : null);
 
 // Known cwds (path autocomplete + sidebar groupings)
 for (const [vps, path] of [
@@ -268,6 +270,7 @@ for (const [k, v] of [
   ['auth.session_ids_hashed', '1'],
   ['sdk.latest_version', SDK_V],   ['sdk.latest_version_at', nowMs],
   ['codex.latest_version', CODEX_V], ['codex.latest_version_at', nowMs],
+  ['codex.cli_latest_version', CODEX_CLI_V], ['codex.cli_latest_version_at', nowMs],
 ])
   db.prepare(`INSERT OR REPLACE INTO claude_settings (key, value) VALUES (?, ?)`).run(k, v);
 

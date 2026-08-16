@@ -6,7 +6,7 @@ import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
-import { getSdkLatestVersion, getCodexLatestVersion } from '@/lib/server/claude/sdkSync';
+import { getSdkLatestVersion, getCodexLatestVersion, getCodexCliLatestVersion } from '@/lib/server/claude/sdkSync';
 import type { AgentKind, CodexSessionConfig } from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
 
@@ -99,6 +99,7 @@ export async function GET(req: Request) {
         builtAgentVersion: getBuiltAgentVersion(),
         sdkLatestVersion: getSdkLatestVersion(),
         codexLatestVersion: getCodexLatestVersion(),
+        codexCliLatestVersion: getCodexCliLatestVersion(),
       },
     });
   } catch (e: any) {

@@ -56,6 +56,7 @@ export type VpsStatusExtra = {
   // sdkVersion: key present only when the hello carried it.
   codexAvailable?: number | null;
   codexSdkVersion?: string | null;
+  codexCliVersion?: string | null;
   // Codex login flag — emitted by the codex/login route on a completed
   // device-code login (hello doesn't know it; the usage poll discovers it).
   codexLoggedIn?: number | null;
@@ -516,6 +517,7 @@ export class AgentClient {
             // The DB column is a 1/0/null integer; codex_available is a boolean.
             ...(hello.codex_available !== undefined ? { codexAvailable: hello.codex_available ? 1 : 0 } : {}),
             ...(hello.codex_sdk_version !== undefined ? { codexSdkVersion: hello.codex_sdk_version } : {}),
+            ...(hello.codex_cli_version !== undefined ? { codexCliVersion: hello.codex_cli_version } : {}),
           }).where(eq(vpsTable.id, this.vps.id)).run();
         } catch {}
         // Live push so open tabs flip the sidebar badge without an F5
@@ -529,6 +531,7 @@ export class AgentClient {
           // key present only when the hello carries it, §14.53).
           ...(hello.codex_available !== undefined ? { codexAvailable: hello.codex_available ? 1 : 0 } : {}),
           ...(hello.codex_sdk_version !== undefined ? { codexSdkVersion: hello.codex_sdk_version } : {}),
+          ...(hello.codex_cli_version !== undefined ? { codexCliVersion: hello.codex_cli_version } : {}),
         });
         // Re-subscribe to everything. This is the critical path for
         // "Charon was down, agent kept emitting events" — we want the

@@ -117,6 +117,7 @@ type Props = {
   sdkLatestVersion?: string | null;
   // Latest openai-codex on PyPI — same mechanism for the codex sdk line (§14.59).
   codexLatestVersion?: string | null;
+  codexCliLatestVersion?: string | null;
   // VPSes for which an update is in progress (UI loading)
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
@@ -142,7 +143,7 @@ export default function Sidebar({
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
-  builtAgentVersion, sdkLatestVersion, codexLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
+  builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
   sessionHandles,
 }: Props) {
 
@@ -289,7 +290,11 @@ export default function Sidebar({
   function codexOutdatedOf(v: Vps): boolean {
     const agentStatus = (v as any).agentStatus ?? 'unknown';
     const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
-    return agentStatus === 'ok' && isVersionOutdated(codexSdkVersion, codexLatestVersion);
+    const codexCliVersion = (v as any).codexCliVersion as string | null | undefined;
+    return agentStatus === 'ok' && (
+      isVersionOutdated(codexSdkVersion, codexLatestVersion)
+      || isVersionOutdated(codexCliVersion, codexCliLatestVersion)
+    );
   }
 
   const totalSleeping = sessions.filter((s) => (s.liveStatus ?? s.status) === 'sleeping').length;
@@ -394,6 +399,7 @@ export default function Sidebar({
                   sdkLatestVersion,
                   codexOutdated: codexOutdatedOf(x.vps),
                   codexLatestVersion,
+                  codexCliLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
                   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
                   onNew, onNewShell, onScan,
@@ -429,6 +435,7 @@ type VpsRenderOpts = {
   // Same pair for openai-codex (the codex sdk line, §14.59).
   codexOutdated: boolean;
   codexLatestVersion?: string | null;
+  codexCliLatestVersion?: string | null;
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
@@ -459,7 +466,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
     sessionHandles,
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
-    sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion,
+    sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion, codexCliLatestVersion,
     selectedId, selectedShellId, selectedInstallId,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     onNew, onNewShell, onScan,
@@ -474,6 +481,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const agentPyzSha = (v as any).agentPyzSha as string | undefined;
   const sdkVersion = (v as any).sdkVersion as string | null | undefined;
   const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
+  const codexCliVersion = (v as any).codexCliVersion as string | null | undefined;
+  const codexSdkOutdated = isVersionOutdated(codexSdkVersion, codexLatestVersion);
+  const codexCliOutdated = isVersionOutdated(codexCliVersion, codexCliLatestVersion);
   const agentReady = agentStatus === 'ok';
   const claudeAv = claudeAvailability(v);
   const codexAv = codexAvailability(v);
@@ -490,6 +500,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const codexTip = codexSdkVersion
     ? (codexOutdated && codexLatestVersion ? ` — codex sdk ${codexSdkVersion} → ${codexLatestVersion}` : ` — codex sdk ${codexSdkVersion}`)
     : '';
+  const codexCliTip = codexCliVersion
+    ? (codexCliOutdated ? ` — codex cli ${codexCliVersion} → ${codexCliLatestVersion}` : ` — codex cli ${codexCliVersion}`)
+    : '';
   // Classified failure (vps.agentLastError → 'ssh-auth' | 'ssh-unreachable' |
   // 'daemon-down' | 'error') — refines the error bar + tooltips below.
   const { code: errCode, detail: errDetail } = parseAgentLastError(v);
@@ -499,7 +512,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   // 'ahead' = the VPS runs a newer agent than this hub builds — expected on a
   // co-tenant host (§14.70); surfaced in the tooltip only, never as an action.
   const agentAhead = agentReady && agentBuildRelation(agentVersion, builtAgentVersion) === 'ahead';
-  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}`
+  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}${codexCliTip}`
     + (agentOutOfDate ? ` — agent update available (v${agentVersion} → v${builtAgentVersion})` : '')
     + (agentAhead ? ` — newer than this hub's build (v${builtAgentVersion}), left alone` : '');
   const noAgentReason = agentStatus === 'missing'
@@ -590,6 +603,12 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
               {`codex ${codexSdkVersion}`}
             </span>
           )}
+          {codexCliVersion && (
+            <span className={`cs-vps-ver sdkline${codexCliOutdated ? ' outdated' : ''}`} title={agentTip}>
+              <AgentLogo kind="codex" size={10} title="Codex CLI" />
+              {`cli ${codexCliVersion}`}
+            </span>
+          )}
         </span>
         {historyBtn}
         {addBtns}
@@ -652,7 +671,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 {!agentOutOfDate && sdkOutdated && !codexOutdated
                   ? `claude sdk ${sdkVersion} → ${sdkLatestVersion}`
                   : !agentOutOfDate && codexOutdated && !sdkOutdated
-                    ? `codex sdk ${codexSdkVersion} → ${codexLatestVersion}`
+                    ? codexCliOutdated && !codexSdkOutdated
+                      ? `codex cli ${codexCliVersion} → ${codexCliLatestVersion}`
+                      : `codex sdk ${codexSdkVersion} → ${codexLatestVersion}`
                     : !agentOutOfDate && sdkOutdated && codexOutdated
                       ? 'sdk updates (claude + codex)'
                       : (sdkOutdated || codexOutdated)

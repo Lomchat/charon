@@ -63,6 +63,7 @@ type Props = {
   // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
   sdkLatestVersion: string | null;
   codexLatestVersion?: string | null;
+  codexCliLatestVersion?: string | null;
   initialTabs: TabDTO[];
 };
 
@@ -107,7 +108,7 @@ const STATUS_DOT: Record<WorkerStatus, string> = {
 
 const emptyEdits: Map<string, EditSnapshot> = new Map();
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion, initialTabs }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, initialTabs }: Props) {
   // The workspace is part of the SSR snapshot. Hydrating it synchronously
   // prevents the initial session from mounting, being cleared by an empty tab
   // store, then mounting again after GET /api/tabs.
@@ -129,6 +130,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     builtAgentVersion: builtAgentVersion ?? null,
     sdkLatestVersion: sdkLatestVersion ?? null,
     codexLatestVersion: codexLatestVersion ?? null,
+    codexCliLatestVersion: codexCliLatestVersion ?? null,
   });
   const buildMetaRef = useRef(buildMeta);
   useEffect(() => { buildMetaRef.current = buildMeta; }, [buildMeta]);
@@ -458,6 +460,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // codex fields: same "key present ⇔ known" no-clobber contract.
           const codexAvailable = (ev as any).codexAvailable !== undefined ? (ev as any).codexAvailable : (v as any).codexAvailable;
           const codexSdkVersion = (ev as any).codexSdkVersion !== undefined ? (ev as any).codexSdkVersion : (v as any).codexSdkVersion;
+          const codexCliVersion = (ev as any).codexCliVersion !== undefined ? (ev as any).codexCliVersion : (v as any).codexCliVersion;
           // agentLastError: classified failure reason (ssh vs daemon) — feeds
           // the health chips (vpsHealth.tsx). Explicit null on 'ok' clears it.
           const agentLastError = (ev as any).agentLastError !== undefined ? (ev as any).agentLastError : (v as any).agentLastError;
@@ -468,13 +471,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           const codexLoggedIn = (ev as any).codexLoggedIn !== undefined ? (ev as any).codexLoggedIn : (v as any).codexLoggedIn;
           const claudeLoggedIn = (ev as any).claudeLoggedIn !== undefined ? (ev as any).claudeLoggedIn : (v as any).claudeLoggedIn;
           if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion
-              && (v as any).codexAvailable === codexAvailable && (v as any).codexSdkVersion === codexSdkVersion
+              && (v as any).codexAvailable === codexAvailable && (v as any).codexSdkVersion === codexSdkVersion && (v as any).codexCliVersion === codexCliVersion
               && (v as any).agentLastError === agentLastError
               && (v as any).codexLoggedIn === codexLoggedIn && (v as any).claudeLoggedIn === claudeLoggedIn) {
             return v;
           }
           changed = true;
-          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, agentLastError, codexLoggedIn, claudeLoggedIn } as Vps;
+          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, codexCliVersion, agentLastError, codexLoggedIn, claudeLoggedIn } as Vps;
         });
         return changed ? next : prev;
       });
@@ -787,6 +790,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               // Codex too, or a VPS stale ONLY on the codex axis keeps the
               // badge its own update just cleared (the sidebar ORs the three).
               codexSdkVersion: (r as any)?.codexSdkVersion ?? (v as any).codexSdkVersion,
+              codexCliVersion: (r as any)?.codexCliVersion ?? (v as any).codexCliVersion,
               agentStatus: 'ok',
             } as Vps)
           : v
@@ -1139,12 +1143,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             && prev.builtAgentVersion === (m.builtAgentVersion ?? null)
             && prev.sdkLatestVersion === m.sdkLatestVersion
             && prev.codexLatestVersion === m.codexLatestVersion
+            && prev.codexCliLatestVersion === m.codexCliLatestVersion
             ? prev
             : {
                 builtPyzSha: m.builtPyzSha,
                 builtAgentVersion: m.builtAgentVersion ?? null,
                 sdkLatestVersion: m.sdkLatestVersion,
                 codexLatestVersion: m.codexLatestVersion,
+                codexCliLatestVersion: m.codexCliLatestVersion,
               });
       }
     } catch {}
@@ -1734,6 +1740,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         builtAgentVersion={buildMeta.builtAgentVersion}
         sdkLatestVersion={buildMeta.sdkLatestVersion}
         codexLatestVersion={buildMeta.codexLatestVersion}
+        codexCliLatestVersion={buildMeta.codexCliLatestVersion}
         updatingAgentVpsIds={updatingAgentVpsIds}
         refreshingAgentVpsIds={refreshingAgentVpsIds}
       />
@@ -2011,6 +2018,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           builtAgentVersion={buildMeta.builtAgentVersion}
           sdkLatestVersion={buildMeta.sdkLatestVersion}
           codexLatestVersion={buildMeta.codexLatestVersion}
+          codexCliLatestVersion={buildMeta.codexCliLatestVersion}
         />
       )}
 

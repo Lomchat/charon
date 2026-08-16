@@ -7,7 +7,7 @@ import ClaudePanel from './ClaudePanel';
 import { listTabs } from '@/lib/server/claude/tabs';
 import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
-import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale } from '@/lib/server/claude/sdkSync';
+import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale, getCodexCliLatestVersion, refreshCodexCliLatestIfStale } from '@/lib/server/claude/sdkSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,7 +50,9 @@ export default async function CharonPage() {
   const sdkLatestVersion = getSdkLatestVersion();
   refreshSdkLatestIfStale();
   const codexLatestVersion = getCodexLatestVersion();
+  const codexCliLatestVersion = getCodexCliLatestVersion();
   refreshCodexLatestIfStale();
+  refreshCodexCliLatestIfStale();
   const initialTabs = listTabs();
 
   return (
@@ -63,6 +65,7 @@ export default async function CharonPage() {
       builtAgentVersion={builtAgentVersion}
       sdkLatestVersion={sdkLatestVersion}
       codexLatestVersion={codexLatestVersion}
+      codexCliLatestVersion={codexCliLatestVersion}
       initialTabs={initialTabs}
     />
   );

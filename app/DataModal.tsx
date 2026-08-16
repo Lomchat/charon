@@ -57,6 +57,7 @@ type Props = {
   builtAgentVersion?: string | null;
   sdkLatestVersion?: string | null;
   codexLatestVersion?: string | null;
+  codexCliLatestVersion?: string | null;
 };
 
 const DEFAULT_FOLDER_ID = 'default';
@@ -74,6 +75,7 @@ type HealthOpts = {
   builtAgentVersion?: string | null;
   sdkLatestVersion?: string | null;
   codexLatestVersion?: string | null;
+  codexCliLatestVersion?: string | null;
   refreshingIds?: Set<string>;
   updatingIds?: Set<string>;
 };
@@ -92,7 +94,7 @@ export default function DataModal({
   onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
   onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin,
   refreshingAgentVpsIds, updatingAgentVpsIds,
-  liveVps, builtAgentVersion, sdkLatestVersion, codexLatestVersion,
+  liveVps, builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion,
 }: Props) {
   const [vpsList, setVpsList] = useState<Vps[]>(initialVps);
   const [folders, setFolders] = useState<VpsFolder[]>(initialFolders);
@@ -644,7 +646,7 @@ export default function DataModal({
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
                   onFixVps={handleFix}
-                  healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                  healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                   onLogin={(v) => onClaudeLogin?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -671,7 +673,7 @@ export default function DataModal({
                 collapsed={!search.active && collapsedFolders.has(defaultFolder.id)}
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onFixVps={handleFix}
-                healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                 onLogin={(v) => onClaudeLogin?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}

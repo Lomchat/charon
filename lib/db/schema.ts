@@ -96,6 +96,10 @@ export const vps = sqliteTable('vps', {
   // to the PyPI latest (settings `codex.latest_version`) to flag outdated
   // fleets, mirroring sdkVersion for Claude.
   codexSdkVersion: text('codex_sdk_version'),
+  // Version of the standalone @openai/codex app-server selected by the
+  // Python SDK via CodexConfig.codex_bin. The Python wrapper can lag the CLI,
+  // so this is a separate freshness axis (hello.codex_cli_version).
+  codexCliVersion: text('codex_cli_version'),
   // State of `codex login` on this VPS. 1 = logged in (~/.codex/auth.json has
   // tokens), 0 = not, NULL = never checked. Mirrors claudeLoggedIn.
   codexLoggedIn: integer('codex_logged_in'),

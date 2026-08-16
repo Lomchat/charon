@@ -37,11 +37,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import re
+import subprocess
 import sys
 import time
 import traceback
 import uuid
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 try:
@@ -138,43 +141,6 @@ CODEX_OPT_OUT_NOTIFICATIONS = (
 )
 
 
-def _charon_dynamic_tools() -> list[dict[str, Any]]:
-    """Read-only Charon workspace primitives exposed as one deferred namespace.
-
-    Codex already has shell/file tools, but these call the same contained,
-    bounded implementations as Charon's UI and therefore preserve gitignore,
-    truncation and multi-repo semantics without teaching the model hub RPCs.
-    """
-    return [{
-        "type": "namespace",
-        "name": "charon_workspace",
-        "description": "Read-only Charon workspace inspection tools.",
-        "tools": [
-            {"type": "function", "name": "list_files", "deferLoading": True,
-             "description": "List one directory inside the session workspace.",
-             "inputSchema": {"type": "object", "properties": {
-                 "path": {"type": "string", "description": "Workspace-relative directory"}},
-                 "additionalProperties": False}},
-            {"type": "function", "name": "read_file", "deferLoading": True,
-             "description": "Read one text file inside the session workspace.",
-             "inputSchema": {"type": "object", "properties": {
-                 "path": {"type": "string"}}, "required": ["path"],
-                 "additionalProperties": False}},
-            {"type": "function", "name": "search", "deferLoading": True,
-             "description": "Search text or file names in the workspace with Charon bounds.",
-             "inputSchema": {"type": "object", "properties": {
-                 "query": {"type": "string"},
-                 "mode": {"type": "string", "enum": ["text", "file"]},
-                 "regex": {"type": "boolean"}}, "required": ["query"],
-                 "additionalProperties": False}},
-            {"type": "function", "name": "git_status", "deferLoading": True,
-             "description": "Read the Git working-tree status containing the session cwd.",
-             "inputSchema": {"type": "object", "properties": {},
-                 "additionalProperties": False}},
-        ],
-    }]
-
-
 def _coerce_effort(effort: str | None):
     """Return a ReasoningEffort enum for `effort`, or None if unset/unknown.
 
@@ -194,8 +160,50 @@ def _coerce_effort(effort: str | None):
         return effort
 
 
+def _external_codex_bin() -> str | None:
+    """Return the fleet-managed CLI when it exists beside the shared venv.
+
+    The Python SDK currently trails the standalone CLI. Charon keeps the SDK
+    as process/router owner while pointing ``CodexConfig.codex_bin`` at the
+    newer app-server installed under that same shared venv.
+    """
+    override = os.environ.get("CHARON_CODEX_BIN", "").strip()
+    candidates = [override] if override else []
+    candidates.append(str(Path(sys.prefix) / "codex-cli" / "node_modules" / ".bin" / "codex"))
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
+            continue
+        try:
+            # npm can install a platform package successfully even when its
+            # Node/runtime requirements make the launcher unusable. Never
+            # replace the SDK-bundled fallback until the binary itself starts.
+            probe = subprocess.run(
+                [candidate, "--version"], capture_output=True, text=True,
+                timeout=5.0, check=False,
+            )
+            if probe.returncode == 0:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+CODEX_CLI_BIN = _external_codex_bin() if CODEX_AVAILABLE else None
+
+
 def _codex_cli_version() -> str | None:
-    """Best-effort version of the bundled codex CLI binary."""
+    """Best-effort version of the CLI that sessions actually execute."""
+    if CODEX_CLI_BIN:
+        try:
+            proc = subprocess.run(
+                [CODEX_CLI_BIN, "--version"], capture_output=True, text=True,
+                timeout=5.0, check=False,
+            )
+            match = re.search(r"(?:codex-cli\s+)?([0-9]+(?:\.[0-9A-Za-z-]+)+)", proc.stdout)
+            if match:
+                return match.group(1)
+        except Exception:
+            pass
     try:
         from importlib.metadata import version as _pkg_version
         return _pkg_version("openai-codex-cli-bin")
@@ -204,6 +212,13 @@ def _codex_cli_version() -> str | None:
 
 
 CODEX_CLI_VERSION = _codex_cli_version() if CODEX_AVAILABLE else None
+
+
+def make_codex_config(**kwargs: Any):
+    """Build a config that prefers the independently managed CLI."""
+    if CODEX_CLI_BIN and not kwargs.get("codex_bin"):
+        kwargs["codex_bin"] = CODEX_CLI_BIN
+    return CodexConfig(**kwargs)
 
 
 def _enum_val(v: Any) -> Any:
@@ -249,7 +264,7 @@ async def fetch_codex_models() -> dict[str, Any]:
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         resp = await client.models(include_hidden=False)
         raw = getattr(resp, "data", None)
         if raw is None:
@@ -296,7 +311,7 @@ async def fetch_codex_threads(*, archived: bool = False) -> dict[str, Any]:
         from openai_codex.generated.v2_all import (
             SortDirection, ThreadSortKey, ThreadSourceKind,
         )
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         cursor = None
         rows: list[dict[str, Any]] = []
         source_kinds = [
@@ -355,7 +370,7 @@ async def codex_login_api_key(api_key: str) -> dict[str, Any]:
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         await client.login_api_key(api_key)
         return {"ok": True}
     except Exception as e:
@@ -373,7 +388,7 @@ async def codex_logout() -> dict[str, Any]:
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         await client.logout()
         return {"ok": True}
     except Exception as e:
@@ -392,7 +407,7 @@ async def codex_set_thread_archived(thread_id: str, archived: bool) -> dict[str,
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         if archived:
             await client.thread_archive(thread_id)
         else:
@@ -439,7 +454,7 @@ async def fetch_codex_usage() -> dict[str, Any]:
         # wrapper layout changed.
         from openai_codex.async_client import AsyncCodexClient
         from openai_codex.generated.v2_all import GetAccountParams
-        client = AsyncCodexClient(CodexConfig())
+        client = AsyncCodexClient(make_codex_config())
         await client.start()
         await client.initialize()
         acct = await client.account_read(GetAccountParams(refresh_token=False))
@@ -989,7 +1004,7 @@ class CodexSession:
             # user input arriving in this event-loop tick starts a second turn.
             self._active_turn = handle
             self._external_turn_task = asyncio.create_task(
-                self._consume_external_turn(handle, claimed=True),
+                self._consume_external_turn(handle),
                 name=f"codex-external-{self.session_id}",
             )
             return True
@@ -1021,7 +1036,7 @@ class CodexSession:
             probe(), name=f"codex-external-probe-{self.session_id}"
         )
 
-    async def _consume_external_turn(self, handle: Any, *, claimed: bool = False) -> None:
+    async def _consume_external_turn(self, handle: Any) -> None:
         self._active_turn = handle
         self._begin_turn()
         try:
@@ -1057,7 +1072,7 @@ class CodexSession:
             handle = AsyncTurnHandle(self._client, self.claude_session_id, turn.id)
             self._active_turn = handle
             self._external_turn_task = asyncio.create_task(
-                self._consume_external_turn(handle, claimed=True),
+                self._consume_external_turn(handle),
                 name=f"codex-review-{self.session_id}"
             )
         return {
@@ -1270,8 +1285,6 @@ class CodexSession:
 
     def _sdk_approval_handler(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
         """SDK reader-thread callback → dashboard future on the agent loop."""
-        if method == "item/tool/call":
-            return self._run_dynamic_tool(dict(params or {}))
         if method not in {
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
@@ -1291,60 +1304,6 @@ class CodexSession:
         except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
             pending.cancel()
             return {"decision": "cancel"}
-
-    def _run_dynamic_tool(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute one read-only dynamic tool on the SDK reader thread."""
-        tool = params.get("tool")
-        if isinstance(tool, dict):
-            name = str(tool.get("name") or "")
-        else:
-            name = str(tool or params.get("name") or "")
-        # Namespace calls may arrive fully-qualified depending on CLI build.
-        name = name.rsplit(".", 1)[-1].rsplit("/", 1)[-1]
-        args = params.get("arguments")
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except Exception:
-                args = {}
-        if not isinstance(args, dict):
-            args = {}
-        try:
-            if name == "list_files":
-                from .fsnav import fs_list
-                result = fs_list(self.cwd, str(args.get("path") or ""), False)
-            elif name == "read_file":
-                from .fsnav import fs_read
-                result = fs_read(self.cwd, str(args.get("path") or ""))
-                # A dynamic tool result enters model context immediately. The
-                # UI viewer may return 2 MiB, but a single model tool result may
-                # not; make the truncation explicit.
-                content = result.get("content") if isinstance(result, dict) else None
-                if isinstance(content, str) and len(content.encode("utf-8")) > 96 * 1024:
-                    result = dict(result)
-                    result["content"] = content.encode("utf-8")[:96 * 1024].decode("utf-8", "ignore")
-                    result["truncated"] = True
-            elif name == "search":
-                from .fsnav import fs_search
-                result = fs_search(
-                    self.cwd, str(args.get("query") or ""),
-                    mode="file" if args.get("mode") == "file" else "text",
-                    regex=bool(args.get("regex")), max_results=50,
-                )
-            elif name == "git_status":
-                from .git import git_status
-                result = git_status(self.cwd, include_recent=False, max_files=400)
-            else:
-                return {"success": False, "contentItems": [{
-                    "type": "inputText", "text": f"unknown Charon dynamic tool: {name}",
-                }]}
-            text = json.dumps(result, ensure_ascii=False, default=str)
-            return {"success": bool(not isinstance(result, dict) or result.get("ok", True)),
-                    "contentItems": [{"type": "inputText", "text": text}]}
-        except Exception as e:
-            return {"success": False, "contentItems": [{
-                "type": "inputText", "text": f"{type(e).__name__}: {e}",
-            }]}
 
     async def _initialize_sdk(self, client: Any) -> None:
         """Initialize through the SDK client with egress capabilities.
@@ -1385,7 +1344,6 @@ class CodexSession:
             "sandbox": _sandbox_mode_wire(self.permission_mode),
             "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
             "approvalsReviewer": "user",
-            "dynamicTools": _charon_dynamic_tools(),
         }
         if self.model:
             params["model"] = self.model
@@ -2237,7 +2195,7 @@ class CodexSession:
     async def _run(self) -> None:
         try:
             self._loop = asyncio.get_running_loop()
-            client = AsyncCodex(CodexConfig(
+            client = AsyncCodex(make_codex_config(
                 cwd=self.cwd,
                 config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
                 env=self.codex_config.get("env") or None,
@@ -2316,6 +2274,10 @@ class CodexSession:
                 self._consume_global_notifications(),
                 name=f"codex-global-{self.session_id}",
             )
+            # A goal/review may already own a physical turn before this
+            # process resumes the thread. Its status notification can precede
+            # our global consumer, so probe once unconditionally at attach.
+            self._schedule_external_turn_probe()
             await self._start_fs_watch()
 
             # ── Turn loop ─────────────────────────────────────────────────────

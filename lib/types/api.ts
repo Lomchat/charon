@@ -631,6 +631,7 @@ export type UpdateVpsAgentResponse = {
   // after a successful update — the initiating tab patches from THIS response
   // and had no codex field to patch with.
   codexSdkVersion?: string | null;
+  codexCliVersion?: string | null;
   builtPyzSha: string;
   detail: string;
   // Non-fatal sub-step failures on an ok update ("sdk upgrade failed: …",
@@ -810,6 +811,7 @@ export type ClaudeSessionsListResponse = {
     builtAgentVersion?: string | null;
     sdkLatestVersion: string | null;
     codexLatestVersion: string | null;
+    codexCliLatestVersion: string | null;
   };
 };
 

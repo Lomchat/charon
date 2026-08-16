@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from charon_agent.codex_session import CodexSession, _charon_dynamic_tools  # noqa: E402
+from charon_agent.codex_session import CodexSession  # noqa: E402
 
 
 def session():
@@ -99,22 +99,6 @@ class TestCodexPermissions(unittest.TestCase):
             self.assertEqual(await task, {"action": "accept", "content": {"project": "Charon"}})
 
         asyncio.run(main())
-
-    def test_dynamic_workspace_tools_are_read_only_and_bounded(self):
-        s, _ = session()
-        specs = _charon_dynamic_tools()
-        names = [tool["name"] for tool in specs[0]["tools"]]
-        self.assertEqual(names, ["list_files", "read_file", "search", "git_status"])
-        result = s._sdk_approval_handler("item/tool/call", {
-            "tool": "charon_workspace.list_files", "arguments": {"path": ""},
-        })
-        self.assertTrue(result["success"])
-        self.assertEqual(result["contentItems"][0]["type"], "inputText")
-        denied = s._sdk_approval_handler("item/tool/call", {
-            "tool": "charon_workspace.delete_file", "arguments": {},
-        })
-        self.assertFalse(denied["success"])
-
 
 if __name__ == "__main__":
     unittest.main()

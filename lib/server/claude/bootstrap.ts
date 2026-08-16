@@ -522,9 +522,10 @@ export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<E
 
 // ── Ensure the latest `openai-codex` in the VPS venv (OPTIONAL, warn-only) ──
 // Codex is a SECOND agent backend (OpenAI). It installs into the SAME
-// ~/.charon/venv as claude-agent-sdk and ships its own codex CLI binary via
-// the `openai-codex-cli-bin` dependency, so there is no separate npm/CLI
-// install. Because PEP 668 is already sidestepped by using the venv (never
+// ~/.charon/venv as claude-agent-sdk. The Python package's bundled CLI can
+// lag the standalone release, so we also install `@openai/codex` below the
+// shared venv and the agent selects it through CodexConfig.codex_bin. Because
+// PEP 668 is already sidestepped by using the venv (never
 // `pip --user`) and the venv is created/healed by ensureSdkLatest — which
 // ALWAYS runs first in every calling flow (bootstrap install_sdk phase +
 // updateVpsAgent) — this step only needs a healthy venv; it does NOT
@@ -547,6 +548,25 @@ const INSTALL_CODEX_CMD = [
   // the existing python already qualifies). Pulls openai-codex-cli-bin (the
   // bundled codex CLI) transitively — no extra step.
   `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 | tail -40`,
+  // The standalone CLI is an independent release line (e.g. CLI 0.147 while
+  // the public Python SDK remains 0.144.4). Keep it optional: a minimal VPS
+  // without npm retains the SDK-bundled app-server instead of losing Codex.
+  `CODEX_CLI_DIR=${VENV_DIR}/codex-cli`,
+  `if command -v npm >/dev/null 2>&1; then`,
+  `  echo "[install_codex] npm install @openai/codex@latest in $CODEX_CLI_DIR"`,
+  `  if npm install --prefix "$CODEX_CLI_DIR" --no-audit --no-fund @openai/codex@latest 2>&1 | tail -40; then`,
+  `    CODEX_BIN="$CODEX_CLI_DIR/node_modules/.bin/codex"`,
+  `    if [ -x "$CODEX_BIN" ] && "$CODEX_BIN" --version >/dev/null 2>&1; then`,
+  `      "$CODEX_BIN" --version | sed 's/^codex-cli /[install_codex] OK cli_version=/'`,
+  `    else`,
+  `      echo "[install_codex] standalone CLI installed but unusable; using bundled CLI"`,
+  `    fi`,
+  `  else`,
+  `    echo "[install_codex] standalone CLI upgrade failed; using bundled CLI"`,
+  `  fi`,
+  `else`,
+  `  echo "[install_codex] npm unavailable; using SDK-bundled CLI"`,
+  `fi`,
   // Post-import check: the ONLY real proof it works. importlib.metadata is
   // the robust version source (matches codex_session.py's fallback).
   `${VENV_PY} -c 'import openai_codex; from importlib.metadata import version; print("[install_codex] OK version=" + version("openai-codex"))'`,
@@ -559,6 +579,7 @@ const INSTALL_CODEX_TIMEOUT_MS = 300_000;
 export type EnsureCodexResult = {
   ok: boolean;
   codexVersion?: string;
+  codexCliVersion?: string;
   // Human tail of the failing output (pip/import error) when ok=false.
   error?: string;
   // Set when the failure is the SSH transport itself (detectSshFailure).
@@ -573,8 +594,9 @@ export async function ensureCodexLatest(vps: Vps, session?: SshSession): Promise
     if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
     const out = r.stdout + r.stderr;
     const m = out.match(/\[install_codex\] OK version=(\S+)/);
+    const cli = out.match(/\[install_codex\] OK cli_version=(\S+)/);
     if (!r.ok || !m) return { ok: false, error: (out.slice(-600) || `exit ${r.code}`).trim() };
-    return { ok: true, codexVersion: m[1] };
+    return { ok: true, codexVersion: m[1], ...(cli ? { codexCliVersion: cli[1] } : {}) };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e) };
   } finally {
@@ -602,6 +624,7 @@ export type UpdateAgentResult = {
   // to the pip step). Absent when codex is not installed / the step failed —
   // codex is OPTIONAL and NEVER fails the update (no null-clobber, §14.53).
   codexSdkVersion?: string;
+  codexCliVersion?: string;
   codexAvailable?: boolean;
   detail: string;
   // PARTIAL failures on an ok:true update (the pip sub-steps are non-fatal by
@@ -638,7 +661,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // persisted value (parsed by pingAgent), using this as the note/fallback.
     const codex = await ensureCodexLatest(vps, session);
     const codexNote = codex.ok
-      ? `codex ${codex.codexVersion}`
+      ? `codex sdk ${codex.codexVersion}${codex.codexCliVersion ? ` / cli ${codex.codexCliVersion}` : ''}`
       : `codex ${codex.sshError ? 'skipped (ssh)' : 'skipped'}: ${(codex.error ?? '').slice(-160)}`;
 
     // Step 2: restart. Try systemd-user then nohup fallback.
@@ -703,6 +726,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // running daemon actually imports), fall back to the pip step's version.
     // Only set when we actually have one (no null-clobber, §14.53).
     const codexSdkVersion = ping.codexSdkVersion ?? (codex.ok ? codex.codexVersion : undefined);
+    const codexCliVersion = ping.codexCliVersion ?? (codex.ok ? codex.codexCliVersion : undefined);
     // Partial failures → structured warnings (the UI toasts them; the badge
     // relighting after an "ok" update is otherwise a silent mystery).
     const warnings: string[] = [];
@@ -714,6 +738,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       newPyzSha: ping.pyzSha,
       ...(sdk.ok && sdk.sdkVersion ? { sdkVersion: sdk.sdkVersion } : {}),
       ...(codexSdkVersion ? { codexSdkVersion } : {}),
+      ...(codexCliVersion ? { codexCliVersion } : {}),
       ...(ping.codexAvailable !== undefined ? { codexAvailable: ping.codexAvailable } : {}),
       detail: `${ping.detail} · ${sdkNote} · ${codexNote}`,
       ...(warnings.length ? { warnings } : {}),
@@ -1060,6 +1085,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       // them (≥0.15.0). Old agents omit the keys → never null-clobber (§14.53).
       ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
       ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
+      ...(pingR.codexCliVersion !== undefined ? { codexCliVersion: pingR.codexCliVersion } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
     // Mirror onto the live bus: the install SSE only reaches the tab that
     // launched it, so without this every OTHER tab/device keeps "not
@@ -1070,6 +1096,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       agentLastError: null,
       ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
       ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
+      ...(pingR.codexCliVersion !== undefined ? { codexCliVersion: pingR.codexCliVersion } : {}),
     });
   } catch {}
 

@@ -27,7 +27,7 @@ from .codex_session import (
     CODEX_AVAILABLE,
     CODEX_IMPORT_ERROR,
     AsyncCodex,
-    CodexConfig,
+    make_codex_config,
 )
 
 # Device codes expire server-side (~15 min). Reap our attempt a bit before so
@@ -106,7 +106,7 @@ async def start() -> dict[str, Any]:
         await _abort(prev)
     client = None
     try:
-        client = AsyncCodex(CodexConfig())
+        client = AsyncCodex(make_codex_config())
         handle = await client.login_chatgpt_device_code()
         a = _Attempt(client, handle)
         a.task = asyncio.create_task(_watch(a))

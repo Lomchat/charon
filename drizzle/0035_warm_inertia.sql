@@ -1,0 +1,1 @@
+ALTER TABLE `vps` ADD `codex_cli_version` text;

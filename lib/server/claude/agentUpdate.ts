@@ -123,6 +123,7 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       agentLastSeenAt: Math.floor(Date.now() / 1000),
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
+      ...(result.codexCliVersion ? { codexCliVersion: result.codexCliVersion } : {}),
       ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
     // Mirror the persist onto the live bus — WITHOUT this, an update driven by
@@ -135,6 +136,7 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       agentLastError: null,
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
+      ...(result.codexCliVersion ? { codexCliVersion: result.codexCliVersion } : {}),
       ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     });
   } catch {}

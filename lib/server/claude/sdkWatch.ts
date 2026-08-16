@@ -4,7 +4,7 @@ import { db, vps as vpsTable, claudeSessions, claudeSessionMessages, claudePendi
 import type { Vps } from '@/lib/db/schema';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { getSetting, setSetting, getSettingBool, type SettingKey } from './settings';
-import { getSdkLatestVersion, refreshSdkLatest, getCodexLatestVersion, refreshCodexLatest } from './sdkSync';
+import { getSdkLatestVersion, refreshSdkLatest, getCodexLatestVersion, refreshCodexLatest, getCodexCliLatestVersion, refreshCodexCliLatest } from './sdkSync';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { runAgentUpdateFlow } from './agentUpdate';
 import { sendPlainToTelegram } from './telegram';
@@ -42,6 +42,7 @@ import { runningBgTasksFromDb, pruneStaleBgTasks } from './bgTaskState';
 // `sdk.last_notified_version`. Both are registered in settings.ts DEFAULTS
 // (internal keys — written here, never POSTable).
 const CODEX_LAST_NOTIFIED_KEY: SettingKey = 'codex.last_notified_version';
+const CODEX_CLI_LAST_NOTIFIED_KEY: SettingKey = 'codex.last_notified_cli_version';
 // Dedup key for the agent axis. Replaces `agent.last_notified_pyz_sha`: the
 // key must be the thing we now act on (§14.6), i.e. the VERSION we ship —
 // keyed on the sha, a rebuild with no bump would re-notify about an update
@@ -175,8 +176,11 @@ async function tick(): Promise<void> {
     // openai-codex + restart), so a VPS behind on any axis is fixed by one run.
     const rc = await refreshCodexLatest();
     if (!rc.ok) console.warn('[sdkWatch] pypi codex refresh failed:', rc.error);
+    const rcli = await refreshCodexCliLatest();
+    if (!rcli.ok) console.warn('[sdkWatch] npm codex CLI refresh failed:', rcli.error);
     const latest = getSdkLatestVersion();
     const codexLatest = getCodexLatestVersion();
+    const codexCliLatest = getCodexCliLatestVersion();
     const builtSha = getBuiltPyzSha();
     const builtVersion = getBuiltAgentVersion();
     // THREE independent staleness axes, ONE update flow (runAgentUpdateFlow
@@ -193,7 +197,7 @@ async function tick(): Promise<void> {
     //            a hub on an older build leaves a newer VPS alone instead of
     //            rolling it back every tick (§14.70). Equal version + different
     //            sha is NOT an axis: bump `__version__` to propagate.
-    if (!latest && !builtVersion && !codexLatest) return; // no way to compare on any axis
+    if (!latest && !builtVersion && !codexLatest && !codexCliLatest) return; // no way to compare on any axis
     const fleet: Vps[] = db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all();
     const sdkOld = (v: Vps) => !!latest && !!v.sdkVersion && isVersionOutdated(v.sdkVersion, latest);
     const pyzOld = (v: Vps) => isAgentOutdated(v.agentVersion, builtVersion);
@@ -201,13 +205,15 @@ async function tick(): Promise<void> {
     // installed, hello ≥0.15.0). NULL codexSdkVersion is invisible here — a
     // VPS without codex is never enrolled just for the codex axis.
     const codexOld = (v: Vps) => !!codexLatest && !!v.codexSdkVersion && isVersionOutdated(v.codexSdkVersion, codexLatest);
+    const codexCliOld = (v: Vps) => !!codexCliLatest && !!v.codexCliVersion && isVersionOutdated(v.codexCliVersion, codexCliLatest);
     const reason = (v: Vps) => [
       sdkOld(v) ? `claude ${v.sdkVersion}→${latest}` : null,
       pyzOld(v) ? `agent v${v.agentVersion}→v${builtVersion}` : null,
       codexOld(v) ? `codex ${v.codexSdkVersion}→${codexLatest}` : null,
+      codexCliOld(v) ? `codex-cli ${v.codexCliVersion}→${codexCliLatest}` : null,
     ].filter(Boolean).join(', ');
     const outdated = fleet
-      .filter((v) => sdkOld(v) || pyzOld(v) || codexOld(v))
+      .filter((v) => sdkOld(v) || pyzOld(v) || codexOld(v) || codexCliOld(v))
       .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
     // VPSes running an agent NEWER than this hub's build — logged, never
     // touched. On a co-tenant host that line is the expected steady state, not
@@ -216,7 +222,7 @@ async function tick(): Promise<void> {
     if (ahead.length) {
       console.log(`[sdkWatch] ${ahead.length} VPS ahead of this hub's build (v${builtVersion}) — left alone: ${ahead.map((v) => `${v.name} v${v.agentVersion}`).join(', ')}`);
     }
-    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, codex-latest=${codexLatest ?? '-'}, agent=v${builtVersion ?? '-'} (pyz ${builtSha ? builtSha.slice(0, 7) : '-'}), fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
+    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, codex-sdk=${codexLatest ?? '-'}, codex-cli=${codexCliLatest ?? '-'}, agent=v${builtVersion ?? '-'} (pyz ${builtSha ? builtSha.slice(0, 7) : '-'}), fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
     if (outdated.length === 0) return;
 
     // --- Notification (once per NEW sdk version AND/OR codex version AND/OR
@@ -229,11 +235,13 @@ async function tick(): Promise<void> {
     const sdkIsNew = !!latest && latest !== (getSetting('sdk.last_notified_version') || '') && outdated.some(sdkOld);
     const pyzIsNew = !!builtVersion && builtVersion !== (getSetting(AGENT_LAST_NOTIFIED_KEY) || '') && outdated.some(pyzOld);
     const codexIsNew = !!codexLatest && codexLatest !== (getSetting(CODEX_LAST_NOTIFIED_KEY) || '') && outdated.some(codexOld);
-    if (sdkIsNew || pyzIsNew || codexIsNew) {
+    const codexCliIsNew = !!codexCliLatest && codexCliLatest !== (getSetting(CODEX_CLI_LAST_NOTIFIED_KEY) || '') && outdated.some(codexCliOld);
+    if (sdkIsNew || pyzIsNew || codexIsNew || codexCliIsNew) {
       const auto = autoSdk || autoCodex;
       const head = [
         sdkIsNew ? `claude-agent-sdk ${latest}` : null,
         codexIsNew ? `openai-codex ${codexLatest}` : null,
+        codexCliIsNew ? `codex-cli ${codexCliLatest}` : null,
         pyzIsNew ? `charon-agent v${builtVersion}` : null,
       ].filter(Boolean).join(' + ');
       const lines = outdated.map((v) => `• ${v.name} (${reason(v)})`).join('\n');
@@ -254,13 +262,14 @@ async function tick(): Promise<void> {
       if (sdkIsNew) setSetting('sdk.last_notified_version', latest!);
       if (pyzIsNew) setSetting(AGENT_LAST_NOTIFIED_KEY, builtVersion!);
       if (codexIsNew) setSetting(CODEX_LAST_NOTIFIED_KEY, codexLatest!);
+      if (codexCliIsNew) setSetting(CODEX_CLI_LAST_NOTIFIED_KEY, codexCliLatest!);
     }
 
     // Nothing enabled on either axis → notify-only, no auto-update.
     if (!autoSdk && !autoCodex) return;
     // Per-VPS eligibility: update iff it's stale on an axis whose gate is ON.
     const shouldAutoUpdate = (v: Vps) =>
-      (autoSdk && (sdkOld(v) || pyzOld(v))) || (autoCodex && codexOld(v));
+      (autoSdk && (sdkOld(v) || pyzOld(v))) || (autoCodex && (codexOld(v) || codexCliOld(v)));
 
     // --- Serial auto-update of the idle ones ---
     const updated: string[] = [];
@@ -277,7 +286,7 @@ async function tick(): Promise<void> {
       // Key spans ALL axes so a new SDK version, a new codex version OR a
       // newer agent version re-enables a previously-attempted VPS
       // (in-memory; a restart also does).
-      const key = `${v.id}@${latest ?? '-'}/${builtVersion ?? '-'}/${codexLatest ?? '-'}`;
+      const key = `${v.id}@${latest ?? '-'}/${builtVersion ?? '-'}/${codexLatest ?? '-'}/${codexCliLatest ?? '-'}`;
       if (state.attempted.has(key)) {
         // Already attempted this exact target in this process (success or
         // failure) — no hammering; a NEW sdk/codex version or pyz build or a
@@ -301,6 +310,7 @@ async function tick(): Promise<void> {
         const done = [
           res.sdkVersion ? `claude ${res.sdkVersion}` : null,
           res.codexSdkVersion ? `codex ${res.codexSdkVersion}` : null,
+          res.codexCliVersion ? `cli ${res.codexCliVersion}` : null,
           res.newPyzSha ? `pyz ${res.newPyzSha.slice(0, 7)}` : null,
         ].filter(Boolean).join(', ');
         updated.push(`${v.name} (${done || 'ok'})`);
@@ -325,7 +335,7 @@ async function tick(): Promise<void> {
     // Batch summary — only when something was actually attempted (a busy-only
     // tick every 30min would just be noise; those VPSes stay badge-lit anyway).
     if (updated.length > 0 || failed.length > 0) {
-      const parts: string[] = [`Agent auto-update (claude ${latest ?? '-'}, codex ${codexLatest ?? '-'}, pyz ${builtSha ? builtSha.slice(0, 7) : '-'}):`];
+      const parts: string[] = [`Agent auto-update (claude ${latest ?? '-'}, codex sdk ${codexLatest ?? '-'}, cli ${codexCliLatest ?? '-'}, pyz ${builtSha ? builtSha.slice(0, 7) : '-'}):`];
       if (updated.length) parts.push(`✓ updated: ${updated.join(', ')}`);
       if (skippedBusy.length) parts.push(`⏸ busy, retry later: ${skippedBusy.join(', ')}`);
       if (failed.length) parts.push(`✗ failed:\n${failed.map((f) => `• ${f}`).join('\n')}`);

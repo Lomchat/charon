@@ -170,6 +170,19 @@ def _events(session, name):
 
 
 class TestCodexResume(unittest.TestCase):
+    def test_make_codex_config_prefers_managed_cli_but_honours_override(self):
+        saved_bin, saved_config = cs.CODEX_CLI_BIN, cs.CodexConfig
+        cs.CODEX_CLI_BIN = "/managed/codex"
+        cs.CodexConfig = lambda **kw: kw
+        try:
+            self.assertEqual(cs.make_codex_config(cwd="/tmp")["codex_bin"], "/managed/codex")
+            self.assertEqual(
+                cs.make_codex_config(cwd="/tmp", codex_bin="/session/codex")["codex_bin"],
+                "/session/codex",
+            )
+        finally:
+            cs.CODEX_CLI_BIN, cs.CodexConfig = saved_bin, saved_config
+
     def test_advanced_codex_config_is_normalized_and_persisted(self):
         s = cs.CodexSession(
             "cfg", cwd="/tmp", name=None, permission_mode="workspace-write",

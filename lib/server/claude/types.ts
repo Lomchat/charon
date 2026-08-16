@@ -199,7 +199,7 @@ export type SyntheticEvent =
       // | 'error: …', null = cleared) + codex availability — feed the per-VPS
       // health chips (app/vpsHealth.tsx). Keys present only when known
       // (no-clobber contract, mirrors sdkVersion).
-      agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null;
+      agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null; codexCliVersion?: string | null;
       // Set by the codex device-code login route on completion (§14.61) and by
       // the claude device-code login session on success (§14.64).
       codexLoggedIn?: number | null; claudeLoggedIn?: number | null }

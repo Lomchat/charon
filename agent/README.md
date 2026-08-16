@@ -6,7 +6,7 @@ plus persistent PTY shells. Charon (the Next.js hub) drives it over **one
 multiplexed SSH per VPS**, speaking line-delimited JSON-RPC to the daemon's
 Unix socket `~/.charon/agent.sock`.
 
-Current `__version__`: **0.52.0** (`charon_agent/__init__.py`).
+Current `__version__`: **0.55.0** (`charon_agent/__init__.py`).
 
 The **protocol spec is [`charon_agent/protocol.py`](charon_agent/protocol.py)**
 (error codes + the canonical `METHODS` set). Its TypeScript mirror is
@@ -24,7 +24,7 @@ charon_agent/server.py        asyncio Unix server, JSON-RPC dispatch, per-sessio
 charon_agent/session.py       Claude session: wraps ClaudeSDKClient, hooks,
                               can_use_tool, permission/question futures
 charon_agent/codex_session.py Codex session: same event vocabulary, per-turn
-                              model/effort/sandbox, no human permission gating
+                              model/effort/sandbox, approvals and global signals
 charon_agent/codex_login.py   headless ChatGPT device-code sign-in
 charon_agent/shell.py         client of the detached PTY holder (spawn/attach,
                               input/resize/kill, busy/idle heuristics)
@@ -77,6 +77,7 @@ connect failed.
 | Var | Default | Role |
 |---|---|---|
 | `CHARON_AGENT_HOME` | `~/.charon` | state directory (handy for tests) |
+| `CHARON_CODEX_BIN` | auto-detected | override the standalone Codex CLI binary |
 | `CHARON_EVLOG_MAX_BYTES` | `10485760` | event-log rotation threshold |
 | `CHARON_EVLOG_ROTATIONS` | `3` | rotated event-log files kept |
 
@@ -92,7 +93,10 @@ CI runs them on Python 3.10 and 3.13 (the supported range).
 
 - Python ≥ 3.10.
 - A dedicated **venv at `~/.charon/venv`** holding `claude-agent-sdk` and
-  `openai-codex` — never `pip install --user` (PEP 668). The systemd unit's
+  `openai-codex`, plus the independently updated npm CLI under
+  `~/.charon/venv/codex-cli` — never `pip install --user` (PEP 668). The agent
+  passes that binary through `CodexConfig.codex_bin`; `CHARON_CODEX_BIN` can
+  override it, and the bundled SDK binary remains the fallback. The systemd unit's
   `ExecStart` runs the pyz with `~/.charon/venv/bin/python`, falling back to
   the best system python. Created and kept fresh by the hub
   (`lib/server/claude/bootstrap.ts`, `VENV_DIR`).

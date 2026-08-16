@@ -351,19 +351,20 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                       />
                     </div>
                     <div className="switch-row">
-                      <span>auto-update Codex (openai-codex) when a VPS is idle</span>
+                      <span>auto-update Codex (Python SDK + CLI) when a VPS is idle</span>
                       <Toggle
                         checked={(s['codex.auto_update'] ?? 'true') === 'true'}
                         onChange={(v) => set('codex.auto_update', v ? 'true' : 'false')}
                         label="auto-update codex when a VPS is idle"
                       />
                     </div>
-                    {(s['sdk.latest_version'] || s['codex.latest_version']) && (
+                    {(s['sdk.latest_version'] || s['codex.latest_version'] || s['codex.cli_latest_version']) && (
                       <p className="set-meta">
-                        latest on PyPI:
+                        latest releases:
                         {s['sdk.latest_version'] && <> claude-agent-sdk <b>{s['sdk.latest_version']}</b></>}
                         {s['sdk.latest_version'] && s['codex.latest_version'] && ' · '}
                         {s['codex.latest_version'] && <> openai-codex <b>{s['codex.latest_version']}</b></>}
+                        {s['codex.cli_latest_version'] && <> · codex-cli <b>{s['codex.cli_latest_version']}</b></>}
                       </p>
                     )}
                   </>

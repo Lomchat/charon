@@ -141,9 +141,14 @@ const DEFAULTS = {
   // successful check. Parallel to sdk.latest_version(_at). cf. codexWatch.
   'codex.latest_version': '',
   'codex.latest_version_at': '',
+  // Standalone @openai/codex CLI release line. It currently advances ahead
+  // of the Python SDK, so freshness and notification dedup stay separate.
+  'codex.cli_latest_version': '',
+  'codex.cli_latest_version_at': '',
   // Last openai-codex version we sent a "new codex" notification for (dedup
   // across ticks/restarts), parallel to sdk.last_notified_version.
   'codex.last_notified_version': '',
+  'codex.last_notified_cli_version': '',
   // Last charon-agent `__version__` we sent a "new agent" notification for —
   // dedup for the agent auto-update axis (sdkWatch.ts), parallel to
   // sdk.last_notified_version. Keyed on the VERSION, not the pyz sha, since
