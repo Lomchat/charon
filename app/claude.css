@@ -1704,6 +1704,19 @@
   background: linear-gradient(to right, transparent, rgba(106,115,136,0.45), transparent);
 }
 .compaction-marker .cm-label { flex: 0 1 auto; text-align: center; }
+/* Fork boundary — same separator shape as the compaction marker, but lavender:
+   that one is a loss (the model forgot), this one is an inheritance. */
+.fork-marker {
+  display: flex; align-items: center; gap: 10px;
+  margin: 14px 2px; color: var(--lavender, #9b8ec4);
+  font-size: 11px; letter-spacing: 0.01em;
+}
+.fork-marker::before,
+.fork-marker::after {
+  content: ''; flex: 1 1 auto; height: 1px;
+  background: linear-gradient(to right, transparent, rgba(155,142,196,0.45), transparent);
+}
+.fork-marker .fm-label { flex: 0 1 auto; text-align: center; }
 /* tool_use card — terminal style */
 .bubble.tool-use {
   background: rgba(28,31,41,0.45);

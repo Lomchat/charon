@@ -104,6 +104,17 @@ export function rebuildStateFromMessages(
             createdAt: m.createdAt,
           });
         }
+        // The branch point. Everything above was inherited from the session
+        // this one was forked from — the model has it too, which is the whole
+        // reason we copied it — and everything below belongs to this branch.
+        if (ev.type === 'fork_point') {
+          out.messages.push({
+            id: 'm' + m.id, role: 'forkpoint',
+            content: typeof ev.fromName === 'string' ? ev.fromName : '',
+            createdAt: m.createdAt,
+            from: typeof ev.fromId === 'string' ? ev.fromId : null,
+          });
+        }
         // A turn driven by another agent, not by the user.
         if (ev.type === 'external_message') {
           out.messages.push({

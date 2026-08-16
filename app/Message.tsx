@@ -62,6 +62,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   if (m.role === 'user_question' || m.role === 'exit_plan_request') return null;
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
   if (m.role === 'compaction') return <CompactionMarker m={m} />;
+  if (m.role === 'forkpoint') return <ForkMarker m={m} />;
 
   const isAssistant = m.role === 'assistant';
   // A message relayed from ANOTHER session drives the turn exactly like one the
@@ -190,6 +191,22 @@ function CompactionMarker({ m }: { m: Msg }) {
       <span className="cm-label">
         Conversation compactée{auto ? ' automatiquement' : ''} — Claude ne se
         souvient plus des messages au-dessus
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The fork boundary. Deliberately the OPPOSITE message to the compaction
+ * marker above: there, the history is intact and the model's memory is not;
+ * here, both are — the branch inherited the transcript AND the context.
+ */
+function ForkMarker({ m }: { m: Msg }) {
+  return (
+    <div className="fork-marker" role="separator">
+      <span className="fm-label">
+        Conversation forkée{m.content ? ` depuis « ${m.content} »` : ''} — tout
+        ce qui précède est hérité
       </span>
     </div>
   );

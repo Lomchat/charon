@@ -1,10 +1,25 @@
 import { NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
-import { db, claudeSessions } from '@/lib/db';
+import { eq, and } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
+import { db, claudeSessions, claudeSessionMessages } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import { emitGlobalSessionListChanged, nextSessionPosition } from '@/lib/server/agent/sessionOps';
+import {
+  emitGlobalSessionListChanged,
+  nextSessionPosition,
+  resumeSession,
+} from '@/lib/server/agent/sessionOps';
 import { randomBytes } from 'crypto';
+
+/**
+ * Heavy diff payloads are NOT carried into the branch: `edit_snapshot` rows are
+ * 61% of all transcript bytes here (327MB of 537MB), and a fork is meant to be
+ * cheap enough to make on a whim. They are side-channel rows the session GET
+ * already strips and serves lazily from `.../edits` (§14.41), so the branch
+ * loses the DIFFS of inherited edits — not the tool cards, not the answers —
+ * and the source session still has every one of them.
+ */
+const UNCOPIED_ROLES = ['edit_snapshot'];
 
 /**
  * POST /api/claude/sessions/[id]/fork
@@ -94,7 +109,79 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     position: nextSessionPosition(src.vpsId),
   }).run();
 
+  // ── Carry the conversation across ───────────────────────────────────────
+  // The SDK copied the CLI transcript, so the MODEL remembers everything. Our
+  // transcript lives in SQLite keyed on OUR session id, so without this the
+  // branch renders as an empty chat against a model that has full context —
+  // the worst of both. One INSERT..SELECT: a 15k-row session is ~15MB and must
+  // not travel through JS.
+  //
+  // Two columns are deliberately NULLED on the copies:
+  //   seq      — replay identity (§14.31). The branch's durable event log
+  //              restarts at 1, and the idempotence gate is a SET of row seqs,
+  //              so inherited rows carrying seq 1..N would convince it the
+  //              branch's own first N events were already persisted and it
+  //              would swallow them.
+  //   cli_uuid — fork REMAPS every uuid, so an inherited uuid names an entry
+  //              that does not exist in the new transcript. Nulling it removes
+  //              "fork from here" on inherited messages (§14.94 only offers it
+  //              where the anchor exists) instead of branching at a bogus one.
+  // ts_ms is KEPT: wall-clock has no epochs (§14.71), so inherited rows sort
+  // correctly against anything the branch produces from now on.
+  let cutoffId: number | null = null;
+  if (upToMessageId) {
+    const [anchor] = db.select({ rid: claudeSessionMessages.id })
+      .from(claudeSessionMessages)
+      .where(and(
+        eq(claudeSessionMessages.sessionId, id),
+        eq(claudeSessionMessages.cliUuid, upToMessageId),
+      )).all();
+    if (anchor) cutoffId = anchor.rid;
+  }
+  let copied = 0;
+  try {
+    const res: any = db.run(sql`
+      INSERT INTO claude_session_messages
+        (session_id, role, content, wire_content, model, seq, cli_uuid, ts_ms, created_at)
+      SELECT ${newId}, role, content, wire_content, model, NULL, NULL, ts_ms, created_at
+        FROM claude_session_messages
+       WHERE session_id = ${id}
+         AND role NOT IN (${sql.join(UNCOPIED_ROLES.map((r) => sql`${r}`), sql`, `)})
+         ${cutoffId != null ? sql`AND id <= ${cutoffId}` : sql``}
+       ORDER BY id
+    `);
+    copied = Number(res?.changes ?? 0);
+  } catch {
+    // A branch with no history is still a usable branch — the model has the
+    // context either way. Do not fail the fork over the convenience copy.
+  }
+
+  // The boundary marker. Everything above came from the source; everything
+  // below is this branch's own. Same shape as the compaction marker: a durable
+  // role='event' row, already in NON_PAGINATED_ROLES (§14.25).
+  db.insert(claudeSessionMessages).values({
+    sessionId: newId,
+    role: 'event',
+    content: JSON.stringify({
+      type: 'fork_point',
+      fromId: id,
+      fromName: src.name || null,
+      ...(cutoffId != null ? { partial: true } : {}),
+    }),
+    tsMs: Date.now(),
+  }).run();
+
+  // Start it. A branch you have to wake up before using reads as a failure,
+  // and resume already knows how to bring a session up from a transcript id
+  // (re-reading model/effort from the row we just wrote, §14.35). If it fails
+  // the row stays 'sleeping' and resumable — the fork itself already worked.
+  let started = false;
+  try {
+    await resumeSession(newId);
+    started = true;
+  } catch {}
+
   emitGlobalSessionListChanged(newId);
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
-  return NextResponse.json({ ok: true, session: row, forkedFrom: id });
+  return NextResponse.json({ ok: true, session: row, forkedFrom: id, copied, started });
 }
