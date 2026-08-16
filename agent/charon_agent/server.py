@@ -236,6 +236,7 @@ class Server:
         transient = event_name in (
             "shell_idle", "shell_status", "usage", "bg_task_progress",
             "tool_progress", "edit_progress", "plan_progress",
+            "codex_signal",
         )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)

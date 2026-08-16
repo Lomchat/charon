@@ -939,6 +939,17 @@ export class SessionStream {
         this._broadcast(payload);
         break;
       }
+      case 'codex_signal': {
+        // Global app-server FIFO signals are live state, not transcript rows.
+        // Reuse the existing activity-card wire shape without persisting every
+        // active/idle or fs invalidation transition into SQLite.
+        this._broadcast({
+          type: 'tool_activity', kind: ev.kind,
+          id: `codex-${ev.kind}-${ev.id}`,
+          status: ev.status, detail: ev.detail,
+        });
+        break;
+      }
       case 'permission_request':
         // NO identity gate-break here (Codex 13.2.C): a permission writes
         // NO message row — but its preceding FLUSH does, stamped with THIS

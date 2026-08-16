@@ -97,6 +97,7 @@ def _make_session(claude_session_id):
     s._client = None
     s._active_turn = None
     s._main_task = None
+    s._global_task = None
     s._ready_evt = asyncio.Event()
     s._stdin_queue = asyncio.Queue()
     s._codex_stderr_lines = []      # _format_err tails this

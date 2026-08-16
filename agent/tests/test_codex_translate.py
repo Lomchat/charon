@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from charon_agent.codex_session import CodexSession  # noqa: E402
 
 
-def ev(name, **attrs):
-    return type(name, (), attrs)()
+def ev(class_name, **attrs):
+    return type(class_name, (), attrs)()
 
 
 def session():
@@ -58,6 +58,26 @@ class CodexNotificationTranslation(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             self.assertEqual(session()._translate(ev("FutureNotification")), [])
         self.assertIn("unhandled notification FutureNotification", err.getvalue())
+
+    def test_global_status_mcp_and_invalidations_are_live_signals(self):
+        s = session()
+        status = types.SimpleNamespace(model_dump=lambda **_kw: {
+            "type": "active", "activeFlags": ["waitingOnApproval"],
+        })
+        events = []
+        for payload in (
+            ev("ThreadStatusChangedNotification", thread_id="t1", status=status),
+            ev("McpServerStatusUpdatedNotification", thread_id="t1", name="docs",
+               status=types.SimpleNamespace(value="failed"), error="timeout",
+               failure_reason=None),
+            ev("SkillsChangedNotification"),
+            ev("FsChangedNotification", watch_id="w1", changed_paths=["/tmp/a"]),
+        ):
+            events.extend(s._translate(payload))
+        self.assertEqual([e["event"] for e in events], ["codex_signal"] * 4)
+        self.assertEqual(events[0]["status"], "active")
+        self.assertEqual(events[1]["kind"], "mcp_status")
+        self.assertEqual(events[3]["detail"]["paths"], ["/tmp/a"])
 
     def test_turn_diff_splits_files(self):
         diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"

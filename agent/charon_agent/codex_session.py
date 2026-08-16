@@ -427,6 +427,7 @@ class CodexSession:
         self._thread: Any = None            # AsyncThread
         self._active_turn: Any = None       # AsyncTurnHandle (live turn)
         self._main_task: asyncio.Task | None = None
+        self._global_task: asyncio.Task | None = None
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
         # Contract-parity attrs poked by server.py (resume_session):
         self._pending_perms: dict[str, asyncio.Future] = {}   # unused (no human gate)
@@ -849,6 +850,55 @@ class CodexSession:
                 if u is not None:
                     self._last_usage = u
                     out.append({"event": "usage", **u})
+
+            elif pt == "ThreadStatusChangedNotification":
+                status = self._json_safe(getattr(payload, "status", None))
+                root = status.get("root", status) if isinstance(status, dict) else status
+                status_type = root.get("type", "unknown") if isinstance(root, dict) else str(root)
+                out.append({
+                    "event": "codex_signal", "kind": "thread_status",
+                    "id": getattr(payload, "thread_id", None) or "thread",
+                    "status": status_type, "detail": root,
+                })
+
+            elif pt == "AccountRateLimitsUpdatedNotification":
+                snap = getattr(payload, "rate_limits", None)
+                out.append({
+                    "event": "codex_signal", "kind": "account_limits",
+                    "id": "account", "status": "updated",
+                    "detail": self._json_safe(snap),
+                })
+
+            elif pt == "McpServerStatusUpdatedNotification":
+                status = _enum_val(getattr(payload, "status", "updated"))
+                out.append({
+                    "event": "codex_signal", "kind": "mcp_status",
+                    "id": getattr(payload, "name", None) or "mcp",
+                    "status": str(status),
+                    "detail": {
+                        "name": getattr(payload, "name", None),
+                        "error": getattr(payload, "error", None),
+                        "failureReason": self._json_safe(
+                            getattr(payload, "failure_reason", None)
+                        ),
+                    },
+                })
+
+            elif pt == "SkillsChangedNotification":
+                out.append({
+                    "event": "codex_signal", "kind": "skills",
+                    "id": "skills", "status": "changed",
+                })
+
+            elif pt == "FsChangedNotification":
+                out.append({
+                    "event": "codex_signal", "kind": "filesystem",
+                    "id": getattr(payload, "watch_id", None) or "fs",
+                    "status": "changed",
+                    "detail": {
+                        "paths": self._json_safe(getattr(payload, "changed_paths", None) or []),
+                    },
+                })
 
             elif pt == "ContextCompactedNotification":
                 out.append({"event": "compaction", "trigger": "auto"})
@@ -1313,6 +1363,36 @@ class CodexSession:
         return u
 
     # ── Main loop ────────────────────────────────────────────────────────────
+    async def _consume_global_notifications(self) -> None:
+        """Drain notifications that are deliberately not routed to a turn.
+
+        AsyncTurnHandle.stream() owns turn-scoped events. The SDK router puts
+        account, thread-status, MCP, skills and fs notifications in a separate
+        FIFO; leaving it unread made those supported signals disappear and let
+        the queue grow for the lifetime of the session.
+        """
+        raw = getattr(self._client, "_client", None)
+        next_notification = getattr(raw, "next_notification", None)
+        if not callable(next_notification):
+            print("codex: SDK has no global notification consumer", file=sys.stderr)
+            return
+        try:
+            while True:
+                note = await next_notification()
+                payload = getattr(note, "payload", note)
+                thread_id = getattr(payload, "thread_id", None)
+                if thread_id and self.claude_session_id and thread_id != self.claude_session_id:
+                    continue
+                for event in self._translate(payload):
+                    self._emit_to_server({"session_id": self.session_id, **event})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Closing the SDK wakes the blocking FIFO with a transport error.
+            # It is diagnostic only; the owning _run task decides lifecycle.
+            if self._client is not None:
+                print(f"codex: global notification reader stopped: {e}", file=sys.stderr)
+
     async def _run(self) -> None:
         try:
             client = AsyncCodex(CodexConfig(
@@ -1405,6 +1485,10 @@ class CodexSession:
             self._emit("mode_changed", mode=self.permission_mode)
             self._emit("status", status="active")
             self._ready_evt.set()
+            self._global_task = asyncio.create_task(
+                self._consume_global_notifications(),
+                name=f"codex-global-{self.session_id}",
+            )
 
             # ── Turn loop ─────────────────────────────────────────────────────
             while True:
@@ -1447,6 +1531,11 @@ class CodexSession:
         finally:
             me = asyncio.current_task()
             if self._main_task is None or self._main_task is me:
+                global_task = self._global_task
+                self._global_task = None
+                if global_task is not None:
+                    global_task.cancel()
+                    await asyncio.gather(global_task, return_exceptions=True)
                 try:
                     if self._client is not None:
                         res = self._client.close()

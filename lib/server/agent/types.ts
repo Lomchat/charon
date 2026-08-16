@@ -153,6 +153,7 @@ export type AgentEvent = (
   | { event: 'plan_progress'; session_id: string; id: string; text: string }
   | { event: 'plan_update'; session_id: string; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }> }
   | { event: 'tool_activity'; session_id: string; kind: string; id: string; status: string; detail?: any }
+  | { event: 'codex_signal'; session_id: string; kind: string; id: string; status: string; detail?: any }
   | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any }
   | { event: 'user_question'; session_id: string; id: string; questions: any[] }
   | { event: 'exit_plan_request'; session_id: string; id: string; plan: string }
