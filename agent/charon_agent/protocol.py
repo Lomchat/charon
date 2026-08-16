@@ -65,6 +65,7 @@ METHODS = {
     # Codex (OpenAI) support (agent >= 0.15.0). Model catalog + account usage
     # for Codex-kind sessions. See agent/charon_agent/codex_session.py.
     "list_codex_models",
+    "list_codex_threads",
     "get_codex_usage",
     # Codex ChatGPT DEVICE-CODE login (agent >= 0.16.0): headless-safe
     # `codex login` — start returns verification_url + user_code, the hub

@@ -51,6 +51,11 @@ try:
         ApprovalMode,
     )
     from openai_codex.generated.v2_all import ReasoningEffort as _CodexEffort
+    try:
+        from openai_codex.errors import TransportClosedError, is_retryable_error
+    except Exception:  # old SDK: keep Codex available, just disable typed retry
+        TransportClosedError = ()  # type: ignore
+        is_retryable_error = lambda _exc: False  # type: ignore
     CODEX_AVAILABLE = True
     CODEX_IMPORT_ERROR: str | None = None
     try:
@@ -67,6 +72,8 @@ except Exception as e:  # pragma: no cover - depends on the remote venv
     Sandbox = None  # type: ignore
     ApprovalMode = None  # type: ignore
     _CodexEffort = None  # type: ignore
+    TransportClosedError = ()  # type: ignore
+    is_retryable_error = lambda _exc: False  # type: ignore
     CODEX_AVAILABLE = False
     CODEX_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     CODEX_SDK_VERSION = None
@@ -135,6 +142,26 @@ def _enum_val(v: Any) -> Any:
     return getattr(v, "value", v)
 
 
+def _json_value(v: Any) -> Any:
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    dump = getattr(v, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json", by_alias=True)
+        except Exception:
+            pass
+    root = getattr(v, "root", None)
+    if root is not None:
+        return _json_value(root)
+    return _enum_val(v)
+
+
+def _path_string(v: Any) -> str | None:
+    raw = getattr(v, "root", v)
+    return str(raw) if raw is not None else None
+
+
 def _thread_inject_response_model():
     """Resolve lazily so an older SDK can still run ordinary Codex sessions;
     only the cross-provider fork reports that its newer primitive is missing."""
@@ -184,6 +211,72 @@ async def fetch_codex_models() -> dict[str, Any]:
                 res = client.close()
                 if asyncio.iscoroutine(res):
                     await asyncio.wait_for(res, timeout=5.0)
+            except Exception:
+                pass
+
+
+async def fetch_codex_threads() -> dict[str, Any]:
+    """List resumable top-level Codex threads through the supported SDK.
+
+    The disk scanner remains a hub fallback for old/offline agents, but the
+    SDK is authoritative for persistent names, source kind and runtime status.
+    """
+    if not CODEX_AVAILABLE:
+        return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
+    client = None
+    try:
+        from openai_codex.generated.v2_all import (
+            SortDirection, ThreadSortKey, ThreadSourceKind,
+        )
+        client = AsyncCodex(CodexConfig())
+        cursor = None
+        rows: list[dict[str, Any]] = []
+        source_kinds = [
+            ThreadSourceKind.cli, ThreadSourceKind.vscode,
+            ThreadSourceKind.exec, ThreadSourceKind.app_server,
+            ThreadSourceKind.unknown,
+        ]
+        while len(rows) < 400:
+            page = await client.thread_list(
+                archived=False, cursor=cursor, limit=min(100, 400 - len(rows)),
+                source_kinds=source_kinds,
+                sort_key=ThreadSortKey.updated_at,
+                sort_direction=SortDirection.desc,
+            )
+            for thread in getattr(page, "data", None) or []:
+                # Defensive against a future source taxonomy change: parent id
+                # is a second, structural sub-agent marker.
+                if getattr(thread, "parent_thread_id", None):
+                    continue
+                cwd = _path_string(getattr(thread, "cwd", None)) or ""
+                preview = str(getattr(thread, "preview", None) or "")[:400]
+                git = getattr(thread, "git_info", None)
+                status = getattr(thread, "status", None)
+                rows.append({
+                    "sessionId": str(getattr(thread, "id", "")),
+                    "cwd": cwd,
+                    "aiTitle": str(getattr(thread, "name", None) or ""),
+                    "firstUserText": preview[:300],
+                    "lastPrompt": preview,
+                    "messageCount": 0,
+                    "model": "",
+                    "effort": "",
+                    "gitBranch": str(getattr(git, "branch", None) or ""),
+                    "mtime": int(getattr(thread, "updated_at", None) or 0),
+                    "size": 0,
+                    "status": _json_value(status),
+                    "source": _json_value(getattr(thread, "source", None)),
+                })
+            cursor = getattr(page, "next_cursor", None)
+            if not cursor:
+                break
+        return {"ok": True, "sessions": rows}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.close(), timeout=5.0)
             except Exception:
                 pass
 
@@ -1261,10 +1354,11 @@ class CodexSession:
                 # logged out, cwd temporarily missing) would destroy the resume
                 # handle permanently — the user keeps a session that silently
                 # lost all its context, with only one `error` line as evidence.
-                # Retry once, then fail LOUDLY and keep the id so a later resume
-                # can still succeed once the real cause is fixed.
+                # Retry only typed transient transport/overload failures, then
+                # fail LOUDLY and keep the id. Invalid params, auth and missing
+                # threads must not incur a blind 1.5-second retry.
                 last_err: Exception | None = None
-                for attempt in (1, 2):
+                for attempt in (1, 2, 3):
                     try:
                         thread = await client.thread_resume(
                             self.claude_session_id, cwd=self.cwd,
@@ -1279,10 +1373,12 @@ class CodexSession:
                     except Exception as e:
                         last_err = e
                         thread = None
-                        if attempt == 1:
-                            # Transient-failure grace: the app-server child is
-                            # spawned lazily by the first RPC.
-                            await asyncio.sleep(1.5)
+                        retryable = bool(is_retryable_error(e)) or isinstance(
+                            e, TransportClosedError
+                        )
+                        if not retryable or attempt == 3:
+                            break
+                        await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
                 if last_err is not None:
                     self.status = "error"
                     self._error_msg = (

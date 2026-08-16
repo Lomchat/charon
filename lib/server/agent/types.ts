@@ -331,6 +331,7 @@ export type AgentMethodName =
   | 'list_sessions'
   | 'get_usage'
   | 'list_codex_models'
+  | 'list_codex_threads'
   | 'get_codex_usage'
   // Codex ChatGPT device-code login (agent >= 0.16.0) — headless `codex
   // login`: start → {verification_url, user_code}, hub polls status. §14.61.

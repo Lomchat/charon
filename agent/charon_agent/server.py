@@ -95,6 +95,7 @@ from .codex_session import (
     CODEX_SDK_VERSION,
     CODEX_CLI_VERSION,
     fetch_codex_models,
+    fetch_codex_threads,
     fetch_codex_usage,
 )
 from .shell import AgentShell
@@ -411,7 +412,7 @@ class Server:
     _META_METHODS = frozenset({
         "cli_agents",
         "hello", "ping", "list_sessions", "get_usage",
-        "list_codex_models", "get_codex_usage",
+        "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "list_dir",
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
@@ -660,6 +661,9 @@ class Server:
             # Codex model catalog (account-driven, per-VPS). Spins up a
             # short-lived app-server client. Never raises. (agent >= 0.15.0)
             return await fetch_codex_models()
+
+        if method == "list_codex_threads":
+            return await fetch_codex_threads()
 
         if method == "get_codex_usage":
             # Codex account-usage snapshot (rate-limit utilization) — the Codex

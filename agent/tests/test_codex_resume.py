@@ -28,6 +28,10 @@ from charon_agent import codex_session as cs  # noqa: E402
 THREAD_ID = "019fb202-0fd5-7093-84e9-7a18939b958c"
 
 
+class FakeRetryableError(RuntimeError):
+    pass
+
+
 class FakeThread:
     def __init__(self, tid):
         self.id = tid
@@ -47,7 +51,7 @@ class FakeClient:
 
     def __init__(self, *, resume_failures=0, resume_exc=None):
         self.resume_failures = resume_failures
-        self.resume_exc = resume_exc or RuntimeError("thread not found")
+        self.resume_exc = resume_exc or FakeRetryableError("server overloaded")
         self.resume_calls = 0
         self.start_calls = 0
         self.fork_calls = []
@@ -126,11 +130,14 @@ def _run(session, client):
         session._stdin_queue.put_nowait(None)   # end the turn loop immediately
         await session._run()
 
-    saved = {n: getattr(cs, n) for n in ("AsyncCodex", "CodexConfig", "Sandbox", "ApprovalMode")}
+    saved = {n: getattr(cs, n) for n in (
+        "AsyncCodex", "CodexConfig", "Sandbox", "ApprovalMode", "is_retryable_error",
+    )}
     cs.AsyncCodex = lambda *a, **kw: client
     cs.CodexConfig = lambda **kw: None
     cs.Sandbox = _FakeEnum
     cs.ApprovalMode = _FakeEnum
+    cs.is_retryable_error = lambda exc: isinstance(exc, FakeRetryableError)
     try:
         asyncio.run(main())
     finally:
@@ -187,7 +194,7 @@ class TestCodexResume(unittest.TestCase):
         s = _make_session(THREAD_ID)
         c = FakeClient(resume_failures=99)
         _run(s, c)
-        self.assertEqual(c.resume_calls, 2, "retry once, then give up")
+        self.assertEqual(c.resume_calls, 3, "typed transient failures get bounded backoff")
         self.assertEqual(c.start_calls, 0, "must NOT fall back to a fresh thread")
         self.assertEqual(s.claude_session_id, THREAD_ID, "the resume handle must survive")
         self.assertEqual(s.status, "error")
@@ -197,6 +204,15 @@ class TestCodexResume(unittest.TestCase):
         self.assertEqual(_events(s, "session_id"), [])
         # A waiter on ready must be released, not left hanging.
         self.assertTrue(s._ready_evt.is_set())
+
+    def test_fatal_resume_failure_is_not_retried(self):
+        s = _make_session(THREAD_ID)
+        c = FakeClient(resume_failures=99, resume_exc=ValueError("bad thread id"))
+        _run(s, c)
+        self.assertEqual(c.resume_calls, 1)
+        self.assertEqual(c.start_calls, 0)
+        self.assertEqual(s.claude_session_id, THREAD_ID)
+        self.assertEqual(s.status, "error")
 
     def test_no_thread_id_still_starts_fresh(self):
         # A brand-new session has no id yet: that path must keep working.

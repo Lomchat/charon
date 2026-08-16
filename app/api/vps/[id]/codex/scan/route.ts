@@ -3,20 +3,17 @@ import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { sshExec } from '@/lib/server/claude/sshExec';
+import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 
 // GET /api/vps/[id]/codex/scan
 // Lists existing Codex threads on the VPS — the Codex sibling of
 // .../claude/scan. Same contract, same response shape, so ResumeModal can
 // render both behind one component.
 //
-// WHY the rollout files and not the SDK's `thread_list` RPC: `thread_list`
-// exists (openai-codex ≥0.144) and is nicer (native sub-agent filtering,
-// `preview`, `name`), but it needs a bootable `codex app-server`, a logged-in
-// account AND a new agent RPC + pyz bump — so it would silently not work on
-// half the fleet. The rollout JSONL is on disk, needs neither, and mirrors how
-// the Claude scan already works. If Codex ever drops the on-disk rollouts
-// (`~/.codex/state_*.sqlite` + session_meta's `history_mode` hint that way),
-// switch to a `list_codex_threads` RPC with this as the fallback.
+// The supported SDK thread_list() is authoritative on current agents: it
+// supplies persistent names, source kinds, parent ids and runtime status. The
+// rollout scanner below remains the compatibility/offline fallback because it
+// needs neither a new agent nor a bootable/logged-in app-server.
 //
 // Layout: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<thread-uuid>.jsonl
 //
@@ -238,6 +235,18 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const { id } = await params;
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+
+  try {
+    const result = await getAgentClientForVpsId(id).call('list_codex_threads', {}) as {
+      ok?: boolean;
+      sessions?: unknown[];
+    };
+    if (result?.ok && Array.isArray(result.sessions)) {
+      return NextResponse.json({ sessions: result.sessions });
+    }
+  } catch {
+    // Old/offline agent or SDK unable to start: fall through to disk scan.
+  }
 
   const cmd =
     `PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ` +
