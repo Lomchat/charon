@@ -426,7 +426,7 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
-        "fork_session", "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
+        "fork_session", "compact_session", "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
         "session_identity",
         "respond_permission",
@@ -948,6 +948,11 @@ class Server:
             title = params.get("title")
             if title is not None and not isinstance(title, str):
                 raise RpcError(ERR_INVALID_PARAMS, "title must be a string")
+            if getattr(s_, "kind", "claude") == "codex":
+                try:
+                    return await s_.fork(title)
+                except Exception as e:
+                    raise RpcError(ERR_INTERNAL, f"Codex fork failed: {e}")
             try:
                 from claude_agent_sdk import fork_session as _fork
             except Exception as e:
@@ -966,6 +971,19 @@ class Server:
             if not isinstance(new_id, str) or not new_id:
                 raise RpcError(ERR_INTERNAL, "fork returned no session id")
             return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
+
+        if method == "compact_session":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") == "codex":
+                try:
+                    return await s_.compact()
+                except Exception as e:
+                    raise RpcError(ERR_INTERNAL, f"Codex compaction failed: {e}")
+            # Claude's SDK has no compact() method; the CLI command travels
+            # through the same query channel and emits the normal marker.
+            await s_.send_input("/compact")
+            return {"ok": True}
 
         if method == "inject_history":
             # Cross-provider fork primitive (agent >= 0.46.0).  Only Codex has
@@ -1002,6 +1020,12 @@ class Server:
             if callable(fn):
                 try:
                     written = bool(fn(name))
+                except Exception:
+                    written = False
+            sdk_name = getattr(s, "set_session_name", None)
+            if callable(sdk_name):
+                try:
+                    written = bool(await sdk_name(name))
                 except Exception:
                     written = False
             # Record what actually landed. On failure the value stays stale, so

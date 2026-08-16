@@ -520,6 +520,38 @@ class CodexSession:
         )
         return {"ok": True, "count": len(items), "thread_id": thread_id}
 
+    async def fork(self, title: str | None = None) -> dict[str, Any]:
+        await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
+        if self._client is None or not self.claude_session_id:
+            raise RuntimeError("Codex thread is not ready")
+        thread = await self._client.thread_fork(
+            self.claude_session_id, cwd=self.cwd,
+            model=self.model,
+            **{k: v for k, v in {
+                "base_instructions": self.codex_config.get("base_instructions"),
+                "developer_instructions": self.codex_config.get("developer_instructions"),
+                "model_provider": self.codex_config.get("model_provider"),
+                "service_tier": self.codex_config.get("service_tier"),
+            }.items() if v is not None},
+        )
+        if title:
+            await thread.set_name(title)
+        return {"ok": True, "claude_session_id": thread.id,
+                "forked_from": self.claude_session_id}
+
+    async def set_session_name(self, name: str) -> bool:
+        if self._thread is None:
+            return False
+        await self._thread.set_name(name)
+        self.name = name
+        return True
+
+    async def compact(self) -> dict[str, Any]:
+        if self._thread is None:
+            raise RuntimeError("Codex thread is not ready")
+        result = await self._thread.compact()
+        return {"ok": True, "result": self._json_safe(result)}
+
     # No human-in-the-loop gates for Codex — these are no-ops kept for the
     # uniform server.py dispatch contract.
     def respond_permission(self, perm_id: str, allow: bool) -> None:

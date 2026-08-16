@@ -269,15 +269,40 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
   }
 }
 
+async function forkCodexNative(source: SourceSession, name: string) {
+  try {
+    const client = getAgentClientForVpsId(source.vpsId);
+    const forked = await client.call('fork_session', {
+      session_id: source.id, title: name,
+    }) as { claude_session_id?: string };
+    if (!forked?.claude_session_id) throw new Error('Codex fork returned no thread id');
+    const newId = randomBytes(8).toString('hex');
+    db.insert(claudeSessions).values({
+      id: newId, claudeSessionId: forked.claude_session_id,
+      vpsId: source.vpsId, cwd: source.cwd, name, kind: 'codex',
+      status: 'sleeping', permissionMode: source.permissionMode,
+      model: source.model, effort: source.effort, codexConfig: source.codexConfig,
+      position: nextSessionPosition(source.vpsId),
+    }).run();
+    const copied = copyVisibleTranscript(source.id, newId, null);
+    insertForkMarker(source, newId, 'codex', null);
+    let started = false;
+    try { await resumeSession(newId); started = true; } catch {}
+    emitGlobalSessionListChanged(newId);
+    const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
+    return NextResponse.json({ ok: true, session: { ...row, codexConfig: undefined },
+      forkedFrom: source.id, copied, started });
+  } catch (e: any) {
+    return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
+  }
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const [source] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (source.kind === 'codex') {
-    return NextResponse.json({ error: 'forking from Codex is not supported yet' }, { status: 400 });
-  }
   if (!source.claudeSessionId) {
     return NextResponse.json(
       { error: 'this session has no transcript yet — send a message first' },
@@ -299,7 +324,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     ? body.name.trim()
     : `${source.name || 'session'} (${targetKind === 'codex' ? 'Codex fork' : 'fork'})`;
 
-  return targetKind === 'codex'
-    ? forkToCodex(source, name, cutoffId)
+  if (source.kind === 'codex') {
+    if (targetKind === 'codex') return forkCodexNative(source, name);
+    return NextResponse.json({
+      error: 'Codex → Claude history injection is not exposed by either SDK yet',
+    }, { status: 501 });
+  }
+  return targetKind === 'codex' ? forkToCodex(source, name, cutoffId)
     : forkToClaude(source, name, upToMessageId, cutoffId);
 }

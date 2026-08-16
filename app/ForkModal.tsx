@@ -6,6 +6,7 @@ import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 
 type Props = {
+  sourceKind: AgentKind;
   sourceName: string;
   vpsName?: string | null;
   codexAvailable: boolean;
@@ -16,7 +17,7 @@ type Props = {
 };
 
 export default function ForkModal({
-  sourceName, vpsName, codexAvailable, busy, error, onChoose, onClose,
+  sourceKind, sourceName, vpsName, codexAvailable, busy, error, onChoose, onClose,
 }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -44,13 +45,15 @@ export default function ForkModal({
             type="button"
             className="fork-choice"
             autoFocus
-            disabled={!!busy}
+            disabled={!!busy || sourceKind === 'codex'}
             onClick={() => onChoose('claude')}
           >
             <AgentLogo kind="claude" size={28} />
             <span className="fork-choice-copy">
               <b>Claude</b>
-              <small>Native transcript fork · same model settings</small>
+              <small>{sourceKind === 'claude'
+                ? 'Native transcript fork · same model settings'
+                : 'Cross-provider import is not exposed by the SDK yet'}</small>
             </span>
             <span className="fork-choice-go">{busy === 'claude' ? '…' : '→'}</span>
           </button>
@@ -64,13 +67,13 @@ export default function ForkModal({
             <span className="fork-choice-copy">
               <b>Codex</b>
               <small>{codexAvailable
-                ? 'Imports the conversation into a new Codex thread'
+                ? (sourceKind === 'codex' ? 'Native Codex thread fork' : 'Imports the conversation into a new Codex thread')
                 : `Unavailable${vpsName ? ` on ${vpsName}` : ' on this VPS'}`}</small>
             </span>
             <span className="fork-choice-go">{busy === 'codex' ? '…' : '→'}</span>
           </button>
         </div>
-        <p className="fork-note">The current Claude session keeps running untouched.</p>
+        <p className="fork-note">The current session keeps running untouched.</p>
         {error && <p className="confirm-err">{error}</p>}
       </div>
     </div>

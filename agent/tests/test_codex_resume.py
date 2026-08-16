@@ -31,6 +31,15 @@ THREAD_ID = "019fb202-0fd5-7093-84e9-7a18939b958c"
 class FakeThread:
     def __init__(self, tid):
         self.id = tid
+        self.names = []
+        self.compactions = 0
+
+    async def set_name(self, name):
+        self.names.append(name)
+
+    async def compact(self):
+        self.compactions += 1
+        return {"compacted": True}
 
 
 class FakeClient:
@@ -41,6 +50,7 @@ class FakeClient:
         self.resume_exc = resume_exc or RuntimeError("thread not found")
         self.resume_calls = 0
         self.start_calls = 0
+        self.fork_calls = []
 
     async def thread_resume(self, thread_id, **kw):
         self.resume_calls += 1
@@ -51,6 +61,10 @@ class FakeClient:
     async def thread_start(self, **kw):
         self.start_calls += 1
         return FakeThread("NEWLY-CREATED-THREAD")
+
+    async def thread_fork(self, thread_id, **kw):
+        self.fork_calls.append((thread_id, kw))
+        return FakeThread("FORKED-THREAD")
 
     def close(self):
         return None
@@ -192,6 +206,39 @@ class TestCodexResume(unittest.TestCase):
         self.assertEqual(c.resume_calls, 0)
         self.assertEqual(c.start_calls, 1)
         self.assertEqual(s.claude_session_id, "NEWLY-CREATED-THREAD")
+
+    def test_native_fork_names_the_new_thread(self):
+        # Assert naming through a capturing client so the branch cannot regress
+        # to a Charon-only label.
+        class CapturingClient(FakeClient):
+            async def thread_fork(self, thread_id, **kw):
+                self.forked = await super().thread_fork(thread_id, **kw)
+                return self.forked
+
+        async def captured():
+            s = _make_session(THREAD_ID)
+            c = CapturingClient()
+            s._client = c
+            s._ready_evt.set()
+            result = await s.fork("branch name")
+            self.assertEqual(result["claude_session_id"], "FORKED-THREAD")
+            self.assertEqual(c.fork_calls[0][0], THREAD_ID)
+            self.assertEqual(c.forked.names, ["branch name"])
+
+        asyncio.run(captured())
+
+    def test_set_name_and_compact_use_the_live_thread(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            thread = FakeThread(THREAD_ID)
+            s._thread = thread
+            self.assertTrue(await s.set_session_name("visible name"))
+            result = await s.compact()
+            self.assertEqual(thread.names, ["visible name"])
+            self.assertEqual(thread.compactions, 1)
+            self.assertTrue(result["ok"])
+
+        asyncio.run(main())
 
 
 if __name__ == "__main__":

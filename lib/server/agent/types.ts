@@ -411,6 +411,7 @@ export type AgentMethodName =
   // Branch a transcript into a NEW session, optionally cutting at a message
   // (agent >= 0.39.0). Pure file work — the original session keeps running.
   | 'fork_session'
+  | 'compact_session'
   // Append bounded Responses message items to a loaded Codex thread's durable
   // model-visible history (agent >= 0.46.0). Used by Claude -> Codex forks.
   | 'inject_history'

@@ -197,6 +197,19 @@ export default function ClaudeSessionView({
   const [forkModalOpen, setForkModalOpen] = useState(false);
   const [forking, setForking] = useState<AgentKind | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
+  const [compacting, setCompacting] = useState(false);
+  const [compactError, setCompactError] = useState<string | null>(null);
+  const doCompact = useCallback(async () => {
+    if (compacting || status === 'thinking') return;
+    setCompacting(true);
+    setCompactError(null);
+    try {
+      const r = await fetch(`/api/claude/sessions/${sessionId}/compact`, { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || 'compaction failed');
+    } catch (e: any) {
+      setCompactError(String(e?.message || e));
+    } finally { setCompacting(false); }
+  }, [compacting, sessionId, status]);
   const doFork = useCallback(async (targetKind: AgentKind) => {
     if (forking) return;
     setForking(targetKind);
@@ -633,17 +646,18 @@ export default function ClaudeSessionView({
             <button onClick={doSleep}>sleep</button>
           )}
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
-          {/* Claude is currently the only SOURCE kind. The chooser offers a
-              native Claude branch or a model-visible Codex history import. */}
-          {sessionKind !== 'codex' && (
-            <button
+          <button onClick={doCompact} disabled={compacting || status === 'thinking'}
+            title="Compact the model context now">{compacting ? 'compacting…' : 'compact'}</button>
+          {compactError && <span className="confirm-err" title={compactError}>compact failed</span>}
+          {/* Same-provider forks are native. Claude → Codex imports model-visible
+              history; Codex → Claude stays disabled until an SDK exposes it. */}
+          <button
               onClick={() => { setForkError(null); setForkModalOpen(true); }}
               disabled={!!forking || !selected.claudeSessionId}
               title={selected.claudeSessionId
                 ? 'Branch this conversation to Claude or Codex — this one keeps running untouched'
                 : 'Nothing to fork yet — send a message first'}
             >{forking ? 'forking…' : 'fork'}</button>
-          )}
           <button
             className="kill"
             onClick={forceStop}
@@ -888,6 +902,7 @@ export default function ClaudeSessionView({
       />
       {forkModalOpen && (
         <ForkModal
+          sourceKind={sessionKind}
           sourceName={selected.name || '(unnamed)'}
           vpsName={selectedVps?.name}
           codexAvailable={selectedVps?.codexAvailable === 1}
