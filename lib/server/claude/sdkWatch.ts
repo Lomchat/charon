@@ -313,6 +313,18 @@ async function tick(): Promise<void> {
           res.codexCliVersion ? `cli ${res.codexCliVersion}` : null,
           res.newPyzSha ? `pyz ${res.newPyzSha.slice(0, 7)}` : null,
         ].filter(Boolean).join(', ');
+        // A pyz restart can succeed while the independently downloaded CLI
+        // falls back to the SDK bundle. That is a PARTIAL failure, not an
+        // update success: keep retrying the same target on later ticks.
+        const cliStillOld = autoCodex && codexCliOld(v) && !!codexCliLatest
+          && (!res.codexCliVersion || isVersionOutdated(res.codexCliVersion, codexCliLatest));
+        if (cliStillOld) {
+          const detail = `CLI remained ${res.codexCliVersion ?? 'unknown'} (target ${codexCliLatest})`;
+          failed.push(`${v.name}: ${detail}`);
+          state.attempted.delete(key);
+          console.warn(`[sdkWatch] ${v.name}: partial auto-update — ${detail}; will retry next tick`);
+          continue;
+        }
         updated.push(`${v.name} (${done || 'ok'})`);
         console.log(`[sdkWatch] ${v.name}: updated (${done || 'ok'}, resumed ${res.resumedSessionIds.length})`);
       } else {

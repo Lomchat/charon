@@ -523,8 +523,10 @@ export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<E
 // ── Ensure the latest `openai-codex` in the VPS venv (OPTIONAL, warn-only) ──
 // Codex is a SECOND agent backend (OpenAI). It installs into the SAME
 // ~/.charon/venv as claude-agent-sdk. The Python package's bundled CLI can
-// lag the standalone release, so we also install `@openai/codex` below the
-// shared venv and the agent selects it through CodexConfig.codex_bin. Because
+// lag the standalone release, so we also install its native npm artifact below
+// the shared venv and the agent selects it through CodexConfig.codex_bin. The
+// artifact is downloaded with Python so minimal VPSes need neither Node nor
+// npm. Because
 // PEP 668 is already sidestepped by using the venv (never
 // `pip --user`) and the venv is created/healed by ensureSdkLatest — which
 // ALWAYS runs first in every calling flow (bootstrap install_sdk phase +
@@ -536,6 +538,79 @@ export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<E
 //
 // Success = the `[install_codex] OK version=` marker printed by the
 // post-install `import openai_codex` check (mirrors ensureSdkLatest).
+const INSTALL_CODEX_NATIVE_PY = Buffer.from(String.raw`
+import json
+import os
+import platform
+import re
+import shutil
+import sys
+import tarfile
+import tempfile
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+root = Path(sys.argv[1]).expanduser()
+machine = platform.machine().lower()
+targets = {
+    "x86_64": ("linux-x64", "x86_64-unknown-linux-musl"),
+    "amd64": ("linux-x64", "x86_64-unknown-linux-musl"),
+    "aarch64": ("linux-arm64", "aarch64-unknown-linux-musl"),
+    "arm64": ("linux-arm64", "aarch64-unknown-linux-musl"),
+}
+if sys.platform != "linux" or machine not in targets:
+    raise RuntimeError("unsupported Codex CLI platform: %s/%s" % (sys.platform, machine))
+suffix, triple = targets[machine]
+
+def read_json(url):
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "charon-agent"})
+    with urllib.request.urlopen(req, timeout=45) as response:
+        return json.load(response)
+
+latest = read_json("https://registry.npmjs.org/@openai%2Fcodex/latest")
+version = str(latest.get("version") or "")
+if not re.fullmatch(r"[0-9]+(?:\.[0-9A-Za-z]+)*", version):
+    raise RuntimeError("invalid Codex CLI version from registry")
+release = version + "-" + suffix
+meta = read_json("https://registry.npmjs.org/@openai%2Fcodex/" + urllib.parse.quote(release, safe=""))
+tarball = str((meta.get("dist") or {}).get("tarball") or "")
+parsed = urllib.parse.urlparse(tarball)
+if parsed.scheme != "https" or parsed.hostname != "registry.npmjs.org":
+    raise RuntimeError("unexpected Codex CLI tarball host")
+
+root.mkdir(parents=True, exist_ok=True)
+archive_fd, archive_name = tempfile.mkstemp(prefix="codex-", suffix=".tgz", dir=root)
+os.close(archive_fd)
+tmp_bin = root / (".codex-" + str(os.getpid()))
+try:
+    req = urllib.request.Request(tarball, headers={"User-Agent": "charon-agent"})
+    with urllib.request.urlopen(req, timeout=120) as response, open(archive_name, "wb") as output:
+        shutil.copyfileobj(response, output, length=1024 * 1024)
+    expected = "package/vendor/%s/bin/codex" % triple
+    with tarfile.open(archive_name, "r:gz") as bundle:
+        member = bundle.getmember(expected)
+        source = bundle.extractfile(member)
+        if source is None or member.size <= 0 or member.size > 250 * 1024 * 1024:
+            raise RuntimeError("invalid Codex CLI binary in npm artifact")
+        with source, open(tmp_bin, "wb") as output:
+            shutil.copyfileobj(source, output, length=1024 * 1024)
+    os.chmod(tmp_bin, 0o755)
+    destination = root / "bin" / "codex"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp_bin, destination)
+finally:
+    try:
+        os.unlink(archive_name)
+    except FileNotFoundError:
+        pass
+    try:
+        os.unlink(tmp_bin)
+    except FileNotFoundError:
+        pass
+print("[install_codex] OK cli_version=" + version)
+`, 'utf8').toString('base64');
+
 const INSTALL_CODEX_CMD = [
   `set -o pipefail`,
   // Venv must exist AND have a working pip (ensureSdkLatest guarantees this
@@ -549,24 +624,14 @@ const INSTALL_CODEX_CMD = [
   // bundled codex CLI) transitively — no extra step.
   `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 | tail -40`,
   // The standalone CLI is an independent release line (e.g. CLI 0.147 while
-  // the public Python SDK remains 0.144.4). Keep it optional: a minimal VPS
-  // without npm retains the SDK-bundled app-server instead of losing Codex.
+  // the public Python SDK remains 0.144.4). Download the platform's native
+  // npm artifact directly so a minimal worker needs no Node/npm installation.
   `CODEX_CLI_DIR=${VENV_DIR}/codex-cli`,
-  `if command -v npm >/dev/null 2>&1; then`,
-  `  echo "[install_codex] npm install @openai/codex@latest in $CODEX_CLI_DIR"`,
-  `  if npm install --prefix "$CODEX_CLI_DIR" --no-audit --no-fund @openai/codex@latest 2>&1 | tail -40; then`,
-  `    CODEX_BIN="$CODEX_CLI_DIR/node_modules/.bin/codex"`,
-  `    if [ -x "$CODEX_BIN" ] && "$CODEX_BIN" --version >/dev/null 2>&1; then`,
-  `      "$CODEX_BIN" --version | sed 's/^codex-cli /[install_codex] OK cli_version=/'`,
-  `    else`,
-  `      echo "[install_codex] standalone CLI installed but unusable; using bundled CLI"`,
-  `    fi`,
-  `  else`,
-  `    echo "[install_codex] standalone CLI upgrade failed; using bundled CLI"`,
-  `  fi`,
-  `else`,
-  `  echo "[install_codex] npm unavailable; using SDK-bundled CLI"`,
-  `fi`,
+  `echo "[install_codex] install standalone native CLI in $CODEX_CLI_DIR"`,
+  `${VENV_PY} -c "import base64; exec(compile(base64.b64decode('${INSTALL_CODEX_NATIVE_PY}'), '<codex-native-install>', 'exec'))" "$CODEX_CLI_DIR"`,
+  `CODEX_BIN="$CODEX_CLI_DIR/bin/codex"`,
+  `test -x "$CODEX_BIN"`,
+  `"$CODEX_BIN" --version >/dev/null`,
   // Post-import check: the ONLY real proof it works. importlib.metadata is
   // the robust version source (matches codex_session.py's fallback).
   `${VENV_PY} -c 'import openai_codex; from importlib.metadata import version; print("[install_codex] OK version=" + version("openai-codex"))'`,

@@ -169,7 +169,14 @@ def _external_codex_bin() -> str | None:
     """
     override = os.environ.get("CHARON_CODEX_BIN", "").strip()
     candidates = [override] if override else []
-    candidates.append(str(Path(sys.prefix) / "codex-cli" / "node_modules" / ".bin" / "codex"))
+    cli_root = Path(sys.prefix) / "codex-cli"
+    # The native binary needs no Node runtime and is therefore the fleet
+    # default. Keep the npm wrapper as a compatibility fallback for boxes
+    # updated by agent 0.55.0.
+    candidates.extend([
+        str(cli_root / "bin" / "codex"),
+        str(cli_root / "node_modules" / ".bin" / "codex"),
+    ])
     for candidate in candidates:
         if not candidate or not os.path.isfile(candidate) or not os.access(candidate, os.X_OK):
             continue

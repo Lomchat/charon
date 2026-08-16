@@ -6,7 +6,7 @@ plus persistent PTY shells. Charon (the Next.js hub) drives it over **one
 multiplexed SSH per VPS**, speaking line-delimited JSON-RPC to the daemon's
 Unix socket `~/.charon/agent.sock`.
 
-Current `__version__`: **0.55.0** (`charon_agent/__init__.py`).
+Current `__version__`: **0.56.0** (`charon_agent/__init__.py`).
 
 The **protocol spec is [`charon_agent/protocol.py`](charon_agent/protocol.py)**
 (error codes + the canonical `METHODS` set). Its TypeScript mirror is
@@ -93,7 +93,7 @@ CI runs them on Python 3.10 and 3.13 (the supported range).
 
 - Python ≥ 3.10.
 - A dedicated **venv at `~/.charon/venv`** holding `claude-agent-sdk` and
-  `openai-codex`, plus the independently updated npm CLI under
+  `openai-codex`, plus the independently updated native npm artifact under
   `~/.charon/venv/codex-cli` — never `pip install --user` (PEP 668). The agent
   passes that binary through `CodexConfig.codex_bin`; `CHARON_CODEX_BIN` can
   override it, and the bundled SDK binary remains the fallback. The systemd unit's
