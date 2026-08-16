@@ -63,6 +63,21 @@ describe('rebuildStateFromMessages', () => {
     expect(s.messages[0]).toMatchObject({ id: 'm7', role: 'thinking', content: 'inner thought' });
   });
 
+  it('collapses repeated keyed activity and plan updates to their latest row', () => {
+    const rows = [
+      row('event', JSON.stringify({ type: 'tool_activity', id: 'codex-goal-thread', status: 'updated', detail: { n: 1 } }), { id: 21, createdAt: 100 }),
+      row('event', JSON.stringify({ type: 'tool_activity', id: 'codex-goal-thread', status: 'updated', detail: { n: 2 } }), { id: 22, createdAt: 200 }),
+      row('event', JSON.stringify({ type: 'plan_update', id: 'turn-1', steps: [{ step: 'one', status: 'pending' }] }), { id: 23, createdAt: 300 }),
+      row('event', JSON.stringify({ type: 'plan_update', id: 'turn-1', steps: [{ step: 'one', status: 'completed' }] }), { id: 24, createdAt: 400 }),
+    ];
+    const s = rebuildStateFromMessages(rows, 'active');
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[0]).toMatchObject({ id: 'activity:codex-goal-thread', createdAt: 200 });
+    expect(JSON.parse(s.messages[0].content).detail).toEqual({ n: 2 });
+    expect(s.messages[1]).toMatchObject({ id: 'plan:turn-1', createdAt: 400 });
+    expect(JSON.parse(s.messages[1].content).steps[0].status).toBe('completed');
+  });
+
   // --- The §39 invariant: re-pair tool_result onto its tool call ---
 
   it('re-pairs a tool_result onto the matching tool_use by SDK tool id', () => {

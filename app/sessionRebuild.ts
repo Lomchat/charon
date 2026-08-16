@@ -54,6 +54,21 @@ export function rebuildStateFromMessages(
   // launch tool_use (run_in_background) contributes the command string.
   const bgMap = new Map<string, BgTask>();
   const bgLaunches = new Map<string, BgLaunchCandidate>();
+  // Live plan/activity events are keyed and replace their previous value.
+  // Rebuild must preserve that invariant: the durable log can legitimately
+  // contain several updates for one key (notably ThreadGoalUpdated), and
+  // blindly appending all of them produced a wall of identical "goal
+  // updated" cards after every reload.
+  const messageIdxByLiveKey = new Map<string, number>();
+  const replaceLiveMessage = (message: Msg) => {
+    const previous = messageIdxByLiveKey.get(String(message.id));
+    if (previous == null) {
+      messageIdxByLiveKey.set(String(message.id), out.messages.length);
+      out.messages.push(message);
+    } else {
+      out.messages[previous] = message;
+    }
+  };
   // SDK tool-use id (toolu_…) → index in out.toolCalls. Lets us re-pair the
   // persisted `tool_result` rows back onto their tool call so `result` is
   // restored — exactly what the live SSE path does. Without it every rebuilt
@@ -105,13 +120,13 @@ export function rebuildStateFromMessages(
           });
         }
         if (ev.type === 'plan_update') {
-          out.messages.push({
+          replaceLiveMessage({
             id: `plan:${String(ev.id ?? m.id)}`, role: 'plan',
             content: JSON.stringify(ev), createdAt: m.createdAt,
           });
         }
         if (ev.type === 'tool_activity') {
-          out.messages.push({
+          replaceLiveMessage({
             id: `activity:${String(ev.id ?? m.id)}`, role: 'activity',
             content: JSON.stringify(ev), createdAt: m.createdAt,
           });
