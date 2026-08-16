@@ -22,6 +22,7 @@ import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
+import ForkModal from './ForkModal';
 
 // A session's mode is a Claude permission mode OR a Codex sandbox level.
 type SessionMode = PermissionMode | CodexSandboxMode;
@@ -191,17 +192,21 @@ export default function ClaudeSessionView({
   // at the bottom of this file). Keeping it out of this component is what stops
   // a keystroke from re-rendering the whole session view — and therefore the
   // (expensive) message list. See CLAUDE.md §11 / §14.
-  // Fork = branch this transcript into a NEW session (agent >= 0.39.0). The
-  // model is bound to the Anthropic-side session, so this is also the only
-  // real answer to "I want this conversation on another model" — which the
-  // model badge could previously only warn about (§14.35).
-  const [forking, setForking] = useState(false);
+  // Fork = branch into native Claude OR import this history into a fresh Codex
+  // thread. The source stays live in both cases (§14.94).
+  const [forkModalOpen, setForkModalOpen] = useState(false);
+  const [forking, setForking] = useState<AgentKind | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
-  const doFork = useCallback(async () => {
+  const doFork = useCallback(async (targetKind: AgentKind) => {
     if (forking) return;
-    setForking(true);
+    setForking(targetKind);
+    setForkError(null);
     try {
-      const r = await fetch(`/api/claude/sessions/${sessionId}/fork`, { method: 'POST' });
+      const r = await fetch(`/api/claude/sessions/${sessionId}/fork`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetKind }),
+      });
       const j = await r.json().catch(() => null);
       if (!r.ok || !j?.session?.id) {
         setForkError(j?.error || 'fork failed');
@@ -212,6 +217,7 @@ export default function ClaudeSessionView({
       // it (§14.78). Looking the id up in `sessions` would lose the race with
       // the list refresh and land on a pane the tab bar does not list.
       setForkError(null);
+      setForkModalOpen(false);
       onOpenSession?.(
         j.session.id,
         { vpsId: j.session.vpsId, cwd: j.session.cwd ?? '' },
@@ -220,7 +226,7 @@ export default function ClaudeSessionView({
     } catch (e: any) {
       setForkError(String(e?.message || e));
     } finally {
-      setForking(false);
+      setForking(null);
     }
   }, [forking, sessionId, onOpenSession]);
 
@@ -627,25 +633,16 @@ export default function ClaudeSessionView({
             <button onClick={doSleep}>sleep</button>
           )}
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
-          {/* Branch the conversation. Claude-only (Codex threads have no fork
-              primitive, §14.59) and pointless before the first turn, when
-              there is no transcript to copy. The source session is untouched —
-              the fork is a file copy on the VPS — which is what makes this
-              safe to offer mid-conversation rather than as a destructive
-              "start over". */}
+          {/* Claude is currently the only SOURCE kind. The chooser offers a
+              native Claude branch or a model-visible Codex history import. */}
           {sessionKind !== 'codex' && (
             <button
-              onClick={doFork}
-              disabled={forking || !selected.claudeSessionId}
+              onClick={() => { setForkError(null); setForkModalOpen(true); }}
+              disabled={!!forking || !selected.claudeSessionId}
               title={selected.claudeSessionId
-                ? 'Branch this conversation into a new session — this one keeps running untouched'
+                ? 'Branch this conversation to Claude or Codex — this one keeps running untouched'
                 : 'Nothing to fork yet — send a message first'}
             >{forking ? 'forking…' : 'fork'}</button>
-          )}
-          {forkError && (
-            <span className="bar-fork-err" title={forkError} onClick={() => setForkError(null)}>
-              fork: {forkError.slice(0, 60)}
-            </span>
           )}
           <button
             className="kill"
@@ -889,6 +886,17 @@ export default function ClaudeSessionView({
         onOpenSession={onOpenSession}
         onReveal={onOpenTools}
       />
+      {forkModalOpen && (
+        <ForkModal
+          sourceName={selected.name || '(unnamed)'}
+          vpsName={selectedVps?.name}
+          codexAvailable={selectedVps?.codexAvailable === 1}
+          busy={forking}
+          error={forkError}
+          onChoose={(kind) => { void doFork(kind); }}
+          onClose={() => { if (!forking) setForkModalOpen(false); }}
+        />
+      )}
     </>
   );
 }
@@ -1574,10 +1582,9 @@ function fmtTokens(n: number): string {
  * the Anthropic-side `claude_session_id` is bound to ONE model. A session
  * created on Opus 4.7 cannot be hot-swapped to 4.8 via resume — the SDK
  * will keep replying as 4.7 even though our DB says 4.8. To actually
- * change the model on an existing session, the user must fork (= null
- * out the claude_session_id and accept a fresh SDK session, losing
- * Anthropic's server-side state but keeping Charon's chat history).
- * That fork capability isn't wired up yet; for now we just warn.
+ * change the model on an existing session, the user forks it. A Claude target
+ * uses the SDK's native transcript copy; a Codex target injects the portable
+ * conversation into a fresh, durable Codex thread (§14.94).
  */
 function ModelEffortBadges({
   kind, vpsId,
@@ -1827,8 +1834,8 @@ function ModelEffortBadges({
               side (claude_session_id = <code style={{ fontSize: 9.5 }}>{claudeSessionId.slice(0, 8)}…</code>).
               A simple resume with a new model will keep the original model.
               <br />
-              To actually swap, create a new session, OR fork this one
-              (loses Anthropic-side context, keeps Charon's chat history).
+              To actually swap, fork this conversation and choose the agent
+              that should continue it.
             </div>
           )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>

@@ -6,7 +6,7 @@ plus persistent PTY shells. Charon (the Next.js hub) drives it over **one
 multiplexed SSH per VPS**, speaking line-delimited JSON-RPC to the daemon's
 Unix socket `~/.charon/agent.sock`.
 
-Current `__version__`: **0.21.0** (`charon_agent/__init__.py`).
+Current `__version__`: **0.46.0** (`charon_agent/__init__.py`).
 
 The **protocol spec is [`charon_agent/protocol.py`](charon_agent/protocol.py)**
 (error codes + the canonical `METHODS` set). Its TypeScript mirror is

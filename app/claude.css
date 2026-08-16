@@ -2276,6 +2276,42 @@
 .prompt-input:disabled { opacity: 0.55; }
 .prompt-input[readonly] { color: var(--parchment-soft); }
 .claude-modal.prompt .confirm-actions { margin-top: 18px; }
+
+/* Fork chooser: two provider cards, intentionally smaller than the creation
+   wizard. It is portaled like PromptModal because the chat can sit beside a
+   transformed tools drawer on tablet. */
+.claude-modal.fork-modal {
+  max-width: 470px; border-radius: 14px;
+  padding: 25px 25px 20px;
+  animation: confirm-pop .16s ease-out;
+}
+.fork-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.fork-head h2 { margin: 0; font-size: 18px; }
+.fork-head p {
+  margin: 4px 0 0; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--parchment-soft); font-family: var(--mono); font-size: 11px;
+}
+.fork-intro, .fork-note { color: var(--parchment-soft); font-size: 12.5px; line-height: 1.45; }
+.fork-intro { margin: 16px 0 11px; }
+.fork-note { margin: 12px 2px 0; font-size: 11px; }
+.fork-choices { display: flex; flex-direction: column; gap: 8px; }
+.fork-choice {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 12px 13px; border-radius: 10px; text-align: left; cursor: pointer;
+  color: var(--parchment); background: var(--shadow);
+  border: 1px solid var(--gold-deep);
+  transition: border-color .12s, background .12s, transform .12s;
+}
+.fork-choice:hover:not(:disabled), .fork-choice:focus-visible {
+  border-color: var(--gold); background: rgba(138,180,228,0.1); outline: none;
+  transform: translateY(-1px);
+}
+.fork-choice:disabled { opacity: .48; cursor: default; }
+.fork-choice-copy { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.fork-choice-copy b { color: var(--gold-bright); font-size: 13.5px; }
+.fork-choice-copy small { color: var(--parchment-soft); font-size: 11px; line-height: 1.35; }
+.fork-choice-go { flex: none; color: var(--gold); font-size: 18px; }
 .claude-modal.data-modal {
   /* Fixed size so the modal doesn't jump when switching tabs */
   width: 1060px; max-width: 94vw;
@@ -5228,14 +5264,6 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ci-mention .cim-state { flex: none; font-size: 10px; opacity: 0.6; }
-
-/* Fork failure, inline next to the button that caused it — a toast would
-   detach the reason ("that message is not in this transcript") from the
-   action. Click to dismiss. */
-.bar-fork-err {
-  font-size: 11px; color: var(--crimson, #d98b8b); cursor: pointer;
-  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* ── Session insight (context window / MCP / sub-agents) ──────────────────
    Three things the session knew and never told anyone. Grouped in the tools

@@ -1,14 +1,21 @@
 import { NextResponse } from 'next/server';
-import { eq, and } from 'drizzle-orm';
+import { asc, eq, and, inArray, lte } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
-import { db, claudeSessions, claudeSessionMessages } from '@/lib/db';
+import { db, claudeSessions, claudeSessionMessages, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import {
+  deleteSession,
   emitGlobalSessionListChanged,
   nextSessionPosition,
   resumeSession,
+  startNewSession,
 } from '@/lib/server/agent/sessionOps';
+import {
+  batchCodexHistoryItems,
+  codexItemsFromForkHistory,
+  FORK_MODEL_ROLES,
+} from '@/lib/server/claude/forkHistory';
 import { randomBytes } from 'crypto';
 
 /**
@@ -23,7 +30,7 @@ const UNCOPIED_ROLES = ['edit_snapshot'];
 
 /**
  * POST /api/claude/sessions/[id]/fork
- *   body: { upToMessageId?: string, name?: string }
+ *   body: { targetKind?: 'claude'|'codex', upToMessageId?: string, name?: string }
  *
  * Branch a session's transcript into a NEW session.
  *
@@ -32,82 +39,32 @@ const UNCOPIED_ROLES = ['edit_snapshot'];
  * UI could only warn about (§14.35). More generally there was no way to try a
  * different direction without destroying the current one.
  *
- * The fork is PURE FILE WORK on the VPS — the SDK copies the transcript and
- * remaps every uuid — so the source session keeps running, untouched. That is
- * the property that makes this safe to offer mid-conversation.
+ * Claude targets use the SDK's native transcript copy. Codex targets start a
+ * fresh loaded thread and append portable Responses items with
+ * `thread/inject_items`, which persists them into its model-visible rollout.
+ * Neither path touches the source session.
  *
  * `upToMessageId` is a CLI transcript uuid (claude_session_messages.cli_uuid),
  * not one of our row ids: the SDK identifies the branch point by ITS id.
  * Omitted = fork the whole conversation.
  *
- * The new session is created SLEEPING with the forked transcript id. It has no
- * agent-side session until the user resumes it — forking should cost nothing
- * until you actually use the branch.
+ * Both targets are started before success is returned so the newly-opened tab
+ * is immediately usable. A failed Codex import removes its Charon session.
  */
-export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const auth = await requireApiSession();
-  if (auth instanceof Response) return auth;
-  const { id } = await params;
+type SourceSession = typeof claudeSessions.$inferSelect;
 
-  const [src] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
-  if (!src) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (src.kind === 'codex') {
-    // Codex threads have no fork primitive (§14.59) — and silently forking
-    // something else would be worse than saying so.
-    return NextResponse.json({ error: 'forking is Claude-only' }, { status: 400 });
-  }
-  if (!src.claudeSessionId) {
-    return NextResponse.json(
-      { error: 'this session has no transcript yet — send a message first' },
-      { status: 400 },
-    );
-  }
+function forkCutoff(sourceId: string, upToMessageId?: string): number | null {
+  if (!upToMessageId) return null;
+  const [anchor] = db.select({ rid: claudeSessionMessages.id })
+    .from(claudeSessionMessages)
+    .where(and(
+      eq(claudeSessionMessages.sessionId, sourceId),
+      eq(claudeSessionMessages.cliUuid, upToMessageId),
+    )).all();
+  return anchor?.rid ?? null;
+}
 
-  const body = await req.json().catch(() => ({}));
-  const upToMessageId = typeof body?.upToMessageId === 'string' ? body.upToMessageId : undefined;
-  const name = typeof body?.name === 'string' && body.name.trim()
-    ? body.name.trim()
-    : `${src.name || 'session'} (fork)`;
-
-  let forked: { claude_session_id?: string } | null = null;
-  try {
-    const client = getAgentClientForVpsId(src.vpsId);
-    forked = await client.call('fork_session', {
-      session_id: id,
-      ...(upToMessageId ? { up_to_message_id: upToMessageId } : {}),
-      title: name,
-    }) as { claude_session_id?: string };
-  } catch (e: any) {
-    // Agent too old (-32601), transcript missing, unknown message uuid — all
-    // arrive here. Surface the reason rather than a generic failure: "that
-    // message is not in this transcript" is actionable, "fork failed" is not.
-    const msg = String(e?.message || e);
-    const status = /-32601|no such method|cannot fork/i.test(msg) ? 501 : 400;
-    return NextResponse.json({ error: msg }, { status });
-  }
-  if (!forked?.claude_session_id) {
-    return NextResponse.json({ error: 'fork returned no session id' }, { status: 500 });
-  }
-
-  const newId = randomBytes(8).toString('hex');
-  db.insert(claudeSessions).values({
-    id: newId,
-    claudeSessionId: forked.claude_session_id,
-    vpsId: src.vpsId,
-    cwd: src.cwd,
-    name,
-    kind: 'claude',
-    // Sleeping, not starting: the branch costs nothing until it is used, and
-    // resume already knows how to bring up a session from a transcript id.
-    status: 'sleeping',
-    permissionMode: src.permissionMode,
-    // Inherit the shape of the conversation it came from — a fork that
-    // silently changed model or effort would not be the same experiment.
-    model: src.model,
-    fallbackModel: src.fallbackModel,
-    effort: src.effort,
-    position: nextSessionPosition(src.vpsId),
-  }).run();
+function copyVisibleTranscript(sourceId: string, newId: string, cutoffId: number | null): number {
 
   // ── Carry the conversation across ───────────────────────────────────────
   // The SDK copied the CLI transcript, so the MODEL remembers everything. Our
@@ -128,16 +85,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   //              where the anchor exists) instead of branching at a bogus one.
   // ts_ms is KEPT: wall-clock has no epochs (§14.71), so inherited rows sort
   // correctly against anything the branch produces from now on.
-  let cutoffId: number | null = null;
-  if (upToMessageId) {
-    const [anchor] = db.select({ rid: claudeSessionMessages.id })
-      .from(claudeSessionMessages)
-      .where(and(
-        eq(claudeSessionMessages.sessionId, id),
-        eq(claudeSessionMessages.cliUuid, upToMessageId),
-      )).all();
-    if (anchor) cutoffId = anchor.rid;
-  }
   let copied = 0;
   try {
     const res: any = db.run(sql`
@@ -145,7 +92,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         (session_id, role, content, wire_content, model, seq, cli_uuid, ts_ms, created_at)
       SELECT ${newId}, role, content, wire_content, model, NULL, NULL, ts_ms, created_at
         FROM claude_session_messages
-       WHERE session_id = ${id}
+       WHERE session_id = ${sourceId}
          AND role NOT IN (${sql.join(UNCOPIED_ROLES.map((r) => sql`${r}`), sql`, `)})
          ${cutoffId != null ? sql`AND id <= ${cutoffId}` : sql``}
        ORDER BY id
@@ -155,7 +102,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // A branch with no history is still a usable branch — the model has the
     // context either way. Do not fail the fork over the convenience copy.
   }
+  return copied;
+}
 
+function insertForkMarker(
+  source: SourceSession,
+  newId: string,
+  targetKind: 'claude' | 'codex',
+  cutoffId: number | null,
+): void {
   // The boundary marker. Everything above came from the source; everything
   // below is this branch's own. Same shape as the compaction marker: a durable
   // role='event' row, already in NON_PAGINATED_ROLES (§14.25).
@@ -164,12 +119,56 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     role: 'event',
     content: JSON.stringify({
       type: 'fork_point',
-      fromId: id,
-      fromName: src.name || null,
+      fromId: source.id,
+      fromName: source.name || null,
+      targetKind,
       ...(cutoffId != null ? { partial: true } : {}),
     }),
     tsMs: Date.now(),
   }).run();
+}
+
+async function forkToClaude(
+  source: SourceSession,
+  name: string,
+  upToMessageId: string | undefined,
+  cutoffId: number | null,
+) {
+  let forked: { claude_session_id?: string } | null = null;
+  try {
+    const client = getAgentClientForVpsId(source.vpsId);
+    forked = await client.call('fork_session', {
+      session_id: source.id,
+      ...(upToMessageId ? { up_to_message_id: upToMessageId } : {}),
+      title: name,
+    }) as { claude_session_id?: string };
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    const status = /-32601|no such method|cannot fork/i.test(msg) ? 501 : 400;
+    return NextResponse.json({ error: msg }, { status });
+  }
+  if (!forked?.claude_session_id) {
+    return NextResponse.json({ error: 'fork returned no session id' }, { status: 500 });
+  }
+
+  const newId = randomBytes(8).toString('hex');
+  db.insert(claudeSessions).values({
+    id: newId,
+    claudeSessionId: forked.claude_session_id,
+    vpsId: source.vpsId,
+    cwd: source.cwd,
+    name,
+    kind: 'claude',
+    status: 'sleeping',
+    permissionMode: source.permissionMode,
+    model: source.model,
+    fallbackModel: source.fallbackModel,
+    effort: source.effort,
+    position: nextSessionPosition(source.vpsId),
+  }).run();
+
+  const copied = copyVisibleTranscript(source.id, newId, cutoffId);
+  insertForkMarker(source, newId, 'claude', cutoffId);
 
   // Start it. A branch you have to wake up before using reads as a failure,
   // and resume already knows how to bring a session up from a transcript id
@@ -183,5 +182,124 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   emitGlobalSessionListChanged(newId);
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
-  return NextResponse.json({ ok: true, session: row, forkedFrom: id, copied, started });
+  return NextResponse.json({ ok: true, session: row, forkedFrom: source.id, copied, started });
+}
+
+async function forkToCodex(source: SourceSession, name: string, cutoffId: number | null) {
+  const [vps] = db.select({ codexAvailable: vpsTable.codexAvailable })
+    .from(vpsTable).where(eq(vpsTable.id, source.vpsId)).all();
+  if (!vps || vps.codexAvailable !== 1) {
+    return NextResponse.json(
+      { error: 'Codex is not available on this VPS. Install or update the agent first.' },
+      { status: 400 },
+    );
+  }
+
+  const filters = [
+    eq(claudeSessionMessages.sessionId, source.id),
+    inArray(claudeSessionMessages.role, [...FORK_MODEL_ROLES]),
+  ];
+  if (cutoffId != null) filters.push(lte(claudeSessionMessages.id, cutoffId));
+  const historyRows = db.select({
+    id: claudeSessionMessages.id,
+    role: claudeSessionMessages.role,
+    // Compact tool payloads keep a large fork practical. User and assistant
+    // rows have no wire variant and therefore remain lossless.
+    content: sql<string>`coalesce(${claudeSessionMessages.wireContent}, ${claudeSessionMessages.content})`,
+    tsMs: claudeSessionMessages.tsMs,
+  }).from(claudeSessionMessages)
+    .where(and(...filters))
+    .orderBy(asc(claudeSessionMessages.id)).all();
+  const items = codexItemsFromForkHistory(historyRows);
+  if (!items.length) {
+    return NextResponse.json({ error: 'this session has no history to import' }, { status: 400 });
+  }
+
+  // Reserve the id so every failure path can remove the half-created Charon
+  // row. The remote Codex rollout may remain scan-able if the daemon dies in
+  // the middle of cleanup; it is never exposed as a successful fork.
+  const newId = randomBytes(8).toString('hex');
+  try {
+    await startNewSession({
+      sessionId: newId,
+      vpsId: source.vpsId,
+      cwd: source.cwd,
+      name,
+      kind: 'codex',
+      permissionMode: 'workspace-write',
+    });
+    const client = getAgentClientForVpsId(source.vpsId);
+    const batches = batchCodexHistoryItems(newId, items);
+    let threadId: string | null = null;
+    for (const batch of batches) {
+      const result = await client.call('inject_history', {
+        session_id: newId,
+        items: batch,
+      }) as { thread_id?: string };
+      if (result?.thread_id) threadId = result.thread_id;
+    }
+    if (!threadId) throw new Error('Codex history import returned no thread id');
+    // Do not depend on the asynchronous session_id event winning the race
+    // against this HTTP response: the RPC itself just proved the real id.
+    db.update(claudeSessions).set({ claudeSessionId: threadId })
+      .where(eq(claudeSessions.id, newId)).run();
+
+    const copied = copyVisibleTranscript(source.id, newId, cutoffId);
+    insertForkMarker(source, newId, 'codex', cutoffId);
+    emitGlobalSessionListChanged(newId);
+    const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
+    return NextResponse.json({
+      ok: true,
+      session: row,
+      forkedFrom: source.id,
+      copied,
+      importedItems: items.length,
+      importedBatches: batches.length,
+      started: true,
+    });
+  } catch (e: any) {
+    try { await deleteSession(newId); } catch {}
+    const msg = String(e?.message || e);
+    const unsupported = /-32601|no such method|inject_items|does not support/i.test(msg);
+    return NextResponse.json({
+      error: unsupported
+        ? 'This VPS agent is too old for Claude → Codex forks. Update the agent first.'
+        : msg,
+    }, { status: unsupported ? 501 : 400 });
+  }
+}
+
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireApiSession();
+  if (auth instanceof Response) return auth;
+  const { id } = await params;
+  const [source] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
+  if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (source.kind === 'codex') {
+    return NextResponse.json({ error: 'forking from Codex is not supported yet' }, { status: 400 });
+  }
+  if (!source.claudeSessionId) {
+    return NextResponse.json(
+      { error: 'this session has no transcript yet — send a message first' },
+      { status: 400 },
+    );
+  }
+
+  const body = await req.json().catch(() => ({}));
+  if (body?.targetKind != null && body.targetKind !== 'claude' && body.targetKind !== 'codex') {
+    return NextResponse.json({ error: 'targetKind must be claude or codex' }, { status: 400 });
+  }
+  const targetKind: 'claude' | 'codex' = body?.targetKind === 'codex' ? 'codex' : 'claude';
+  const upToMessageId = typeof body?.upToMessageId === 'string' ? body.upToMessageId : undefined;
+  const cutoffId = forkCutoff(id, upToMessageId);
+  if (upToMessageId && cutoffId == null) {
+    return NextResponse.json({ error: 'that message is not in this transcript' }, { status: 400 });
+  }
+  const name = typeof body?.name === 'string' && body.name.trim()
+    ? body.name.trim()
+    : `${source.name || 'session'} (${targetKind === 'codex' ? 'Codex fork' : 'fork'})`;
+
+  return targetKind === 'codex'
+    ? forkToCodex(source, name, cutoffId)
+    : forkToClaude(source, name, upToMessageId, cutoffId);
 }

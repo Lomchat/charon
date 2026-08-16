@@ -134,6 +134,18 @@ def _enum_val(v: Any) -> Any:
     return getattr(v, "value", v)
 
 
+def _thread_inject_response_model():
+    """Resolve lazily so an older SDK can still run ordinary Codex sessions;
+    only the cross-provider fork reports that its newer primitive is missing."""
+    try:
+        from openai_codex.generated.v2_all import ThreadInjectItemsResponse
+        return ThreadInjectItemsResponse
+    except Exception as e:
+        raise RuntimeError(
+            "the installed openai-codex SDK does not support thread/inject_items"
+        ) from e
+
+
 async def fetch_codex_models() -> dict[str, Any]:
     """List the Codex model catalog (account-driven, per-VPS). Spins up a
     short-lived app-server client. Never raises."""
@@ -427,6 +439,67 @@ class CodexSession:
             applied_at_next_start=False,
         )
         await self._save_state()
+
+    async def inject_history(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Append prebuilt Responses items to this thread's durable history.
+
+        ``thread/inject_items`` is the app-server's native handoff primitive:
+        it persists the supplied items in the rollout and includes them in
+        subsequent model requests without starting a turn.  A brand-new Codex
+        session starts asynchronously, so callers may arrive before
+        ``thread_start`` has returned; wait for that boundary instead of racing
+        a request against a thread that does not exist yet.
+
+        The Charon socket accepts one line below 64 KiB.  The hub therefore
+        sends several bounded batches; validate each one again here because a
+        protocol endpoint must not trust its caller.
+        """
+        if not isinstance(items, list) or not items:
+            raise ValueError("items must be a non-empty list")
+        if len(items) > 64:
+            raise ValueError("too many history items in one batch")
+        encoded = json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 56 * 1024:
+            raise ValueError("history batch exceeds 56 KiB")
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                raise ValueError("history items must be message objects")
+            role = item.get("role")
+            if role not in ("user", "assistant"):
+                raise ValueError("history message role must be user or assistant")
+            content = item.get("content")
+            expected = "input_text" if role == "user" else "output_text"
+            if (not isinstance(content, list) or len(content) != 1
+                    or not isinstance(content[0], dict)
+                    or content[0].get("type") != expected
+                    or not isinstance(content[0].get("text"), str)):
+                raise ValueError(f"{role} history content must contain one {expected}")
+
+        try:
+            await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError("Codex thread did not become ready for history import") from e
+        if self.status != "active" or self._client is None or self._thread is None:
+            raise RuntimeError(
+                f"Codex thread is not available for history import (status={self.status})"
+            )
+        if self._active_turn is not None:
+            raise RuntimeError("cannot import history while a Codex turn is running")
+        thread_id = self.claude_session_id or getattr(self._thread, "id", None)
+        if not isinstance(thread_id, str) or not thread_id:
+            raise RuntimeError("Codex thread has no id")
+
+        response_model = _thread_inject_response_model()
+        raw = getattr(self._client, "_client", None)
+        request = getattr(raw, "request", None)
+        if not callable(request):
+            raise RuntimeError("the installed openai-codex SDK has no raw app-server client")
+        await request(
+            "thread/inject_items",
+            {"threadId": thread_id, "items": items},
+            response_model=response_model,
+        )
+        return {"ok": True, "count": len(items), "thread_id": thread_id}
 
     # No human-in-the-loop gates for Codex — these are no-ops kept for the
     # uniform server.py dispatch contract.

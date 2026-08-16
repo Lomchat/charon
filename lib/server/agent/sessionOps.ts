@@ -2235,6 +2235,9 @@ export async function importExistingSession(opts: {
 }
 
 export async function startNewSession(opts: {
+  // Internal callers that need transactional cleanup (cross-provider fork)
+  // may reserve the id before the agent call. Public create leaves it unset.
+  sessionId?: string;
   vpsId: string;
   cwd: string;
   name?: string | null;
@@ -2257,7 +2260,7 @@ export async function startNewSession(opts: {
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
   const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
-  const sessionId = newId();
+  const sessionId = opts.sessionId ?? newId();
   // Resolve effective config: per-session opts first, then global defaults.
   // We persist the RESOLVED values to the DB row so they survive a Charon
   // restart even if the global default changes later. (If we stored null

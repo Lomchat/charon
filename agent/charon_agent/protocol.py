@@ -154,6 +154,7 @@ METHODS = {
     "set_effort",
     "set_session_name",
     "fork_session",
+    "inject_history",
     "get_context_usage",
     "mcp_status",
     "mcp_toggle",

@@ -413,7 +413,7 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
-        "fork_session", "get_context_usage", "mcp_status", "mcp_toggle",
+        "fork_session", "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
         "session_identity",
         "respond_permission",
@@ -952,6 +952,26 @@ class Server:
             if not isinstance(new_id, str) or not new_id:
                 raise RpcError(ERR_INTERNAL, "fork returned no session id")
             return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
+
+        if method == "inject_history":
+            # Cross-provider fork primitive (agent >= 0.46.0).  Only Codex has
+            # an app-server history-injection API; Claude uses fork_session's
+            # native transcript copy instead.  The session method waits for a
+            # freshly-started Codex thread to be loaded before injecting.
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS,
+                               "inject_history is only supported for Codex sessions")
+            items = params.get("items")
+            if not isinstance(items, list) or not items:
+                raise RpcError(ERR_INVALID_PARAMS, "items must be a non-empty list")
+            try:
+                return await s_.inject_history(items)
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            except Exception as e:
+                raise RpcError(ERR_INTERNAL, f"history import failed: {e}")
 
         if method == "set_session_name":
             sid = self._require_sid(params)
