@@ -16,6 +16,7 @@ import LspPicker from './LspPicker';
 import HistoryModal from './HistoryModal';
 import { IconClockHistory } from './icons';
 import PromptModal from './PromptModal';
+import { subscribeFsChanged } from './fsChangeBus';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
@@ -229,6 +230,14 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
       document.removeEventListener('visibilitychange', visible);
     };
   }, [media, probeExternalChange]);
+
+  // Codex app-server fs/watch supplies the fast path; the 10s stat poll above
+  // remains the provider-neutral/missed-event safety net.
+  useEffect(() => subscribeFsChanged((changedVpsId, paths) => {
+    if (changedVpsId !== vpsId) return;
+    const absolute = `${root.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
+    if (paths.includes(absolute)) void probeExternalChange();
+  }), [vpsId, root, path, probeExternalChange]);
 
   // Ctrl+S also works when focus is outside CodeMirror (the header, a button)
   // — the shortcut belongs to the pane, not to the text area.

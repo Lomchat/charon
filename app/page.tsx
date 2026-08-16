@@ -2,7 +2,7 @@ import './claude.css';
 import { db, vps as vpsTable, vpsFolders as vpsFoldersTable, vpsPaths as vpsPathsTable, claudeSessions } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
-import { asc, desc } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { listTabs } from '@/lib/server/claude/tabs';
 import { cliNamesForVps } from '@/lib/server/claude/cliNames';
@@ -24,6 +24,7 @@ export default async function CharonPage() {
   const vpsRows = db.select().from(vpsTable).orderBy(asc(vpsTable.position)).all();
   const pathRows = db.select().from(vpsPathsTable).all();
   const sessionRowsRaw = db.select().from(claudeSessions)
+    .where(eq(claudeSessions.archived, 0))
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
   // The ADDRESSABLE name each session really has, on the FIRST paint.

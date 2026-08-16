@@ -2,7 +2,10 @@ import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { emitGlobalAccountUsage, setUsagePollTrigger, setCodexUsagePollTrigger } from './sessionOps';
+import {
+  emitGlobalAccountUsage, setUsagePollTrigger, setCodexUsagePollTrigger,
+  setCodexUsagePushHandler,
+} from './sessionOps';
 import type { AgentUsageResult, AgentCodexUsageResult, CodexRateWindow } from './types';
 import { getSetting, setSetting } from '@/lib/server/claude/settings';
 import type { AccountUsage, AccountUsageWindow, AccountUsageLimit } from '@/lib/server/claude/types';
@@ -465,6 +468,56 @@ function normalizeCodex(raw: AgentCodexUsageResult): AccountUsage {
   };
 }
 
+function pushField(obj: Record<string, unknown>, snake: string, camel: string): unknown {
+  return obj[snake] ?? obj[camel];
+}
+
+/** Normalize one AccountRateLimitsUpdated payload from the app-server FIFO.
+ * Generated SDK models currently dump snake_case; accepting camelCase too
+ * keeps this path tolerant of a future alias/default change. */
+function pushedCodexWindow(value: unknown): CodexRateWindow | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const w = value as Record<string, unknown>;
+  const used = numOrNull(pushField(w, 'used_percent', 'usedPercent'));
+  const resets = numOrNull(pushField(w, 'resets_at', 'resetsAt'));
+  const minutes = numOrNull(pushField(w, 'window_duration_mins', 'windowDurationMins'))
+    ?? numOrNull(pushField(w, 'window_minutes', 'windowMinutes'));
+  if (used === null && resets === null) return null;
+  return { used_percent: used, resets_at: resets, window_minutes: minutes };
+}
+
+/** Consume a pushed rate-limit snapshot without another RPC. Polling remains
+ * the cold-start/offline fallback; a running Codex thread now updates gauges
+ * immediately when app-server announces a change. */
+export function ingestCodexUsagePush(vpsId: string, detail: unknown): AccountUsage | null {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  const d = detail as Record<string, unknown>;
+  const windows = [pushedCodexWindow(d.primary), pushedCodexWindow(d.secondary)]
+    .filter((w): w is CodexRateWindow => w !== null);
+  if (windows.length === 0) return null;
+  let fiveHour: CodexRateWindow | null = null;
+  let sevenDay: CodexRateWindow | null = null;
+  for (const w of windows) {
+    if (w.window_minutes != null && w.window_minutes <= 360) fiveHour = w;
+    else sevenDay = w;
+  }
+  const raw: AgentCodexUsageResult = {
+    ok: true,
+    provider: 'codex',
+    plan_type: strOrNull(pushField(d, 'plan_type', 'planType')),
+    five_hour: fiveHour,
+    seven_day: sevenDay,
+    windows,
+    fetched_at: Date.now() / 1000,
+  };
+  const usage = normalizeCodex(raw);
+  const st = codexStateFor(vpsId);
+  st.last = usage;
+  st.lastPollAt = Date.now();
+  try { emitGlobalAccountUsage(vpsId, usage); } catch {}
+  return usage;
+}
+
 /** Best-effort classification of a codex-usage failure as an auth problem
  *  (→ mark vps.codexLoggedIn=0). The agent returns a free-form
  *  "ExcType: message" string, so we keyword-match. A non-auth failure
@@ -580,3 +633,4 @@ export function triggerCodexUsagePoll(vpsId: string): void {
 }
 
 setCodexUsagePollTrigger(triggerCodexUsagePoll);
+setCodexUsagePushHandler(ingestCodexUsagePush);

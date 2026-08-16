@@ -46,6 +46,7 @@ type Props = {
                                      // sleeping/error). Placed above
                                      // Delete.
   onKill?: () => void;               // "Close" — shell/install only
+  onArchive?: () => void;            // native Codex archive (reversible)
   onDelete?: () => void;
   onClose: () => void;
 };
@@ -54,7 +55,7 @@ export default function SessionContextMenu({
   title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Close',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
-  onRename, onColor, onEditCwd, onSleep, onKill, onDelete, onClose,
+  onRename, onColor, onEditCwd, onSleep, onKill, onArchive, onDelete, onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -158,6 +159,11 @@ export default function SessionContextMenu({
           type="button"
           onClick={() => { onSleep(); onClose(); }}
         >💤 Sleep</button>
+      )}
+      {onArchive && (
+        <button type="button" onClick={() => { onArchive(); onClose(); }}>
+          Archive Codex thread
+        </button>
       )}
       {onKill && (
         <button

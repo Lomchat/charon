@@ -229,15 +229,16 @@ out.sort(key=lambda x: -x.get('mtime', 0))
 print(json.dumps(out))
 `;
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
   const { id } = await params;
+  const archived = new URL(req.url).searchParams.get('archived') === '1';
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   try {
-    const result = await getAgentClientForVpsId(id).call('list_codex_threads', {}) as {
+    const result = await getAgentClientForVpsId(id).call('list_codex_threads', { archived }) as {
       ok?: boolean;
       sessions?: unknown[];
     };
@@ -247,6 +248,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   } catch {
     // Old/offline agent or SDK unable to start: fall through to disk scan.
   }
+
+  // Rollout files don't carry the state-db archive bit. Returning every
+  // rollout here would label active threads as archived, so degrade honestly.
+  if (archived) return NextResponse.json({ sessions: [], archivedUnavailable: true });
 
   const cmd =
     `PY=$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10 || command -v python3); ` +

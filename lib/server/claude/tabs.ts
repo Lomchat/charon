@@ -298,7 +298,8 @@ export function reconcileTabs(liveInstallIds?: Set<string>): number {
   const rows = db.select().from(tabs).all();
   if (rows.length === 0) return 0;
 
-  const sessionIds = new Set(db.select({ id: claudeSessions.id }).from(claudeSessions).all().map((r) => r.id));
+  const sessionIds = new Set(db.select({ id: claudeSessions.id }).from(claudeSessions)
+    .where(eq(claudeSessions.archived, 0)).all().map((r) => r.id));
   const shellIds = new Set(db.select({ id: shells.id }).from(shells).all().map((r) => r.id));
   const vpsIds = new Set(db.select({ id: vpsTable.id }).from(vpsTable).all().map((r) => r.id));
 
@@ -334,7 +335,7 @@ export function seedTabsIfEmpty(): number {
   const [{ n }] = db.select({ n: sql<number>`count(*)` }).from(tabs).all();
   if (n > 0) return 0;
   const live = db.select().from(claudeSessions).all()
-    .filter((s) => s.status !== 'sleeping' && s.status !== 'killed');
+    .filter((s) => s.archived === 0 && s.status !== 'sleeping' && s.status !== 'killed');
   if (live.length === 0) return 0;
   for (const s of live) {
     try {

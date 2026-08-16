@@ -51,6 +51,7 @@ try:
         Sandbox,
         ApprovalMode,
     )
+    from openai_codex.api import AsyncTurnHandle
     from openai_codex.generated.v2_all import ReasoningEffort as _CodexEffort
     try:
         from openai_codex.errors import TransportClosedError, is_retryable_error
@@ -72,6 +73,7 @@ except Exception as e:  # pragma: no cover - depends on the remote venv
     CodexConfig = None  # type: ignore
     Sandbox = None  # type: ignore
     ApprovalMode = None  # type: ignore
+    AsyncTurnHandle = None  # type: ignore
     _CodexEffort = None  # type: ignore
     TransportClosedError = ()  # type: ignore
     is_retryable_error = lambda _exc: False  # type: ignore
@@ -134,6 +136,43 @@ CODEX_OPT_OUT_NOTIFICATIONS = (
     "thread/realtime/sdp",
     "thread/realtime/transcript/delta",
 )
+
+
+def _charon_dynamic_tools() -> list[dict[str, Any]]:
+    """Read-only Charon workspace primitives exposed as one deferred namespace.
+
+    Codex already has shell/file tools, but these call the same contained,
+    bounded implementations as Charon's UI and therefore preserve gitignore,
+    truncation and multi-repo semantics without teaching the model hub RPCs.
+    """
+    return [{
+        "type": "namespace",
+        "name": "charon_workspace",
+        "description": "Read-only Charon workspace inspection tools.",
+        "tools": [
+            {"type": "function", "name": "list_files", "deferLoading": True,
+             "description": "List one directory inside the session workspace.",
+             "inputSchema": {"type": "object", "properties": {
+                 "path": {"type": "string", "description": "Workspace-relative directory"}},
+                 "additionalProperties": False}},
+            {"type": "function", "name": "read_file", "deferLoading": True,
+             "description": "Read one text file inside the session workspace.",
+             "inputSchema": {"type": "object", "properties": {
+                 "path": {"type": "string"}}, "required": ["path"],
+                 "additionalProperties": False}},
+            {"type": "function", "name": "search", "deferLoading": True,
+             "description": "Search text or file names in the workspace with Charon bounds.",
+             "inputSchema": {"type": "object", "properties": {
+                 "query": {"type": "string"},
+                 "mode": {"type": "string", "enum": ["text", "file"]},
+                 "regex": {"type": "boolean"}}, "required": ["query"],
+                 "additionalProperties": False}},
+            {"type": "function", "name": "git_status", "deferLoading": True,
+             "description": "Read the Git working-tree status containing the session cwd.",
+             "inputSchema": {"type": "object", "properties": {},
+                 "additionalProperties": False}},
+        ],
+    }]
 
 
 def _coerce_effort(effort: str | None):
@@ -244,7 +283,7 @@ async def fetch_codex_models() -> dict[str, Any]:
                 pass
 
 
-async def fetch_codex_threads() -> dict[str, Any]:
+async def fetch_codex_threads(*, archived: bool = False) -> dict[str, Any]:
     """List resumable top-level Codex threads through the supported SDK.
 
     The disk scanner remains a hub fallback for old/offline agents, but the
@@ -267,7 +306,7 @@ async def fetch_codex_threads() -> dict[str, Any]:
         ]
         while len(rows) < 400:
             page = await client.thread_list(
-                archived=False, cursor=cursor, limit=min(100, 400 - len(rows)),
+                archived=archived, cursor=cursor, limit=min(100, 400 - len(rows)),
                 source_kinds=source_kinds,
                 sort_key=ThreadSortKey.updated_at,
                 sort_direction=SortDirection.desc,
@@ -295,6 +334,7 @@ async def fetch_codex_threads() -> dict[str, Any]:
                     "size": 0,
                     "status": _json_value(status),
                     "source": _json_value(getattr(thread, "source", None)),
+                    "archived": archived,
                 })
             cursor = getattr(page, "next_cursor", None)
             if not cursor:
@@ -336,6 +376,28 @@ async def codex_logout() -> dict[str, Any]:
         client = AsyncCodex(CodexConfig())
         await client.logout()
         return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if client is not None:
+            try:
+                await asyncio.wait_for(client.close(), timeout=5.0)
+            except Exception:
+                pass
+
+
+async def codex_set_thread_archived(thread_id: str, archived: bool) -> dict[str, Any]:
+    """Archive/unarchive one persisted thread through the supported SDK."""
+    if not CODEX_AVAILABLE:
+        return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
+    client = None
+    try:
+        client = AsyncCodex(CodexConfig())
+        if archived:
+            await client.thread_archive(thread_id)
+        else:
+            await client.thread_unarchive(thread_id)
+        return {"ok": True, "archived": archived, "thread_id": thread_id}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     finally:
@@ -497,6 +559,9 @@ class CodexSession:
         self._main_task: asyncio.Task | None = None
         self._global_task: asyncio.Task | None = None
         self._external_turn_task: asyncio.Task | None = None
+        self._external_probe_task: asyncio.Task | None = None
+        self._external_probe_lock: asyncio.Lock | None = None
+        self._starting_turn = False
         self._stdin_queue: asyncio.Queue = asyncio.Queue()
         # Server-initiated SDK requests run on the SDK reader thread. Futures
         # below live on the agent loop; the callback blocks only that reader
@@ -518,6 +583,7 @@ class CodexSession:
         self._mcp_startup: dict[str, dict[str, Any]] = {}
         self._codex_stderr_lines: list[str] = []
         self._plan_deltas: dict[str, str] = {}
+        self._fs_watch_id: str | None = None
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -564,17 +630,48 @@ class CodexSession:
         self._emit("interrupted", forced=True)
         self._cancel_pending_requests()
         old_task = self._main_task
+        client = self._client
         external = getattr(self, "_external_turn_task", None)
         if external is not None and not external.done():
             external.cancel()
+        probe = getattr(self, "_external_probe_task", None)
+        if probe is not None and not probe.done():
+            probe.cancel()
+        if old_task is not None and not old_task.done():
+            # Do not clear ``_client`` before _run's finally: that is the
+            # owner which closes the app-server child.  Clearing first leaked
+            # a live Codex process that kept executing an autonomous goal and
+            # editing the workspace after Charon displayed "stopped".
+            old_task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(old_task, return_exceptions=True), timeout=7.0,
+                )
+            except asyncio.TimeoutError:
+                # A transport close can itself wedge.  Retain the captured
+                # client and make one bounded direct close attempt instead of
+                # orphaning the process silently.
+                if client is not None:
+                    try:
+                        res = client.close()
+                        if asyncio.iscoroutine(res):
+                            await asyncio.wait_for(res, timeout=5.0)
+                    except Exception:
+                        pass
+        elif client is not None:
+            try:
+                res = client.close()
+                if asyncio.iscoroutine(res):
+                    await asyncio.wait_for(res, timeout=5.0)
+            except Exception:
+                pass
         self._external_turn_task = None
+        self._external_probe_task = None
         self._main_task = None
         self._client = None
         self._thread = None
         self._active_turn = None
         self._stopped.set()
-        if old_task is not None and not old_task.done():
-            old_task.cancel()  # fire-and-forget
         await self._save_state()
 
     async def send_input(self, content: str) -> None:
@@ -842,7 +939,89 @@ class CodexSession:
         )
         return {"ok": True, "thread": self._json_safe(getattr(response, "thread", None))}
 
-    async def _consume_external_turn(self, handle: Any) -> None:
+    @staticmethod
+    def _thread_status_type(thread: Any) -> str:
+        status = getattr(thread, "status", None)
+        status = getattr(status, "root", status)
+        value = getattr(status, "type", status)
+        return str(getattr(value, "value", value) or "")
+
+    @staticmethod
+    def _turn_status_type(turn: Any) -> str:
+        value = getattr(turn, "status", None)
+        return str(getattr(value, "value", value) or "")
+
+    async def _attach_active_external_turn(self) -> bool:
+        """Adopt a server-started turn (goals/reviews/other clients).
+
+        Codex goals may immediately start a continuation turn after the handle
+        Charon was streaming completes.  The SDK router buffers that turn by
+        id, but ``next_notification()`` deliberately cannot see it.  Without
+        adopting the in-progress turn, a later ``turn/start`` is folded into
+        the goal while Charon waits on a different handle and appears frozen.
+        """
+        if self._thread is None or self._client is None:
+            return False
+        if self._active_turn is not None or self._starting_turn:
+            return self._active_turn is not None
+        if self._external_probe_lock is None:
+            self._external_probe_lock = asyncio.Lock()
+        async with self._external_probe_lock:
+            if self._active_turn is not None or self._starting_turn:
+                return self._active_turn is not None
+            read = await self._thread.read(include_turns=True)
+            thread = getattr(read, "thread", None)
+            if thread is None or self._thread_status_type(thread) != "active":
+                return False
+            turns = list(getattr(thread, "turns", None) or [])
+            live = next(
+                (turn for turn in reversed(turns)
+                 if self._turn_status_type(turn) in ("inProgress", "in_progress")),
+                None,
+            )
+            turn_id = getattr(live, "id", None)
+            if not isinstance(turn_id, str) or not turn_id:
+                raise RuntimeError(
+                    "Codex reports an active external turn but did not expose its id"
+                )
+            handle = AsyncTurnHandle(self._client, self.claude_session_id, turn_id)
+            # Claim synchronously before scheduling the consumer.  Otherwise a
+            # user input arriving in this event-loop tick starts a second turn.
+            self._active_turn = handle
+            self._external_turn_task = asyncio.create_task(
+                self._consume_external_turn(handle, claimed=True),
+                name=f"codex-external-{self.session_id}",
+            )
+            return True
+
+    def _schedule_external_turn_probe(self) -> None:
+        if self._active_turn is not None or self._starting_turn:
+            return
+        task = self._external_probe_task
+        if task is not None and not task.done():
+            return
+
+        async def probe() -> None:
+            try:
+                # ThreadStatusChanged can precede the turn being visible in
+                # thread/read by a few milliseconds.
+                for delay in (0.0, 0.05, 0.2, 0.5):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    if await self._attach_active_external_turn():
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._emit("error", msg=f"external Codex turn: {e}")
+            finally:
+                self._external_probe_task = None
+
+        self._external_probe_task = asyncio.create_task(
+            probe(), name=f"codex-external-probe-{self.session_id}"
+        )
+
+    async def _consume_external_turn(self, handle: Any, *, claimed: bool = False) -> None:
         self._active_turn = handle
         self._begin_turn()
         try:
@@ -856,7 +1035,8 @@ class CodexSession:
             self._emit("error", msg=self._format_err("review", e))
             self._emit("stop", subtype="error")
         finally:
-            self._active_turn = None
+            if self._active_turn is handle:
+                self._active_turn = None
             self._external_turn_task = None
             self._end_turn()
 
@@ -865,7 +1045,6 @@ class CodexSession:
             raise RuntimeError("Codex thread is not ready")
         if self._active_turn is not None:
             raise RuntimeError("cannot start review while a turn is running")
-        from openai_codex.api import AsyncTurnHandle
         from openai_codex.generated.v2_all import ReviewStartResponse
         response = await self._client._client.request(
             "review/start",
@@ -876,8 +1055,10 @@ class CodexSession:
         review_thread_id = getattr(response, "review_thread_id", None)
         if delivery == "inline" and turn is not None:
             handle = AsyncTurnHandle(self._client, self.claude_session_id, turn.id)
+            self._active_turn = handle
             self._external_turn_task = asyncio.create_task(
-                self._consume_external_turn(handle), name=f"codex-review-{self.session_id}"
+                self._consume_external_turn(handle, claimed=True),
+                name=f"codex-review-{self.session_id}"
             )
         return {
             "ok": True,
@@ -1089,6 +1270,8 @@ class CodexSession:
 
     def _sdk_approval_handler(self, method: str, params: dict[str, Any] | None) -> dict[str, Any]:
         """SDK reader-thread callback → dashboard future on the agent loop."""
+        if method == "item/tool/call":
+            return self._run_dynamic_tool(dict(params or {}))
         if method not in {
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
@@ -1108,6 +1291,60 @@ class CodexSession:
         except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
             pending.cancel()
             return {"decision": "cancel"}
+
+    def _run_dynamic_tool(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Execute one read-only dynamic tool on the SDK reader thread."""
+        tool = params.get("tool")
+        if isinstance(tool, dict):
+            name = str(tool.get("name") or "")
+        else:
+            name = str(tool or params.get("name") or "")
+        # Namespace calls may arrive fully-qualified depending on CLI build.
+        name = name.rsplit(".", 1)[-1].rsplit("/", 1)[-1]
+        args = params.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        try:
+            if name == "list_files":
+                from .fsnav import fs_list
+                result = fs_list(self.cwd, str(args.get("path") or ""), False)
+            elif name == "read_file":
+                from .fsnav import fs_read
+                result = fs_read(self.cwd, str(args.get("path") or ""))
+                # A dynamic tool result enters model context immediately. The
+                # UI viewer may return 2 MiB, but a single model tool result may
+                # not; make the truncation explicit.
+                content = result.get("content") if isinstance(result, dict) else None
+                if isinstance(content, str) and len(content.encode("utf-8")) > 96 * 1024:
+                    result = dict(result)
+                    result["content"] = content.encode("utf-8")[:96 * 1024].decode("utf-8", "ignore")
+                    result["truncated"] = True
+            elif name == "search":
+                from .fsnav import fs_search
+                result = fs_search(
+                    self.cwd, str(args.get("query") or ""),
+                    mode="file" if args.get("mode") == "file" else "text",
+                    regex=bool(args.get("regex")), max_results=50,
+                )
+            elif name == "git_status":
+                from .git import git_status
+                result = git_status(self.cwd, include_recent=False, max_files=400)
+            else:
+                return {"success": False, "contentItems": [{
+                    "type": "inputText", "text": f"unknown Charon dynamic tool: {name}",
+                }]}
+            text = json.dumps(result, ensure_ascii=False, default=str)
+            return {"success": bool(not isinstance(result, dict) or result.get("ok", True)),
+                    "contentItems": [{"type": "inputText", "text": text}]}
+        except Exception as e:
+            return {"success": False, "contentItems": [{
+                "type": "inputText", "text": f"{type(e).__name__}: {e}",
+            }]}
 
     async def _initialize_sdk(self, client: Any) -> None:
         """Initialize through the SDK client with egress capabilities.
@@ -1148,6 +1385,7 @@ class CodexSession:
             "sandbox": _sandbox_mode_wire(self.permission_mode),
             "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
             "approvalsReviewer": "user",
+            "dynamicTools": _charon_dynamic_tools(),
         }
         if self.model:
             params["model"] = self.model
@@ -1939,6 +2177,13 @@ class CodexSession:
                     continue
                 for event in self._translate(payload):
                     self._emit_to_server({"session_id": self.session_id, **event})
+                if type(payload).__name__ == "ThreadStatusChangedNotification":
+                    status = getattr(payload, "status", None)
+                    status = getattr(status, "root", status)
+                    status_type = getattr(status, "type", status)
+                    status_type = str(getattr(status_type, "value", status_type) or "")
+                    if status_type == "active":
+                        self._schedule_external_turn_probe()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1946,6 +2191,48 @@ class CodexSession:
             # It is diagnostic only; the owning _run task decides lifecycle.
             if self._client is not None:
                 print(f"codex: global notification reader stopped: {e}", file=sys.stderr)
+
+    async def _start_fs_watch(self) -> None:
+        """Watch the session cwd so app-server pushes precise invalidations.
+
+        Charon's editor already has a stat-poll safety net; this supplies the
+        immediate signal and exercises the supported fs/watch lifecycle. Old
+        app-servers simply return -32601 and continue normally.
+        """
+        if self._client is None:
+            return
+        raw = getattr(self._client, "_client", None)
+        request = getattr(raw, "request", None)
+        if not callable(request):
+            return  # lightweight test double / old SDK
+        try:
+            from openai_codex.generated.v2_all import FsWatchResponse
+            watch_id = f"charon-{self.session_id}"
+            await request(
+                "fs/watch", {"watchId": watch_id, "path": self.cwd},
+                response_model=FsWatchResponse,
+            )
+            self._fs_watch_id = watch_id
+        except Exception as e:
+            if getattr(e, "code", None) != -32601:
+                print(f"codex: fs/watch unavailable: {e}", file=sys.stderr)
+
+    async def _stop_fs_watch(self) -> None:
+        watch_id = self._fs_watch_id
+        self._fs_watch_id = None
+        if not watch_id or self._client is None:
+            return
+        raw = getattr(self._client, "_client", None)
+        request = getattr(raw, "request", None)
+        if not callable(request):
+            return
+        try:
+            from openai_codex.generated.v2_all import FsUnwatchResponse
+            await request(
+                "fs/unwatch", {"watchId": watch_id}, response_model=FsUnwatchResponse,
+            )
+        except Exception:
+            pass
 
     async def _run(self) -> None:
         try:
@@ -2029,6 +2316,7 @@ class CodexSession:
                 self._consume_global_notifications(),
                 name=f"codex-global-{self.session_id}",
             )
+            await self._start_fs_watch()
 
             # ── Turn loop ─────────────────────────────────────────────────────
             while True:
@@ -2038,16 +2326,40 @@ class CodexSession:
                 if not isinstance(msg, dict) or msg.get("type") != "user_message":
                     continue
                 content = msg.get("content") or ""
+                try:
+                    if await self._attach_active_external_turn():
+                        turn = self._active_turn
+                        if turn is None:
+                            raise RuntimeError("external Codex turn vanished before steer")
+                        res = turn.steer(content)
+                        if asyncio.iscoroutine(res):
+                            await res
+                        continue
+                except Exception as e:
+                    # The active status can arrive just before thread/read
+                    # exposes its turn. Retry the SAME input a few times; do
+                    # not silently start another turn or drop what the user
+                    # typed while the server-owned turn is still running.
+                    retry = int(msg.get("_external_retry") or 0)
+                    if retry < 5:
+                        msg["_external_retry"] = retry + 1
+                        await asyncio.sleep(0.1 * (retry + 1))
+                        await self._stdin_queue.put(msg)
+                        continue
+                    self._emit("error", msg=f"could not join active Codex turn: {e}")
+                    continue
                 self._streamed_items.clear()
                 self._last_usage = None
-                self._begin_turn()
                 # Announce the resolved model for this turn (effective_model).
                 if self.model and self.model != self._effective_model:
                     self._effective_model = self.model
                     self._emit("effective_model", model=self.model)
                 try:
+                    self._starting_turn = True
                     handle = await self._sdk_turn(thread, content)
                     self._active_turn = handle
+                    self._starting_turn = False
+                    self._begin_turn()
                     async for note in handle.stream():
                         payload = getattr(note, "payload", note)
                         for ev in self._translate(payload):
@@ -2059,6 +2371,7 @@ class CodexSession:
                     # Make sure the turn is closed on the stop path.
                     self._emit("stop", subtype="error")
                 finally:
+                    self._starting_turn = False
                     self._active_turn = None
                 self._end_turn()
         except asyncio.CancelledError:
@@ -2071,6 +2384,7 @@ class CodexSession:
         finally:
             me = asyncio.current_task()
             if self._main_task is None or self._main_task is me:
+                await self._stop_fs_watch()
                 global_task = self._global_task
                 self._global_task = None
                 if global_task is not None:

@@ -55,6 +55,9 @@ class FakeClient:
         self.resume_calls = 0
         self.start_calls = 0
         self.fork_calls = []
+        self.archive_calls = []
+        self.unarchive_calls = []
+        self.close_calls = 0
 
     async def thread_resume(self, thread_id, **kw):
         self.resume_calls += 1
@@ -70,8 +73,15 @@ class FakeClient:
         self.fork_calls.append((thread_id, kw))
         return FakeThread("FORKED-THREAD")
 
-    def close(self):
-        return None
+    async def thread_archive(self, thread_id):
+        self.archive_calls.append(thread_id)
+
+    async def thread_unarchive(self, thread_id):
+        self.unarchive_calls.append(thread_id)
+        return FakeThread(thread_id)
+
+    async def close(self):
+        self.close_calls += 1
 
 
 def _make_session(claude_session_id):
@@ -98,7 +108,16 @@ def _make_session(claude_session_id):
     s._active_turn = None
     s._main_task = None
     s._global_task = None
+    s._external_turn_task = None
+    s._external_probe_task = None
+    s._external_probe_lock = None
+    s._starting_turn = False
+    s._external_probe_task = None
+    s._external_probe_lock = None
+    s._starting_turn = False
+    s._fs_watch_id = None
     s._ready_evt = asyncio.Event()
+    s._stopped = asyncio.Event()
     s._stdin_queue = asyncio.Queue()
     s._codex_stderr_lines = []      # _format_err tails this
     s._emit = lambda ev, **kw: s._emitted.append((ev, kw))
@@ -254,6 +273,101 @@ class TestCodexResume(unittest.TestCase):
             self.assertEqual(thread.names, ["visible name"])
             self.assertEqual(thread.compactions, 1)
             self.assertTrue(result["ok"])
+
+        asyncio.run(main())
+
+    def test_archive_and_unarchive_use_supported_sdk_methods(self):
+        async def main():
+            client = FakeClient()
+            saved_codex, saved_config, saved_available = cs.AsyncCodex, cs.CodexConfig, cs.CODEX_AVAILABLE
+            cs.AsyncCodex = lambda *_a, **_kw: client
+            cs.CodexConfig = lambda **_kw: None
+            cs.CODEX_AVAILABLE = True
+            try:
+                self.assertTrue((await cs.codex_set_thread_archived(THREAD_ID, True))["ok"])
+                self.assertTrue((await cs.codex_set_thread_archived(THREAD_ID, False))["ok"])
+            finally:
+                cs.AsyncCodex, cs.CodexConfig, cs.CODEX_AVAILABLE = saved_codex, saved_config, saved_available
+            self.assertEqual(client.archive_calls, [THREAD_ID])
+            self.assertEqual(client.unarchive_calls, [THREAD_ID])
+
+        asyncio.run(main())
+
+    def test_force_stop_closes_the_app_server_before_clearing_client(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            c = FakeClient()
+            s._client = c
+            s.status = "active"
+
+            async def owner():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    # Mirrors _run's finally: it can close only while the
+                    # session still retains its client reference.
+                    if s._client is not None:
+                        await s._client.close()
+
+            s._main_task = asyncio.create_task(owner())
+            await asyncio.sleep(0)
+            await s.force_stop()
+            self.assertGreaterEqual(c.close_calls, 1)
+            self.assertIsNone(s._client)
+            self.assertEqual(s.status, "sleeping")
+
+        asyncio.run(main())
+
+    def test_active_server_turn_is_claimed_before_another_turn_starts(self):
+        class Value:
+            def __init__(self, value):
+                self.value = value
+
+        class ActiveStatus:
+            type = "active"
+
+        class Turn:
+            id = "external-turn"
+            status = Value("inProgress")
+
+        class ThreadRecord:
+            status = type("Status", (), {"root": ActiveStatus()})()
+            turns = [Turn()]
+
+        class ReadResponse:
+            thread = ThreadRecord()
+
+        class LiveThread(FakeThread):
+            async def read(self, *, include_turns=False):
+                self.include_turns = include_turns
+                return ReadResponse()
+
+        class Handle:
+            def __init__(self, client, thread_id, turn_id):
+                self.client = client
+                self.thread_id = thread_id
+                self.id = turn_id
+
+            async def stream(self):
+                if False:
+                    yield None
+
+        async def main():
+            s = _make_session(THREAD_ID)
+            s._thread = LiveThread(THREAD_ID)
+            s._client = FakeClient()
+            saved = cs.AsyncTurnHandle
+            cs.AsyncTurnHandle = Handle
+            try:
+                attached = await s._attach_active_external_turn()
+                self.assertTrue(attached)
+                self.assertEqual(s._active_turn.id, "external-turn")
+                self.assertTrue(s._thread.include_turns)
+                task = s._external_turn_task
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            finally:
+                cs.AsyncTurnHandle = saved
 
         asyncio.run(main())
 

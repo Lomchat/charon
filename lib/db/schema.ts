@@ -185,6 +185,11 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
   codexConfig: text('codex_config'),
+  // Codex app-server archive state. Archived rows stay in SQLite with their
+  // complete Charon transcript, but disappear from the normal sidebar/list;
+  // the resume/import modal can unarchive them through the SDK. Claude rows
+  // always keep the default 0 because Claude has no native archive primitive.
+  archived: integer('archived').notNull().default(0),
   // The model id Anthropic ACTUALLY used on the last assistant turn, captured
   // from the agent's `effective_model` event (AssistantMessage.model — API
   // truth, not the configured value above: aliases resolve, fallback_model can

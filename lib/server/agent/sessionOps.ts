@@ -301,6 +301,14 @@ export function setCodexUsagePollTrigger(fn: (vpsId: string) => void): void {
   codexUsagePollTrigger = fn;
 }
 
+// App-server also PUSHES AccountRateLimitsUpdated on the global SDK FIFO.
+// usagePoll owns normalization/cache state, while this module owns agent-event
+// dispatch, so inject the consumer just like the post-stop poll trigger above.
+let codexUsagePushHandler: ((vpsId: string, detail: unknown) => void) | null = null;
+export function setCodexUsagePushHandler(fn: (vpsId: string, detail: unknown) => void): void {
+  codexUsagePushHandler = fn;
+}
+
 export class SessionStream {
   readonly id: string;
   readonly vpsId: string;
@@ -940,6 +948,12 @@ export class SessionStream {
         break;
       }
       case 'codex_signal': {
+        if (ev.kind === 'account_limits') {
+          // This signal is account state, not transcript/tool activity. Feed
+          // the existing Codex usage cache + LOW_VOLUME global gauge event.
+          codexUsagePushHandler?.(this.vpsId, ev.detail);
+          break;
+        }
         // Global app-server FIFO signals are live state, not transcript rows.
         // Reuse the existing activity-card wire shape without persisting every
         // active/idle or fs invalidation transition into SQLite.

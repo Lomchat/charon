@@ -1,0 +1,1 @@
+ALTER TABLE `claude_sessions` ADD `archived` integer DEFAULT 0 NOT NULL;

@@ -99,6 +99,7 @@ from .codex_session import (
     fetch_codex_usage,
     codex_login_api_key,
     codex_logout,
+    codex_set_thread_archived,
 )
 from .shell import AgentShell
 from .state import load_state, save_state
@@ -417,7 +418,7 @@ class Server:
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
-        "codex_login_api_key", "codex_logout",
+        "codex_login_api_key", "codex_logout", "codex_archive_thread", "codex_unarchive_thread",
         "list_dir",
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
         "git_pull", "git_discard",
@@ -669,7 +670,7 @@ class Server:
             return await fetch_codex_models()
 
         if method == "list_codex_threads":
-            return await fetch_codex_threads()
+            return await fetch_codex_threads(archived=bool(params.get("archived")))
 
         if method == "get_codex_usage":
             # Codex account-usage snapshot (rate-limit utilization) — the Codex
@@ -694,6 +695,16 @@ class Server:
             return await codex_login_api_key(api_key.strip())
         if method == "codex_logout":
             return await codex_logout()
+        if method == "codex_archive_thread":
+            thread_id = params.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RpcError(ERR_INVALID_PARAMS, "thread_id required")
+            return await codex_set_thread_archived(thread_id, True)
+        if method == "codex_unarchive_thread":
+            thread_id = params.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RpcError(ERR_INVALID_PARAMS, "thread_id required")
+            return await codex_set_thread_archived(thread_id, False)
 
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 

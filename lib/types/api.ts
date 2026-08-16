@@ -778,6 +778,7 @@ export type ScannedCodexSession = Omit<ScannedClaudeSession, 'cwdLatest' | 'summ
   cwdLatest?: string;
   summary?: string;
   effort?: string;
+  archived?: boolean;
 };
 export type ScanVpsCodexResponse = { sessions: ScannedCodexSession[] };
 /** Either backend's scan row — what ResumeModal actually renders. */
@@ -785,7 +786,7 @@ export type ScannedSession = ScannedClaudeSession | ScannedCodexSession;
 
 // ── Claude sessions ──────────────────────────────────────────────────────────
 
-export type ClaudeSessionListQuery = { vpsId?: string; status?: string };
+export type ClaudeSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
 
 export type SessionListItem = ClaudeSession & {
   liveStatus: WorkerStatus | string;

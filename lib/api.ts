@@ -307,8 +307,8 @@ export const api = {
     send<ScanVpsClaudeResponse>('GET', `/api/vps/${id}/claude/scan`),
   // Codex sibling: lists the VPS's Codex threads (~/.codex/sessions rollouts)
   // so they can be imported + resumed like Claude ones.
-  scanVpsCodex: (id: string) =>
-    send<ScanVpsCodexResponse>('GET', `/api/vps/${id}/codex/scan`),
+  scanVpsCodex: (id: string, archived = false) =>
+    send<ScanVpsCodexResponse>('GET', `/api/vps/${id}/codex/scan${archived ? '?archived=1' : ''}`),
   // Re-checks the VPS's `claude login` state. Persists in DB + returns.
   // Triggered when the login modal closes (the user may have just logged
   // in or out), or on manual demand.
@@ -343,6 +343,7 @@ export const api = {
     const p = new URLSearchParams();
     if (q?.vpsId) p.set('vpsId', q.vpsId);
     if (q?.status) p.set('status', q.status);
+    if (q?.includeArchived) p.set('includeArchived', '1');
     const qs = p.toString();
     return send<ClaudeSessionsListResponse>('GET', `/api/claude/sessions${qs ? '?' + qs : ''}`);
   },
@@ -393,6 +394,10 @@ export const api = {
   // shortcut button without a warning.
   deleteClaudeSession: (id: string) =>
     send<DeleteClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}`),
+  archiveCodexSession: (id: string) =>
+    send<OkResponse>('POST', `/api/claude/sessions/${id}/archive`),
+  unarchiveCodexSession: (id: string) =>
+    send<OkResponse>('DELETE', `/api/claude/sessions/${id}/archive`),
   renameClaudeSession: (id: string, name: string | null) =>
     send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
   // Sleep / resume / input / interrupt / force-stop: all return { ok: true }

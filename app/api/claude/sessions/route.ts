@@ -20,8 +20,10 @@ export async function GET(req: Request) {
     const filters: any[] = [];
     const vpsId = url.searchParams.get('vpsId');
     const status = url.searchParams.get('status');
+    const includeArchived = url.searchParams.get('includeArchived') === '1';
     if (vpsId) filters.push(eq(claudeSessions.vpsId, vpsId));
     if (status) filters.push(eq(claudeSessions.status, status));
+    if (!includeArchived) filters.push(eq(claudeSessions.archived, 0));
     const where = filters.length ? and(...filters) : undefined;
     const rows = db.select().from(claudeSessions)
       .where(where as any)

@@ -16,6 +16,7 @@ import ConfirmModal from './ConfirmModal';
 import PromptModal from './PromptModal';
 import { setPathDrag } from './pathDrag';
 import { readExpanded, treeScope, writeExpanded } from './treeExpansion';
+import { subscribeFsChanged } from './fsChangeBus';
 
 type Props = {
   vpsId: string | null;
@@ -157,6 +158,22 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     expandedForRef.current = null;
   }, [scope]);
   useEffect(() => { void load(''); }, [load]);
+
+  useEffect(() => {
+    if (!cwd) return;
+    const base = cwd.replace(/\/$/, '');
+    return subscribeFsChanged((changedVpsId, paths) => {
+      if (changedVpsId !== vpsId) return;
+      const dirs = new Set<string>();
+      for (const absolute of paths) {
+        if (absolute !== base && !absolute.startsWith(base + '/')) continue;
+        const relative = absolute.slice(base.length).replace(/^\//, '');
+        const slash = relative.lastIndexOf('/');
+        dirs.add(slash < 0 ? '' : relative.slice(0, slash));
+      }
+      for (const dir of dirs) void load(dir, true);
+    });
+  }, [vpsId, cwd, load]);
 
   // List what was restored. Without this the tree would claim those folders
   // are open and show nothing under them until each was clicked again.

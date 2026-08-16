@@ -169,12 +169,6 @@ export default function CodexLoginModal({ vps, onClose }: {
               {phase.code}{copied ? <span className="cxl-copied">copied ✓</span> : null}
             </button>
             <div className="cxl-status">⟳ waiting for you to finish signing in… (the VPS saves its own credentials)</div>
-            <div className="cxl-step">or sign in directly with an API key (Charon does not store it):</div>
-            <input className="nw-input mono" type="text" autoComplete="off"
-              value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" />
-            <button className="wiz-btn ghost" disabled={accountBusy || !apiKey.trim()}
-              onClick={() => void loginWithApiKey()}>{accountBusy ? 'signing in…' : 'Use API key'}</button>
-            {accountError && <div className="cxl-status err">⚠ {accountError}</div>}
           </div>
         )}
 
@@ -190,6 +184,17 @@ export default function CodexLoginModal({ vps, onClose }: {
             <button className="wiz-btn ghost" disabled={accountBusy} onClick={() => void logout()}>
               {accountBusy ? 'signing out…' : 'Sign out Codex on this VPS'}
             </button>
+          </div>
+        )}
+
+        {phase.kind !== 'success' && (
+          <div className="cxl-body">
+            <div className="cxl-step">or sign in directly with an API key (Charon does not store it):</div>
+            <input className="nw-input mono" type="text" autoComplete="off"
+              value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" />
+            <button className="wiz-btn ghost" disabled={accountBusy || !apiKey.trim()}
+              onClick={() => void loginWithApiKey()}>{accountBusy ? 'signing in…' : 'Use API key'}</button>
+            {accountError && <div className="cxl-status err">⚠ {accountError}</div>}
           </div>
         )}
 

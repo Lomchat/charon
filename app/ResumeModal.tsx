@@ -32,6 +32,8 @@ export default function ResumeModal({
   const [vpsId, setVpsId] = useState(initialVpsId ?? vpsList[0]?.id ?? '');
   // Claude is the default tab (the historical behaviour of this button).
   const [kind, setKind] = useState<AgentKind>('claude');
+  const [showArchivedCodex, setShowArchivedCodex] = useState(false);
+  const [archivedDb, setArchivedDb] = useState<ClaudeSession[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
   // Scans are cached per (vps, kind) so flipping tabs back and forth doesn't
   // re-run an ssh round-trip that takes seconds on a big ~/.codex/sessions.
@@ -40,7 +42,8 @@ export default function ResumeModal({
   const [busy, setBusy] = useState<string | null>(null);
   const reqSeq = useRef(0);
 
-  const cacheKey = `${vpsId}:${kind}`;
+  const archivedScan = kind === 'codex' && showArchivedCodex;
+  const cacheKey = `${vpsId}:${kind}:${archivedScan ? 'archived' : 'active'}`;
   const scanned = scans[cacheKey] ?? null;
   const scanError = errors[cacheKey] ?? null;
 
@@ -53,25 +56,30 @@ export default function ResumeModal({
   const availability = vps ? backendAvailability(vps, kind) : null;
   const unusable = availability && !availability.ok ? availability.reason : null;
 
-  const dbForVps = dbSessions.filter(
+  const allDbSessions = [...dbSessions, ...archivedDb.filter(
+    (a) => !dbSessions.some((s) => s.id === a.id),
+  )];
+  const dbForVps = allDbSessions.filter(
     (s) => s.vpsId === vpsId && ((s.kind ?? 'claude') === kind),
   );
   const dbKnownIds = useMemo(
     () => new Set(dbForVps.map((s) => s.claudeSessionId).filter(Boolean) as string[]),
     [dbForVps],
   );
-  const resumable = dbForVps.filter((s) => s.status === 'sleeping' || s.status === 'error');
+  const archivedInDb = dbForVps.filter((s) => s.archived === 1);
+  const resumable = dbForVps.filter((s) => s.archived !== 1 && (s.status === 'sleeping' || s.status === 'error'));
   const notImported = scanned ? scanned.filter((s) => !dbKnownIds.has(s.sessionId)) : null;
 
   async function doScan(force = false) {
     if (!vpsId) return;
-    const key = `${vpsId}:${kind}`;
+    const wantsArchived = kind === 'codex' && showArchivedCodex;
+    const key = `${vpsId}:${kind}:${wantsArchived ? 'archived' : 'active'}`;
     if (!force && scans[key]) return;    // cached
     const seq = ++reqSeq.current;
     setScanLoading(true);
     setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
     try {
-      const r = kind === 'codex' ? await api.scanVpsCodex(vpsId) : await api.scanVpsClaude(vpsId);
+      const r = kind === 'codex' ? await api.scanVpsCodex(vpsId, wantsArchived) : await api.scanVpsClaude(vpsId);
       if (seq !== reqSeq.current) return;  // a newer tab/VPS switch won
       setScans((s) => ({ ...s, [key]: (r.sessions ?? []) as ScannedSession[] }));
     } catch (e: any) {
@@ -90,7 +98,19 @@ export default function ResumeModal({
 
   // Scan on mount and on every (vps, kind) switch — cached, so a tab flip back
   // is instant.
-  useEffect(() => { doScan(); }, [vpsId, kind]); // eslint-disable-line
+  useEffect(() => { doScan(); }, [vpsId, kind, showArchivedCodex]); // eslint-disable-line
+
+  // Normal session lists deliberately hide archived rows. Load them only
+  // while the Codex history tab is open so native archives remain recoverable
+  // without cluttering the sidebar or its steady-state polling payload.
+  useEffect(() => {
+    let cancelled = false;
+    if (kind !== 'codex' || !vpsId) { setArchivedDb([]); return; }
+    api.listClaudeSessions({ vpsId, includeArchived: true }).then((r) => {
+      if (!cancelled) setArchivedDb(r.sessions.filter((s) => s.kind === 'codex' && s.archived === 1));
+    }).catch(() => { if (!cancelled) setArchivedDb([]); });
+    return () => { cancelled = true; };
+  }, [kind, vpsId]);
 
   async function importScanned(s: ScannedSession) {
     setBusy(s.sessionId);
@@ -100,6 +120,10 @@ export default function ResumeModal({
         vpsId, kind, claudeSessionId: s.sessionId, cwd: s.cwd,
         name: title ? title.slice(0, 60) : null,
       });
+      // An SDK archived scan returns native archived threads. Import the
+      // transcript first (so the session route has a DB row), then restore the
+      // native thread before handing it back to the ordinary session flow.
+      if (kind === 'codex' && archivedScan) await api.unarchiveCodexSession(r.id);
       onImported({ id: r.id, vpsId, cwd: s.cwd });
     } catch (e: any) {
       alert('import: ' + (e?.message ?? e));
@@ -113,6 +137,17 @@ export default function ResumeModal({
       onResumed(id);
     } catch (e: any) {
       alert('resume: ' + (e?.message ?? e));
+    } finally { setBusy(null); }
+  }
+
+  async function unarchiveAndResume(id: string) {
+    setBusy(id);
+    try {
+      await api.unarchiveCodexSession(id);
+      setArchivedDb((rows) => rows.filter((s) => s.id !== id));
+      onResumed(id);
+    } catch (e: any) {
+      alert('unarchive: ' + (e?.message ?? e));
     } finally { setBusy(null); }
   }
 
@@ -180,6 +215,32 @@ export default function ResumeModal({
             {kind === 'codex' ? 'Codex' : 'Claude'} is {unusable} on this VPS — you can still
             import (the transcript is read over ssh), but resuming will fail until it is fixed.
           </p>
+        )}
+
+        {kind === 'codex' && (
+          <label className="wiz-adv-check">
+            <input type="checkbox" checked={showArchivedCodex}
+              onChange={(e) => setShowArchivedCodex(e.target.checked)} />
+            scan archived Codex threads
+          </label>
+        )}
+
+        {kind === 'codex' && archivedInDb.length > 0 && (
+          <>
+            <h3>archived in DB ({archivedInDb.length})</h3>
+            <ul className="resume-list">
+              {archivedInDb.map((s) => (
+                <li key={s.id}>
+                  <span className="tag tag-scan">archived</span>
+                  <span className="name">{s.name || s.cwd.split('/').slice(-2).join('/')}</span>
+                  <span className="cwd">{s.cwd}</span>
+                  <button onClick={() => unarchiveAndResume(s.id)} disabled={busy === s.id}>
+                    unarchive & resume
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         <h3>in DB ({resumable.length})</h3>

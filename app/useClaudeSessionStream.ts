@@ -10,6 +10,7 @@ import {
   applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
   type BgTask, type BgLaunchCandidate,
 } from './bgTasks';
+import { publishFsChanged } from './fsChangeBus';
 import type {
   WorkerEvent, WorkerStatus, PermissionMode,
 } from '@/lib/server/claude/types';
@@ -278,6 +279,7 @@ export function useClaudeSessionStream(
 
   // ── State ──────────────────────────────────────────────────────────────
   const [sessionMeta, setSessionMeta] = useState<ClaudeSessionDetailResponse['session'] | null>(null);
+  const vpsIdRef = useRef('');
   const [messages, setMessages] = useState<Msg[]>([]);
   const [currentAssistant, setCurrentAssistant] = useState('');
   const [status, setStatus] = useState<WorkerStatus | null>(null);
@@ -483,6 +485,7 @@ export function useClaudeSessionStream(
     setEffectiveModel(r.effectiveModel ?? null);
     effectiveModelRef.current = r.effectiveModel ?? null;
     setSessionMeta(r.session);
+    vpsIdRef.current = r.session.vpsId;
     // Interaction queues — we inject the sessionId required by the shared
     // type (the API doesn't return it by default).
     const sid = r.session.id;
@@ -1002,6 +1005,7 @@ export function useClaudeSessionStream(
           });
           break;
         case 'tool_activity':
+          if (ev.kind === 'filesystem') publishFsChanged(vpsIdRef.current, (ev.detail as any)?.paths);
           setMessages((prev) => {
             const id = `activity:${ev.id}`;
             const row = { id, role: 'activity', content: JSON.stringify(ev),

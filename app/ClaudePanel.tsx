@@ -1423,6 +1423,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
+  async function archiveCodexOne(id: string) {
+    try {
+      await api.archiveCodexSession(id);
+      const tab = resolvedTabs.find((t) => t.kind === 'session' && t.ref === id);
+      if (tab) await closeWorkspaceTab(tab.id);
+      if (id === selectedId) setSelectedId(null);
+      refreshSessions();
+    } catch (e: any) {
+      setError({ msg: 'archive: ' + (e?.message ?? e) });
+    }
+  }
+
   // Permanent deletion (DB cascade on the server side). The caller must
   // have confirmed — the context menu goes through `<ConfirmModal>`
   // (`confirmDelete` state), no native confirm() here. No more soft-kill
@@ -2036,6 +2048,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               ? () => sleepOne(ctxMenu.session.id)
               : undefined
           }
+          onArchive={ctxMenu.session.kind === 'codex'
+            ? () => archiveCodexOne(ctxMenu.session.id)
+            : undefined}
           onDelete={() => setConfirmDelete(ctxMenu.session)}
           onClose={() => setCtxMenu(null)}
         />

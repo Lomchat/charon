@@ -77,6 +77,8 @@ METHODS = {
     "codex_login_cancel",
     "codex_login_api_key",
     "codex_logout",
+    "codex_archive_thread",
+    "codex_unarchive_thread",
     # Filesystem navigation for the hub's path autocomplete - subdirs of a
     # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.
     "list_dir",
