@@ -96,7 +96,14 @@ type Props = {
   // at — on desktop the panel is always visible and this is a no-op.
   onOpenTools?: () => void;
   /** Jump to another session, from the explorer's activity icons (§14.88). */
-  onOpenSession?: (sessionId: string) => void;
+  // §14.78: opening something that was just CREATED must carry the created row
+  // and pin it. A bare id loses the race against the session-list refresh, and
+  // an unpinned tab is a preview the next preview evicts.
+  onOpenSession?: (
+    sessionId: string,
+    hint?: { vpsId: string; cwd: string },
+    pin?: boolean,
+  ) => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -201,8 +208,15 @@ export default function ClaudeSessionView({
         return;
       }
       // Open the branch straight away: the point of forking is to work in it.
+      // Creating, not browsing — so hand over the row we just got back and PIN
+      // it (§14.78). Looking the id up in `sessions` would lose the race with
+      // the list refresh and land on a pane the tab bar does not list.
       setForkError(null);
-      onOpenSession?.(j.session.id);
+      onOpenSession?.(
+        j.session.id,
+        { vpsId: j.session.vpsId, cwd: j.session.cwd ?? '' },
+        true,
+      );
     } catch (e: any) {
       setForkError(String(e?.message || e));
     } finally {

@@ -1862,7 +1862,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // The git chip lives in the chat header but points at the ToolPanel,
           // which is a drawer <=1100px — it has to be able to reveal it.
           onOpenTools={() => setToolsOpen(true)}
-          onOpenSession={(id) => openSessionById(id, false)}
+          onOpenSession={(id, hint, pin) => openSessionById(id, pin ?? false, hint)}
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the
