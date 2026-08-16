@@ -30,7 +30,7 @@
   },
   "scripts": {
     "dev": "node server.js",
-    "build": "node scripts/check-protocol-sync.mjs && next build && touch .next/.deploy-ready",
+    "build": "node scripts/check-protocol-sync.mjs && next build && node scripts/migrate.mjs && touch .next/.deploy-ready",
     "start": "node server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
