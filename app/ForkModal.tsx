@@ -45,7 +45,7 @@ export default function ForkModal({
             type="button"
             className="fork-choice"
             autoFocus
-            disabled={!!busy || sourceKind === 'codex'}
+            disabled={!!busy}
             onClick={() => onChoose('claude')}
           >
             <AgentLogo kind="claude" size={28} />
@@ -53,7 +53,7 @@ export default function ForkModal({
               <b>Claude</b>
               <small>{sourceKind === 'claude'
                 ? 'Native transcript fork · same model settings'
-                : 'Cross-provider import is not exposed by the SDK yet'}</small>
+                : 'Imports the complete transcript through VPS handoff files'}</small>
             </span>
             <span className="fork-choice-go">{busy === 'claude' ? '…' : '→'}</span>
           </button>
