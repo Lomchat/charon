@@ -1,0 +1,1 @@
+ALTER TABLE `claude_sessions` ADD `codex_config` text;

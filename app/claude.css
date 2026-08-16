@@ -3631,6 +3631,15 @@
   display: flex; flex-direction: column; gap: 5px;
   font-family: var(--body); font-size: 11px; color: var(--parchment-soft);
 }
+.wiz-adv-field > input,
+.wiz-adv-field > textarea,
+.wiz-adv-field > select {
+  width: 100%; padding: 8px 9px; border-radius: 6px;
+  background: var(--shadow); border: 1px solid var(--gold-deep);
+  color: var(--parchment); font: 12px var(--body); outline: none;
+}
+.wiz-adv-field > textarea { min-height: 68px; resize: vertical; }
+.wiz-adv-check { display: flex; align-items: center; gap: 8px; color: var(--parchment-soft); font-size: 12px; }
 
 .wiz-summary {
   display: flex; align-items: center; gap: 8px; margin-bottom: 16px;

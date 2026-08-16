@@ -9,7 +9,7 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { IconTerminal } from './icons';
-import type { AgentKind, CodexSandboxMode } from '@/lib/types/api';
+import type { AgentKind, CodexSandboxMode, CodexSessionConfig } from '@/lib/types/api';
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
@@ -113,6 +113,17 @@ export default function NewSessionWizard({
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
   const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode>('workspace-write');
+  const [codexBaseInstructions, setCodexBaseInstructions] = useState('');
+  const [codexDeveloperInstructions, setCodexDeveloperInstructions] = useState('');
+  const [codexOverrides, setCodexOverrides] = useState('');
+  const [codexOutputSchema, setCodexOutputSchema] = useState('');
+  const [codexSummary, setCodexSummary] = useState<'auto' | 'concise' | 'detailed' | 'none'>('auto');
+  const [codexPersonality, setCodexPersonality] = useState<'friendly' | 'pragmatic' | 'none'>('pragmatic');
+  const [codexServiceTier, setCodexServiceTier] = useState<'fast' | 'flex'>('fast');
+  const [codexEphemeral, setCodexEphemeral] = useState(false);
+  const [codexModelProvider, setCodexModelProvider] = useState('');
+  const [codexEnv, setCodexEnv] = useState('');
+  const [codexBin, setCodexBin] = useState('');
   const [globalDefaults, setGlobalDefaults] = useState<{ model: string; fallbackModel: string; effort: string } | null>(null);
 
   // Enter validates the CURRENT step, wherever focus is. Each step's own
@@ -479,6 +490,36 @@ export default function NewSessionWizard({
     setBusy(true); setErr(null);
     try {
       if (kind === 'agent') {
+        let codexConfig: CodexSessionConfig | null = null;
+        if (isCodex) {
+          let outputSchema: Record<string, unknown> | null = null;
+          if (codexOutputSchema.trim()) {
+            const parsed = JSON.parse(codexOutputSchema);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('output schema must be a JSON object');
+            outputSchema = parsed;
+          }
+          const env: Record<string, string> = {};
+          for (const line of codexEnv.split('\n').map((v) => v.trim()).filter(Boolean)) {
+            const split = line.indexOf('=');
+            if (split < 1) throw new Error(`invalid env line: ${line}`);
+            const key = line.slice(0, split).trim();
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env name: ${key}`);
+            env[key] = line.slice(split + 1);
+          }
+          codexConfig = {
+            configOverrides: codexOverrides.split('\n').map((v) => v.trim()).filter(Boolean),
+            outputSchema,
+            baseInstructions: codexBaseInstructions.trim() || null,
+            developerInstructions: codexDeveloperInstructions.trim() || null,
+            summary: codexSummary,
+            personality: codexPersonality,
+            serviceTier: codexServiceTier,
+            ephemeral: codexEphemeral,
+            modelProvider: codexModelProvider.trim() || null,
+            env,
+            codexBin: codexBin.trim() || null,
+          };
+        }
         const r = await api.createClaudeSession({
           vpsId: vps.id, cwd: path!.trim(),
           name: name.trim() || null,
@@ -489,6 +530,7 @@ export default function NewSessionWizard({
           // Codex has no fallback-model concept (server ignores it anyway).
           fallbackModel: isCodex ? null : (fallbackModel.trim() || null),
           effort: effort || null,
+          codexConfig,
         });
         onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: path!.trim() });
       } else {
@@ -777,6 +819,47 @@ export default function NewSessionWizard({
                               <option key={m} value={m}>{m} — {CODEX_MODE_DESC[m]}</option>
                             ))}
                           </select>
+                        </label>
+                        <label className="wiz-adv-field">personality
+                          <select value={codexPersonality} onChange={(e) => setCodexPersonality(e.target.value as any)}>
+                            <option value="friendly">friendly</option><option value="pragmatic">pragmatic</option><option value="none">none</option>
+                          </select>
+                        </label>
+                        <label className="wiz-adv-field">reasoning summary
+                          <select value={codexSummary} onChange={(e) => setCodexSummary(e.target.value as any)}>
+                            <option value="auto">auto</option><option value="concise">concise</option>
+                            <option value="detailed">detailed</option><option value="none">none</option>
+                          </select>
+                        </label>
+                        <label className="wiz-adv-field">service tier
+                          <select value={codexServiceTier} onChange={(e) => setCodexServiceTier(e.target.value as any)}>
+                            <option value="fast">fast</option><option value="flex">flex</option>
+                          </select>
+                        </label>
+                        <label className="wiz-adv-field">base instructions
+                          <textarea value={codexBaseInstructions} onChange={(e) => setCodexBaseInstructions(e.target.value)} placeholder="system-level instructions for this thread" />
+                        </label>
+                        <label className="wiz-adv-field">developer instructions
+                          <textarea value={codexDeveloperInstructions} onChange={(e) => setCodexDeveloperInstructions(e.target.value)} placeholder="project conventions and constraints" />
+                        </label>
+                        <label className="wiz-adv-field">config overrides <span className="wiz-opt">(one key=value per line)</span>
+                          <textarea className="mono" value={codexOverrides} onChange={(e) => setCodexOverrides(e.target.value)} placeholder={'features.foo=true\nmcp_servers.docs.enabled=true'} />
+                        </label>
+                        <label className="wiz-adv-field">output schema <span className="wiz-opt">(JSON object)</span>
+                          <textarea className="mono" value={codexOutputSchema} onChange={(e) => setCodexOutputSchema(e.target.value)} placeholder={'{"type":"object","properties":{}}'} />
+                        </label>
+                        <label className="wiz-adv-field">model provider
+                          <input value={codexModelProvider} onChange={(e) => setCodexModelProvider(e.target.value)} placeholder="default provider" />
+                        </label>
+                        <label className="wiz-adv-field">environment <span className="wiz-opt">(KEY=value per line)</span>
+                          <textarea className="mono" value={codexEnv} onChange={(e) => setCodexEnv(e.target.value)} />
+                        </label>
+                        <label className="wiz-adv-field">Codex binary
+                          <input className="mono" value={codexBin} onChange={(e) => setCodexBin(e.target.value)} placeholder="SDK bundled binary" />
+                        </label>
+                        <label className="wiz-adv-check">
+                          <input type="checkbox" checked={codexEphemeral} onChange={(e) => setCodexEphemeral(e.target.checked)} />
+                          ephemeral thread (not kept in ~/.codex)
                         </label>
                       </>
                     ) : (

@@ -293,6 +293,7 @@ class CodexSession:
         model: str | None = None,
         fallback_model: str | None = None,
         effort: str | None = None,
+        codex_config: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
@@ -309,6 +310,22 @@ class CodexSession:
         # (always None) so server.py's set_model path is uniform.
         self.fallback_model = None
         self.effort = effort if effort in self.VALID_EFFORTS else None
+        cfg = codex_config if isinstance(codex_config, dict) else {}
+        self.codex_config: dict[str, Any] = {
+            "config_overrides": [str(v)[:2048] for v in (cfg.get("configOverrides") or [])[:64]
+                                 if isinstance(v, str) and v.strip()],
+            "output_schema": cfg.get("outputSchema") if isinstance(cfg.get("outputSchema"), dict) else None,
+            "base_instructions": cfg.get("baseInstructions") if isinstance(cfg.get("baseInstructions"), str) else None,
+            "developer_instructions": cfg.get("developerInstructions") if isinstance(cfg.get("developerInstructions"), str) else None,
+            "summary": cfg.get("summary") if cfg.get("summary") in ("auto", "concise", "detailed", "none") else None,
+            "personality": cfg.get("personality") if cfg.get("personality") in ("friendly", "pragmatic", "none") else None,
+            "service_tier": cfg.get("serviceTier") if cfg.get("serviceTier") in ("fast", "flex") else None,
+            "ephemeral": bool(cfg.get("ephemeral")),
+            "model_provider": cfg.get("modelProvider") if isinstance(cfg.get("modelProvider"), str) else None,
+            "env": {str(k): str(v)[:8192] for k, v in (cfg.get("env") or {}).items()}
+                   if isinstance(cfg.get("env"), dict) else {},
+            "codex_bin": cfg.get("codexBin") if isinstance(cfg.get("codexBin"), str) else None,
+        }
         self._emit_to_server = emit
         self._on_state_change = on_state_change
 
@@ -532,6 +549,7 @@ class CodexSession:
             "model": self.model,
             "fallback_model": None,
             "effort": self.effort,
+            "codex_config": self._persisted_codex_config(),
         }
 
     def to_persist(self) -> dict[str, Any]:
@@ -549,6 +567,7 @@ class CodexSession:
             "model": self.model,
             "fallback_model": None,
             "effort": self.effort,
+            "codex_config": self._persisted_codex_config(),
         }
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -596,7 +615,26 @@ class CodexSession:
         eff = _coerce_effort(self.effort)
         if eff is not None:
             kw["effort"] = eff
+        for key in ("output_schema", "personality", "service_tier", "summary"):
+            value = self.codex_config.get(key)
+            if value is not None:
+                kw[key] = value
         return kw
+
+    def _persisted_codex_config(self) -> dict[str, Any]:
+        return {
+            "configOverrides": self.codex_config.get("config_overrides", []),
+            "outputSchema": self.codex_config.get("output_schema"),
+            "baseInstructions": self.codex_config.get("base_instructions"),
+            "developerInstructions": self.codex_config.get("developer_instructions"),
+            "summary": self.codex_config.get("summary"),
+            "personality": self.codex_config.get("personality"),
+            "serviceTier": self.codex_config.get("service_tier"),
+            "ephemeral": self.codex_config.get("ephemeral", False),
+            "modelProvider": self.codex_config.get("model_provider"),
+            "env": self.codex_config.get("env", {}),
+            "codexBin": self.codex_config.get("codex_bin"),
+        }
 
     # ── Translate Codex notifications → Charon events ─────────────────────────
     def _translate(self, payload: Any) -> list[dict[str, Any]]:
@@ -1152,7 +1190,12 @@ class CodexSession:
     # ── Main loop ────────────────────────────────────────────────────────────
     async def _run(self) -> None:
         try:
-            client = AsyncCodex(CodexConfig(cwd=self.cwd))
+            client = AsyncCodex(CodexConfig(
+                cwd=self.cwd,
+                config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
+                env=self.codex_config.get("env") or None,
+                codex_bin=self.codex_config.get("codex_bin") or None,
+            ))
             self._client = client
         except Exception as e:
             self.status = "error"
@@ -1167,6 +1210,13 @@ class CodexSession:
                                     "approval_mode": approval}
         if self.model:
             start_kw["model"] = self.model
+        for key in ("base_instructions", "developer_instructions", "personality",
+                    "service_tier", "model_provider"):
+            value = self.codex_config.get(key)
+            if value is not None:
+                start_kw[key] = value
+        if self.codex_config.get("ephemeral"):
+            start_kw["ephemeral"] = True
 
         try:
             thread = None
@@ -1188,6 +1238,9 @@ class CodexSession:
                             self.claude_session_id, cwd=self.cwd,
                             approval_mode=approval, sandbox=sandbox,
                             **({"model": self.model} if self.model else {}),
+                            **{k: v for k, v in start_kw.items()
+                               if k in ("base_instructions", "developer_instructions", "personality",
+                                        "service_tier", "model_provider")},
                         )
                         last_err = None
                         break

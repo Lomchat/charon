@@ -184,6 +184,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   model: text('model'),
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
+  codexConfig: text('codex_config'),
   // The model id Anthropic ACTUALLY used on the last assistant turn, captured
   // from the agent's `effective_model` event (AssistantMessage.model — API
   // truth, not the configured value above: aliases resolve, fallback_model can

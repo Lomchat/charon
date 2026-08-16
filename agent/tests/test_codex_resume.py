@@ -68,6 +68,7 @@ def _make_session(claude_session_id):
     s.model = None
     s.fallback_model = None
     s.effort = None
+    s.codex_config = {}
     s.status = "starting"
     s._error_msg = None
     s._emitted = []
@@ -128,6 +129,26 @@ def _events(session, name):
 
 
 class TestCodexResume(unittest.TestCase):
+    def test_advanced_codex_config_is_normalized_and_persisted(self):
+        s = cs.CodexSession(
+            "cfg", cwd="/tmp", name=None, permission_mode="workspace-write",
+            claude_session_id=None, emit=lambda _e: None,
+            on_state_change=lambda: None,
+            codex_config={
+                "configOverrides": ["features.foo=true"],
+                "outputSchema": {"type": "object"},
+                "summary": "detailed", "personality": "friendly",
+                "serviceTier": "flex", "ephemeral": True,
+                "modelProvider": "bedrock", "env": {"REGION": "eu"},
+                "codexBin": "/opt/codex",
+            },
+        )
+        saved = s.to_persist()["codex_config"]
+        self.assertEqual(saved["configOverrides"], ["features.foo=true"])
+        self.assertEqual(saved["outputSchema"], {"type": "object"})
+        self.assertEqual(saved["summary"], "detailed")
+        self.assertTrue(saved["ephemeral"])
+
     def test_resume_success_keeps_thread_id(self):
         s = _make_session(THREAD_ID)
         c = FakeClient()

@@ -275,13 +275,13 @@ class Server:
         model: str | None,
         fallback_model: str | None,
         effort: str | None,
+        codex_config: dict[str, Any] | None = None,
     ) -> Any:
         """Factory keyed on the agent-type discriminator. Claude → AgentSession,
         Codex → CodexSession. Both share the exact constructor signature +
         public/private contract that this server drives."""
         cls = CodexSession if kind == "codex" else AgentSession
-        return cls(
-            session_id,
+        kwargs: dict[str, Any] = dict(
             cwd=cwd,
             name=name,
             permission_mode=permission_mode,
@@ -291,6 +291,12 @@ class Server:
             model=model,
             fallback_model=fallback_model,
             effort=effort,
+        )
+        if kind == "codex":
+            kwargs["codex_config"] = codex_config
+        return cls(
+            session_id,
+            **kwargs,
         )
 
     async def _create_session(
@@ -306,6 +312,7 @@ class Server:
         fallback_model: str | None = None,
         effort: str | None = None,
         cli_name: str | None = None,
+        codex_config: dict[str, Any] | None = None,
     ) -> Any:
         s = self._make_session(
             kind=kind,
@@ -317,6 +324,7 @@ class Server:
             model=model,
             fallback_model=fallback_model,
             effort=effort,
+            codex_config=codex_config,
         )
         # The ADDRESSABLE name — what `claude agents`/the peer list shows and
         # what another agent types to reach this session. It is a START-time
@@ -369,6 +377,7 @@ class Server:
                     fallback_model=row.get("fallback_model"),
                     effort=row.get("effort"),
                     cli_name=row.get("cli_name"),
+                    codex_config=row.get("codex_config"),
                 )
             except Exception as e:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
@@ -387,6 +396,7 @@ class Server:
             model=row.get("model"),
             fallback_model=row.get("fallback_model"),
             effort=row.get("effort"),
+            codex_config=row.get("codex_config"),
         )
         s.status = "sleeping"
         self.sessions[row["session_id"]] = s
@@ -699,6 +709,7 @@ class Server:
                 fallback_model=params.get("fallback_model"),
                 effort=params.get("effort"),
                 cli_name=params.get("cli_name"),
+                codex_config=params.get("codex_config") if isinstance(params.get("codex_config"), dict) else None,
             )
             return {"session_id": session_id, "kind": kind}
 

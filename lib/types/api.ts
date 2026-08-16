@@ -907,6 +907,21 @@ export type CreateClaudeSessionBody = {
   model?: string | null;
   fallbackModel?: string | null;   // Claude only (Codex ignores it)
   effort?: string | null;
+  codexConfig?: CodexSessionConfig | null;
+};
+
+export type CodexSessionConfig = {
+  configOverrides?: string[];
+  outputSchema?: Record<string, unknown> | null;
+  baseInstructions?: string | null;
+  developerInstructions?: string | null;
+  summary?: 'auto' | 'concise' | 'detailed' | 'none' | null;
+  personality?: 'friendly' | 'pragmatic' | 'none' | null;
+  serviceTier?: 'fast' | 'flex' | null;
+  ephemeral?: boolean;
+  modelProvider?: string | null;
+  env?: Record<string, string>;
+  codexBin?: string | null;
 };
 export type CreateClaudeSessionResponse = {
   id: string;

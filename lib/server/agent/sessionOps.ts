@@ -17,6 +17,7 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
+import type { CodexSessionConfig } from '@/lib/types/api';
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
@@ -73,6 +74,17 @@ function _resolveSessionConfig(
     fallbackModel: pick(opts.fallbackModel, 'claude.default_fallback_model'),
     effort: pick(opts.effort, 'claude.default_effort'),
   };
+}
+
+function parseCodexConfig(value: string | null | undefined): CodexSessionConfig | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as CodexSessionConfig : null;
+  } catch {
+    return null;
+  }
 }
 
 // Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
@@ -2290,6 +2302,7 @@ export async function startNewSession(opts: {
   model?: string | null;
   fallbackModel?: string | null;
   effort?: string | null;
+  codexConfig?: CodexSessionConfig | null;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
@@ -2320,6 +2333,7 @@ export async function startNewSession(opts: {
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
+    codexConfig: kind === 'codex' && opts.codexConfig ? JSON.stringify(opts.codexConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
   }).run();
@@ -2358,6 +2372,7 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
+      codex_config: kind === 'codex' ? (opts.codexConfig ?? null) : null,
       // What another agent on this machine types to reach it (agent >= 0.42.0).
       cli_name: cliNameFor(opts.vpsId, sessionId,
         { id: sessionId, name: opts.name ?? null, cwd: opts.cwd }),
@@ -2472,6 +2487,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
+          codex_config: kind === 'codex' ? parseCodexConfig(row.codexConfig) : null,
           // Re-asserted on every resume: this is the only moment a rename can
           // reach the CLI, since --name is fixed at startup.
           cli_name: cliNameFor(row.vpsId, sessionId),

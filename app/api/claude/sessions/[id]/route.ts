@@ -212,7 +212,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   )).all();
 
   const response = NextResponse.json({
-    session: row,
+    session: { ...row, codexConfig: undefined },
     liveStatus: stream ? stream.status : row.status,
     subscribers: focusCountFor(id),
     messages,
@@ -344,7 +344,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // rename must reach every device rather than waiting for the 15s poll.
   if ('name' in update) emitGlobalSessionListChanged(id);
 
-  return NextResponse.json(relocateNote ? { ...row, _relocateNote: relocateNote } : row);
+  const publicRow = { ...row, codexConfig: undefined };
+  return NextResponse.json(relocateNote ? { ...publicRow, _relocateNote: relocateNote } : publicRow);
 }
 
 // DELETE /api/claude/sessions/[id]
