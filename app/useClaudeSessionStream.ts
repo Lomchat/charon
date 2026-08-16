@@ -947,18 +947,68 @@ export function useClaudeSessionStream(
           break;
         }
         case 'tool_result':
-          setMessages((prev) => [...prev, {
-            id: 'tr' + ev.tool_use_id + Math.random(), role: 'tool_result',
-            content: JSON.stringify({
-              type: 'tool_result',
-              tool_use_id: ev.tool_use_id,
-              content: ev.content,
-              is_error: !!ev.is_error,
-            }),
-            createdAt: Math.floor(Date.now() / 1000),
-          }]);
+          setMessages((prev) => {
+            const id = 'tr-live-' + ev.tool_use_id;
+            const row = {
+              id, role: 'tool_result',
+              content: JSON.stringify({ type: 'tool_result', tool_use_id: ev.tool_use_id,
+                content: ev.content, is_error: !!ev.is_error }),
+              createdAt: Math.floor(Date.now() / 1000),
+            };
+            const idx = prev.findIndex((m) => m.id === id);
+            return idx < 0 ? [...prev, row] : prev.map((m, i) => i === idx ? row : m);
+          });
           setToolCalls((prev) => prev.map((c) => c.id === ev.tool_use_id
             ? { ...c, result: { content: ev.content, isError: !!ev.is_error } } : c));
+          break;
+        case 'tool_progress':
+          setMessages((prev) => {
+            const id = 'tr-live-' + ev.tool_use_id;
+            const idx = prev.findIndex((m) => m.id === id);
+            let content = ev.delta;
+            if (idx >= 0) {
+              try { content = String(JSON.parse(prev[idx].content).content ?? '') + ev.delta; } catch {}
+            }
+            // Bound the browser buffer; the final aggregate replaces it.
+            content = content.slice(-256 * 1024);
+            const row = { id, role: 'tool_result', content: JSON.stringify({
+              type: 'tool_result', tool_use_id: ev.tool_use_id, content, is_error: false,
+            }), createdAt: Math.floor(Date.now() / 1000) };
+            return idx < 0 ? [...prev, row] : prev.map((m, i) => i === idx ? row : m);
+          });
+          break;
+        case 'edit_progress': {
+          const key = ev.file_path;
+          setEdits((prev) => {
+            const next = new Map(prev);
+            next.set(key, { toolUseId: ev.tool_use_id, filePath: key,
+              before: null, after: ev.diff, truncated: !!ev.truncated });
+            return next;
+          });
+          setFiles((prev) => new Set(prev).add(key));
+          break;
+        }
+        case 'plan_progress':
+        case 'plan_update':
+          flushAssistantBuf();
+          setMessages((prev) => {
+            const id = `plan:${ev.id}`;
+            const row = { id, role: 'plan', content: JSON.stringify({
+              ...ev, partial: ev.type === 'plan_progress',
+            }),
+              createdAt: Math.floor(Date.now() / 1000) };
+            const idx = prev.findIndex((m) => m.id === id);
+            return idx < 0 ? [...prev, row] : prev.map((m, i) => i === idx ? row : m);
+          });
+          break;
+        case 'tool_activity':
+          setMessages((prev) => {
+            const id = `activity:${ev.id}`;
+            const row = { id, role: 'activity', content: JSON.stringify(ev),
+              createdAt: Math.floor(Date.now() / 1000) };
+            const idx = prev.findIndex((m) => m.id === id);
+            return idx < 0 ? [...prev, row] : prev.map((m, i) => i === idx ? row : m);
+          });
           break;
         case 'stop':
           flushAssistantBuf();

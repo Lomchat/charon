@@ -890,6 +890,43 @@ export class SessionStream {
         } as WorkerEvent);
         if (this.isReplaying) this.replayKnownToolResultIds.add(String(ev.tool_use_id));
         break;
+      case 'tool_progress':
+        // High-frequency command/MCP output. Live-only: the completed item
+        // persists the authoritative aggregate as a normal tool_result.
+        this._broadcast({ type: 'tool_progress', tool_use_id: ev.tool_use_id, delta: ev.delta });
+        break;
+      case 'edit_progress':
+        // Live cumulative patch. The completed FileChangeThreadItem persists
+        // the final edit_snapshot; writing every delta would drown pagination.
+        this._broadcast({
+          type: 'edit_progress', tool_use_id: ev.tool_use_id,
+          file_path: ev.file_path, diff: ev.diff,
+          size: ev.size, truncated: ev.truncated,
+        });
+        break;
+      case 'plan_progress':
+        this._broadcast({ type: 'plan_progress', id: ev.id, text: ev.text });
+        break;
+      case 'plan_update': {
+        const payload = {
+          type: 'plan_update' as const, id: ev.id,
+          ...(ev.explanation !== undefined ? { explanation: ev.explanation } : {}),
+          steps: ev.steps,
+        };
+        if (!this._replayAlreadyPersisted(ev)) this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
+      case 'tool_activity': {
+        const id = `codex-${ev.kind}-${ev.id}`;
+        const payload = {
+          type: 'tool_activity' as const, kind: ev.kind, id,
+          status: ev.status, detail: ev.detail,
+        };
+        if (!this._replayAlreadyPersisted(ev)) this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
       case 'permission_request':
         // NO identity gate-break here (Codex 13.2.C): a permission writes
         // NO message row — but its preceding FLUSH does, stamped with THIS

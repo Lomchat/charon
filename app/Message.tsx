@@ -61,8 +61,10 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   // AskUserQuestion / ExitPlanMode tool_use above — we don't render the raw duplicate.
   if (m.role === 'user_question' || m.role === 'exit_plan_request') return null;
   if (m.role === 'thinking') return <ThinkingBubble m={m} />;
-  if (m.role === 'compaction') return <CompactionMarker m={m} />;
+  if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
+  if (m.role === 'plan') return <PlanCard m={m} />;
+  if (m.role === 'activity') return <ActivityCard m={m} />;
 
   const isAssistant = m.role === 'assistant';
   // A message relayed from ANOTHER session drives the turn exactly like one the
@@ -184,15 +186,45 @@ export default memo(Message);
  * A rule rather than a bubble: it is a boundary between two regions of the
  * conversation, not something anyone said.
  */
-function CompactionMarker({ m }: { m: Msg }) {
+function CompactionMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
   const auto = m.content === 'auto';
   return (
     <div className="compaction-marker" role="separator">
       <span className="cm-label">
-        Conversation compactée{auto ? ' automatiquement' : ''} — Claude ne se
+        Conversation compactée{auto ? ' automatiquement' : ''} — {kind === 'codex' ? 'Codex' : 'Claude'} ne se
         souvient plus des messages au-dessus
       </span>
     </div>
+  );
+}
+
+function PlanCard({ m }: { m: Msg }) {
+  let plan: any = {};
+  try { plan = JSON.parse(m.content); } catch {}
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  return (
+    <div className="codex-plan-card">
+      <header><span className="tag">plan</span>{plan.partial && <span>live</span>}</header>
+      {plan.explanation && <p>{String(plan.explanation)}</p>}
+      {steps.length > 0 ? (
+        <ol>{steps.map((s: any, i: number) => {
+          const status = String(s.status ?? 'pending').toLowerCase();
+          const mark = status.includes('complete') ? '✓' : status.includes('progress') ? '●' : '○';
+          return <li key={i} className={`plan-${status}`}><span>{mark}</span>{String(s.step ?? '')}</li>;
+        })}</ol>
+      ) : <pre>{String(plan.text ?? '')}</pre>}
+    </div>
+  );
+}
+
+function ActivityCard({ m }: { m: Msg }) {
+  let ev: any = {};
+  try { ev = JSON.parse(m.content); } catch {}
+  return (
+    <details className="codex-activity-card">
+      <summary><span className="tag">{String(ev.kind ?? 'codex')}</span> {String(ev.status ?? 'updated')}</summary>
+      {ev.detail != null && <pre>{JSON.stringify(ev.detail, null, 2)}</pre>}
+    </details>
   );
 }
 

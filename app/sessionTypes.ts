@@ -27,6 +27,8 @@ export type Msg = {
   from?: string | null;
 };
 
+export type PlanStep = { step: string; status: string };
+
 export type ToolCallEntry = {
   id: string;
   name: string;

@@ -22,6 +22,11 @@ export type BridgeEvent =
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
+  | { type: 'tool_progress'; tool_use_id: string; delta: string }
+  | { type: 'edit_progress'; tool_use_id: string; file_path: string; diff: string; size: number; truncated: boolean }
+  | { type: 'plan_progress'; id: string; text: string }
+  | { type: 'plan_update'; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }> }
+  | { type: 'tool_activity'; kind: string; id: string; status: string; detail?: any }
   | { type: 'permission_request'; id: string; tool: string; input: any }
   | { type: 'user_question'; id: string; questions: UserQuestion[] }
   | { type: 'exit_plan_request'; id: string; plan: string }

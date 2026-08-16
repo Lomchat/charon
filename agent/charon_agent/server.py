@@ -232,7 +232,10 @@ class Server:
         #                    would otherwise collect EVERY past toggle in the
         #                    tail window and replay them as stale status frames.
         # shell_exit STAYS durable (a reconnect must learn the shell is dead).
-        transient = event_name in ("shell_idle", "shell_status", "usage", "bg_task_progress")
+        transient = event_name in (
+            "shell_idle", "shell_status", "usage", "bg_task_progress",
+            "tool_progress", "edit_progress", "plan_progress",
+        )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)
             try:

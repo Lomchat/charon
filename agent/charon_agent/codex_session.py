@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 import time
 import traceback
@@ -329,6 +330,7 @@ class CodexSession:
         self._streamed_items: set[str] = set()   # item ids that got text deltas
         self._last_usage: dict[str, int] | None = None
         self._codex_stderr_lines: list[str] = []
+        self._plan_deltas: dict[str, str] = {}
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -618,6 +620,60 @@ class CodexSession:
                         self._streamed_items.add(item_id)
                     out.append({"event": "thinking", "text": delta})
 
+            elif pt in ("CommandExecutionOutputDeltaNotification", "CommandExecOutputDeltaNotification"):
+                delta = getattr(payload, "delta", "") or ""
+                item_id = getattr(payload, "item_id", "") or ""
+                if delta and item_id:
+                    out.append({"event": "tool_progress", "tool_use_id": item_id, "delta": delta})
+
+            elif pt == "FileChangePatchUpdatedNotification":
+                item_id = getattr(payload, "item_id", "") or ""
+                for change in (getattr(payload, "changes", None) or []):
+                    path = self._path_str(getattr(change, "path", None)) or ""
+                    diff = getattr(change, "diff", "") or ""
+                    if path and diff:
+                        out.append({
+                            "event": "edit_progress", "tool_use_id": item_id,
+                            "file_path": path, "diff": diff[:256 * 1024],
+                            "size": len(diff), "truncated": len(diff) > 256 * 1024,
+                        })
+
+            elif pt == "TurnDiffUpdatedNotification":
+                diff = getattr(payload, "diff", "") or ""
+                turn_id = getattr(payload, "turn_id", "") or "turn"
+                for path, patch in self._split_turn_diff(diff):
+                    out.append({
+                        "event": "edit_progress", "tool_use_id": f"codex-turn-{turn_id}",
+                        "file_path": path, "diff": patch[:256 * 1024],
+                        "size": len(patch), "truncated": len(patch) > 256 * 1024,
+                    })
+
+            elif pt == "PlanDeltaNotification":
+                item_id = getattr(payload, "item_id", "") or "plan"
+                turn_id = getattr(payload, "turn_id", "") or item_id
+                delta = getattr(payload, "delta", "") or ""
+                if delta:
+                    text = self._plan_deltas.get(item_id, "") + delta
+                    self._plan_deltas[item_id] = text[-128 * 1024:]
+                    out.append({
+                        "event": "plan_progress", "id": f"turn-{turn_id}",
+                        "text": self._plan_deltas[item_id],
+                    })
+
+            elif pt == "TurnPlanUpdatedNotification":
+                turn_id = getattr(payload, "turn_id", "") or "plan"
+                steps = []
+                for step in (getattr(payload, "plan", None) or []):
+                    steps.append({
+                        "step": str(getattr(step, "step", "") or ""),
+                        "status": str(_enum_val(getattr(step, "status", "pending"))),
+                    })
+                out.append({
+                    "event": "plan_update", "id": f"turn-{turn_id}",
+                    "explanation": getattr(payload, "explanation", None),
+                    "steps": steps,
+                })
+
             elif pt == "ItemStartedNotification":
                 self._on_item(getattr(payload, "item", None), phase="started", out=out)
 
@@ -630,6 +686,78 @@ class CodexSession:
                 if u is not None:
                     self._last_usage = u
                     out.append({"event": "usage", **u})
+
+            elif pt == "ContextCompactedNotification":
+                out.append({"event": "compaction", "trigger": "auto"})
+
+            elif pt == "ModelReroutedNotification":
+                model = getattr(payload, "to_model", None)
+                if isinstance(model, str) and model:
+                    self._effective_model = model
+                    out.append({"event": "effective_model", "model": model})
+
+            elif pt in ("ModelVerificationNotification", "ModelSafetyBufferingUpdatedNotification"):
+                out.append({
+                    "event": "tool_activity", "kind": "model",
+                    "id": getattr(payload, "turn_id", None) or "model",
+                    "status": "updated", "detail": self._json_safe(payload),
+                })
+
+            elif pt == "ItemGuardianApprovalReviewStartedNotification":
+                rid = getattr(payload, "review_id", None) or "guardian"
+                out.append({
+                    "event": "tool_use", "id": rid, "name": "auto_review",
+                    "input": {"action": self._json_safe(getattr(payload, "action", None))},
+                })
+
+            elif pt == "ItemGuardianApprovalReviewCompletedNotification":
+                rid = getattr(payload, "review_id", None) or "guardian"
+                review = getattr(payload, "review", None)
+                out.append({
+                    "event": "tool_result", "tool_use_id": rid,
+                    "content": self._stringify(self._json_safe(review)),
+                    "is_error": str(_enum_val(getattr(review, "status", ""))) in ("denied", "failed"),
+                })
+
+            elif pt == "GuardianWarningNotification":
+                out.append({"event": "thinking", "text": f"Auto-review: {getattr(payload, 'message', '')}"})
+
+            elif pt == "HookStartedNotification":
+                run = getattr(payload, "run", None)
+                rid = getattr(run, "id", None) or "hook"
+                out.append({
+                    "event": "tool_use", "id": rid, "name": "codex_hook",
+                    "input": self._json_safe(run),
+                })
+
+            elif pt == "HookCompletedNotification":
+                run = getattr(payload, "run", None)
+                rid = getattr(run, "id", None) or "hook"
+                status = str(_enum_val(getattr(run, "status", "")))
+                out.append({
+                    "event": "tool_result", "tool_use_id": rid,
+                    "content": self._stringify(self._json_safe(run)),
+                    "is_error": status in ("failed", "error"),
+                })
+
+            elif pt == "McpToolCallProgressNotification":
+                item_id = getattr(payload, "item_id", "") or ""
+                message = getattr(payload, "message", "") or ""
+                if item_id and message:
+                    out.append({"event": "tool_progress", "tool_use_id": item_id, "delta": message + "\n"})
+
+            elif pt == "TerminalInteractionNotification":
+                item_id = getattr(payload, "item_id", "") or ""
+                stdin = getattr(payload, "stdin", "") or ""
+                if item_id and stdin:
+                    out.append({"event": "tool_progress", "tool_use_id": item_id, "delta": stdin})
+
+            elif pt == "ThreadGoalUpdatedNotification":
+                out.append({
+                    "event": "tool_activity", "kind": "goal",
+                    "id": getattr(payload, "thread_id", None) or "goal",
+                    "status": "updated", "detail": self._json_safe(getattr(payload, "goal", None)),
+                })
 
             elif pt == "TurnCompletedNotification":
                 turn = getattr(payload, "turn", None)
@@ -656,12 +784,30 @@ class CodexSession:
                 msg = getattr(err, "message", None) or (err if isinstance(err, str) else str(err))
                 out.append({"event": "error", "msg": str(msg), "fatal": not will_retry})
 
-            # Everything else (TurnStarted, TurnModerationMetadata,
-            # ThreadStarted, ContextCompacted, DeprecationNotice, ConfigWarning,
-            # AccountRateLimitsUpdated, McpToolCallProgress, …) is either handled
-            # elsewhere or intentionally ignored.
+            elif pt not in (
+                "TurnStartedNotification", "ReasoningSummaryPartAddedNotification",
+                "ThreadStartedNotification", "TurnModerationMetadataNotification",
+            ):
+                # SDK upgrades must not silently black-hole newly introduced
+                # notification classes. Keep the wire quiet, but leave an
+                # actionable breadcrumb in the daemon log.
+                print(f"codex: unhandled notification {pt}", file=sys.stderr)
         except Exception as e:
             out.append({"event": "error", "msg": f"translate: {type(e).__name__}: {e}"})
+        return out
+
+    @staticmethod
+    def _split_turn_diff(diff: str) -> list[tuple[str, str]]:
+        """Split a cumulative git-style turn diff into per-file patches."""
+        if not diff:
+            return []
+        starts = list(re.finditer(r"(?m)^diff --git a/(.+?) b/(.+?)$", diff))
+        if not starts:
+            return []
+        out: list[tuple[str, str]] = []
+        for i, match in enumerate(starts):
+            end = starts[i + 1].start() if i + 1 < len(starts) else len(diff)
+            out.append((match.group(2), diff[match.start():end].rstrip()))
         return out
 
     def _on_item(self, item_wrapper: Any, *, phase: str, out: list[dict[str, Any]]) -> None:

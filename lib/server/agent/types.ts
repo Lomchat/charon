@@ -148,6 +148,11 @@ export type AgentEvent = (
   | { event: 'thinking'; session_id: string; text: string }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
+  | { event: 'tool_progress'; session_id: string; tool_use_id: string; delta: string }
+  | { event: 'edit_progress'; session_id: string; tool_use_id: string; file_path: string; diff: string; size: number; truncated: boolean }
+  | { event: 'plan_progress'; session_id: string; id: string; text: string }
+  | { event: 'plan_update'; session_id: string; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }> }
+  | { event: 'tool_activity'; session_id: string; kind: string; id: string; status: string; detail?: any }
   | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any }
   | { event: 'user_question'; session_id: string; id: string; questions: any[] }
   | { event: 'exit_plan_request'; session_id: string; id: string; plan: string }

@@ -104,6 +104,18 @@ export function rebuildStateFromMessages(
             createdAt: m.createdAt,
           });
         }
+        if (ev.type === 'plan_update') {
+          out.messages.push({
+            id: `plan:${String(ev.id ?? m.id)}`, role: 'plan',
+            content: JSON.stringify(ev), createdAt: m.createdAt,
+          });
+        }
+        if (ev.type === 'tool_activity') {
+          out.messages.push({
+            id: `activity:${String(ev.id ?? m.id)}`, role: 'activity',
+            content: JSON.stringify(ev), createdAt: m.createdAt,
+          });
+        }
         // The branch point. Everything above was inherited from the session
         // this one was forked from — the model has it too, which is the whole
         // reason we copied it — and everything below belongs to this branch.
