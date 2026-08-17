@@ -232,7 +232,9 @@ export default function ClaudeSessionView({
       setRewindError(String(e?.message || e)); setRewinding(false);
     }
   }, [rewinding, sessionId, status]);
-  const doFork = useCallback(async (targetKind: AgentKind) => {
+  const doFork = useCallback(async (targetKind: AgentKind, options?: {
+    lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string;
+  }) => {
     if (forking) return;
     setForking(targetKind);
     setForkError(null);
@@ -240,7 +242,7 @@ export default function ClaudeSessionView({
       const r = await fetch(`/api/claude/sessions/${sessionId}/fork`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ targetKind }),
+        body: JSON.stringify({ targetKind, ...options }),
       });
       const j = await r.json().catch(() => null);
       if (!r.ok || !j?.session?.id) {
@@ -930,12 +932,13 @@ export default function ClaudeSessionView({
       {forkModalOpen && (
         <ForkModal
           sourceKind={sessionKind}
+          sessionId={sessionId}
           sourceName={selected.name || '(unnamed)'}
           vpsName={selectedVps?.name}
           codexAvailable={selectedVps?.codexAvailable === 1}
           busy={forking}
           error={forkError}
-          onChoose={(kind) => { void doFork(kind); }}
+          onChoose={(kind, options) => { void doFork(kind, options); }}
           onClose={() => { if (!forking) setForkModalOpen(false); }}
         />
       )}

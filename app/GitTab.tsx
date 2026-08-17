@@ -17,6 +17,7 @@ type Props = {
   cwd: string | null;
   /** Set when a session is mid-turn in this folder — a warning, never a block. */
   busy?: boolean;
+  onOpenSession?: (sessionId: string) => void;
 };
 
 /**
@@ -40,7 +41,7 @@ type Props = {
  * session's in-flight work, and a pre-ticked "everything" is how you commit it
  * by accident.
  */
-export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, busy }: Props) {
+export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, busy, onOpenSession }: Props) {
   const { workspace, loading, error } = useGitStatus(vpsId, cwd);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewing, setReviewing] = useState(false);
@@ -56,7 +57,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
     return next;
   });
 
-  const doReview = useCallback(async (target: Record<string, unknown>) => {
+  const doReview = useCallback(async (target: Record<string, unknown>, delivery: 'inline' | 'detached') => {
     if (!sessionId || reviewing || busy) return;
     setReviewing(true);
     setReviewError(null);
@@ -64,17 +65,18 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
       const response = await fetch(`/api/claude/sessions/${sessionId}/review`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ target, delivery: 'inline' }),
+        body: JSON.stringify({ target, delivery }),
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.ok) throw new Error(result?.error || 'review failed');
       setReviewOpen(false);
+      if (delivery === 'detached' && result?.session?.id) onOpenSession?.(result.session.id);
     } catch (error: unknown) {
       setReviewError(error instanceof Error ? error.message : String(error));
     } finally {
       setReviewing(false);
     }
-  }, [sessionId, reviewing, busy]);
+  }, [sessionId, reviewing, busy, onOpenSession]);
 
   if (!vpsId || !cwd) return <div className="tp-empty">no repository for this session</div>;
 
@@ -157,7 +159,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
       })}
       {reviewOpen && (
         <ReviewModal busy={reviewing} error={reviewError}
-          onConfirm={(target) => { void doReview(target); }}
+          onConfirm={(target, delivery) => { void doReview(target, delivery); }}
           onClose={() => { if (!reviewing) setReviewOpen(false); }} />
       )}
     </div>

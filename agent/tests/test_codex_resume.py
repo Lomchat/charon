@@ -19,6 +19,8 @@ import asyncio
 import os
 import sys
 import unittest
+import types
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -273,6 +275,31 @@ class TestCodexResume(unittest.TestCase):
             self.assertEqual(result["claude_session_id"], "FORKED-THREAD")
             self.assertEqual(c.fork_calls[0][0], THREAD_ID)
             self.assertEqual(c.forked.names, ["branch name"])
+
+        asyncio.run(captured())
+
+    def test_partial_fork_uses_native_last_turn_id(self):
+        class Raw:
+            def __init__(self): self.calls = []
+            async def thread_fork(self, thread_id, params):
+                self.calls.append((thread_id, params))
+                return type("Response", (), {"thread": type("Thread", (), {"id": "PARTIAL"})()})()
+
+        class Client:
+            def __init__(self): self._client = Raw()
+
+        async def captured():
+            s = _make_session(THREAD_ID)
+            s._client = Client()
+            s._ready_evt.set()
+            api = types.ModuleType("openai_codex.api")
+            api.AsyncThread = lambda _client, thread_id: FakeThread(thread_id)
+            package = types.ModuleType("openai_codex")
+            package.__path__ = []
+            with mock.patch.dict(sys.modules, {"openai_codex": package, "openai_codex.api": api}):
+                result = await s.fork(last_turn_id="turn-7")
+            self.assertEqual(result["claude_session_id"], "PARTIAL")
+            self.assertEqual(s._client._client.calls[0][1]["lastTurnId"], "turn-7")
 
         asyncio.run(captured())
 

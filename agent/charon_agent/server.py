@@ -433,6 +433,7 @@ class Server:
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
         "fork_session", "compact_session", "rollback_session", "review_session",
+        "codex_fork_points",
         "list_background_terminals", "stop_background_terminal",
         "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
@@ -991,7 +992,10 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "title must be a string")
             if getattr(s_, "kind", "claude") == "codex":
                 try:
-                    return await s_.fork(title)
+                    last_turn_id = params.get("last_turn_id")
+                    if last_turn_id is not None and not isinstance(last_turn_id, str):
+                        raise RpcError(ERR_INVALID_PARAMS, "last_turn_id must be a string")
+                    return await s_.fork(title, last_turn_id)
                 except Exception as e:
                     raise RpcError(ERR_INTERNAL, f"Codex fork failed: {e}")
             try:
@@ -1012,6 +1016,18 @@ class Server:
             if not isinstance(new_id, str) or not new_id:
                 raise RpcError(ERR_INTERNAL, "fork returned no session id")
             return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
+
+        if method == "codex_fork_points":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                return {"ok": False, "error": "Codex-only surface"}
+            try:
+                return await s_.fork_points()
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex fork points failed: {e}")
 
         if method == "compact_session":
             sid = self._require_sid(params)

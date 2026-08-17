@@ -897,24 +897,76 @@ class CodexSession:
         )
         return {"ok": True, "count": len(items), "thread_id": thread_id}
 
-    async def fork(self, title: str | None = None) -> dict[str, Any]:
+    async def fork(self, title: str | None = None, last_turn_id: str | None = None,
+                   ephemeral: bool = False) -> dict[str, Any]:
         await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
         if self._client is None or not self.claude_session_id:
             raise RuntimeError("Codex thread is not ready")
-        thread = await self._client.thread_fork(
-            self.claude_session_id, cwd=self.cwd,
-            model=self.model,
-            **{k: v for k, v in {
-                "base_instructions": self.codex_config.get("base_instructions"),
-                "developer_instructions": self.codex_config.get("developer_instructions"),
-                "model_provider": self.codex_config.get("model_provider"),
-                "service_tier": self.codex_config.get("service_tier"),
-            }.items() if v is not None},
-        )
+        if hasattr(self._client, "_client"):
+            params = {k: v for k, v in {
+                "cwd": self.cwd, "model": self.model, "lastTurnId": last_turn_id,
+                "ephemeral": ephemeral or None,
+                "baseInstructions": self.codex_config.get("base_instructions"),
+                "developerInstructions": self.codex_config.get("developer_instructions"),
+                "modelProvider": self.codex_config.get("model_provider"),
+                "serviceTier": self.codex_config.get("service_tier"),
+                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            }.items() if v is not None}
+            result = await self._client._client.thread_fork(self.claude_session_id, params)
+            from openai_codex.api import AsyncThread
+            thread = AsyncThread(self._client, result.thread.id)
+        else:
+            # Lightweight tests / older SDKs retain the high-level full-fork
+            # path. A partial fork is capability-detected on the raw method.
+            if last_turn_id:
+                raise RuntimeError("this Codex SDK cannot fork at a specific turn")
+            thread = await self._client.thread_fork(
+                self.claude_session_id, cwd=self.cwd, model=self.model,
+                ephemeral=ephemeral,
+                **{k: v for k, v in {
+                    "base_instructions": self.codex_config.get("base_instructions"),
+                    "developer_instructions": self.codex_config.get("developer_instructions"),
+                    "model_provider": self.codex_config.get("model_provider"),
+                    "service_tier": self.codex_config.get("service_tier"),
+                }.items() if v is not None},
+            )
         if title:
             await thread.set_name(title)
         return {"ok": True, "claude_session_id": thread.id,
                 "forked_from": self.claude_session_id}
+
+    async def fork_points(self) -> dict[str, Any]:
+        """Return completed native turns with bounded human-readable prompts."""
+        if self._thread is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        read = await self._thread.read(include_turns=True)
+        thread = getattr(read, "thread", None)
+        points: list[dict[str, Any]] = []
+        for turn in (getattr(thread, "turns", None) or []):
+            status = str(_enum_val(getattr(turn, "status", "")))
+            if status == "inProgress":
+                continue
+            prompt = ""
+            for wrapped in (getattr(turn, "items", None) or []):
+                item = getattr(wrapped, "root", wrapped)
+                if type(item).__name__ != "UserMessageThreadItem":
+                    continue
+                parts = []
+                for value in (getattr(item, "content", None) or []):
+                    value = getattr(value, "root", value)
+                    text = getattr(value, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+                prompt = "\n".join(parts).strip()
+                break
+            points.append({
+                "turn_id": getattr(turn, "id", None),
+                "prompt": prompt[:16_384],
+                "started_at": getattr(turn, "started_at", None),
+                "completed_at": getattr(turn, "completed_at", None),
+                "status": status,
+            })
+        return {"ok": True, "points": points[-100:]}
 
     async def set_session_name(self, name: str) -> bool:
         if self._thread is None:
@@ -1033,12 +1085,40 @@ class CodexSession:
         if self._active_turn is not None:
             raise RuntimeError("cannot rewind while a Codex turn is running")
         from openai_codex.generated.v2_all import ThreadRollbackResponse
-        response = await self._client._client.request(
-            "thread/rollback",
-            {"threadId": self.claude_session_id, "numTurns": num_turns},
-            response_model=ThreadRollbackResponse,
-        )
-        return {"ok": True, "thread": self._json_safe(getattr(response, "thread", None))}
+        try:
+            response = await self._client._client.request(
+                "thread/rollback",
+                {"threadId": self.claude_session_id, "numTurns": num_turns},
+                response_model=ThreadRollbackResponse,
+            )
+            return {"ok": True, "thread": self._json_safe(getattr(response, "thread", None)),
+                    "strategy": "rollback"}
+        except Exception as e:
+            if getattr(e, "code", None) != -32601:
+                raise
+        # thread/rollback is deprecated. On servers that removed it, replace
+        # this session's native handle with a fork ending at the last kept
+        # completed turn. Files are still deliberately untouched.
+        read = await self._thread.read(include_turns=True)
+        turns = list(getattr(getattr(read, "thread", None), "turns", None) or [])
+        kept = turns[:-num_turns]
+        if not kept:
+            raise RuntimeError("cannot rewind every turn after thread/rollback removal; fork before the first prompt instead")
+        old_id = self.claude_session_id
+        result = await self._client._client.thread_fork(old_id, {
+            "cwd": self.cwd, "lastTurnId": getattr(kept[-1], "id", None),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+        })
+        from openai_codex.api import AsyncThread
+        self.claude_session_id = result.thread.id
+        self._thread = AsyncThread(self._client, result.thread.id)
+        self._emit("session_id", claude_session_id=result.thread.id)
+        await self._save_state()
+        try:
+            await self._client._client.thread_archive(old_id)
+        except Exception:
+            pass
+        return {"ok": True, "thread": self._json_safe(result.thread), "strategy": "fork"}
 
     @staticmethod
     def _thread_status_type(thread: Any) -> str:
@@ -1608,7 +1688,8 @@ class CodexSession:
                 if delta:
                     if item_id:
                         self._streamed_items.add(item_id)
-                    out.append({"event": "assistant_text", "delta": delta})
+                    out.append({"event": "assistant_text", "delta": delta,
+                                "uuid": getattr(payload, "turn_id", None)})
 
             elif pt in ("ReasoningTextDeltaNotification", "ReasoningSummaryTextDeltaNotification"):
                 delta = getattr(payload, "delta", "") or ""

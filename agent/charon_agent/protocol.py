@@ -159,6 +159,7 @@ METHODS = {
     "set_effort",
     "set_session_name",
     "fork_session",
+    "codex_fork_points",
     "compact_session",
     "rollback_session",
     "review_session",

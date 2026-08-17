@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import { eq } from 'drizzle-orm';
+import { randomBytes } from 'crypto';
+import { db, claudeSessions } from '@/lib/db';
+import { emitGlobalSessionListChanged, nextSessionPosition, resumeSession } from '@/lib/server/agent/sessionOps';
 
 type Target =
   | { type: 'uncommittedChanges' }
@@ -28,5 +32,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const delivery = body?.delivery === 'detached' ? 'detached' : 'inline';
   const result = await callSessionRpc(id, 'review_session', { target, delivery });
+  if (result?.ok && delivery === 'detached' && typeof result.review_thread_id === 'string') {
+    const [source] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
+    if (!source) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+    const newId = randomBytes(8).toString('hex');
+    db.insert(claudeSessions).values({
+      id: newId, claudeSessionId: result.review_thread_id, vpsId: source.vpsId,
+      cwd: source.cwd, name: `${source.name || 'session'} (review)`, kind: 'codex',
+      status: 'sleeping', permissionMode: source.permissionMode, model: source.model,
+      effort: source.effort, codexConfig: source.codexConfig,
+      position: nextSessionPosition(source.vpsId),
+    }).run();
+    try { await resumeSession(newId); } catch {}
+    emitGlobalSessionListChanged(newId);
+    const [session] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
+    return NextResponse.json({ ...result, session: { ...session, codexConfig: undefined } });
+  }
   return NextResponse.json(result, { status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400 });
 }

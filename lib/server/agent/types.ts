@@ -417,6 +417,7 @@ export type AgentMethodName =
   // Branch a transcript into a NEW session, optionally cutting at a message
   // (agent >= 0.39.0). Pure file work — the original session keeps running.
   | 'fork_session'
+  | 'codex_fork_points'
   | 'compact_session'
   | 'rollback_session'
   | 'review_session'

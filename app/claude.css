@@ -5369,6 +5369,17 @@
   font-size: 11px; line-height: 1.45; opacity: 0.85; }
 
 .si-diverged { color: var(--gold-bright, #e0b96a); opacity: 0.85; margin-top: 4px; }
+.fork-edit-toggle { display: flex; align-items: center; gap: 7px; font-size: 11px;
+  color: var(--parchment-soft); }
+.fork-edit-prompt { width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--stone-2); color: var(--parchment); border: 1px solid var(--gold-deep);
+  border-radius: 6px; padding: 7px; font: 12px/1.45 var(--mono); }
+.review-delivery { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.review-delivery button { display: flex; flex-direction: column; gap: 2px; text-align: left;
+  background: rgba(0,0,0,0.12); color: var(--parchment); border: 1px solid var(--gold-deep);
+  border-radius: 7px; padding: 8px; cursor: pointer; }
+.review-delivery button.on { border-color: var(--gold-bright); background: rgba(224,185,106,0.08); }
+.review-delivery small { color: var(--parchment-soft); font-size: 10px; }
 .si-control { display: grid; grid-template-columns: 72px 1fr; align-items: center;
   gap: 7px; margin: 5px 0; font-size: 11px; color: var(--parchment-soft); }
 .si-control select { min-width: 0; background: var(--stone-2); color: var(--parchment);

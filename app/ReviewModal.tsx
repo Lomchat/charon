@@ -8,11 +8,12 @@ type Kind = 'uncommittedChanges' | 'baseBranch' | 'commit' | 'custom';
 export default function ReviewModal({ busy, error, onConfirm, onClose }: {
   busy: boolean;
   error: string | null;
-  onConfirm: (target: Record<string, unknown>) => void;
+  onConfirm: (target: Record<string, unknown>, delivery: 'inline' | 'detached') => void;
   onClose: () => void;
 }) {
   const [kind, setKind] = useState<Kind>('uncommittedChanges');
   const [value, setValue] = useState('');
+  const [delivery, setDelivery] = useState<'inline' | 'detached'>('inline');
   useEffect(() => {
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
     window.addEventListener('keydown', key);
@@ -27,7 +28,7 @@ export default function ReviewModal({ busy, error, onConfirm, onClose }: {
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="claude-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="review-title">
         <div className="fork-head">
-          <div><h2 id="review-title">Start Codex review</h2><p>The reviewer streams into this conversation</p></div>
+          <div><h2 id="review-title">Start Codex review</h2><p>Choose where the reviewer should work</p></div>
           <button type="button" className="modal-close" disabled={busy} onClick={onClose}>×</button>
         </div>
         <label className="nw-field"><span>Target</span>
@@ -43,10 +44,20 @@ export default function ReviewModal({ busy, error, onConfirm, onClose }: {
             ? <textarea value={value} onChange={(e) => setValue(e.target.value)} rows={4} />
             : <input value={value} onChange={(e) => setValue(e.target.value)} />}
         </label>}
+        <div className="review-delivery" role="radiogroup" aria-label="Review destination">
+          <button type="button" role="radio" aria-checked={delivery === 'inline'}
+            className={delivery === 'inline' ? 'on' : ''} onClick={() => setDelivery('inline')}>
+            <b>This session</b><small>Review appears in the current conversation</small>
+          </button>
+          <button type="button" role="radio" aria-checked={delivery === 'detached'}
+            className={delivery === 'detached' ? 'on' : ''} onClick={() => setDelivery('detached')}>
+            <b>New session</b><small>Keep review findings in a separate Codex thread</small>
+          </button>
+        </div>
         {error && <p className="confirm-err">{error}</p>}
         <div className="confirm-actions">
           <button type="button" onClick={onClose} disabled={busy}>cancel</button>
-          <button type="button" onClick={() => onConfirm(target)} disabled={busy || (needsValue && !value.trim())}>
+          <button type="button" onClick={() => onConfirm(target, delivery)} disabled={busy || (needsValue && !value.trim())}>
             {busy ? 'starting…' : 'start review'}
           </button>
         </div>
