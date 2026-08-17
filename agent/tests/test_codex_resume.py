@@ -412,7 +412,9 @@ class TestCodexResume(unittest.TestCase):
                                   name="other", agent_role=None, preview="no", status={"type": "idle"}, created_at=3),
         ]
         class Raw:
-            async def request(self, *_args, **_kwargs):
+            params = None
+            async def request(self, _method, params, **_kwargs):
+                self.params = params
                 return types.SimpleNamespace(data=rows, next_cursor=None)
         class Client:
             _client = Raw()
@@ -430,6 +432,7 @@ class TestCodexResume(unittest.TestCase):
                 result = await s.subagents()
             self.assertEqual([a["id"] for a in result["agents"]], ["child", "grandchild"])
             self.assertEqual([a["depth"] for a in result["agents"]], [1, 2])
+            self.assertEqual(s._client._client.params["sourceKinds"], ["subAgentThreadSpawn"])
 
         asyncio.run(captured())
 
@@ -451,10 +454,15 @@ class TestCodexResume(unittest.TestCase):
             s = _make_session(THREAD_ID)
             s._thread = FakeThread(THREAD_ID)
             s._last_thread_usage = {
-                "total": {
+                "last": {
                     "input_tokens": 600, "cached_input_tokens": 400,
                     "output_tokens": 100, "reasoning_output_tokens": 25,
                     "total_tokens": 725,
+                },
+                "total": {
+                    "input_tokens": 60_000, "cached_input_tokens": 40_000,
+                    "output_tokens": 10_000, "reasoning_output_tokens": 2_500,
+                    "total_tokens": 72_500,
                 },
                 "model_context_window": 1000,
             }

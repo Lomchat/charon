@@ -13,6 +13,7 @@ if _AGENT_DIR not in sys.path:
     sys.path.insert(0, _AGENT_DIR)
 
 from charon_agent import protocol  # noqa: E402
+from charon_agent.server import Server  # noqa: E402
 from charon_agent.protocol import (  # noqa: E402
     METHODS,
     RpcError,
@@ -57,6 +58,12 @@ class TestErrorCodes(unittest.TestCase):
             "ERR_SDK_UNAVAILABLE",
         ):
             self.assertIsInstance(getattr(protocol, name), int, name)
+
+
+class TestDispatchRegistry(unittest.TestCase):
+    def test_every_protocol_method_is_routable(self):
+        routed = Server._META_METHODS | Server._SESSION_METHODS | Server._SHELL_METHODS
+        self.assertEqual(METHODS, routed)
 
     def test_codes_are_distinct(self):
         codes = [

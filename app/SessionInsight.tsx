@@ -334,7 +334,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
               <li key={i} className={`si-mcp-row ${String(sv.status ?? '').toLowerCase()}`}>
                 <span className="si-mcp-name">{sv.name}</span>
                 <span className="si-mcp-status" title={sv.tools?.join(', ')}>{sv.status}
-                  {sv.auth_status && ` · auth: ${sv.auth_status}`}
+                  {sv.auth_status && sv.auth_status !== 'unsupported' && ` · auth: ${sv.auth_status}`}
                   {sv.tool_count != null && ` · ${sv.tool_count} tools`}
                 </span>
                 <button

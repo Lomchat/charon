@@ -11,16 +11,16 @@ async function rowFor(id: string) {
 }
 
 async function listResources(id: string, kind: string, forceReload: boolean) {
-  try {
-    return await callSessionRpc(id, 'session_resources', { force_reload: forceReload });
-  } catch (error: any) {
-    // Rolling fleet compatibility: Codex resources shipped before the common
-    // method. Claude has no honest fallback on an old agent.
-    if (kind === 'codex' && /-32601|unknown method|no such method/i.test(String(error?.message || error))) {
-      return callSessionRpc(id, 'codex_resources', { force_reload: forceReload });
-    }
-    throw error;
+  const result = await callSessionRpc(id, 'session_resources', { force_reload: forceReload });
+  // callSessionRpc deliberately normalises failures into result objects so a
+  // side panel cannot throw. Inspect that envelope instead of relying on a
+  // catch which can never run. Codex resources predate the common method.
+  if (kind === 'codex' && result?.ok === false
+      && (result?.reason === 'unsupported'
+        || /-32601|unknown method|no such method/i.test(String(result?.error || '')))) {
+    return callSessionRpc(id, 'codex_resources', { force_reload: forceReload });
   }
+  return result;
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {

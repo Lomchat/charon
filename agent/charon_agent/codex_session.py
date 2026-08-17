@@ -884,7 +884,10 @@ class CodexSession:
         """List this thread's descendants without assuming parent filters.
 
         0.147 exposes parentThreadId on Thread but not in ThreadListParams, so
-        fetch the bounded sub-agent catalog and build the tree locally.
+        fetch the bounded spawned-agent catalog and build the tree locally.
+        Guardian approval reviewers, compaction workers and memory maintenance
+        also have parentThreadId, but they are implementation details rather
+        than collaborators and must not leak their full review prompts here.
         """
         if self._client is None or not self.claude_session_id:
             return []
@@ -894,8 +897,7 @@ class CodexSession:
         while len(rows) < 500:
             response = await self._client._client.request(
                 "thread/list", {
-                    "cwd": self.cwd, "sourceKinds": ["subAgent", "subAgentReview",
-                    "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"],
+                    "cwd": self.cwd, "sourceKinds": ["subAgentThreadSpawn"],
                     "limit": 100, "sortKey": "created_at", "sortDirection": "asc",
                     **({"cursor": cursor} if cursor else {}),
                 }, response_model=ThreadListResponse,
@@ -1227,10 +1229,15 @@ class CodexSession:
         except Exception as e:
             return {"ok": False, "error": f"thread/read: {e}"}
         usage = self._last_thread_usage or {}
-        total = usage.get("total") if isinstance(usage, dict) else None
+        # `total` is lifetime COMPUTE across every model request in the thread.
+        # It can exceed the context window by orders of magnitude and is not a
+        # measure of what the next request must fit. `last` is the latest model
+        # request's prompt/output footprint, which is the context gauge users
+        # expect (the durable recorded-usage row already exposes aggregation).
+        current = usage.get("last") if isinstance(usage, dict) else None
         total_tokens = (
-            total.get("totalTokens", total.get("total_tokens"))
-            if isinstance(total, dict) else None
+            current.get("totalTokens", current.get("total_tokens"))
+            if isinstance(current, dict) else None
         )
         max_tokens = usage.get("modelContextWindow", usage.get("model_context_window")) if isinstance(usage, dict) else None
         percentage = (
@@ -1239,14 +1246,14 @@ class CodexSession:
             else None
         )
         categories: list[dict[str, Any]] = []
-        if isinstance(total, dict):
+        if isinstance(current, dict):
             for snake, camel, label in (
                 ("input_tokens", "inputTokens", "input"),
                 ("cached_input_tokens", "cachedInputTokens", "cached input"),
                 ("output_tokens", "outputTokens", "output"),
                 ("reasoning_output_tokens", "reasoningOutputTokens", "reasoning"),
             ):
-                value = total.get(snake, total.get(camel))
+                value = current.get(snake, current.get(camel))
                 if isinstance(value, (int, float)):
                     categories.append({"name": label, "tokens": int(value)})
         return {
