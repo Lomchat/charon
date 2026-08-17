@@ -1,13 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentKind } from '@/lib/types/api';
 import { sessionCapabilities } from '@/lib/sessionCapabilities';
+import { isMcpServerReady } from './sessionInsightState';
 
 /**
- * Three things the session already knew and never told anyone: how full its
- * context window is, whether its MCP servers actually connected, and what the
- * sub-agents it spawned did.
+ * Session state that does not belong in the transcript: identity, security
+ * profiles, provider resources, context pressure, MCP health and sub-agents.
  *
  * They share a panel rather than each taking a ToolPanel tab because six tab
  * labels already do not fit in 340px (§11) — and they answer the same kind of
@@ -39,6 +39,7 @@ type McpServer = {
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
 type SubAgent = { id: string; parent_id?: string | null; depth?: number; name?: string | null; role?: string | null; preview?: string; status?: string };
+type SubAgents = { ok?: boolean; error?: string; reason?: string; agents?: Array<string | SubAgent> };
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
 type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[]; profile_reason?: string; runtime_reason?: string; runtime_error?: string };
@@ -50,6 +51,41 @@ type Resources = {
   skills?: Skill[]; apps?: CodexApp[]; commands?: Command[]; plugins?: unknown[];
   skill_errors?: unknown[];
 };
+
+type LoadedState = {
+  context: boolean;
+  mcp: boolean;
+  subagents: boolean;
+  security: boolean;
+  resources: boolean;
+};
+
+function InsightSection({
+  title, meta, defaultOpen = false, loading = false, children,
+}: {
+  title: string;
+  meta?: string;
+  defaultOpen?: boolean;
+  loading?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <details className="si-sec" open={open} aria-busy={loading}
+      onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="si-sec-title">
+        <span className="si-sec-chevron" aria-hidden="true" />
+        <span>{title}</span>
+        {meta && <small>{meta}</small>}
+      </summary>
+      <div className="si-sec-body">{children}</div>
+    </details>
+  );
+}
+
+function LoadingInsight() {
+  return <p className="si-loading" role="status"><span aria-hidden="true" />loading…</p>;
+}
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -75,42 +111,58 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
   const hasSecurity = capabilities.permissionProfiles !== 'none';
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [mcp, setMcp] = useState<Mcp | null>(null);
-  const [agents, setAgents] = useState<SubAgent[] | null>(null);
+  const [subagents, setSubagents] = useState<SubAgents | null>(null);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
+  const [loaded, setLoaded] = useState<LoadedState>({
+    context: false,
+    mcp: false,
+    subagents: false,
+    security: !hasSecurity,
+    resources: false,
+  });
   const [security, setSecurity] = useState<Security | null>(null);
   const [securityBusy, setSecurityBusy] = useState(false);
   const [resources, setResources] = useState<Resources | null>(null);
   const [resourcePrompt, setResourcePrompt] = useState('');
   const [resourceBusy, setResourceBusy] = useState<string | null>(null);
   const [mcpOauthUrls, setMcpOauthUrls] = useState<Record<string, string>>({});
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setBusy(true);
-    try {
-      const [c, m, a, sec, res] = await Promise.all([
-        fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
-        fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
-        fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
-        hasSecurity
-          ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
-          : Promise.resolve(null),
-        fetch(`/api/claude/sessions/${sessionId}/resources`).then((r) => r.json()).catch(() => null),
-      ]);
-      setCtx(c); setMcp(m);
-      setAgents(Array.isArray(a?.agents) ? a.agents.map((item: string | SubAgent) =>
-        typeof item === 'string' ? { id: item, depth: 1 } : item) : null);
-      setSecurity(sec);
-      setResources(res);
-    } finally {
-      setBusy(false);
+    const get = (path: string) => fetch(path).then((r) => r.json()).catch(() => null);
+    const finish = (key: keyof LoadedState, apply: () => void) => {
+      if (loadGeneration.current !== generation) return;
+      apply();
+      setLoaded((current) => current[key] ? current : { ...current, [key]: true });
+    };
+
+    const requests: Promise<void>[] = [
+      get(`/api/claude/sessions/${sessionId}/context`)
+        .then((value) => finish('context', () => setCtx(value))),
+      get(`/api/claude/sessions/${sessionId}/mcp`)
+        .then((value) => finish('mcp', () => setMcp(value))),
+      get(`/api/claude/sessions/${sessionId}/subagents`)
+        .then((value) => finish('subagents', () => setSubagents(value))),
+      get(`/api/claude/sessions/${sessionId}/resources`)
+        .then((value) => finish('resources', () => setResources(value))),
+    ];
+    if (hasSecurity) {
+      requests.push(get(`/api/claude/sessions/${sessionId}/security`)
+        .then((value) => finish('security', () => setSecurity(value))));
     }
+
+    await Promise.allSettled(requests);
+    if (loadGeneration.current === generation) setBusy(false);
   }, [sessionId, hasSecurity]);
 
   // On mount and on demand only — never on a timer. None of this changes fast
   // enough to justify a poll next to a running turn.
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => { loadGeneration.current += 1; }, []);
   useEffect(() => {
     const refreshOnReturn = () => { if (document.visibilityState === 'visible') void load(); };
     window.addEventListener('focus', refreshOnReturn);
@@ -128,6 +180,13 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
   const pct = typeof ctx?.percentage === 'number'
     ? ctx.percentage
     : (ctx?.total_tokens && ctx?.max_tokens ? (ctx.total_tokens / ctx.max_tokens) * 100 : null);
+  const agents: SubAgent[] = Array.isArray(subagents?.agents)
+    ? subagents.agents.map((item) => typeof item === 'string' ? { id: item, depth: 1 } : item)
+    : [];
+  const pendingSections = Object.values(loaded).filter((value) => !value).length;
+  const resourceCount = (resources?.skills?.length ?? 0)
+    + (resources?.apps?.length ?? 0)
+    + (resources?.commands?.length ?? 0);
 
   const updateSecurity = useCallback(async (patch: { reviewer?: 'user' | 'auto_review'; permissionProfile?: string | null }) => {
     setSecurityBusy(true);
@@ -169,34 +228,40 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
   return (
     <div className="session-insight">
       <div className="si-head">
-        <span>session</span>
-        <button type="button" onClick={() => void load()} disabled={busy} title="refresh">↻</button>
+        <span>session details</span>
+        <span className="si-head-actions">
+          {busy && <small role="status">
+            {pendingSections > 0 ? `loading ${pendingSections} section${pendingSections === 1 ? '' : 's'}…` : 'refreshing…'}
+          </small>}
+          <button type="button" onClick={() => void load()} disabled={busy} title="refresh">↻</button>
+        </span>
       </div>
 
-      <section className="si-sec">
-        <h4>names</h4>
-        {/* The violet @handle is derived from CHARON's name. What every tool on
-            the VPS knows the session as is the CLI's own title — the two are
-            mirrored (agent >= 0.38.0, re-asserted on any difference) but a
-            session on an older agent, or one that has not taken a turn since,
-            can still disagree. Showing both is cheaper than asking anyone to
-            trust that they converged. */}
-        <ul className="si-cats">
-          <li><span>Charon</span><b>{ctx?.identity?.name || '(unnamed)'}</b></li>
-          <li><span>{kind === 'codex' ? 'Codex' : 'Claude'}</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
-        </ul>
-        {ctx?.identity && ctx.identity.cli_title
-          && ctx.identity.cli_title !== ctx.identity.name && (
-          <p className="si-none si-diverged">
-            The CLI still knows this session under a different name — it is
-            re-asserted at the next turn.
-          </p>
-        )}
-      </section>
+      <InsightSection title="names" loading={!loaded.context}
+        meta={!loaded.context ? 'loading…' : (ctx?.identity ? 'Charon + CLI' : 'unavailable')}>
+        {!loaded.context ? <LoadingInsight /> : ctx?.identity ? <>
+          {/* Display names and native titles are mirrored but independent.
+              Showing both makes a pending/failed convergence explicit. */}
+          <ul className="si-cats">
+            <li><span>Charon</span><b>{ctx.identity.name || '(unnamed)'}</b></li>
+            <li><span>{kind === 'codex' ? 'Codex' : 'Claude'}</span><b>{ctx.identity.cli_title || '—'}</b></li>
+          </ul>
+          {ctx.identity.cli_title && ctx.identity.cli_title !== ctx.identity.name && (
+            <p className="si-none si-diverged">
+              The CLI still knows this session under a different name — it is
+              re-asserted at the next turn.
+            </p>
+          )}
+        </> : <p className="si-none">{why(ctx) ?? 'identity unavailable'}</p>}
+      </InsightSection>
 
-      {capabilities.permissionProfiles !== 'none' && <section className="si-sec">
-        <h4>permission profiles</h4>
-        {security?.ok ? <>
+      {capabilities.permissionProfiles !== 'none' && <InsightSection
+        title="permission profiles"
+        loading={!loaded.security}
+        meta={!loaded.security ? 'loading…' : (security?.ok
+          ? (security.permission_profile || 'legacy sandbox') : 'unavailable')}
+      >
+        {!loaded.security ? <LoadingInsight /> : security?.ok ? <>
           <label className="si-control">
             <span>profile</span>
             <select disabled={securityBusy} value={security.permission_profile ?? ''} onChange={(e) => {
@@ -227,11 +292,15 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
             </div>)}
           </div>}
         </> : <p className="si-none">{why(security) ?? 'not running'}</p>}
-      </section>}
+      </InsightSection>}
 
-      <section className="si-sec">
-        <h4>{capabilities.apps !== 'none' ? 'skills & apps' : 'skills & commands'}</h4>
-        {resources?.ok ? <>
+      <InsightSection
+        title={capabilities.apps !== 'none' ? 'skills & apps' : 'skills & commands'}
+        loading={!loaded.resources}
+        meta={!loaded.resources ? 'loading…' : (resources?.ok
+          ? `${resourceCount} available` : 'unavailable')}
+      >
+        {!loaded.resources ? <LoadingInsight /> : resources?.ok ? <>
           <textarea className="si-resource-prompt" rows={2} value={resourcePrompt}
             onChange={(e) => setResourcePrompt(e.target.value)}
             placeholder={`Optional instruction for the selected ${capabilities.apps !== 'none' ? 'skill or app' : 'skill or command'}`} />
@@ -276,10 +345,11 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
           {!resources.skills?.length && !resources.apps?.length && !resources.commands?.length
             && <p className="si-none">none available</p>}
         </> : <p className="si-none">{why(resources) ?? 'not running'}</p>}
-      </section>
+      </InsightSection>
 
-      <section className="si-sec">
-        <h4>context window</h4>
+      <InsightSection title="context window" defaultOpen loading={!loaded.context}
+        meta={!loaded.context ? 'loading…' : (pct != null ? `${Math.round(pct)}% used` : 'unavailable')}>
+        {!loaded.context ? <LoadingInsight /> : <>
         {ctx?.status?.type && (
           <div className="si-line">status: {readableStatus(ctx.status.type)}
             {(ctx.status.activeFlags ?? ctx.status.active_flags)?.length
@@ -324,11 +394,13 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
               ? ` · $${ctx.recorded_usage.cost_usd.toFixed(4)}` : ''}
           </div>
         )}
-      </section>
+        </>}
+      </InsightSection>
 
-      <section className="si-sec">
-        <h4>mcp servers</h4>
-        {mcp?.ok && mcp.servers?.length ? (
+      <InsightSection title="MCP servers" defaultOpen loading={!loaded.mcp}
+        meta={!loaded.mcp ? 'loading…' : (mcp?.ok
+          ? `${mcp.servers?.length ?? 0} configured` : 'unavailable')}>
+        {!loaded.mcp ? <LoadingInsight /> : mcp?.ok && mcp.servers?.length ? (
           <ul className="si-mcp">
             {mcp.servers.map((sv, i) => (
               <li key={i} className={`si-mcp-row ${String(sv.status ?? '').toLowerCase()}`}>
@@ -337,7 +409,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
                   {sv.auth_status && sv.auth_status !== 'unsupported' && ` · auth: ${sv.auth_status}`}
                   {sv.tool_count != null && ` · ${sv.tool_count} tools`}
                 </span>
-                <button
+                {!isMcpServerReady(sv.status) && <button
                   type="button"
                   onClick={async () => {
                     await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
@@ -347,7 +419,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
                     }).catch(() => {});
                     void load();
                   }}
-                >reconnect</button>
+                >reconnect</button>}
                 {capabilities.mcpOauth !== 'none' && ['notloggedin', 'auth required'].includes(
                   String(sv.auth_status || sv.status || '').toLowerCase().replace(/[^a-z ]/g, ''),
                 ) && <button type="button" onClick={async () => {
@@ -377,11 +449,14 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
         ) : (
           <p className="si-none">{mcp?.ok ? 'none configured' : (why(mcp) ?? 'not running')}</p>
         )}
-      </section>
+      </InsightSection>
 
-      <section className="si-sec">
-        <h4>sub-agents{agents?.length ? ` (${agents.length})` : ''}</h4>
-        {agents?.length ? (
+      <InsightSection title="sub-agents" loading={!loaded.subagents}
+        meta={!loaded.subagents ? 'loading…' : (subagents?.ok === false
+          ? 'unavailable' : `${agents.length} spawned`)}>
+        {!loaded.subagents ? <LoadingInsight /> : subagents?.ok === false ? (
+          <p className="si-none">{why(subagents) ?? 'not running'}</p>
+        ) : agents.length ? (
           <ul className="si-agents">
             {agents.map((agent) => (
               <li key={agent.id} style={{ paddingLeft: `${Math.max(0, (agent.depth ?? 1) - 1) * 10}px` }}>
@@ -408,7 +483,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
         ) : (
           <p className="si-none">none spawned</p>
         )}
-      </section>
+      </InsightSection>
     </div>
   );
 }

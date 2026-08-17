@@ -5345,14 +5345,44 @@
 }
 .ci-mention .cim-state { flex: none; font-size: 10px; opacity: 0.6; }
 
-/* ── Session insight (context window / MCP / sub-agents) ──────────────────
-   Three things the session knew and never told anyone. Grouped in the tools
-   tab rather than each taking a label, because six already do not fit. */
-.session-insight { display: flex; flex-direction: column; gap: 14px; padding: 10px 12px; }
+/* ── Session insight (identity / resources / context / MCP / sub-agents) ──
+   Grouped in the tools tab rather than each taking a label, because six tabs
+   already do not fit. */
+.tp-calls-pane[hidden] { display: none; }
+.si-bootstrap { display: flex; align-items: center; gap: 7px; padding: 12px;
+  color: var(--parchment-soft); font-size: 11px; }
+.si-bootstrap::before, .si-loading > span { content: ''; width: 10px; height: 10px;
+  flex: none; border: 1.5px solid rgba(106,115,136,0.42); border-top-color: var(--teal, #86c5d8);
+  border-radius: 50%; animation: ci-spin 0.7s linear infinite; }
+.session-insight { display: flex; flex-direction: column; gap: 8px; padding: 6px 2px 10px; }
 .si-head { display: flex; align-items: center; justify-content: space-between;
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.6; }
+.si-head-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.si-head-actions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-transform: none; letter-spacing: 0; font-size: 9.5px; font-weight: 400; }
 .si-head button { background: none; border: 0; color: inherit; cursor: pointer; font-size: 13px; }
-.si-sec h4 { margin: 0 0 6px; font-size: 11px; font-weight: 600; opacity: 0.75; }
+.si-head button:disabled { cursor: default; opacity: 0.35; }
+.si-sec { border: 1px solid rgba(106,115,136,0.22); border-radius: 7px;
+  background: rgba(0,0,0,0.08); overflow: clip; }
+.si-sec-title { display: grid; grid-template-columns: 10px minmax(0,1fr) auto;
+  align-items: center; gap: 6px; min-height: 29px; padding: 2px 8px;
+  cursor: pointer; list-style: none; color: var(--parchment-soft);
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.045em; user-select: none; }
+.si-sec-title::-webkit-details-marker { display: none; }
+.si-sec-title:hover { background: rgba(106,115,136,0.09); color: var(--parchment); }
+.si-sec-title:focus-visible { outline: 1px solid var(--teal, #86c5d8); outline-offset: -1px; }
+.si-sec-title small { min-width: 0; max-width: 120px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; text-align: right;
+  color: var(--parchment-soft); opacity: 0.58; font-size: 9px;
+  font-weight: 400; text-transform: none; letter-spacing: 0; }
+.si-sec-chevron { width: 5px; height: 5px; border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor; transform: rotate(-45deg);
+  transition: transform 120ms ease; opacity: 0.65; }
+.si-sec[open] .si-sec-chevron { transform: rotate(45deg) translate(-1px,-1px); }
+.si-sec-body { padding: 8px; border-top: 1px solid rgba(106,115,136,0.16); }
+.si-loading { display: flex; align-items: center; gap: 6px; margin: 0;
+  color: var(--parchment-soft); font-size: 11px; opacity: 0.7; }
 .si-none, .si-empty { margin: 0; font-size: 11px; opacity: 0.5; }
 .si-bar { height: 6px; border-radius: 3px; background: rgba(106,115,136,0.28); overflow: hidden; }
 .si-bar-fill { display: block; height: 100%; background: var(--teal, #86c5d8); }

@@ -54,7 +54,10 @@ type Props = {
   onReveal?: () => void;
 };
 
-const SessionInsight = dynamic(() => import('./SessionInsight'), { ssr: false });
+const SessionInsight = dynamic(() => import('./SessionInsight'), {
+  ssr: false,
+  loading: () => <div className="si-bootstrap" role="status">loading session details…</div>,
+});
 
 export type Tab = 'edits' | 'git' | 'tree' | 'search' | 'files' | 'calls';
 
@@ -162,16 +165,14 @@ function ToolPanel({
         {tab === 'git' && <GitTab sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
         {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
-        {tab === 'calls' && (
-          <>
-            {/* Context window, MCP health and sub-agent transcripts share this
-                tab rather than each taking their own: six tab labels already
-                do not fit in 340px (§11), and all three answer "what is the
-                state of this session, beyond the transcript". */}
-            {sessionId && <SessionInsight sessionId={sessionId} kind={kind} />}
-            <CallsTab calls={toolCalls} />
-          </>
-        )}
+        {/* Keep the inspector mounted while another tab is visible. Its five
+            independent requests therefore start with the session, not on the
+            first Tools click; `hidden` avoids any layout/paint cost. A key
+            prevents one session's last-known data flashing in the next. */}
+        <div className="tp-calls-pane" hidden={tab !== 'calls'}>
+          {sessionId && <SessionInsight key={`${sessionId}:${kind}`} sessionId={sessionId} kind={kind} />}
+          <CallsTab calls={toolCalls} />
+        </div>
         {tab === 'files' && (
           <FilesTab
             sessionId={sessionId}
