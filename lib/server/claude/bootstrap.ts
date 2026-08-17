@@ -582,30 +582,54 @@ if parsed.scheme != "https" or parsed.hostname != "registry.npmjs.org":
 root.mkdir(parents=True, exist_ok=True)
 archive_fd, archive_name = tempfile.mkstemp(prefix="codex-", suffix=".tgz", dir=root)
 os.close(archive_fd)
-tmp_bin = root / (".codex-" + str(os.getpid()))
+stage = root / (".install-" + str(os.getpid()))
 try:
     req = urllib.request.Request(tarball, headers={"User-Agent": "charon-agent"})
     with urllib.request.urlopen(req, timeout=120) as response, open(archive_name, "wb") as output:
         shutil.copyfileobj(response, output, length=1024 * 1024)
-    expected = "package/vendor/%s/bin/codex" % triple
+    prefix = "package/vendor/%s/" % triple
+    stage.mkdir()
+    installed = []
+    total_size = 0
     with tarfile.open(archive_name, "r:gz") as bundle:
-        member = bundle.getmember(expected)
-        source = bundle.extractfile(member)
-        if source is None or member.size <= 0 or member.size > 250 * 1024 * 1024:
-            raise RuntimeError("invalid Codex CLI binary in npm artifact")
-        with source, open(tmp_bin, "wb") as output:
-            shutil.copyfileobj(source, output, length=1024 * 1024)
-    os.chmod(tmp_bin, 0o755)
-    destination = root / "bin" / "codex"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(tmp_bin, destination)
+        for member in bundle.getmembers():
+            if not member.isfile() or not member.name.startswith(prefix):
+                continue
+            relative = Path(member.name[len(prefix):])
+            # Never trust paths from an archive, even one whose registry host
+            # was pinned above. Empty, absolute and parent-traversing members
+            # are not part of a valid platform package.
+            if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError("unsafe path in Codex CLI npm artifact")
+            total_size += member.size
+            if member.size < 0 or total_size > 400 * 1024 * 1024 or len(installed) >= 64:
+                raise RuntimeError("invalid Codex CLI platform payload")
+            source = bundle.extractfile(member)
+            if source is None:
+                raise RuntimeError("unreadable Codex CLI platform payload")
+            target = stage / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with source, open(target, "wb") as output:
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+            os.chmod(target, member.mode & 0o777 or 0o644)
+            installed.append(relative)
+    required = {Path("bin/codex"), Path("bin/codex-code-mode-host"), Path("codex-path/rg")}
+    if not required.issubset(set(installed)):
+        raise RuntimeError("incomplete Codex CLI platform payload")
+    # Publish each validated file with os.replace. This keeps the previously
+    # working payload intact until its replacement is completely written.
+    for relative in installed:
+        source = stage / relative
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(source, destination)
 finally:
     try:
         os.unlink(archive_name)
     except FileNotFoundError:
         pass
     try:
-        os.unlink(tmp_bin)
+        shutil.rmtree(stage)
     except FileNotFoundError:
         pass
 print("[install_codex] OK cli_version=" + version)
@@ -631,6 +655,8 @@ const INSTALL_CODEX_CMD = [
   `${VENV_PY} -c "import base64; exec(compile(base64.b64decode('${INSTALL_CODEX_NATIVE_PY}'), '<codex-native-install>', 'exec'))" "$CODEX_CLI_DIR"`,
   `CODEX_BIN="$CODEX_CLI_DIR/bin/codex"`,
   `test -x "$CODEX_BIN"`,
+  `test -x "$CODEX_CLI_DIR/bin/codex-code-mode-host"`,
+  `test -x "$CODEX_CLI_DIR/codex-path/rg"`,
   `"$CODEX_BIN" --version >/dev/null`,
   // Post-import check: the ONLY real proof it works. importlib.metadata is
   // the robust version source (matches codex_session.py's fallback).
