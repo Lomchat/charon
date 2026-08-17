@@ -1253,8 +1253,8 @@ const ChatInputBar = memo(function ChatInputBar({
   return (
     <footer className="claude-input-bar">
       {isCodex ? (
-        // Codex has no interactive approval — its "mode" is a sandbox level
-        // (the guardrail). Change applies on the next turn. cf. CLAUDE.md §14.59.
+        // Sandbox is independent from who reviews escalations. The session
+        // inspector exposes human vs Approve-for-me and named profiles.
         <div className="mode-switch codex" role="radiogroup" aria-label="sandbox mode">
           {CODEX_SANDBOX_MODES.map((m) => {
             const meta = CODEX_MODE_META[m];

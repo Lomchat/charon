@@ -925,6 +925,8 @@ export type CodexSessionConfig = {
   modelProvider?: string | null;
   env?: Record<string, string>;
   codexBin?: string | null;
+  approvalsReviewer?: 'user' | 'auto_review';
+  permissionProfile?: string | null;
 };
 export type CreateClaudeSessionResponse = {
   id: string;

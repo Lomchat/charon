@@ -5369,6 +5369,18 @@
   font-size: 11px; line-height: 1.45; opacity: 0.85; }
 
 .si-diverged { color: var(--gold-bright, #e0b96a); opacity: 0.85; margin-top: 4px; }
+.si-control { display: grid; grid-template-columns: 72px 1fr; align-items: center;
+  gap: 7px; margin: 5px 0; font-size: 11px; color: var(--parchment-soft); }
+.si-control select { min-width: 0; background: var(--stone-2); color: var(--parchment);
+  border: 1px solid rgba(106,115,136,0.4); border-radius: 5px; padding: 3px 5px; }
+.si-denials { margin-top: 8px; }
+.si-denial { display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  padding: 5px 6px; border: 1px solid rgba(217,139,139,0.28); border-radius: 5px;
+  font-size: 10px; }
+.si-denial span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.si-denial button { flex: none; background: none; border: 1px solid rgba(217,139,139,0.45);
+  color: inherit; border-radius: 4px; cursor: pointer; padding: 2px 5px; font-size: 10px; }
 
 /* A handle we PREDICT but have not read back from the CLI: the session was
    started before --name was passed, or renamed since (the flag is fixed at

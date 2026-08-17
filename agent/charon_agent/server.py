@@ -436,6 +436,7 @@ class Server:
         "list_background_terminals", "stop_background_terminal",
         "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
+        "codex_security_status", "set_codex_security", "approve_codex_denial",
         "session_identity",
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
@@ -1059,6 +1060,50 @@ class Server:
                 if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
                     raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
                 raise RpcError(ERR_INTERNAL, f"Codex review failed: {e}")
+
+        if method == "codex_security_status":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                return {"ok": False, "error": "Codex-only surface"}
+            return await s_.security_status(bool(params.get("force_reload")))
+
+        if method == "set_codex_security":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
+            reviewer = params.get("reviewer")
+            profile = params.get("permission_profile")
+            if reviewer not in ("user", "auto_review"):
+                raise RpcError(ERR_INVALID_PARAMS, "reviewer must be user or auto_review")
+            if profile is not None and not isinstance(profile, str):
+                raise RpcError(ERR_INVALID_PARAMS, "permission_profile must be a string or null")
+            try:
+                return await s_.set_security(reviewer, profile)
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex security update failed: {e}")
+
+        if method == "approve_codex_denial":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            review_id = params.get("review_id")
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
+            if not isinstance(review_id, str) or not review_id:
+                raise RpcError(ERR_INVALID_PARAMS, "review_id required")
+            try:
+                return await s_.approve_guardian_denial(review_id)
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Guardian override failed: {e}")
 
         if method == "list_background_terminals":
             sid = self._require_sid(params)

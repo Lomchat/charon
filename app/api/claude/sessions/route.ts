@@ -147,6 +147,8 @@ function normalizeCodexConfig(raw: unknown): CodexSessionConfig | null {
     ephemeral: r.ephemeral === true,
     modelProvider: text(r.modelProvider, 256), env,
     codexBin: text(r.codexBin, 4096),
+    approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? 'user',
+    permissionProfile: text(r.permissionProfile, 256),
   };
 }
 

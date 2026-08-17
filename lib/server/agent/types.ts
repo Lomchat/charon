@@ -420,6 +420,9 @@ export type AgentMethodName =
   | 'compact_session'
   | 'rollback_session'
   | 'review_session'
+  | 'codex_security_status'
+  | 'set_codex_security'
+  | 'approve_codex_denial'
   | 'list_background_terminals'
   | 'stop_background_terminal'
   // Append bounded Responses message items to a loaded Codex thread's durable

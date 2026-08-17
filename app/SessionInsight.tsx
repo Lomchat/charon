@@ -29,6 +29,9 @@ type McpServer = { name?: string | null; status?: string | null; tool_count?: nu
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
 type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; cpuPercent?: number | null; rss_kb?: number | null; rssKb?: number | null };
+type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
+type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
+type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[] };
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -46,11 +49,13 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [terminals, setTerminals] = useState<BgTerminal[] | null>(null);
+  const [security, setSecurity] = useState<Security | null>(null);
+  const [securityBusy, setSecurityBusy] = useState(false);
 
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [c, m, a, bt] = await Promise.all([
+      const [c, m, a, bt, sec] = await Promise.all([
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
         isCodex ? Promise.resolve(null)
@@ -58,10 +63,14 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         isCodex
           ? fetch(`/api/claude/sessions/${sessionId}/background-terminals`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
+        isCodex
+          ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setCtx(c); setMcp(m);
       setAgents(Array.isArray(a?.agents) ? a.agents : null);
       setTerminals(Array.isArray(bt?.terminals) ? bt.terminals : null);
+      setSecurity(sec);
     } finally {
       setBusy(false);
     }
@@ -82,6 +91,18 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const pct = typeof ctx?.percentage === 'number'
     ? ctx.percentage
     : (ctx?.total_tokens && ctx?.max_tokens ? (ctx.total_tokens / ctx.max_tokens) * 100 : null);
+
+  const updateSecurity = useCallback(async (reviewer: 'user' | 'auto_review', profile: string | null) => {
+    setSecurityBusy(true);
+    try {
+      const r = await fetch(`/api/claude/sessions/${sessionId}/security`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reviewer, permissionProfile: profile }),
+      });
+      const data = await r.json().catch(() => null);
+      setSecurity(data);
+    } finally { setSecurityBusy(false); }
+  }, [sessionId]);
 
   return (
     <div className="session-insight">
@@ -110,6 +131,47 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
           </p>
         )}
       </section>
+
+      {isCodex && <section className="si-sec">
+        <h4>permissions</h4>
+        {security?.ok ? <>
+          <label className="si-control">
+            <span>reviewer</span>
+            <select disabled={securityBusy} value={security.reviewer ?? 'user'} onChange={(e) => {
+              void updateSecurity(e.target.value as 'user' | 'auto_review', security.permission_profile ?? null);
+            }}>
+              <option value="user">ask me</option>
+              <option value="auto_review">Approve for me</option>
+            </select>
+          </label>
+          <label className="si-control">
+            <span>profile</span>
+            <select disabled={securityBusy} value={security.permission_profile ?? ''} onChange={(e) => {
+              void updateSecurity(security.reviewer ?? 'user', e.target.value || null);
+            }}>
+              <option value="">legacy sandbox</option>
+              {(security.profiles ?? []).map((profile) => <option key={profile.id} value={profile.id}
+                disabled={profile.allowed === false}>{profile.id}{profile.allowed === false ? ' (blocked)' : ''}</option>)}
+            </select>
+          </label>
+          {!!security.denials?.length && <div className="si-denials">
+            <p className="si-line">recent denials</p>
+            {security.denials.map((denial) => <div className="si-denial" key={denial.review_id}>
+              <span title={JSON.stringify(denial.action)}>{denial.rationale || denial.risk_level || 'Denied action'}</span>
+              <button type="button" disabled={securityBusy} onClick={async () => {
+                setSecurityBusy(true);
+                try {
+                  await fetch(`/api/claude/sessions/${sessionId}/security`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ action: 'approve_denial', reviewId: denial.review_id }),
+                  });
+                  await load();
+                } finally { setSecurityBusy(false); }
+              }}>approve once</button>
+            </div>)}
+          </div>}
+        </> : <p className="si-none">{why(security) ?? 'not running'}</p>}
+      </section>}
 
       <section className="si-sec">
         <h4>context window</h4>

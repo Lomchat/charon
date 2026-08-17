@@ -570,6 +570,10 @@ class CodexSession:
             "env": {str(k): str(v)[:8192] for k, v in (cfg.get("env") or {}).items()}
                    if isinstance(cfg.get("env"), dict) else {},
             "codex_bin": cfg.get("codexBin") if isinstance(cfg.get("codexBin"), str) else None,
+            "approvals_reviewer": cfg.get("approvalsReviewer")
+            if cfg.get("approvalsReviewer") in ("user", "auto_review") else "user",
+            "permission_profile": cfg.get("permissionProfile")
+            if isinstance(cfg.get("permissionProfile"), str) and cfg.get("permissionProfile").strip() else None,
         }
         self._emit_to_server = emit
         self._on_state_change = on_state_change
@@ -606,6 +610,11 @@ class CodexSession:
         self._codex_stderr_lines: list[str] = []
         self._plan_deltas: dict[str, str] = {}
         self._fs_watch_id: str | None = None
+        # Exact Guardian denial payloads are required by
+        # thread/approveGuardianDeniedAction. Keep only the ten entries Codex
+        # itself exposes in its /approve picker; they are runtime state, not
+        # durable authorization grants.
+        self._guardian_denials: list[dict[str, Any]] = []
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -731,6 +740,76 @@ class CodexSession:
         self.permission_mode = mode
         self._emit("mode_changed", mode=mode)
         await self._save_state()
+
+    async def security_status(self, force_reload: bool = False) -> dict[str, Any]:
+        """Return reviewer, active profile and server-advertised profiles."""
+        if self._client is None:
+            return {"ok": False, "error": "Codex thread is not running"}
+        try:
+            from openai_codex.generated.v2_all import PermissionProfileListResponse
+            rows: list[dict[str, Any]] = []
+            cursor = None
+            while True:
+                response = await self._client._client.request(
+                    "permissionProfile/list",
+                    {"cwd": self.cwd, "limit": 100,
+                     **({"cursor": cursor} if cursor else {})},
+                    response_model=PermissionProfileListResponse,
+                )
+                rows.extend(self._json_safe(row) for row in (response.data or []))
+                cursor = response.next_cursor
+                if not cursor:
+                    break
+            return {
+                "ok": True,
+                "reviewer": self.codex_config.get("approvals_reviewer", "user"),
+                "permission_profile": self.codex_config.get("permission_profile"),
+                "profiles": rows,
+                "denials": [dict(row) for row in self._guardian_denials],
+                "force_reloaded": bool(force_reload),
+            }
+        except Exception as e:
+            return {"ok": False, "error": f"permissionProfile/list: {e}",
+                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+
+    async def set_security(self, reviewer: str, permission_profile: str | None) -> dict[str, Any]:
+        if reviewer not in ("user", "auto_review"):
+            raise ValueError("reviewer must be user or auto_review")
+        if permission_profile is not None:
+            permission_profile = permission_profile.strip()
+            if not permission_profile or len(permission_profile) > 256:
+                raise ValueError("permission_profile must be a non-empty profile id")
+        self.codex_config["approvals_reviewer"] = reviewer
+        self.codex_config["permission_profile"] = permission_profile
+        # Rejoin the loaded thread with the modern profile. permissions and
+        # legacy sandbox are deliberately mutually exclusive. Reviewer is also
+        # sent on every turn, so changing it never requires a restart.
+        if self._client is not None and self.claude_session_id:
+            params: dict[str, Any] = {"approvalsReviewer": reviewer, "cwd": self.cwd}
+            if permission_profile:
+                params["permissions"] = permission_profile
+            else:
+                params["sandbox"] = _sandbox_mode_wire(self.permission_mode)
+            await self._client._client.thread_resume(self.claude_session_id, params)
+        await self._save_state()
+        return await self.security_status()
+
+    async def approve_guardian_denial(self, review_id: str) -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            raise RuntimeError("Codex thread is not ready")
+        denial = next((row for row in reversed(self._guardian_denials)
+                       if row.get("review_id") == review_id), None)
+        if denial is None:
+            raise ValueError("Guardian denial is no longer available")
+        from openai_codex.generated.v2_all import ThreadApproveGuardianDeniedActionResponse
+        await self._client._client.request(
+            "thread/approveGuardianDeniedAction",
+            {"threadId": self.claude_session_id, "event": denial["event"]},
+            response_model=ThreadApproveGuardianDeniedActionResponse,
+        )
+        self._guardian_denials = [row for row in self._guardian_denials
+                                  if row.get("review_id") != review_id]
+        return {"ok": True, "review_id": review_id}
 
     async def set_model(self, model: str | None, fallback_model: str | None = None) -> None:
         # Codex applies model per-turn → the change takes effect on the NEXT
@@ -1348,10 +1427,14 @@ class CodexSession:
     async def _sdk_thread_start(self, client: Any, *, resume: bool) -> Any:
         params: dict[str, Any] = {
             "cwd": self.cwd,
-            "sandbox": _sandbox_mode_wire(self.permission_mode),
             "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
-            "approvalsReviewer": "user",
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
         }
+        profile = self.codex_config.get("permission_profile")
+        if profile:
+            params["permissions"] = profile
+        else:
+            params["sandbox"] = _sandbox_mode_wire(self.permission_mode)
         if self.model:
             params["model"] = self.model
         for src, dst in (
@@ -1389,9 +1472,13 @@ class CodexSession:
 
         params: dict[str, Any] = {
             "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
-            "approvalsReviewer": "user",
-            "sandboxPolicy": _sandbox_policy_wire(self.permission_mode),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
         }
+        # A named profile is thread-scoped and cannot be combined with legacy
+        # sandbox settings. With no profile, preserve the existing per-turn
+        # sandbox override.
+        if not self.codex_config.get("permission_profile"):
+            params["sandboxPolicy"] = _sandbox_policy_wire(self.permission_mode)
         if self.model:
             params["model"] = self.model
         if self.effort:
@@ -1505,6 +1592,8 @@ class CodexSession:
             "modelProvider": self.codex_config.get("model_provider"),
             "env": self.codex_config.get("env", {}),
             "codexBin": self.codex_config.get("codex_bin"),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            "permissionProfile": self.codex_config.get("permission_profile"),
         }
 
     # ── Translate Codex notifications → Charon events ─────────────────────────
@@ -1688,6 +1777,16 @@ class CodexSession:
                     "content": self._stringify(self._json_safe(review)),
                     "is_error": str(_enum_val(getattr(review, "status", ""))) in ("denied", "failed"),
                 })
+                status = str(_enum_val(getattr(review, "status", "")))
+                if status == "denied":
+                    self._guardian_denials.append({
+                        "review_id": str(rid),
+                        "action": self._json_safe(getattr(payload, "action", None)),
+                        "rationale": getattr(review, "rationale", None),
+                        "risk_level": _enum_val(getattr(review, "risk_level", None)),
+                        "event": self._json_safe(payload),
+                    })
+                    self._guardian_denials = self._guardian_denials[-10:]
 
             elif pt == "GuardianWarningNotification":
                 out.append({"event": "thinking", "text": f"Auto-review: {getattr(payload, 'message', '')}"})

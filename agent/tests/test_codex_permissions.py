@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import unittest
+import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -19,6 +20,29 @@ def session():
 
 
 class TestCodexPermissions(unittest.TestCase):
+    def test_guardian_denial_is_kept_for_one_exact_override(self):
+        s, _ = session()
+        review = types.SimpleNamespace(
+            status=types.SimpleNamespace(value="denied"), rationale="unsafe",
+            risk_level=types.SimpleNamespace(value="high"),
+        )
+        payload = type("ItemGuardianApprovalReviewCompletedNotification", (), {
+            "review_id": "review-1", "review": review,
+            "action": {"type": "command", "command": "danger"},
+        })()
+        out = s._translate(payload)
+        self.assertTrue(out[0]["is_error"])
+        self.assertEqual(s._guardian_denials[0]["review_id"], "review-1")
+        self.assertEqual(s._guardian_denials[0]["rationale"], "unsafe")
+
+    def test_security_config_is_persisted(self):
+        s, _ = session()
+        s.codex_config["approvals_reviewer"] = "auto_review"
+        s.codex_config["permission_profile"] = ":workspace"
+        saved = s.to_persist()["codex_config"]
+        self.assertEqual(saved["approvalsReviewer"], "auto_review")
+        self.assertEqual(saved["permissionProfile"], ":workspace")
+
     def test_command_allow_once_and_session(self):
         async def main(always):
             s, emitted = session()
