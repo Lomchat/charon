@@ -22,6 +22,7 @@ import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed
 import { useInstallNotifications } from './useInstallNotifications';
 import { setFocus, subscribeAll } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
+import PromptModal from './PromptModal';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
@@ -141,16 +142,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
 
-  // Addressable handles confirmed by the provider. A Codex native thread name
-  // is only a display identity, and an offline/old Claude CLI may not expose
-  // its peer name. Neither case is an address: omit it from every surface and
-  // the @ menu instead of rendering a hopeful `@name?` that cannot route.
-  // The provider-neutral Charon peer bus will replace this live-only map.
+  // Stable Charon addresses are persisted independently from display names.
+  // Keep sleeping targets visible in identity surfaces; `addressable` below
+  // separately gates the composer menu to sessions that can receive now.
   const sessionHandles = useMemo(() => {
     const out = new Map<string, { handle: string; confirmed: boolean }>();
     for (const s of sessions) {
-      if (s.addressable && s.cliName) {
-        out.set(s.id, { handle: s.cliName, confirmed: true });
+      if (s.handle) {
+        out.set(s.id, { handle: s.handle, confirmed: true });
       }
     }
     return out;
@@ -187,6 +186,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     | null
   >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [handleEditor, setHandleEditor] = useState<SessionListItem | null>(null);
   // "Delete permanently" confirmation — styled modal instead of the native
   // confirm(). Holds the target session while the dialog is open.
   const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
@@ -1467,6 +1467,13 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     refreshSessions();
   }
 
+  async function updateSessionHandle(sess: SessionListItem, value: string) {
+    const updated = await api.updateSessionHandle(sess.id, value);
+    setSessions((prev) => prev.map((row) => row.id === sess.id ? { ...row, ...updated } : row));
+    setHandleEditor(null);
+    refreshSessions();
+  }
+
   async function patchShell(id: string, body: { name?: string | null; color?: string | null }) {
     try {
       const updated = await api.updateShell(id, body);
@@ -1851,7 +1858,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // actually address (cross-session messaging is filesystem-scoped).
           siblings={sessions
             .filter((s) => s.vpsId === selected.vpsId
-              && s.id !== selected.id && sessionHandles.has(s.id))
+              && s.id !== selected.id && s.addressable && sessionHandles.has(s.id))
             .map((s) => ({
               id: s.id, name: s.name,
               handle: sessionHandles.get(s.id)?.handle ?? s.id.slice(0, 6),
@@ -2033,6 +2040,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // the item disappears from the menu (the "resume" button in the
           // chat header takes care of waking up the session; we don't duplicate here).
           onRename={() => setEditingId(ctxMenu.session.id)}
+          onEditHandle={() => setHandleEditor(ctxMenu.session)}
           onEditCwd={() => editSessionCwd(ctxMenu.session)}
           onColor={(color) => patchSession(ctxMenu.session.id, { color })}
           onSleep={
@@ -2089,6 +2097,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           }
           onKill={() => killInstallOne(ctxMenu.install.id)}
           onClose={() => setCtxMenu(null)}
+        />
+      )}
+
+      {handleEditor && (
+        <PromptModal
+          title="Change session address"
+          hint={<>Stable on this VPS and independent from the display name. You may type it with or without <code>@</code>; spaces and accents are normalized.</>}
+          initial={handleEditor.handle ?? ''}
+          placeholder="api-worker"
+          confirmLabel="change address"
+          busyLabel="changing…"
+          icon="@"
+          validate={(value) => value.replace(/^@/, '').trim() ? null : 'a handle is required'}
+          onSubmit={(value) => updateSessionHandle(handleEditor, value)}
+          onClose={() => setHandleEditor(null)}
         />
       )}
 

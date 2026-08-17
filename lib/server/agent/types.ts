@@ -297,7 +297,10 @@ export type AgentEvent = (
   // `<cross-session-message from-name=…>` envelope. ⚠ These messages carry NO
   // `origin` field — the envelope inside plain string content is the only
   // signal, which is why the first implementation caught nothing.
-  | { event: 'external_message'; session_id: string; origin: string; text: string; from?: string }
+  | {
+      event: 'external_message'; session_id: string; origin: string; text: string; from?: string;
+      from_provider?: AgentKind; source_session_id?: string; message_id?: string;
+    }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
   // regexing prose, stated.
@@ -400,6 +403,8 @@ export type AgentMethodName =
   | 'git_discard'
   | 'start_session'
   | 'resume_session'
+  | 'peer_list'
+  | 'peer_send'
   | 'subscribe'
   | 'unsubscribe'
   | 'send_input'
@@ -410,10 +415,10 @@ export type AgentMethodName =
   | 'set_permission_mode'
   | 'set_model'
   | 'set_effort'
-  // Mirror Charon's session name into the CLI's own transcript (agent >=
-  // 0.38.0) so `claude --resume <name>` and the CLI's cross-session addressing
-  // agree with what the dashboard shows.
+  // Mirror Charon's display name into the provider transcript (agent >=
+  // 0.38.0). Peer routing has its own stable handle.
   | 'set_session_name'
+  | 'set_session_handle'
   // Branch a transcript into a NEW session, optionally cutting at a message
   // (agent >= 0.39.0). Pure file work — the original session keeps running.
   | 'fork_session'

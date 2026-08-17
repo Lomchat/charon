@@ -137,6 +137,10 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   position: integer('position').notNull().default(0),
   cwd: text('cwd').notNull(),
   name: text('name'),
+  // Stable, provider-neutral address used by Charon's peer bus. Unlike the
+  // display name it does not change on rename; unlike Claude's native peer
+  // name it works for both providers. Unique only inside a VPS.
+  handle: text('handle'),
   // Visual marker: color (hex or name) applied to the left border of
   // the row in the sidebar. NULL = no marker.
   color: text('color'),
@@ -235,7 +239,9 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   alwaysAllowTools: text('always_allow_tools'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
-});
+}, (t) => [
+  uniqueIndex('uq_claude_sessions_vps_id_handle').on(t.vpsId, t.handle),
+]);
 
 export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   id: integer('id').primaryKey({ autoIncrement: true }),

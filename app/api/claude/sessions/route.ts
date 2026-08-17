@@ -3,12 +3,13 @@ import { desc, eq, and, sql } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
-import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, getCodexLatestVersion, getCodexCliLatestVersion } from '@/lib/server/claude/sdkSync';
 import type { AgentKind, CodexSessionConfig } from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
+import { compareVersions } from '@/lib/version';
+import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -62,31 +63,28 @@ export async function GET(req: Request) {
     `) as Array<{ sessionId: string; content: string }>;
     const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
-    // The ADDRESSABLE name each session really has, straight from the CLI.
-    // One call per VPS (cached 60s), never per session. Unknown → the client
-    // marks its @handle unconfirmed rather than presenting a guess as an
-    // address (§14.93).
-    const vpsIds = [...new Set(rows.map((r) => r.vpsId))];
-    const cliNameByVps = new Map(await Promise.all(
-      vpsIds.map(async (v) => [v, await cliNamesForVps(v)] as const)));
+    const agentVersions = new Map(db.select({
+      id: vpsTable.id, version: vpsTable.agentVersion,
+    }).from(vpsTable).all().map((v) => [v.id, v.version] as const));
 
     const annotated = rows.map((r) => {
       const stream = streams.get(r.id);
       const perms = pendingBySession.get(r.id) ?? 0;
       const qs = pendingQBySession.get(r.id) ?? 0;
       const firstMsg = firstMsgBySession.get(r.id) ?? null;
-      const cliName = cliNameByVps.get(r.vpsId)?.get(r.id) ?? null;
+      const liveStatus = stream ? stream.status : r.status;
+      const peerAgentReady = compareVersions(
+        agentVersions.get(r.vpsId), SESSION_PEER_AGENT_VERSION,
+      ) >= 0;
       return {
         ...r,
         codexConfig: undefined,
-        liveStatus: stream ? stream.status : r.status,
-        // What Claude itself calls this session. Null = not known (agent too
-        // old, VPS offline, or session not running).
-        cliName,
-        // Codex thread names are persistent display identities, not peer
-        // addresses. Claude is addressable only when the live CLI confirms
-        // the peer name; a derived guess must never enter the @ menu.
-        addressable: r.kind !== 'codex' && !!cliName,
+        liveStatus,
+        // Handles are durable for both providers. Only a sufficiently recent
+        // live daemon can route them, so sleeping/stale targets stay out of the
+        // composer menu without hiding their identity in the sidebar.
+        addressable: !!r.handle && peerAgentReady
+          && ['starting', 'active', 'thinking', 'background', 'failed'].includes(liveStatus),
         subscribers: focusCountFor(r.id),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,

@@ -794,13 +794,7 @@ export type SessionListItem = ClaudeSession & {
   subscribers: number;
   pendingPermissions: number;
   firstUserMessage: string | null;
-  /** What the CLI itself calls this session — the ADDRESSABLE name another
-   *  agent types after an `@`. Null when unknown (agent too old, VPS offline,
-   *  session not running), in which case the UI shows its derived handle as an
-   *  unconfirmed prediction rather than asserting an address. §14.93 */
-  cliName?: string | null;
-  /** True only when another live session can actually route a message to this
-   *  identity. A display/native thread name alone is not an address. */
+  /** True only while the provider-neutral bus can route this stable handle. */
   addressable?: boolean;
 };
 export type ClaudeSessionsListResponse = {
@@ -963,6 +957,7 @@ export type ImportClaudeSessionResponse = {
 
 export type RenameClaudeSessionBody = {
   name?: string | null;
+  handle?: string;
   color?: string | null;
   cwd?: string;
 };

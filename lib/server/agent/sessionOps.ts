@@ -31,9 +31,8 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
-import { assignHandlesByVps } from '@/lib/sessionHandle';
-import { invalidateCliNames } from '@/lib/server/claude/cliNames';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
+import { allocateSessionHandle } from './sessionHandles';
 
 // How long after the last background task finishes before the session is
 // declared done. Long enough for the model's automatic follow-up turn (§14.54)
@@ -1281,6 +1280,9 @@ export class SessionStream {
           // Who sent it. The transcript's first question about a message
           // nobody in this session typed is "who asked me this".
           ...(ev.from ? { from: ev.from } : {}),
+          ...(ev.from_provider ? { fromProvider: ev.from_provider } : {}),
+          ...(ev.source_session_id ? { sourceSessionId: ev.source_session_id } : {}),
+          ...(ev.message_id ? { messageId: ev.message_id } : {}),
         };
         this._persist('event', payload);
         this._broadcast(payload);
@@ -2248,38 +2250,6 @@ export function listStreams(): SessionStream[] {
  * both worlds, and costs one query.
  */
 
-/**
- * The ADDRESSABLE name to hand the CLI as `--name` for a session on this VPS.
- *
- * Same derivation the dashboard uses (`assignHandlesByVps`) so the @handle and
- * the real address are the same string BY CONSTRUCTION rather than by
- * coincidence. Computed over the whole VPS because uniqueness is per-machine —
- * that is the scope cross-session messaging works in.
- *
- * ⚠ `--name` is a START-time flag. A rename therefore only reaches the CLI at
- * the next sleep+resume; until then the dashboard shows what Claude actually
- * answers to, not what we wish it answered to.
- */
-function cliNameFor(vpsId: string, sessionId: string, override?: { id: string; name: string | null; cwd: string; createdAt?: number | null }): string | undefined {
-  try {
-    const rows = db.select({
-      id: claudeSessions.id, name: claudeSessions.name,
-      cwd: claudeSessions.cwd, createdAt: claudeSessions.createdAt,
-    }).from(claudeSessions).where(and(
-      eq(claudeSessions.vpsId, vpsId),
-      eq(claudeSessions.archived, 0),
-    )).all();
-    const list = rows.map((r) => ({ ...r, vpsId }));
-    // A session being CREATED is not in the table yet at call time.
-    if (override && !list.some((r) => r.id === override.id)) {
-      list.push({ ...override, createdAt: override.createdAt ?? Math.floor(Date.now() / 1000), vpsId });
-    }
-    return assignHandlesByVps(list).get(sessionId);
-  } catch {
-    return undefined;
-  }
-}
-
 export function nextSessionPosition(vpsId: string): number {
   const [row] = db
     .select({ max: sql<number | null>`max(${claudeSessions.position})` })
@@ -2311,12 +2281,16 @@ export async function importExistingSession(opts: {
   const sessionId = newId();
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
   const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
+  const handle = allocateSessionHandle(opts.vpsId, {
+    id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
+  });
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
     claudeSessionId: opts.claudeSessionId,
     cwd: opts.cwd,
     name: opts.name ?? null,
+    handle,
     kind,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? defaultMode,
@@ -2355,6 +2329,9 @@ export async function startNewSession(opts: {
   const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = opts.sessionId ?? newId();
+  const handle = allocateSessionHandle(opts.vpsId, {
+    id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
+  });
   // Resolve effective config: per-session opts first, then global defaults.
   // We persist the RESOLVED values to the DB row so they survive a Charon
   // restart even if the global default changes later. (If we stored null
@@ -2371,6 +2348,7 @@ export async function startNewSession(opts: {
     vpsId: opts.vpsId,
     cwd: opts.cwd,
     name: opts.name ?? null,
+    handle,
     kind,
     status: 'starting',
     permissionMode,
@@ -2410,6 +2388,7 @@ export async function startNewSession(opts: {
       kind,
       cwd: opts.cwd,
       name: opts.name ?? null,
+      handle,
       permission_mode: permissionMode,
       // Pass-through to the agent. Older agents (< 0.5.0) silently ignore
       // unknown params — the SDK call falls back to its own defaults.
@@ -2417,14 +2396,9 @@ export async function startNewSession(opts: {
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
       codex_config: kind === 'codex' ? (opts.codexConfig ?? null) : null,
-      // What another agent on this machine types to reach it (agent >= 0.42.0).
-      cli_name: cliNameFor(opts.vpsId, sessionId,
-        { id: sessionId, name: opts.name ?? null, cwd: opts.cwd }),
+      // Stable Charon peer address. Claude also mirrors it to native --name.
+      cli_name: handle,
     });
-    // The addressable name only exists once the CLI is up, and the cached map
-    // was read before that — without this the new session shows an unconfirmed
-    // handle for a full TTL despite already answering to the real one.
-    invalidateCliNames(opts.vpsId);
   } catch (e: any) {
     streams.delete(sessionId);
     db.update(claudeSessions).set({ status: 'error' })
@@ -2502,13 +2476,13 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // gotcha 36.
     let resolvedStatus: WorkerStatus = 'starting';
     try {
-      // A resume is the ONLY moment --name can reach the CLI (start-time flag),
-      // so a rename made while the session ran is applied here.
+      // Reassert the stable handle on every resume. Claude's native --name is
+      // start-time only; Charon's common bus changes immediately.
       const rpcRes = await client.call('resume_session', {
         session_id: sessionId,
-        cli_name: cliNameFor(row.vpsId, sessionId),
+        handle: row.handle,
+        cli_name: row.handle,
       });
-      invalidateCliNames(row.vpsId);
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
         resolvedStatus = agentStatus;
@@ -2533,13 +2507,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
           codex_config: kind === 'codex' ? parseCodexConfig(row.codexConfig) : null,
-          // Re-asserted on every resume: this is the only moment a rename can
-          // reach the CLI, since --name is fixed at startup.
-          cli_name: cliNameFor(row.vpsId, sessionId),
+          // Reassert both provider-neutral identity and Claude's native name.
+          handle: row.handle,
+          cli_name: row.handle,
         });
-        // A resume is the only moment --name can change (start-time flag), so
-        // it is also the only moment the cached answer can go stale.
-        invalidateCliNames(row.vpsId);
       } catch (startErr: any) {
         // If another concurrent call just created it (race between
         // two resume paths), the agent replies "already exists". In that

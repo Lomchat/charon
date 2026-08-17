@@ -14,7 +14,10 @@
 
 /** Longest handle we emit. Long enough to stay recognisable, short enough to
  *  type in full without autocomplete. */
-const MAX_LEN = 32;
+export const SESSION_HANDLE_MAX_LEN = 32;
+/** First daemon version whose Claude and Codex sessions both expose the
+ * provider-neutral Charon peer MCP. */
+export const SESSION_PEER_AGENT_VERSION = '0.64.0';
 
 /**
  * Normalise a free-form name into handle shape. Returns '' when nothing
@@ -31,7 +34,7 @@ export function slugifyHandle(name: string | null | undefined): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, MAX_LEN)
+    .slice(0, SESSION_HANDLE_MAX_LEN)
     .replace(/-+$/g, '');
 }
 
@@ -41,6 +44,26 @@ function handleFromCwd(cwd: string | null | undefined): string {
   if (!cwd) return '';
   const tail = cwd.replace(/\/+$/, '').split('/').filter(Boolean).pop();
   return slugifyHandle(tail ?? '');
+}
+
+/** Preferred unsuffixed handle for one session. Exported so DB allocation can
+ * preserve already-issued handles instead of recomputing the whole fleet. */
+export function preferredSessionHandle(session: HandleInput): string {
+  return slugifyHandle(session.name)
+    || handleFromCwd(session.cwd)
+    || `session-${session.id.slice(0, 6)}`;
+}
+
+/** Allocate one collision-free handle without ever exceeding the wire/UI cap. */
+export function uniqueSessionHandle(base: string, taken: ReadonlySet<string>): string {
+  const clean = slugifyHandle(base) || 'session';
+  if (!taken.has(clean)) return clean;
+  for (let n = 2; ; n += 1) {
+    const suffix = `-${n}`;
+    const head = clean.slice(0, SESSION_HANDLE_MAX_LEN - suffix.length).replace(/-+$/g, '');
+    const candidate = `${head || 'session'}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 export type HandleInput = {
@@ -75,14 +98,8 @@ export function assignHandles(sessions: HandleInput[]): Map<string, string> {
   const out = new Map<string, string>();
   const taken = new Set<string>();
   for (const s of ordered) {
-    const base =
-      slugifyHandle(s.name) ||
-      handleFromCwd(s.cwd) ||
-      // Last resort: never empty, never colliding, still copy-pasteable.
-      `session-${s.id.slice(0, 6)}`;
-    let handle = base;
-    let n = 2;
-    while (taken.has(handle)) handle = `${base}-${n++}`;
+    const base = preferredSessionHandle(s);
+    const handle = uniqueSessionHandle(base, taken);
     taken.add(handle);
     out.set(s.id, handle);
   }

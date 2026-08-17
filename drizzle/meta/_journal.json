@@ -253,6 +253,13 @@
       "when": 1786897511787,
       "tag": "0035_warm_inertia",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1786990004964,
+      "tag": "0036_lean_randall_flagg",
+      "breakpoints": true
     }
   ]
 }

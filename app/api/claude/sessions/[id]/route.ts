@@ -12,6 +12,7 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 import { orderChronologically } from '@/lib/server/claude/messageOrder';
 import { loadMessageWindow, publicMessageColumns } from '@/lib/server/claude/messageWindow';
+import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
 
 /**
  * The Claude SDK stores each session in
@@ -265,7 +266,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 // PATCH /api/claude/sessions/[id]
 //
-// Allowed fields: name, color, cwd.
+// Allowed fields: name, handle, color, cwd.
 //
 // Special case cwd: the cwd is used at the moment of start_session on the
 // agent side — updating the value in DB is not enough if the agent already
@@ -286,6 +287,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const v = body[k];
     update[k] = v == null || v === '' ? null : String(v).trim();
   }
+  if ('handle' in body) {
+    const handle = normalizeSessionHandle(body.handle);
+    if (!handle) {
+      return NextResponse.json({ error: 'a valid session handle is required' }, { status: 400 });
+    }
+    update.handle = handle;
+  }
   if (Object.keys(update).length === 0) {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
     return NextResponse.json(row ?? null);
@@ -294,6 +302,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const [before] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!before) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const cwdChanged = 'cwd' in update && update.cwd !== before.cwd;
+  if (typeof update.handle === 'string' && update.handle !== before.handle) {
+    const conflict = db.select({ id: claudeSessions.id }).from(claudeSessions).where(and(
+      eq(claudeSessions.vpsId, before.vpsId),
+      eq(claudeSessions.handle, update.handle),
+    )).get();
+    if (conflict && conflict.id !== id) {
+      return NextResponse.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
+    }
+  }
 
   let relocateNote: string | undefined;
   // If cwd changes: kill on the agent side + reset DB status to 'sleeping' +
@@ -321,13 +338,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
   }
 
-  db.update(claudeSessions).set(update).where(eq(claudeSessions.id, id)).run();
+  try {
+    db.update(claudeSessions).set(update).where(eq(claudeSessions.id, id)).run();
+  } catch (e) {
+    if (typeof update.handle === 'string' && /unique/i.test(String(e))) {
+      return NextResponse.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
+    }
+    throw e;
+  }
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
 
   // Mirror the name into the CLI's own transcript (agent >= 0.38.0). Until
   // now Charon's name lived only in the dashboard: a session called
-  // "frontend" here was an unnamed uuid to everything on the VPS, including
-  // `claude --resume <name>` and the CLI's cross-session addressing.
+  // "frontend" here was an unnamed uuid to the provider's resume picker.
+  // The peer address is intentionally independent (`handle`).
   // Fire-and-forget on purpose — a rename must not fail because a VPS is
   // unreachable, and the agent retries the write at the next turn end.
   if ('name' in update && typeof update.name === 'string' && update.name) {
@@ -340,9 +364,20 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     })();
   }
 
-  // The sidebar/tab bar show the name, and handles are derived from it, so a
-  // rename must reach every device rather than waiting for the 15s poll.
-  if ('name' in update) emitGlobalSessionListChanged(id);
+  if ('handle' in update && typeof update.handle === 'string') {
+    const handle = update.handle;
+    void (async () => {
+      try {
+        const client = getAgentClientForVpsId(before.vpsId);
+        await client.call('set_session_handle', { session_id: id, handle });
+      } catch {
+        // The DB is authoritative; every start/resume reasserts it after a
+        // reconnect or automatic daemon update.
+      }
+    })();
+  }
+
+  if ('name' in update || 'handle' in update) emitGlobalSessionListChanged(id);
 
   const publicRow = { ...row, codexConfig: undefined };
   return NextResponse.json(relocateNote ? { ...publicRow, _relocateNote: relocateNote } : publicRow);

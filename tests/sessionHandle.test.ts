@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { assignHandles, resolveHandle, slugifyHandle } from '@/lib/sessionHandle';
+import {
+  assignHandles, resolveHandle, SESSION_HANDLE_MAX_LEN, slugifyHandle,
+} from '@/lib/sessionHandle';
 
 describe('slugifyHandle', () => {
   it('makes a free-form name typeable after an @', () => {
@@ -56,6 +58,16 @@ describe('assignHandles — seniority wins collisions', () => {
       { id: 'c', name: 'api', createdAt: 3 },
     ]);
     expect([h.get('a'), h.get('b'), h.get('c')]).toEqual(['api', 'api-2', 'api-3']);
+  });
+
+  it('keeps collision suffixes inside the maximum length', () => {
+    const name = 'a'.repeat(SESSION_HANDLE_MAX_LEN);
+    const h = assignHandles([
+      { id: 'a', name, createdAt: 1 },
+      { id: 'b', name, createdAt: 2 },
+    ]);
+    expect(h.get('b')).toBe(`${'a'.repeat(SESSION_HANDLE_MAX_LEN - 2)}-2`);
+    expect(h.get('b')?.length).toBe(SESSION_HANDLE_MAX_LEN);
   });
 });
 

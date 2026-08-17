@@ -854,8 +854,7 @@ function SessionList({
 
 function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
   s: SessionListItem;
-  /** Addressable handle — what another agent on this VPS types to reach it.
-   *  `confirmed` = read from the CLI itself; false = predicted, not yet applied. */
+  /** Stable provider-neutral Charon handle on this VPS. */
   handle?: { handle: string; confirmed: boolean } | null;
   selected: boolean;
   showDetails: boolean;
@@ -933,12 +932,10 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
         <div className="cs-card-foot">
           {handle && (
             <span
-              className={`cs-card-handle${handle.confirmed ? '' : ' unconfirmed'}`}
-              title={handle.confirmed
-                ? `${s.kind === 'codex' ? 'Codex' : 'Claude'} answers to @${handle.handle} on this machine`
-                : `@${handle.handle} is what it WILL be named — not applied until this session restarts`}
+              className="cs-card-handle"
+              title={`Stable Charon address on this machine (${s.addressable ? 'currently reachable' : 'not currently reachable'})`}
             >
-              @{handle.handle}{handle.confirmed ? '' : '?'}
+              @{handle.handle}
             </span>
           )}
           <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>

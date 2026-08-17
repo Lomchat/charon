@@ -37,6 +37,7 @@ type Props = {
   showRename?: boolean;              // default true; false for install
   showColor?: boolean;               // default true; false for install
   onRename?: () => void;
+  onEditHandle?: () => void;
   onColor?: (color: RowColor) => void;
   onEditCwd?: () => void;            // "Change folder" option
   onSleep?: () => void;              // "💤 Sleep" — for active Claude
@@ -55,7 +56,7 @@ export default function SessionContextMenu({
   title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Close',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
-  onRename, onColor, onEditCwd, onSleep, onKill, onArchive, onDelete, onClose,
+  onRename, onEditHandle, onColor, onEditCwd, onSleep, onKill, onArchive, onDelete, onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -123,6 +124,9 @@ export default function SessionContextMenu({
       </div>
       {showRename && onRename && (
         <button type="button" onClick={() => { onRename(); onClose(); }}>Rename</button>
+      )}
+      {onEditHandle && (
+        <button type="button" onClick={() => { onEditHandle(); onClose(); }}>Change @handle</button>
       )}
       {onEditCwd && (
         <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Change folder (cwd)</button>

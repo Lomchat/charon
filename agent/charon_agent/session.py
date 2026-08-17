@@ -88,6 +88,10 @@ StateSaveCallback = Callable[[], Awaitable[None] | None]
 AUTO_ALLOW_TOOLS = {
     "TodoWrite", "ExitPlanMode",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList",
+    # Charon's own same-VPS peer bus. The daemon validates the target, live
+    # state, size and rate limit; asking again at the provider layer makes
+    # ordinary @session communication unusably noisy.
+    "mcp__charon_peer__list_sessions", "mcp__charon_peer__send_message",
 }
 
 # Tools auto-allowed in plan mode only
@@ -333,7 +337,8 @@ _MAX_BUFFER_SIZE = 32 * 1024 * 1024
 # 1 MiB stdout cap (the bug), but an SDK too old to accept the kwarg has no
 # other choice.
 _OPTIONAL_KEYS_FALLBACK_ORDER = (
-    "include_partial_messages", "max_buffer_size", "effort", "fallback_model", "model",
+    "include_partial_messages", "max_buffer_size", "mcp_servers",
+    "effort", "fallback_model", "model",
     # `settings` carries the ultracode flags (§14.56); an SDK too old to accept
     # the kwarg just starts without ultracode.
     "settings",
@@ -417,10 +422,14 @@ class AgentSession:
         model: str | None = None,
         fallback_model: str | None = None,
         effort: str | None = None,
+        handle: str | None = None,
+        peer_mcp: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
         self.name = name
+        self.handle = handle or None
+        self.peer_mcp = dict(peer_mcp) if isinstance(peer_mcp, dict) else None
         self.permission_mode = permission_mode if permission_mode in (
             "normal", "acceptEdits", "auto", "plan",
         ) else "normal"
@@ -446,19 +455,14 @@ class AgentSession:
         # Deliberately the value and not a "done" boolean: a boolean latches on
         # the first success, so a later rename whose write failed (VPS blip,
         # transcript not yet on disk) was never retried and the two names
-        # diverged silently — Charon showing one thing, `claude --resume` and
-        # cross-session addressing another. Comparing values instead makes it
+        # diverged silently — Charon showing one thing and `claude --resume`
+        # another. Comparing values instead makes it
         # converge: any difference is re-asserted at the next turn end, and an
         # unchanged name writes nothing.
         self._cli_title_value: str | None = None
-        # The ADDRESSABLE name, passed to the CLI as --name at startup.
-        #
-        # Distinct from `self.name` (Charon's display name) and from the
-        # transcript title: this is what `claude agents` lists and what another
-        # agent types to reach this session. Unset → the CLI invents one from
-        # the directory (`eleven-duel-dev-87`), which is what made the
-        # dashboard's @handle and the real address disagree.
-        self.cli_name: str | None = None
+        # Claude's native peer name, mirrored from Charon's stable handle at
+        # startup. Charon itself routes both providers through peer_mcp.
+        self.cli_name: str | None = self.handle
         self._pending_perms: dict[str, asyncio.Future] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
@@ -815,6 +819,9 @@ class AgentSession:
         should ask of anyone — so report both and let the panel show the gap.
         """
         out: dict[str, Any] = {"ok": True, "name": self.name,
+                               "handle": getattr(self, "handle", None),
+                               "addressable": bool(getattr(self, "handle", None) and
+                                                   getattr(self, "peer_mcp", None)),
                                "claude_session_id": self.claude_session_id}
         if not self.claude_session_id:
             return out
@@ -867,6 +874,7 @@ class AgentSession:
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
+            "handle": getattr(self, "handle", None),
             "permission_mode": self.permission_mode,
             "status": self.status,
             "model": self.model,
@@ -887,10 +895,9 @@ class AgentSession:
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
-            # The ADDRESSABLE name (--name). Persisted because it is a
-            # START-time flag: a restored session that forgets it comes back
-            # under the CLI's auto-generated `<dir>-<hash>`, silently breaking
-            # every address another agent had for it.
+            "handle": getattr(self, "handle", None),
+            # Claude's native --name is a start-time flag; persist it so CLI
+            # interoperability survives daemon restarts.
             "cli_name": self.cli_name,
             "permission_mode": self.permission_mode,
             "status": persist_status,
@@ -1799,6 +1806,14 @@ class AgentSession:
                 options_kwargs["extra_args"] = {
                     **(options_kwargs.get("extra_args") or {}),
                     "name": self.cli_name,
+                }
+            if self.peer_mcp:
+                options_kwargs["mcp_servers"] = {
+                    "charon_peer": {
+                        "type": "stdio",
+                        "command": str(self.peer_mcp.get("command") or ""),
+                        "args": [str(v) for v in (self.peer_mcp.get("args") or [])],
+                    },
                 }
             options_kwargs["include_partial_messages"] = True
             # Raise the CLI-stdout NDJSON framing cap well above the SDK's 1 MiB

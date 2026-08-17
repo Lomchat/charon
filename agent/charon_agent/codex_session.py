@@ -539,10 +539,14 @@ class CodexSession:
         fallback_model: str | None = None,
         effort: str | None = None,
         codex_config: dict[str, Any] | None = None,
+        handle: str | None = None,
+        peer_mcp: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
         self.name = name
+        self.handle = handle or None
+        self.peer_mcp = dict(peer_mcp) if isinstance(peer_mcp, dict) else None
         # For a Codex session, permission_mode holds a Codex mode string
         # (read-only / workspace-write / full-access). Accept the legacy
         # Claude modes too and coerce them to a sane Codex default so a mode
@@ -1051,9 +1055,25 @@ class CodexSession:
 
     def _session_sdk_config(self) -> Any:
         """Build the SDK config shared by the resident and transient clients."""
+        overrides = list(self.codex_config.get("config_overrides") or ())
+        peer_mcp = getattr(self, "peer_mcp", None)
+        if peer_mcp:
+            # `config_overrides` is the supported SDK escape hatch for
+            # config.toml. JSON strings/arrays are valid TOML literals. Keep
+            # the reserved server last so a user override cannot redirect the
+            # internal peer transport to another executable.
+            command = str(peer_mcp.get("command") or "")
+            args = [str(v) for v in (peer_mcp.get("args") or [])]
+            overrides.extend((
+                f"mcp_servers.charon_peer.command={json.dumps(command)}",
+                f"mcp_servers.charon_peer.args={json.dumps(args)}",
+                "mcp_servers.charon_peer.enabled=true",
+                "mcp_servers.charon_peer.startup_timeout_sec=10",
+                "mcp_servers.charon_peer.tool_timeout_sec=30",
+            ))
         return make_codex_config(
             cwd=self.cwd,
-            config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
+            config_overrides=tuple(overrides),
             env=self.codex_config.get("env") or None,
             codex_bin=self.codex_config.get("codex_bin") or None,
         )
@@ -1228,8 +1248,10 @@ class CodexSession:
             "ok": True,
             "name": self.name,
             "cli_title": self.name,
+            "handle": getattr(self, "handle", None),
             "thread_id": self.claude_session_id,
-            "addressable": False,
+            "addressable": bool(getattr(self, "handle", None) and
+                                getattr(self, "peer_mcp", None)),
         }
 
     async def mcp_status(self) -> dict[str, Any]:
@@ -1812,6 +1834,7 @@ class CodexSession:
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
+            "handle": getattr(self, "handle", None),
             "permission_mode": self.permission_mode,
             "status": self.status,
             "model": self.model,
@@ -1830,6 +1853,7 @@ class CodexSession:
             "claude_session_id": self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
+            "handle": getattr(self, "handle", None),
             "permission_mode": self.permission_mode,
             "status": persist_status,
             "model": self.model,

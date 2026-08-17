@@ -400,6 +400,8 @@ export const api = {
     send<OkResponse>('DELETE', `/api/claude/sessions/${id}/archive`),
   renameClaudeSession: (id: string, name: string | null) =>
     send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
+  updateSessionHandle: (id: string, handle: string) =>
+    send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { handle } as RenameClaudeSessionBody),
   // Sleep / resume / input / interrupt / force-stop: all return { ok: true }
   sleepClaudeSession: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/sleep`),

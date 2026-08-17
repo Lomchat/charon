@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="path to state.json (default: ~/.charon/state.json)")
     p.add_argument("--connect", action="store_true",
                    help="stdio ↔ socket proxy mode (used by Charon over SSH)")
+    p.add_argument("--peer-mcp", metavar="SOURCE_SESSION_ID", default=None,
+                   help="internal: expose the provider-neutral peer bus over stdio MCP")
     # ── Shell holder mode (>= 0.10.0) ──
     # A detached per-shell process owning the PTY + bash so the shell
     # survives agent restarts. Spawned BY the agent, never by hand.
@@ -63,6 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.connect:
         from .client import connect_main
         return connect_main(socket_path)
+
+    if args.peer_mcp:
+        from .peer_mcp import run as peer_mcp_main
+        return peer_mcp_main(args.peer_mcp, str(socket_path))
 
     # Daemon mode
     from .server import Server

@@ -92,6 +92,9 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
             {m.from ? `via @${m.from}` : 'via another session'}
           </span>
         )}
+        {isExternal && m.fromProvider && (
+          <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
+        )}
         {/* Per-message agent attribution (assistant only): a small Claude/Codex
             logo so it's always clear which backend is speaking, next to the
             API-confirmed model id (from AssistantMessage.model, NOT the model's

@@ -1106,6 +1106,8 @@ export function useClaudeSessionStream(
             id: 'ex' + Date.now() + Math.random(), role: 'external',
             content: ev.text, createdAt: Math.floor(Date.now() / 1000),
             from: (ev as { from?: string }).from ?? null,
+            fromProvider: (ev as { fromProvider?: 'claude' | 'codex' }).fromProvider ?? null,
+            sourceSessionId: (ev as { sourceSessionId?: string }).sourceSessionId ?? null,
           }]);
           break;
         case 'mode_changed':

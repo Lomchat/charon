@@ -5,9 +5,10 @@ import { seedInitialData } from '@/lib/server/seed';
 import { asc, desc, eq } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { listTabs } from '@/lib/server/claude/tabs';
-import { cliNamesForVps } from '@/lib/server/claude/cliNames';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale, getCodexCliLatestVersion, refreshCodexCliLatestIfStale } from '@/lib/server/claude/sdkSync';
+import { compareVersions } from '@/lib/version';
+import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,23 +28,15 @@ export default async function CharonPage() {
     .where(eq(claudeSessions.archived, 0))
     .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
     .all();
-  // The ADDRESSABLE name each session really has, on the FIRST paint.
-  //
-  // Without this the SSR snapshot has no `cliName` at all, so every @handle
-  // renders as an unconfirmed prediction until a later list poll replaces the
-  // whole array — and "the name is wrong for the first N seconds, then right"
-  // is indistinguishable from "the name is wrong", which is exactly the bug
-  // this feature exists to kill. Cached per VPS (60s), so this costs one RPC
-  // per machine at most. §14.93
-  const cliNamesByVps = new Map(await Promise.all(
-    [...new Set(sessionRowsRaw.map((r) => r.vpsId))]
-      .map(async (v) => [v, await cliNamesForVps(v)] as const)));
+  const vpsById = new Map(vpsRows.map((v) => [v.id, v] as const));
   const sessionRows = sessionRowsRaw.map((r) => {
-    const cliName = cliNamesByVps.get(r.vpsId)?.get(r.id) ?? null;
+    const peerAgentReady = compareVersions(
+      vpsById.get(r.vpsId)?.agentVersion, SESSION_PEER_AGENT_VERSION,
+    ) >= 0;
     return {
       ...r,
-      cliName,
-      addressable: r.kind !== 'codex' && !!cliName,
+      addressable: !!r.handle && peerAgentReady
+        && ['starting', 'active', 'thinking', 'background', 'failed'].includes(r.status),
     };
   });
   const builtPyzSha = getBuiltPyzSha();

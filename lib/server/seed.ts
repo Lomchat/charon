@@ -8,6 +8,7 @@ import { encryptSecretsAtRest } from './claude/settings';
 import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/claude/tabs';
 import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
+import { ensureSessionHandles } from './agent/sessionHandles';
 
 // ── Boot seed, retryable per sub-system (P1.6) ──────────────────────────────
 // Since §14.45 this is the GUARANTEED agent-arming path (instrumentation.ts
@@ -44,6 +45,9 @@ const STEPS: Step[] = [
   { name: 'sessionIdHash', run: () => migrateSessionIdsToHashed() },
   // Idempotent (prefix-gated): encrypt secret settings at rest (enc:v1:).
   { name: 'secretsAtRest', run: () => encryptSecretsAtRest() },
+  // Provider-neutral peer addresses. Must run before autoConnect so every
+  // start/resume hands the daemon a durable handle, never a derived guess.
+  { name: 'sessionHandles', run: () => ensureSessionHandles() },
   // Housekeeping: purge expired session rows + stale in-memory AES keys
   // (had ZERO callers before 2026-07-22 — expired rows accumulated forever).
   // Boot-time + daily interval, unref'd.

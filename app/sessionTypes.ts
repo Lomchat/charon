@@ -25,6 +25,8 @@ export type Msg = {
   // message. Rendered as a chip beside the role, the same way an assistant
   // bubble shows the model that produced it.
   from?: string | null;
+  fromProvider?: 'claude' | 'codex' | null;
+  sourceSessionId?: string | null;
 };
 
 export type PlanStep = { step: string; status: string };

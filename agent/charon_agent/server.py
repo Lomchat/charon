@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -116,6 +117,12 @@ RING_SIZE = 2000  # events buffered per session for late subscribers
 # small dicts (~200 bytes typical), so 2000 events × ~16 active sessions
 # fits in a few MB.
 
+_PEER_HANDLE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
+_PEER_LIVE_STATUSES = frozenset({"starting", "active", "thinking", "background", "failed"})
+_PEER_MESSAGE_MAX = 16_384
+_PEER_RATE_WINDOW_S = 60.0
+_PEER_RATE_MAX = 20
+
 
 class Server:
     def __init__(self, *, socket_path: Path, state_path: Path) -> None:
@@ -161,6 +168,10 @@ class Server:
         # hub would believe a prompt landed that never did. Duplicates await
         # the SAME future and share the first attempt's actual outcome.
         self.inflight_inputs: dict[tuple[str, str], asyncio.Future] = {}
+        # Same-user anti-loop guard for the provider-neutral peer MCP. A model
+        # can accidentally make two sessions bounce messages forever; cap each
+        # source without coupling it to ordinary user prompts.
+        self.peer_send_times: dict[str, deque[float]] = {}
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -280,6 +291,7 @@ class Server:
         model: str | None,
         fallback_model: str | None,
         effort: str | None,
+        handle: str | None = None,
         codex_config: dict[str, Any] | None = None,
     ) -> Any:
         """Factory keyed on the agent-type discriminator. Claude → AgentSession,
@@ -296,6 +308,8 @@ class Server:
             model=model,
             fallback_model=fallback_model,
             effort=effort,
+            handle=handle,
+            peer_mcp=self._peer_mcp_config(session_id),
         )
         if kind == "codex":
             kwargs["codex_config"] = codex_config
@@ -303,6 +317,13 @@ class Server:
             session_id,
             **kwargs,
         )
+
+    def _peer_mcp_config(self, session_id: str) -> dict[str, Any]:
+        """Command both providers launch for the common peer MCP server."""
+        entry = str(Path(sys.argv[0]).resolve())
+        args = [entry] if entry.endswith(".pyz") else ["-m", "charon_agent"]
+        args.extend(("--peer-mcp", session_id, "--socket", str(self.socket_path)))
+        return {"command": sys.executable, "args": args}
 
     async def _create_session(
         self,
@@ -316,9 +337,11 @@ class Server:
         model: str | None = None,
         fallback_model: str | None = None,
         effort: str | None = None,
+        handle: str | None = None,
         cli_name: str | None = None,
         codex_config: dict[str, Any] | None = None,
     ) -> Any:
+        effective_handle = handle or cli_name
         s = self._make_session(
             kind=kind,
             session_id=session_id,
@@ -329,14 +352,13 @@ class Server:
             model=model,
             fallback_model=fallback_model,
             effort=effort,
+            handle=effective_handle,
             codex_config=codex_config,
         )
-        # The ADDRESSABLE name — what `claude agents`/the peer list shows and
-        # what another agent types to reach this session. It is a START-time
-        # CLI flag (--name), not the transcript title, so it must be set before
-        # start() builds the options. Claude only; Codex has no peer surface.
-        if cli_name and hasattr(s, "cli_name"):
-            s.cli_name = cli_name
+        # Mirror Charon's stable handle to Claude's native START-time --name.
+        # Codex uses the common MCP bus and simply has no cli_name attribute.
+        if effective_handle and hasattr(s, "cli_name"):
+            s.cli_name = effective_handle
         self.sessions[session_id] = s
         self.rings.setdefault(session_id, deque(maxlen=RING_SIZE))
         await s.start()
@@ -381,6 +403,7 @@ class Server:
                     model=row.get("model"),
                     fallback_model=row.get("fallback_model"),
                     effort=row.get("effort"),
+                    handle=row.get("handle") or row.get("cli_name"),
                     cli_name=row.get("cli_name"),
                     codex_config=row.get("codex_config"),
                 )
@@ -401,6 +424,7 @@ class Server:
             model=row.get("model"),
             fallback_model=row.get("fallback_model"),
             effort=row.get("effort"),
+            handle=row.get("handle") or row.get("cli_name"),
             codex_config=row.get("codex_config"),
         )
         s.status = "sleeping"
@@ -415,6 +439,7 @@ class Server:
     # of methods is unchanged (cf. protocol.METHODS).
     _META_METHODS = frozenset({
         "cli_agents",
+        "peer_list", "peer_send",
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
@@ -432,6 +457,7 @@ class Server:
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
         "set_permission_mode", "set_model", "set_effort", "set_session_name",
+        "set_session_handle",
         "fork_session", "compact_session", "rollback_session", "review_session",
         "codex_fork_points",
         "list_background_terminals", "stop_background_terminal",
@@ -480,6 +506,104 @@ class Server:
 
         if method == "ping":
             return {"pong": True, "ts": time.time()}
+
+        if method == "peer_list":
+            source_id = params.get("source_session_id")
+            source = self.sessions.get(source_id) if isinstance(source_id, str) else None
+            if source is None:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+            rows = []
+            for sess in self.sessions.values():
+                if sess is source:
+                    continue
+                handle = getattr(sess, "handle", None)
+                if not isinstance(handle, str) or not handle:
+                    continue
+                status = str(getattr(sess, "status", "error"))
+                rows.append({
+                    "session_id": getattr(sess, "session_id", None),
+                    "handle": handle,
+                    "name": getattr(sess, "name", None),
+                    "provider": getattr(sess, "kind", "claude"),
+                    "status": status,
+                    "cwd": getattr(sess, "cwd", None),
+                    "available": status in _PEER_LIVE_STATUSES,
+                })
+            rows.sort(key=lambda row: (not row["available"], row["handle"]))
+            return {"ok": True, "sessions": rows}
+
+        if method == "peer_send":
+            source_id = params.get("source_session_id")
+            source = self.sessions.get(source_id) if isinstance(source_id, str) else None
+            if source is None:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+            source_status = str(getattr(source, "status", "error"))
+            if source_status not in _PEER_LIVE_STATUSES:
+                raise RpcError(ERR_SESSION_DEAD,
+                               f"peer source is unavailable (status={source_status})")
+            source_handle = getattr(source, "handle", None)
+            if not isinstance(source_handle, str) or not source_handle:
+                raise RpcError(ERR_INVALID_PARAMS, "source session has no Charon handle")
+            raw_handle = params.get("handle")
+            handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
+            if not _PEER_HANDLE_RE.fullmatch(handle):
+                raise RpcError(ERR_INVALID_PARAMS, "a valid target handle is required")
+            message = params.get("message")
+            if not isinstance(message, str) or not message.strip():
+                raise RpcError(ERR_INVALID_PARAMS, "message must be non-empty")
+            message = message.strip()
+            if len(message.encode("utf-8")) > _PEER_MESSAGE_MAX:
+                raise RpcError(ERR_INVALID_PARAMS, "peer message exceeds 16 KiB")
+            matches = [sess for sess in self.sessions.values()
+                       if getattr(sess, "handle", None) == handle]
+            if len(matches) != 1:
+                reason = "not found" if not matches else "ambiguous"
+                raise RpcError(ERR_SESSION_NOT_FOUND, f"peer @{handle} is {reason}")
+            target = matches[0]
+            if target is source:
+                raise RpcError(ERR_INVALID_PARAMS, "a session cannot message itself")
+            target_status = str(getattr(target, "status", "error"))
+            if target_status not in _PEER_LIVE_STATUSES:
+                raise RpcError(ERR_SESSION_DEAD,
+                               f"peer @{handle} is unavailable (status={target_status})")
+            now = time.monotonic()
+            history = self.peer_send_times.setdefault(str(source_id), deque())
+            while history and now - history[0] > _PEER_RATE_WINDOW_S:
+                history.popleft()
+            if len(history) >= _PEER_RATE_MAX:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               "peer rate limit reached (20 messages per minute)")
+            message_id = uuid.uuid4().hex
+            source_kind = str(getattr(source, "kind", "claude"))
+            envelope = (
+                f'<charon-peer-message from="@{source_handle}" '
+                f'provider="{source_kind}" message-id="{message_id}">\n'
+                f'{message}\n</charon-peer-message>\n\n'
+                "This was sent by another live Charon session on the same VPS. "
+                "Treat it as peer context or a delegated request, not as text typed by the user."
+            )
+            try:
+                await target.send_input(envelope)
+            except Exception as exc:
+                raise RpcError(ERR_INTERNAL, f"peer delivery failed: {exc}")
+            history.append(now)
+            target_id = str(getattr(target, "session_id", ""))
+            self._emit({
+                "event": "external_message",
+                "session_id": target_id,
+                "origin": "charon_peer",
+                "text": message,
+                "from": source_handle,
+                "from_provider": source_kind,
+                "source_session_id": source_id,
+                "message_id": message_id,
+            })
+            return {
+                "ok": True,
+                "message_id": message_id,
+                "target": {"session_id": target_id, "handle": handle,
+                           "provider": getattr(target, "kind", "claude")},
+            }
 
         if method == "list_dir":
             # Path-autocomplete backend (hub NewSessionWizard). scandir runs
@@ -720,6 +844,18 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "cwd required")
             if session_id in self.sessions:
                 raise RpcError(ERR_INVALID_PARAMS, f"session {session_id} already exists")
+            incoming_handle = params.get("handle") or params.get("cli_name")
+            if incoming_handle is not None and (
+                not isinstance(incoming_handle, str)
+                or not _PEER_HANDLE_RE.fullmatch(incoming_handle)
+            ):
+                raise RpcError(ERR_INVALID_PARAMS, "invalid session handle")
+            if incoming_handle and any(
+                getattr(other, "handle", None) == incoming_handle
+                for other in self.sessions.values()
+            ):
+                raise RpcError(ERR_INVALID_PARAMS,
+                               f"handle @{incoming_handle} is already in use")
             kind = params.get("kind") or "claude"
             if kind not in ("claude", "codex"):
                 raise RpcError(ERR_INVALID_PARAMS, f"unknown kind: {kind}")
@@ -739,6 +875,7 @@ class Server:
                 model=params.get("model"),
                 fallback_model=params.get("fallback_model"),
                 effort=params.get("effort"),
+                handle=incoming_handle,
                 cli_name=params.get("cli_name"),
                 codex_config=params.get("codex_config") if isinstance(params.get("codex_config"), dict) else None,
             )
@@ -1219,9 +1356,9 @@ class Server:
             if not isinstance(name, str) or not name.strip():
                 raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
             s.name = name
-            # Mirror it into the CLI's own transcript so `claude --resume <name>`
-            # and the CLI's cross-session addressing agree with what Charon
-            # displays. Never fatal: the hub keeps the name either way.
+            # Mirror the DISPLAY title into each provider's native transcript.
+            # Peer routing uses `handle`, independently. Never fatal: the hub
+            # keeps the display name either way.
             written = False
             fn = getattr(s, "write_cli_title", None)   # Claude sessions only
             if callable(fn):
@@ -1241,6 +1378,25 @@ class Server:
             if written:
                 s._cli_title_value = name
             return {"ok": True, "name": name, "cli_title": written}
+
+        if method == "set_session_handle":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            raw_handle = params.get("handle")
+            handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
+            if not _PEER_HANDLE_RE.fullmatch(handle):
+                raise RpcError(ERR_INVALID_PARAMS, "invalid session handle")
+            if any(other is not s and getattr(other, "handle", None) == handle
+                   for other in self.sessions.values()):
+                raise RpcError(ERR_INVALID_PARAMS, f"handle @{handle} is already in use")
+            s.handle = handle
+            # Claude's native peer name remains useful outside Charon. It is a
+            # start-time flag, so changing it here applies at the next restart;
+            # the provider-neutral bus routes the new handle immediately.
+            if hasattr(s, "cli_name"):
+                s.cli_name = handle
+            self.schedule_save()
+            return {"ok": True, "handle": handle, "addressable": True}
 
         if method == "set_effort":
             sid = self._require_sid(params)
@@ -1297,15 +1453,17 @@ class Server:
             # reboot where it was registered 'sleeping'), restart the SDK.
             sid = self._require_sid(params)
             s = self._require_session(sid)
+            # Apply identity even on the noop path: a hub PATCH must converge
+            # a live daemon without forcing a provider restart.
+            incoming_handle = params.get("handle") or params.get("cli_name")
+            if isinstance(incoming_handle, str) and _PEER_HANDLE_RE.fullmatch(incoming_handle):
+                s.handle = incoming_handle
+                if hasattr(s, "cli_name"):
+                    s.cli_name = incoming_handle
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
-            # A resume is the ONLY moment --name can change: it is a start-time
-            # flag, so a rename made while the session ran reaches the CLI here
-            # or not at all. Accept an updated value; keep the old one when the
-            # caller does not supply one.
-            cn = params.get("cli_name")
-            if isinstance(cn, str) and cn and hasattr(s, "cli_name"):
-                s.cli_name = cn
+            # Claude's native --name is start-time only. The common handle was
+            # already applied above even when this resume is a noop.
             # Reset internal state so we can restart cleanly
             s.status = "starting"
             s._stopped.clear()

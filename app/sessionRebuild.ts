@@ -144,6 +144,9 @@ export function rebuildStateFromMessages(
             id: 'm' + m.id, role: 'external',
             content: String(ev.text ?? ''), createdAt: m.createdAt,
             from: typeof ev.from === 'string' ? ev.from : null,
+            fromProvider: ev.fromProvider === 'claude' || ev.fromProvider === 'codex'
+              ? ev.fromProvider : null,
+            sourceSessionId: typeof ev.sourceSessionId === 'string' ? ev.sourceSessionId : null,
           });
         }
       } catch {}

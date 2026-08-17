@@ -68,9 +68,8 @@ type Props = {
   /** This session's addressable handle (unique on its VPS). Shown in the
    *  header so the user knows what other agents type to reach it. */
   handle?: string | null;
-  /** True when `handle` was read from the CLI itself; false when it is only
-   *  what the session WILL be called after its next restart (--name is a
-   *  start-time flag, so a rename cannot reach a running CLI). */
+  /** Kept for wire compatibility with older parents. New Charon handles are
+   * durable DB identities and therefore always confirmed. */
   handleConfirmed?: boolean;
   /** Other sessions on the SAME machine — the ones this one can address.
    *  Feeds the `@` menu in the composer. */
@@ -641,11 +640,9 @@ export default function ClaudeSessionView({
                 reach this session — knowing it requires seeing it. */}
             {handle && (
               <span
-                className={`bar-handle${handleConfirmed ? '' : ' unconfirmed'}`}
-                title={handleConfirmed
-                  ? `${selected.kind === 'codex' ? 'Codex' : 'Claude'} answers to @${handle} on ${selectedVps?.name ?? 'this machine'} — this is a confirmed address`
-                  : `@${handle} is what this session WILL be called; --name is fixed at startup, so it applies after the next resume`}
-              >@{handle}{handleConfirmed ? '' : '?'}</span>
+                className="bar-handle"
+                title={`Stable Charon address on ${selectedVps?.name ?? 'this machine'} (${selected.addressable ? 'currently reachable' : 'not currently reachable'})`}
+              >@{handle}</span>
             )}
             {selected.cwd && (
               <span className="bar-sub">
