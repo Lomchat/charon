@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
 import { recordedSessionUsage } from '@/lib/server/agent/sessionUsage';
+import { normalizeCodexContextUsage } from '@/lib/server/claude/sessionInsightCompat';
 
 /** GET /api/claude/sessions/[id]/context — how full the context window is.
  *
@@ -18,5 +19,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     callSessionRpc(id, 'get_context_usage'),
     callSessionRpc(id, 'session_identity'),
   ]);
-  return NextResponse.json({ ...usage, identity, recorded_usage: recordedSessionUsage(id) });
+  return NextResponse.json({
+    ...normalizeCodexContextUsage(usage),
+    identity,
+    recorded_usage: recordedSessionUsage(id),
+  });
 }

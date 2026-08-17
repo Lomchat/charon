@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import { hideInternalCodexSubagents } from '@/lib/server/claude/sessionInsightCompat';
 
 /** GET /api/claude/sessions/[id]/subagents            → the ids
  *  GET /api/claude/sessions/[id]/subagents?agent=<id> → that one's transcript
@@ -17,5 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json(
       await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent }));
   }
-  return NextResponse.json(await callSessionRpc(id, 'list_subagents'));
+  return NextResponse.json(hideInternalCodexSubagents(
+    await callSessionRpc(id, 'list_subagents'),
+  ));
 }
