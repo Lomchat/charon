@@ -75,13 +75,18 @@ export async function GET(req: Request) {
       const perms = pendingBySession.get(r.id) ?? 0;
       const qs = pendingQBySession.get(r.id) ?? 0;
       const firstMsg = firstMsgBySession.get(r.id) ?? null;
+      const cliName = cliNameByVps.get(r.vpsId)?.get(r.id) ?? null;
       return {
         ...r,
         codexConfig: undefined,
         liveStatus: stream ? stream.status : r.status,
         // What Claude itself calls this session. Null = not known (agent too
         // old, VPS offline, or session not running).
-        cliName: cliNameByVps.get(r.vpsId)?.get(r.id) ?? null,
+        cliName,
+        // Codex thread names are persistent display identities, not peer
+        // addresses. Claude is addressable only when the live CLI confirms
+        // the peer name; a derived guess must never enter the @ menu.
+        addressable: r.kind !== 'codex' && !!cliName,
         subscribers: focusCountFor(r.id),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,

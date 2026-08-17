@@ -935,7 +935,7 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
             <span
               className={`cs-card-handle${handle.confirmed ? '' : ' unconfirmed'}`}
               title={handle.confirmed
-                ? `Claude answers to @${handle.handle} on this machine`
+                ? `${s.kind === 'codex' ? 'Codex' : 'Claude'} answers to @${handle.handle} on this machine`
                 : `@${handle.handle} is what it WILL be named — not applied until this session restarts`}
             >
               @{handle.handle}{handle.confirmed ? '' : '?'}

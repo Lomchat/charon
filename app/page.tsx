@@ -38,10 +38,14 @@ export default async function CharonPage() {
   const cliNamesByVps = new Map(await Promise.all(
     [...new Set(sessionRowsRaw.map((r) => r.vpsId))]
       .map(async (v) => [v, await cliNamesForVps(v)] as const)));
-  const sessionRows = sessionRowsRaw.map((r) => ({
-    ...r,
-    cliName: cliNamesByVps.get(r.vpsId)?.get(r.id) ?? null,
-  }));
+  const sessionRows = sessionRowsRaw.map((r) => {
+    const cliName = cliNamesByVps.get(r.vpsId)?.get(r.id) ?? null;
+    return {
+      ...r,
+      cliName,
+      addressable: r.kind !== 'codex' && !!cliName,
+    };
+  });
   const builtPyzSha = getBuiltPyzSha();
   // Version-ordered staleness baseline (§14.6) — the sha is display-only now.
   const builtAgentVersion = getBuiltAgentVersion();

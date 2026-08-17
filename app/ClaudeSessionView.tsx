@@ -643,7 +643,7 @@ export default function ClaudeSessionView({
               <span
                 className={`bar-handle${handleConfirmed ? '' : ' unconfirmed'}`}
                 title={handleConfirmed
-                  ? `Claude answers to @${handle} on ${selectedVps?.name ?? 'this machine'} — this is the name it really has`
+                  ? `${selected.kind === 'codex' ? 'Codex' : 'Claude'} answers to @${handle} on ${selectedVps?.name ?? 'this machine'} — this is a confirmed address`
                   : `@${handle} is what this session WILL be called; --name is fixed at startup, so it applies after the next resume`}
               >@{handle}{handleConfirmed ? '' : '?'}</span>
             )}

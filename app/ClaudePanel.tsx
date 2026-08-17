@@ -24,7 +24,6 @@ import { setFocus, subscribeAll } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
 import LocalAgentButton from './LocalAgentButton';
 import ClaudeSessionView from './ClaudeSessionView';
-import { assignHandlesByVps } from '@/lib/sessionHandle';
 import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
@@ -142,33 +141,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
 
-  // Addressable handles, one per session, unique WITHIN a VPS (§ sessionHandle).
-  // A session's `name` is free-form and may be null or duplicated; the handle
-  // is the form you can type after an `@` and hand to another agent as "who to
-  // talk to". Derived here rather than server-side so every surface that shows
-  // it — chat header, sidebar details, the @ menu — agrees by construction.
-  // ⚠ The @ must be what CLAUDE answers to, not what we wish it answered to.
-  //
-  // `cliName` is the addressable identity read from the CLI itself (`claude
-  // agents`), set by --name at session START. The derived handle is only a
-  // PREDICTION of it: correct for anything started since agent 0.42.0, wrong
-  // for a session started before, and stale for one renamed since (--name is
-  // fixed at startup, so a rename lands at the next resume).
-  //
-  // So the real name wins whenever it is known, and the prediction is marked
-  // unconfirmed rather than presented as an address — showing @migration for a
-  // session every tool on the box calls eleven-duel-dev-87 is exactly the bug
-  // this replaces.
+  // Addressable handles confirmed by the provider. A Codex native thread name
+  // is only a display identity, and an offline/old Claude CLI may not expose
+  // its peer name. Neither case is an address: omit it from every surface and
+  // the @ menu instead of rendering a hopeful `@name?` that cannot route.
+  // The provider-neutral Charon peer bus will replace this live-only map.
   const sessionHandles = useMemo(() => {
-    const predicted = assignHandlesByVps(sessions.map((s) => ({
-      id: s.id, name: s.name, cwd: s.cwd, vpsId: s.vpsId, createdAt: s.createdAt,
-    })));
     const out = new Map<string, { handle: string; confirmed: boolean }>();
     for (const s of sessions) {
-      const real = s.cliName;
-      out.set(s.id, real
-        ? { handle: real, confirmed: true }
-        : { handle: predicted.get(s.id) ?? s.id.slice(0, 6), confirmed: false });
+      if (s.addressable && s.cliName) {
+        out.set(s.id, { handle: s.cliName, confirmed: true });
+      }
     }
     return out;
   }, [sessions]);
@@ -1867,7 +1850,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // Other sessions on the SAME machine — the ones this session can
           // actually address (cross-session messaging is filesystem-scoped).
           siblings={sessions
-            .filter((s) => s.vpsId === selected.vpsId && s.id !== selected.id)
+            .filter((s) => s.vpsId === selected.vpsId
+              && s.id !== selected.id && sessionHandles.has(s.id))
             .map((s) => ({
               id: s.id, name: s.name,
               handle: sessionHandles.get(s.id)?.handle ?? s.id.slice(0, 6),

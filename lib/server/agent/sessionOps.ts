@@ -1339,7 +1339,13 @@ export class SessionStream {
         // the answer, whether or not the model happened to phrase it in a way
         // §14.65's regex recognises. The prose path stays for older agents and
         // supplies the human-readable text when it did match.
-        const typedFailure = ev.is_error === true || ev.terminal_reason === 'api_error';
+        // Codex reports SDK/app-server turn failures as subtype='error'. It
+        // does not have Claude's ResultMessage.is_error/terminal_reason
+        // fields, so ignoring subtype here turned a real Codex failure into a
+        // successful finish notification followed by an idle session.
+        const typedFailure = ev.is_error === true
+          || ev.terminal_reason === 'api_error'
+          || ev.subtype === 'error';
         const terminalError = this.pendingTerminalAssistantError
           ?? (typedFailure
             ? {
@@ -1418,16 +1424,17 @@ export class SessionStream {
           // marker below still advances: this stop has been dealt with.
           if (!this.isReplaying && isNewFinish && !bgPending) {
             const terminalError = this.terminalErrorLatched;
+            const providerLabel = this.kind === 'codex' ? 'Codex' : 'Claude';
             const terminalErrorLabel = this.terminalErrorKind === 'authentication'
               ? 'an authentication error'
               : 'an API error';
             this._maybePush(terminalError ? {
               title: `⚠ ${this.vpsName} · ${this._label()}`,
-              body: `Claude ended with ${terminalErrorLabel}`,
+              body: `${providerLabel} ended with ${terminalErrorLabel}`,
               tag: `stop-${this.id}`,
             } : {
               title: `✓ ${this.vpsName} · ${this._label()}`,
-              body: 'Claude finished its response',
+              body: `${providerLabel} finished its response`,
               tag: `stop-${this.id}`,
             });
             // Mirror the "finished" notification to Telegram (plain text, no
@@ -1439,8 +1446,8 @@ export class SessionStream {
             // off/unconfigured. (CLAUDE.md §7)
             sendPlainToTelegram(
               terminalError
-                ? `⚠ ${this.vpsName} · ${this._label()}\nClaude ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
-                : `✓ ${this.vpsName} · ${this._label()}\nClaude finished its response`,
+                ? `⚠ ${this.vpsName} · ${this._label()}\n${providerLabel} ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
+                : `✓ ${this.vpsName} · ${this._label()}\n${providerLabel} finished its response`,
               `/?session=${this.id}`,
             ).catch(() => {});
           }

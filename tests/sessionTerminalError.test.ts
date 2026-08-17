@@ -222,7 +222,7 @@ describe('terminal Claude assistant errors', () => {
     expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
   });
 
-  it('keeps ordinary and Codex turns on the normal finished path', () => {
+  it('keeps ordinary successful turns on the provider-correct finished path', () => {
     for (const [kind, text] of [
       ['claude', 'The requested work is complete.'],
       ['codex', 'API Error: this is Codex text and is outside this rule.'],
@@ -242,7 +242,24 @@ describe('terminal Claude assistant errors', () => {
       expect(stream.status).toBe('active');
       expect(sessionStatus()).toBe('active');
       expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
-        .toContain('Claude finished its response');
+        .toContain(`${kind === 'codex' ? 'Codex' : 'Claude'} finished its response`);
     }
+  });
+
+  it('treats a Codex subtype=error stop as a failed turn', () => {
+    const stream = createStream('codex');
+    stream._onAgentEvent({
+      event: 'error', session_id: SID, msg: 'turn: app-server rejected the request', seq: 40,
+    });
+    stream._onAgentEvent({
+      event: 'stop', session_id: SID, subtype: 'error', seq: 41,
+    });
+
+    expect(stream.status).toBe('failed');
+    expect(sessionStatus()).toBe('failed');
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+      .toContain('Codex ended with an API error');
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+      .not.toContain('finished its response');
   });
 });

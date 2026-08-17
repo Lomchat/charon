@@ -799,6 +799,9 @@ export type SessionListItem = ClaudeSession & {
    *  session not running), in which case the UI shows its derived handle as an
    *  unconfirmed prediction rather than asserting an address. §14.93 */
   cliName?: string | null;
+  /** True only when another live session can actually route a message to this
+   *  identity. A display/native thread name alone is not an address. */
+  addressable?: boolean;
 };
 export type ClaudeSessionsListResponse = {
   sessions: SessionListItem[];
