@@ -153,6 +153,9 @@ commit-by-commit — `git log` has the detail.
 
 ### Fixed
 
+- The stdlib-only agent test suite now supplies its own tiny Pydantic test
+  double for the Codex background-terminal response model, so clean CI runners
+  no longer fail only because a developer machine happened to have Pydantic.
 - Codex forks and newly-created external threads release the temporary
   app-server writer before the target resumes them; unmaterialized threads are
   no longer read with `includeTurns` before their first user message.

@@ -480,6 +480,24 @@ class TestCodexResume(unittest.TestCase):
         asyncio.run(main())
 
     def test_background_terminal_registry_becomes_common_task_lifecycle(self):
+        # The production Codex venv brings Pydantic through openai-codex, but
+        # the agent unit suite is deliberately stdlib-only. Do not let this
+        # test silently depend on whichever packages happen to be installed on
+        # the developer's system Python.
+        class FakeBaseModel:
+            @classmethod
+            def model_validate(cls, payload):
+                value = cls()
+                value.data = payload.get("data", [])
+                value.next_cursor = payload.get("nextCursor")
+                return value
+
+        fake_pydantic = types.SimpleNamespace(
+            BaseModel=FakeBaseModel,
+            ConfigDict=lambda **kwargs: kwargs,
+            Field=lambda default=None, **_kwargs: default,
+        )
+
         class Raw:
             def __init__(self):
                 self.rows = [{"processId": "pty-7", "command": "npm test", "cwd": "/repo"}]
@@ -492,7 +510,8 @@ class TestCodexResume(unittest.TestCase):
             s = _make_session(THREAD_ID)
             raw = Raw()
             s._client = types.SimpleNamespace(_client=raw)
-            await s._sync_background_terminals(start_monitor=False)
+            with mock.patch.dict(sys.modules, {"pydantic": fake_pydantic}):
+                await s._sync_background_terminals(start_monitor=False)
             self.assertEqual(raw.asserted[0], "thread/backgroundTerminals/list")
             self.assertEqual(s._emitted[-1], ("bg_task", {
                 "kind": "started", "task_id": "codex-terminal:pty-7",
@@ -500,7 +519,8 @@ class TestCodexResume(unittest.TestCase):
                 "status": "running",
             }))
             raw.rows = []
-            await s._sync_background_terminals(start_monitor=False)
+            with mock.patch.dict(sys.modules, {"pydantic": fake_pydantic}):
+                await s._sync_background_terminals(start_monitor=False)
             self.assertEqual(s._emitted[-1], ("bg_task", {
                 "kind": "finished", "task_id": "codex-terminal:pty-7",
                 "status": "completed", "terminal": True,
