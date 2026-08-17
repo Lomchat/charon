@@ -10,17 +10,16 @@ async function rowFor(id: string) {
   return db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get() ?? null;
 }
 
-/** Archive keeps the complete Charon DB transcript, but first stops the live
- * worker and then archives its Codex rollout through AsyncCodex. */
+/** Archive is the common reversible "remove from the workspace" operation.
+ * Both providers keep their complete Charon transcript. Codex additionally
+ * mirrors the state into its native thread archive; Claude has no native
+ * archive and therefore needs no remote metadata call. */
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = await rowFor(id);
   if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (row.kind !== 'codex' || !row.claudeSessionId) {
-    return NextResponse.json({ error: 'archive is only available for persisted Codex threads' }, { status: 400 });
-  }
   try {
     const client = getAgentClientForVpsId(row.vpsId);
     try {
@@ -33,10 +32,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     // while no process backs it.
     db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
       .where(eq(claudeSessions.id, id)).run();
-    const result = await client.call<{ ok?: boolean; error?: string }>('codex_archive_thread', {
-      thread_id: row.claudeSessionId,
-    });
-    if (!result?.ok) throw new Error(result?.error || 'Codex archive failed');
+    if (row.kind === 'codex' && row.claudeSessionId) {
+      const result = await client.call<{ ok?: boolean; error?: string }>('codex_archive_thread', {
+        thread_id: row.claudeSessionId,
+      });
+      if (!result?.ok) throw new Error(result?.error || 'Codex archive failed');
+    }
     db.transaction((tx) => {
       tx.update(claudeSessions).set({ archived: 1 })
         .where(eq(claudeSessions.id, id)).run();
@@ -62,14 +63,13 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const row = await rowFor(id);
   if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (row.kind !== 'codex' || !row.claudeSessionId) {
-    return NextResponse.json({ error: 'unarchive is only available for persisted Codex threads' }, { status: 400 });
-  }
   try {
-    const result = await getAgentClientForVpsId(row.vpsId).call<{ ok?: boolean; error?: string }>(
-      'codex_unarchive_thread', { thread_id: row.claudeSessionId },
-    );
-    if (!result?.ok) throw new Error(result?.error || 'Codex unarchive failed');
+    if (row.kind === 'codex' && row.claudeSessionId) {
+      const result = await getAgentClientForVpsId(row.vpsId).call<{ ok?: boolean; error?: string }>(
+        'codex_unarchive_thread', { thread_id: row.claudeSessionId },
+      );
+      if (!result?.ok) throw new Error(result?.error || 'Codex unarchive failed');
+    }
     db.update(claudeSessions).set({ archived: 0, status: 'sleeping', sleepRequested: 1, resumePending: 0 })
       .where(eq(claudeSessions.id, id)).run();
     emitGlobalSessionListChanged(id);

@@ -110,11 +110,11 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
 
   return (
     <div className={`git-tab${multi ? ' multi' : ''}`}>
-      {kind === 'codex' && sessionId && (
+      {sessionId && (
         <div className="gt-reviewbar">
-          <span>Review this working tree with Codex</span>
+          <span>Review this working tree with {kind === 'codex' ? 'Codex' : 'Claude'}</span>
           <button type="button" onClick={() => { setReviewError(null); setReviewOpen(true); }}
-            disabled={reviewing || busy} title="Run Codex code review">
+            disabled={reviewing || busy} title={`Run ${kind === 'codex' ? 'Codex' : 'Claude'} code review`}>
             <IconSparkle className="gt-sparkle" /> {reviewing ? 'starting…' : 'review'}
           </button>
         </div>
@@ -158,7 +158,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
         );
       })}
       {reviewOpen && (
-        <ReviewModal busy={reviewing} error={reviewError}
+        <ReviewModal provider={kind === 'codex' ? 'Codex' : 'Claude'} busy={reviewing} error={reviewError}
           onConfirm={(target, delivery) => { void doReview(target, delivery); }}
           onClose={() => { if (!reviewing) setReviewOpen(false); }} />
       )}

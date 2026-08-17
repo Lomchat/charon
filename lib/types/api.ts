@@ -1046,12 +1046,13 @@ export type ClaudeModelsRefreshResponse = {
 
 export type RevertClaudeEditBody = {
   filePath: string;
-  content: string | null;
 };
 export type RevertClaudeEditResponse = {
   ok: boolean;
-  code?: number;
-  stderr: string;
+  action?: 'restored' | 'deleted';
+  filePath?: string;
+  reason?: string;
+  error?: string;
 };
 
 export type SearchClaudeResult = {

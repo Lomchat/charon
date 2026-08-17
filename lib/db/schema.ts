@@ -193,10 +193,10 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
   codexConfig: text('codex_config'),
-  // Codex app-server archive state. Archived rows stay in SQLite with their
-  // complete Charon transcript, but disappear from the normal sidebar/list;
-  // the resume/import modal can unarchive them through the SDK. Claude rows
-  // always keep the default 0 because Claude has no native archive primitive.
+  // Common workspace archive. Rows keep their complete Charon transcript but
+  // disappear from normal list/resume/reconcile paths; ResumeModal restores
+  // either provider. Codex also mirrors this into its native SDK archive,
+  // while Claude has no remote archive primitive.
   archived: integer('archived').notNull().default(0),
   // The model id Anthropic ACTUALLY used on the last assistant turn, captured
   // from the agent's `effective_model` event (AssistantMessage.model — API
@@ -224,7 +224,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // hub restart mid-update and left sessions asleep forever (real incident:
   // WS_MASTER 2026-07-22). cf. CLAUDE.md §14.62.
   resumePending: integer('resume_pending').notNull().default(0),
-  // Tools the user answered "always allow" for, as a JSON array of tool names.
+  // Claude tools the user answered "always allow" for, as JSON tool names.
   //
   // §14.8 recorded this set as in-memory "by design", the permanent escape
   // hatch being permission_mode='auto'. In practice the hub restarts far more
@@ -234,8 +234,9 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // Deliberately NOT the SDK's `updated_permissions`: its only persistent
   // destination is `localSettings`, i.e. `.claude/settings.local.json` inside
   // the user's repo — which Charon does not even load (setting_sources is
-  // ['project']), so the rule would be written and never read again. Keeping
-  // the authority hub-side also keeps it revocable from the UI.
+  // ['project']), so the rule would be written and never read again. Never
+  // hydrate this for Codex: its broad card labels would grant unrelated
+  // commands; Codex owns exact session-scoped grants natively (§14.8/96).
   alwaysAllowTools: text('always_allow_tools'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')

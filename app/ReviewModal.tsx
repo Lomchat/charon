@@ -5,7 +5,8 @@ import { createPortal } from 'react-dom';
 
 type Kind = 'uncommittedChanges' | 'baseBranch' | 'commit' | 'custom';
 
-export default function ReviewModal({ busy, error, onConfirm, onClose }: {
+export default function ReviewModal({ provider, busy, error, onConfirm, onClose }: {
+  provider: 'Claude' | 'Codex';
   busy: boolean;
   error: string | null;
   onConfirm: (target: Record<string, unknown>, delivery: 'inline' | 'detached') => void;
@@ -28,7 +29,7 @@ export default function ReviewModal({ busy, error, onConfirm, onClose }: {
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="claude-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="review-title">
         <div className="fork-head">
-          <div><h2 id="review-title">Start Codex review</h2><p>Choose where the reviewer should work</p></div>
+          <div><h2 id="review-title">Start {provider} review</h2><p>Choose where the reviewer should work</p></div>
           <button type="button" className="modal-close" disabled={busy} onClick={onClose}>×</button>
         </div>
         <label className="nw-field"><span>Target</span>
@@ -51,7 +52,7 @@ export default function ReviewModal({ busy, error, onConfirm, onClose }: {
           </button>
           <button type="button" role="radio" aria-checked={delivery === 'detached'}
             className={delivery === 'detached' ? 'on' : ''} onClick={() => setDelivery('detached')}>
-            <b>New session</b><small>Keep review findings in a separate Codex thread</small>
+            <b>New session</b><small>Keep review findings in a separate {provider} session</small>
           </button>
         </div>
         {error && <p className="confirm-err">{error}</p>}

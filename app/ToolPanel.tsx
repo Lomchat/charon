@@ -202,12 +202,12 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
 
   if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
 
-  async function revert(filePath: string, before: string | null) {
+  async function revert(filePath: string) {
     if (!sessionId) return;
     if (!confirm(`Restore "${filePath}" to its initial state?`)) return;
     setBusy(filePath);
     try {
-      await api.revertClaudeEdit(sessionId, filePath, before);
+      await api.revertClaudeEdit(sessionId, filePath);
       onRevert();
     } catch (e: any) {
       alert('revert: ' + (e?.message ?? e));
@@ -232,7 +232,9 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
                   {!isCodex && (
                     <>
                       <button className="compare" onClick={() => setOpen(e)} title="compare side by side">⇄ split</button>
-                      <button className="revert" disabled={busy === e.filePath} onClick={() => revert(e.filePath, e.before)}>
+                      <button className="revert" disabled={busy === e.filePath || e.truncated}
+                        title={e.truncated ? 'Cannot safely restore a truncated snapshot' : 'Restore this exact snapshot if the file has not changed since'}
+                        onClick={() => revert(e.filePath)}>
                         {busy === e.filePath ? '…' : 'revert'}
                       </button>
                     </>

@@ -287,6 +287,21 @@ class WriteTest(unittest.TestCase):
         self.assertEqual(r["reason"], "too_large")
         self.assertEqual(self.read(), "one\n")   # untouched
 
+    def test_stale_delete_is_refused_and_current_file_survives(self):
+        before = F.fs_read(self.root, "a.txt")["sha256"]
+        with open(os.path.join(self.root, "a.txt"), "w") as f:
+            f.write("newer agent work\n")
+        r = F.fs_delete(self.root, "a.txt", expected_sha256=before)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "stale")
+        self.assertEqual(self.read(), "newer agent work\n")
+
+    def test_sha_gated_delete_removes_the_exact_file(self):
+        expected = F.fs_read(self.root, "a.txt")["sha256"]
+        r = F.fs_delete(self.root, "a.txt", expected_sha256=expected)
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "a.txt")))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

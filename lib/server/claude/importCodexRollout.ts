@@ -14,7 +14,8 @@ import type { ImportedMessage } from './importJsonl';
 //   tool_result                → {type,tool_use_id,content,is_error}
 // Reasoning items are skipped (as in the Claude importer), and edit_snapshot
 // rows are NOT produced: the rollout stores the apply_patch RESULT, not a
-// before/after pair, and Codex has no revert anyway (§14.59).
+// before/after pair. Charon deliberately does not offer revert for a bare
+// Codex patch because it has no exact pre-image or stale-write token (§14.59).
 const PARSE_PY = `
 import json, sys, os
 from pathlib import Path

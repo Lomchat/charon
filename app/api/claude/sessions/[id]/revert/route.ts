@@ -1,44 +1,111 @@
 import { NextResponse } from 'next/server';
-import { eq } from 'drizzle-orm';
-import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
+import { createHash } from 'node:crypto';
+import { and, desc, eq, lt } from 'drizzle-orm';
+import { db, claudeSessionMessages, claudeSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
+import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
+import { AgentRpcError } from '@/lib/server/agent/types';
+import { invalidateGitStatus } from '@/lib/server/claude/git';
 
-// POST /api/claude/sessions/[id]/revert
-// Body: { filePath: string, content: string | null }
-// If content === null -> deletes the file (case of a Write that created a
-// non-existent file). Otherwise writes the content (base64) to the VPS via SSH.
+type Snapshot = {
+  file_path?: unknown;
+  phase?: unknown;
+  tool_use_id?: unknown;
+  content?: unknown;
+  truncated?: unknown;
+};
+
+function parseSnapshot(content: string): Snapshot | null {
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' ? parsed as Snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Restore the latest exact Claude edit snapshot.
+ *
+ * The client chooses only a path. Before/after bodies come from trusted DB
+ * snapshots, never from the request, and the after-body SHA is an atomic
+ * precondition on fs_write/fs_delete. A later agent edit therefore produces
+ * `stale` instead of being overwritten or deleted. The agent also contains
+ * every path under the session cwd. */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
-  const s = await requireApiSession();
-  if (s instanceof Response) return s;
+  const auth = await requireApiSession();
+  if (auth instanceof Response) return auth;
   const { id } = await params;
-  const body = await req.json();
-  const filePath = String(body.filePath ?? '').trim();
-  if (!filePath || !filePath.startsWith('/')) {
-    return NextResponse.json({ error: 'absolute filePath required' }, { status: 400 });
-  }
-  const [sess] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
-  if (!sess) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, sess.vpsId)).all();
-  if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
+  const body = await req.json().catch(() => ({}));
+  const filePath = typeof body?.filePath === 'string' ? body.filePath.trim().slice(0, 8192) : '';
+  if (!filePath) return NextResponse.json({ ok: false, error: 'filePath required' }, { status: 400 });
 
-  // shQuote: protects against $, `, \, ', etc. in filePath (which may come
-  // from an edit_snapshot whose file_path is technically controllable on the
-  // VPS side). No unquoted interpolation anywhere.
-  const q = shQuote(filePath);
-
-  // Content null = delete the file (creation by Write)
-  if (body.content == null) {
-    const r = await sshExec(v, `rm -f -- ${q}`, { timeoutMs: 10_000 });
-    return NextResponse.json({ ok: r.ok, stderr: r.stderr.slice(-200) });
+  const [session] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
+  if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 });
+  if (session.kind !== 'claude') {
+    return NextResponse.json({ ok: false, error: 'Codex patch reverts are not available' }, { status: 400 });
   }
 
-  // Otherwise: pipe base64 -> base64 -d > file. The base64 is safe
-  // (restricted alphabet) but we still pass it via stdin to avoid the risk
-  // of an argv that's too long. echo '...' is enough here because the
-  // content is pure b64.
-  const b64 = Buffer.from(String(body.content), 'utf8').toString('base64');
-  const cmd = `mkdir -p "$(dirname ${q})" && echo ${shQuote(b64)} | base64 -d > ${q}`;
-  const r = await sshExec(v, cmd, { timeoutMs: 15_000 });
-  return NextResponse.json({ ok: r.ok, code: r.code, stderr: r.stderr.slice(-300) });
+  const [afterRow] = db.select().from(claudeSessionMessages).where(and(
+    eq(claudeSessionMessages.sessionId, id),
+    eq(claudeSessionMessages.role, 'edit_snapshot'),
+    eq(claudeSessionMessages.snapshotFilePath, filePath),
+    eq(claudeSessionMessages.snapshotPhase, 'after'),
+  )).orderBy(desc(claudeSessionMessages.id)).limit(1).all();
+  const after = afterRow ? parseSnapshot(afterRow.content) : null;
+  if (!afterRow || !after) {
+    return NextResponse.json({ ok: false, error: 'no completed edit snapshot exists for this file' }, { status: 409 });
+  }
+
+  const toolId = afterRow.snapshotToolUseId;
+  const beforeWhere = [
+    eq(claudeSessionMessages.sessionId, id),
+    eq(claudeSessionMessages.role, 'edit_snapshot'),
+    eq(claudeSessionMessages.snapshotFilePath, filePath),
+    eq(claudeSessionMessages.snapshotPhase, 'before'),
+    lt(claudeSessionMessages.id, afterRow.id),
+    ...(toolId ? [eq(claudeSessionMessages.snapshotToolUseId, toolId)] : []),
+  ];
+  const [beforeRow] = db.select().from(claudeSessionMessages)
+    .where(and(...beforeWhere)).orderBy(desc(claudeSessionMessages.id)).limit(1).all();
+  const before = beforeRow ? parseSnapshot(beforeRow.content) : null;
+  if (!beforeRow || !before) {
+    return NextResponse.json({ ok: false, error: 'the matching before snapshot is missing' }, { status: 409 });
+  }
+  if (after.truncated || before.truncated || afterRow.snapshotTruncated || beforeRow.snapshotTruncated) {
+    return NextResponse.json({ ok: false, error: 'snapshot is truncated; refusing an unsafe partial revert' }, { status: 409 });
+  }
+  const afterContent = typeof after.content === 'string' ? after.content : after.content === null ? null : undefined;
+  const beforeContent = typeof before.content === 'string' ? before.content : before.content === null ? null : undefined;
+  if (afterContent === undefined || beforeContent === undefined) {
+    return NextResponse.json({ ok: false, error: 'snapshot content is invalid' }, { status: 409 });
+  }
+  const expectedSha256 = afterContent === null ? ''
+    : createHash('sha256').update(afterContent, 'utf8').digest('hex');
+
+  try {
+    const client = getAgentClientForVpsId(session.vpsId);
+    const result = beforeContent === null
+      ? await client.call<{ ok?: boolean; error?: string; reason?: string }>('fs_delete', {
+        root: session.cwd, path: filePath, recursive: false,
+        expected_sha256: expectedSha256,
+      })
+      : await client.call<{ ok?: boolean; error?: string; reason?: string }>('fs_write', {
+        root: session.cwd, path: filePath, content: beforeContent,
+        expected_sha256: expectedSha256,
+      });
+    if (!result?.ok) {
+      return NextResponse.json({ ok: false, ...result }, {
+        status: result?.reason === 'stale' ? 409 : 400,
+      });
+    }
+    invalidateGitStatus(session.vpsId, session.cwd);
+    return NextResponse.json({
+      ok: true, action: beforeContent === null ? 'deleted' : 'restored', filePath,
+    });
+  } catch (e: unknown) {
+    if (e instanceof AgentRpcError && e.code === -32601) {
+      return NextResponse.json({ ok: false, reason: 'unsupported', error: 'update this VPS agent to revert safely' }, { status: 501 });
+    }
+    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 400 });
+  }
 }

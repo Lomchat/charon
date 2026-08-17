@@ -394,9 +394,9 @@ export const api = {
   // shortcut button without a warning.
   deleteClaudeSession: (id: string) =>
     send<DeleteClaudeSessionResponse>('DELETE', `/api/claude/sessions/${id}`),
-  archiveCodexSession: (id: string) =>
+  archiveSession: (id: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/archive`),
-  unarchiveCodexSession: (id: string) =>
+  unarchiveSession: (id: string) =>
     send<OkResponse>('DELETE', `/api/claude/sessions/${id}/archive`),
   renameClaudeSession: (id: string, name: string | null) =>
     send<ClaudeSession>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
@@ -507,8 +507,8 @@ export const api = {
     send<ClaudeModelsResponse>('GET', '/api/claude/models'),
   refreshClaudeModels: () =>
     send<ClaudeModelsRefreshResponse>('POST', '/api/claude/models/refresh'),
-  revertClaudeEdit: (id: string, filePath: string, content: string | null) =>
-    send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath, content }),
+  revertClaudeEdit: (id: string, filePath: string) =>
+    send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath }),
   searchClaude: (q: string) =>
     send<SearchClaudeResponse>('GET', `/api/claude/search?q=${encodeURIComponent(q)}`),
 

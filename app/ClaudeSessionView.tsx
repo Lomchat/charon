@@ -213,13 +213,13 @@ export default function ClaudeSessionView({
       setCompactError(String(e?.message || e));
     } finally { setCompacting(false); }
   }, [compacting, sessionId, status]);
-  const doRewind = useCallback(async (numTurns: number) => {
+  const doRewind = useCallback(async (messageId: string) => {
     if (rewinding || status === 'thinking') return;
     setRewinding(true); setRewindError(null);
     try {
       const r = await fetch(`/api/claude/sessions/${sessionId}/rollback`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ numTurns }),
+        body: JSON.stringify({ messageId }),
       });
       const j = await r.json().catch(() => null);
       if (!r.ok) throw new Error(j?.error || 'rewind failed');
@@ -670,10 +670,11 @@ export default function ClaudeSessionView({
           <button onClick={doCompact} disabled={compacting || status === 'thinking'}
             title="Compact the model context now">{compacting ? 'compacting…' : 'compact'}</button>
           {compactError && <span className="confirm-err" title={compactError}>compact failed</span>}
-          {sessionKind === 'codex' && <>
-            <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
-              disabled={rewinding || status === 'thinking'} title="Remove recent turns from Codex history">rewind</button>
-          </>}
+          <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
+            disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
+            title={status === 'sleeping' || status === 'error'
+              ? 'Resume the session before rewinding it'
+              : `Remove recent turns from ${sessionKind === 'codex' ? 'Codex' : 'Claude'} history`}>rewind</button>
           {/* Same-provider forks are native. Cross-provider forks import a
               portable model-visible transcript; Codex → Claude uses bounded
               VPS handoff files because Claude exposes no injection API. */}
@@ -939,8 +940,9 @@ export default function ClaudeSessionView({
           onClose={() => { if (!forking) setForkModalOpen(false); }}
         />
       )}
-      {rewindOpen && <RewindModal messages={messages} busy={rewinding} error={rewindError}
-        onConfirm={(turns) => { void doRewind(turns); }}
+      {rewindOpen && <RewindModal messages={messages}
+        provider={sessionKind === 'codex' ? 'Codex' : 'Claude'} busy={rewinding} error={rewindError}
+        onConfirm={(messageId) => { void doRewind(messageId); }}
         onClose={() => { if (!rewinding) setRewindOpen(false); }} />}
     </>
   );

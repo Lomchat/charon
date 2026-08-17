@@ -101,13 +101,15 @@ export default function ResumeModal({
   useEffect(() => { doScan(); }, [vpsId, kind, showArchivedCodex]); // eslint-disable-line
 
   // Normal session lists deliberately hide archived rows. Load them only
-  // while the Codex history tab is open so native archives remain recoverable
-  // without cluttering the sidebar or its steady-state polling payload.
+  // while that provider tab is open so archives remain recoverable without
+  // cluttering the sidebar or its steady-state polling payload.
   useEffect(() => {
     let cancelled = false;
-    if (kind !== 'codex' || !vpsId) { setArchivedDb([]); return; }
+    if (!vpsId) { setArchivedDb([]); return; }
     api.listClaudeSessions({ vpsId, includeArchived: true }).then((r) => {
-      if (!cancelled) setArchivedDb(r.sessions.filter((s) => s.kind === 'codex' && s.archived === 1));
+      if (!cancelled) setArchivedDb(r.sessions.filter(
+        (s) => (s.kind ?? 'claude') === kind && s.archived === 1,
+      ));
     }).catch(() => { if (!cancelled) setArchivedDb([]); });
     return () => { cancelled = true; };
   }, [kind, vpsId]);
@@ -123,7 +125,7 @@ export default function ResumeModal({
       // An SDK archived scan returns native archived threads. Import the
       // transcript first (so the session route has a DB row), then restore the
       // native thread before handing it back to the ordinary session flow.
-      if (kind === 'codex' && archivedScan) await api.unarchiveCodexSession(r.id);
+      if (kind === 'codex' && archivedScan) await api.unarchiveSession(r.id);
       onImported({ id: r.id, vpsId, cwd: s.cwd });
     } catch (e: any) {
       alert('import: ' + (e?.message ?? e));
@@ -143,7 +145,7 @@ export default function ResumeModal({
   async function unarchiveAndResume(id: string) {
     setBusy(id);
     try {
-      await api.unarchiveCodexSession(id);
+      await api.unarchiveSession(id);
       setArchivedDb((rows) => rows.filter((s) => s.id !== id));
       onResumed(id);
     } catch (e: any) {
@@ -225,7 +227,7 @@ export default function ResumeModal({
           </label>
         )}
 
-        {kind === 'codex' && archivedInDb.length > 0 && (
+        {archivedInDb.length > 0 && (
           <>
             <h3>archived in DB ({archivedInDb.length})</h3>
             <ul className="resume-list">

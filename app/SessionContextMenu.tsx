@@ -47,7 +47,7 @@ type Props = {
                                      // sleeping/error). Placed above
                                      // Delete.
   onKill?: () => void;               // "Close" — shell/install only
-  onArchive?: () => void;            // native Codex archive (reversible)
+  onArchive?: () => void;            // common reversible workspace archive
   onDelete?: () => void;
   onClose: () => void;
 };
@@ -166,7 +166,7 @@ export default function SessionContextMenu({
       )}
       {onArchive && (
         <button type="button" onClick={() => { onArchive(); onClose(); }}>
-          Archive Codex thread
+          Archive session
         </button>
       )}
       {onKill && (

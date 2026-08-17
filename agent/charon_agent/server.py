@@ -365,6 +365,67 @@ class Server:
         self.schedule_save()
         return s
 
+    async def _rewind_claude_session(self, session: Any,
+                                     up_to_message_id: str | None) -> dict[str, Any]:
+        """Replace one live Claude handle with a truncated native branch.
+
+        Claude has no rollback primitive. Its supported transcript fork is the
+        equivalent operation: branch at the last message we keep, stop the old
+        writer, then restart this Charon session against the branch. With no
+        anchor we restart fresh. The old transcript stays on disk and files are
+        deliberately untouched.
+        """
+        old_id = getattr(session, "claude_session_id", None)
+        if not isinstance(old_id, str) or not old_id:
+            raise RpcError(ERR_INVALID_PARAMS, "session has no transcript to rewind")
+        if getattr(session, "status", None) in ("thinking", "starting"):
+            raise RpcError(ERR_INVALID_PARAMS, "cannot rewind while a Claude turn is running")
+
+        new_id: str | None = None
+        if up_to_message_id:
+            try:
+                from claude_agent_sdk import fork_session as _fork
+                result = await asyncio.to_thread(
+                    _fork, old_id, directory=getattr(session, "cwd", None),
+                    up_to_message_id=up_to_message_id,
+                    title=getattr(session, "name", None),
+                )
+            except FileNotFoundError as e:
+                raise RpcError(ERR_INVALID_PARAMS, f"transcript not found: {e}")
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            new_id = getattr(result, "session_id", None) or (
+                result.get("session_id") if isinstance(result, dict) else None)
+            if not isinstance(new_id, str) or not new_id:
+                raise RpcError(ERR_INTERNAL, "Claude rewind fork returned no session id")
+
+        # Release the old native writer before starting the replacement. A new
+        # queue is intentional: stop() injects an EOF sentinel and a timeout
+        # can leave stale input behind; neither may leak into the new history.
+        await session.stop(mark="sleeping")
+        session.claude_session_id = new_id
+        session._stdin_queue = asyncio.Queue()
+        session._stopped.clear()
+        session._ready_evt.clear()
+        session._session_id_emitted = False
+        session._main_task = None
+        session._client = None
+        session._client_ctx = None
+        session._cli_title_value = None
+        session._error_msg = None
+        session.status = "starting"
+        if new_id:
+            session._emit("session_id", claude_session_id=new_id)
+        await session._save_state()
+        await session.start()
+        self.schedule_save()
+        return {
+            "ok": True,
+            "strategy": "fork" if new_id else "fresh",
+            "old_claude_session_id": old_id,
+            "claude_session_id": new_id,
+        }
+
     async def _restore_existing(self) -> None:
         """At boot: reload state.json and attempt a resume for each session.
 
@@ -647,9 +708,11 @@ class Server:
                 str(params.get("to") or ""))
 
         if method == "fs_delete":
+            exp = params.get("expected_sha256")
             return await asyncio.to_thread(
                 _fs_delete, str(params.get("root") or ""), str(params.get("path") or ""),
-                bool(params.get("recursive")))
+                bool(params.get("recursive")),
+                None if exp is None else str(exp))
 
         if method == "fs_search":
             # Tree-wide search (agent >= 0.29.0). The heaviest read this daemon
@@ -1204,17 +1267,20 @@ class Server:
         if method == "rollback_session":
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "rewind is only supported for Codex sessions")
-            num_turns = params.get("num_turns")
-            if not isinstance(num_turns, int) or isinstance(num_turns, bool) or not 1 <= num_turns <= 100:
-                raise RpcError(ERR_INVALID_PARAMS, "num_turns must be an integer from 1 to 100")
-            try:
-                return await s_.rollback(num_turns)
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex rewind failed: {e}")
+            if getattr(s_, "kind", "claude") == "codex":
+                num_turns = params.get("num_turns")
+                if not isinstance(num_turns, int) or isinstance(num_turns, bool) or not 1 <= num_turns <= 100:
+                    raise RpcError(ERR_INVALID_PARAMS, "num_turns must be an integer from 1 to 100")
+                try:
+                    return await s_.rollback(num_turns)
+                except Exception as e:
+                    if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                        raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                    raise RpcError(ERR_INTERNAL, f"Codex rewind failed: {e}")
+            up_to = params.get("up_to_message_id")
+            if up_to is not None and (not isinstance(up_to, str) or not up_to):
+                raise RpcError(ERR_INVALID_PARAMS, "up_to_message_id must be a non-empty string or null")
+            return await self._rewind_claude_session(s_, up_to)
 
         if method == "review_session":
             sid = self._require_sid(params)

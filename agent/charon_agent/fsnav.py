@@ -417,12 +417,17 @@ def fs_rename(root: str, path: str, to: str) -> dict[str, Any]:
         return {"ok": False, "error": str(e), "reason": "error"}
 
 
-def fs_delete(root: str, path: str, recursive: bool = False) -> dict[str, Any]:
+def fs_delete(root: str, path: str, recursive: bool = False,
+              expected_sha256: str | None = None) -> dict[str, Any]:
     """Delete a file, or a directory when `recursive`.
 
     A non-empty directory without `recursive` is refused with
     `reason: 'not_empty'` so the caller can ask the question with the real
     stakes on screen rather than guessing them.
+
+    `expected_sha256` gives file deletion the same stale-write protection as
+    fs_write. It is used by edit revert: if an agent changed the file after the
+    snapshot, the older UI action must not delete the newer work.
     """
     try:
         target = _contained(root, path)
@@ -431,6 +436,15 @@ def fs_delete(root: str, path: str, recursive: bool = False) -> dict[str, Any]:
         # Deleting the root itself would take the session's cwd with it.
         if target == os.path.realpath(os.path.expanduser(root)):
             return {"ok": False, "error": "refusing to delete the root folder", "reason": "bad_path"}
+        if expected_sha256 is not None:
+            current = _file_sha(target) if os.path.isfile(target) else ""
+            if current != expected_sha256:
+                return {
+                    "ok": False, "reason": "stale",
+                    "error": ("the file was deleted on the VPS" if not os.path.exists(target)
+                              else "the file changed on the VPS since the snapshot"),
+                    "sha256": current,
+                }
         if not os.path.exists(target) and not os.path.islink(target):
             return {"ok": False, "error": "not found", "reason": "missing"}
 

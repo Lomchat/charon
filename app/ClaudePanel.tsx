@@ -1412,9 +1412,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
   }
 
-  async function archiveCodexOne(id: string) {
+  async function archiveOne(id: string) {
     try {
-      await api.archiveCodexSession(id);
+      await api.archiveSession(id);
       const tab = resolvedTabs.find((t) => t.kind === 'session' && t.ref === id);
       if (tab) await closeWorkspaceTab(tab.id);
       if (id === selectedId) setSelectedId(null);
@@ -2048,9 +2048,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               ? () => sleepOne(ctxMenu.session.id)
               : undefined
           }
-          onArchive={ctxMenu.session.kind === 'codex'
-            ? () => archiveCodexOne(ctxMenu.session.id)
-            : undefined}
+          onArchive={() => archiveOne(ctxMenu.session.id)}
           onDelete={() => setConfirmDelete(ctxMenu.session)}
           onClose={() => setCtxMenu(null)}
         />

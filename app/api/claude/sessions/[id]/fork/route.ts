@@ -20,6 +20,7 @@ import {
   splitUtf8,
 } from '@/lib/server/claude/forkHistory';
 import { randomBytes } from 'crypto';
+import { allocateSessionHandle } from '@/lib/server/agent/sessionHandles';
 
 /**
  * Heavy diff payloads are NOT carried into the branch: `edit_snapshot` rows are
@@ -173,12 +174,14 @@ async function forkToClaude(
   }
 
   const newId = randomBytes(8).toString('hex');
+  const handle = allocateSessionHandle(source.vpsId, { id: newId, name, cwd: source.cwd });
   db.insert(claudeSessions).values({
     id: newId,
     claudeSessionId: forked.claude_session_id,
     vpsId: source.vpsId,
     cwd: source.cwd,
     name,
+    handle,
     kind: 'claude',
     status: 'sleeping',
     permissionMode: source.permissionMode,
@@ -314,9 +317,10 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
     }) as { claude_session_id?: string };
     if (!forked?.claude_session_id) throw new Error('Codex fork returned no thread id');
     const newId = randomBytes(8).toString('hex');
+    const handle = allocateSessionHandle(source.vpsId, { id: newId, name, cwd: source.cwd });
     db.insert(claudeSessions).values({
       id: newId, claudeSessionId: forked.claude_session_id,
-      vpsId: source.vpsId, cwd: source.cwd, name, kind: 'codex',
+      vpsId: source.vpsId, cwd: source.cwd, name, handle, kind: 'codex',
       status: 'sleeping', permissionMode: source.permissionMode,
       model: source.model, effort: source.effort, codexConfig: source.codexConfig,
       position: nextSessionPosition(source.vpsId),

@@ -1310,6 +1310,10 @@ class CodexSession:
                     **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
 
     async def rollback(self, num_turns: int) -> dict[str, Any]:
+        try:
+            await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError("Codex thread did not become ready for rewind") from e
         if self._client is None or not self.claude_session_id:
             raise RuntimeError("Codex thread is not ready")
         if self._active_turn is not None:
@@ -1347,7 +1351,8 @@ class CodexSession:
             await self._client._client.thread_archive(old_id)
         except Exception:
             pass
-        return {"ok": True, "thread": self._json_safe(response_thread), "strategy": "fork"}
+        return {"ok": True, "thread": self._json_safe(response_thread),
+                "strategy": "fork", "claude_session_id": new_id}
 
     @staticmethod
     def _thread_status_type(thread: Any) -> str:
