@@ -303,6 +303,74 @@ class TestCodexResume(unittest.TestCase):
 
         asyncio.run(captured())
 
+    def test_rewind_uses_a_partial_fork_without_deprecated_rollback(self):
+        class LiveThread(FakeThread):
+            async def read(self, *, include_turns=False):
+                self.include_turns = include_turns
+                turns = [types.SimpleNamespace(id=f"turn-{index}") for index in range(3)]
+                return types.SimpleNamespace(thread=types.SimpleNamespace(turns=turns))
+
+        class Raw:
+            def __init__(self):
+                self.forks = []
+                self.archives = []
+
+            async def thread_fork(self, thread_id, params):
+                self.forks.append((thread_id, params))
+                return types.SimpleNamespace(thread=types.SimpleNamespace(id="REWOUND"))
+
+            async def thread_archive(self, thread_id):
+                self.archives.append(thread_id)
+
+        class Client:
+            def __init__(self): self._client = Raw()
+
+        async def captured():
+            s = _make_session(THREAD_ID)
+            s._client = Client()
+            s._thread = LiveThread(THREAD_ID)
+            api = types.ModuleType("openai_codex.api")
+            api.AsyncThread = lambda _client, thread_id: FakeThread(thread_id)
+            package = types.ModuleType("openai_codex"); package.__path__ = []
+            with mock.patch.dict(sys.modules, {"openai_codex": package, "openai_codex.api": api}):
+                result = await s.rollback(2)
+            self.assertEqual(result["strategy"], "fork")
+            self.assertEqual(s.claude_session_id, "REWOUND")
+            self.assertEqual(s._client._client.forks[0][1]["lastTurnId"], "turn-0")
+            self.assertEqual(s._client._client.archives, [THREAD_ID])
+
+        asyncio.run(captured())
+
+    def test_rewind_before_first_prompt_starts_a_blank_thread(self):
+        class LiveThread(FakeThread):
+            async def read(self, *, include_turns=False):
+                return types.SimpleNamespace(
+                    thread=types.SimpleNamespace(turns=[types.SimpleNamespace(id="turn-0")]))
+
+        class Raw:
+            def __init__(self): self.archives = []
+            async def thread_archive(self, thread_id): self.archives.append(thread_id)
+
+        class Client:
+            def __init__(self): self._client = Raw()
+
+        async def captured():
+            s = _make_session(THREAD_ID)
+            s._client = Client()
+            s._thread = LiveThread(THREAD_ID)
+
+            async def start_blank(_client, *, resume):
+                self.assertFalse(resume)
+                return FakeThread("BLANK")
+
+            s._sdk_thread_start = start_blank
+            result = await s.rollback(1)
+            self.assertEqual(result["thread"], {"id": "BLANK"})
+            self.assertEqual(s.claude_session_id, "BLANK")
+            self.assertEqual(s._client._client.archives, [THREAD_ID])
+
+        asyncio.run(captured())
+
     def test_codex_subagents_are_scoped_and_nested(self):
         root = THREAD_ID
         rows = [

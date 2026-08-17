@@ -1225,41 +1225,40 @@ class CodexSession:
             raise RuntimeError("Codex thread is not ready")
         if self._active_turn is not None:
             raise RuntimeError("cannot rewind while a Codex turn is running")
-        from openai_codex.generated.v2_all import ThreadRollbackResponse
-        try:
-            response = await self._client._client.request(
-                "thread/rollback",
-                {"threadId": self.claude_session_id, "numTurns": num_turns},
-                response_model=ThreadRollbackResponse,
-            )
-            return {"ok": True, "thread": self._json_safe(getattr(response, "thread", None)),
-                    "strategy": "rollback"}
-        except Exception as e:
-            if getattr(e, "code", None) != -32601:
-                raise
-        # thread/rollback is deprecated. On servers that removed it, replace
-        # this session's native handle with a fork ending at the last kept
-        # completed turn. Files are still deliberately untouched.
+        # thread/rollback is deprecated with no replacement. Use the supported
+        # fork primitive directly and replace this session's native handle with
+        # a branch ending at the last kept completed turn. Rewinding before the
+        # first prompt becomes a fresh thread. Files remain deliberately
+        # untouched in both cases.
         read = await self._thread.read(include_turns=True)
         turns = list(getattr(getattr(read, "thread", None), "turns", None) or [])
+        if num_turns > len(turns):
+            raise RuntimeError("rewind exceeds the available Codex turns")
         kept = turns[:-num_turns]
-        if not kept:
-            raise RuntimeError("cannot rewind every turn after thread/rollback removal; fork before the first prompt instead")
         old_id = self.claude_session_id
-        result = await self._client._client.thread_fork(old_id, {
-            "cwd": self.cwd, "lastTurnId": getattr(kept[-1], "id", None),
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
-        })
-        from openai_codex.api import AsyncThread
-        self.claude_session_id = result.thread.id
-        self._thread = AsyncThread(self._client, result.thread.id)
-        self._emit("session_id", claude_session_id=result.thread.id)
+        if kept:
+            result = await self._client._client.thread_fork(old_id, {
+                "cwd": self.cwd, "lastTurnId": getattr(kept[-1], "id", None),
+                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            })
+            from openai_codex.api import AsyncThread
+            new_thread = AsyncThread(self._client, result.thread.id)
+            response_thread = result.thread
+        else:
+            new_thread = await self._sdk_thread_start(self._client, resume=False)
+            response_thread = {"id": getattr(new_thread, "id", None)}
+        new_id = getattr(new_thread, "id", None)
+        if not new_id:
+            raise RuntimeError("Codex rewind produced no replacement thread id")
+        self.claude_session_id = new_id
+        self._thread = new_thread
+        self._emit("session_id", claude_session_id=new_id)
         await self._save_state()
         try:
             await self._client._client.thread_archive(old_id)
         except Exception:
             pass
-        return {"ok": True, "thread": self._json_safe(result.thread), "strategy": "fork"}
+        return {"ok": True, "thread": self._json_safe(response_thread), "strategy": "fork"}
 
     @staticmethod
     def _thread_status_type(thread: Any) -> str:

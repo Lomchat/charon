@@ -196,11 +196,23 @@ async function forkToClaude(
   // (re-reading model/effort from the row we just wrote, §14.35). If it fails
   // the row stays 'sleeping' and resumable — the fork itself already worked.
   let started = false;
+  let startError: unknown = null;
   try {
     await resumeSession(newId);
     started = true;
-    await sendReplacement(newId, replacementPrompt);
-  } catch {}
+  } catch (e) { startError = e; }
+  if (replacementPrompt?.trim()) {
+    try {
+      // sendUserMessage also auto-resumes. Give an edited branch one last
+      // self-healing attempt, but never claim success if its replacement
+      // prompt was not actually accepted.
+      await sendReplacement(newId, replacementPrompt);
+      started = true;
+    } catch (e: any) {
+      await deleteSession(newId);
+      return NextResponse.json({ error: String(e?.message || startError || e) }, { status: 400 });
+    }
+  }
 
   emitGlobalSessionListChanged(newId);
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
@@ -312,10 +324,19 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
     const copied = copyVisibleTranscript(source.id, newId, cutoffId);
     insertForkMarker(source, newId, 'codex', cutoffId);
     let started = false;
+    let startError: unknown = null;
     try {
       await resumeSession(newId); started = true;
-      await sendReplacement(newId, replacementPrompt);
-    } catch {}
+    } catch (e) { startError = e; }
+    if (replacementPrompt?.trim()) {
+      try {
+        await sendReplacement(newId, replacementPrompt);
+        started = true;
+      } catch (e: any) {
+        await deleteSession(newId);
+        throw new Error(String(e?.message || startError || e));
+      }
+    }
     emitGlobalSessionListChanged(newId);
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
     return NextResponse.json({ ok: true, session: { ...row, codexConfig: undefined },

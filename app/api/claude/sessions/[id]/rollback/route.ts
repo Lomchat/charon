@@ -8,8 +8,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 
 /** Drop the last N Codex turns from BOTH model history and Charon's replay.
- * Files are deliberately untouched: app-server's deprecated rollback primitive
- * only rewinds conversation context, so the confirmation UI says that plainly. */
+ * Files are deliberately untouched: the agent replaces the native handle with
+ * a fork ending at the selected turn, so the confirmation UI says that plainly. */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
@@ -35,7 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
   }
 
-  // App-server has already committed the rollback. Mirror exactly from the
+  // The agent has already swapped in the truncated native thread. Mirror from the
   // earliest removed user prompt onward so a browser refresh cannot resurrect
   // model-forgotten turns from SQLite.
   const userRows = db.select({ id: claudeSessionMessages.id })
