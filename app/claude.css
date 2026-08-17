@@ -1705,8 +1705,7 @@
 }
 .compaction-marker .cm-label { flex: 0 1 auto; text-align: center; }
 
-.codex-plan-card,
-.codex-activity-card {
+.codex-plan-card {
   margin: 8px 2px;
   padding: 10px 12px;
   border: 1px solid rgba(168, 184, 224, 0.28);
@@ -1722,9 +1721,7 @@
 .codex-plan-card li { display: flex; gap: 8px; line-height: 1.35; }
 .codex-plan-card li > span { width: 14px; color: var(--lavender); font-family: var(--mono); }
 .codex-plan-card li[class*="complete"] { color: var(--parchment-soft); }
-.codex-plan-card pre,
-.codex-activity-card pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); }
-.codex-activity-card summary { cursor: pointer; }
+.codex-plan-card pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); }
 /* Fork boundary — same separator shape as the compaction marker, but lavender:
    that one is a loss (the model forgot), this one is an inheritance. */
 .fork-marker {
@@ -4040,6 +4037,18 @@
 .claude-input-bar .mode-switch .m-btn.on.full-access {
   background: rgba(255,120,90,0.14); border-color: #ff785a; color: #ff785a;
 }
+.claude-input-bar .mode-switch .m-btn.reviewer-toggle {
+  margin-top: 3px; border-style: dashed; min-width: 138px;
+}
+.claude-input-bar .mode-switch .m-btn.reviewer-toggle .reviewer-state {
+  margin-left: auto; font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.08em; color: var(--parchment-soft);
+}
+.claude-input-bar .mode-switch .m-btn.reviewer-toggle.on {
+  background: rgba(127,191,127,0.12); border-color: #7fbf7f;
+  border-style: solid; color: #9bd49b;
+}
+.claude-input-bar .mode-switch .m-btn.reviewer-toggle.on .reviewer-state { color: #9bd49b; }
 
 /* Codex unified-diff: dimmed file/patch header lines (--- +++ @@ envelopes). */
 .dline.meta { color: var(--parchment-soft); opacity: 0.5; }

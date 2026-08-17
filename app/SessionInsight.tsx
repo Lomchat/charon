@@ -32,7 +32,7 @@ type SubAgent = { id: string; parent_id?: string | null; depth?: number; name?: 
 type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; cpuPercent?: number | null; rss_kb?: number | null; rssKb?: number | null };
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
-type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[] };
+type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[]; profile_reason?: string; runtime_reason?: string; runtime_error?: string };
 type Skill = { name?: string; path?: string; description?: string; enabled?: boolean; short_description?: string | null };
 type CodexApp = { id?: string; name?: string; description?: string | null; is_accessible?: boolean; is_enabled?: boolean; install_url?: string | null };
 type Resources = { ok?: boolean; error?: string; reason?: string; skills?: Skill[]; apps?: CodexApp[]; skill_errors?: unknown[] };
@@ -103,12 +103,12 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
     ? ctx.percentage
     : (ctx?.total_tokens && ctx?.max_tokens ? (ctx.total_tokens / ctx.max_tokens) * 100 : null);
 
-  const updateSecurity = useCallback(async (reviewer: 'user' | 'auto_review', profile: string | null) => {
+  const updateSecurity = useCallback(async (patch: { reviewer?: 'user' | 'auto_review'; permissionProfile?: string | null }) => {
     setSecurityBusy(true);
     try {
       const r = await fetch(`/api/claude/sessions/${sessionId}/security`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer, permissionProfile: profile }),
+        body: JSON.stringify(patch),
       });
       const data = await r.json().catch(() => null);
       setSecurity(data);
@@ -163,27 +163,21 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       </section>
 
       {isCodex && <section className="si-sec">
-        <h4>permissions</h4>
+        <h4>permission profiles</h4>
         {security?.ok ? <>
-          <label className="si-control">
-            <span>reviewer</span>
-            <select disabled={securityBusy} value={security.reviewer ?? 'user'} onChange={(e) => {
-              void updateSecurity(e.target.value as 'user' | 'auto_review', security.permission_profile ?? null);
-            }}>
-              <option value="user">ask me</option>
-              <option value="auto_review">Approve for me</option>
-            </select>
-          </label>
           <label className="si-control">
             <span>profile</span>
             <select disabled={securityBusy} value={security.permission_profile ?? ''} onChange={(e) => {
-              void updateSecurity(security.reviewer ?? 'user', e.target.value || null);
+              void updateSecurity({ permissionProfile: e.target.value || null });
             }}>
               <option value="">legacy sandbox</option>
               {(security.profiles ?? []).map((profile) => <option key={profile.id} value={profile.id}
                 disabled={profile.allowed === false}>{profile.id}{profile.allowed === false ? ' (blocked)' : ''}</option>)}
             </select>
           </label>
+          {(security.profile_reason === 'unsupported' || security.runtime_reason || security.runtime_error) && (
+            <p className="si-none">profiles unavailable until the Codex session is running on a compatible agent</p>
+          )}
           {!!security.denials?.length && <div className="si-denials">
             <p className="si-line">recent denials</p>
             {security.denials.map((denial) => <div className="si-denial" key={denial.review_id}>

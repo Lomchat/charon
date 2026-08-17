@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 import types
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -42,6 +43,34 @@ class TestCodexPermissions(unittest.TestCase):
         saved = s.to_persist()["codex_config"]
         self.assertEqual(saved["approvalsReviewer"], "auto_review")
         self.assertEqual(saved["permissionProfile"], ":workspace")
+
+    def test_missing_profile_catalog_does_not_hide_reviewer(self):
+        class Unsupported(RuntimeError):
+            code = -32601
+
+        class Raw:
+            async def request(self, *_args, **_kwargs):
+                raise Unsupported("no permissionProfile/list")
+
+        async def main():
+            s, _ = session()
+            s.codex_config["approvals_reviewer"] = "auto_review"
+            s._client = types.SimpleNamespace(_client=Raw())
+            generated = types.ModuleType("openai_codex.generated.v2_all")
+            generated.PermissionProfileListResponse = object
+            package = types.ModuleType("openai_codex"); package.__path__ = []
+            generated_package = types.ModuleType("openai_codex.generated"); generated_package.__path__ = []
+            with mock.patch.dict(sys.modules, {
+                "openai_codex": package,
+                "openai_codex.generated": generated_package,
+                "openai_codex.generated.v2_all": generated,
+            }):
+                result = await s.security_status()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["reviewer"], "auto_review")
+            self.assertEqual(result["profile_reason"], "unsupported")
+
+        asyncio.run(main())
 
     def test_command_allow_once_and_session(self):
         async def main(always):

@@ -944,7 +944,9 @@ export class SessionStream {
           type: 'tool_activity' as const, kind: ev.kind, id,
           status: ev.status, detail: ev.detail,
         };
-        if (!this._replayAlreadyPersisted(ev)) this._persist('event', payload);
+        // Hooks/progress/status are live control-plane state. Persisting them
+        // created raw JSON cards on replay and grew the transcript for no user
+        // value; consumers that need a signal still receive the broadcast.
         this._broadcast(payload);
         break;
       }

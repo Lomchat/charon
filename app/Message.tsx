@@ -64,7 +64,10 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
   if (m.role === 'plan') return <PlanCard m={m} />;
-  if (m.role === 'activity') return <ActivityCard m={m} />;
+  // Low-level Codex lifecycle signals used to render as expandable raw-JSON
+  // cards. They are session state, not conversation, and are now deliberately
+  // absent from the transcript (old cached rows included).
+  if (m.role === 'activity') return null;
 
   const isAssistant = m.role === 'assistant';
   // A message relayed from ANOTHER session drives the turn exactly like one the
@@ -214,17 +217,6 @@ function PlanCard({ m }: { m: Msg }) {
         })}</ol>
       ) : <pre>{String(plan.text ?? '')}</pre>}
     </div>
-  );
-}
-
-function ActivityCard({ m }: { m: Msg }) {
-  let ev: any = {};
-  try { ev = JSON.parse(m.content); } catch {}
-  return (
-    <details className="codex-activity-card">
-      <summary><span className="tag">{String(ev.kind ?? 'codex')}</span> {String(ev.status ?? 'updated')}</summary>
-      {ev.detail != null && <pre>{JSON.stringify(ev.detail, null, 2)}</pre>}
-    </details>
   );
 }
 

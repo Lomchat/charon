@@ -54,7 +54,7 @@ export function rebuildStateFromMessages(
   // launch tool_use (run_in_background) contributes the command string.
   const bgMap = new Map<string, BgTask>();
   const bgLaunches = new Map<string, BgLaunchCandidate>();
-  // Live plan/activity events are keyed and replace their previous value.
+  // Live plan events are keyed and replace their previous value.
   // Rebuild must preserve that invariant: the durable log can legitimately
   // contain several updates for one key (notably ThreadGoalUpdated), and
   // blindly appending all of them produced a wall of identical "goal
@@ -125,12 +125,8 @@ export function rebuildStateFromMessages(
             content: JSON.stringify(ev), createdAt: m.createdAt,
           });
         }
-        if (ev.type === 'tool_activity') {
-          replaceLiveMessage({
-            id: `activity:${String(ev.id ?? m.id)}`, role: 'activity',
-            content: JSON.stringify(ev), createdAt: m.createdAt,
-          });
-        }
+        // Historical tool_activity rows are intentionally ignored. They are
+        // control-plane state, not messages from the user or agent.
         // The branch point. Everything above was inherited from the session
         // this one was forked from — the model has it too, which is the whole
         // reason we copied it — and everything below belongs to this branch.

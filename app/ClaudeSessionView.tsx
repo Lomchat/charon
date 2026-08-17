@@ -1022,6 +1022,53 @@ const ChatInputBar = memo(function ChatInputBar({
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
+  const [codexReviewer, setCodexReviewer] = useState<'user' | 'auto_review'>('user');
+  const [reviewerReady, setReviewerReady] = useState(false);
+  const [reviewerBusy, setReviewerBusy] = useState(false);
+  const [reviewerDeferred, setReviewerDeferred] = useState(false);
+  const [reviewerError, setReviewerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isCodex) return;
+    const controller = new AbortController();
+    setReviewerReady(false);
+    setReviewerError(null);
+    void fetch(`/api/claude/sessions/${sessionId}/security`, { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.ok) throw new Error(data?.error || 'reviewer unavailable');
+        if (!controller.signal.aborted) {
+          setCodexReviewer(data.reviewer === 'auto_review' ? 'auto_review' : 'user');
+          setReviewerDeferred(data.applied === false);
+          setReviewerReady(true);
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setReviewerError(String(error?.message || error));
+      });
+    return () => controller.abort();
+  }, [isCodex, sessionId]);
+
+  const toggleCodexReviewer = useCallback(async () => {
+    if (!isCodex || !reviewerReady || reviewerBusy) return;
+    const next = codexReviewer === 'auto_review' ? 'user' : 'auto_review';
+    setReviewerBusy(true);
+    setReviewerError(null);
+    try {
+      const response = await fetch(`/api/claude/sessions/${sessionId}/security`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reviewer: next }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) throw new Error(data?.error || 'reviewer update failed');
+      setCodexReviewer(data.reviewer === 'auto_review' ? 'auto_review' : 'user');
+      setReviewerDeferred(data.applied === false);
+    } catch (error: any) {
+      setReviewerError(String(error?.message || error));
+    } finally {
+      setReviewerBusy(false);
+    }
+  }, [codexReviewer, isCodex, reviewerBusy, reviewerReady, sessionId]);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1256,9 +1303,9 @@ const ChatInputBar = memo(function ChatInputBar({
   return (
     <footer className="claude-input-bar">
       {isCodex ? (
-        // Sandbox is independent from who reviews escalations. The session
-        // inspector exposes human vs Approve-for-me and named profiles.
-        <div className="mode-switch codex" role="radiogroup" aria-label="sandbox mode">
+        // Sandbox and reviewer are independent, but both are safety controls
+        // the user needs beside the prompt — not hidden in the calls panel.
+        <div className="mode-switch codex" role="group" aria-label="Codex safety controls">
           {CODEX_SANDBOX_MODES.map((m) => {
             const meta = CODEX_MODE_META[m];
             return (
@@ -1274,6 +1321,24 @@ const ChatInputBar = memo(function ChatInputBar({
               </button>
             );
           })}
+          <button
+            type="button" role="switch"
+            aria-checked={codexReviewer === 'auto_review'}
+            className={`m-btn reviewer-toggle${codexReviewer === 'auto_review' ? ' on' : ''}`}
+            disabled={!reviewerReady || reviewerBusy}
+            onClick={() => void toggleCodexReviewer()}
+            title={reviewerError || (reviewerDeferred
+              ? 'Saved in Charon — applies when this Codex session next resumes on the updated agent'
+              : codexReviewer === 'auto_review'
+              ? 'Approve for me is ON — Codex auto-reviews permission escalations; click to ask you instead'
+              : 'Approve for me is OFF — Codex asks you; click to let its reviewer decide')}
+          >
+            <span className="m-glyph">✓</span>
+            <span className="m-label">approve for me</span>
+            <span className="reviewer-state">{reviewerBusy ? '…' : reviewerDeferred
+              ? `${codexReviewer === 'auto_review' ? 'on' : 'off'} · resume`
+              : codexReviewer === 'auto_review' ? 'on' : 'off'}</span>
+          </button>
         </div>
       ) : (
         <div className="mode-switch" role="radiogroup" aria-label="permission mode">

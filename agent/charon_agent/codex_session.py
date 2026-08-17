@@ -770,8 +770,19 @@ class CodexSession:
                 "force_reloaded": bool(force_reload),
             }
         except Exception as e:
-            return {"ok": False, "error": f"permissionProfile/list: {e}",
-                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+            # ApprovalsReviewer is independent from the beta profile catalog.
+            # A server without permissionProfile/list must still expose and
+            # allow changing ask-me vs auto-review.
+            if getattr(e, "code", None) == -32601:
+                return {
+                    "ok": True,
+                    "reviewer": self.codex_config.get("approvals_reviewer", "user"),
+                    "permission_profile": self.codex_config.get("permission_profile"),
+                    "profiles": [],
+                    "denials": [dict(row) for row in self._guardian_denials],
+                    "profile_reason": "unsupported",
+                }
+            return {"ok": False, "error": f"permissionProfile/list: {e}"}
 
     async def set_security(self, reviewer: str, permission_profile: str | None) -> dict[str, Any]:
         if reviewer not in ("user", "auto_review"):

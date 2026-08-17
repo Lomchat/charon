@@ -1006,13 +1006,8 @@ export function useClaudeSessionStream(
           break;
         case 'tool_activity':
           if (ev.kind === 'filesystem') publishFsChanged(vpsIdRef.current, (ev.detail as any)?.paths);
-          setMessages((prev) => {
-            const id = `activity:${ev.id}`;
-            const row = { id, role: 'activity', content: JSON.stringify(ev),
-              createdAt: Math.floor(Date.now() / 1000) };
-            const idx = prev.findIndex((m) => m.id === id);
-            return idx < 0 ? [...prev, row] : prev.map((m, i) => i === idx ? row : m);
-          });
+          // Status/MCP/hook/fs invalidations are control-plane signals. Keep
+          // their side effects, but never turn raw protocol JSON into chat.
           break;
         case 'stop':
           flushAssistantBuf();
