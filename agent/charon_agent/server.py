@@ -955,6 +955,15 @@ class Server:
                     if not isinstance(name, str) or not name:
                         raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
                     return await s_.mcp_reconnect(name)
+                if method == "list_subagents":
+                    return await s_.subagents()
+                if method == "get_subagent_messages":
+                    agent_id = params.get("agent_id")
+                    if not isinstance(agent_id, str) or not agent_id:
+                        raise RpcError(ERR_INVALID_PARAMS, "agent_id must be a non-empty string")
+                    limit = params.get("limit")
+                    return await s_.subagent_messages(
+                        agent_id, int(limit) if isinstance(limit, int) else 400)
                 return {"ok": False, "error": "not available on Codex sessions"}
             if method == "session_identity":
                 return s_.identity()

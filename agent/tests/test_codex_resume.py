@@ -303,6 +303,38 @@ class TestCodexResume(unittest.TestCase):
 
         asyncio.run(captured())
 
+    def test_codex_subagents_are_scoped_and_nested(self):
+        root = THREAD_ID
+        rows = [
+            types.SimpleNamespace(id="child", parent_thread_id=root, agent_nickname="worker",
+                                  name=None, agent_role="explorer", preview="inspect", status={"type": "idle"}, created_at=1),
+            types.SimpleNamespace(id="grandchild", parent_thread_id="child", agent_nickname=None,
+                                  name="nested", agent_role=None, preview="deep", status={"type": "active"}, created_at=2),
+            types.SimpleNamespace(id="unrelated", parent_thread_id="elsewhere", agent_nickname=None,
+                                  name="other", agent_role=None, preview="no", status={"type": "idle"}, created_at=3),
+        ]
+        class Raw:
+            async def request(self, *_args, **_kwargs):
+                return types.SimpleNamespace(data=rows, next_cursor=None)
+        class Client:
+            _client = Raw()
+        generated = types.ModuleType("openai_codex.generated.v2_all")
+        generated.ThreadListResponse = object
+        package = types.ModuleType("openai_codex"); package.__path__ = []
+        generated_package = types.ModuleType("openai_codex.generated"); generated_package.__path__ = []
+
+        async def captured():
+            s = _make_session(root); s._client = Client()
+            with mock.patch.dict(sys.modules, {
+                "openai_codex": package, "openai_codex.generated": generated_package,
+                "openai_codex.generated.v2_all": generated,
+            }):
+                result = await s.subagents()
+            self.assertEqual([a["id"] for a in result["agents"]], ["child", "grandchild"])
+            self.assertEqual([a["depth"] for a in result["agents"]], [1, 2])
+
+        asyncio.run(captured())
+
     def test_set_name_and_compact_use_the_live_thread(self):
         async def main():
             s = _make_session(THREAD_ID)

@@ -5361,6 +5361,9 @@
   border-radius: 4px; color: inherit; cursor: pointer; font-size: 10px; padding: 1px 5px; }
 .si-agent { background: none; border: 0; color: inherit; cursor: pointer;
   font-size: 11px; padding: 3px 0; text-align: left; width: 100%; }
+.si-agent small { color: var(--parchment-soft); font-weight: 400; }
+.si-agent-preview { margin: -1px 0 3px 14px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--parchment-soft); font-size: 9.5px; }
 .si-transcript { max-height: 320px; overflow-y: auto; margin: 4px 0 8px 10px;
   border-left: 2px solid rgba(106,115,136,0.35); padding-left: 8px; }
 .si-msg { margin-bottom: 6px; }

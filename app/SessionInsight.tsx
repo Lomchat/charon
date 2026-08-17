@@ -28,6 +28,7 @@ type Ctx = {
 type McpServer = { name?: string | null; status?: string | null; tool_count?: number | null; error?: string | null };
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
+type SubAgent = { id: string; parent_id?: string | null; depth?: number; name?: string | null; role?: string | null; preview?: string; status?: string };
 type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; cpuPercent?: number | null; rss_kb?: number | null; rssKb?: number | null };
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
@@ -47,7 +48,7 @@ function why(r: { reason?: string; error?: string } | null): string | null {
 export default function SessionInsight({ sessionId, isCodex }: { sessionId: string; isCodex: boolean }) {
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [mcp, setMcp] = useState<Mcp | null>(null);
-  const [agents, setAgents] = useState<string[] | null>(null);
+  const [agents, setAgents] = useState<SubAgent[] | null>(null);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -64,8 +65,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       const [c, m, a, bt, sec, res] = await Promise.all([
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
-        isCodex ? Promise.resolve(null)
-          : fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
+        fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
         isCodex
           ? fetch(`/api/claude/sessions/${sessionId}/background-terminals`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
@@ -77,7 +77,8 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
           : Promise.resolve(null),
       ]);
       setCtx(c); setMcp(m);
-      setAgents(Array.isArray(a?.agents) ? a.agents : null);
+      setAgents(Array.isArray(a?.agents) ? a.agents.map((item: string | SubAgent) =>
+        typeof item === 'string' ? { id: item, depth: 1 } : item) : null);
       setTerminals(Array.isArray(bt?.terminals) ? bt.terminals : null);
       setSecurity(sec);
       setResources(res);
@@ -331,16 +332,18 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         </ul> : <p className="si-none">none running</p>}
       </section>}
 
-      {!isCodex && <section className="si-sec">
+      <section className="si-sec">
         <h4>sub-agents{agents?.length ? ` (${agents.length})` : ''}</h4>
         {agents?.length ? (
           <ul className="si-agents">
-            {agents.map((id) => (
-              <li key={id}>
-                <button type="button" className="si-agent" onClick={() => void openTranscript(id)}>
-                  {openAgent === id ? '▾' : '▸'} {id.slice(0, 24)}
+            {agents.map((agent) => (
+              <li key={agent.id} style={{ paddingLeft: `${Math.max(0, (agent.depth ?? 1) - 1) * 10}px` }}>
+                <button type="button" className="si-agent" onClick={() => void openTranscript(agent.id)}>
+                  {openAgent === agent.id ? '▾' : '▸'} {agent.name || agent.role || agent.id.slice(0, 24)}
+                  {agent.status && <small> · {agent.status}</small>}
                 </button>
-                {openAgent === id && (
+                {agent.preview && <div className="si-agent-preview">{agent.preview}</div>}
+                {openAgent === agent.id && (
                   <div className="si-transcript">
                     {agentMsgs == null ? <em>loading…</em>
                       : agentMsgs.length === 0 ? <em>empty transcript</em>
@@ -358,7 +361,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         ) : (
           <p className="si-none">none spawned</p>
         )}
-      </section>}
+      </section>
     </div>
   );
 }

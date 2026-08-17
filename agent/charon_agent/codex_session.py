@@ -859,6 +859,99 @@ class CodexSession:
         )
         return {"ok": True, "effective_enabled": bool(response.effective_enabled)}
 
+    async def _codex_descendants(self) -> list[tuple[Any, int]]:
+        """List this thread's descendants without assuming parent filters.
+
+        0.147 exposes parentThreadId on Thread but not in ThreadListParams, so
+        fetch the bounded sub-agent catalog and build the tree locally.
+        """
+        if self._client is None or not self.claude_session_id:
+            return []
+        from openai_codex.generated.v2_all import ThreadListResponse
+        rows: list[Any] = []
+        cursor = None
+        while len(rows) < 500:
+            response = await self._client._client.request(
+                "thread/list", {
+                    "cwd": self.cwd, "sourceKinds": ["subAgent", "subAgentReview",
+                    "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"],
+                    "limit": 100, "sortKey": "created_at", "sortDirection": "asc",
+                    **({"cursor": cursor} if cursor else {}),
+                }, response_model=ThreadListResponse,
+            )
+            rows.extend(response.data or [])
+            cursor = response.next_cursor
+            if not cursor:
+                break
+        children: dict[str, list[Any]] = {}
+        for row in rows:
+            parent = getattr(row, "parent_thread_id", None)
+            if isinstance(parent, str):
+                children.setdefault(parent, []).append(row)
+        out: list[tuple[Any, int]] = []
+        queue = [(child, 1) for child in children.get(self.claude_session_id, [])]
+        seen: set[str] = set()
+        while queue and len(out) < 200:
+            row, depth = queue.pop(0)
+            tid = getattr(row, "id", None)
+            if not isinstance(tid, str) or tid in seen:
+                continue
+            seen.add(tid)
+            out.append((row, depth))
+            queue[0:0] = [(child, depth + 1) for child in children.get(tid, [])]
+        return out
+
+    async def subagents(self) -> dict[str, Any]:
+        descendants = await self._codex_descendants()
+        agents = []
+        for thread, depth in descendants:
+            status = self._json_safe(getattr(thread, "status", None))
+            root = status.get("root", status) if isinstance(status, dict) else status
+            agents.append({
+                "id": getattr(thread, "id", None),
+                "parent_id": getattr(thread, "parent_thread_id", None),
+                "depth": depth,
+                "name": getattr(thread, "agent_nickname", None) or getattr(thread, "name", None),
+                "role": getattr(thread, "agent_role", None),
+                "preview": str(getattr(thread, "preview", "") or "")[:500],
+                "status": root.get("type") if isinstance(root, dict) else str(root or ""),
+                "created_at": getattr(thread, "created_at", None),
+            })
+        return {"ok": True, "agents": agents}
+
+    async def subagent_messages(self, agent_id: str, limit: int = 400) -> dict[str, Any]:
+        descendants = await self._codex_descendants()
+        allowed = {str(getattr(thread, "id", "")) for thread, _depth in descendants}
+        if agent_id not in allowed:
+            return {"ok": False, "error": "thread is not a descendant of this session"}
+        response = await self._client._client.thread_read(agent_id, include_turns=True)
+        thread = getattr(response, "thread", None)
+        messages: list[dict[str, Any]] = []
+        for turn in (getattr(thread, "turns", None) or []):
+            for wrapped in (getattr(turn, "items", None) or []):
+                item = getattr(wrapped, "root", wrapped)
+                kind = type(item).__name__
+                role, content = None, ""
+                if kind == "UserMessageThreadItem":
+                    role = "user"
+                    parts = []
+                    for value in (getattr(item, "content", None) or []):
+                        value = getattr(value, "root", value)
+                        text = getattr(value, "text", None)
+                        if isinstance(text, str): parts.append(text)
+                    content = "\n".join(parts)
+                elif kind == "AgentMessageThreadItem":
+                    role, content = "assistant", str(getattr(item, "text", "") or "")
+                elif "Reasoning" in kind:
+                    role = "thinking"
+                    content = self._stringify(self._json_safe(item))
+                if role and content:
+                    messages.append({"role": role, "content": content[:8000],
+                                     "turn_id": getattr(turn, "id", None)})
+                    if len(messages) >= max(1, min(limit, 400)):
+                        return {"ok": True, "messages": messages}
+        return {"ok": True, "messages": messages}
+
     async def set_model(self, model: str | None, fallback_model: str | None = None) -> None:
         # Codex applies model per-turn → the change takes effect on the NEXT
         # turn with NO sleep+resume needed. applied_at_next_start=False tells
