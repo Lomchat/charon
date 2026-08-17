@@ -528,3 +528,39 @@ export const api = {
   pushUnsubscribe: (endpoint: string) =>
     send<OkResponse>('POST', '/api/claude/push/unsubscribe', { endpoint }),
 };
+
+/**
+ * Canonical provider-neutral session client for new code.
+ *
+ * The HTTP paths and the original `api.*Claude*` members intentionally stay
+ * stable: third-party callers and old dashboard code already depend on them.
+ * Keeping this as a thin reference-only facade gives Claude and Codex one
+ * vocabulary without duplicating requests or creating a flag-day rename.
+ */
+export const sessionApi = {
+  list: api.listClaudeSessions,
+  get: api.getClaudeSession,
+  loadOlder: api.loadOlderClaudeMessages,
+  pollSince: api.pollClaudeSessionSince,
+  getEdits: api.getClaudeSessionEdits,
+  create: api.createClaudeSession,
+  import: api.importClaudeSession,
+  remove: api.deleteClaudeSession,
+  archive: api.archiveSession,
+  unarchive: api.unarchiveSession,
+  rename: api.renameClaudeSession,
+  updateHandle: api.updateSessionHandle,
+  sleep: api.sleepClaudeSession,
+  resume: api.resumeClaudeSession,
+  restart: api.restartClaudeSession,
+  sendInput: api.sendClaudeInput,
+  interrupt: api.interruptClaude,
+  forceStop: api.forceStopClaude,
+  stopBackgroundTask: api.stopClaudeBgTask,
+  respondPermission: api.respondClaudePermission,
+  respondQuestion: api.respondClaudeQuestion,
+  respondExitPlan: api.respondClaudeExitPlan,
+  setMode: api.setClaudeMode,
+  setModel: api.setClaudeSessionModel,
+  setEffort: api.setClaudeSessionEffort,
+} as const;

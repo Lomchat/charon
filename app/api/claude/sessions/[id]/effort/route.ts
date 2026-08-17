@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { isKnownEffort } from '@/lib/server/claude/modelSync';
+import { isSessionEffort } from '@/lib/sessionCapabilities';
 
 // POST /api/claude/sessions/[id]/effort
 // Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }
@@ -24,12 +25,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
   // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
   // the final gate for both (drops a level its SDK/model doesn't know).
-  const CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   let effort: string | null;
   if (raw == null || raw === '') {
     effort = null;
   } else if (typeof raw === 'string' &&
-             (stream.kind === 'codex' ? CODEX_EFFORTS.includes(raw) : isKnownEffort(raw))) {
+             (stream.kind === 'codex' ? isSessionEffort('codex', raw) : isKnownEffort(raw))) {
     effort = raw;
   } else {
     return NextResponse.json(

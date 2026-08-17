@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '@/lib/api';
+import { api, sessionApi } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import ModelPicker from './ModelPicker';
@@ -10,9 +10,12 @@ import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { IconTerminal } from './icons';
 import type {
-  AgentKind, CodexSandboxMode, CodexSessionConfig, ProviderSessionConfig,
+  AgentKind, CodexSessionConfig, ProviderSessionConfig,
 } from '@/lib/types/api';
-import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
+import {
+  CODEX_SANDBOX_MODES, defaultSessionMode, sessionCapabilities,
+  type CodexSandboxMode,
+} from '@/lib/sessionCapabilities';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 
@@ -106,6 +109,7 @@ export default function NewSessionWizard({
   const vpsSearchRef = useSearchAutoFocus<HTMLInputElement>(step === 'vps');
 
   const isCodex = kind === 'agent' && selKind === 'codex';
+  const capabilities = sessionCapabilities(selKind);
 
   // Optional per-session config (agent only). Blank = inherit the global
   // default (claude.default_* / codex.default_*). Codex has no fallback model
@@ -529,15 +533,15 @@ export default function NewSessionWizard({
           const skills = claudeSkills.split('\n').map((v) => v.trim()).filter(Boolean);
           sessionConfig = { ...shared, skills: skills.length ? skills : null };
         }
-        const r = await api.createClaudeSession({
+        const r = await sessionApi.create({
           vpsId: vps.id, cwd: path!.trim(),
           name: name.trim() || null,
           kind: selKind,
           // Codex mode = a sandbox level; Claude keeps the historical 'auto'.
-          permissionMode: isCodex ? codexSandbox : 'auto',
+          permissionMode: isCodex ? codexSandbox : defaultSessionMode(selKind, 'create'),
           model: model.trim() || null,
           // Codex has no fallback-model concept (server ignores it anyway).
-          fallbackModel: isCodex ? null : (fallbackModel.trim() || null),
+          fallbackModel: capabilities.fallbackModel === 'none' ? null : (fallbackModel.trim() || null),
           effort: effort || null,
           sessionConfig,
         });

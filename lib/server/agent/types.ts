@@ -1,34 +1,39 @@
 // TypeScript mirror of the agent's JSON-RPC protocol (agent/charon_agent/protocol.py).
 // Events are aligned with lib/server/claude/types.ts (BridgeEvent) — the wire
 // type differs slightly: we have an "event" string instead of a "type".
+import type {
+  ClaudeEffort, ClaudeMode, CodexEffort as ProviderCodexEffort,
+  CodexSandboxMode as ProviderCodexSandboxMode,
+  SessionEffort, SessionMode as ProviderSessionMode, SessionProvider,
+} from '@/lib/sessionCapabilities';
 
 // Agent-type discriminator (multi-agent support). 'claude' = Claude Agent SDK
 // (ClaudeSDKClient), 'codex' = OpenAI Codex (openai-codex → codex app-server).
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = SessionProvider;
 
-export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
+export type PermissionMode = ClaudeMode;
 
 // Codex's "mode" is a SANDBOX level (the guardrail). Human/auto approval is
 // independent (`approvalsReviewer`) and uses the common permission cards.
 // Both mode namespaces share the historical permission_mode DB field.
-export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
+export type CodexSandboxMode = ProviderCodexSandboxMode;
 
 // Superset used wherever a session's mode is read regardless of kind.
-export type SessionMode = PermissionMode | CodexSandboxMode;
+export type SessionMode = ProviderSessionMode;
 
 // Mirrors claude_agent_sdk.EffortLevel literal. Newer SDK versions may add
 // values; if so, also extend this union (the agent silently drops unknown
 // effort values, so adding new ones here without bumping the agent is safe).
 // 'ultracode' = Charon pseudo-effort (xhigh + dynamic-workflow orchestration),
 // applied agent-side via options.settings, not the SDK effort kwarg (§14.56).
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+export type EffortLevel = ClaudeEffort;
 
 // Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's
 // Workflow-delegation tier (the analog of Claude's 'ultracode').
-export type CodexEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type CodexEffort = ProviderCodexEffort;
 
 // Superset effort used at the wire/hub level regardless of kind.
-export type AnyEffort = EffortLevel | CodexEffort;
+export type AnyEffort = SessionEffort;
 
 export type AgentSessionStatus =
   | 'starting'

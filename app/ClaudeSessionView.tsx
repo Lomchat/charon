@@ -1,10 +1,12 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
-import type { SessionListItem, AgentKind, CodexSandboxMode, SessionAttachment } from '@/lib/types/api';
-import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
-import type { PermissionMode, AccountUsage } from '@/lib/server/claude/types';
-import { api } from '@/lib/api';
+import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
+import type { AccountUsage } from '@/lib/server/claude/types';
+import {
+  CODEX_SANDBOX_MODES, sessionCapabilities,
+  type CodexSandboxMode, type SessionMode,
+} from '@/lib/sessionCapabilities';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
@@ -16,7 +18,7 @@ import ExitPlanCard from './ExitPlanCard';
 import type {
   PermissionRequest, PendingQuestion, PendingExitPlan, ToolCallEntry,
 } from './sessionTypes';
-import { useClaudeSessionStream, type StreamCache } from './useClaudeSessionStream';
+import { useAgentSessionStream, type StreamCache } from './useClaudeSessionStream';
 import ModelPicker from './ModelPicker';
 import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
@@ -25,8 +27,6 @@ import AgentLogo from './AgentLogo';
 import ForkModal from './ForkModal';
 import RewindModal from './RewindModal';
 
-// A session's mode is a Claude permission mode OR a Codex sandbox level.
-type SessionMode = PermissionMode | CodexSandboxMode;
 import {
   getCached, fetchAndCache, invalidate as invalidateCache,
   extendWithOlder as extendCacheWithOlder,
@@ -122,7 +122,7 @@ export default function ClaudeSessionView({
   onOpenTools,
   onOpenSession,
 }: Props) {
-  const stream = useClaudeSessionStream(sessionId, {
+  const stream = useAgentSessionStream(sessionId, {
     cache: sharedCacheRef,
     onKilled,
   });
@@ -1019,6 +1019,8 @@ const ChatInputBar = memo(function ChatInputBar({
   siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
 }) {
   const isCodex = kind === 'codex';
+  const capabilities = sessionCapabilities(kind);
+  const hasAutoReviewer = capabilities.autoReviewer !== 'none';
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
@@ -1030,7 +1032,7 @@ const ChatInputBar = memo(function ChatInputBar({
   const [reviewerError, setReviewerError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isCodex) return;
+    if (!hasAutoReviewer) return;
     const controller = new AbortController();
     setReviewerReady(false);
     setReviewerError(null);
@@ -1048,10 +1050,10 @@ const ChatInputBar = memo(function ChatInputBar({
         if (!controller.signal.aborted) setReviewerError(String(error?.message || error));
       });
     return () => controller.abort();
-  }, [isCodex, sessionId]);
+  }, [hasAutoReviewer, sessionId]);
 
   const toggleCodexReviewer = useCallback(async () => {
-    if (!isCodex || !reviewerReady || reviewerBusy) return;
+    if (!hasAutoReviewer || !reviewerReady || reviewerBusy) return;
     const next = codexReviewer === 'auto_review' ? 'user' : 'auto_review';
     setReviewerBusy(true);
     setReviewerError(null);
@@ -1069,7 +1071,7 @@ const ChatInputBar = memo(function ChatInputBar({
     } finally {
       setReviewerBusy(false);
     }
-  }, [codexReviewer, isCodex, reviewerBusy, reviewerReady, sessionId]);
+  }, [codexReviewer, hasAutoReviewer, reviewerBusy, reviewerReady, sessionId]);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1322,7 +1324,7 @@ const ChatInputBar = memo(function ChatInputBar({
               </button>
             );
           })}
-          <button
+          {hasAutoReviewer && <button
             type="button" role="switch"
             aria-checked={codexReviewer === 'auto_review'}
             className={`m-btn reviewer-toggle${codexReviewer === 'auto_review' ? ' on' : ''}`}
@@ -1339,7 +1341,7 @@ const ChatInputBar = memo(function ChatInputBar({
             <span className="reviewer-state">{reviewerBusy ? '…' : reviewerDeferred
               ? `${codexReviewer === 'auto_review' ? 'on' : 'off'} · resume`
               : codexReviewer === 'auto_review' ? 'on' : 'off'}</span>
-          </button>
+          </button>}
         </div>
       ) : (
         <div className="mode-switch" role="radiogroup" aria-label="permission mode">
@@ -1736,6 +1738,8 @@ function ModelEffortBadges({
   onApplyNow?: () => Promise<void> | void;
 }) {
   const isCodex = kind === 'codex';
+  const capabilities = sessionCapabilities(kind);
+  const hasFallbackModel = capabilities.fallbackModel !== 'none';
   const [open, setOpen] = useState(false);
   // Local edit buffers — only committed on Save so a half-typed model
   // doesn't fire an RPC per keystroke (the SDK would log an error per
@@ -1782,7 +1786,7 @@ function ModelEffortBadges({
       // moved, so this is free.
       const nextModel = draftModel.trim() || null;
       // Codex has no fallback model — always submit null so it can't leak in.
-      const nextFallback = isCodex ? null : (draftFallback.trim() || null);
+      const nextFallback = hasFallbackModel ? (draftFallback.trim() || null) : null;
       const nextEffort = draftEffort === '' ? null : draftEffort;
       if (nextModel !== (model ?? null) || nextFallback !== (fallbackModel ?? null)) {
         await onSetModel(nextModel, nextFallback);
@@ -1809,14 +1813,14 @@ function ModelEffortBadges({
   // is benign; or session bound to old model so configured swap was ignored
   // — that's the gotcha §35 footgun and worth a stronger color. Claude-only
   // (the binding caveat is Anthropic-side; Codex has no such trap).
-  const mismatch = !isCodex && !!model && !!effectiveModel && effectiveModel !== model
+  const mismatch = hasFallbackModel && !!model && !!effectiveModel && effectiveModel !== model
     && !(['opus', 'sonnet', 'haiku'].includes(model)); // aliases legitimately resolve to a different id
   // Codex applies model/effort/mode on the NEXT TURN (the *_changed events
   // carry applied_at_next_start=false) → never show the deferred ⏳ / ↻ badge.
   const anyPending = !isCodex && (modelPendingApply || effortPendingApply);
   const titleParts: string[] = [];
   titleParts.push(`configured model: ${model ?? '(global default)'}`);
-  if (!isCodex && fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
+  if (hasFallbackModel && fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
   if (effectiveModel) titleParts.push(`effective (API-confirmed): ${effectiveModel}`);
   titleParts.push(`effort: ${effort ?? '(global default)'}`);
   if (mismatch) titleParts.push(
@@ -1972,7 +1976,7 @@ function ModelEffortBadges({
             )}
           </label>
           {/* Codex has no fallback-model concept — hide the control entirely. */}
-          {!isCodex && (
+          {hasFallbackModel && (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
               <ModelPicker

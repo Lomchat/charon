@@ -168,7 +168,7 @@ function ToolPanel({
                 tab rather than each taking their own: six tab labels already
                 do not fit in 340px (§11), and all three answer "what is the
                 state of this session, beyond the transcript". */}
-            {sessionId && <SessionInsight sessionId={sessionId} isCodex={kind === 'codex'} />}
+            {sessionId && <SessionInsight sessionId={sessionId} kind={kind} />}
             <CallsTab calls={toolCalls} />
           </>
         )}

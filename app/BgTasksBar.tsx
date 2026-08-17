@@ -1,6 +1,6 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { api } from '@/lib/api';
+import { sessionApi } from '@/lib/api';
 import { effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 
@@ -89,7 +89,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
   const kill = useCallback(async (taskId: string) => {
     setKilling((k) => ({ ...k, [taskId]: 'pending' }));
     try {
-      await api.stopClaudeBgTask(sessionId, taskId);
+      await sessionApi.stopBackgroundTask(sessionId, taskId);
     } catch (e: any) {
       setKilling((k) => ({ ...k, [taskId]: e?.message ?? 'failed' }));
     }

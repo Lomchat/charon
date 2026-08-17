@@ -530,3 +530,14 @@ export type Shell = typeof shells.$inferSelect;
 export type TabRow = typeof tabs.$inferSelect;
 export type ClaudeSetting = typeof claudeSettings.$inferSelect;
 export type ClaudePushSub = typeof claudePushSubs.$inferSelect;
+
+// Provider-neutral names for new code. The SQL/table identifiers stay
+// `claude_*` for migration and plugin compatibility; these aliases make that
+// historical storage detail stop leaking into shared Claude/Codex semantics.
+export type AgentSession = ClaudeSession;
+export type AgentSessionMessageRow = ClaudeSessionMessageRow;
+export type AgentSessionMessage = ClaudeSessionMessage;
+export type AgentPendingPermission = ClaudePendingPermission;
+export type AgentPendingQuestion = ClaudePendingQuestion;
+export type AgentSessionAttachment = ClaudeSessionAttachment;
+export type AgentSessionLog = ClaudeSessionLog;

@@ -1,15 +1,13 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
+import { defaultSessionMode, isSessionMode } from '@/lib/sessionCapabilities';
 
 // POST /api/claude/sessions/[id]/mode { mode }
 // Kind-aware:
 //   claude → 'normal' | 'acceptEdits' | 'auto' | 'plan'
 //   codex  → 'read-only' | 'workspace-write' | 'full-access' (sandbox level;
 //            its independent reviewer is configured through /security).
-const CLAUDE_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
-const CODEX_MODES = ['read-only', 'workspace-write', 'full-access'] as const;
-
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -17,9 +15,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const stream = getOrCreateStream(id);
   if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
-  const allowed: readonly string[] = stream.kind === 'codex' ? CODEX_MODES : CLAUDE_MODES;
-  const fallback = stream.kind === 'codex' ? 'workspace-write' : 'normal';
-  const mode = allowed.includes(body?.mode) ? body.mode : fallback;
+  const mode = isSessionMode(stream.kind, body?.mode)
+    ? body.mode
+    : defaultSessionMode(stream.kind, 'runtime');
   try {
     await stream.setPermissionMode(mode as any);
     return NextResponse.json({ ok: true, mode });

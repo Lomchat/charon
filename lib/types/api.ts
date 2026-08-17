@@ -11,12 +11,19 @@ import type {
 import type { PermissionMode, WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
+import type {
+  CodexEffort, CodexSandboxMode, SessionProvider,
+} from '@/lib/sessionCapabilities';
 
 // Re-export so consumers don't have to know the source
 export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
   ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
   ClaudePushSub, PermissionMode, WorkerStatus, AccountUsage, ShellInfo,
   InstallInfo, InstallStatus };
+export type {
+  AgentSession, AgentSessionMessage, AgentPendingPermission,
+  AgentPendingQuestion, AgentSessionAttachment, AgentSessionLog,
+} from '@/lib/db/schema';
 
 // Account usage (the `/usage` gauges) for a VPS. `usage` = the Claude account
 // (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
@@ -27,14 +34,14 @@ export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: Accoun
 // ── Multi-agent (Claude + Codex) discriminator & Codex config ────────────────
 // Duplicated here (not imported from server-only agent/types.ts) to keep client
 // bundles clean, mirroring the ClaudeEffortLevel pattern below.
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = SessionProvider;
 // Codex "mode" is its sandbox level. Human/automatic approval is a separate
 // reviewer choice; both providers use Charon's common permission cards.
-export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
-export const CODEX_SANDBOX_MODES: CodexSandboxMode[] = ['read-only', 'workspace-write', 'full-access'];
+export { CODEX_SANDBOX_MODES } from '@/lib/sessionCapabilities';
+export type { CodexSandboxMode } from '@/lib/sessionCapabilities';
 // Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's
 // Workflow-delegation tier (analog of Claude's 'ultracode').
-export type CodexEffortLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+export type CodexEffortLevel = CodexEffort;
 export const CODEX_CANONICAL_EFFORTS: CodexEffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
 
 // GET /api/codex/models?vpsId=… — Codex model catalog for a VPS (account-driven,
@@ -997,6 +1004,25 @@ export type RespondExitPlanBody = {
 
 export type SetClaudeModeBody = { mode: PermissionMode | CodexSandboxMode };
 export type SetClaudeModeResponse = { ok: true; mode: PermissionMode | CodexSandboxMode };
+
+// Canonical provider-neutral aliases. Historical `Claude*` names remain part
+// of the public TypeScript surface so existing extensions do not break.
+export type AgentSessionListQuery = ClaudeSessionListQuery;
+export type AgentSessionsListResponse = ClaudeSessionsListResponse;
+export type AgentSessionDetailResponse = ClaudeSessionDetailResponse;
+export type AgentSessionMessageWindow = ClaudeSessionMessageWindow;
+export type AgentSessionEditsResponse = ClaudeSessionEditsResponse;
+export type CreateAgentSessionBody = CreateClaudeSessionBody;
+export type CreateAgentSessionResponse = CreateClaudeSessionResponse;
+export type ImportAgentSessionBody = ImportClaudeSessionBody;
+export type ImportAgentSessionResponse = ImportClaudeSessionResponse;
+export type RenameAgentSessionBody = RenameClaudeSessionBody;
+export type SendAgentInputBody = SendClaudeInputBody;
+export type AgentInputBody = ClaudeInputBody;
+export type DeleteAgentSessionResponse = DeleteClaudeSessionResponse;
+export type ResumeAgentSessionResponse = ResumeClaudeSessionResponse;
+export type SetAgentModeBody = SetClaudeModeBody;
+export type SetAgentModeResponse = SetClaudeModeResponse;
 
 // Mirrors EffortLevel in lib/server/agent/types.ts (and claude_agent_sdk).
 // Duplicated here to avoid client bundles pulling a `server-only` module.

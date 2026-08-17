@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '@/lib/api';
+import { sessionApi } from '@/lib/api';
 import type {
   Msg, ToolCallEntry, EditSnapshot,
   PermissionRequest, PendingQuestion, PendingExitPlan,
@@ -12,20 +12,19 @@ import {
 } from './bgTasks';
 import { publishFsChanged } from './fsChangeBus';
 import type {
-  WorkerEvent, WorkerStatus, PermissionMode,
+  WorkerEvent, WorkerStatus,
 } from '@/lib/server/claude/types';
 import type {
-  ClaudeSessionDetailResponse, ClaudeSessionMessageWindow, CodexSandboxMode,
+  AgentSessionDetailResponse, AgentSessionMessageWindow,
 } from '@/lib/types/api';
-import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
+import {
+  defaultSessionMode, isSessionMode, type SessionMode,
+} from '@/lib/sessionCapabilities';
 import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
 
 // A session's "mode" is a Claude permission mode OR a Codex sandbox level —
 // both are stored in the same permission_mode field (cf. schema.ts). Widened
 // so codex sessions don't get their sandbox mode reset to 'normal'.
-type SessionMode = PermissionMode | CodexSandboxMode;
-const CLAUDE_MODES: readonly PermissionMode[] = ['normal', 'acceptEdits', 'auto', 'plan'];
-
 // Compare two interaction-queue snapshots by id sequence. Returns true if
 // `a` and `b` reference the same set of items in the same order. Used to
 // skip re-renders when the polling delta returns the same pendings list.
@@ -130,15 +129,15 @@ function reloadForExpiredSession(): void {
 //   - Scroll mechanics (chatBodyRef/isAtBottom remain on the caller side)
 
 export type StreamCache = {
-  get(id: string): ClaudeSessionDetailResponse | undefined;
-  fetch(id: string, force?: boolean): Promise<ClaudeSessionDetailResponse>;
+  get(id: string): AgentSessionDetailResponse | undefined;
+  fetch(id: string, force?: boolean): Promise<AgentSessionDetailResponse>;
   invalidate?(id: string): void;
   /**
    * Extends the cache entry with a window of older messages (loadMore).
    * Allows loaded pages to be preserved across session switch/remount.
    * No-op if the implementation does not support it.
    */
-  extendWithOlder?(id: string, older: ClaudeSessionMessageWindow): void;
+  extendWithOlder?(id: string, older: AgentSessionMessageWindow): void;
 };
 
 export type UseClaudeSessionStreamOptions = {
@@ -159,7 +158,7 @@ export type UseClaudeSessionStreamOptions = {
 
 export type ClaudeSessionStreamState = {
   // Session metadata
-  sessionMeta: ClaudeSessionDetailResponse['session'] | null;
+  sessionMeta: AgentSessionDetailResponse['session'] | null;
   // Conversation state
   messages: Msg[];
   currentAssistant: string;
@@ -278,7 +277,7 @@ export function useClaudeSessionStream(
   useEffect(() => { onKilledRef.current = onKilled; }, [onKilled]);
 
   // ── State ──────────────────────────────────────────────────────────────
-  const [sessionMeta, setSessionMeta] = useState<ClaudeSessionDetailResponse['session'] | null>(null);
+  const [sessionMeta, setSessionMeta] = useState<AgentSessionDetailResponse['session'] | null>(null);
   const vpsIdRef = useRef('');
   const [messages, setMessages] = useState<Msg[]>([]);
   const [currentAssistant, setCurrentAssistant] = useState('');
@@ -415,7 +414,7 @@ export function useClaudeSessionStream(
   // explicit resync) AND by the polling loop, which does a clean refetch
   // whenever the cheap `?since=` probe reports new rows (see pollDelta).
   // Replaces local state entirely.
-  const applyApiData = useCallback((r: ClaudeSessionDetailResponse) => {
+  const applyApiData = useCallback((r: AgentSessionDetailResponse) => {
     if (!r?.session) return;
     const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus);
     // Streaming preview reconciliation. applyApiData runs on the initial
@@ -461,9 +460,8 @@ export function useClaudeSessionStream(
     // isn't reset to 'normal'.
     const sessKind = (r.session as { kind?: string })?.kind === 'codex' ? 'codex' : 'claude';
     const pm = r.session?.permissionMode as SessionMode;
-    const validModes: readonly string[] = sessKind === 'codex' ? CODEX_SANDBOX_MODES : CLAUDE_MODES;
     setPermissionMode(
-      validModes.includes(pm as string) ? pm : (sessKind === 'codex' ? 'workspace-write' : 'normal'),
+      isSessionMode(sessKind, pm) ? pm : defaultSessionMode(sessKind),
     );
     // Initialize model / fallback / effort from the DB row. The session row
     // schema includes these columns (cf. lib/db/schema.ts § claudeSessions);
@@ -548,7 +546,7 @@ export function useClaudeSessionStream(
     } else {
       const requestRevision = liveEventRevisionRef.current;
       try {
-        const r = (await api.getClaudeSession(sessionId)) as ClaudeSessionDetailResponse;
+        const r = (await sessionApi.get(sessionId)) as AgentSessionDetailResponse;
         if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
           applyApiData(r);
         }
@@ -583,7 +581,7 @@ export function useClaudeSessionStream(
     if (targetPaths.length === 0) return;
     editsLoadInflightRef.current = true;
     try {
-      const r = await api.getClaudeSessionEdits(sessionId);
+      const r = await sessionApi.getEdits(sessionId);
       const byPath = new Map(r.edits.map((e) => [e.filePath, e] as const));
       setEdits((prev) => {
         const next = new Map(prev);
@@ -657,7 +655,7 @@ export function useClaudeSessionStream(
     const ac = new AbortController();
     pollAbortRef.current = ac;
     try {
-      const r = await api.pollClaudeSessionSince(sessionId, since, ac.signal) as ClaudeSessionDetailResponse;
+      const r = await sessionApi.pollSince(sessionId, since, ac.signal) as AgentSessionDetailResponse;
       // ── Reconcile the status pill from the server's authoritative liveStatus
       // on EVERY tick (CLAUDE.md §14.45, RC2). The quiet poll used to read ONLY
       // `r.messages` and ignored `liveStatus`/`session.status`, so a pure
@@ -697,10 +695,9 @@ export function useClaudeSessionStream(
           kind?: string; model?: string | null; fallbackModel?: string | null; effort?: string | null;
         };
         const kind = sess.kind === 'codex' ? 'codex' : 'claude';
-        const validModes: readonly string[] = kind === 'codex' ? CODEX_SANDBOX_MODES : CLAUDE_MODES;
-        const nextMode = validModes.includes(sess.permissionMode)
+        const nextMode = isSessionMode(kind, sess.permissionMode)
           ? sess.permissionMode as SessionMode
-          : kind === 'codex' ? 'workspace-write' : 'normal';
+          : defaultSessionMode(kind);
         setPermissionMode((prev) => prev === nextMode ? prev : nextMode);
         setModelState((prev) => prev === (sess.model ?? null) ? prev : sess.model ?? null);
         setFallbackModelState((prev) => prev === (sess.fallbackModel ?? null) ? prev : sess.fallbackModel ?? null);
@@ -798,7 +795,7 @@ export function useClaudeSessionStream(
     loadMoreInflightRef.current = true;
     setIsLoadingMore(true);
     try {
-      const older = await api.loadOlderClaudeMessages(sessionId, cursor, 200);
+      const older = await sessionApi.loadOlder(sessionId, cursor, 200);
       // Server may return hasMore=false even if the page is non-empty:
       // the old cursor was already the limit. We update anyway.
       const olderRebuilt = rebuildStateFromMessages(
@@ -1304,17 +1301,17 @@ export function useClaudeSessionStream(
     setStatus('thinking');
     lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     setLiveUsage(null);  // new turn → reset the live token counter (§14.50)
-    try { await api.sendClaudeInput(sessionId, trimmed); }
+    try { await sessionApi.sendInput(sessionId, trimmed); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
 
   const interrupt = useCallback(async () => {
-    try { await api.interruptClaude(sessionId); }
+    try { await sessionApi.interrupt(sessionId); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
 
   const forceStop = useCallback(async () => {
-    try { await api.forceStopClaude(sessionId); }
+    try { await sessionApi.forceStop(sessionId); }
     catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
 
@@ -1322,7 +1319,7 @@ export function useClaudeSessionStream(
     if (permissionMode === mode) return;
     const prev = permissionMode;
     setPermissionMode(mode); // optimistic — reconciled by the mode_changed SSE
-    try { await api.setClaudeMode(sessionId, mode); }
+    try { await sessionApi.setMode(sessionId, mode); }
     catch (e) {
       setPermissionMode(prev); // revert: the agent never applied the change
       setError({ msg: String((e as Error)?.message ?? e) });
@@ -1341,7 +1338,7 @@ export function useClaudeSessionStream(
     setModelState(newModel);
     setFallbackModelState(newFallbackModel);
     try {
-      await api.setClaudeSessionModel(sessionId, newModel, newFallbackModel);
+      await sessionApi.setModel(sessionId, newModel, newFallbackModel);
     } catch (e) {
       setModelState(prevModel);
       setFallbackModelState(prevFallback);
@@ -1354,7 +1351,7 @@ export function useClaudeSessionStream(
     const prev = effort;
     setEffortState(newEffort);
     try {
-      await api.setClaudeSessionEffort(sessionId, newEffort);
+      await sessionApi.setEffort(sessionId, newEffort);
     } catch (e) {
       setEffortState(prev);
       setError({ msg: String((e as Error)?.message ?? e) });
@@ -1370,7 +1367,7 @@ export function useClaudeSessionStream(
     setStatus('sleeping');
     lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try {
-      await api.sleepClaudeSession(sessionId);
+      await sessionApi.sleep(sessionId);
     } catch (e) {
       setError({ msg: String((e as Error)?.message ?? e) });
     }
@@ -1381,7 +1378,7 @@ export function useClaudeSessionStream(
     setStatus('starting');
     lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try {
-      await api.resumeClaudeSession(sessionId);
+      await sessionApi.resume(sessionId);
       // Bump streamKey → useEffect closes the old SSE, reloads history,
       // re-attaches handlers. Avoids the UI being stuck on the post-sleep
       // state while the session has restarted on the agent side.
@@ -1401,7 +1398,7 @@ export function useClaudeSessionStream(
     setStatus('starting');
     lastOptimisticStatusTsRef.current = Date.now();  // guard the poll reconcile (RC2)
     try {
-      await api.restartClaudeSession(sessionId);
+      await sessionApi.restart(sessionId);
       setModelPendingApply(false);
       setEffortPendingApply(false);
       setStreamKey((k) => k + 1);
@@ -1419,7 +1416,7 @@ export function useClaudeSessionStream(
   // calling the action.
   const doDelete = useCallback(async () => {
     try {
-      await api.deleteClaudeSession(sessionId);
+      await sessionApi.remove(sessionId);
       onKilledRef.current?.();
     } catch (e) {
       setError({ msg: String((e as Error)?.message ?? e) });
@@ -1435,7 +1432,7 @@ export function useClaudeSessionStream(
   // shown.
   const respondPermission = useCallback(async (permId: string, allow: boolean, always = false) => {
     try {
-      await api.respondClaudePermission(sessionId, permId, allow, always);
+      await sessionApi.respondPermission(sessionId, permId, allow, always);
       // Removal arrives via `interaction_resolved` SSE. Fallback in case the
       // SSE is down: we remove locally (and the server won't send back anything
       // we don't already treat as a no-op via the filter by id).
@@ -1445,14 +1442,14 @@ export function useClaudeSessionStream(
 
   const respondQuestion = useCallback(async (qid: string, answers: Record<string, string> | null) => {
     try {
-      await api.respondClaudeQuestion(sessionId, qid, answers);
+      await sessionApi.respondQuestion(sessionId, qid, answers);
       setQuestionQueue((q) => q.filter((p) => p.id !== qid));
     } catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
 
   const respondExitPlan = useCallback(async (qid: string, decision: 'approve' | 'reject', feedback?: string) => {
     try {
-      await api.respondClaudeExitPlan(sessionId, qid, decision, feedback);
+      await sessionApi.respondExitPlan(sessionId, qid, decision, feedback);
       setExitPlanQueue((q) => q.filter((p) => p.id !== qid));
     } catch (e) { setError({ msg: String((e as Error)?.message ?? e) }); }
   }, [sessionId]);
@@ -1486,3 +1483,9 @@ export function useClaudeSessionStream(
     clearPrefillInput, refetchHistory, loadMoreHistory, setHistoryHold, clearError,
   ]);
 }
+
+// Canonical names for shared Claude/Codex consumers. Keep the historical
+// exports above so extensions can migrate without a flag day.
+export type AgentSessionStreamState = ClaudeSessionStreamState;
+export type AgentSessionStreamActions = ClaudeSessionStreamActions;
+export const useAgentSessionStream = useClaudeSessionStream;

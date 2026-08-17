@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import type { AgentKind } from '@/lib/types/api';
+import { sessionCapabilities } from '@/lib/sessionCapabilities';
 
 /**
  * Three things the session already knew and never told anyone: how full its
@@ -67,7 +69,10 @@ function compactNumber(value: number): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-export default function SessionInsight({ sessionId, isCodex }: { sessionId: string; isCodex: boolean }) {
+export default function SessionInsight({ sessionId, kind }: { sessionId: string; kind: AgentKind }) {
+  const isCodex = kind === 'codex';
+  const capabilities = sessionCapabilities(kind);
+  const hasSecurity = capabilities.permissionProfiles !== 'none';
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [mcp, setMcp] = useState<Mcp | null>(null);
   const [agents, setAgents] = useState<SubAgent[] | null>(null);
@@ -88,7 +93,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
-        isCodex
+        hasSecurity
           ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
         fetch(`/api/claude/sessions/${sessionId}/resources`).then((r) => r.json()).catch(() => null),
@@ -101,7 +106,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
     } finally {
       setBusy(false);
     }
-  }, [sessionId, isCodex]);
+  }, [sessionId, hasSecurity]);
 
   // On mount and on demand only — never on a timer. None of this changes fast
   // enough to justify a poll next to a running turn.
@@ -178,7 +183,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
             trust that they converged. */}
         <ul className="si-cats">
           <li><span>Charon</span><b>{ctx?.identity?.name || '(unnamed)'}</b></li>
-          <li><span>{isCodex ? 'Codex' : 'Claude'}</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
+          <li><span>{kind === 'codex' ? 'Codex' : 'Claude'}</span><b>{ctx?.identity?.cli_title || '—'}</b></li>
         </ul>
         {ctx?.identity && ctx.identity.cli_title
           && ctx.identity.cli_title !== ctx.identity.name && (
@@ -189,7 +194,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         )}
       </section>
 
-      {isCodex && <section className="si-sec">
+      {capabilities.permissionProfiles !== 'none' && <section className="si-sec">
         <h4>permission profiles</h4>
         {security?.ok ? <>
           <label className="si-control">
@@ -225,11 +230,11 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       </section>}
 
       <section className="si-sec">
-        <h4>{isCodex ? 'skills & apps' : 'skills & commands'}</h4>
+        <h4>{capabilities.apps !== 'none' ? 'skills & apps' : 'skills & commands'}</h4>
         {resources?.ok ? <>
           <textarea className="si-resource-prompt" rows={2} value={resourcePrompt}
             onChange={(e) => setResourcePrompt(e.target.value)}
-            placeholder={`Optional instruction for the selected ${isCodex ? 'skill or app' : 'skill or command'}`} />
+            placeholder={`Optional instruction for the selected ${capabilities.apps !== 'none' ? 'skill or app' : 'skill or command'}`} />
           {!!resources.skills?.length && <ul className="si-resources">
             {resources.skills.map((skill) => <li key={skill.path || skill.name}>
               <span><b>${skill.name}</b><small>{skill.description || skill.short_description}</small></span>
@@ -343,7 +348,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
                     void load();
                   }}
                 >reconnect</button>
-                {isCodex && ['notloggedin', 'auth required'].includes(
+                {capabilities.mcpOauth !== 'none' && ['notloggedin', 'auth required'].includes(
                   String(sv.auth_status || sv.status || '').toLowerCase().replace(/[^a-z ]/g, ''),
                 ) && <button type="button" onClick={async () => {
                   const response = await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
@@ -357,7 +362,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
                 }}>connect</button>}
                 {sv.name && mcpOauthUrls[sv.name] && <a href={mcpOauthUrls[sv.name]}
                   target="_blank" rel="noreferrer">open login</a>}
-                {!isCodex && <button type="button" onClick={async () => {
+                {capabilities.mcpToggle !== 'none' && <button type="button" onClick={async () => {
                   await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ action: 'toggle', name: sv.name,

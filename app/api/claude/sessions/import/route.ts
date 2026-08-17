@@ -5,7 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
 import { importCodexRolloutMessages } from '@/lib/server/claude/importCodexRollout';
-import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
+import { defaultSessionMode, isSessionMode } from '@/lib/sessionCapabilities';
 import { deriveMessageStorage } from '@/lib/server/claude/messageWire';
 
 // POST /api/claude/sessions/import
@@ -39,11 +39,9 @@ export async function POST(req: Request) {
     // The mode namespaces are disjoint: Claude PermissionModes vs Codex
     // sandbox levels. Validating with the wrong list would silently hand the
     // agent a mode it coerces back to its default (§14.59).
-    const permissionMode = kind === 'codex'
-      ? (CODEX_SANDBOX_MODES.includes(body.permissionMode) ? body.permissionMode : 'workspace-write')
-      : ((['normal', 'acceptEdits', 'auto', 'plan'] as const).includes(body.permissionMode)
-        ? body.permissionMode
-        : 'auto');
+    const permissionMode = isSessionMode(kind, body.permissionMode)
+      ? body.permissionMode
+      : defaultSessionMode(kind, 'create');
     const id = await importExistingSession({
       vpsId, cwd, claudeSessionId, kind,
       name: body.name ? String(body.name) : null,

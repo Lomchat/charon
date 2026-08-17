@@ -33,6 +33,7 @@ import {
 } from '@/lib/server/claude/messageWire';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
 import { allocateSessionHandle } from './sessionHandles';
+import { defaultSessionMode, isSessionEffort } from '@/lib/sessionCapabilities';
 
 // How long after the last background task finishes before the session is
 // declared done. Long enough for the model's automatic follow-up turn (§14.54)
@@ -99,23 +100,14 @@ function resolveCodexConfig(value: CodexSessionConfig | null | undefined): Codex
   return { ...(value ?? {}), approvalsReviewer: reviewer };
 }
 
-// Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
-// agent/charon_agent/session.py. Kept in sync with `EffortLevel` in types.ts.
-const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-// Codex reasoning-effort levels (agent/charon_agent/codex_session.py VALID_EFFORTS,
-// mirrors CodexEffort in types.ts). Distinct from Claude's set — 'none' |
-// 'minimal' | 'ultra' are Codex-only, 'ultracode' is Claude-only.
-const VALID_CODEX_EFFORTS: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 export function isValidEffort(v: string | null | undefined): v is EffortLevel {
-  return typeof v === 'string' && (VALID_EFFORTS as readonly string[]).includes(v);
+  return isSessionEffort('claude', v);
 }
 // Kind-aware effort validity. A Codex session's effort is validated against the
 // Codex set (so 'ultra'/'none'/'minimal' aren't dropped); a Claude session uses
 // the Claude set. Invalid values are dropped (persisted as null → default).
 function isValidEffortForKind(v: string | null | undefined, kind: AgentKind): boolean {
-  if (typeof v !== 'string') return false;
-  const set = kind === 'codex' ? VALID_CODEX_EFFORTS : (VALID_EFFORTS as readonly string[]);
-  return set.includes(v);
+  return isSessionEffort(kind, v);
 }
 
 const newId = () => crypto.randomBytes(8).toString('hex');
@@ -2364,7 +2356,7 @@ export async function importExistingSession(opts: {
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
   const sessionId = newId();
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
-  const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
+  const defaultMode = defaultSessionMode(kind, 'runtime') as SessionMode;
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
   });
@@ -2414,7 +2406,7 @@ export async function startNewSession(opts: {
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
-  const defaultMode: SessionMode = kind === 'codex' ? 'workspace-write' : 'normal';
+  const defaultMode = defaultSessionMode(kind, 'runtime') as SessionMode;
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = opts.sessionId ?? newId();
   const handle = allocateSessionHandle(opts.vpsId, {

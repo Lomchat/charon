@@ -1,5 +1,6 @@
 // Events exchanged between the Python bridge and the SessionWorker (and to the
 // SSE clients). We keep a wide TS union + guard helpers.
+import type { ClaudeEffort, ClaudeMode } from '@/lib/sessionCapabilities';
 
 // One sub-agent inside a running Workflow-tool task (from the SDK's raw
 // TaskProgressMessage.workflow_progress[]). Carried by bg_task_progress. §14.54.
@@ -128,11 +129,9 @@ export type BridgeEvent =
   | { type: 'turn_error'; kind: string }
   | { type: 'error'; msg: string; fatal?: boolean };
 
-// Mirror of claude_agent_sdk.EffortLevel. Re-exported from
-// lib/server/agent/types.ts as the source of truth for the protocol layer;
-// duplicated here as a local alias to avoid a circular import (this file
-// is imported by sessionOps.ts which itself imports from agent/types.ts).
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+// Public compatibility name; the browser-safe provider contract owns the
+// literals so protocol, routes and UI cannot drift independently.
+export type EffortLevel = ClaudeEffort;
 
 // ── Account usage (the `/usage` gauges) ─────────────────────────────────────
 // Normalized shape of api.anthropic.com/api/oauth/usage, polled per-VPS from
@@ -243,7 +242,7 @@ export type WorkerStatus =
   | 'starting' | 'active' | 'thinking' | 'failed' | 'background'
   | 'sleeping' | 'killed' | 'error' | 'reconnecting';
 
-export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
+export type PermissionMode = ClaudeMode;
 
 export type UserQuestion = {
   question: string;
