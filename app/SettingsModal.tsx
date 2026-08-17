@@ -283,9 +283,19 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                         </label>
                       </>
                     )}
+                    <div className="switch-row">
+                      <span>approve for me by default</span>
+                      <Toggle
+                        checked={(s['codex.default_approvals_reviewer'] ?? 'user') === 'auto_review'}
+                        onChange={(v) => set('codex.default_approvals_reviewer', v ? 'auto_review' : 'user')}
+                        label="let the Codex reviewer decide approvals by default"
+                      />
+                    </div>
                     <p className="set-meta">
-                      permission model: Codex has no interactive approvals — each
-                      session picks a sandbox level instead (cf. CLAUDE.md §14.59).
+                      New sessions inherit this choice. Sandbox and reviewer are
+                      independent; interactive requests use the same permission
+                      cards as Claude, and “approve for me” is also switchable
+                      beside the Codex composer.
                     </p>
                   </>
                 )}

@@ -108,6 +108,10 @@ const DEFAULTS = {
   // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. CLAUDE.md §14.59.
   'codex.default_model': '',
   'codex.default_effort': '',
+  // New sessions ask the user by default. `auto_review` delegates approval
+  // decisions to Codex's reviewer; the composer can still toggle it per
+  // session. This default is copied into each new session row.
+  'codex.default_approvals_reviewer': 'user',
   // Fleet-wide openai-codex auto-update toggle (parallel to sdk.auto_update).
   // ON by default. User-editable (SettingsModal). cf. codexWatch (future).
   'codex.auto_update': 'true',

@@ -86,6 +86,19 @@ function parseCodexConfig(value: string | null | undefined): CodexSessionConfig 
   }
 }
 
+/** Resolve the safety reviewer once, when a Codex session is created.
+ * Changing the fleet default must not silently alter existing sessions;
+ * explicit per-session config always wins. */
+function resolveCodexConfig(value: CodexSessionConfig | null | undefined): CodexSessionConfig {
+  const configured = value?.approvalsReviewer;
+  const reviewer = configured === 'auto_review' || configured === 'user'
+    ? configured
+    : getSetting('codex.default_approvals_reviewer') === 'auto_review'
+      ? 'auto_review'
+      : 'user';
+  return { ...(value ?? {}), approvalsReviewer: reviewer };
+}
+
 // Mirrors claude_agent_sdk.EffortLevel + the VALID_EFFORTS tuple in
 // agent/charon_agent/session.py. Kept in sync with `EffortLevel` in types.ts.
 const VALID_EFFORTS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
@@ -973,13 +986,20 @@ export class SessionStream {
         // when it's the piece that failed. Discard the replayed buffer if
         // the flush row exists, then let the pendingIds dedup decide.
         if (this._replayAlreadyPersisted(ev)) this._dropReplayedAssistantBuffer();
-        if (this.alwaysAllow.has(ev.tool)) {
-          // Auto-allow: forward to the agent immediately
-          this.respondPermission(ev.id, true).catch(() => {});
-          return;
-        }
+        // Claude's allow-list is keyed by a concrete SDK tool. Codex emits
+        // broad labels ("Codex command", "Codex file changes"); remembering
+        // one would silently approve every later request of that class.
+        // Codex receives the exact native Turn/Session grant below instead.
+        const autoAllow = this.kind === 'claude' && this.alwaysAllow.has(ev.tool);
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
-        if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) break;
+        if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) {
+          if (autoAllow) {
+            this.respondPermission(ev.id, true).catch(() => {
+              this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
+            });
+          }
+          break;
+        }
         try {
           db.insert(claudePendingPermissions).values({
             id: ev.id,
@@ -1000,14 +1020,16 @@ export class SessionStream {
           this._log('warn', 'sdk_error', { msg: 'pending perm insert failed', err: (e as Error)?.message });
           break;
         }
-        this._broadcast({ type: 'permission_request', id: ev.id, tool: ev.tool, input: ev.input });
-        this._log('info', 'permission', { id: ev.id, tool: ev.tool });
-        this._maybePush({
-          title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
-          body: `tool ${ev.tool} — tap to approve`,
-          tag: `perm-${this.id}`,
-        });
-        sendPermissionToTelegram(this.id, ev.id, ev.tool, ev.input).catch(() => {});
+        if (autoAllow) {
+          // Persist first so a transport failure has a real card to recover.
+          // Surface it only on failure; successful remembered grants stay
+          // invisible, as they did before persistence became provider-first.
+          this.respondPermission(ev.id, true).catch(() => {
+            this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
+          });
+          break;
+        }
+        this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
         break;
       case 'user_question': {
         // Identity gate on the event's OWN row: it is inserted AFTER the
@@ -1597,20 +1619,31 @@ export class SessionStream {
 
   async respondPermission(permId: string, allow: boolean, always = false): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
+    const [row] = db.select().from(claudePendingPermissions)
+      .where(and(
+        eq(claudePendingPermissions.id, permId),
+        eq(claudePendingPermissions.sessionId, this.id),
+      )).all();
+    if (!row) throw new Error('permission request not found for this session');
+
+    // The provider is authoritative. Keep the card pending until its RPC has
+    // accepted the answer; otherwise an offline/timeout path leaves the SDK
+    // blocked while every browser believes the interaction was resolved.
+    await client.call('respond_permission', {
+      session_id: this.id, perm_id: permId, allow, always,
+    });
     try {
-      const [row] = db.select().from(claudePendingPermissions)
-        .where(eq(claudePendingPermissions.id, permId)).all();
-      if (row && always && allow) {
+      if (this.kind === 'claude' && always && allow) {
         this.alwaysAllow.add(row.toolName);
         this._persistAlwaysAllow();
       }
       db.update(claudePendingPermissions)
         .set({ status: allow ? 'allowed' : 'denied', respondedAt: Math.floor(Date.now() / 1000) })
-        .where(eq(claudePendingPermissions.id, permId)).run();
+        .where(and(
+          eq(claudePendingPermissions.id, permId),
+          eq(claudePendingPermissions.sessionId, this.id),
+        )).run();
     } catch {}
-    await client.call('respond_permission', {
-      session_id: this.id, perm_id: permId, allow, always,
-    });
     this._broadcast({ type: 'interaction_resolved', kind: 'permission', id: permId });
     markInteractionResolvedInTelegram('permission', permId);
   }
@@ -1854,6 +1887,9 @@ export class SessionStream {
   /** Restore it on stream creation. Tolerates any garbage in the column —
    *  a corrupt value must not stop a session from starting. */
   hydrateAlwaysAllow(raw: string | null | undefined): void {
+    // Codex session grants live in Codex and are scoped to the exact request.
+    // Historical rows may contain broad pre-fix labels; never hydrate them.
+    if (this.kind !== 'claude') return;
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
@@ -2137,6 +2173,17 @@ export class SessionStream {
     } catch {}
   }
 
+  private _surfacePermissionRequest(id: string, tool: string, input: unknown): void {
+    this._broadcast({ type: 'permission_request', id, tool, input });
+    this._log('info', 'permission', { id, tool });
+    this._maybePush({
+      title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
+      body: `tool ${tool} — tap to approve`,
+      tag: `perm-${this.id}`,
+    });
+    sendPermissionToTelegram(this.id, id, tool, input).catch(() => {});
+  }
+
   /** Human-friendly session label for notifications: explicit name, else
    * the last path segment of the cwd, else a short id. */
   private _label(): string {
@@ -2284,6 +2331,7 @@ export async function importExistingSession(opts: {
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
   });
+  const codexConfig = kind === 'codex' ? resolveCodexConfig(null) : null;
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
@@ -2292,6 +2340,7 @@ export async function importExistingSession(opts: {
     name: opts.name ?? null,
     handle,
     kind,
+    codexConfig: codexConfig ? JSON.stringify(codexConfig) : null,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? defaultMode,
     position: nextSessionPosition(opts.vpsId),
@@ -2341,6 +2390,7 @@ export async function startNewSession(opts: {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
   const effortPersist = isValidEffortForKind(cfg.effort, kind) ? cfg.effort : null;
+  const codexConfig = kind === 'codex' ? resolveCodexConfig(opts.codexConfig) : null;
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
@@ -2355,7 +2405,7 @@ export async function startNewSession(opts: {
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
-    codexConfig: kind === 'codex' && opts.codexConfig ? JSON.stringify(opts.codexConfig) : null,
+    codexConfig: codexConfig ? JSON.stringify(codexConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
   }).run();
@@ -2395,7 +2445,7 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
-      codex_config: kind === 'codex' ? (opts.codexConfig ?? null) : null,
+      codex_config: codexConfig,
       // Stable Charon peer address. Claude also mirrors it to native --name.
       cli_name: handle,
     });

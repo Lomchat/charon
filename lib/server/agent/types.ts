@@ -8,9 +8,9 @@ export type AgentKind = 'claude' | 'codex';
 
 export type PermissionMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
 
-// Codex sessions have NO interactive human approval (cf. CLAUDE.md §14.59):
-// their "mode" is a SANDBOX level (the guardrail). Stored in the same
-// permission_mode field as Claude's modes.
+// Codex's "mode" is a SANDBOX level (the guardrail). Human/auto approval is
+// independent (`approvalsReviewer`) and uses the common permission cards.
+// Both mode namespaces share the historical permission_mode DB field.
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
 
 // Superset used wherever a session's mode is read regardless of kind.

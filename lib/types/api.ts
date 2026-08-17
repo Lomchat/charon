@@ -28,8 +28,8 @@ export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: Accoun
 // Duplicated here (not imported from server-only agent/types.ts) to keep client
 // bundles clean, mirroring the ClaudeEffortLevel pattern below.
 export type AgentKind = 'claude' | 'codex';
-// Codex sessions have no interactive human approval; their "mode" is a sandbox
-// level (the guardrail). cf. CLAUDE.md §14.59.
+// Codex "mode" is its sandbox level. Human/automatic approval is a separate
+// reviewer choice; both providers use Charon's common permission cards.
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
 export const CODEX_SANDBOX_MODES: CodexSandboxMode[] = ['read-only', 'workspace-write', 'full-access'];
 // Codex reasoning-effort levels (catalog-driven per model). 'ultra' is Codex's

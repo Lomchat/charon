@@ -150,7 +150,9 @@ function normalizeCodexConfig(raw: unknown): CodexSessionConfig | null {
     ephemeral: r.ephemeral === true,
     modelProvider: text(r.modelProvider, 256), env,
     codexBin: text(r.codexBin, 4096),
-    approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? 'user',
+    // Undefined means "inherit the fleet default"; startNewSession resolves
+    // and persists it exactly once.
+    approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? undefined,
     permissionProfile: text(r.permissionProfile, 256),
   };
 }
@@ -181,8 +183,8 @@ export async function POST(req: Request) {
   }
 
   // Kind-aware mode validation + default. Claude: a PermissionMode (default
-  // 'auto'). Codex: a sandbox level (default 'workspace-write'). Codex has NO
-  // human-approval mode — the "mode" is the sandbox guardrail.
+  // 'auto'). Codex: a sandbox level (default 'workspace-write'). Codex's
+  // human reviewer is an independent safety control stored in codexConfig.
   const CLAUDE_MODES = ['normal', 'acceptEdits', 'auto', 'plan'] as const;
   const CODEX_MODES = ['read-only', 'workspace-write', 'full-access'] as const;
   const allowedModes: readonly string[] = kind === 'codex' ? CODEX_MODES : CLAUDE_MODES;

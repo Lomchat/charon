@@ -18,6 +18,7 @@ const ALLOWED_KEYS = [
   // are written by the freshness sync, never accepted from a settings POST.
   'codex.default_model',
   'codex.default_effort',
+  'codex.default_approvals_reviewer',
   'codex.auto_update',
   // Optional hub-side Anthropic API key, used only to auto-sync the model
   // list from GET /v1/models (see modelSync.ts). models_cache/_at are written
