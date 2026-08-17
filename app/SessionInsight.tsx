@@ -25,7 +25,10 @@ type Ctx = {
   identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
 };
 
-type McpServer = { name?: string | null; status?: string | null; tool_count?: number | null; error?: string | null };
+type McpServer = {
+  name?: string | null; status?: string | null; tool_count?: number | null;
+  error?: string | null; auth_status?: string | null; tools?: string[];
+};
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
 type SubAgent = { id: string; parent_id?: string | null; depth?: number; name?: string | null; role?: string | null; preview?: string; status?: string };
@@ -35,7 +38,12 @@ type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string
 type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[]; profile_reason?: string; runtime_reason?: string; runtime_error?: string };
 type Skill = { name?: string; path?: string; description?: string; enabled?: boolean; short_description?: string | null };
 type CodexApp = { id?: string; name?: string; description?: string | null; is_accessible?: boolean; is_enabled?: boolean; install_url?: string | null };
-type Resources = { ok?: boolean; error?: string; reason?: string; skills?: Skill[]; apps?: CodexApp[]; skill_errors?: unknown[] };
+type Command = { name?: string; description?: string | null; argument_hint?: string | null };
+type Resources = {
+  ok?: boolean; error?: string; reason?: string; provider?: string;
+  skills?: Skill[]; apps?: CodexApp[]; commands?: Command[]; plugins?: unknown[];
+  skill_errors?: unknown[];
+};
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -58,6 +66,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const [resources, setResources] = useState<Resources | null>(null);
   const [resourcePrompt, setResourcePrompt] = useState('');
   const [resourceBusy, setResourceBusy] = useState<string | null>(null);
+  const [mcpOauthUrls, setMcpOauthUrls] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -72,9 +81,7 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         isCodex
           ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
-        isCodex
-          ? fetch(`/api/claude/sessions/${sessionId}/resources`).then((r) => r.json()).catch(() => null)
-          : Promise.resolve(null),
+        fetch(`/api/claude/sessions/${sessionId}/resources`).then((r) => r.json()).catch(() => null),
       ]);
       setCtx(c); setMcp(m);
       setAgents(Array.isArray(a?.agents) ? a.agents.map((item: string | SubAgent) =>
@@ -90,6 +97,11 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   // On mount and on demand only — never on a timer. None of this changes fast
   // enough to justify a poll next to a running turn.
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const refreshOnReturn = () => { if (document.visibilityState === 'visible') void load(); };
+    window.addEventListener('focus', refreshOnReturn);
+    return () => window.removeEventListener('focus', refreshOnReturn);
+  }, [load]);
 
   const openTranscript = useCallback(async (id: string) => {
     if (openAgent === id) { setOpenAgent(null); setAgentMsgs(null); return; }
@@ -115,24 +127,30 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
     } finally { setSecurityBusy(false); }
   }, [sessionId]);
 
-  const invokeResource = useCallback(async (kind: 'skill' | 'app', item: Skill | CodexApp) => {
-    const name = kind === 'skill' ? (item as Skill).name : (item as CodexApp).id;
-    const path = kind === 'skill' ? (item as Skill).path : `app://${(item as CodexApp).id}`;
-    if (!name || !path) return;
+  const invokeResource = useCallback(async (kind: 'skill' | 'app' | 'command', item: Skill | CodexApp | Command) => {
+    const name = kind === 'skill' ? (item as Skill).name
+      : kind === 'app' ? (item as CodexApp).id : (item as Command).name;
+    const path = kind === 'skill' ? (item as Skill).path
+      : kind === 'app' ? `app://${(item as CodexApp).id}` : null;
+    if (!name || (isCodex && kind !== 'command' && !path)) return;
     const prompt = resourcePrompt.trim();
-    const display = `$${name}${prompt ? ` ${prompt}` : ''}`;
+    const display = kind === 'command' ? `/${name}${prompt ? ` ${prompt}` : ''}`
+      : `$${name}${prompt ? ` ${prompt}` : ''}`;
+    const content = !isCodex && kind === 'skill'
+      ? `Use the "${name}" skill for this request.${prompt ? `\n\n${prompt}` : ''}`
+      : display;
     setResourceBusy(`${kind}:${name}`);
     try {
       await fetch(`/api/claude/sessions/${sessionId}/input`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: display, codexInputs: [
+        body: JSON.stringify({ content, ...(isCodex && kind !== 'command' ? { codexInputs: [
           { type: 'text', text: display },
           kind === 'skill' ? { type: 'skill', name, path } : { type: 'mention', name, path },
-        ] }),
+        ] } : {}) }),
       });
       setResourcePrompt('');
     } finally { setResourceBusy(null); }
-  }, [resourcePrompt, sessionId]);
+  }, [isCodex, resourcePrompt, sessionId]);
 
   return (
     <div className="session-insight">
@@ -197,12 +215,12 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         </> : <p className="si-none">{why(security) ?? 'not running'}</p>}
       </section>}
 
-      {isCodex && <section className="si-sec">
-        <h4>skills & apps</h4>
+      <section className="si-sec">
+        <h4>{isCodex ? 'skills & apps' : 'skills & commands'}</h4>
         {resources?.ok ? <>
           <textarea className="si-resource-prompt" rows={2} value={resourcePrompt}
             onChange={(e) => setResourcePrompt(e.target.value)}
-            placeholder="Optional instruction for the selected skill or app" />
+            placeholder={`Optional instruction for the selected ${isCodex ? 'skill or app' : 'skill or command'}`} />
           {!!resources.skills?.length && <ul className="si-resources">
             {resources.skills.map((skill) => <li key={skill.path || skill.name}>
               <span><b>${skill.name}</b><small>{skill.description || skill.short_description}</small></span>
@@ -215,11 +233,20 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
                 try {
                   await fetch(`/api/claude/sessions/${sessionId}/resources`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ path: skill.path, enabled: skill.enabled === false }),
+                    body: JSON.stringify({ name: skill.name, path: skill.path, enabled: skill.enabled === false }),
                   });
                   await load();
                 } finally { setResourceBusy(null); }
               }}>{skill.enabled === false ? 'enable' : 'disable'}</button>}
+            </li>)}
+          </ul>}
+          {!!resources.commands?.length && <ul className="si-resources commands">
+            {resources.commands.map((command) => <li key={command.name}>
+              <span><b>/{command.name}</b><small>{command.description || command.argument_hint}</small></span>
+              <button type="button" disabled={!!resourceBusy}
+                onClick={() => void invokeResource('command', command)}>
+                {resourceBusy === `command:${command.name}` ? '…' : 'use'}
+              </button>
             </li>)}
           </ul>}
           {!!resources.apps?.length && <ul className="si-resources apps">
@@ -232,9 +259,10 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
               {app.install_url && <a href={app.install_url} target="_blank" rel="noreferrer">connect</a>}
             </li>)}
           </ul>}
-          {!resources.skills?.length && !resources.apps?.length && <p className="si-none">none available</p>}
+          {!resources.skills?.length && !resources.apps?.length && !resources.commands?.length
+            && <p className="si-none">none available</p>}
         </> : <p className="si-none">{why(resources) ?? 'not running'}</p>}
-      </section>}
+      </section>
 
       <section className="si-sec">
         <h4>context window</h4>
@@ -280,7 +308,10 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
             {mcp.servers.map((sv, i) => (
               <li key={i} className={`si-mcp-row ${String(sv.status ?? '').toLowerCase()}`}>
                 <span className="si-mcp-name">{sv.name}</span>
-                <span className="si-mcp-status">{sv.status}{sv.tool_count != null && ` · ${sv.tool_count} tools`}</span>
+                <span className="si-mcp-status" title={sv.tools?.join(', ')}>{sv.status}
+                  {sv.auth_status && ` · auth: ${sv.auth_status}`}
+                  {sv.tool_count != null && ` · ${sv.tool_count} tools`}
+                </span>
                 <button
                   type="button"
                   onClick={async () => {
@@ -292,6 +323,28 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
                     void load();
                   }}
                 >reconnect</button>
+                {isCodex && ['notloggedin', 'auth required'].includes(
+                  String(sv.auth_status || sv.status || '').toLowerCase().replace(/[^a-z ]/g, ''),
+                ) && <button type="button" onClick={async () => {
+                  const response = await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ action: 'oauth', name: sv.name }),
+                  });
+                  const data = await response.json().catch(() => null);
+                  if (response.ok && data?.authorization_url && sv.name) {
+                    setMcpOauthUrls((current) => ({ ...current, [sv.name!]: data.authorization_url }));
+                  }
+                }}>connect</button>}
+                {sv.name && mcpOauthUrls[sv.name] && <a href={mcpOauthUrls[sv.name]}
+                  target="_blank" rel="noreferrer">open login</a>}
+                {!isCodex && <button type="button" onClick={async () => {
+                  await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ action: 'toggle', name: sv.name,
+                      enabled: String(sv.status ?? '').toLowerCase() === 'disabled' }),
+                  }).catch(() => {});
+                  void load();
+                }}>{String(sv.status ?? '').toLowerCase() === 'disabled' ? 'enable' : 'disable'}</button>}
                 {sv.error && <span className="si-mcp-err" title={sv.error}>{sv.error.slice(0, 60)}</span>}
               </li>
             ))}

@@ -17,7 +17,7 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
-import type { CodexSessionConfig } from '@/lib/types/api';
+import type { CodexSessionConfig, ProviderSessionConfig } from '@/lib/types/api';
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
@@ -75,12 +75,12 @@ function _resolveSessionConfig(
   };
 }
 
-function parseCodexConfig(value: string | null | undefined): CodexSessionConfig | null {
+export function parseProviderConfig(value: string | null | undefined): ProviderSessionConfig | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as CodexSessionConfig : null;
+      ? parsed as ProviderSessionConfig : null;
   } catch {
     return null;
   }
@@ -878,6 +878,18 @@ export class SessionStream {
         this.pendingTurnAssistantSeen = true;
         this._broadcast({ type: 'assistant_text', delta: ev.delta });
         break;
+      case 'structured_output': {
+        if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
+        if (!this._flushAssistant()) break;
+        const payload = {
+          type: 'structured_output' as const,
+          value: ev.value,
+          ...(ev.truncated ? { truncated: true } : {}),
+        };
+        this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
       case 'thinking':
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         // Flush failed → STOP: persisting this boundary's row now would put
@@ -2331,7 +2343,7 @@ export async function importExistingSession(opts: {
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
   });
-  const codexConfig = kind === 'codex' ? resolveCodexConfig(null) : null;
+  const providerConfig = kind === 'codex' ? resolveCodexConfig(null) : null;
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
@@ -2340,7 +2352,7 @@ export async function importExistingSession(opts: {
     name: opts.name ?? null,
     handle,
     kind,
-    codexConfig: codexConfig ? JSON.stringify(codexConfig) : null,
+    codexConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? defaultMode,
     position: nextSessionPosition(opts.vpsId),
@@ -2369,6 +2381,8 @@ export async function startNewSession(opts: {
   model?: string | null;
   fallbackModel?: string | null;
   effort?: string | null;
+  sessionConfig?: ProviderSessionConfig | null;
+  /** @deprecated internal compatibility while old callers migrate. */
   codexConfig?: CodexSessionConfig | null;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
@@ -2390,7 +2404,10 @@ export async function startNewSession(opts: {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
   const effortPersist = isValidEffortForKind(cfg.effort, kind) ? cfg.effort : null;
-  const codexConfig = kind === 'codex' ? resolveCodexConfig(opts.codexConfig) : null;
+  const requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
+  const providerConfig: ProviderSessionConfig | null = kind === 'codex'
+    ? resolveCodexConfig(requestedConfig as CodexSessionConfig | null)
+    : requestedConfig;
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
@@ -2405,7 +2422,8 @@ export async function startNewSession(opts: {
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
-    codexConfig: codexConfig ? JSON.stringify(codexConfig) : null,
+    // Historical column name; the JSON is provider-neutral since agent 0.66.
+    codexConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
   }).run();
@@ -2445,7 +2463,9 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
-      codex_config: codexConfig,
+      session_config: providerConfig,
+      // Compatibility with an older agent that only reads this key.
+      codex_config: kind === 'codex' ? providerConfig : null,
       // Stable Charon peer address. Claude also mirrors it to native --name.
       cli_name: handle,
     });
@@ -2532,6 +2552,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         session_id: sessionId,
         handle: row.handle,
         cli_name: row.handle,
+        session_config: parseProviderConfig(row.codexConfig),
       });
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
@@ -2556,7 +2577,8 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
-          codex_config: kind === 'codex' ? parseCodexConfig(row.codexConfig) : null,
+          session_config: parseProviderConfig(row.codexConfig),
+          codex_config: kind === 'codex' ? parseProviderConfig(row.codexConfig) : null,
           // Reassert both provider-neutral identity and Claude's native name.
           handle: row.handle,
           cli_name: row.handle,

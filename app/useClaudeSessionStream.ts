@@ -1100,6 +1100,15 @@ export function useClaudeSessionStream(
             createdAt: Math.floor(Date.now() / 1000),
           }]);
           break;
+        case 'structured_output':
+          flushAssistantBuf();
+          const structuredJson = JSON.stringify(ev.value, null, 2);
+          setMessages((prev) => [...prev, {
+            id: 'so' + Date.now() + Math.random(), role: 'structured',
+            content: `${ev.truncated ? '_Output truncated by the 512 KiB safety limit._\n\n' : ''}\`\`\`json\n${structuredJson}\n\`\`\``,
+            createdAt: Math.floor(Date.now() / 1000),
+          }]);
+          break;
         case 'external_message':
           flushAssistantBuf();
           setMessages((prev) => [...prev, {

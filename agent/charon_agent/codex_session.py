@@ -1309,6 +1309,36 @@ class CodexSession:
             return {"ok": False, "error": f"config/mcpServer/reload: {e}",
                     **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
 
+    async def mcp_oauth_login(self, name: str) -> dict[str, Any]:
+        if self._client is None or not self.claude_session_id:
+            return {"ok": False, "error": "Codex thread is not running"}
+        try:
+            try:
+                from openai_codex.generated.v2_all import McpServerOauthLoginResponse
+                response_model = McpServerOauthLoginResponse
+            except (ImportError, AttributeError):
+                from pydantic import BaseModel, Field
+
+                class _OauthResponse(BaseModel):
+                    authorization_url: str = Field(alias="authorizationUrl")
+
+                response_model = _OauthResponse
+            response = await self._client._client.request(
+                "mcpServer/oauth/login",
+                {
+                    "name": name, "threadId": self.claude_session_id,
+                    "timeoutSecs": 300,
+                },
+                response_model=response_model,
+            )
+            url = getattr(response, "authorization_url", None)
+            if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+                raise RuntimeError("Codex returned no valid MCP authorization URL")
+            return {"ok": True, "authorization_url": url}
+        except Exception as e:
+            return {"ok": False, "error": f"mcpServer/oauth/login: {e}",
+                    **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
+
     async def rollback(self, num_turns: int) -> dict[str, Any]:
         try:
             await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
@@ -1845,6 +1875,7 @@ class CodexSession:
             "model": self.model,
             "fallback_model": None,
             "effort": self.effort,
+            "provider_config": self._persisted_codex_config(),
             "codex_config": self._persisted_codex_config(),
         }
 
@@ -1864,6 +1895,8 @@ class CodexSession:
             "model": self.model,
             "fallback_model": None,
             "effort": self.effort,
+            "provider_config": self._persisted_codex_config(),
+            # Compatibility with state.json written/read by agent <0.66.
             "codex_config": self._persisted_codex_config(),
         }
 
@@ -2067,6 +2100,18 @@ class CodexSession:
                         "failureReason": self._json_safe(
                             getattr(payload, "failure_reason", None)
                         ),
+                    },
+                })
+
+            elif pt == "McpServerOauthLoginCompletedNotification":
+                name = getattr(payload, "name", None) or "mcp"
+                success = bool(getattr(payload, "success", False))
+                out.append({
+                    "event": "codex_signal", "kind": "mcp_oauth",
+                    "id": name, "status": "connected" if success else "failed",
+                    "detail": {
+                        "name": name, "success": success,
+                        "error": getattr(payload, "error", None),
                     },
                 })
 

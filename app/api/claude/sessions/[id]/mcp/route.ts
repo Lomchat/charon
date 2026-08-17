@@ -25,5 +25,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json(
       await callSessionRpc(id, 'mcp_toggle', { name, enabled: !!body.enabled }));
   }
+  if (body?.action === 'oauth') {
+    const result = await callSessionRpc(id, 'mcp_oauth_login', { name });
+    return NextResponse.json(result, {
+      status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400,
+    });
+  }
   return NextResponse.json(await callSessionRpc(id, 'mcp_reconnect', { name }));
 }

@@ -19,6 +19,7 @@ export type BridgeEvent =
   | { type: 'ready' }
   | { type: 'session_id'; id: string }
   | { type: 'assistant_text'; delta: string }
+  | { type: 'structured_output'; value: unknown; truncated?: boolean }
   | { type: 'thinking'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }

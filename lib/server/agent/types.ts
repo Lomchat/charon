@@ -145,6 +145,7 @@ export type AgentEvent = (
   // these deltas belong to — the anchor a fork branches at. First delta of a
   // message carries it; the hub stamps it on the flush row.
   | { event: 'assistant_text'; session_id: string; delta: string; uuid?: string }
+  | { event: 'structured_output'; session_id: string; value: unknown; truncated?: boolean }
   | { event: 'thinking'; session_id: string; text: string }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
@@ -430,6 +431,7 @@ export type AgentMethodName =
   | 'set_codex_security'
   | 'approve_codex_denial'
   | 'codex_resources'
+  | 'session_resources'
   | 'set_codex_skill'
   | 'list_background_terminals'
   | 'stop_background_terminal'
@@ -442,6 +444,7 @@ export type AgentMethodName =
   | 'mcp_status'
   | 'mcp_toggle'
   | 'mcp_reconnect'
+  | 'mcp_oauth_login'
   | 'list_subagents'
   | 'get_subagent_messages'
   // What Charon calls this session vs what the CLI calls it — so a divergence

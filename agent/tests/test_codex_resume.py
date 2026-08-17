@@ -349,6 +349,7 @@ class TestCodexResume(unittest.TestCase):
             s = _make_session(THREAD_ID)
             s._client = Client()
             s._thread = LiveThread(THREAD_ID)
+            s._ready_evt.set()
             api = types.ModuleType("openai_codex.api")
             api.AsyncThread = lambda _client, thread_id: FakeThread(thread_id)
             package = types.ModuleType("openai_codex"); package.__path__ = []
@@ -378,6 +379,7 @@ class TestCodexResume(unittest.TestCase):
             s = _make_session(THREAD_ID)
             s._client = Client()
             s._thread = LiveThread(THREAD_ID)
+            s._ready_evt.set()
 
             async def start_blank(_client, *, resume):
                 self.assertFalse(resume)
@@ -450,6 +452,37 @@ class TestCodexResume(unittest.TestCase):
                 cs.AsyncCodex, cs.CodexConfig, cs.CODEX_AVAILABLE = saved_codex, saved_config, saved_available
             self.assertEqual(client.archive_calls, [THREAD_ID])
             self.assertEqual(client.unarchive_calls, [THREAD_ID])
+
+        asyncio.run(main())
+
+    def test_mcp_oauth_login_returns_a_browser_url_for_this_thread(self):
+        class Raw:
+            def __init__(self): self.calls = []
+            async def request(self, method, params, *, response_model):
+                self.calls.append((method, params, response_model))
+                return types.SimpleNamespace(authorization_url="https://login.example/authorize")
+
+        class Client:
+            def __init__(self): self._client = Raw()
+
+        async def main():
+            s = _make_session(THREAD_ID)
+            s._client = Client()
+            generated = types.ModuleType("openai_codex.generated.v2_all")
+            generated.McpServerOauthLoginResponse = object
+            package = types.ModuleType("openai_codex"); package.__path__ = []
+            generated_package = types.ModuleType("openai_codex.generated"); generated_package.__path__ = []
+            with mock.patch.dict(sys.modules, {
+                "openai_codex": package, "openai_codex.generated": generated_package,
+                "openai_codex.generated.v2_all": generated,
+            }):
+                result = await s.mcp_oauth_login("docs")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["authorization_url"], "https://login.example/authorize")
+            method, params, _model = s._client._client.calls[0]
+            self.assertEqual(method, "mcpServer/oauth/login")
+            self.assertEqual(params["threadId"], THREAD_ID)
+            self.assertEqual(params["name"], "docs")
 
         asyncio.run(main())
 

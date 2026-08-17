@@ -292,7 +292,7 @@ class Server:
         fallback_model: str | None,
         effort: str | None,
         handle: str | None = None,
-        codex_config: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
     ) -> Any:
         """Factory keyed on the agent-type discriminator. Claude → AgentSession,
         Codex → CodexSession. Both share the exact constructor signature +
@@ -312,7 +312,9 @@ class Server:
             peer_mcp=self._peer_mcp_config(session_id),
         )
         if kind == "codex":
-            kwargs["codex_config"] = codex_config
+            kwargs["codex_config"] = provider_config
+        else:
+            kwargs["session_config"] = provider_config
         return cls(
             session_id,
             **kwargs,
@@ -339,7 +341,7 @@ class Server:
         effort: str | None = None,
         handle: str | None = None,
         cli_name: str | None = None,
-        codex_config: dict[str, Any] | None = None,
+        provider_config: dict[str, Any] | None = None,
     ) -> Any:
         effective_handle = handle or cli_name
         s = self._make_session(
@@ -353,7 +355,7 @@ class Server:
             fallback_model=fallback_model,
             effort=effort,
             handle=effective_handle,
-            codex_config=codex_config,
+            provider_config=provider_config,
         )
         # Mirror Charon's stable handle to Claude's native START-time --name.
         # Codex uses the common MCP bus and simply has no cli_name attribute.
@@ -466,7 +468,9 @@ class Server:
                     effort=row.get("effort"),
                     handle=row.get("handle") or row.get("cli_name"),
                     cli_name=row.get("cli_name"),
-                    codex_config=row.get("codex_config"),
+                    provider_config=(row.get("provider_config")
+                                     if isinstance(row.get("provider_config"), dict)
+                                     else row.get("codex_config")),
                 )
             except Exception as e:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
@@ -486,7 +490,9 @@ class Server:
             fallback_model=row.get("fallback_model"),
             effort=row.get("effort"),
             handle=row.get("handle") or row.get("cli_name"),
-            codex_config=row.get("codex_config"),
+            provider_config=(row.get("provider_config")
+                             if isinstance(row.get("provider_config"), dict)
+                             else row.get("codex_config")),
         )
         s.status = "sleeping"
         self.sessions[row["session_id"]] = s
@@ -940,7 +946,11 @@ class Server:
                 effort=params.get("effort"),
                 handle=incoming_handle,
                 cli_name=params.get("cli_name"),
-                codex_config=params.get("codex_config") if isinstance(params.get("codex_config"), dict) else None,
+                provider_config=(params.get("session_config")
+                                 if isinstance(params.get("session_config"), dict)
+                                 else params.get("codex_config")
+                                 if isinstance(params.get("codex_config"), dict)
+                                 else None),
             )
             return {"session_id": session_id, "kind": kind}
 
@@ -1136,7 +1146,7 @@ class Server:
             }
 
         if method in ("get_context_usage", "mcp_status", "mcp_toggle",
-                      "mcp_reconnect", "list_subagents", "get_subagent_messages",
+                      "mcp_reconnect", "mcp_oauth_login", "list_subagents", "get_subagent_messages",
                       "session_identity"):
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
@@ -1155,6 +1165,11 @@ class Server:
                     if not isinstance(name, str) or not name:
                         raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
                     return await s_.mcp_reconnect(name)
+                if method == "mcp_oauth_login":
+                    name = params.get("name")
+                    if not isinstance(name, str) or not name:
+                        raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
+                    return await s_.mcp_oauth_login(name)
                 if method == "list_subagents":
                     return await s_.subagents()
                 if method == "get_subagent_messages":
@@ -1182,6 +1197,8 @@ class Server:
                 if not isinstance(name, str) or not name:
                     raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
                 return await s_.mcp_reconnect(name)
+            if method == "mcp_oauth_login":
+                return {"ok": False, "error": "MCP OAuth login is Codex-only"}
             if method == "list_subagents":
                 return s_.subagents()
             # Explicit rather than a fall-through: the protocol test scans for
@@ -1358,6 +1375,16 @@ class Server:
                     raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
                 raise RpcError(ERR_INTERNAL, f"Codex resources failed: {e}")
 
+        if method == "session_resources":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            try:
+                return await s_.resources(bool(params.get("force_reload")))
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"session resources failed: {e}")
+
         if method == "set_codex_skill":
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
@@ -1526,6 +1553,9 @@ class Server:
                 s.handle = incoming_handle
                 if hasattr(s, "cli_name"):
                     s.cli_name = incoming_handle
+            incoming_config = params.get("session_config")
+            if isinstance(incoming_config, dict) and hasattr(s, "apply_session_config"):
+                await s.apply_session_config(incoming_config)
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
             # Claude's native --name is start-time only. The common handle was

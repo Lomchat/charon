@@ -6,7 +6,9 @@ import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, getCodexLatestVersion, getCodexCliLatestVersion } from '@/lib/server/claude/sdkSync';
-import type { AgentKind, CodexSessionConfig } from '@/lib/types/api';
+import type {
+  AgentKind, ClaudeSessionConfig, CodexSessionConfig, ProviderSessionConfig,
+} from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
@@ -116,18 +118,14 @@ export async function GET(req: Request) {
   }
 }
 
-function normalizeCodexConfig(raw: unknown): CodexSessionConfig | null {
+function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSessionConfig | null {
   if (raw == null) return null;
-  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('codexConfig must be an object');
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('sessionConfig must be an object');
   const r = raw as Record<string, unknown>;
   const text = (value: unknown, max: number) => typeof value === 'string'
     ? value.trim().slice(0, max) || null : null;
   const pick = <T extends string>(value: unknown, allowed: readonly T[]): T | null =>
     typeof value === 'string' && allowed.includes(value as T) ? value as T : null;
-  const configOverrides = Array.isArray(r.configOverrides)
-    ? r.configOverrides.filter((v): v is string => typeof v === 'string')
-      .map((v) => v.trim()).filter(Boolean).slice(0, 64).map((v) => v.slice(0, 2048))
-    : [];
   const env: Record<string, string> = {};
   if (r.env && typeof r.env === 'object' && !Array.isArray(r.env)) {
     for (const [key, value] of Object.entries(r.env).slice(0, 64)) {
@@ -140,21 +138,41 @@ function normalizeCodexConfig(raw: unknown): CodexSessionConfig | null {
     if (JSON.stringify(r.outputSchema).length > 32_768) throw new Error('outputSchema is too large');
     outputSchema = r.outputSchema as Record<string, unknown>;
   }
-  return {
-    configOverrides, outputSchema,
+  const shared = {
+    outputSchema,
     baseInstructions: text(r.baseInstructions, 32_768),
     developerInstructions: text(r.developerInstructions, 32_768),
+    env,
+  };
+  if (kind === 'claude') {
+    let skills: ClaudeSessionConfig['skills'] = null;
+    if (r.skills === 'all') skills = 'all';
+    else if (Array.isArray(r.skills)) {
+      skills = r.skills.filter((v): v is string => typeof v === 'string')
+        .map((v) => v.trim()).filter(Boolean).slice(0, 128).map((v) => v.slice(0, 256));
+    } else if (r.skills != null) {
+      throw new Error('skills must be "all", an array of names, or null');
+    }
+    return { ...shared, skills };
+  }
+  const configOverrides = Array.isArray(r.configOverrides)
+    ? r.configOverrides.filter((v): v is string => typeof v === 'string')
+      .map((v) => v.trim()).filter(Boolean).slice(0, 64).map((v) => v.slice(0, 2048))
+    : [];
+  const codex: CodexSessionConfig = {
+    ...shared, configOverrides,
     summary: pick(r.summary, ['auto', 'concise', 'detailed', 'none'] as const),
     personality: pick(r.personality, ['friendly', 'pragmatic', 'none'] as const),
     serviceTier: pick(r.serviceTier, ['fast', 'flex'] as const),
     ephemeral: r.ephemeral === true,
-    modelProvider: text(r.modelProvider, 256), env,
+    modelProvider: text(r.modelProvider, 256),
     codexBin: text(r.codexBin, 4096),
     // Undefined means "inherit the fleet default"; startNewSession resolves
     // and persists it exactly once.
     approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? undefined,
     permissionProfile: text(r.permissionProfile, 256),
   };
+  return codex;
 }
 
 // POST /api/claude/sessions
@@ -203,9 +221,11 @@ export async function POST(req: Request) {
   const fallbackModel = typeof body.fallbackModel === 'string' && body.fallbackModel.length > 0
     ? body.fallbackModel : null;
   const effort = typeof body.effort === 'string' && body.effort.length > 0 ? body.effort : null;
-  let codexConfig: CodexSessionConfig | null = null;
+  let sessionConfig: ProviderSessionConfig | null = null;
   try {
-    codexConfig = kind === 'codex' ? normalizeCodexConfig(body.codexConfig) : null;
+    // `codexConfig` remains accepted for rolling clients while every new UI
+    // uses the provider-neutral name.
+    sessionConfig = normalizeProviderConfig(kind, body.sessionConfig ?? body.codexConfig);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
@@ -215,7 +235,7 @@ export async function POST(req: Request) {
       name: body.name ? String(body.name) : null,
       kind,
       permissionMode,
-      model, fallbackModel, effort, codexConfig,
+      model, fallbackModel, effort, sessionConfig,
     });
     return NextResponse.json({
       id: stream.id, kind: stream.kind, status: stream.status, claudeSessionId: stream.claudeSessionId,

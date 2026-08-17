@@ -5366,8 +5366,9 @@
 .si-mcp-name { font-weight: 600; }
 .si-mcp-status { opacity: 0.6; }
 .si-mcp-row.failed .si-mcp-name, .si-mcp-err { color: var(--crimson, #d98b8b); }
-.si-mcp-row button { background: none; border: 1px solid rgba(106,115,136,0.4);
-  border-radius: 4px; color: inherit; cursor: pointer; font-size: 10px; padding: 1px 5px; }
+.si-mcp-row button, .si-mcp-row a { background: none; border: 1px solid rgba(106,115,136,0.4);
+  border-radius: 4px; color: inherit; cursor: pointer; font-size: 10px; padding: 1px 5px;
+  text-decoration: none; }
 .si-agent { background: none; border: 0; color: inherit; cursor: pointer;
   font-size: 11px; padding: 3px 0; text-align: left; width: 100%; }
 .si-agent small { color: var(--parchment-soft); font-weight: 400; }

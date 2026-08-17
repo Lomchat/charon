@@ -119,6 +119,14 @@ export function rebuildStateFromMessages(
             createdAt: m.createdAt,
           });
         }
+        if (ev.type === 'structured_output') {
+          const json = JSON.stringify(ev.value, null, 2);
+          out.messages.push({
+            id: 'm' + m.id, role: 'structured',
+            content: `${ev.truncated ? '_Output truncated by the 512 KiB safety limit._\n\n' : ''}\`\`\`json\n${json}\n\`\`\``,
+            createdAt: m.createdAt,
+          });
+        }
         if (ev.type === 'plan_update') {
           replaceLiveMessage({
             id: `plan:${String(ev.id ?? m.id)}`, role: 'plan',

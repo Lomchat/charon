@@ -79,6 +79,17 @@ class CodexNotificationTranslation(unittest.TestCase):
         self.assertEqual(events[1]["kind"], "mcp_status")
         self.assertEqual(events[3]["detail"]["paths"], ["/tmp/a"])
 
+    def test_mcp_oauth_completion_is_a_typed_session_signal(self):
+        out = session()._translate(ev(
+            "McpServerOauthLoginCompletedNotification", name="docs",
+            success=True, error=None,
+        ))
+        self.assertEqual(out, [{
+            "event": "codex_signal", "kind": "mcp_oauth", "id": "docs",
+            "status": "connected",
+            "detail": {"name": "docs", "success": True, "error": None},
+        }])
+
     def test_turn_diff_splits_files(self):
         diff = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
         self.assertEqual(CodexSession._split_turn_diff(diff)[0][0], "a.txt")

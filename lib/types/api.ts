@@ -907,24 +907,37 @@ export type CreateClaudeSessionBody = {
   model?: string | null;
   fallbackModel?: string | null;   // Claude only (Codex ignores it)
   effort?: string | null;
+  /** Provider-specific construction options. Shared fields have identical UI
+   * semantics; the adapters map them to each SDK's native shape. */
+  sessionConfig?: ProviderSessionConfig | null;
+  /** @deprecated request compatibility for clients predating the neutral name. */
   codexConfig?: CodexSessionConfig | null;
 };
 
-export type CodexSessionConfig = {
-  configOverrides?: string[];
+export type SharedSessionConfig = {
   outputSchema?: Record<string, unknown> | null;
   baseInstructions?: string | null;
   developerInstructions?: string | null;
+  env?: Record<string, string>;
+};
+
+export type ClaudeSessionConfig = SharedSessionConfig & {
+  /** null = CLI defaults; "all" = every discovered skill; [] = none. */
+  skills?: 'all' | string[] | null;
+};
+
+export type CodexSessionConfig = SharedSessionConfig & {
+  configOverrides?: string[];
   summary?: 'auto' | 'concise' | 'detailed' | 'none' | null;
   personality?: 'friendly' | 'pragmatic' | 'none' | null;
   serviceTier?: 'fast' | 'flex' | null;
   ephemeral?: boolean;
   modelProvider?: string | null;
-  env?: Record<string, string>;
   codexBin?: string | null;
   approvalsReviewer?: 'user' | 'auto_review';
   permissionProfile?: string | null;
 };
+export type ProviderSessionConfig = ClaudeSessionConfig | CodexSessionConfig;
 export type CreateClaudeSessionResponse = {
   id: string;
   kind: AgentKind;

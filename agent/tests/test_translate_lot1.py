@@ -132,6 +132,18 @@ class ResultMessageTranslation(unittest.TestCase):
                                usage={"input_tokens": 1, "output_tokens": 1}))
         self.assertNotIn("tree", one(events, "usage"))
 
+    def test_structured_output_is_not_lost_at_turn_end(self):
+        events = translate(_ev(
+            "ResultMessage", subtype="success", duration_ms=1,
+            total_cost_usd=0, usage={}, model_usage=None,
+            structured_output={"answer": "yes", "score": 1},
+        ))
+        self.assertEqual(one(events, "structured_output"), {
+            "event": "structured_output",
+            "value": {"answer": "yes", "score": 1},
+            "truncated": False,
+        })
+
     def test_typed_turn_outcome_on_stop(self):
         events = translate(_ev(
             "ResultMessage", subtype="error_during_execution",

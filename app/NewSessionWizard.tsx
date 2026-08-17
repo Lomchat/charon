@@ -9,7 +9,9 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { IconTerminal } from './icons';
-import type { AgentKind, CodexSandboxMode, CodexSessionConfig } from '@/lib/types/api';
+import type {
+  AgentKind, CodexSandboxMode, CodexSessionConfig, ProviderSessionConfig,
+} from '@/lib/types/api';
 import { CODEX_SANDBOX_MODES } from '@/lib/types/api';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
@@ -113,17 +115,18 @@ export default function NewSessionWizard({
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
   const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode>('workspace-write');
-  const [codexBaseInstructions, setCodexBaseInstructions] = useState('');
-  const [codexDeveloperInstructions, setCodexDeveloperInstructions] = useState('');
+  const [baseInstructions, setBaseInstructions] = useState('');
+  const [developerInstructions, setDeveloperInstructions] = useState('');
   const [codexOverrides, setCodexOverrides] = useState('');
-  const [codexOutputSchema, setCodexOutputSchema] = useState('');
+  const [outputSchemaText, setOutputSchemaText] = useState('');
   const [codexSummary, setCodexSummary] = useState<'auto' | 'concise' | 'detailed' | 'none'>('auto');
   const [codexPersonality, setCodexPersonality] = useState<'friendly' | 'pragmatic' | 'none'>('pragmatic');
   const [codexServiceTier, setCodexServiceTier] = useState<'fast' | 'flex'>('fast');
   const [codexEphemeral, setCodexEphemeral] = useState(false);
   const [codexModelProvider, setCodexModelProvider] = useState('');
-  const [codexEnv, setCodexEnv] = useState('');
+  const [sessionEnv, setSessionEnv] = useState('');
   const [codexBin, setCodexBin] = useState('');
+  const [claudeSkills, setClaudeSkills] = useState('');
   const [globalDefaults, setGlobalDefaults] = useState<{ model: string; fallbackModel: string; effort: string } | null>(null);
 
   // Enter validates the CURRENT step, wherever focus is. Each step's own
@@ -490,35 +493,41 @@ export default function NewSessionWizard({
     setBusy(true); setErr(null);
     try {
       if (kind === 'agent') {
-        let codexConfig: CodexSessionConfig | null = null;
+        let outputSchema: Record<string, unknown> | null = null;
+        if (outputSchemaText.trim()) {
+          const parsed = JSON.parse(outputSchemaText);
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('output schema must be a JSON object');
+          outputSchema = parsed;
+        }
+        const env: Record<string, string> = {};
+        for (const line of sessionEnv.split('\n').map((v) => v.trim()).filter(Boolean)) {
+          const split = line.indexOf('=');
+          if (split < 1) throw new Error(`invalid env line: ${line}`);
+          const key = line.slice(0, split).trim();
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env name: ${key}`);
+          env[key] = line.slice(split + 1);
+        }
+        const shared = {
+          outputSchema,
+          baseInstructions: baseInstructions.trim() || null,
+          developerInstructions: developerInstructions.trim() || null,
+          env,
+        };
+        let sessionConfig: ProviderSessionConfig | null;
         if (isCodex) {
-          let outputSchema: Record<string, unknown> | null = null;
-          if (codexOutputSchema.trim()) {
-            const parsed = JSON.parse(codexOutputSchema);
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('output schema must be a JSON object');
-            outputSchema = parsed;
-          }
-          const env: Record<string, string> = {};
-          for (const line of codexEnv.split('\n').map((v) => v.trim()).filter(Boolean)) {
-            const split = line.indexOf('=');
-            if (split < 1) throw new Error(`invalid env line: ${line}`);
-            const key = line.slice(0, split).trim();
-            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env name: ${key}`);
-            env[key] = line.slice(split + 1);
-          }
-          codexConfig = {
+          sessionConfig = {
+            ...shared,
             configOverrides: codexOverrides.split('\n').map((v) => v.trim()).filter(Boolean),
-            outputSchema,
-            baseInstructions: codexBaseInstructions.trim() || null,
-            developerInstructions: codexDeveloperInstructions.trim() || null,
             summary: codexSummary,
             personality: codexPersonality,
             serviceTier: codexServiceTier,
             ephemeral: codexEphemeral,
             modelProvider: codexModelProvider.trim() || null,
-            env,
             codexBin: codexBin.trim() || null,
-          };
+          } satisfies CodexSessionConfig;
+        } else {
+          const skills = claudeSkills.split('\n').map((v) => v.trim()).filter(Boolean);
+          sessionConfig = { ...shared, skills: skills.length ? skills : null };
         }
         const r = await api.createClaudeSession({
           vpsId: vps.id, cwd: path!.trim(),
@@ -530,7 +539,7 @@ export default function NewSessionWizard({
           // Codex has no fallback-model concept (server ignores it anyway).
           fallbackModel: isCodex ? null : (fallbackModel.trim() || null),
           effort: effort || null,
-          codexConfig,
+          sessionConfig,
         });
         onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: path!.trim() });
       } else {
@@ -801,7 +810,7 @@ export default function NewSessionWizard({
             {kind === 'agent' && (
               <div className="wiz-adv">
                 <button className="wiz-adv-toggle" onClick={() => setShowAdv((v) => !v)}>
-                  {showAdv ? '▾' : '▸'} advanced · model{isCodex ? ', effort & sandbox' : ' & effort'}
+                  {showAdv ? '▾' : '▸'} advanced · model, instructions{isCodex ? ', effort & sandbox' : ', effort & skills'}
                 </button>
                 {showAdv && (
                   <div className="wiz-adv-body">
@@ -837,22 +846,22 @@ export default function NewSessionWizard({
                           </select>
                         </label>
                         <label className="wiz-adv-field">base instructions
-                          <textarea value={codexBaseInstructions} onChange={(e) => setCodexBaseInstructions(e.target.value)} placeholder="system-level instructions for this thread" />
+                          <textarea value={baseInstructions} onChange={(e) => setBaseInstructions(e.target.value)} placeholder="system-level instructions for this thread" />
                         </label>
                         <label className="wiz-adv-field">developer instructions
-                          <textarea value={codexDeveloperInstructions} onChange={(e) => setCodexDeveloperInstructions(e.target.value)} placeholder="project conventions and constraints" />
+                          <textarea value={developerInstructions} onChange={(e) => setDeveloperInstructions(e.target.value)} placeholder="project conventions and constraints" />
                         </label>
                         <label className="wiz-adv-field">config overrides <span className="wiz-opt">(one key=value per line)</span>
                           <textarea className="mono" value={codexOverrides} onChange={(e) => setCodexOverrides(e.target.value)} placeholder={'features.foo=true\nmcp_servers.docs.enabled=true'} />
                         </label>
                         <label className="wiz-adv-field">output schema <span className="wiz-opt">(JSON object)</span>
-                          <textarea className="mono" value={codexOutputSchema} onChange={(e) => setCodexOutputSchema(e.target.value)} placeholder={'{"type":"object","properties":{}}'} />
+                          <textarea className="mono" value={outputSchemaText} onChange={(e) => setOutputSchemaText(e.target.value)} placeholder={'{"type":"object","properties":{}}'} />
                         </label>
                         <label className="wiz-adv-field">model provider
                           <input value={codexModelProvider} onChange={(e) => setCodexModelProvider(e.target.value)} placeholder="default provider" />
                         </label>
                         <label className="wiz-adv-field">environment <span className="wiz-opt">(KEY=value per line)</span>
-                          <textarea className="mono" value={codexEnv} onChange={(e) => setCodexEnv(e.target.value)} />
+                          <textarea className="mono" value={sessionEnv} onChange={(e) => setSessionEnv(e.target.value)} />
                         </label>
                         <label className="wiz-adv-field">Codex binary
                           <input className="mono" value={codexBin} onChange={(e) => setCodexBin(e.target.value)} placeholder="SDK bundled binary" />
@@ -872,6 +881,21 @@ export default function NewSessionWizard({
                         </label>
                         <label className="wiz-adv-field">effort
                           <EffortPicker value={effort} onChange={setEffort} modelId={model} inheritPlaceholder={globalDefaults?.effort || undefined} />
+                        </label>
+                        <label className="wiz-adv-field">base instructions
+                          <textarea value={baseInstructions} onChange={(e) => setBaseInstructions(e.target.value)} placeholder="instructions appended to Claude Code's system prompt" />
+                        </label>
+                        <label className="wiz-adv-field">developer instructions
+                          <textarea value={developerInstructions} onChange={(e) => setDeveloperInstructions(e.target.value)} placeholder="project conventions and constraints" />
+                        </label>
+                        <label className="wiz-adv-field">output schema <span className="wiz-opt">(JSON object)</span>
+                          <textarea className="mono" value={outputSchemaText} onChange={(e) => setOutputSchemaText(e.target.value)} placeholder={'{"type":"object","properties":{}}'} />
+                        </label>
+                        <label className="wiz-adv-field">skills <span className="wiz-opt">(one name per line; blank = CLI defaults)</span>
+                          <textarea className="mono" value={claudeSkills} onChange={(e) => setClaudeSkills(e.target.value)} placeholder={'code-review\nfrontend-design'} />
+                        </label>
+                        <label className="wiz-adv-field">environment <span className="wiz-opt">(KEY=value per line)</span>
+                          <textarea className="mono" value={sessionEnv} onChange={(e) => setSessionEnv(e.target.value)} />
                         </label>
                       </>
                     )}

@@ -192,6 +192,10 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   model: text('model'),
   fallbackModel: text('fallback_model'),
   effort: text('effort'),
+  // Provider construction config JSON. The SQL name is historical: Codex
+  // shipped first, but since agent 0.66 the same column carries Claude's
+  // appended instructions, structured-output schema, skill filter and env.
+  // Never return it from public session APIs (env may contain secrets).
   codexConfig: text('codex_config'),
   // Common workspace archive. Rows keep their complete Charon transcript but
   // disappear from normal list/resume/reconcile paths; ResumeModal restores

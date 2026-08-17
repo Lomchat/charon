@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 try:
@@ -338,6 +340,7 @@ _MAX_BUFFER_SIZE = 32 * 1024 * 1024
 # other choice.
 _OPTIONAL_KEYS_FALLBACK_ORDER = (
     "include_partial_messages", "max_buffer_size", "mcp_servers",
+    "skills", "output_format", "system_prompt", "env",
     "effort", "fallback_model", "model",
     # `settings` carries the ultracode flags (§14.56); an SDK too old to accept
     # the kwarg just starts without ultracode.
@@ -409,6 +412,29 @@ class AgentSession:
     # applied via options.settings rather than the SDK effort kwarg (§14.56).
     VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultracode")
 
+    @staticmethod
+    def _normalize_session_config(value: dict[str, Any] | None) -> dict[str, Any]:
+        raw_cfg = value if isinstance(value, dict) else {}
+        raw_skills = raw_cfg.get("skills")
+        skills: str | list[str] | None = None
+        if raw_skills == "all":
+            skills = "all"
+        elif isinstance(raw_skills, list):
+            skills = [str(v).strip()[:256] for v in raw_skills[:128]
+                      if isinstance(v, str) and v.strip()]
+        return {
+            "baseInstructions": raw_cfg.get("baseInstructions")
+            if isinstance(raw_cfg.get("baseInstructions"), str) else None,
+            "developerInstructions": raw_cfg.get("developerInstructions")
+            if isinstance(raw_cfg.get("developerInstructions"), str) else None,
+            "outputSchema": raw_cfg.get("outputSchema")
+            if isinstance(raw_cfg.get("outputSchema"), dict) else None,
+            "skills": skills,
+            "env": {str(k): str(v)[:8192] for k, v in (raw_cfg.get("env") or {}).items()
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", str(k))}
+            if isinstance(raw_cfg.get("env"), dict) else {},
+        }
+
     def __init__(
         self,
         session_id: str,
@@ -424,12 +450,14 @@ class AgentSession:
         effort: str | None = None,
         handle: str | None = None,
         peer_mcp: dict[str, Any] | None = None,
+        session_config: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.cwd = cwd
         self.name = name
         self.handle = handle or None
         self.peer_mcp = dict(peer_mcp) if isinstance(peer_mcp, dict) else None
+        self.session_config = self._normalize_session_config(session_config)
         self.permission_mode = permission_mode if permission_mode in (
             "normal", "acceptEdits", "auto", "plan",
         ) else "normal"
@@ -660,6 +688,92 @@ class AgentSession:
         )
         await self._save_state()
 
+    async def apply_session_config(self, value: dict[str, Any] | None) -> None:
+        """Replace construction-time options; the next SDK start applies them."""
+        self.session_config = self._normalize_session_config(value)
+        await self._save_state()
+
+    @staticmethod
+    def _skill_frontmatter(path: Path) -> tuple[str, str | None]:
+        name = path.parent.name
+        description: str | None = None
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[:65536]
+            if text.startswith("---"):
+                end = text.find("\n---", 3)
+                if end >= 0:
+                    for line in text[3:end].splitlines():
+                        key, sep, value = line.partition(":")
+                        if not sep:
+                            continue
+                        value = value.strip().strip("'\"")
+                        if key.strip() == "name" and value:
+                            name = value[:256]
+                        elif key.strip() == "description" and value:
+                            description = value[:1024]
+        except OSError:
+            pass
+        return name, description
+
+    def _discovered_skills(self) -> list[dict[str, Any]]:
+        """Bounded project/user SKILL.md inventory, project definition wins."""
+        found: dict[str, dict[str, Any]] = {}
+        roots = [
+            (Path(os.path.expanduser("~/.claude/skills")), "user"),
+            (Path(self.cwd) / ".claude" / "skills", "project"),
+        ]
+        selected = self.session_config.get("skills")
+        for root, source in roots:
+            try:
+                candidates = sorted(root.glob("*/SKILL.md"))[:256]
+            except OSError:
+                candidates = []
+            for path in candidates:
+                name, description = self._skill_frontmatter(path)
+                enabled = (selected == "all" or selected is None
+                           or isinstance(selected, list) and name in selected)
+                found[name] = {
+                    "name": name, "path": str(path), "description": description,
+                    "enabled": enabled, "source": source,
+                }
+        return sorted(found.values(), key=lambda item: str(item["name"]).lower())[:256]
+
+    async def resources(self, force_reload: bool = False) -> dict[str, Any]:
+        """Skills plus the live CLI command/plugin catalog for this session."""
+        del force_reload  # filesystem reads are already fresh and bounded
+        commands: list[dict[str, Any]] = []
+        plugins: list[Any] = []
+        info: Any = None
+        if self._client is not None:
+            try:
+                info = await self._client.get_server_info()
+            except Exception:
+                info = None
+        if isinstance(info, dict):
+            raw_commands = info.get("commands") or info.get("slash_commands") or []
+            for command in raw_commands[:200] if isinstance(raw_commands, list) else []:
+                if isinstance(command, str):
+                    commands.append({"name": command})
+                elif isinstance(command, dict):
+                    name = command.get("name") or command.get("command")
+                    if isinstance(name, str) and name:
+                        commands.append({
+                            "name": name[:256],
+                            "description": str(command.get("description") or "")[:1024] or None,
+                            "argument_hint": str(command.get("argumentHint") or
+                                                 command.get("argument_hint") or "")[:512] or None,
+                        })
+            raw_plugins = info.get("plugins")
+            if isinstance(raw_plugins, list):
+                plugins = raw_plugins[:100]
+        return {
+            "ok": True, "provider": "claude",
+            "skills": self._discovered_skills(),
+            "commands": commands, "plugins": plugins,
+            "running": self._client is not None,
+            "configured_skills": self.session_config.get("skills"),
+        }
+
     def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
         fut = self._pending_perms.pop(perm_id, None)
         if fut is not None and not fut.done():
@@ -728,10 +842,21 @@ class AgentSession:
         servers = r.get("servers") if isinstance(r, dict) else getattr(r, "servers", None)
         out = []
         for sv in (servers or [])[:50]:
+            tools = _field(sv, "tools")
+            if isinstance(tools, dict):
+                tool_names = [str(name) for name in list(tools)[:100]]
+            elif isinstance(tools, list):
+                tool_names = [str(_field(item, "name") or item) for item in tools[:100]]
+            else:
+                tool_names = []
             out.append({
                 "name": _field(sv, "name"),
                 "status": _field(sv, "status", "state"),
-                "tool_count": _field(sv, "tool_count", "toolCount"),
+                "tool_count": (_field(sv, "tool_count", "toolCount")
+                               if _field(sv, "tool_count", "toolCount") is not None
+                               else len(tool_names)),
+                "tools": tool_names,
+                "auth_status": _field(sv, "auth_status", "authStatus"),
                 "error": _field(sv, "error", "message"),
             })
         return {"ok": True, "servers": out}
@@ -880,6 +1005,7 @@ class AgentSession:
             "model": self.model,
             "fallback_model": self.fallback_model,
             "effort": self.effort,
+            "provider_config": self.session_config,
         }
 
     def to_persist(self) -> dict[str, Any]:
@@ -904,6 +1030,7 @@ class AgentSession:
             "model": self.model,
             "fallback_model": self.fallback_model,
             "effort": self.effort,
+            "provider_config": self.session_config,
         }
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -1608,6 +1735,17 @@ class AgentSession:
                 if tree:
                     usage_ev["tree"] = tree
                 out.append(usage_ev)
+                structured = getattr(ev, "structured_output", None)
+                if structured is not None:
+                    try:
+                        encoded = json.dumps(structured, ensure_ascii=False, default=str)
+                        truncated = len(encoded.encode("utf-8")) > 512 * 1024
+                        value = ({"preview": encoded[:512 * 1024], "truncated": True}
+                                 if truncated else json.loads(encoded))
+                        out.append({"event": "structured_output", "value": value,
+                                    "truncated": truncated})
+                    except Exception as e:
+                        out.append({"event": "error", "msg": f"structured output: {e}"})
                 # Typed turn outcome (SDK >= 0.2.126). `terminal_reason` says WHY
                 # the turn ended (completed | max_turns | aborted_streaming |
                 # aborted_tools) and `api_error_status` carries the HTTP status
@@ -1735,6 +1873,35 @@ class AgentSession:
         self.status = "active"
         self._emit("status", status="active")
 
+    def _advanced_option_kwargs(self) -> dict[str, Any]:
+        """Map the common persisted config to ClaudeAgentOptions kwargs."""
+        out: dict[str, Any] = {}
+        appended: list[str] = []
+        base = self.session_config.get("baseInstructions")
+        developer = self.session_config.get("developerInstructions")
+        if isinstance(base, str) and base.strip():
+            appended.append("Session instructions:\n" + base.strip())
+        if isinstance(developer, str) and developer.strip():
+            appended.append("Developer instructions:\n" + developer.strip())
+        if appended:
+            # Claude exposes one append channel rather than separate base and
+            # developer slots. Preserve the Claude Code preset (tools, project
+            # context, safety) and label both sections explicitly.
+            out["system_prompt"] = {
+                "type": "preset", "preset": "claude_code",
+                "append": "\n\n".join(appended),
+            }
+        schema = self.session_config.get("outputSchema")
+        if isinstance(schema, dict):
+            out["output_format"] = {"type": "json_schema", "schema": schema}
+        skills = self.session_config.get("skills")
+        if skills == "all" or isinstance(skills, list):
+            out["skills"] = skills
+        env = self.session_config.get("env")
+        if isinstance(env, dict) and env:
+            out["env"] = env
+        return out
+
     # ── Main loop ────────────────────────────────────────────────────────────
     async def _run(self) -> None:
         # SDK mode:
@@ -1794,6 +1961,7 @@ class AgentSession:
                 )
             elif self.effort:
                 options_kwargs["effort"] = self.effort
+            options_kwargs.update(self._advanced_option_kwargs())
             # Live token usage (§14.50): receive the raw Anthropic stream events
             # (StreamEvent) so we can surface a growing token counter. Dropped by
             # _build_options_with_fallback on an SDK too old to know the kwarg →
