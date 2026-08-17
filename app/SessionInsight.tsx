@@ -23,6 +23,11 @@ type Ctx = {
   status?: { type?: string; activeFlags?: string[]; active_flags?: string[] };
   categories?: Array<{ name?: string | null; tokens?: number | null }>;
   identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
+  recorded_usage?: {
+    turns: number; input_tokens: number; output_tokens: number;
+    cache_read_tokens: number; cache_write_tokens: number;
+    duration_ms: number; cost_usd: number; models?: string[];
+  } | null;
 };
 
 type McpServer = {
@@ -32,7 +37,6 @@ type McpServer = {
 type Mcp = { ok?: boolean; error?: string; reason?: string; servers?: McpServer[] };
 type SubMsg = { role?: string; content?: string };
 type SubAgent = { id: string; parent_id?: string | null; depth?: number; name?: string | null; role?: string | null; preview?: string; status?: string };
-type BgTerminal = { process_id?: string; processId?: string; command?: string; cwd?: string; cpu_percent?: number | null; cpuPercent?: number | null; rss_kb?: number | null; rssKb?: number | null };
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
 type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[]; profile_reason?: string; runtime_reason?: string; runtime_error?: string };
@@ -53,6 +57,16 @@ function why(r: { reason?: string; error?: string } | null): string | null {
   return null;
 }
 
+function readableStatus(value: string): string {
+  return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
+}
+
+function compactNumber(value: number): string {
+  if (value < 1_000) return String(Math.round(value));
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)}k`;
+  return `${(value / 1_000_000).toFixed(1)}m`;
+}
+
 export default function SessionInsight({ sessionId, isCodex }: { sessionId: string; isCodex: boolean }) {
   const [ctx, setCtx] = useState<Ctx | null>(null);
   const [mcp, setMcp] = useState<Mcp | null>(null);
@@ -60,7 +74,6 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(false);
-  const [terminals, setTerminals] = useState<BgTerminal[] | null>(null);
   const [security, setSecurity] = useState<Security | null>(null);
   const [securityBusy, setSecurityBusy] = useState(false);
   const [resources, setResources] = useState<Resources | null>(null);
@@ -71,13 +84,10 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [c, m, a, bt, sec, res] = await Promise.all([
+      const [c, m, a, sec, res] = await Promise.all([
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/subagents`).then((r) => r.json()).catch(() => null),
-        isCodex
-          ? fetch(`/api/claude/sessions/${sessionId}/background-terminals`).then((r) => r.json()).catch(() => null)
-          : Promise.resolve(null),
         isCodex
           ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
@@ -86,7 +96,6 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       setCtx(c); setMcp(m);
       setAgents(Array.isArray(a?.agents) ? a.agents.map((item: string | SubAgent) =>
         typeof item === 'string' ? { id: item, depth: 1 } : item) : null);
-      setTerminals(Array.isArray(bt?.terminals) ? bt.terminals : null);
       setSecurity(sec);
       setResources(res);
     } finally {
@@ -266,10 +275,10 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
 
       <section className="si-sec">
         <h4>context window</h4>
-        {isCodex && ctx?.status?.type && (
-          <div className="si-line">status: {ctx.status.type}
+        {ctx?.status?.type && (
+          <div className="si-line">status: {readableStatus(ctx.status.type)}
             {(ctx.status.activeFlags ?? ctx.status.active_flags)?.length
-              ? ` · ${(ctx.status.activeFlags ?? ctx.status.active_flags)?.join(', ')}` : ''}
+              ? ` · ${(ctx.status.activeFlags ?? ctx.status.active_flags)?.map(readableStatus).join(', ')}` : ''}
           </div>
         )}
         {ctx?.ok && pct != null ? (
@@ -298,6 +307,17 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
           </>
         ) : (
           <p className="si-none">{why(ctx) ?? 'not running'}</p>
+        )}
+        {ctx?.recorded_usage && (
+          <div className="si-line" title={ctx.recorded_usage.models?.join(', ')}>
+            recorded: {ctx.recorded_usage.turns} turn{ctx.recorded_usage.turns === 1 ? '' : 's'}
+            {' · '}↑ {compactNumber(ctx.recorded_usage.output_tokens)} out
+            {' · '}↓ {compactNumber(ctx.recorded_usage.input_tokens)} in
+            {ctx.recorded_usage.cache_read_tokens > 0
+              ? ` · ${compactNumber(ctx.recorded_usage.cache_read_tokens)} cached` : ''}
+            {ctx.recorded_usage.cost_usd > 0
+              ? ` · $${ctx.recorded_usage.cost_usd.toFixed(4)}` : ''}
+          </div>
         )}
       </section>
 
@@ -353,31 +373,6 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
           <p className="si-none">{mcp?.ok ? 'none configured' : (why(mcp) ?? 'not running')}</p>
         )}
       </section>
-
-      {isCodex && <section className="si-sec">
-        <h4>background terminals{terminals?.length ? ` (${terminals.length})` : ''}</h4>
-        {terminals?.length ? <ul className="si-mcp">
-          {terminals.map((term, i) => {
-            const processId = term.process_id ?? term.processId ?? '';
-            const cpu = term.cpu_percent ?? term.cpuPercent;
-            const rss = term.rss_kb ?? term.rssKb;
-            return <li key={processId || i} className="si-mcp-row ready">
-              <span className="si-mcp-name" title={term.cwd}>{term.command || processId}</span>
-              <span className="si-mcp-status">pid {processId}
-                {cpu != null ? ` · ${cpu}%` : ''}
-                {rss != null ? ` · ${Math.round(rss / 1024)} MB` : ''}
-              </span>
-              <button type="button" onClick={async () => {
-                await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
-                  method: 'POST', headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ processId }),
-                }).catch(() => {});
-                void load();
-              }}>stop</button>
-            </li>;
-          })}
-        </ul> : <p className="si-none">none running</p>}
-      </section>}
 
       <section className="si-sec">
         <h4>sub-agents{agents?.length ? ` (${agents.length})` : ''}</h4>

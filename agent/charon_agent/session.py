@@ -810,7 +810,14 @@ class AgentSession:
             r = {k: getattr(r, k, None) for k in
                  ("totalTokens", "maxTokens", "percentage", "model",
                   "autoCompactThreshold", "categories")}
-        out: dict[str, Any] = {"ok": True}
+        out: dict[str, Any] = {
+            "ok": True,
+            "provider": "claude",
+            # Codex exposes a richer native ThreadStatus; Claude's SDK does
+            # not, so report the daemon's authoritative lifecycle in the same
+            # envelope rather than leaving the common inspector blank.
+            "status": {"type": self.status},
+        }
         for src, dst in (("totalTokens", "total_tokens"), ("maxTokens", "max_tokens"),
                          ("percentage", "percentage"), ("model", "model"),
                          ("autoCompactThreshold", "auto_compact_threshold"),

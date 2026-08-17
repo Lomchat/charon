@@ -43,6 +43,24 @@ class ClaudeAdvancedConfigTest(unittest.TestCase):
 
 
 class ClaudeResourcesTest(unittest.IsolatedAsyncioTestCase):
+    async def test_context_envelope_has_common_provider_and_status(self):
+        session = AgentSession(
+            "s1", cwd="/tmp", name="demo", permission_mode="normal",
+            claude_session_id=None, emit=lambda _event: None,
+            on_state_change=lambda: None,
+        )
+        session.status = "thinking"
+
+        class Client:
+            async def get_context_usage(self):
+                return {"totalTokens": 250, "maxTokens": 1000, "percentage": 25}
+
+        session._client = Client()
+        result = await session.context_usage()
+        self.assertEqual(result["provider"], "claude")
+        self.assertEqual(result["status"], {"type": "thinking"})
+        self.assertEqual(result["total_tokens"], 250)
+
     async def test_project_skills_and_live_commands_share_one_inventory(self):
         with tempfile.TemporaryDirectory(prefix="charon-skills-") as tmp:
             skill = Path(tmp) / ".claude" / "skills" / "review" / "SKILL.md"

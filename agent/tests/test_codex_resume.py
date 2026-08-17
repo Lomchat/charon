@@ -47,6 +47,10 @@ class FakeThread:
         self.compactions += 1
         return {"compacted": True}
 
+    async def read(self, include_turns=False):
+        del include_turns
+        return types.SimpleNamespace(thread=types.SimpleNamespace(status={"type": "idle"}))
+
 
 class FakeClient:
     """Stands in for AsyncCodex: records calls, fails resume on demand."""
@@ -105,6 +109,10 @@ def _make_session(claude_session_id):
     s._streamed_items = set()
     s._session_id_emitted = False
     s._effective_model = None
+    s._last_thread_usage = None
+    s._background_terminals = {}
+    s._background_monitor_task = None
+    s._background_sync_lock = asyncio.Lock()
     s._thread = None
     s._client = None
     s._active_turn = None
@@ -435,6 +443,80 @@ class TestCodexResume(unittest.TestCase):
             self.assertEqual(thread.names, ["visible name"])
             self.assertEqual(thread.compactions, 1)
             self.assertTrue(result["ok"])
+
+        asyncio.run(main())
+
+    def test_context_usage_normalizes_status_and_token_categories(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            s._thread = FakeThread(THREAD_ID)
+            s._last_thread_usage = {
+                "total": {
+                    "input_tokens": 600, "cached_input_tokens": 400,
+                    "output_tokens": 100, "reasoning_output_tokens": 25,
+                    "total_tokens": 725,
+                },
+                "model_context_window": 1000,
+            }
+            result = await s.context_usage()
+            self.assertEqual(result["provider"], "codex")
+            self.assertEqual(result["status"], {"type": "idle"})
+            self.assertEqual(result["percentage"], 72.5)
+            self.assertEqual(result["categories"], [
+                {"name": "input", "tokens": 600},
+                {"name": "cached input", "tokens": 400},
+                {"name": "output", "tokens": 100},
+                {"name": "reasoning", "tokens": 25},
+            ])
+
+        asyncio.run(main())
+
+    def test_background_terminal_registry_becomes_common_task_lifecycle(self):
+        class Raw:
+            def __init__(self):
+                self.rows = [{"processId": "pty-7", "command": "npm test", "cwd": "/repo"}]
+
+            async def request(self, method, params, response_model):
+                self.asserted = (method, params)
+                return response_model.model_validate({"data": self.rows, "nextCursor": None})
+
+        async def main():
+            s = _make_session(THREAD_ID)
+            raw = Raw()
+            s._client = types.SimpleNamespace(_client=raw)
+            await s._sync_background_terminals(start_monitor=False)
+            self.assertEqual(raw.asserted[0], "thread/backgroundTerminals/list")
+            self.assertEqual(s._emitted[-1], ("bg_task", {
+                "kind": "started", "task_id": "codex-terminal:pty-7",
+                "description": "npm test", "task_type": "codex_terminal",
+                "status": "running",
+            }))
+            raw.rows = []
+            await s._sync_background_terminals(start_monitor=False)
+            self.assertEqual(s._emitted[-1], ("bg_task", {
+                "kind": "finished", "task_id": "codex-terminal:pty-7",
+                "status": "completed", "terminal": True,
+            }))
+
+        asyncio.run(main())
+
+    def test_background_reconciliation_precedes_turn_stop(self):
+        TurnCompletedNotification = type("TurnCompletedNotification", (), {})
+
+        async def main():
+            s = _make_session(THREAD_ID)
+            s._last_usage = {"input_tokens": 1, "output_tokens": 2}
+            order = []
+
+            async def sync():
+                order.append("background-sync")
+
+            s._sync_background_terminals = sync
+            s._emit_to_server = lambda event: order.append(event["event"])
+            payload = TurnCompletedNotification()
+            payload.turn = types.SimpleNamespace(status="completed", duration_ms=10)
+            await s._translate_and_emit(payload)
+            self.assertEqual(order, ["background-sync", "usage", "stop"])
 
         asyncio.run(main())
 

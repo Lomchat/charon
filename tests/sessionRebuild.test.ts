@@ -67,6 +67,7 @@ describe('rebuildStateFromMessages', () => {
     const rows = [
       row('event', JSON.stringify({ type: 'tool_activity', id: 'codex-goal-thread', status: 'updated', detail: { n: 1 } }), { id: 21, createdAt: 100 }),
       row('event', JSON.stringify({ type: 'tool_activity', id: 'codex-goal-thread', status: 'updated', detail: { n: 2 } }), { id: 22, createdAt: 200 }),
+      row('event', JSON.stringify({ type: 'turn_usage', provider: 'codex', outputTokens: 42 }), { id: 25, createdAt: 250 }),
       row('event', JSON.stringify({ type: 'plan_update', id: 'turn-1', steps: [{ step: 'one', status: 'pending' }] }), { id: 23, createdAt: 300 }),
       row('event', JSON.stringify({ type: 'plan_update', id: 'turn-1', steps: [{ step: 'one', status: 'completed' }] }), { id: 24, createdAt: 400 }),
     ];

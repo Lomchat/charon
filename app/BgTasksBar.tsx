@@ -4,6 +4,22 @@ import { api } from '@/lib/api';
 import { effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 
+type CodexTerminal = {
+  process_id?: string; processId?: string;
+  command?: string | string[]; cwd?: string;
+  cpu_percent?: number | null; cpuPercent?: number | null;
+  rss_kb?: number | null; rssKb?: number | null;
+};
+
+function terminalId(term: CodexTerminal): string {
+  return String(term.process_id ?? term.processId ?? '');
+}
+
+function terminalCommand(term: CodexTerminal): string {
+  if (Array.isArray(term.command)) return term.command.join(' ');
+  return typeof term.command === 'string' && term.command ? term.command : terminalId(term);
+}
+
 // Per-sub-agent state glyphs for a Workflow run's fan-out (bg_task_progress).
 const AGENT_STATE: Record<string, { glyph: string; cls: string }> = {
   start: { glyph: '◐', cls: 'running' },
@@ -54,13 +70,21 @@ function taskTitle(t: BgTask): string {
   return t.description || t.workflowName || t.command || t.taskId;
 }
 
-function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: string }) {
+function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
+  tasks: BgTask[];
+  sessionId: string;
+  provider: 'claude' | 'codex';
+  sessionStatus: string;
+}) {
   const [open, setOpen] = useState(false);
   const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000));
   // taskId → in-flight/failed kill. Pessimistic (§14.18): the row keeps saying
   // "running" until the CLI's own terminal event arrives, because only the CLI
   // knows whether the task actually died.
   const [killing, setKilling] = useState<Record<string, 'pending' | string>>({});
+  const [terminals, setTerminals] = useState<CodexTerminal[]>([]);
+  const [terminalError, setTerminalError] = useState<string | null>(null);
+  const [terminalKilling, setTerminalKilling] = useState<Record<string, 'pending' | string>>({});
 
   const kill = useCallback(async (taskId: string) => {
     setKilling((k) => ({ ...k, [taskId]: 'pending' }));
@@ -71,6 +95,55 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
     }
   }, [sessionId]);
 
+  const refreshTerminals = useCallback(async () => {
+    if (provider !== 'codex') return;
+    try {
+      const response = await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
+        cache: 'no-store',
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      setTerminals(Array.isArray(data.terminals) ? data.terminals : []);
+      setTerminalError(null);
+    } catch (error: any) {
+      // Preserve the last good registry on a transient VPS failure. A stale
+      // process row is safer than making running work disappear on one poll.
+      setTerminalError(error?.message ?? 'background process lookup failed');
+    }
+  }, [provider, sessionId]);
+
+  const killTerminal = useCallback(async (processId: string) => {
+    setTerminalKilling((current) => ({ ...current, [processId]: 'pending' }));
+    try {
+      const response = await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ processId }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      setTerminalKilling((current) => {
+        const next = { ...current }; delete next[processId]; return next;
+      });
+      await refreshTerminals();
+    } catch (error: any) {
+      setTerminalKilling((current) => ({
+        ...current, [processId]: error?.message ?? 'failed',
+      }));
+    }
+  }, [refreshTerminals, sessionId]);
+
+  useEffect(() => {
+    if (provider !== 'codex' || !['starting', 'active', 'thinking', 'background'].includes(sessionStatus)) {
+      setTerminals([]); setTerminalError(null); return;
+    }
+    void refreshTerminals();
+    const delay = open || sessionStatus === 'thinking' ? 3_000 : 12_000;
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshTerminals();
+    }, delay);
+    return () => clearInterval(timer);
+  }, [open, provider, refreshTerminals, sessionStatus]);
+
   // Age-capped view of the registry: a task running past the cap is `stale`,
   // not live work (`effectiveBgStatus`). Recomputed off the 1s ticker, so a
   // task that ages out while the bar is open stops claiming to be running.
@@ -78,9 +151,17 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
     () => tasks.map((t) => ({ t, status: effectiveBgStatus(t, nowS) })),
     [tasks, nowS],
   );
+  const terminalTaskIds = useMemo(
+    () => new Set(terminals.map((term) => `codex-terminal:${terminalId(term)}`)),
+    [terminals],
+  );
+  const taskView = useMemo(
+    () => view.filter(({ t }) => !terminalTaskIds.has(t.taskId)),
+    [terminalTaskIds, view],
+  );
   const running = useMemo(
-    () => view.filter((v) => v.status === 'running').map((v) => v.t),
-    [view],
+    () => taskView.filter((v) => v.status === 'running').map((v) => v.t),
+    [taskView],
   );
   const lastEndedAt = useMemo(
     () => tasks.reduce((m, t) => Math.max(m, t.endedAt ?? 0), 0),
@@ -103,24 +184,27 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  const visible = running.length > 0
+  const runningCount = running.length + terminals.length;
+  const visible = runningCount > 0
     || (tasks.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
   if (!visible) return null;
 
-  const headline = running.length > 0
-    ? `${running.length} background task${running.length > 1 ? 's' : ''} running`
-    : 'background tasks finished';
-  const newest = running.length > 0 ? running[running.length - 1] : tasks[0];
+  const headline = runningCount > 0
+    ? `${runningCount} background work item${runningCount > 1 ? 's' : ''} running`
+    : 'background work finished';
+  const newest = running.length > 0 ? running[running.length - 1]
+    : terminals.length > 0 ? undefined : tasks[0];
+  const newestTerminal = terminals[terminals.length - 1];
 
   return (
     <>
       <button
         type="button"
-        className={`bgtasks-bar${running.length > 0 ? ' active' : ''}`}
+        className={`bgtasks-bar${runningCount > 0 ? ' active' : ''}`}
         onClick={() => setOpen(true)}
         title="click for background task details"
       >
-        <span className={`bgtasks-dot ${running.length > 0 ? 'running' : 'done'}`} aria-hidden />
+        <span className={`bgtasks-dot ${runningCount > 0 ? 'running' : 'done'}`} aria-hidden />
         <span className="bgtasks-headline">{headline}</span>
         {newest && (
           <span className="bgtasks-snippet">
@@ -130,6 +214,12 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
             {running.length > 0 && ` · ${fmtElapsed(newest.startedAt, nowS)}`}
           </span>
         )}
+        {!newest && newestTerminal && (
+          <span className="bgtasks-snippet">
+            <span className="bgtask-badge workflow" aria-hidden>⌘</span>
+            {terminalCommand(newestTerminal)}
+          </span>
+        )}
         <span className="bgtasks-more" aria-hidden>▸ details</span>
       </button>
 
@@ -137,14 +227,13 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
         <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}>
           <div className="claude-modal bgtasks-modal">
             <button className="modal-close" onClick={() => setOpen(false)}>✕</button>
-            <h2>background tasks</h2>
+            <h2>background work</h2>
             <p className="bgtasks-help">
-              Processes this session launched in the background. When one
-              finishes, the agent is woken automatically and its report streams
-              into the chat — no need to send a message.
+              Tasks and long-running processes launched by this session. You
+              can stop one without stopping the session itself.
             </p>
             <div className="bgtasks-list">
-              {view.map(({ t, status }) => {
+              {taskView.map(({ t, status }) => {
                 const meta = STATUS_META[status] ?? STATUS_META.stale;
                 const end = t.endedAt ?? nowS;
                 const kstate = killing[t.taskId];
@@ -210,6 +299,35 @@ function BgTasksBarImpl({ tasks, sessionId }: { tasks: BgTask[]; sessionId: stri
                   </div>
                 );
               })}
+              {terminals.map((term, i) => {
+                const processId = terminalId(term);
+                const cpu = term.cpu_percent ?? term.cpuPercent;
+                const rss = term.rss_kb ?? term.rssKb;
+                const kstate = terminalKilling[processId];
+                return (
+                  <div key={processId || `terminal-${i}`} className="bgtask-row running">
+                    <div className="bgtask-head">
+                      <span className="bgtask-status running">● running</span>
+                      <span className="bgtask-badge workflow">⌘ process</span>
+                      <span className="bgtask-id" title={term.cwd || processId}>{processId || 'unknown pid'}</span>
+                      <span className="bgtask-time">
+                        {cpu != null ? `${cpu}% cpu` : ''}
+                        {rss != null ? `${cpu != null ? ' · ' : ''}${Math.round(rss / 1024)} MB` : ''}
+                      </span>
+                      {!!processId && <button type="button" className="bgtask-kill"
+                        disabled={kstate === 'pending'} onClick={() => void killTerminal(processId)}>
+                        {kstate === 'pending' ? 'stopping…' : '⊘ stop'}
+                      </button>}
+                    </div>
+                    <pre className="bgtask-cmd">{terminalCommand(term)}</pre>
+                    {term.cwd && <div className="bgtask-output">in {term.cwd}</div>}
+                    {kstate && kstate !== 'pending' && <div className="bgtask-killerr">could not stop: {kstate}</div>}
+                  </div>
+                );
+              })}
+              {terminalError && terminals.length > 0 && (
+                <div className="bgtask-killerr">process registry refresh failed: {terminalError}</div>
+              )}
             </div>
           </div>
         </div>

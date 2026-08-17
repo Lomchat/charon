@@ -75,9 +75,9 @@ export type BridgeEvent =
       agents?: BgAgentProgress[];
       phases?: Array<{ index?: number | null; title?: string | null }>;
     }
-  // usage = live token counter for the current turn (§14.50). Transient
-  // (broadcast-only, high-volume → focused conn). `final:true` = turn totals
-  // (duration_ms, cost_usd from the ResultMessage).
+  // usage = live token counter for the current turn (§14.50). Intermediate
+  // frames are transient; the hub persists exactly the `final:true` frame as
+  // an invisible provider-neutral turn_usage DB event (agent/hub >=0.67).
   // `tree` (agent >= 0.36.0) is the whole-tree total from model_usage —
   // subagents included. The flat fields count the main thread only, which
   // under-reports every ultracode/Workflow session.

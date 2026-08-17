@@ -36,11 +36,13 @@ const SID = 'c'.repeat(32);
 let db: any;
 let schema: any;
 let SessionStream: any;
+let recordedSessionUsage: any;
 
-function createStream(status: string = 'active') {
+function createStream(status: string = 'active', kind: 'claude' | 'codex' = 'claude') {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build',
-    status, permissionMode: 'normal', claudeSessionId: null, kind: 'claude',
+    status, permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
+    claudeSessionId: null, kind,
   }) as any;
 }
 
@@ -71,6 +73,7 @@ beforeAll(async () => {
     .onConflictDoNothing().run();
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
+  ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
 });
 
 beforeEach(() => {
@@ -87,7 +90,54 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('provider-neutral durable turn usage', () => {
+  it('stores only final frames and aggregates Claude tree + Codex turn totals identically', () => {
+    const claude = createStream('active', 'claude');
+    claude._onAgentEvent({
+      event: 'usage', session_id: SID, output_tokens: 9, input_tokens: 10,
+      final: false,
+    });
+    claude._onAgentEvent({
+      event: 'usage', session_id: SID, output_tokens: 90, input_tokens: 100,
+      cache_read_tokens: 20, final: true, duration_ms: 1000, cost_usd: 0.1,
+      tree: {
+        input_tokens: 150, output_tokens: 120, cache_read_tokens: 30,
+        cache_write_tokens: 5, cost_usd: 0.2, models: ['claude-test'],
+      },
+    });
+    const codex = createStream('active', 'codex');
+    codex._onAgentEvent({
+      event: 'usage', session_id: SID, output_tokens: 80, input_tokens: 200,
+      cache_read_tokens: 40, final: true, duration_ms: 2000,
+    });
+
+    const rows = db.select().from(schema.claudeSessionMessages).all();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row: any) => JSON.parse(row.content).provider)).toEqual(['claude', 'codex']);
+    expect(recordedSessionUsage(SID)).toEqual({
+      turns: 2,
+      input_tokens: 350,
+      output_tokens: 200,
+      cache_read_tokens: 70,
+      cache_write_tokens: 5,
+      duration_ms: 3000,
+      cost_usd: 0.2,
+      models: ['claude-test'],
+    });
+  });
+});
+
 describe('a turn that ends with background tasks still running (§14.91)', () => {
+  it('adopts a background task discovered just after the provider stop', () => {
+    const stream = createStream();
+    stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 1 });
+    expect(stream.status).toBe('active');
+    stream._onAgentEvent(bgTask(2, 'started', 'codex-terminal:pty-1'));
+    expect(stream.status).toBe('background');
+    expect(sessionRow().status).toBe('background');
+    expect(sessionRow().unreadStop).toBe(0);
+  });
+
   it('goes background instead of done, and stays there under the daemon idle frame', () => {
     const stream = createStream();
     stream._onAgentEvent(bgTask(1, 'started', 'task-a'));

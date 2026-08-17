@@ -1246,11 +1246,25 @@ export class SessionStream {
         }
         break;
       case 'usage':
-        // Transient LIVE token counter for the current turn (§14.50). The agent
-        // emits it broadcast-only (no durable log, no seq), throttled. No DB
-        // write — just fan it out to the focused SSE conn (it's high-volume →
-        // focused-only via eventConnections) so the ThinkingBar can show a
-        // growing "↑ N tokens". Never replayed (not in the durable log).
+        // Intermediate counters stay transient/high-volume. The one final
+        // frame is different: persist one provider-neutral turn_usage row so
+        // Claude and Codex accounting survives a browser/hub restart and can
+        // be compared from the same DB representation. It remains invisible
+        // in the transcript; sessionRebuild intentionally ignores it.
+        if (ev.final && !this._replayAlreadyPersisted(ev)) {
+          this._persist('event', {
+            type: 'turn_usage', provider: this.kind,
+            outputTokens: ev.output_tokens,
+            inputTokens: ev.input_tokens ?? 0,
+            cacheReadTokens: ev.cache_read_tokens ?? 0,
+            cacheWriteTokens: ev.cache_write_tokens ?? 0,
+            durationMs: ev.duration_ms ?? 0,
+            costUsd: ev.cost_usd ?? null,
+            ...(ev.tree ? { tree: ev.tree } : {}),
+          });
+        }
+        // Fan every frame to the focused SSE connection so ThinkingBar can
+        // show the growing output counter. Intermediate frames never touch DB.
         this._broadcast({
           type: 'usage',
           output_tokens: ev.output_tokens,
@@ -1963,6 +1977,17 @@ export class SessionStream {
     if (running.size > 0) {
       // More work started — whatever "it's done" we had queued is void.
       this._cancelBgFinish();
+      // Some providers can reveal a native background process immediately
+      // after their stop frame. Do not leave the session green/auto-updatable
+      // merely because that lifecycle event crossed the wire second.
+      if (!before && this.status === 'active') {
+        this.status = 'background';
+        try {
+          db.update(claudeSessions).set({ status: 'background', unreadStop: 0 })
+            .where(eq(claudeSessions.id, this.id)).run();
+        } catch {}
+        this._broadcast({ type: 'status', status: 'background' });
+      }
       return;
     }
     if (!before) return;                            // nothing was running anyway

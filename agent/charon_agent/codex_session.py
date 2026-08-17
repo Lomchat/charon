@@ -614,6 +614,12 @@ class CodexSession:
         self._codex_stderr_lines: list[str] = []
         self._plan_deltas: dict[str, str] = {}
         self._fs_watch_id: str | None = None
+        # Codex's background-terminal registry is native app-server state. Map
+        # it onto the same durable bg_task lifecycle Claude uses so the hub's
+        # status, notifications and fleet-update quiet gate all agree.
+        self._background_terminals: dict[str, dict[str, Any]] = {}
+        self._background_monitor_task: asyncio.Task | None = None
+        self._background_sync_lock = asyncio.Lock()
         # Exact Guardian denial payloads are required by
         # thread/approveGuardianDeniedAction. Keep only the ten entries Codex
         # itself exposes in its /approve picker; they are runtime state, not
@@ -1232,6 +1238,17 @@ class CodexSession:
             if isinstance(total_tokens, (int, float)) and isinstance(max_tokens, (int, float)) and max_tokens
             else None
         )
+        categories: list[dict[str, Any]] = []
+        if isinstance(total, dict):
+            for snake, camel, label in (
+                ("input_tokens", "inputTokens", "input"),
+                ("cached_input_tokens", "cachedInputTokens", "cached input"),
+                ("output_tokens", "outputTokens", "output"),
+                ("reasoning_output_tokens", "reasoningOutputTokens", "reasoning"),
+            ):
+                value = total.get(snake, total.get(camel))
+                if isinstance(value, (int, float)):
+                    categories.append({"name": label, "tokens": int(value)})
         return {
             "ok": True,
             "provider": "codex",
@@ -1240,6 +1257,7 @@ class CodexSession:
             "max_tokens": max_tokens,
             "percentage": percentage,
             "usage": usage or None,
+            "categories": categories,
             "model": self._effective_model or self.model,
         }
 
@@ -1491,8 +1509,7 @@ class CodexSession:
         try:
             async for note in handle.stream():
                 payload = getattr(note, "payload", note)
-                for event in self._translate(payload):
-                    self._emit_to_server({"session_id": self.session_id, **event})
+                await self._translate_and_emit(payload)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1563,6 +1580,75 @@ class CodexSession:
             return {"ok": False, "error": f"backgroundTerminals/list: {e}",
                     **({"reason": "unsupported"} if getattr(e, "code", None) == -32601 else {})}
 
+    @staticmethod
+    def _background_terminal_id(row: dict[str, Any]) -> str:
+        value = row.get("processId", row.get("process_id"))
+        return str(value) if value is not None else ""
+
+    @staticmethod
+    def _background_terminal_description(row: dict[str, Any]) -> str:
+        command = row.get("command")
+        if isinstance(command, list):
+            return " ".join(str(part) for part in command)[:4096]
+        if isinstance(command, str) and command:
+            return command[:4096]
+        return CodexSession._background_terminal_id(row) or "Codex background process"
+
+    async def _sync_background_terminals(
+        self, *, start_monitor: bool = True, disappeared_status: str = "completed",
+    ) -> None:
+        """Reconcile the native process registry into common bg_task events."""
+        lock = getattr(self, "_background_sync_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._background_sync_lock = lock
+        async with lock:
+            result = await self.background_terminals()
+            if not result.get("ok"):
+                return
+            current: dict[str, dict[str, Any]] = {}
+            for raw in result.get("terminals") or []:
+                if not isinstance(raw, dict):
+                    continue
+                process_id = self._background_terminal_id(raw)
+                if process_id:
+                    current[process_id] = raw
+            previous = getattr(self, "_background_terminals", {})
+            for process_id, row in current.items():
+                if process_id not in previous:
+                    self._emit(
+                        "bg_task", kind="started",
+                        task_id=f"codex-terminal:{process_id}",
+                        description=self._background_terminal_description(row),
+                        task_type="codex_terminal", status="running",
+                    )
+            for process_id in previous.keys() - current.keys():
+                self._emit(
+                    "bg_task", kind="finished",
+                    task_id=f"codex-terminal:{process_id}",
+                    status=disappeared_status, terminal=True,
+                )
+            self._background_terminals = current
+        if start_monitor and current:
+            task = getattr(self, "_background_monitor_task", None)
+            if task is None or task.done():
+                self._background_monitor_task = asyncio.create_task(
+                    self._monitor_background_terminals(),
+                    name=f"codex-background-{self.session_id}",
+                )
+
+    async def _monitor_background_terminals(self) -> None:
+        try:
+            while self._client is not None and getattr(self, "_background_terminals", {}):
+                await asyncio.sleep(5.0)
+                await self._sync_background_terminals(start_monitor=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"codex: background-terminal monitor failed: {e}", file=sys.stderr)
+        finally:
+            self._background_monitor_task = None
+
     async def stop_background_terminal(self, process_id: str) -> dict[str, Any]:
         if self._client is None or not self.claude_session_id:
             return {"ok": False, "error": "Codex thread is not running"}
@@ -1570,11 +1656,28 @@ class CodexSession:
 
         class _Terminated(BaseModel):
             terminated: bool
-        response = await self._client._client.request(
-            "thread/backgroundTerminals/terminate",
-            {"threadId": self.claude_session_id, "processId": process_id},
-            response_model=_Terminated,
-        )
+        lock = getattr(self, "_background_sync_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._background_sync_lock = lock
+        async with lock:
+            response = await self._client._client.request(
+                "thread/backgroundTerminals/terminate",
+                {"threadId": self.claude_session_id, "processId": process_id},
+                response_model=_Terminated,
+            )
+            if response.terminated:
+                tracked = getattr(self, "_background_terminals", {}).pop(process_id, None)
+                # Emit even when the direct UI lookup found the process before
+                # the end-of-turn reconciliation did. A lone finished row is
+                # harmless; silently losing a requested kill is not.
+                self._emit(
+                    "bg_task", kind="finished",
+                    task_id=f"codex-terminal:{process_id}",
+                    description=(self._background_terminal_description(tracked)
+                                 if isinstance(tracked, dict) else None),
+                    task_type="codex_terminal", status="killed", terminal=True,
+                )
         return {"ok": True, "terminated": response.terminated}
 
     def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
@@ -1969,6 +2072,16 @@ class CodexSession:
         }
 
     # ── Translate Codex notifications → Charon events ─────────────────────────
+    async def _translate_and_emit(self, payload: Any) -> None:
+        events = self._translate(payload)
+        # Discover background PTYs BEFORE the translated stop reaches the hub.
+        # Otherwise the hub briefly (and observably) declares the session done,
+        # sends its completion notification and may pass the fleet quiet gate.
+        if type(payload).__name__ == "TurnCompletedNotification":
+            await self._sync_background_terminals()
+        for event in events:
+            self._emit_to_server({"session_id": self.session_id, **event})
+
     def _translate(self, payload: Any) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         try:
@@ -2813,8 +2926,7 @@ class CodexSession:
                     self._begin_turn()
                     async for note in handle.stream():
                         payload = getattr(note, "payload", note)
-                        for ev in self._translate(payload):
-                            self._emit_to_server({"session_id": self.session_id, **ev})
+                        await self._translate_and_emit(payload)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -2841,6 +2953,12 @@ class CodexSession:
                 if global_task is not None:
                     global_task.cancel()
                     await asyncio.gather(global_task, return_exceptions=True)
+                background_task = getattr(self, "_background_monitor_task", None)
+                self._background_monitor_task = None
+                if background_task is not None and background_task is not me:
+                    background_task.cancel()
+                    await asyncio.gather(background_task, return_exceptions=True)
+                self._background_terminals = {}
                 try:
                     if self._client is not None:
                         res = self._client.close()

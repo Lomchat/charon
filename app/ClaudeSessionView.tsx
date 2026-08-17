@@ -860,7 +860,9 @@ export default function ClaudeSessionView({
         {/* Background tasks (Bash run_in_background / bg subagents): slim
             status line above the input, click → details modal. Renders null
             when the session has no live/recent background work. */}
-        <BgTasksBar tasks={bgTasks} sessionId={sessionId} />
+        <BgTasksBar tasks={bgTasks} sessionId={sessionId}
+          provider={sessionKind === 'codex' ? 'codex' : 'claude'}
+          sessionStatus={status ?? 'sleeping'} />
 
         {/* Input area — replaced by resume CTA if disconnected, or
             QuestionCard/ExitPlanCard/PermissionCard if pending. */}

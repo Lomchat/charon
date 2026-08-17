@@ -438,8 +438,8 @@ export type AgentMethodName =
   // Append bounded Responses message items to a loaded Codex thread's durable
   // model-visible history (agent >= 0.46.0). Used by Claude -> Codex forks.
   | 'inject_history'
-  // Live context-window usage, MCP server health, and the sub-agent
-  // transcripts this session spawned (agent >= 0.40.0). All Claude-only.
+  // Provider-neutral context-window usage, MCP health and sub-agent/resource
+  // inspection. Provider adapters retain richer native fields.
   | 'get_context_usage'
   | 'mcp_status'
   | 'mcp_toggle'
