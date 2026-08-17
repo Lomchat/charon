@@ -40,6 +40,7 @@ import {
 } from './sessionAttachments';
 import { IconPaperclip } from './icons';
 import { IconExternal } from './fileIcons';
+import { shouldShowChatRole } from './chatVisibility';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,6 +66,9 @@ import { IconExternal } from './fileIcons';
 type Props = {
   sessionId: string;
   selected: SessionListItem;
+  /** Show technical transcript activity (tool calls/results, plans and
+   * reasoning). False is a render-only conversation view. */
+  showTools: boolean;
   /** This session's addressable handle (unique on its VPS). Shown in the
    *  header so the user knows what other agents type to reach it. */
   handle?: string | null;
@@ -117,7 +121,7 @@ const sharedCacheRef: StreamCache = {
 };
 
 export default function ClaudeSessionView({
-  sessionId, selected, selectedVps, handle, handleConfirmed, siblings,
+  sessionId, selected, showTools, selectedVps, handle, handleConfirmed, siblings,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
   onOpenSession,
@@ -333,6 +337,13 @@ export default function ClaudeSessionView({
     return out;
   }, [messages]);
 
+  const visibleRenderable = useMemo(
+    () => showTools
+      ? renderable
+      : renderable.filter(({ msg }) => shouldShowChatRole(msg.role, false)),
+    [renderable, showTools],
+  );
+
   // ── "Continue" affordance for a turn the transport cut (§14.68) ───────────
   // The CLI closes such a turn with a synthetic assistant bubble ("API Error:
   // Connection closed mid-response…"); the one-word fix is to send "Continue".
@@ -505,7 +516,7 @@ export default function ClaudeSessionView({
     if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
   }, []);
   // Recompute isAtTop when the content changes (new messages → max moves).
-  useEffect(() => { handleChatScroll(); }, [messages.length, handleChatScroll]);
+  useEffect(() => { handleChatScroll(); }, [visibleRenderable.length, handleChatScroll]);
   const onPillClick = useCallback(() => {
     setNewCount(0);
     const el = chatBodyRef.current;
@@ -599,15 +610,25 @@ export default function ClaudeSessionView({
     requestAnimationFrame(step);
   }, []);
 
-  // Count new messages when the user is NOT at the bottom, for the ↓ N pill.
+  // Count new VISIBLE messages when the user is NOT at the bottom, for the ↓ N
+  // pill. Hidden tool/reasoning rows must not advertise a message the reader
+  // cannot reach. Toggling the preference only changes the baseline; it is not
+  // new activity.
+  const previousShowToolsRef = useRef(showTools);
   useEffect(() => {
     const prev = lastMessageCountRef.current;
-    const cur = messages.length;
+    const cur = visibleRenderable.length;
+    if (previousShowToolsRef.current !== showTools) {
+      previousShowToolsRef.current = showTools;
+      lastMessageCountRef.current = cur;
+      setNewCount(0);
+      return;
+    }
     if (cur > prev && !isAtBottomRef.current) {
       setNewCount((c) => c + (cur - prev));
     }
     lastMessageCountRef.current = cur;
-  }, [messages.length]);
+  }, [visibleRenderable.length, showTools]);
 
   // ── Action wrappers (just handle local UI around the hook) ────────────────
   // The "pause" button in the header used to be a false friend: it called
@@ -767,7 +788,7 @@ export default function ClaudeSessionView({
                   <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={onReauth} />
                 )}
                 <MessageHistory
-                  renderable={renderable}
+                  renderable={visibleRenderable}
                   kind={sessionKind}
                   onReauth={onReauth}
                   continuableMsgId={continuableMsgId}
@@ -854,15 +875,23 @@ export default function ClaudeSessionView({
         </div>
 
         {status === 'thinking' && (
-          <ThinkingBar label={sessionKind === 'codex' ? 'Codex is thinking' : 'Claude is thinking'} currentTool={currentTool} stepCount={stepCount} startedAt={turnStartedAt} tokens={liveUsage?.output ?? null} />
+          <ThinkingBar
+            label={sessionKind === 'codex' ? 'Codex is thinking' : 'Claude is thinking'}
+            currentTool={showTools ? currentTool : null}
+            stepCount={showTools ? stepCount : 0}
+            startedAt={turnStartedAt}
+            tokens={showTools ? (liveUsage?.output ?? null) : null}
+          />
         )}
 
         {/* Background tasks (Bash run_in_background / bg subagents): slim
             status line above the input, click → details modal. Renders null
             when the session has no live/recent background work. */}
-        <BgTasksBar tasks={bgTasks} sessionId={sessionId}
-          provider={sessionKind === 'codex' ? 'codex' : 'claude'}
-          sessionStatus={status ?? 'sleeping'} />
+        {showTools && (
+          <BgTasksBar tasks={bgTasks} sessionId={sessionId}
+            provider={sessionKind === 'codex' ? 'codex' : 'claude'}
+            sessionStatus={status ?? 'sleeping'} />
+        )}
 
         {/* Input area — replaced by resume CTA if disconnected, or
             QuestionCard/ExitPlanCard/PermissionCard if pending. */}

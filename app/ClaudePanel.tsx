@@ -36,6 +36,7 @@ import {
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
   IconMenu, IconPanelRight,
 } from './icons';
+import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 
 // Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
 // chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
@@ -118,6 +119,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
   const [vpsPaths, setVpsPaths] = useState<VpsPath[]>(initialPaths);
+  // Global browser preference for transcript density. Default ON, matching
+  // the historical UI; read storage only after mount so SSR hydration stays
+  // deterministic (same rule as the notification-sound preference below).
+  const [showTools, setShowTools] = useState(true);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(SHOW_TOOLS_STORAGE_KEY) === '0') setShowTools(false);
+    } catch {}
+  }, []);
+  const toggleShowTools = useCallback(() => {
+    setShowTools((current) => {
+      const next = !current;
+      try { localStorage.setItem(SHOW_TOOLS_STORAGE_KEY, next ? '1' : '0'); } catch {}
+      return next;
+    });
+  }, []);
   // LIVE staleness baselines. The SSR props freeze at page load; a tab that
   // survives a hub deploy would forever compare vps.agentPyzSha against the
   // OLD builtPyzSha → phantom "update agent" badge on the whole fleet until
@@ -1683,6 +1700,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
       <Sidebar
         sessionHandles={sessionHandles}
+        showTools={showTools}
+        onToggleShowTools={toggleShowTools}
         vpsList={vpsList}
         vpsFolders={vpsFolders}
         vpsPaths={vpsPaths}
@@ -1852,6 +1871,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           key={selectedId}
           sessionId={selected.id}
           selected={selected}
+          showTools={showTools}
           handle={sessionHandles.get(selected.id)?.handle ?? null}
           handleConfirmed={sessionHandles.get(selected.id)?.confirmed ?? false}
           // Other sessions on the SAME machine — the ones this session can

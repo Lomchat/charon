@@ -465,7 +465,7 @@
 .cs-vps-head .cs-add-btn { padding: 4px 7px; }
 .cs-vps-head .cs-add-btn svg { width: 13px; height: 13px; }
 
-/* sidebar toggle switches ("show paused" + "details"), side by side, wrap
+/* sidebar toggle switches ("show paused" + "details" + "show tools"), wrap
    when the labels don't fit on one line */
 .cs-switch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .cs-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }

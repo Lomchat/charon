@@ -126,6 +126,10 @@ type Props = {
    *  over the FULL session list: deriving it here would let a display filter
    *  (hide paused) silently re-point `@name` at a different session. */
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
+  /** Browser-local transcript filter. The parent owns it because the switch
+   *  lives here while the filtered messages live in ClaudeSessionView. */
+  showTools: boolean;
+  onToggleShowTools: () => void;
 };
 
 export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
@@ -145,6 +149,7 @@ export default function Sidebar({
   onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
   builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
   sessionHandles,
+  showTools, onToggleShowTools,
 }: Props) {
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
@@ -331,6 +336,11 @@ export default function Sidebar({
             <input type="checkbox" checked={showDetails} onChange={toggleShowDetails} />
             <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
             <span className="cs-switch-label">details</span>
+          </label>
+          <label className="cs-switch" title="show or hide tool calls, tool results, plans and reasoning in conversations">
+            <input type="checkbox" checked={showTools} onChange={onToggleShowTools} />
+            <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
+            <span className="cs-switch-label">show tools</span>
           </label>
         </div>
       </div>
