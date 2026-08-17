@@ -1,15 +1,18 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import type { GitFileEntry, GitStatusResponse } from '@/lib/types/api';
+import type { AgentKind, GitFileEntry, GitStatusResponse } from '@/lib/types/api';
 import DiffViewerModal from './DiffViewerModal';
 import BranchModal from './BranchModal';
 import HistoryModal from './HistoryModal';
+import ReviewModal from './ReviewModal';
 import { fileStatusLabel, gitReasonHint, refreshGit, useGitStatus, workspaceDirtyCount } from './gitStore';
 import { IconSparkle } from './icons';
 import { IconExternal } from './fileIcons';
 
 type Props = {
+  sessionId?: string | null;
+  kind?: AgentKind;
   vpsId: string | null;
   cwd: string | null;
   /** Set when a session is mid-turn in this folder — a warning, never a block. */
@@ -37,8 +40,11 @@ type Props = {
  * session's in-flight work, and a pre-ticked "everything" is how you commit it
  * by accident.
  */
-export default function GitTab({ vpsId, cwd, busy }: Props) {
+export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, busy }: Props) {
   const { workspace, loading, error } = useGitStatus(vpsId, cwd);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   // EXPLICIT fold choices, by repo root — a Map rather than a Set because the
   // default is computed (clean repos start folded, see below) and "the user
   // opened this one" has to outrank it. Browser-side: which project you are
@@ -49,6 +55,26 @@ export default function GitTab({ vpsId, cwd, busy }: Props) {
     next.set(root, !isCollapsed);
     return next;
   });
+
+  const doReview = useCallback(async (target: Record<string, unknown>) => {
+    if (!sessionId || reviewing || busy) return;
+    setReviewing(true);
+    setReviewError(null);
+    try {
+      const response = await fetch(`/api/claude/sessions/${sessionId}/review`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target, delivery: 'inline' }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.ok) throw new Error(result?.error || 'review failed');
+      setReviewOpen(false);
+    } catch (error: unknown) {
+      setReviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewing(false);
+    }
+  }, [sessionId, reviewing, busy]);
 
   if (!vpsId || !cwd) return <div className="tp-empty">no repository for this session</div>;
 
@@ -82,6 +108,15 @@ export default function GitTab({ vpsId, cwd, busy }: Props) {
 
   return (
     <div className={`git-tab${multi ? ' multi' : ''}`}>
+      {kind === 'codex' && sessionId && (
+        <div className="gt-reviewbar">
+          <span>Review this working tree with Codex</span>
+          <button type="button" onClick={() => { setReviewError(null); setReviewOpen(true); }}
+            disabled={reviewing || busy} title="Run Codex code review">
+            <IconSparkle className="gt-sparkle" /> {reviewing ? 'starting…' : 'review'}
+          </button>
+        </div>
+      )}
       {multi && (
         <div className="gt-wshead">
           <span className="gt-wscount">
@@ -120,6 +155,11 @@ export default function GitTab({ vpsId, cwd, busy }: Props) {
           />
         );
       })}
+      {reviewOpen && (
+        <ReviewModal busy={reviewing} error={reviewError}
+          onConfirm={(target) => { void doReview(target); }}
+          onClose={() => { if (!reviewing) setReviewOpen(false); }} />
+      )}
     </div>
   );
 }

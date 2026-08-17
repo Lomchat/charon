@@ -2333,6 +2333,32 @@
 .fork-choice-copy b { color: var(--gold-bright); font-size: 13.5px; }
 .fork-choice-copy small { color: var(--parchment-soft); font-size: 11px; line-height: 1.35; }
 .fork-choice-go { flex: none; color: var(--gold); font-size: 18px; }
+.rewind-list {
+  display: flex; flex-direction: column; gap: 7px;
+  max-height: min(52vh, 430px); overflow-y: auto; margin: 16px 0 4px;
+  padding-right: 3px;
+}
+.rewind-choice {
+  width: 100%; display: flex; flex-direction: column; gap: 5px;
+  padding: 10px 11px; text-align: left; cursor: pointer;
+  color: var(--parchment); background: var(--shadow);
+  border: 1px solid var(--gold-deep); border-radius: 9px;
+}
+.rewind-choice:hover:not(:disabled), .rewind-choice.on {
+  border-color: var(--gold); background: rgba(138,180,228,0.1);
+}
+.rewind-choice.on { box-shadow: inset 3px 0 0 var(--gold); }
+.rewind-choice-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rewind-choice-head b { color: var(--gold-bright); font-size: 11px; }
+.rewind-choice-head time { color: var(--parchment-soft); font-family: var(--mono); font-size: 9px; }
+.rewind-user, .rewind-assistant {
+  display: -webkit-box; overflow: hidden; overflow-wrap: anywhere;
+  -webkit-box-orient: vertical; white-space: pre-wrap;
+}
+.rewind-user { -webkit-line-clamp: 3; font-size: 12px; line-height: 1.4; }
+.rewind-assistant {
+  -webkit-line-clamp: 2; color: var(--parchment-soft); font-size: 10.5px; line-height: 1.35;
+}
 .claude-modal.data-modal {
   /* Fixed size so the modal doesn't jump when switching tabs */
   width: 1060px; max-width: 94vw;
@@ -4205,6 +4231,21 @@
 /* The git tab body. A control surface: list + message + buttons. Reading a
    diff happens in DiffViewerModal, never in this column. */
 .git-tab { display: flex; flex-direction: column; gap: 8px; }
+.gt-reviewbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border: 1px solid var(--gold-deep); border-radius: 7px;
+  color: var(--parchment-soft); font-family: var(--mono); font-size: 10px;
+  background: rgba(138,180,228,0.06);
+}
+.gt-reviewbar span { flex: 1 1 auto; min-width: 0; }
+.gt-reviewbar button {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--gold-deep); border-radius: 4px; padding: 3px 7px;
+  color: var(--gold-bright); background: var(--stone-2); cursor: pointer;
+  font-family: var(--mono); font-size: 9.5px;
+}
+.gt-reviewbar button:hover:not(:disabled) { border-color: var(--gold); }
+.gt-reviewbar button:disabled { opacity: .45; cursor: default; }
 
 /* ── A folder OF projects: one section per checkout (§14.83) ──────────────
    With a single repo none of this renders and the panel is byte-identical to

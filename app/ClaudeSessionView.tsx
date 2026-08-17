@@ -24,7 +24,6 @@ import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import ForkModal from './ForkModal';
 import RewindModal from './RewindModal';
-import ReviewModal from './ReviewModal';
 
 // A session's mode is a Claude permission mode OR a Codex sandbox level.
 type SessionMode = PermissionMode | CodexSandboxMode;
@@ -204,9 +203,6 @@ export default function ClaudeSessionView({
   const [rewindOpen, setRewindOpen] = useState(false);
   const [rewinding, setRewinding] = useState(false);
   const [rewindError, setRewindError] = useState<string | null>(null);
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewing, setReviewing] = useState(false);
-  const [reviewError, setReviewError] = useState<string | null>(null);
   const doCompact = useCallback(async () => {
     if (compacting || status === 'thinking') return;
     setCompacting(true);
@@ -236,20 +232,6 @@ export default function ClaudeSessionView({
       setRewindError(String(e?.message || e)); setRewinding(false);
     }
   }, [rewinding, sessionId, status]);
-  const doReview = useCallback(async (target: Record<string, unknown>) => {
-    if (reviewing || status === 'thinking') return;
-    setReviewing(true); setReviewError(null);
-    try {
-      const r = await fetch(`/api/claude/sessions/${sessionId}/review`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ target, delivery: 'inline' }),
-      });
-      const j = await r.json().catch(() => null);
-      if (!r.ok || !j?.ok) throw new Error(j?.error || 'review failed');
-      setReviewOpen(false);
-    } catch (e: any) { setReviewError(String(e?.message || e)); }
-    finally { setReviewing(false); }
-  }, [reviewing, sessionId, status]);
   const doFork = useCallback(async (targetKind: AgentKind) => {
     if (forking) return;
     setForking(targetKind);
@@ -690,8 +672,6 @@ export default function ClaudeSessionView({
             title="Compact the model context now">{compacting ? 'compacting…' : 'compact'}</button>
           {compactError && <span className="confirm-err" title={compactError}>compact failed</span>}
           {sessionKind === 'codex' && <>
-            <button onClick={() => { setReviewError(null); setReviewOpen(true); }}
-              disabled={reviewing || status === 'thinking'} title="Run Codex code review">review</button>
             <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
               disabled={rewinding || status === 'thinking'} title="Remove recent turns from Codex history">rewind</button>
           </>}
@@ -959,12 +939,9 @@ export default function ClaudeSessionView({
           onClose={() => { if (!forking) setForkModalOpen(false); }}
         />
       )}
-      {rewindOpen && <RewindModal busy={rewinding} error={rewindError}
+      {rewindOpen && <RewindModal messages={messages} busy={rewinding} error={rewindError}
         onConfirm={(turns) => { void doRewind(turns); }}
         onClose={() => { if (!rewinding) setRewindOpen(false); }} />}
-      {reviewOpen && <ReviewModal busy={reviewing} error={reviewError}
-        onConfirm={(target) => { void doReview(target); }}
-        onClose={() => { if (!reviewing) setReviewOpen(false); }} />}
     </>
   );
 }
