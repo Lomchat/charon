@@ -258,48 +258,68 @@ class TestCodexResume(unittest.TestCase):
         self.assertEqual(c.start_calls, 1)
         self.assertEqual(s.claude_session_id, "NEWLY-CREATED-THREAD")
 
-    def test_native_fork_names_the_new_thread(self):
-        # Assert naming through a capturing client so the branch cannot regress
-        # to a Charon-only label.
-        class CapturingClient(FakeClient):
-            async def thread_fork(self, thread_id, **kw):
-                self.forked = await super().thread_fork(thread_id, **kw)
-                return self.forked
-
-        async def captured():
-            s = _make_session(THREAD_ID)
-            c = CapturingClient()
-            s._client = c
-            s._ready_evt.set()
-            result = await s.fork("branch name")
-            self.assertEqual(result["claude_session_id"], "FORKED-THREAD")
-            self.assertEqual(c.fork_calls[0][0], THREAD_ID)
-            self.assertEqual(c.forked.names, ["branch name"])
-
-        asyncio.run(captured())
-
-    def test_partial_fork_uses_native_last_turn_id(self):
+    def test_native_fork_uses_short_lived_client_and_releases_writer(self):
         class Raw:
-            def __init__(self): self.calls = []
+            def __init__(self):
+                self.calls = []
+                self._sync = types.SimpleNamespace(_approval_handler=None)
+
             async def thread_fork(self, thread_id, params):
                 self.calls.append((thread_id, params))
                 return type("Response", (), {"thread": type("Thread", (), {"id": "PARTIAL"})()})()
 
-        class Client:
-            def __init__(self): self._client = Raw()
+        class TransientClient:
+            def __init__(self):
+                self._client = Raw()
+                self.close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
 
         async def captured():
             s = _make_session(THREAD_ID)
-            s._client = Client()
+            resident = FakeClient()
+            transient = TransientClient()
+            s._client = resident
             s._ready_evt.set()
+
+            async def initialized(client):
+                self.assertIs(client, transient)
+
+            s._initialize_sdk = initialized
             api = types.ModuleType("openai_codex.api")
-            api.AsyncThread = lambda _client, thread_id: FakeThread(thread_id)
+            created_threads = []
+            def make_thread(_client, thread_id):
+                thread = FakeThread(thread_id)
+                created_threads.append(thread)
+                return thread
+            api.AsyncThread = make_thread
             package = types.ModuleType("openai_codex")
             package.__path__ = []
-            with mock.patch.dict(sys.modules, {"openai_codex": package, "openai_codex.api": api}):
-                result = await s.fork(last_turn_id="turn-7")
+            saved_codex, saved_config = cs.AsyncCodex, cs.make_codex_config
+            cs.AsyncCodex = lambda _config: transient
+            cs.make_codex_config = lambda **kwargs: kwargs
+            try:
+                with mock.patch.dict(sys.modules, {"openai_codex": package, "openai_codex.api": api}):
+                    result = await s.fork("branch name", last_turn_id="turn-7")
+            finally:
+                cs.AsyncCodex, cs.make_codex_config = saved_codex, saved_config
             self.assertEqual(result["claude_session_id"], "PARTIAL")
-            self.assertEqual(s._client._client.calls[0][1]["lastTurnId"], "turn-7")
+            self.assertEqual(transient._client.calls[0][0], THREAD_ID)
+            self.assertEqual(transient._client.calls[0][1]["lastTurnId"], "turn-7")
+            self.assertEqual(transient.close_calls, 1)
+            self.assertEqual(created_threads[0].names, ["branch name"])
+            self.assertEqual(resident.fork_calls, [], "the resident source writer must not own the fork")
+
+        asyncio.run(captured())
+
+    def test_ephemeral_fork_is_rejected_before_it_can_be_orphaned(self):
+        async def captured():
+            s = _make_session(THREAD_ID)
+            s._client = FakeClient()
+            s._ready_evt.set()
+            with self.assertRaisesRegex(RuntimeError, "ephemeral"):
+                await s.fork(ephemeral=True)
 
         asyncio.run(captured())
 
@@ -478,7 +498,12 @@ class TestCodexResume(unittest.TestCase):
             thread = ThreadRecord()
 
         class LiveThread(FakeThread):
+            def __init__(self, tid):
+                super().__init__(tid)
+                self.read_calls = []
+
             async def read(self, *, include_turns=False):
+                self.read_calls.append(include_turns)
                 self.include_turns = include_turns
                 return ReadResponse()
 
@@ -502,12 +527,39 @@ class TestCodexResume(unittest.TestCase):
                 attached = await s._attach_active_external_turn()
                 self.assertTrue(attached)
                 self.assertEqual(s._active_turn.id, "external-turn")
-                self.assertTrue(s._thread.include_turns)
+                self.assertEqual(s._thread.read_calls, [False, True])
                 task = s._external_turn_task
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             finally:
                 cs.AsyncTurnHandle = saved
+
+        asyncio.run(main())
+
+    def test_unmaterialized_new_thread_is_idle_not_an_error(self):
+        class IdleStatus:
+            type = "idle"
+
+        class BlankThread(FakeThread):
+            def __init__(self, tid):
+                super().__init__(tid)
+                self.read_calls = []
+
+            async def read(self, *, include_turns=False):
+                self.read_calls.append(include_turns)
+                if include_turns:
+                    raise RuntimeError("thread is not materialized yet; includeTurns is unavailable")
+                status = types.SimpleNamespace(root=IdleStatus())
+                return types.SimpleNamespace(thread=types.SimpleNamespace(status=status))
+
+        async def main():
+            s = _make_session(THREAD_ID)
+            s._thread = BlankThread(THREAD_ID)
+            s._client = FakeClient()
+            attached = await s._attach_active_external_turn()
+            self.assertFalse(attached)
+            self.assertEqual(s._thread.read_calls, [False])
+            self.assertEqual(_events(s, "error"), [])
 
         asyncio.run(main())
 

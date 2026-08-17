@@ -1049,42 +1049,98 @@ class CodexSession:
         )
         return {"ok": True, "count": len(items), "thread_id": thread_id}
 
+    def _session_sdk_config(self) -> Any:
+        """Build the SDK config shared by the resident and transient clients."""
+        return make_codex_config(
+            cwd=self.cwd,
+            config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
+            env=self.codex_config.get("env") or None,
+            codex_bin=self.codex_config.get("codex_bin") or None,
+        )
+
+    async def _fork_with_transient_client(
+        self,
+        *,
+        title: str | None,
+        last_turn_id: str | None,
+    ) -> str:
+        """Fork through a short-lived app-server and release its writer lock.
+
+        ``thread/fork`` loads and subscribes the child on the connection which
+        performs the request.  Every Charon Codex session owns a separate
+        app-server process, so forking on the source session's resident client
+        left the child writer-locked there.  The newly-created Charon session
+        then failed ``thread/resume`` with "already has an active writer".
+
+        A dedicated SDK client can fork a stored thread without resuming it.
+        Closing that client before returning releases the child's native writer
+        lock, while the source process and any in-flight source turn remain
+        untouched.
+        """
+        client = AsyncCodex(self._session_sdk_config())
+        try:
+            if hasattr(client, "_client"):
+                # Keep initialization identical to resident clients.  Install
+                # the callback first in case MCP startup needs an elicitation.
+                client._client._sync._approval_handler = self._sdk_approval_handler
+                await self._initialize_sdk(client)
+                params = {k: v for k, v in {
+                    "cwd": self.cwd,
+                    "model": self.model,
+                    "lastTurnId": last_turn_id,
+                    "baseInstructions": self.codex_config.get("base_instructions"),
+                    "developerInstructions": self.codex_config.get("developer_instructions"),
+                    "modelProvider": self.codex_config.get("model_provider"),
+                    "serviceTier": self.codex_config.get("service_tier"),
+                    "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+                }.items() if v is not None}
+                result = await client._client.thread_fork(self.claude_session_id, params)
+                from openai_codex.api import AsyncThread
+                thread = AsyncThread(client, result.thread.id)
+            else:
+                # Compatibility path for old SDKs and lightweight test doubles.
+                if last_turn_id:
+                    raise RuntimeError("this Codex SDK cannot fork at a specific turn")
+                thread = await client.thread_fork(
+                    self.claude_session_id,
+                    cwd=self.cwd,
+                    model=self.model,
+                    **{k: v for k, v in {
+                        "base_instructions": self.codex_config.get("base_instructions"),
+                        "developer_instructions": self.codex_config.get("developer_instructions"),
+                        "model_provider": self.codex_config.get("model_provider"),
+                        "service_tier": self.codex_config.get("service_tier"),
+                    }.items() if v is not None},
+                )
+            if title:
+                await thread.set_name(title)
+            thread_id = getattr(thread, "id", None)
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RuntimeError("Codex fork returned no thread id")
+            return thread_id
+        finally:
+            try:
+                result = client.close()
+                if asyncio.iscoroutine(result):
+                    await asyncio.wait_for(result, timeout=5.0)
+            except Exception:
+                pass
+
     async def fork(self, title: str | None = None, last_turn_id: str | None = None,
                    ephemeral: bool = False) -> dict[str, Any]:
         await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
         if self._client is None or not self.claude_session_id:
             raise RuntimeError("Codex thread is not ready")
-        if hasattr(self._client, "_client"):
-            params = {k: v for k, v in {
-                "cwd": self.cwd, "model": self.model, "lastTurnId": last_turn_id,
-                "ephemeral": ephemeral or None,
-                "baseInstructions": self.codex_config.get("base_instructions"),
-                "developerInstructions": self.codex_config.get("developer_instructions"),
-                "modelProvider": self.codex_config.get("model_provider"),
-                "serviceTier": self.codex_config.get("service_tier"),
-                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
-            }.items() if v is not None}
-            result = await self._client._client.thread_fork(self.claude_session_id, params)
-            from openai_codex.api import AsyncThread
-            thread = AsyncThread(self._client, result.thread.id)
-        else:
-            # Lightweight tests / older SDKs retain the high-level full-fork
-            # path. A partial fork is capability-detected on the raw method.
-            if last_turn_id:
-                raise RuntimeError("this Codex SDK cannot fork at a specific turn")
-            thread = await self._client.thread_fork(
-                self.claude_session_id, cwd=self.cwd, model=self.model,
-                ephemeral=ephemeral,
-                **{k: v for k, v in {
-                    "base_instructions": self.codex_config.get("base_instructions"),
-                    "developer_instructions": self.codex_config.get("developer_instructions"),
-                    "model_provider": self.codex_config.get("model_provider"),
-                    "service_tier": self.codex_config.get("service_tier"),
-                }.items() if v is not None},
-            )
-        if title:
-            await thread.set_name(title)
-        return {"ok": True, "claude_session_id": thread.id,
+        if ephemeral:
+            # A transient client would destroy an in-memory fork when it
+            # closes, while a resident client would recreate the active-writer
+            # bug when Charon materializes a second session for it.
+            raise RuntimeError("ephemeral Codex forks cannot become Charon sessions")
+        thread_id = await self._fork_with_transient_client(
+            title=title,
+            last_turn_id=last_turn_id,
+        )
+        return {"ok": True, "claude_session_id": thread_id,
                 "forked_from": self.claude_session_id}
 
     async def fork_points(self) -> dict[str, Any]:
@@ -1301,10 +1357,26 @@ class CodexSession:
         async with self._external_probe_lock:
             if self._active_turn is not None or self._starting_turn:
                 return self._active_turn is not None
-            read = await self._thread.read(include_turns=True)
-            thread = getattr(read, "thread", None)
+            # A thread created by thread/start exists in memory before its
+            # first user message has materialized a rollout.  includeTurns is
+            # invalid during that window; inspect the summary first and only
+            # ask for turns when the runtime status proves one is active.
+            try:
+                summary = await self._thread.read(include_turns=False)
+            except Exception as e:
+                if "not materialized yet" in str(e):
+                    return False
+                raise
+            thread = getattr(summary, "thread", None)
             if thread is None or self._thread_status_type(thread) != "active":
                 return False
+            try:
+                read = await self._thread.read(include_turns=True)
+            except Exception as e:
+                if "not materialized yet" in str(e):
+                    return False
+                raise
+            thread = getattr(read, "thread", None)
             turns = list(getattr(thread, "turns", None) or [])
             live = next(
                 (turn for turn in reversed(turns)
@@ -1345,7 +1417,10 @@ class CodexSession:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self._emit("error", msg=f"external Codex turn: {e}")
+                # A brand-new thread has no persisted turns yet.  That is an
+                # ordinary idle state, not a user-visible session error.
+                if "not materialized yet" not in str(e):
+                    self._emit("error", msg=f"external Codex turn: {e}")
             finally:
                 self._external_probe_task = None
 
@@ -1373,6 +1448,10 @@ class CodexSession:
             self._end_turn()
 
     async def review(self, target: dict[str, Any], delivery: str = "inline") -> dict[str, Any]:
+        try:
+            await asyncio.wait_for(self._ready_evt.wait(), timeout=45.0)
+        except asyncio.TimeoutError as e:
+            raise RuntimeError("Codex thread did not become ready for review") from e
         if self._client is None or not self.claude_session_id:
             raise RuntimeError("Codex thread is not ready")
         if self._active_turn is not None:
@@ -2533,12 +2612,7 @@ class CodexSession:
     async def _run(self) -> None:
         try:
             self._loop = asyncio.get_running_loop()
-            client = AsyncCodex(make_codex_config(
-                cwd=self.cwd,
-                config_overrides=tuple(self.codex_config.get("config_overrides") or ()),
-                env=self.codex_config.get("env") or None,
-                codex_bin=self.codex_config.get("codex_bin") or None,
-            ))
+            client = AsyncCodex(self._session_sdk_config())
             # Install before start(): app-server may issue a server request as
             # soon as initialization completes.
             if hasattr(client, "_client"):
@@ -2555,6 +2629,7 @@ class CodexSession:
 
         try:
             thread = None
+            resuming_known_thread = bool(self.claude_session_id)
             if self.claude_session_id:
                 # ── Resuming a KNOWN thread ──────────────────────────────────
                 # NEVER silently fall back to thread_start() here. The thread id
@@ -2612,10 +2687,11 @@ class CodexSession:
                 self._consume_global_notifications(),
                 name=f"codex-global-{self.session_id}",
             )
-            # A goal/review may already own a physical turn before this
-            # process resumes the thread. Its status notification can precede
-            # our global consumer, so probe once unconditionally at attach.
-            self._schedule_external_turn_probe()
+            # A goal/review may already own a physical turn before a RESUME.
+            # A fresh thread cannot; probing it with includeTurns before its
+            # first user message is invalid in app-server.
+            if resuming_known_thread:
+                self._schedule_external_turn_probe()
             await self._start_fs_watch()
 
             # ── Turn loop ─────────────────────────────────────────────────────
