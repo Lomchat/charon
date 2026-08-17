@@ -5392,6 +5392,18 @@
   white-space: nowrap; }
 .si-denial button { flex: none; background: none; border: 1px solid rgba(217,139,139,0.45);
   color: inherit; border-radius: 4px; cursor: pointer; padding: 2px 5px; font-size: 10px; }
+.si-resource-prompt { width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--stone-2); color: var(--parchment); border: 1px solid rgba(106,115,136,0.4);
+  border-radius: 5px; padding: 5px; font: 10.5px/1.4 var(--mono); }
+.si-resources { list-style: none; margin: 6px 0 0; padding: 0; }
+.si-resources li { display: flex; align-items: center; gap: 5px; padding: 4px 0;
+  border-bottom: 1px solid rgba(106,115,136,0.14); font-size: 10px; }
+.si-resources li > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.si-resources small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--parchment-soft); }
+.si-resources button, .si-resources a { flex: none; background: none;
+  border: 1px solid rgba(106,115,136,0.4); border-radius: 4px; color: inherit;
+  cursor: pointer; font-size: 9.5px; padding: 2px 4px; text-decoration: none; }
 
 /* A handle we PREDICT but have not read back from the CLI: the session was
    started before --name was passed, or renamed since (the flag is fixed at

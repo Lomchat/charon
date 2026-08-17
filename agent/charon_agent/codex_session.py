@@ -705,21 +705,22 @@ class CodexSession:
         self._stopped.set()
         await self._save_state()
 
-    async def send_input(self, content: str) -> None:
+    async def send_input(self, content: str, codex_inputs: list[dict[str, Any]] | None = None) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
         # Mid-turn: steer the live turn (parity with Claude's mid-turn query).
         turn = self._active_turn
         if turn is not None and self.status == "thinking":
             try:
-                res = turn.steer(content)
+                res = turn.steer(codex_inputs or content)
                 if asyncio.iscoroutine(res):
                     await res
                 return
             except Exception as e:
                 self._emit("error", msg=f"steer: {e}")
                 # fall through to queue for the next turn
-        await self._stdin_queue.put({"type": "user_message", "content": content})
+        await self._stdin_queue.put({"type": "user_message", "content": content,
+                                     "codex_inputs": codex_inputs})
 
     async def interrupt(self) -> None:
         turn = self._active_turn
@@ -810,6 +811,53 @@ class CodexSession:
         self._guardian_denials = [row for row in self._guardian_denials
                                   if row.get("review_id") != review_id]
         return {"ok": True, "review_id": review_id}
+
+    async def resources(self, force_reload: bool = False) -> dict[str, Any]:
+        """List model-invokable local skills and hosted Apps/connectors."""
+        if self._client is None or not self.claude_session_id:
+            return {"ok": False, "error": "Codex thread is not running"}
+        from openai_codex.generated.v2_all import SkillsListResponse, AppsListResponse
+        skills_response = await self._client._client.request(
+            "skills/list", {"cwds": [self.cwd], "forceReload": force_reload},
+            response_model=SkillsListResponse,
+        )
+        skills: list[dict[str, Any]] = []
+        errors: list[Any] = []
+        for entry in (getattr(skills_response, "data", None) or []):
+            skills.extend(self._json_safe(skill) for skill in (getattr(entry, "skills", None) or []))
+            errors.extend(self._json_safe(error) for error in (getattr(entry, "errors", None) or []))
+
+        apps: list[dict[str, Any]] = []
+        apps_error = None
+        cursor = None
+        try:
+            while True:
+                response = await self._client._client.request(
+                    "app/list", {"threadId": self.claude_session_id, "limit": 100,
+                                 "forceRefetch": force_reload,
+                                 **({"cursor": cursor} if cursor else {})},
+                    response_model=AppsListResponse,
+                )
+                apps.extend(self._json_safe(app) for app in (getattr(response, "data", None) or []))
+                cursor = getattr(response, "next_cursor", None)
+                if not cursor:
+                    break
+        except Exception as e:
+            # Apps are account/feature gated independently from local skills.
+            # One unavailable catalog must not hide the other.
+            apps_error = str(e)
+        return {"ok": True, "skills": skills, "skill_errors": errors,
+                "apps": apps, "apps_error": apps_error}
+
+    async def set_skill_enabled(self, path: str, enabled: bool) -> dict[str, Any]:
+        if self._client is None:
+            raise RuntimeError("Codex thread is not running")
+        from openai_codex.generated.v2_all import SkillsConfigWriteResponse
+        response = await self._client._client.request(
+            "skills/config/write", {"path": path, "enabled": enabled},
+            response_model=SkillsConfigWriteResponse,
+        )
+        return {"ok": True, "effective_enabled": bool(response.effective_enabled)}
 
     async def set_model(self, model: str | None, fallback_model: str | None = None) -> None:
         # Codex applies model per-turn → the change takes effect on the NEXT
@@ -1547,7 +1595,7 @@ class CodexSession:
             result = await client._client.thread_start(params)
         return AsyncThread(client, result.thread.id)
 
-    async def _sdk_turn(self, thread: Any, content: str) -> Any:
+    async def _sdk_turn(self, thread: Any, content: Any) -> Any:
         from openai_codex.api import AsyncTurnHandle
 
         params: dict[str, Any] = {
@@ -2475,12 +2523,13 @@ class CodexSession:
                 if not isinstance(msg, dict) or msg.get("type") != "user_message":
                     continue
                 content = msg.get("content") or ""
+                turn_input = msg.get("codex_inputs") or content
                 try:
                     if await self._attach_active_external_turn():
                         turn = self._active_turn
                         if turn is None:
                             raise RuntimeError("external Codex turn vanished before steer")
-                        res = turn.steer(content)
+                        res = turn.steer(turn_input)
                         if asyncio.iscoroutine(res):
                             await res
                         continue
@@ -2505,7 +2554,7 @@ class CodexSession:
                     self._emit("effective_model", model=self.model)
                 try:
                     self._starting_turn = True
-                    handle = await self._sdk_turn(thread, content)
+                    handle = await self._sdk_turn(thread, turn_input)
                     self._active_turn = handle
                     self._starting_turn = False
                     self._begin_turn()

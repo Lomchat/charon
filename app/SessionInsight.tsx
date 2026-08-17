@@ -32,6 +32,9 @@ type BgTerminal = { process_id?: string; processId?: string; command?: string; c
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
 type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[] };
+type Skill = { name?: string; path?: string; description?: string; enabled?: boolean; short_description?: string | null };
+type CodexApp = { id?: string; name?: string; description?: string | null; is_accessible?: boolean; is_enabled?: boolean; install_url?: string | null };
+type Resources = { ok?: boolean; error?: string; reason?: string; skills?: Skill[]; apps?: CodexApp[]; skill_errors?: unknown[] };
 
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
@@ -51,11 +54,14 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
   const [terminals, setTerminals] = useState<BgTerminal[] | null>(null);
   const [security, setSecurity] = useState<Security | null>(null);
   const [securityBusy, setSecurityBusy] = useState(false);
+  const [resources, setResources] = useState<Resources | null>(null);
+  const [resourcePrompt, setResourcePrompt] = useState('');
+  const [resourceBusy, setResourceBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [c, m, a, bt, sec] = await Promise.all([
+      const [c, m, a, bt, sec, res] = await Promise.all([
         fetch(`/api/claude/sessions/${sessionId}/context`).then((r) => r.json()).catch(() => null),
         fetch(`/api/claude/sessions/${sessionId}/mcp`).then((r) => r.json()).catch(() => null),
         isCodex ? Promise.resolve(null)
@@ -66,11 +72,15 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
         isCodex
           ? fetch(`/api/claude/sessions/${sessionId}/security`).then((r) => r.json()).catch(() => null)
           : Promise.resolve(null),
+        isCodex
+          ? fetch(`/api/claude/sessions/${sessionId}/resources`).then((r) => r.json()).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setCtx(c); setMcp(m);
       setAgents(Array.isArray(a?.agents) ? a.agents : null);
       setTerminals(Array.isArray(bt?.terminals) ? bt.terminals : null);
       setSecurity(sec);
+      setResources(res);
     } finally {
       setBusy(false);
     }
@@ -103,6 +113,25 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
       setSecurity(data);
     } finally { setSecurityBusy(false); }
   }, [sessionId]);
+
+  const invokeResource = useCallback(async (kind: 'skill' | 'app', item: Skill | CodexApp) => {
+    const name = kind === 'skill' ? (item as Skill).name : (item as CodexApp).id;
+    const path = kind === 'skill' ? (item as Skill).path : `app://${(item as CodexApp).id}`;
+    if (!name || !path) return;
+    const prompt = resourcePrompt.trim();
+    const display = `$${name}${prompt ? ` ${prompt}` : ''}`;
+    setResourceBusy(`${kind}:${name}`);
+    try {
+      await fetch(`/api/claude/sessions/${sessionId}/input`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: display, codexInputs: [
+          { type: 'text', text: display },
+          kind === 'skill' ? { type: 'skill', name, path } : { type: 'mention', name, path },
+        ] }),
+      });
+      setResourcePrompt('');
+    } finally { setResourceBusy(null); }
+  }, [resourcePrompt, sessionId]);
 
   return (
     <div className="session-insight">
@@ -171,6 +200,45 @@ export default function SessionInsight({ sessionId, isCodex }: { sessionId: stri
             </div>)}
           </div>}
         </> : <p className="si-none">{why(security) ?? 'not running'}</p>}
+      </section>}
+
+      {isCodex && <section className="si-sec">
+        <h4>skills & apps</h4>
+        {resources?.ok ? <>
+          <textarea className="si-resource-prompt" rows={2} value={resourcePrompt}
+            onChange={(e) => setResourcePrompt(e.target.value)}
+            placeholder="Optional instruction for the selected skill or app" />
+          {!!resources.skills?.length && <ul className="si-resources">
+            {resources.skills.map((skill) => <li key={skill.path || skill.name}>
+              <span><b>${skill.name}</b><small>{skill.description || skill.short_description}</small></span>
+              <button type="button" disabled={!!resourceBusy || skill.enabled === false}
+                onClick={() => void invokeResource('skill', skill)}>
+                {resourceBusy === `skill:${skill.name}` ? '…' : 'use'}
+              </button>
+              {skill.path && <button type="button" disabled={!!resourceBusy} onClick={async () => {
+                setResourceBusy(`toggle:${skill.name}`);
+                try {
+                  await fetch(`/api/claude/sessions/${sessionId}/resources`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ path: skill.path, enabled: skill.enabled === false }),
+                  });
+                  await load();
+                } finally { setResourceBusy(null); }
+              }}>{skill.enabled === false ? 'enable' : 'disable'}</button>}
+            </li>)}
+          </ul>}
+          {!!resources.apps?.length && <ul className="si-resources apps">
+            {resources.apps.map((app) => <li key={app.id}>
+              <span><b>{app.name || app.id}</b><small>{app.description}</small></span>
+              <button type="button" disabled={!!resourceBusy || app.is_accessible === false || app.is_enabled === false}
+                onClick={() => void invokeResource('app', app)}>
+                {resourceBusy === `app:${app.id}` ? '…' : 'use'}
+              </button>
+              {app.install_url && <a href={app.install_url} target="_blank" rel="noreferrer">connect</a>}
+            </li>)}
+          </ul>}
+          {!resources.skills?.length && !resources.apps?.length && <p className="si-none">none available</p>}
+        </> : <p className="si-none">{why(resources) ?? 'not running'}</p>}
       </section>}
 
       <section className="si-sec">

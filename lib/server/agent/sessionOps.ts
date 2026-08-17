@@ -1480,7 +1480,7 @@ export class SessionStream {
   }
 
   // ── Actions (forwarded to the agent) ─────────────────────────────────────
-  async sendUserMessage(content: string): Promise<void> {
+  async sendUserMessage(content: string, codexInputs?: Array<Record<string, unknown>>): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     this.clearTerminalErrorLatch();
     this._persist('user', content);
@@ -1496,6 +1496,7 @@ export class SessionStream {
     const params = {
       session_id: this.id, content,
       client_message_id: crypto.randomUUID(),
+      ...(codexInputs?.length ? { codex_inputs: codexInputs } : {}),
     };
     try {
       await client.call('send_input', params);

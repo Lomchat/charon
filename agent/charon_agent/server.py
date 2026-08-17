@@ -438,6 +438,7 @@ class Server:
         "inject_history", "get_context_usage", "mcp_status", "mcp_toggle",
         "mcp_reconnect", "list_subagents", "get_subagent_messages",
         "codex_security_status", "set_codex_security", "approve_codex_denial",
+        "codex_resources", "set_codex_skill",
         "session_identity",
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
@@ -838,6 +839,12 @@ class Server:
             content = params.get("content")
             if not isinstance(content, str):
                 raise RpcError(ERR_INVALID_PARAMS, "content required (str)")
+            codex_inputs = params.get("codex_inputs")
+            if codex_inputs is not None:
+                if getattr(s, "kind", "claude") != "codex" or not isinstance(codex_inputs, list):
+                    raise RpcError(ERR_INVALID_PARAMS, "codex_inputs require a Codex session")
+                if len(codex_inputs) > 16 or any(not isinstance(item, dict) for item in codex_inputs):
+                    raise RpcError(ERR_INVALID_PARAMS, "codex_inputs must contain at most 16 objects")
             cmid = params.get("client_message_id")
             cmid = cmid if isinstance(cmid, str) and cmid else None
             if cmid is not None:
@@ -858,7 +865,10 @@ class Server:
                 fut: asyncio.Future = asyncio.get_running_loop().create_future()
                 self.inflight_inputs[key] = fut
                 try:
-                    await s.send_input(content)
+                    if codex_inputs is not None:
+                        await s.send_input(content, codex_inputs)
+                    else:
+                        await s.send_input(content)
                 except Exception as e:
                     self.inflight_inputs.pop(key, None)
                     if not fut.done():
@@ -871,7 +881,10 @@ class Server:
                 if not fut.done():
                     fut.set_result(True)
                 return {"ok": True}
-            await s.send_input(content)
+            if codex_inputs is not None:
+                await s.send_input(content, codex_inputs)
+            else:
+                await s.send_input(content)
             return {"ok": True}
 
         if method == "interrupt":
@@ -1120,6 +1133,33 @@ class Server:
                 if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
                     raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
                 raise RpcError(ERR_INTERNAL, f"Guardian override failed: {e}")
+
+        if method == "codex_resources":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            if getattr(s_, "kind", "claude") != "codex":
+                return {"ok": False, "error": "Codex-only surface"}
+            try:
+                return await s_.resources(bool(params.get("force_reload")))
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex resources failed: {e}")
+
+        if method == "set_codex_skill":
+            sid = self._require_sid(params)
+            s_ = self._require_session(sid)
+            path, enabled = params.get("path"), params.get("enabled")
+            if getattr(s_, "kind", "claude") != "codex":
+                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
+            if not isinstance(path, str) or not path or not isinstance(enabled, bool):
+                raise RpcError(ERR_INVALID_PARAMS, "path and enabled required")
+            try:
+                return await s_.set_skill_enabled(path, enabled)
+            except Exception as e:
+                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
+                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
+                raise RpcError(ERR_INTERNAL, f"Codex skill update failed: {e}")
 
         if method == "list_background_terminals":
             sid = self._require_sid(params)

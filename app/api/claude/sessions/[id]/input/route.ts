@@ -19,7 +19,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     const content = String(body.content ?? '').trim();
     if (!content) return NextResponse.json({ error: 'content required' }, { status: 400 });
-    await stream.sendUserMessage(content);
+    const codexInputs = Array.isArray(body.codexInputs) ? body.codexInputs : undefined;
+    if (codexInputs && (codexInputs.length > 16 || codexInputs.some((item: unknown) =>
+      !item || typeof item !== 'object' || Array.isArray(item)))) {
+      return NextResponse.json({ error: 'invalid codexInputs' }, { status: 400 });
+    }
+    const normalized = codexInputs?.map((raw: any) => {
+      if (raw.type === 'text' && typeof raw.text === 'string') {
+        return { type: 'text', text: raw.text.slice(0, 100_000) };
+      }
+      if ((raw.type === 'skill' || raw.type === 'mention')
+          && typeof raw.name === 'string' && typeof raw.path === 'string') {
+        return { type: raw.type, name: raw.name.slice(0, 256), path: raw.path.slice(0, 4096) };
+      }
+      return null;
+    });
+    if (normalized?.some((item: unknown) => item == null)) {
+      return NextResponse.json({ error: 'unsupported codex input item' }, { status: 400 });
+    }
+    await stream.sendUserMessage(content, normalized as Array<Record<string, unknown>> | undefined);
     // Talking to a session is the clearest possible signal that its tab has
     // stopped being a preview. Pin it so the next thing opened in this folder
     // can't evict the conversation you're having. §14.78
