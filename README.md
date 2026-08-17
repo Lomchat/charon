@@ -14,9 +14,9 @@
 >    [Claude Code](https://docs.claude.com/en/docs/claude-code) /
 >    [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk) **and
 >    [OpenAI Codex](https://github.com/openai/codex)** sessions, side by side on
->    any SSH-reachable VPS, with token-streamed replies, a permission flow
->    (Claude) or sandbox modes (Codex), diff capture & revert, live account-usage
->    gauges and notifications.
+>    any SSH-reachable VPS, with streamed replies, human approval gates,
+>    fork / rewind / compact / review controls, diffs, usage gauges, skills,
+>    MCP tools, sub-agents and notifications.
 > 2. **A small IDE over SSH** — a **tabbed workspace**, a **file explorer** rooted
 >    at each session's working directory, a real **code editor** with conflict-safe
 >    saves, and **source control**: branch, changed files, per-file diffs, commit,
@@ -53,29 +53,101 @@ Each session is an independent agent running **on the VPS**, not on your
 machine — a `ClaudeSDKClient` (Claude) or an OpenAI Codex thread (via the Codex
 app-server). Both speak the same UI:
 
-- **Token-by-token streaming** of the answer, with **collapsible thinking
-  blocks** and tool calls **paired with their results** — Claude tools
-  (`Read`/`Edit`/`Bash`/…) and Codex tools (`shell`/`apply_patch`/
-  `update_plan`/…) alike.
-- **Approval you control** — Claude pauses on every `Edit`/`Bash`/`Write` for
-  _allow once_ / _allow always (this session)_ / _deny_; Codex runs under a
-  **sandbox mode** (read-only / workspace-write / full-access). Either way you're
-  pinged by **Web Push + Telegram** when a session needs you, on any device.
-- **Diff capture & revert** — every edit stores a `before`/`after` snapshot (a
-  unified diff for Codex); one click rewinds a file.
+- **Rich live transcripts.** Answers stream token by token; reasoning is
+  collapsible; tool calls are paired with their results; shell output, plans,
+  file patches, generated images, compaction boundaries, background work and
+  structured JSON results appear as they happen. A conversation-only switch
+  can hide operational cards without deleting them.
+- **Human approval gates.** Both providers surface command, file and tool
+  approvals as the same cards with _allow once_, session-scoped approval and
+  _deny_. Codex additionally exposes its human / `auto_review` reviewer,
+  permission profiles and exact Guardian-denial retry. Claude keeps its
+  per-tool “always allow” list. Web Push and Telegram can alert you when either
+  provider is waiting.
+- **The complete session lifecycle.** Create, import, resume, sleep, archive,
+  unarchive, rename and delete sessions from the same UI. Every session also
+  has a stable `@handle`: changing its display title never breaks its address.
+- **Fork at a visible turn.** Pick the user message to branch from, then fork
+  Claude → Claude, Codex → Codex, or **across providers** in either direction.
+  Editing an earlier prompt uses the same branch mechanism: the source remains
+  untouched and the edited prompt becomes the first message of the child.
+- **Rewind with a message picker.** Charon shows the conversation points you
+  can return to and previews what will be removed. Rewind changes agent
+  history only; it deliberately does **not** restore files in the working tree.
+- **Compact on demand.** Ask Claude or Codex to condense the model context
+  before changing direction; automatic and manual compactions are marked in
+  the transcript so a sudden memory boundary is visible.
+- **Code review from the Git tab.** Review uncommitted changes, a base branch,
+  one commit or custom instructions, either inline in the current session or
+  in a separate session. Codex uses its native review; Claude gets the same UX
+  through a read-only review prompt on a native fork.
+- **Session edits.** Claude records bounded before/after snapshots and can
+  safely restore an individual file. Codex streams and retains its unified
+  patches for inspection; history rewind is not presented as a file revert.
 - **Attach files by drag & drop, 📎 or paste** — the file is uploaded into the
   session's working directory and its path spliced into your message, so the
   agent opens it with its own tools (screenshots, logs, PDFs, CSVs…). No mime
   filtering: what's usable is the agent's call, not a 415.
-- **Per-session model & reasoning effort**, a **todo / plan panel**, **live
-  account-usage gauges** (your Claude or Codex quota), **full-text search**
-  across all history, **import** of sessions you started in a terminal
-  (both backends), and **in-hub sign-in** for both — headless code flows, no
-  terminal: Claude hands you an OAuth url to open and a code to paste back,
-  Codex a ChatGPT device code you confirm on any device.
+- **Provider resources in one Tools inspector.** See context-window pressure,
+  recorded per-turn usage, effective model and native status; inspect MCP
+  health/tools/auth; read sub-agent transcripts and stop long-running
+  background work. Invoke or toggle Claude skills and slash commands, and use
+  Codex skills and connected apps. Sections load independently and
+  unavailable capabilities explain why instead of disappearing.
+- **Detailed per-session configuration.** Common model, effort, instructions
+  and JSON output schema controls; Claude fallback model, skills and
+  environment; Codex sandbox, personality, reasoning-summary level, service
+  tier, provider, environment, ephemeral threads and bounded
+  `config.toml`-style overrides (including MCP configuration).
+- **Search and identity.** Full-text search covers stored session history;
+  imported terminal sessions retain their native transcript identity; the
+  effective model is stamped on each answer even if a provider reroutes it.
+- **In-hub sign-in and account controls.** Claude uses a hosted OAuth-code flow;
+  Codex supports ChatGPT device login, API-key login and logout. Live quota
+  windows and durable per-turn token totals remain separate, so a lifetime
+  total is never mistaken for current context pressure.
 - **Survives everything** — restart Charon, restart the agent, drop the
   network: the session keeps running and the UI reattaches with a durable replay
   of anything it missed. No more "my terminal died, my session is gone".
+
+The shared UI is capability-driven rather than pretending the providers are
+identical. Claude uniquely has fallback models, exit-plan questions and native
+slash commands; Codex uniquely has apps, OAuth-aware MCP servers, native review,
+permission profiles and an automatic approval reviewer. Controls that Charon
+can safely adapt — cross-provider fork, review, archive, stable handles and peer
+messaging — still look and persist the same way for both.
+
+### MCP and session-to-session messaging
+
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) lets an agent
+discover and call tools supplied by another process. Charon shows each
+session's MCP servers in **Tools → MCP servers**, including startup status,
+tool count, errors and authentication state. Claude servers can be enabled or
+disabled from the panel; Codex servers can start their OAuth flow there.
+Reconnect is offered only when a server is not already ready.
+
+Charon also gives **every live Claude and Codex session** an internal MCP server
+named `charon_peer`. It exposes two tools:
+
+- `list_sessions` returns the other live sessions on the same VPS, with their
+  stable `@handle`, display name and provider.
+- `send_message` delivers a message to one exact `@handle` through that
+  session's normal input path.
+
+That makes a prompt such as _“Ask `@api-review` to inspect this migration and
+reply to you with its findings”_ actionable for either provider. The path is:
+
+```
+source agent → charon_peer MCP → charon-agent → target session → reply the same way
+```
+
+No extra port or external MCP service is opened: `charon_peer` is a local stdio
+process from the same agent zipapp and routes through the daemon's chmod-600
+Unix socket. Delivery is recorded as a durable **external message**, not forged
+as a human prompt. Routing is intentionally same-VPS and live-session only;
+messages are capped at 16 KiB and each source at 20 sends per minute. An MCP
+success means “delivered”, not “the other agent agreed”, so prompts should ask
+the target to reply to the source handle when a response is required.
 
 <img src="./docs/img/usage.png" alt="Account-usage gauges — 5-hour session, weekly, and per-model caps with reset times" width="60%"></img>
 
@@ -213,49 +285,56 @@ notify-on-event window over your whole fleet.
 
 ## Features at a glance
 
-- **Two backends, one UI** — run **Claude** and **OpenAI Codex** sessions side by
-  side on the same fleet; each VPS can offer either, both, or neither.
-- **Multi-VPS dashboard** — sidebar grouped by folder → VPS → sessions & shells,
-  per-VPS health chips (ssh / agent / Claude / Codex, each with the fix),
-  drag-and-drop, "show paused" / "details" toggles.
-- **Persistent sessions** — Claude and Codex sessions survive Charon/agent
-  restarts and network drops; auto-resume on boot, durable event-log replay on
-  reconnect.
-- **Workspace tabs** — machine → folder → tabs, preview vs pinned, shared across
-  your devices, drag to reorder.
-- **File explorer + editor** — browse the project, open files, edit and save with
-  conflict detection, create/rename/delete, inline media preview, and live
-  markers for the files an agent is touching right now.
-- **Code intelligence** — language servers running on the VPS: diagnostics,
-  hover, go-to-definition and references (with a picker when there are
-  several), project-wide rename, format, go-to-symbol, project-aware
-  completion.
-- **Source control** — branch chip, branch switcher (drift vs upstream *and* vs
-  HEAD, create, fetch), changed files, side-by-side diffs, path-scoped commit,
-  push, pull, per-file discard, commit history (repo or single file), AI-drafted
-  commit messages; a working directory holding several repositories gets a
-  section each.
-- **File attachments** — drag & drop / 📎 / paste; the file lands in the session's
-  workspace and the agent reads it with its own tools.
-- **Persistent shells** — detached-holder PTYs that outlive the hub and the agent.
-- **One SSH connection per VPS**, JSON-RPC multiplexed — no per-session SSH
-  spawns.
-- **Streaming chat UI**, **permission flow / sandbox modes**, **edits & revert**
-  (what the agent changed in *this* session, side by side, revertable),
-  **todo / plan panel**, **full-text search**, **per-session model & effort**.
-- **Account-usage gauges** — the `/usage` quota (5-hour, weekly, per-model caps)
-  for each session's Claude or Codex account, polled once per account.
-- **Notifications** — Web Push + Telegram on pending permissions, questions,
-  turn-completions and idle shells, with deep links back into the session.
-- **One responsive UI** — the same components reflow from a 3-column desktop to
-  tablet/phone drawers; no separate mobile app.
-- **One-click VPS bootstrap** — detects the distro, installs Python +
-  `claude-agent-sdk` + `openai-codex` + the `claude` CLI, deploys the agent
-  zipapp, registers a systemd-user service (or `nohup` + cron fallback).
-- **Fleet stays current by itself** — the hub notices an outdated agent or SDK
-  and updates quiet VPSes on its own (toggleable), never mid-turn.
-- **Resilient by design** — the frontend re-syncs after a hub restart without a
-  manual refresh (boot-time agent arming, status reconcile, SSE auto-recovery).
+- **Claude and Codex session control:** create, import, resume, sleep, archive,
+  unarchive, rename, stable `@handle`, delete, interrupt and force-stop.
+- **Conversation control:** exact-turn same-provider and cross-provider fork,
+  edit-an-old-prompt branching, message-picker rewind, manual compact and
+  inline or detached code review from the Git tab.
+- **Live, durable transcripts:** streamed text/reasoning, paired tools,
+  questions and approval cards, plans, shell output, patches, images,
+  structured results, compaction markers, effective-model changes, replay-gap
+  warnings and a conversation-only view.
+- **Provider controls:** model, effort, instructions and output schema for both;
+  Claude fallback/skills/commands; Codex sandbox, reviewer, permission profile,
+  Guardian retry, personality, service tier, reasoning summary, provider,
+  ephemeral mode, apps and config overrides.
+- **Session inspector:** context-window pressure, native status and identity,
+  per-turn token/cost totals, MCP server tools/auth/errors, skills/apps/commands,
+  sub-agent tree and readable transcripts.
+- **Agent collaboration:** the built-in `charon_peer` MCP lets any live Claude
+  or Codex session list and message another live `@handle` on the same VPS.
+- **Background work:** provider-native task/process tracking, sub-agent progress,
+  completion notifications and targeted stop controls.
+- **Human-in-the-loop:** common permission/question/exit-plan cards, Web Push
+  and Telegram alerts with deep links, plus account quota gauges.
+- **Attachments and session edits:** drag, paste or pick a file into the remote
+  workspace; inspect per-session edit history and safely restore Claude
+  before/after snapshots.
+- **Multi-VPS dashboard:** folders, health chips for SSH/agent/provider login,
+  filterable and draggable VPS/session lists, paused-session visibility and
+  one responsive desktop/tablet/phone UI.
+- **Shared workspace tabs:** machine → folder → preview/pinned tabs, persisted
+  across devices for sessions, terminals, files and install logs.
+- **Remote file explorer and editor:** lazy tree, git decorations, live agent
+  activity markers, create/rename/delete, atomic conflict-safe saves, inline
+  media/PDF previews and project-wide file/content search.
+- **Remote code intelligence:** diagnostics, hover, completion,
+  go-to-definition, references, symbols, rename and format through bounded LSP
+  processes beside the project on the VPS.
+- **Source control:** multi-repository workspaces, status, side-by-side and raw
+  diffs, per-file discard, scoped commits, AI commit-message draft, push/pull,
+  fetch, branch create/switch/delete, upstream/HEAD drift and paged repo/file
+  history.
+- **Persistent SSH shells:** detached PTYs, durable scrollback, reconnect,
+  resize arbitration and idle notifications survive browser, hub and agent
+  restarts.
+- **One multiplexed SSH connection per VPS:** sessions, peer MCP, files, Git,
+  LSP and shells share a line-delimited JSON-RPC transport; no agent TCP port.
+- **Bootstrap and sign-in:** distro-aware Python/venv/SDK/CLI installation,
+  zipapp deployment, systemd-user or cron fallback, Claude OAuth and Codex
+  device/API-key account flows.
+- **Self-maintaining fleet:** version/hash/SDK freshness detection, safe updates
+  only while a VPS is quiet, reconnect/reconcile and exact durable replay.
 
 ## Requirements
 
@@ -436,8 +515,9 @@ contributor's map of the codebase is in
 - **`charon-agent`**: a Python **stdlib-only zipapp** deployed to each VPS at
   `~/.charon/charon-agent.pyz`. Listens on a Unix socket, hosts N sessions —
   `ClaudeSDKClient` (Claude) and/or OpenAI Codex threads via the `openai-codex`
-  SDK — plus the detached shell holders, the file-tree/read/write RPCs and the
-  git RPCs, checkpointing state to `~/.charon/state.json` after every change.
+  SDK — plus `charon_peer`, detached shell holders and bounded file/search/Git/
+  LSP services, checkpointing state to `~/.charon/state.json` after every
+  lifecycle change.
 - **Transport**: one long-running SSH per VPS, the agent invoked as
   `exec ~/.charon/charon-agent.pyz --connect` (stdio ↔ Unix socket). Backoff
   reconnect on drop. Files, git, chat and shells are all multiplexed over it —
@@ -512,11 +592,12 @@ VPS during bootstrap. After any change to `agent/charon_agent/`, bump
   you need a team dashboard.
 - **No VPS provisioning.** Charon expects VPS that already exist and are
   SSH-reachable by key.
-- **Not a full IDE.** The editor is for reading and for the one-line fix, not for
-  refactoring: no LSP, no debugger, no multi-file search-and-replace.
-- **Not a git client.** The panel covers commit / push / pull / discard; branch
-  surgery, rebases and merge-conflict resolution belong in a shell (there's one
-  right there).
+- **Not a desktop IDE replacement.** Charon has remote LSP, project search and
+  refactors, but no debugger, extension marketplace or multi-file
+  search-and-replace UI.
+- **Not an exhaustive git client.** Status, history, branches, review, commits,
+  push/pull and safe discard are covered; interactive rebases, force operations
+  and merge-conflict resolution belong in the built-in shell.
 - **No Windows / \*BSD / macOS-as-VPS support.**
 - **No cloud-hosted version.** Self-hosted only.
 

@@ -68,8 +68,10 @@ git add drizzle/*.sql drizzle/meta/  # commit BOTH .sql and the snapshot
 
 A method exists in three places at once :
 
-1. Python handler in `agent/charon_agent/server.py` (the dispatch table) and
-   the helper in `session.py`.
+1. Python handler in `agent/charon_agent/server.py`, routed through exactly one
+   of `_META_METHODS`, `_SESSION_METHODS` or `_SHELL_METHODS`, plus any helper
+   in `session.py`, `codex_session.py`, `shell.py`, `fsnav.py`, `git.py` or
+   `lsp.py`.
 2. The method name added to `METHODS` in `agent/charon_agent/protocol.py`.
 3. TypeScript mirror : `lib/server/agent/types.ts` (the `AgentMethodName`
    union, and event types if you also added events), and a wrapper in
@@ -78,9 +80,10 @@ A method exists in three places at once :
 After editing : bump `agent/charon_agent/__init__.py:__version__`, then
 `bash agent/build.sh` to regenerate `agent/dist/charon-agent.pyz`.
 
-The prebuild step `scripts/check-protocol-sync.mjs` will fail the build if
-the Python `METHODS` set and the TS `AgentMethodName` union disagree — so
-you'll know immediately if you forgot one side.
+The Python tests also assert that `METHODS` is exactly the union of the three
+dispatch sets. The prebuild step `scripts/check-protocol-sync.mjs` fails if the
+Python set and TypeScript `AgentMethodName` union disagree, so a method cannot
+be documented but unroutable (or routed but unavailable to the hub).
 
 ### Add an API route
 
@@ -108,6 +111,10 @@ chances are the hook already exposes what you need.
 - **PR titles** : same.
 - **Comments** : English preferred for new code. Existing comments are
   still partly French ; translating them is a welcome separate PR.
+- **Documentation**: update `README.md` for user-visible features,
+  `CHANGELOG.md` for observable changes, and an ADR when an architectural
+  decision changes. Keep examples and version references verifiable against
+  the code; stale documentation is a bug.
 
 ## Tests
 
@@ -160,6 +167,11 @@ verification in the PR instead.
    rebuilt-and-committed `.pyz` turns CI red. CI also runs a blocking
    `npm audit --omit=dev --audit-level=high` and a Docker job that boots the
    compose stack.
+
+   On an installed bare-metal checkout, `npm run build` also applies pending
+   migrations and writes the deploy-ready marker consumed by the local systemd
+   path unit. Use an isolated checkout/database if you do not intend to deploy
+   the build you are testing.
 5. Open the PR. Link to any related issue.
 
 If your change is architectural (touches the agent protocol, the

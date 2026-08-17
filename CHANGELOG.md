@@ -16,6 +16,39 @@ commit-by-commit — `git log` has the detail.
   (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
   SDK and translated into the same event vocabulary, so the whole chat UI is
   shared. A VPS can offer either backend, both, or neither.
+- **Provider-parity session lifecycle:** exact-turn native forks, transcript
+  transfer for Claude ↔ Codex forks, edit-an-old-prompt branches, visible-point
+  rewind, manual compaction, archive/unarchive and stable provider-neutral
+  session handles. Rewind is history-only and never claims to restore files.
+- **Code review in the Git panel** for uncommitted changes, a base branch, a
+  commit or custom instructions, delivered inline or in a separate session.
+  Codex uses native review; Claude uses an equivalent read-only forked review.
+- **Human approval cards for Codex**, including session-scoped grants, user vs
+  automatic reviewer selection, beta permission profiles and one-shot retry of
+  an exact Guardian denial. Claude and Codex now share the same visible waiting
+  and question flows.
+- **Provider-neutral session collaboration.** Every live Claude and Codex
+  session receives the local `charon_peer` MCP, whose `list_sessions` and
+  `send_message` tools route by durable `@handle` between live sessions on the
+  same VPS and record delivery as an external message.
+- **Session inspector in Tools:** native/display identity, context-window
+  pressure, recorded turn usage, MCP servers/tools/auth/errors, skills,
+  Claude commands, Codex apps and scoped sub-agent trees/transcripts.
+- **Provider-native background work** in the common task bar, including Codex
+  background terminals, Claude workflow/sub-agent progress, durable terminal
+  reconciliation and targeted stop controls.
+- **Advanced session configuration:** base/developer instructions and JSON
+  output schema for both providers; Claude fallback/skills/environment; Codex
+  personality, reasoning summary, service tier, provider, environment,
+  ephemeral mode and bounded config overrides.
+- **Rich Codex event rendering:** live plan, command output and file-patch
+  deltas, compaction markers, effective-model reroutes, hooks, MCP progress,
+  generated images and native thread items no longer disappear from replay.
+- **Remote workspace and code intelligence:** shared tabs, lazy file tree,
+  conflict-safe editor, project search, Git workspaces/branches/history/review
+  and bounded remote LSP diagnostics/navigation/refactors.
+- **Structured-output persistence** for Claude plus common turn-level usage
+  rows, so successful schema output and final accounting survive replay.
 - **In-hub sign-in for both backends.** Claude uses the hosted OAuth-code flow
   (open the URL, paste the code back — works on a headless VPS); Codex uses the
   ChatGPT device-code flow. No PTY, no callback on the VPS.
@@ -49,7 +82,8 @@ commit-by-commit — `git log` has the detail.
   turn mid-response.
 - **Notifications**: Web Push and Telegram for permission requests, questions,
   finished turns and idle shells, with deep links back to the session or shell.
-- **Import of existing Claude CLI sessions** found on a VPS, history included.
+- **Import of existing Claude and Codex CLI sessions** found on a VPS, history
+  included, with Codex archive state mirrored by the hub.
 - **Test suites**: Vitest for the hub, stdlib `unittest` for the agent, both
   wired into CI (`npm test`, `npm run test:py`) alongside a login rate-limiter,
   replay/pagination fault-injection suites and an agent holder load test.
@@ -71,6 +105,18 @@ commit-by-commit — `git log` has the detail.
 
 ### Changed
 
+- The Tools inspector preloads with the selected session, resolves each data
+  source independently and groups identity, security, resources, context, MCP
+  and sub-agents under collapsible headings. It shows explicit loading states,
+  keeps last-good data during refresh and hides reconnect for healthy MCP
+  servers.
+- Session names are presentation; stable `@handles` are the routing identity.
+  Native CLI titles are mirrored and displayed separately when convergence is
+  pending instead of silently assuming all three values are identical.
+- Provider-specific controls use one explicit capability contract. Native,
+  safely adapted and unavailable operations share UI/storage where possible
+  while runtime support is still detected from the agent, never guessed from a
+  package version.
 - **One responsive UI** at `/`: the separate mobile route tree was retired in
   favour of breakpoints and drawers, so phones run the same components.
 - Full UI translation from French to English.
@@ -107,6 +153,12 @@ commit-by-commit — `git log` has the detail.
 
 ### Fixed
 
+- Codex forks and newly-created external threads release the temporary
+  app-server writer before the target resumes them; unmaterialized threads are
+  no longer read with `includeTurns` before their first user message.
+- Codex context gauges use the latest request footprint instead of lifetime
+  thread totals, preventing impossible percentages far above 100%; internal
+  Guardian/review/compaction workers no longer appear as user sub-agents.
 - Charon restarts no longer freeze open tabs: agent connections are armed at
   process start, and the browser self-heals through a reconcile on reconnect
   plus an SSE-independent poll.

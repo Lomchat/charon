@@ -57,11 +57,16 @@ reverse proxy** (or on `localhost` only). The threat model assumes :
   `.pyz`, and the SSH private key (whose file permissions are what `ssh`
   requires). At-rest encryption protects a leaked database file, not the
   live host — an attacker with the host's env has the key too.
-- Each VPS that Charon talks to is trusted. Charon runs arbitrary `bash`
-  and `claude` commands on every VPS it manages, by design — the agent
+- Each VPS that Charon talks to is trusted. Charon runs coding agents and
+  arbitrary shell commands on every VPS it manages, by design — the agent
   receives RPC calls over a `chmod 600` Unix socket reachable only via
   SSH-by-key. Anyone with the SSH key effectively has root-equivalent
   access on the VPS.
+- Agent prompts, tool results, MCP server output and session-to-session
+  messages are untrusted content. Permission cards reduce accidental actions;
+  they are not a security boundary against a deliberately trusted full-access
+  agent. The built-in `charon_peer` MCP routes only between live sessions owned
+  by the same daemon and applies message-size and rate limits.
 
 ### Out of scope
 
@@ -81,13 +86,16 @@ We're interested in reports about :
 - Cross-site request forgery on state-changing endpoints.
 - Shell command injection on inputs that reach `sshExec` without
   `shQuote`.
-- Path traversal or unintended file access in the endpoints that take a
-  user-supplied path or reach the filesystem of a managed VPS — notably
-  `GET /api/vps/[id]/fs?path=` (directory listing for the path
-  autocomplete), `POST /api/claude/sessions/[id]/revert` (writes/deletes a
-  file over SSH) and `GET /api/claude/sessions/[id]/export` (dumps a full
-  transcript). These are authenticated, but we want to hear about any way
-  to escape their intended scope.
+- Path traversal or unintended file access in authenticated endpoints that
+  reach a managed VPS — notably `/api/vps/[id]/fs/{list,file,write,op,search}`,
+  the Git and LSP route families, session attachment/revert routes and
+  `/api/claude/sessions/[id]/export`. File operations are intended to stay
+  inside their supplied workspace root and mutating writes are guarded; we
+  want to hear about any way to escape those bounds or bypass stale-write /
+  revert checks.
+- Cross-session routing bugs that deliver an MCP peer message to the wrong
+  stable `@handle`, permit self/cross-daemon delivery, or expose a private
+  sub-agent transcript to an unrelated session.
 - Anything that lets an unauthenticated visitor learn about the existence
   or contents of sessions / VPS / settings.
 - Anything that lets a logged-in user escalate beyond the documented

@@ -42,6 +42,8 @@ For UI changes, a screenshot or short clip helps reviewers.
 - [ ] If I added a migration, I committed both the `.sql` and the
       `drizzle/meta/` snapshot.
 - [ ] I added a `CHANGELOG.md` entry under `## [Unreleased]`.
+- [ ] I updated `README.md` and/or the relevant ADR for any user-visible or
+      architectural change; examples and version references still match code.
 
 ## Related issues
 
