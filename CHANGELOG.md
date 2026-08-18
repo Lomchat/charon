@@ -107,9 +107,9 @@ commit-by-commit — `git log` has the detail.
 
 - The Tools inspector preloads with the selected session, resolves each data
   source independently and groups identity, security, resources, context, MCP
-  and sub-agents under collapsible headings. It shows explicit loading states,
-  keeps last-good data during refresh and hides reconnect for healthy MCP
-  servers.
+  sub-agents and recorded tool calls under collapsible headings. It shows
+  explicit loading states, keeps last-good data during refresh and hides
+  reconnect for healthy MCP servers.
 - Session names are presentation; stable `@handles` are the routing identity.
   Native CLI titles are mirrored and displayed separately when convergence is
   pending instead of silently assuming all three values are identical.
@@ -153,6 +153,9 @@ commit-by-commit — `git log` has the detail.
 
 ### Fixed
 
+- Missing context telemetry no longer labels a loaded, idle Codex thread as
+  “not running”; lifecycle status and context-usage availability are displayed
+  independently.
 - The stdlib-only agent test suite now supplies its own tiny Pydantic test
   double for the Codex background-terminal response model, so clean CI runners
   no longer fail only because a developer machine happened to have Pydantic.

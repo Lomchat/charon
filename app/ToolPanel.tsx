@@ -7,6 +7,7 @@ import type { AgentKind, SessionAttachment } from '@/lib/types/api';
 import SplitDiffModal from './SplitDiffModal';
 import { fmtSize } from './sessionAttachments';
 import GitTab from './GitTab';
+import InsightSection from './InsightSection';
 import TreeTab from './TreeTab';
 import SearchTab from './SearchTab';
 import { useGitStatus, workspaceDirtyCount } from './gitStore';
@@ -171,7 +172,12 @@ function ToolPanel({
             prevents one session's last-known data flashing in the next. */}
         <div className="tp-calls-pane" hidden={tab !== 'calls'}>
           {sessionId && <SessionInsight key={`${sessionId}:${kind}`} sessionId={sessionId} kind={kind} />}
-          <CallsTab calls={toolCalls} />
+          <InsightSection
+            title="tool calls"
+            meta={`${toolCalls.length} recorded`}
+          >
+            <CallsTab calls={toolCalls} />
+          </InsightSection>
         </div>
         {tab === 'files' && (
           <FilesTab

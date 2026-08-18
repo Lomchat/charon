@@ -1,9 +1,10 @@
 'use client';
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentKind } from '@/lib/types/api';
 import { sessionCapabilities } from '@/lib/sessionCapabilities';
-import { isMcpServerReady } from './sessionInsightState';
+import InsightSection from './InsightSection';
+import { contextUsagePresentation, isMcpServerReady } from './sessionInsightState';
 
 /**
  * Session state that does not belong in the transcript: identity, security
@@ -59,29 +60,6 @@ type LoadedState = {
   security: boolean;
   resources: boolean;
 };
-
-function InsightSection({
-  title, meta, defaultOpen = false, loading = false, children,
-}: {
-  title: string;
-  meta?: string;
-  defaultOpen?: boolean;
-  loading?: boolean;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <details className="si-sec" open={open} aria-busy={loading}
-      onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary className="si-sec-title">
-        <span className="si-sec-chevron" aria-hidden="true" />
-        <span>{title}</span>
-        {meta && <small>{meta}</small>}
-      </summary>
-      <div className="si-sec-body">{children}</div>
-    </details>
-  );
-}
 
 function LoadingInsight() {
   return <p className="si-loading" role="status"><span aria-hidden="true" />loading…</p>;
@@ -180,6 +158,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
   const pct = typeof ctx?.percentage === 'number'
     ? ctx.percentage
     : (ctx?.total_tokens && ctx?.max_tokens ? (ctx.total_tokens / ctx.max_tokens) * 100 : null);
+  const contextPresentation = contextUsagePresentation(ctx, pct);
   const agents: SubAgent[] = Array.isArray(subagents?.agents)
     ? subagents.agents.map((item) => typeof item === 'string' ? { id: item, depth: 1 } : item)
     : [];
@@ -348,7 +327,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
       </InsightSection>
 
       <InsightSection title="context window" defaultOpen loading={!loaded.context}
-        meta={!loaded.context ? 'loading…' : (pct != null ? `${Math.round(pct)}% used` : 'unavailable')}>
+        meta={!loaded.context ? 'loading…' : contextPresentation.meta}>
         {!loaded.context ? <LoadingInsight /> : <>
         {ctx?.status?.type && (
           <div className="si-line">status: {readableStatus(ctx.status.type)}
@@ -381,7 +360,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
             )}
           </>
         ) : (
-          <p className="si-none">{why(ctx) ?? 'not running'}</p>
+          <p className="si-none">{contextPresentation.empty}</p>
         )}
         {ctx?.recorded_usage && (
           <div className="si-line" title={ctx.recorded_usage.models?.join(', ')}>
