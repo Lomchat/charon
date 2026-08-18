@@ -75,8 +75,9 @@ app-server). Both speak the same UI:
   can return to and previews what will be removed. Rewind changes agent
   history only; it deliberately does **not** restore files in the working tree.
 - **Compact on demand.** Ask Claude or Codex to condense the model context
-  before changing direction; automatic and manual compactions are marked in
-  the transcript so a sudden memory boundary is visible.
+  before changing direction from either the small live context gauge under the
+  session path or the Tools inspector. Automatic and manual compactions are
+  marked in the transcript so a sudden memory boundary is visible.
 - **Code review from the Git tab.** Review uncommitted changes, a base branch,
   one commit or custom instructions, either inline in the current session or
   in a separate session. Codex uses its native review; Claude gets the same UX
@@ -298,9 +299,10 @@ notify-on-event window over your whole fleet.
   Claude fallback/skills/commands; Codex sandbox, reviewer, permission profile,
   Guardian retry, personality, service tier, reasoning summary, provider,
   ephemeral mode, apps and config overrides.
-- **Session inspector:** context-window pressure, native status and identity,
-  per-turn token/cost totals, MCP server tools/auth/errors, skills/apps/commands,
-  sub-agent tree and readable transcripts.
+- **Session inspector:** context-window pressure (also visible live beneath the
+  session path), native status and identity, per-turn token/cost totals, MCP
+  server tools/auth/errors, skills/apps/commands, sub-agent tree and readable
+  transcripts.
 - **Agent collaboration:** the built-in `charon_peer` MCP lets any live Claude
   or Codex session list and message another live `@handle` on the same VPS.
 - **Background work:** provider-native task/process tracking, sub-agent progress,

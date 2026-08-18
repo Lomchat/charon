@@ -723,6 +723,34 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .claude-bar .bar-cwd .c-tail { flex: none; white-space: nowrap; color: var(--parchment-soft); }
+/* Third identity line: current model-context occupancy. It reuses the exact
+   snapshot rendered in Tools, so there is no second request or disagreement. */
+.claude-bar .bar-context-row {
+  display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 15px;
+}
+.claude-bar .bar-context-meter {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-family: var(--mono); font-size: 8.5px; line-height: 12px;
+  color: var(--parchment-soft);
+}
+.claude-bar .bar-context-label { opacity: 0.55; text-transform: uppercase; letter-spacing: 0.05em; }
+.claude-bar .bar-context-track {
+  display: block; flex: 0 1 86px; width: 86px; min-width: 34px; height: 4px;
+  overflow: hidden; border-radius: 3px; background: rgba(106,115,136,0.28);
+}
+.claude-bar .bar-context-fill { display: block; height: 100%; background: var(--teal, #86c5d8); }
+.claude-bar .bar-context-fill.hot { background: var(--gold-bright, #e0b96a); }
+.claude-bar .bar-context-meter b { color: var(--parchment); font-weight: 600; }
+.claude-bar .bar-context-tokens { white-space: nowrap; opacity: 0.72; }
+/* Override the generic action-button dimensions: this belongs to the tiny
+   gauge line, not to the interrupt/rewind cluster. */
+.claude-bar .bar-context-compact {
+  flex: none; padding: 0 5px; min-height: 14px; line-height: 12px;
+  border-radius: 3px; background: transparent;
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.03em;
+  text-transform: lowercase; color: var(--parchment-soft);
+}
+.claude-bar .bar-context-error { color: var(--crimson); font: 8.5px/1 var(--mono); }
 .claude-bar .bar-empty {
   font-family: var(--body); font-style: italic;
   color: var(--parchment-soft); font-size: 13px;
@@ -5388,6 +5416,16 @@
 .si-bar-fill { display: block; height: 100%; background: var(--teal, #86c5d8); }
 /* Past ~75% the session is close to compacting — the one number acted on. */
 .si-bar-fill.hot { background: var(--gold-bright, #e0b96a); }
+.si-context-actions { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; min-height: 22px; margin-bottom: 5px; }
+.si-context-actions > span { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 10.5px; opacity: 0.65; }
+.si-context-actions button { flex: none; background: none;
+  border: 1px solid rgba(106,115,136,0.4); border-radius: 4px;
+  color: inherit; cursor: pointer; font-size: 10px; padding: 2px 6px; }
+.si-context-actions button:disabled { cursor: default; opacity: 0.35; }
+.si-context-error { margin: 0 0 5px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--crimson, #d98b8b); font-size: 10px; }
 .si-line { margin-top: 4px; font-size: 11px; opacity: 0.7; }
 .si-cats { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11px; }
 .si-cats li { display: flex; justify-content: space-between; gap: 8px; opacity: 0.65; }

@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentKind } from '@/lib/types/api';
 import { sessionCapabilities } from '@/lib/sessionCapabilities';
 import InsightSection from './InsightSection';
-import { contextUsagePresentation, isMcpServerReady } from './sessionInsightState';
+import {
+  contextUsagePercentage, contextUsagePresentation, contextWindowTokenLabel,
+  isMcpServerReady, type SessionContextUsage,
+} from './sessionInsightState';
 
 /**
  * Session state that does not belong in the transcript: identity, security
@@ -18,20 +21,6 @@ import { contextUsagePresentation, isMcpServerReady } from './sessionInsightStat
  * an agent that may predate them, on a VPS that may be unreachable, for a session
  * that may be asleep — so `reason` is rendered, never thrown.
  */
-
-type Ctx = {
-  ok?: boolean; error?: string; reason?: string;
-  total_tokens?: number; max_tokens?: number; percentage?: number;
-  auto_compact_threshold?: number; model?: string;
-  status?: { type?: string; activeFlags?: string[]; active_flags?: string[] };
-  categories?: Array<{ name?: string | null; tokens?: number | null }>;
-  identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
-  recorded_usage?: {
-    turns: number; input_tokens: number; output_tokens: number;
-    cache_read_tokens: number; cache_write_tokens: number;
-    duration_ms: number; cost_usd: number; models?: string[];
-  } | null;
-};
 
 type McpServer = {
   name?: string | null; status?: string | null; tool_count?: number | null;
@@ -54,7 +43,6 @@ type Resources = {
 };
 
 type LoadedState = {
-  context: boolean;
   mcp: boolean;
   subagents: boolean;
   security: boolean;
@@ -83,18 +71,30 @@ function compactNumber(value: number): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-export default function SessionInsight({ sessionId, kind }: { sessionId: string; kind: AgentKind }) {
+export default function SessionInsight({
+  sessionId, kind, context: ctx, contextLoaded, contextLoading,
+  onRefreshContext, onCompact, compacting, compactDisabled, compactError,
+}: {
+  sessionId: string;
+  kind: AgentKind;
+  context: SessionContextUsage | null;
+  contextLoaded: boolean;
+  contextLoading: boolean;
+  onRefreshContext: () => Promise<void>;
+  onCompact: () => void | Promise<void>;
+  compacting: boolean;
+  compactDisabled: boolean;
+  compactError?: string | null;
+}) {
   const isCodex = kind === 'codex';
   const capabilities = sessionCapabilities(kind);
   const hasSecurity = capabilities.permissionProfiles !== 'none';
-  const [ctx, setCtx] = useState<Ctx | null>(null);
   const [mcp, setMcp] = useState<Mcp | null>(null);
   const [subagents, setSubagents] = useState<SubAgents | null>(null);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(true);
   const [loaded, setLoaded] = useState<LoadedState>({
-    context: false,
     mcp: false,
     subagents: false,
     security: !hasSecurity,
@@ -119,8 +119,6 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
     };
 
     const requests: Promise<void>[] = [
-      get(`/api/claude/sessions/${sessionId}/context`)
-        .then((value) => finish('context', () => setCtx(value))),
       get(`/api/claude/sessions/${sessionId}/mcp`)
         .then((value) => finish('mcp', () => setMcp(value))),
       get(`/api/claude/sessions/${sessionId}/subagents`)
@@ -147,6 +145,10 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
     return () => window.removeEventListener('focus', refreshOnReturn);
   }, [load]);
 
+  const refreshAll = useCallback(async () => {
+    await Promise.allSettled([load(), onRefreshContext()]);
+  }, [load, onRefreshContext]);
+
   const openTranscript = useCallback(async (id: string) => {
     if (openAgent === id) { setOpenAgent(null); setAgentMsgs(null); return; }
     setOpenAgent(id); setAgentMsgs(null);
@@ -155,14 +157,14 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
     setAgentMsgs(Array.isArray(r?.messages) ? r.messages : []);
   }, [openAgent, sessionId]);
 
-  const pct = typeof ctx?.percentage === 'number'
-    ? ctx.percentage
-    : (ctx?.total_tokens && ctx?.max_tokens ? (ctx.total_tokens / ctx.max_tokens) * 100 : null);
+  const pct = contextUsagePercentage(ctx);
+  const tokenLabel = contextWindowTokenLabel(ctx);
   const contextPresentation = contextUsagePresentation(ctx, pct);
   const agents: SubAgent[] = Array.isArray(subagents?.agents)
     ? subagents.agents.map((item) => typeof item === 'string' ? { id: item, depth: 1 } : item)
     : [];
-  const pendingSections = Object.values(loaded).filter((value) => !value).length;
+  const pendingSections = Object.values(loaded).filter((value) => !value).length
+    + (contextLoaded ? 0 : 1);
   const resourceCount = (resources?.skills?.length ?? 0)
     + (resources?.apps?.length ?? 0)
     + (resources?.commands?.length ?? 0);
@@ -209,16 +211,16 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
       <div className="si-head">
         <span>session details</span>
         <span className="si-head-actions">
-          {busy && <small role="status">
+          {(busy || contextLoading) && <small role="status">
             {pendingSections > 0 ? `loading ${pendingSections} section${pendingSections === 1 ? '' : 's'}…` : 'refreshing…'}
           </small>}
-          <button type="button" onClick={() => void load()} disabled={busy} title="refresh">↻</button>
+          <button type="button" onClick={() => void refreshAll()} disabled={busy || contextLoading} title="refresh">↻</button>
         </span>
       </div>
 
-      <InsightSection title="names" loading={!loaded.context}
-        meta={!loaded.context ? 'loading…' : (ctx?.identity ? 'Charon + CLI' : 'unavailable')}>
-        {!loaded.context ? <LoadingInsight /> : ctx?.identity ? <>
+      <InsightSection title="names" loading={!contextLoaded}
+        meta={!contextLoaded ? 'loading…' : (ctx?.identity ? 'Charon + CLI' : 'unavailable')}>
+        {!contextLoaded ? <LoadingInsight /> : ctx?.identity ? <>
           {/* Display names and native titles are mirrored but independent.
               Showing both makes a pending/failed convergence explicit. */}
           <ul className="si-cats">
@@ -326,18 +328,26 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
         </> : <p className="si-none">{why(resources) ?? 'not running'}</p>}
       </InsightSection>
 
-      <InsightSection title="context window" defaultOpen loading={!loaded.context}
-        meta={!loaded.context ? 'loading…' : contextPresentation.meta}>
-        {!loaded.context ? <LoadingInsight /> : <>
-        {ctx?.status?.type && (
-          <div className="si-line">status: {readableStatus(ctx.status.type)}
-            {(ctx.status.activeFlags ?? ctx.status.active_flags)?.length
-              ? ` · ${(ctx.status.activeFlags ?? ctx.status.active_flags)?.map(readableStatus).join(', ')}` : ''}
-          </div>
-        )}
+      <InsightSection title="context window" defaultOpen loading={!contextLoaded}
+        meta={!contextLoaded ? 'loading…' : contextPresentation.meta}>
+        {!contextLoaded ? <LoadingInsight /> : <>
+        <div className="si-context-actions">
+          {ctx?.status?.type ? (
+            <span>status: {readableStatus(ctx.status.type)}
+              {(ctx.status.activeFlags ?? ctx.status.active_flags)?.length
+                ? ` · ${(ctx.status.activeFlags ?? ctx.status.active_flags)?.map(readableStatus).join(', ')}` : ''}
+            </span>
+          ) : <span />}
+          <button type="button" onClick={() => void onCompact()}
+            disabled={compacting || compactDisabled}
+            title={compactDisabled ? 'The session must be running and idle to compact' : 'Compact the model context now'}>
+            {compacting ? 'compacting…' : 'compact'}
+          </button>
+        </div>
+        {compactError && <p className="si-context-error" title={compactError}>compaction failed: {compactError}</p>}
         {ctx?.ok && pct != null ? (
           <>
-            <div className="si-bar" title={`${ctx.total_tokens ?? '?'} / ${ctx.max_tokens ?? '?'} tokens`}>
+            <div className="si-bar" title={tokenLabel ? `${tokenLabel} tokens` : 'context usage'}>
               {/* Amber past the auto-compact threshold: that is the point where
                   the session is about to stop remembering, which is the only
                   number here anyone acts on. */}
@@ -348,8 +358,7 @@ export default function SessionInsight({ sessionId, kind }: { sessionId: string;
             </div>
             <div className="si-line">
               {Math.round(pct)}% used
-              {ctx.total_tokens != null && ctx.max_tokens != null &&
-                ` · ${Math.round(ctx.total_tokens / 1000)}k / ${Math.round(ctx.max_tokens / 1000)}k`}
+              {tokenLabel && ` · ${tokenLabel}`}
             </div>
             {!!ctx.categories?.length && (
               <ul className="si-cats">

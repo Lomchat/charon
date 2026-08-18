@@ -41,6 +41,9 @@ import {
 import { IconPaperclip } from './icons';
 import { IconExternal } from './fileIcons';
 import { shouldShowChatRole } from './chatVisibility';
+import { canCompactSession } from './sessionInsightState';
+import { useSessionContext } from './useSessionContext';
+import HeaderContextGauge from './HeaderContextGauge';
 
 // ClaudeSessionView
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,6 +154,13 @@ export default function ClaudeSessionView({
   // deferred "apply now ↻" badge (Codex applies on the next turn → no badge).
   const sessionKind: AgentKind = (selected.kind as AgentKind) === 'codex' ? 'codex' : 'claude';
   const vpsId = selectedVps?.id ?? '';
+  const {
+    context: sessionContext,
+    loaded: contextLoaded,
+    loading: contextLoading,
+    refresh: refreshContext,
+  } = useSessionContext(sessionId);
+  const compactAllowed = canCompactSession(status);
 
   // ── Source control (§14.76) ───────────────────────────────────────────────
   // The chip next to the cwd opens the ToolPanel on the git tab (and reveals
@@ -172,7 +182,15 @@ export default function ClaudeSessionView({
     if (was === 'thinking' && status !== 'thinking' && vpsId && selected.cwd) {
       refreshGit(vpsId, selected.cwd);
     }
-  }, [status, vpsId, selected.cwd]);
+    // Context telemetry changes once per model request, not on every streamed
+    // token. Refresh on the authoritative lifecycle edge, including
+    // starting→active after a resume. The initial null→status edge is skipped:
+    // the hook already owns that first request for header + Tools.
+    if (was !== null && was !== status && status
+        && !['thinking', 'starting', 'reconnecting'].includes(status)) {
+      void refreshContext();
+    }
+  }, [status, vpsId, selected.cwd, refreshContext]);
 
   // ── Session attachments ───────────────────────────────────────────────────
   // One list, two consumers: <ChatInputBar> (underline + insert on upload) and
@@ -207,16 +225,20 @@ export default function ClaudeSessionView({
   const [rewinding, setRewinding] = useState(false);
   const [rewindError, setRewindError] = useState<string | null>(null);
   const doCompact = useCallback(async () => {
-    if (compacting || status === 'thinking') return;
+    if (compacting || !compactAllowed) return;
     setCompacting(true);
     setCompactError(null);
     try {
       const r = await fetch(`/api/claude/sessions/${sessionId}/compact`, { method: 'POST' });
       if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || 'compaction failed');
+      // Codex compact() resolves after the operation. Claude queues /compact
+      // and refreshes again on thinking→active, so this immediate read is both
+      // useful for Codex and harmless for Claude.
+      await refreshContext();
     } catch (e: any) {
       setCompactError(String(e?.message || e));
     } finally { setCompacting(false); }
-  }, [compacting, sessionId, status]);
+  }, [compacting, compactAllowed, refreshContext, sessionId]);
   const doRewind = useCallback(async (messageId: string) => {
     if (rewinding || status === 'thinking') return;
     setRewinding(true); setRewindError(null);
@@ -651,9 +673,10 @@ export default function ClaudeSessionView({
     <>
       <main className="claude-main">
         <div className="claude-bar">
-          {/* Session identity: title + the cwd it runs in, as a subtitle.
-              The path is the fastest "where am I?" cue when several sessions
-              share a name (or have none). */}
+          {/* Session identity: title, cwd, then the live context gauge. The
+              path is the fastest "where am I?" cue when several sessions
+              share a name (or have none); context is the next thing most
+              likely to change how the user continues the conversation. */}
           <div className="bar-ident">
             <span className="bar-name">{selected.name || '(unnamed)'}</span>
             {/* The addressing form of the same identity. Shown next to the
@@ -675,6 +698,13 @@ export default function ClaudeSessionView({
                 <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
               </span>
             )}
+            <HeaderContextGauge
+              context={sessionContext}
+              onCompact={doCompact}
+              compacting={compacting}
+              compactDisabled={!compactAllowed}
+              compactError={compactError}
+            />
           </div>
           {/* Account-usage gauges (5h / 7d) for this session's VPS account —
               leftmost of the right-aligned control cluster (between the title
@@ -688,9 +718,6 @@ export default function ClaudeSessionView({
             <button onClick={doSleep}>sleep</button>
           )}
           <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
-          <button onClick={doCompact} disabled={compacting || status === 'thinking'}
-            title="Compact the model context now">{compacting ? 'compacting…' : 'compact'}</button>
-          {compactError && <span className="confirm-err" title={compactError}>compact failed</span>}
           <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
             disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
             title={status === 'sleeping' || status === 'error'
@@ -957,6 +984,14 @@ export default function ClaudeSessionView({
         onTabConsumed={clearRequestedToolTab}
         onOpenSession={onOpenSession}
         onReveal={onOpenTools}
+        context={sessionContext}
+        contextLoaded={contextLoaded}
+        contextLoading={contextLoading}
+        onRefreshContext={refreshContext}
+        onCompact={doCompact}
+        compacting={compacting}
+        compactDisabled={!compactAllowed}
+        compactError={compactError}
       />
       {forkModalOpen && (
         <ForkModal

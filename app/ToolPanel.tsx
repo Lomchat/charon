@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
 import type { AgentKind, SessionAttachment } from '@/lib/types/api';
+import type { SessionContextUsage } from './sessionInsightState';
 import SplitDiffModal from './SplitDiffModal';
 import { fmtSize } from './sessionAttachments';
 import GitTab from './GitTab';
@@ -53,6 +54,15 @@ type Props = {
   /** Reveal the panel — it is a drawer below 1100px, where switching a tab
    *  nobody can see is the same as doing nothing. */
   onReveal?: () => void;
+  /** One provider-neutral context snapshot shared with the chat header. */
+  context?: SessionContextUsage | null;
+  contextLoaded?: boolean;
+  contextLoading?: boolean;
+  onRefreshContext?: () => Promise<void>;
+  onCompact?: () => void | Promise<void>;
+  compacting?: boolean;
+  compactDisabled?: boolean;
+  compactError?: string | null;
 };
 
 const SessionInsight = dynamic(() => import('./SessionInsight'), {
@@ -87,7 +97,9 @@ function ToolPanel({
   sessionId, kind = 'claude', toolCalls, edits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath, onOpenSession,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
-  onReveal,
+  onReveal, context = null, contextLoaded = false, contextLoading = false,
+  onRefreshContext, onCompact, compacting = false, compactDisabled = true,
+  compactError = null,
 }: Props) {
   const [tab, setTab] = useState<Tab>('tree');
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
@@ -166,12 +178,25 @@ function ToolPanel({
         {tab === 'git' && <GitTab sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
         {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
-        {/* Keep the inspector mounted while another tab is visible. Its five
-            independent requests therefore start with the session, not on the
-            first Tools click; `hidden` avoids any layout/paint cost. A key
-            prevents one session's last-known data flashing in the next. */}
+        {/* Keep the inspector mounted while another tab is visible. Its four
+            panel-only requests therefore start with the session, not on the
+            first Tools click; context is the header's shared request.
+            `hidden` avoids layout/paint cost, and the key prevents one
+            session's last-known data flashing in the next. */}
         <div className="tp-calls-pane" hidden={tab !== 'calls'}>
-          {sessionId && <SessionInsight key={`${sessionId}:${kind}`} sessionId={sessionId} kind={kind} />}
+          {sessionId && <SessionInsight
+            key={`${sessionId}:${kind}`}
+            sessionId={sessionId}
+            kind={kind}
+            context={context}
+            contextLoaded={contextLoaded}
+            contextLoading={contextLoading}
+            onRefreshContext={onRefreshContext ?? (async () => {})}
+            onCompact={onCompact ?? (() => {})}
+            compacting={compacting}
+            compactDisabled={compactDisabled}
+            compactError={compactError}
+          />}
           <InsightSection
             title="tool calls"
             meta={`${toolCalls.length} recorded`}

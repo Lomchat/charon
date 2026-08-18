@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { contextUsagePresentation, isMcpServerReady } from '../app/sessionInsightState';
+import {
+  canCompactSession, contextUsagePercentage, contextUsagePresentation,
+  contextWindowTokenLabel, isMcpServerReady,
+} from '../app/sessionInsightState';
 
 describe('isMcpServerReady', () => {
   it.each(['ready', 'READY', 'connected', 'running', 'started', 'ok'])(
@@ -34,4 +37,35 @@ describe('contextUsagePresentation', () => {
       empty: 'Codex thread is not running',
     });
   });
+});
+
+describe('shared context gauge values', () => {
+  it('prefers the provider percentage and accepts numeric SDK strings', () => {
+    expect(contextUsagePercentage({ percentage: '83.54', total_tokens: 1, max_tokens: 2 })).toBe(83.54);
+  });
+
+  it('computes occupancy when a provider only supplies token counts', () => {
+    expect(contextUsagePercentage({ total_tokens: 129_000, max_tokens: 258_000 })).toBe(50);
+  });
+
+  it('uses the same concise numbers in the header and Tools', () => {
+    expect(contextWindowTokenLabel({ total_tokens: 215_338, max_tokens: 258_000 })).toBe('215k / 258k');
+    expect(contextWindowTokenLabel({ total_tokens: 2_640, max_tokens: 200_000 })).toBe('2.6k / 200k');
+  });
+
+  it('does not invent a gauge without both token figures', () => {
+    expect(contextUsagePercentage({ total_tokens: 1_000 })).toBeNull();
+    expect(contextWindowTokenLabel({ total_tokens: 1_000 })).toBeNull();
+  });
+});
+
+describe('canCompactSession', () => {
+  it.each(['active', 'failed', 'background'])('allows idle live state %s', (status) => {
+    expect(canCompactSession(status)).toBe(true);
+  });
+
+  it.each([null, undefined, 'starting', 'thinking', 'sleeping', 'error', 'reconnecting', 'killed'])(
+    'blocks non-idle state %s',
+    (status) => expect(canCompactSession(status)).toBe(false),
+  );
 });

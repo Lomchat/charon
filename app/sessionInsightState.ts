@@ -16,11 +16,67 @@ export function isMcpServerReady(status: string | null | undefined): boolean {
     || normalized === 'ok';
 }
 
-type ContextUsageEnvelope = {
+export type SessionContextUsage = {
   ok?: boolean;
   error?: string;
   reason?: string;
-} | null;
+  total_tokens?: number | string;
+  max_tokens?: number | string;
+  percentage?: number | string;
+  auto_compact_threshold?: number | string;
+  model?: string;
+  status?: { type?: string; activeFlags?: string[]; active_flags?: string[] };
+  categories?: Array<{ name?: string | null; tokens?: number | null }>;
+  identity?: { name?: string | null; cli_title?: string | null; cli_error?: string };
+  recorded_usage?: {
+    turns: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    duration_ms: number;
+    cost_usd: number;
+    models?: string[];
+  } | null;
+};
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** One provider-neutral occupancy value for both header and Tools gauges. */
+export function contextUsagePercentage(context: SessionContextUsage | null): number | null {
+  const explicit = finiteNumber(context?.percentage);
+  if (explicit != null) return explicit;
+  const total = finiteNumber(context?.total_tokens);
+  const maximum = finiteNumber(context?.max_tokens);
+  return total != null && maximum != null && maximum > 0
+    ? total * 100 / maximum
+    : null;
+}
+
+function compactTokenCount(value: number): string {
+  if (value < 1_000) return String(Math.round(value));
+  if (value < 10_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
+  return `${(value / 1_000_000).toFixed(1)}m`;
+}
+
+/** The same concise token pair is shown beside both occupancy gauges. */
+export function contextWindowTokenLabel(context: SessionContextUsage | null): string | null {
+  const total = finiteNumber(context?.total_tokens);
+  const maximum = finiteNumber(context?.max_tokens);
+  if (total == null || maximum == null) return null;
+  return `${compactTokenCount(total)} / ${compactTokenCount(maximum)}`;
+}
+
+/** Native compaction requires an idle, loaded provider session. */
+export function canCompactSession(status: string | null | undefined): boolean {
+  return status === 'active' || status === 'failed' || status === 'background';
+}
 
 /**
  * Thread lifecycle and context telemetry are independent. In particular,
@@ -29,7 +85,7 @@ type ContextUsageEnvelope = {
  * be presented as if the thread were stopped.
  */
 export function contextUsagePresentation(
-  context: ContextUsageEnvelope,
+  context: SessionContextUsage | null,
   percentage: number | null,
 ): { meta: string; empty: string | null } {
   if (typeof percentage === 'number' && Number.isFinite(percentage)) {

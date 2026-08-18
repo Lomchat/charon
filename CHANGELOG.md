@@ -105,8 +105,12 @@ commit-by-commit — `git log` has the detail.
 
 ### Changed
 
+- Claude and Codex now share one live context-window snapshot between the
+  session header and Tools. The header shows a compact percentage/token gauge
+  beneath the cwd, and both gauges carry the compact action; the oversized
+  action-bar button was removed.
 - The Tools inspector preloads with the selected session, resolves each data
-  source independently and groups identity, security, resources, context, MCP
+  source independently and groups identity, security, resources, context, MCP,
   sub-agents and recorded tool calls under collapsible headings. It shows
   explicit loading states, keeps last-good data during refresh and hides
   reconnect for healthy MCP servers.
