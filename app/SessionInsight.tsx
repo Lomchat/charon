@@ -6,6 +6,7 @@ import { sessionCapabilities } from '@/lib/sessionCapabilities';
 import InsightSection from './InsightSection';
 import {
   contextUsagePercentage, contextUsagePresentation, contextWindowTokenLabel,
+  insightSnapshotRequestState,
   isMcpServerReady, type SessionContextUsage,
 } from './sessionInsightState';
 
@@ -48,6 +49,8 @@ type LoadedState = {
   security: boolean;
   resources: boolean;
 };
+
+const FOCUS_REFRESH_AFTER_MS = 30_000;
 
 function LoadingInsight() {
   return <p className="si-loading" role="status"><span aria-hidden="true" />loading…</p>;
@@ -107,46 +110,150 @@ export default function SessionInsight({
   const [resourceBusy, setResourceBusy] = useState<string | null>(null);
   const [mcpOauthUrls, setMcpOauthUrls] = useState<Record<string, string>>({});
   const loadGeneration = useRef(0);
+  const loadInflight = useRef<Promise<void> | null>(null);
+  const loadController = useRef<AbortController | null>(null);
+  const loadRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadRetryAttempt = useRef(0);
+  const loadLastStartedAt = useRef(0);
+  const forceAfterInflight = useRef(false);
+  const loadRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
 
-  const load = useCallback(async () => {
+  const load = useCallback((force = false): Promise<void> => {
+    if (loadInflight.current) {
+      if (force) forceAfterInflight.current = true;
+      return loadInflight.current;
+    }
+    if (loadRetryTimer.current) {
+      clearTimeout(loadRetryTimer.current);
+      loadRetryTimer.current = null;
+    }
     const generation = ++loadGeneration.current;
+    const controller = new AbortController();
+    loadController.current = controller;
+    loadLastStartedAt.current = Date.now();
     setBusy(true);
-    const get = (path: string) => fetch(path).then((r) => r.json()).catch(() => null);
+    const get = async (path: string) => {
+      const separator = path.includes('?') ? '&' : '?';
+      try {
+        const response = await fetch(`${path}${force ? `${separator}force=1` : ''}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        const body = await response.json().catch(() => null);
+        return response.ok
+          ? body
+          : { ok: false, error: body?.error || `request failed (${response.status})` };
+      } catch (error) {
+        if (controller.signal.aborted) return null;
+        return { ok: false, error: String((error as Error)?.message || error) };
+      }
+    };
     const finish = (key: keyof LoadedState, apply: () => void) => {
       if (loadGeneration.current !== generation) return;
       apply();
       setLoaded((current) => current[key] ? current : { ...current, [key]: true });
     };
 
-    const requests: Promise<void>[] = [
-      get(`/api/claude/sessions/${sessionId}/mcp`)
-        .then((value) => finish('mcp', () => setMcp(value))),
-      get(`/api/claude/sessions/${sessionId}/subagents`)
-        .then((value) => finish('subagents', () => setSubagents(value))),
-      get(`/api/claude/sessions/${sessionId}/resources`)
-        .then((value) => finish('resources', () => setResources(value))),
-    ];
-    if (hasSecurity) {
-      requests.push(get(`/api/claude/sessions/${sessionId}/security`)
-        .then((value) => finish('security', () => setSecurity(value))));
-    }
+    const promise = (async () => {
+      let shouldRetry = false;
+      let serverRetryAfterMs = 0;
+      // Sequential browser reads leave several HTTP/1.1 connections free for
+      // chat input even behind a proxy. The first three routes themselves
+      // return non-blocking snapshots; security is last because older agents
+      // can still make that one a normal, awaited RPC.
+      const requests: Array<{
+        key: keyof LoadedState;
+        path: string;
+        apply: (value: any) => void;
+      }> = [
+        { key: 'resources', path: `/api/claude/sessions/${sessionId}/resources`, apply: setResources },
+        { key: 'subagents', path: `/api/claude/sessions/${sessionId}/subagents`, apply: setSubagents },
+        { key: 'mcp', path: `/api/claude/sessions/${sessionId}/mcp`, apply: setMcp },
+      ];
+      if (hasSecurity) {
+        requests.push({
+          key: 'security',
+          path: `/api/claude/sessions/${sessionId}/security`,
+          apply: setSecurity,
+        });
+      }
 
-    await Promise.allSettled(requests);
-    if (loadGeneration.current === generation) setBusy(false);
+      for (const request of requests) {
+        const value = await get(request.path);
+        if (controller.signal.aborted || loadGeneration.current !== generation) return;
+        const requestState = insightSnapshotRequestState(value);
+        if (!requestState.waiting) {
+          finish(request.key, () => request.apply(value));
+        }
+        if (requestState.shouldRetry) {
+          shouldRetry = true;
+          serverRetryAfterMs = Math.max(serverRetryAfterMs, requestState.retryAfterMs);
+        }
+      }
+
+      if (loadGeneration.current !== generation) return;
+      setBusy(shouldRetry);
+      if (shouldRetry) {
+        const attempt = ++loadRetryAttempt.current;
+        const backoff = Math.min(10_000, 500 * (2 ** Math.min(5, attempt)));
+        loadRetryTimer.current = setTimeout(() => {
+          loadRetryTimer.current = null;
+          void loadRef.current(false);
+        }, Math.max(serverRetryAfterMs, backoff));
+      } else {
+        loadRetryAttempt.current = 0;
+      }
+    })().finally(() => {
+      if (loadController.current === controller) {
+        loadController.current = null;
+        loadInflight.current = null;
+      }
+      if (loadGeneration.current === generation && forceAfterInflight.current) {
+        forceAfterInflight.current = false;
+        if (loadRetryTimer.current) {
+          clearTimeout(loadRetryTimer.current);
+          loadRetryTimer.current = null;
+        }
+        queueMicrotask(() => { void loadRef.current(true); });
+      }
+    });
+    loadInflight.current = promise;
+    return promise;
   }, [sessionId, hasSecurity]);
+  loadRef.current = load;
 
-  // On mount and on demand only — never on a timer. None of this changes fast
-  // enough to justify a poll next to a running turn.
-  useEffect(() => { void load(); }, [load]);
-  useEffect(() => () => { loadGeneration.current += 1; }, []);
+  // The retry is completion-driven, not a poll: it only consumes a background
+  // snapshot that the server has already started. Once all sections settle,
+  // there are no timers.
   useEffect(() => {
-    const refreshOnReturn = () => { if (document.visibilityState === 'visible') void load(); };
+    loadRetryAttempt.current = 0;
+    forceAfterInflight.current = false;
+    void load(false);
+    return () => {
+      loadGeneration.current += 1;
+      forceAfterInflight.current = false;
+      if (loadRetryTimer.current) {
+        clearTimeout(loadRetryTimer.current);
+        loadRetryTimer.current = null;
+      }
+      loadController.current?.abort(new DOMException('session details changed', 'AbortError'));
+      loadController.current = null;
+      loadInflight.current = null;
+    };
+  }, [load]);
+  useEffect(() => {
+    const refreshOnReturn = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (loadInflight.current || loadRetryTimer.current) return;
+      if (Date.now() - loadLastStartedAt.current < FOCUS_REFRESH_AFTER_MS) return;
+      void load(false);
+    };
     window.addEventListener('focus', refreshOnReturn);
     return () => window.removeEventListener('focus', refreshOnReturn);
   }, [load]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.allSettled([load(), onRefreshContext()]);
+    await Promise.allSettled([load(true), onRefreshContext()]);
   }, [load, onRefreshContext]);
 
   const openTranscript = useCallback(async (id: string) => {
@@ -267,7 +374,7 @@ export default function SessionInsight({
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ action: 'approve_denial', reviewId: denial.review_id }),
                   });
-                  await load();
+                  await load(true);
                 } finally { setSecurityBusy(false); }
               }}>approve once</button>
             </div>)}
@@ -299,7 +406,7 @@ export default function SessionInsight({
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ name: skill.name, path: skill.path, enabled: skill.enabled === false }),
                   });
-                  await load();
+                  await load(true);
                 } finally { setResourceBusy(null); }
               }}>{skill.enabled === false ? 'enable' : 'disable'}</button>}
             </li>)}
@@ -405,7 +512,7 @@ export default function SessionInsight({
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ action: 'reconnect', name: sv.name }),
                     }).catch(() => {});
-                    void load();
+                    void load(true);
                   }}
                 >reconnect</button>}
                 {capabilities.mcpOauth !== 'none' && ['notloggedin', 'auth required'].includes(
@@ -428,7 +535,7 @@ export default function SessionInsight({
                     body: JSON.stringify({ action: 'toggle', name: sv.name,
                       enabled: String(sv.status ?? '').toLowerCase() === 'disabled' }),
                   }).catch(() => {});
-                  void load();
+                  void load(true);
                 }}>{String(sv.status ?? '').toLowerCase() === 'disabled' ? 'enable' : 'disable'}</button>}
                 {sv.error && <span className="si-mcp-err" title={sv.error}>{sv.error.slice(0, 60)}</span>}
               </li>

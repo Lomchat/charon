@@ -38,7 +38,38 @@ export type SessionContextUsage = {
     cost_usd: number;
     models?: string[];
   } | null;
+  _snapshot?: {
+    state?: 'loading' | 'fresh' | 'refreshing' | 'stale' | 'error';
+    updated_at?: number;
+    retry_after_ms?: number;
+    last_error?: string;
+  };
 };
+
+/** Interpret the non-blocking server snapshot envelope used by Tools/header. */
+export function insightSnapshotRequestState(value: unknown): {
+  waiting: boolean;
+  refreshing: boolean;
+  shouldRetry: boolean;
+  retryAfterMs: number;
+} {
+  const row = value && typeof value === 'object' ? value as Record<string, any> : {};
+  const snapshot = row._snapshot && typeof row._snapshot === 'object'
+    ? row._snapshot as Record<string, any> : {};
+  const state = typeof snapshot.state === 'string' ? snapshot.state : '';
+  const waiting = row.reason === 'loading' || state === 'loading';
+  const refreshing = state === 'refreshing' || state === 'stale';
+  const requestedDelay = Number(snapshot.retry_after_ms);
+  const retryAfterMs = Number.isFinite(requestedDelay)
+    ? Math.min(15_000, Math.max(500, requestedDelay))
+    : 1_000;
+  return {
+    waiting,
+    refreshing,
+    shouldRetry: waiting || refreshing,
+    retryAfterMs,
+  };
+}
 
 function finiteNumber(value: unknown): number | null {
   if (typeof value !== 'number' && typeof value !== 'string') return null;

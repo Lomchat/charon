@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
 import { hideInternalCodexSubagents } from '@/lib/server/claude/sessionInsightCompat';
+import { readSessionInsightSnapshot } from '@/lib/server/claude/sessionInsightSnapshot';
 
 /** GET /api/claude/sessions/[id]/subagents            → the ids
  *  GET /api/claude/sessions/[id]/subagents?agent=<id> → that one's transcript
@@ -18,7 +19,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json(
       await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent }));
   }
-  return NextResponse.json(hideInternalCodexSubagents(
-    await callSessionRpc(id, 'list_subagents'),
+  const force = new URL(req.url).searchParams.get('force') === '1';
+  return NextResponse.json(readSessionInsightSnapshot(
+    id,
+    'subagents',
+    async () => hideInternalCodexSubagents(await callSessionRpc(id, 'list_subagents')),
+    { force, maxAgeMs: 15_000 },
   ));
 }

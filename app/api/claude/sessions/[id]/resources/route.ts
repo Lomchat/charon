@@ -3,6 +3,10 @@ import { eq } from 'drizzle-orm';
 import { db, claudeSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import {
+  invalidateSessionInsightSnapshot,
+  readSessionInsightSnapshot,
+} from '@/lib/server/claude/sessionInsightSnapshot';
 import { parseProviderConfig, restartSession } from '@/lib/server/agent/sessionOps';
 import type { ClaudeSessionConfig } from '@/lib/types/api';
 
@@ -29,9 +33,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const row = await rowFor(id);
   if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  const force = new URL(req.url).searchParams.get('force') === '1';
   try {
-    return NextResponse.json(await listResources(
-      id, row.kind, new URL(req.url).searchParams.get('force') === '1',
+    return NextResponse.json(readSessionInsightSnapshot(
+      id,
+      'resources',
+      () => listResources(id, row.kind, force),
+      { force, maxAgeMs: 60_000 },
     ));
   } catch (error: any) {
     const message = String(error?.message || error);
@@ -55,6 +63,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (row.kind === 'codex') {
     if (!path) return NextResponse.json({ error: 'skill path required' }, { status: 400 });
     const result = await callSessionRpc(id, 'set_codex_skill', { path, enabled: body.enabled });
+    invalidateSessionInsightSnapshot(id, 'resources');
     return NextResponse.json(result, { status: result?.ok ? 200 : result?.reason === 'unsupported' ? 501 : 400 });
   }
 
@@ -88,6 +97,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         warning = `saved; restart failed: ${String(error?.message || error)}`;
       }
     }
+    invalidateSessionInsightSnapshot(id, 'resources');
     return NextResponse.json({ ok: true, enabled: body.enabled, applied, warning });
   } catch (error: any) {
     return NextResponse.json({ error: String(error?.message || error) }, { status: 400 });

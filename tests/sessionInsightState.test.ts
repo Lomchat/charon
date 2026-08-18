@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canCompactSession, contextUsagePercentage, contextUsagePresentation,
-  contextWindowTokenLabel, isMcpServerReady,
+  contextWindowTokenLabel, insightSnapshotRequestState, isMcpServerReady,
 } from '../app/sessionInsightState';
 
 describe('isMcpServerReady', () => {
@@ -68,4 +68,31 @@ describe('canCompactSession', () => {
     'blocks non-idle state %s',
     (status) => expect(canCompactSession(status)).toBe(false),
   );
+});
+
+describe('insight snapshot loading state', () => {
+  it('retries a cold non-blocking snapshot without pretending it is unavailable', () => {
+    expect(insightSnapshotRequestState({
+      ok: false,
+      reason: 'loading',
+      _snapshot: { state: 'loading', retry_after_ms: 1_200 },
+    })).toEqual({
+      waiting: true,
+      refreshing: false,
+      shouldRetry: true,
+      retryAfterMs: 1_200,
+    });
+  });
+
+  it('keeps stale data usable while scheduling its refresh', () => {
+    expect(insightSnapshotRequestState({
+      ok: true,
+      _snapshot: { state: 'refreshing', retry_after_ms: 50 },
+    })).toEqual({
+      waiting: false,
+      refreshing: true,
+      shouldRetry: true,
+      retryAfterMs: 500,
+    });
+  });
 });

@@ -45,7 +45,7 @@ async function send<TRes = unknown>(
   method: string,
   path: string,
   body?: unknown,
-  opts?: { signal?: AbortSignal; timeoutMs?: number },
+  opts?: { signal?: AbortSignal; timeoutMs?: number; timeoutMessage?: string },
 ): Promise<TRes> {
   // Bound EVERY request with a timeout. Without this, a fetch issued just
   // before the device sleeps (laptop lid, mobile background) hangs forever
@@ -57,12 +57,18 @@ async function send<TRes = unknown>(
   // cf. CLAUDE.md §14 gotcha 24.
   const timeoutMs = opts?.timeoutMs ?? 30_000;
   const ac = new AbortController();
-  const onExternalAbort = () => ac.abort();
+  const onExternalAbort = () => ac.abort(
+    opts?.signal?.reason ?? new DOMException('request cancelled', 'AbortError'),
+  );
   if (opts?.signal) {
-    if (opts.signal.aborted) ac.abort();
+    if (opts.signal.aborted) onExternalAbort();
     else opts.signal.addEventListener('abort', onExternalAbort, { once: true });
   }
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ac.abort(new DOMException(`request timed out after ${timeoutMs}ms`, 'TimeoutError'));
+  }, timeoutMs);
   let res: Response;
   try {
     res = await fetch(path, {
@@ -71,6 +77,18 @@ async function send<TRes = unknown>(
       body: body ? JSON.stringify(body) : undefined,
       signal: ac.signal,
     });
+  } catch (error) {
+    if (timedOut) {
+      const seconds = Math.round(timeoutMs / 1_000);
+      throw new Error(opts?.timeoutMessage
+        ?? `${method} ${path} timed out after ${seconds}s; try again when the connection is stable`);
+    }
+    if (opts?.signal?.aborted) {
+      const reason = opts.signal.reason;
+      if (reason instanceof Error) throw reason;
+      throw new DOMException('request cancelled', 'AbortError');
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
     if (opts?.signal) opts.signal.removeEventListener('abort', onExternalAbort);
@@ -414,7 +432,14 @@ export const api = {
   restartClaudeSession: (id: string) =>
     send<ResumeClaudeSessionResponse>('POST', `/api/claude/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
   sendClaudeInput: (id: string, content: string) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { content }),
+    // A message is the one request that must outlive the agent RPC's 60s
+    // bound. Inspector traffic is isolated separately, but a real VPS/network
+    // stall should still produce a precise error rather than Chrome's opaque
+    // "signal is aborted without reason".
+    send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { content }, {
+      timeoutMs: 90_000,
+      timeoutMessage: 'Sending the message timed out after 90s. It may already have been accepted; the transcript will reconcile automatically.',
+    }),
   // ── Session attachments (drag & drop / paperclip) ───────────────────────
   // Upload is the ONE call that can't go through `send()`: that helper always
   // sets `content-type: application/json`, and a multipart body needs the
