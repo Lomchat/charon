@@ -906,7 +906,7 @@ export type CreateClaudeSessionBody = {
   name?: string | null;
   // 'claude' (default) | 'codex'. Determines the backend + config semantics.
   kind?: AgentKind;
-  // Claude: 'normal'|'acceptEdits'|'auto'|'plan'. Codex: a CodexSandboxMode.
+  // Claude: normal/acceptEdits/auto/plan. Codex: sandbox mode or accept-all.
   permissionMode?: PermissionMode | CodexSandboxMode;
   // Per-session config. Pass null/omit to inherit the global defaults
   // (claude.default_* / codex.default_*). Effort validity depends on kind;
@@ -966,7 +966,7 @@ export type ImportClaudeSessionBody = {
   cwd: string;
   name?: string | null;
   kind?: AgentKind;
-  // Claude: a PermissionMode. Codex: a CodexSandboxMode.
+  // Claude: a PermissionMode. Codex: sandbox mode or accept-all.
   permissionMode?: PermissionMode | CodexSandboxMode;
 };
 export type ImportClaudeSessionResponse = {

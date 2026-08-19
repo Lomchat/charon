@@ -22,7 +22,11 @@ import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
-import { classifyTerminalClaudeError } from '@/lib/terminalClaudeError';
+import {
+  classifyTerminalClaudeError, type TerminalClaudeErrorKind,
+} from '@/lib/terminalClaudeError';
+import { classifySessionError, type SessionErrorPayload } from '@/lib/sessionError';
+import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 import { dropTabsForRef } from '@/lib/server/claude/tabs';
 import {
@@ -33,7 +37,9 @@ import {
 } from '@/lib/server/claude/messageWire';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
 import { allocateSessionHandle } from './sessionHandles';
-import { defaultSessionMode, isSessionEffort } from '@/lib/sessionCapabilities';
+import {
+  defaultSessionMode, isSessionEffort, isSessionMode,
+} from '@/lib/sessionCapabilities';
 
 // How long after the last background task finishes before the session is
 // declared done. Long enough for the model's automatic follow-up turn (§14.54)
@@ -76,6 +82,19 @@ function _resolveSessionConfig(
   };
 }
 
+/** Resolve the mode copied into a newly-created/imported session. Settings are
+ * installation policy; the shared fallback remains safe for source checkouts
+ * and for a corrupt/unknown stored value. */
+export function resolveConfiguredSessionMode(kind: AgentKind): SessionMode {
+  const key: SettingKey = kind === 'codex'
+    ? 'codex.default_permission_mode'
+    : 'claude.default_permission_mode';
+  const configured = getSetting(key);
+  return (isSessionMode(kind, configured)
+    ? configured
+    : defaultSessionMode(kind, 'create')) as SessionMode;
+}
+
 export function parseProviderConfig(value: string | null | undefined): ProviderSessionConfig | null {
   if (!value) return null;
   try {
@@ -89,7 +108,8 @@ export function parseProviderConfig(value: string | null | undefined): ProviderS
 
 /** Resolve the safety reviewer once, when a Codex session is created.
  * Changing the fleet default must not silently alter existing sessions;
- * explicit per-session config always wins. */
+ * explicit API config still wins. The dashboard exposes this only in global
+ * Settings, not as a noisy per-composer switch. */
 function resolveCodexConfig(value: CodexSessionConfig | null | undefined): CodexSessionConfig {
   const configured = value?.approvalsReviewer;
   const reviewer = configured === 'auto_review' || configured === 'user'
@@ -314,6 +334,30 @@ export function setCodexUsagePushHandler(fn: (vpsId: string, detail: unknown) =>
   codexUsagePushHandler = fn;
 }
 
+let usageResetResolver: ((vpsId: string, kind: AgentKind) => number | null) | null = null;
+export function setUsageResetResolver(fn: (vpsId: string, kind: AgentKind) => number | null): void {
+  usageResetResolver = fn;
+}
+
+function resetFromCodexLimits(detail: unknown): number | null {
+  const exhausted: number[] = [];
+  const future: number[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    const item = value as Record<string, unknown>;
+    const reset = normalizeResetAtMs(item.resets_at ?? item.resetsAt);
+    if (reset && reset > Date.now() - 60_000) {
+      const used = Number(item.used_percent ?? item.usedPercent ?? NaN);
+      (Number.isFinite(used) && used >= 100 ? exhausted : future).push(reset);
+    }
+    for (const child of Object.values(item)) visit(child);
+  };
+  visit(detail);
+  // If multiple windows are exhausted, the account remains blocked until the
+  // last of them resets. Without utilization evidence, use the next reset.
+  return exhausted.length ? Math.max(...exhausted) : future.length ? Math.min(...future) : null;
+}
+
 export class SessionStream {
   readonly id: string;
   readonly vpsId: string;
@@ -323,7 +367,7 @@ export class SessionStream {
   readonly kind: AgentKind = 'claude';
   status: WorkerStatus = 'starting';
   // For a Codex session this holds a sandbox mode ('read-only' |
-  // 'workspace-write' | 'full-access'); for Claude a permission mode. Typed as
+  // 'workspace-write' | 'full-access' | 'accept-all'); for Claude a permission mode. Typed as
   // the Claude subset for the existing broadcast plumbing (BridgeEvent is
   // locked to PermissionMode) — codex values pass through at runtime.
   permissionMode: PermissionMode = 'normal';
@@ -460,14 +504,23 @@ export class SessionStream {
   // followed by a perfectly ordinary stop→active sequence. Remember the
   // classified final bubble until `stop`, then latch the session in `failed`;
   // while latched, the agent's idle `active` frame must not overwrite it.
-  private pendingTerminalAssistantError: { text: string; kind: 'authentication' | 'api' } | null = null;
+  private pendingTerminalAssistantError: { text: string; kind: TerminalClaudeErrorKind } | null = null;
+  // Raw SDK/provider error held until `stop` tells us whether it actually
+  // blocked the turn. Non-blocking diagnostics keep their live banner only;
+  // a failed stop promotes this into one durable role='error' chat row.
+  private pendingAgentError: { msg: string; fatal: boolean } | null = null;
+  private pendingTurnErrorKind: string | null = null;
+  private pendingBlockingErrorRecorded = false;
   // Evidence that the current/replayed turn actually carried assistant output.
   // Needed to clear an older `failed` latch on a later successful replay
   // without treating an isolated duplicate stop as a recovery.
   private pendingTurnAssistantSeen = false;
   private terminalErrorLatched = false;
   private terminalErrorText: string | null = null;
-  private terminalErrorKind: 'authentication' | 'api' | null = null;
+  private terminalErrorKind: SessionErrorPayload['kind'] | null = null;
+  // Latest structured quota reset seen on this provider stream. Always UTC
+  // epoch ms; never a server-local/browser-local wall clock.
+  private latestLimitResetAtMs: number | null = null;
   // Seq of the earliest event whose _persist FAILED (DB error). Holds the
   // durable cursor back so the next restart replays it and the row gets a
   // second chance — the seq-gate makes the re-delivery of everything else
@@ -525,7 +578,7 @@ export class SessionStream {
     // Preserve a durable failed-turn marker across a Charon reconnect. The
     // daemon is still idle/active; only a new turn or explicit lifecycle
     // recovery clears this display state.
-    this.terminalErrorLatched = this.kind === 'claude' && opts.status === 'failed';
+    this.terminalErrorLatched = opts.status === 'failed';
   }
 
   /** Wires the listener to the agent (idempotent).
@@ -971,6 +1024,7 @@ export class SessionStream {
           // This signal is account state, not transcript/tool activity. Feed
           // the existing Codex usage cache + LOW_VOLUME global gauge event.
           codexUsagePushHandler?.(this.vpsId, ev.detail);
+          this.latestLimitResetAtMs = resetFromCodexLimits(ev.detail) ?? this.latestLimitResetAtMs;
           break;
         }
         // Global app-server FIFO signals are live state, not transcript rows.
@@ -1357,6 +1411,7 @@ export class SessionStream {
         // NOT replace the /api/oauth/usage poll behind the percentage gauges —
         // §14.72's pacing stays. What it adds is the "am I limited right now,
         // and when does the window reset" half, at zero network cost.
+        this.latestLimitResetAtMs = normalizeResetAtMs(ev.resets_at) ?? this.latestLimitResetAtMs;
         this._broadcast({
           type: 'rate_limit',
           status: ev.status, window: ev.window,
@@ -1368,7 +1423,8 @@ export class SessionStream {
         // Typed failure (agent >= 0.36.0), the same fact §14.65 infers from
         // prose. Layered, not substituted: the regex path still runs for older
         // agents, and both converge on the idempotent flag write.
-        if (/auth/i.test(ev.kind)) this._flagClaudeLoggedOut();
+        this.pendingTurnErrorKind = ev.kind;
+        if (/auth/i.test(ev.kind)) this._flagProviderLoggedOut();
         this._broadcast({ type: 'turn_error', kind: ev.kind });
         break;
       case 'stop': {
@@ -1388,18 +1444,42 @@ export class SessionStream {
         const typedFailure = ev.is_error === true
           || ev.terminal_reason === 'api_error'
           || ev.subtype === 'error';
-        const terminalError = this.pendingTerminalAssistantError
-          ?? (typedFailure
-            ? {
-                text: this.terminalErrorText
-                  ?? `The turn ended with an API error${ev.api_error_status ? ` (${ev.api_error_status})` : ''}.`,
-                kind: (String(ev.api_error_status) === '401' ? 'authentication' : 'api') as 'authentication' | 'api',
-              }
+        const assistantTerminalError = this.pendingTerminalAssistantError;
+        const typedErrorText = this.pendingAgentError?.msg ?? this.terminalErrorText
+          ?? `The turn ended with an API error${ev.api_error_status ? ` (${ev.api_error_status})` : ''}.`;
+        const typedErrorKind = typedFailure
+          ? classifySessionError({
+              provider: this.kind,
+              message: typedErrorText,
+              turnFailure: true,
+              hint: this.pendingTurnErrorKind,
+              apiStatus: ev.api_error_status,
+            }).kind
+          : null;
+        const terminalError = assistantTerminalError
+          ?? (typedFailure && typedErrorKind
+            ? { text: typedErrorText, kind: typedErrorKind }
             : null);
         const turnSawAssistant = this.pendingTurnAssistantSeen;
         const recoveredFromFailed =
           !terminalError && turnSawAssistant && this.status === 'failed';
+        // Claude's synthetic failure is already a durable assistant bubble.
+        // Every other failed stop needs its own durable provider-neutral error
+        // row; this is the path Codex previously lacked entirely.
+        if (typedFailure && (!assistantTerminalError || assistantTerminalError.kind === 'rate_limit') && !this.pendingBlockingErrorRecorded) {
+          this._recordBlockingError(
+            terminalError?.text,
+            {
+              turnFailure: true,
+              hint: this.pendingTurnErrorKind,
+              apiStatus: ev.api_error_status,
+            },
+          );
+        }
         this.pendingTerminalAssistantError = null;
+        this.pendingAgentError = null;
+        this.pendingTurnErrorKind = null;
+        this.pendingBlockingErrorRecorded = false;
         this.pendingTurnAssistantSeen = false;
         // The turn ended, but background work it launched may outlive it: that
         // session is neither working nor finished, and calling it finished is
@@ -1469,7 +1549,9 @@ export class SessionStream {
             const providerLabel = this.kind === 'codex' ? 'Codex' : 'Claude';
             const terminalErrorLabel = this.terminalErrorKind === 'authentication'
               ? 'an authentication error'
-              : 'an API error';
+              : this.terminalErrorKind === 'rate_limit'
+                ? 'a rate-limit error'
+                : 'an API error';
             this._maybePush(terminalError ? {
               title: `⚠ ${this.vpsName} · ${this._label()}`,
               body: `${providerLabel} ended with ${terminalErrorLabel}`,
@@ -1525,18 +1607,33 @@ export class SessionStream {
         break;
       case 'error':
         this._log('error', 'sdk_error', { msg: ev.msg, fatal: !!ev.fatal });
+        this.pendingAgentError = { msg: ev.msg, fatal: ev.fatal === true };
         this._broadcast({ type: 'error', msg: ev.msg, fatal: ev.fatal });
+        // Fatal means the SDK/session itself cannot continue and there may be
+        // no following stop event. Persist now; a later stop is deduped by the
+        // per-turn flag and replay identity.
+        if (ev.fatal === true && !this.pendingBlockingErrorRecorded) {
+          this._recordBlockingError(ev.msg, {
+            fatal: true,
+            turnFailure: false,
+            hint: this.pendingTurnErrorKind,
+          });
+        }
         break;
     }
   }
 
   // ── Actions (forwarded to the agent) ─────────────────────────────────────
-  async sendUserMessage(content: string, codexInputs?: Array<Record<string, unknown>>): Promise<void> {
+  async sendUserMessage(
+    content: string,
+    codexInputs?: Array<Record<string, unknown>>,
+    opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string },
+  ): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     this.clearTerminalErrorLatch();
-    this._persist('user', content);
+    if (opts?.persist !== false) this._persist('user', content);
     const now = Math.floor(Date.now() / 1000);
-    this._broadcast({ type: 'user_echo', content, createdAt: now });
+    if (opts?.broadcastUser !== false) this._broadcast({ type: 'user_echo', content, createdAt: now });
     this.status = 'thinking';
     this._broadcast({ type: 'status', status: 'thinking' });
     // Idempotency key (P1.1): the agent (>= 0.19.0) records the id once the
@@ -1546,7 +1643,7 @@ export class SessionStream {
     // (retry then risks a duplicate, same as before — strictly no worse).
     const params = {
       session_id: this.id, content,
-      client_message_id: crypto.randomUUID(),
+      client_message_id: opts?.clientMessageId ?? crypto.randomUUID(),
       ...(codexInputs?.length ? { codex_inputs: codexInputs } : {}),
     };
     try {
@@ -1585,6 +1682,11 @@ export class SessionStream {
     await client.call('interrupt', { session_id: this.id });
   }
 
+  /** Publish an already-persisted scheduler card onto this session's SSE. */
+  publishScheduledResume(messageId: number, content: string, createdAt: number): void {
+    this._broadcast({ type: 'scheduled_resume', messageId, content, createdAt });
+  }
+
   async forceStop(): Promise<void> {
     // Force the SDK to let go: the session switches to 'sleeping'
     // immediately on the agent side, we can resume just after. Used when
@@ -1596,7 +1698,7 @@ export class SessionStream {
   }
 
   // mode is a Claude PermissionMode OR (for a codex session) a Codex sandbox
-  // mode (read-only / workspace-write / full-access). Passed straight to the
+  // mode (read-only / workspace-write / full-access / accept-all). Passed straight to the
   // agent, which interprets it per kind.
   async setPermissionMode(mode: SessionMode): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
@@ -1880,7 +1982,7 @@ export class SessionStream {
    */
   private _noteAuthExpired(text: string): void {
     if (!isClaudeAuthExpired(text)) return;
-    this._flagClaudeLoggedOut();
+    this._flagProviderLoggedOut();
   }
 
   /**
@@ -1917,23 +2019,68 @@ export class SessionStream {
     } catch {}
   }
 
-  private _flagClaudeLoggedOut(): void {
-    // Codex sessions carry their own credentials — never touch the claude flag.
-    if (this.kind !== 'claude') return;
+  private _flagProviderLoggedOut(): void {
     try {
       const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
-      if (!v || v.claudeLoggedIn === 0) return;
-      db.update(vpsTable)
-        .set({ claudeLoggedIn: 0, claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000) })
+      if (!v) return;
+      const alreadyLoggedOut = this.kind === 'codex'
+        ? v.codexLoggedIn === 0 : v.claudeLoggedIn === 0;
+      if (alreadyLoggedOut) return;
+      const checkedAt = Math.floor(Date.now() / 1000);
+      db.update(vpsTable).set(this.kind === 'codex'
+        ? { codexLoggedIn: 0, codexLoggedInCheckedAt: checkedAt }
+        : { claudeLoggedIn: 0, claudeLoggedInCheckedAt: checkedAt })
         .where(eq(vpsTable.id, this.vpsId)).run();
-      this._log('warn', 'claude_auth_expired', { vpsId: this.vpsId });
+      this._log('warn', `${this.kind}_auth_expired`, { vpsId: this.vpsId });
       // Only mirror a status we actually know: emitGlobalVpsStatus's union
       // excludes 'unknown', and sending a wrong agentStatus would corrupt the
       // badge (the client patches it from the event).
       if (v.agentStatus === 'ok' || v.agentStatus === 'missing' || v.agentStatus === 'error') {
-        emitGlobalVpsStatus(this.vpsId, v.agentStatus, { claudeLoggedIn: 0 });
+        emitGlobalVpsStatus(this.vpsId, v.agentStatus, this.kind === 'codex'
+          ? { codexLoggedIn: 0 } : { claudeLoggedIn: 0 });
       }
     } catch {}
+  }
+
+  /** Persist and immediately surface one blocking failure as a chat message. */
+  private _recordBlockingError(
+    message: string | null | undefined,
+    opts: {
+      turnFailure: boolean;
+      fatal?: boolean;
+      hint?: string | null;
+      apiStatus?: string | number | null;
+      resetAt?: number | null;
+    },
+  ): SessionErrorPayload | null {
+    const seq = this.currentEventSeq;
+    if (this.isReplaying && seq != null && this.replayPersistedSeqs?.has(seq)) {
+      this.pendingBlockingErrorRecorded = true;
+      return null;
+    }
+    const payload = classifySessionError({
+      provider: this.kind,
+      message,
+      turnFailure: opts.turnFailure,
+      fatal: opts.fatal,
+      hint: opts.hint,
+      apiStatus: opts.apiStatus,
+      resetAt: opts.resetAt ?? resolveResetAtMs(
+        (this.latestLimitResetAtMs != null && this.latestLimitResetAtMs >= Date.now() - 60_000
+          ? this.latestLimitResetAtMs : null)
+          ?? usageResetResolver?.(this.vpsId, this.kind),
+        String(message ?? ''),
+      ),
+    });
+    if (payload.kind === 'authentication') this._flagProviderLoggedOut();
+    const messageId = this._persist('error', payload);
+    if (!messageId) return null;
+    this.pendingBlockingErrorRecorded = true;
+    this._broadcast({
+      type: 'blocking_error', error: payload,
+      createdAt: Math.floor((this.currentEventTs ?? Date.now()) / 1000), messageId,
+    });
+    return payload;
   }
 
   /** Public variant for graceful shutdown: persists without broadcasting. */
@@ -2074,6 +2221,9 @@ export class SessionStream {
   clearTerminalErrorLatch(): void {
     this.terminalErrorLatched = false;
     this.pendingTerminalAssistantError = null;
+    this.pendingAgentError = null;
+    this.pendingTurnErrorKind = null;
+    this.pendingBlockingErrorRecorded = false;
     this.pendingTurnAssistantSeen = false;
     this.terminalErrorText = null;
     this.terminalErrorKind = null;
@@ -2151,7 +2301,7 @@ export class SessionStream {
     } catch {}
   }
 
-  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null; cliUuid?: string | null }): boolean {
+  private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null; cliUuid?: string | null }): number | false {
     // Stamp the row with the seq of the event being dispatched (null for
     // hub-originated rows like 'user' — sendUserMessage runs outside
     // dispatch). Flush rows override with the FIRST DELTA's seq via
@@ -2169,7 +2319,7 @@ export class SessionStream {
     try {
       const rawContent = typeof content === 'string' ? content : JSON.stringify(content);
       const storage = deriveMessageStorage(role, rawContent);
-      db.insert(claudeSessionMessages).values({
+      const result = db.insert(claudeSessionMessages).values({
         sessionId: this.id, role,
         content: rawContent,
         ...storage,
@@ -2180,7 +2330,7 @@ export class SessionStream {
         ...(extra?.cliUuid ? { cliUuid: extra.cliUuid } : {}),
         tsMs,
       }).run();
-      return true;
+      return Number(result.lastInsertRowid);
     } catch (e: any) {
       // Hold the durable cursor back to (seq - 1): the next restart will
       // replay this event and the insert gets a second chance — without
@@ -2356,7 +2506,7 @@ export async function importExistingSession(opts: {
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
   const sessionId = newId();
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
-  const defaultMode = defaultSessionMode(kind, 'runtime') as SessionMode;
+  const defaultMode = resolveConfiguredSessionMode(kind);
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
   });
@@ -2388,7 +2538,7 @@ export async function startNewSession(opts: {
   name?: string | null;
   // 'claude' (default) | 'codex'. Selects the backend + config semantics.
   kind?: AgentKind;
-  // Claude: a PermissionMode. Codex: a CodexSandboxMode (the sandbox level).
+  // Claude: a PermissionMode. Codex: sandbox mode or combined accept-all.
   permissionMode?: SessionMode;
   // Optional config overrides. If null/undefined we fall back to the global
   // defaults (claude.default_* or codex.default_*); if those are also empty,
@@ -2406,7 +2556,7 @@ export async function startNewSession(opts: {
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
   const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
-  const defaultMode = defaultSessionMode(kind, 'runtime') as SessionMode;
+  const defaultMode = resolveConfiguredSessionMode(kind);
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = opts.sessionId ?? newId();
   const handle = allocateSessionHandle(opts.vpsId, {
@@ -2798,9 +2948,9 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
  *      questions/logs from `claudeSessions`, but we explicitly delete
  *      logs too as defense in depth (they existed outside the cascade
  *      historically in the code).
- *   4. Best-effort: call `kill_session` on the agent side so it forgets
- *      the session. If the agent is down, never mind — the next reconcile
- *      will ignore orphan sessions (cf. `reconcileVpsAgentState`).
+ *   4. Fire-and-forget `kill_session` on the agent so slow remote shutdown
+ *      never holds the HTTP DELETE/modal open. If the agent is down, the next
+ *      reconcile ignores the orphan (cf. `reconcileVpsAgentState`).
  */
 export async function deleteSession(sessionId: string): Promise<void> {
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
@@ -2829,14 +2979,15 @@ export async function deleteSession(sessionId: string): Promise<void> {
   } catch { /* the layout is not worth failing a delete over */ }
   // Live-announce the removal so every other tab/device drops the card. §14.52.
   emitGlobalSessionListChanged(sessionId);
-  try {
-    const client = getAgentClientForVpsId(row.vpsId);
-    await client.call('kill_session', { session_id: sessionId });
-  } catch (e) {
-    // Agent down: the session is already deleted on the Charon side, the
-    // agent may still have an orphan in its state.json — will be ignored
-    // by reconcileVpsAgentState (no DB row), then cleaned at its next restart.
-  }
+  void (async () => {
+    try {
+      const client = getAgentClientForVpsId(row.vpsId);
+      await client.call('kill_session', { session_id: sessionId });
+    } catch {
+      // Agent down: Charon already deleted it; reconciliation ignores the
+      // orphan (no DB row), then the next daemon restart cleans state.json.
+    }
+  })();
 }
 
 // ── Charon ↔ agent reconciliation (self-healing after restart) ─────────────

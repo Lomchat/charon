@@ -17,6 +17,10 @@ import PromptModal from './PromptModal';
 import { setPathDrag } from './pathDrag';
 import { readExpanded, treeScope, writeExpanded } from './treeExpansion';
 import { subscribeFsChanged } from './fsChangeBus';
+import {
+  collapseTreeDeletePaths, isTreeSelectionOnly, readTreeSelection, selectTreeRow,
+  treeSelectionScope, writeTreeSelection,
+} from './treeSelection';
 
 type Props = {
   vpsId: string | null;
@@ -32,7 +36,7 @@ type Props = {
   onOpenSession?: (sessionId: string) => void;
 };
 
-type Menu = { x: number; y: number; row: Row | null };
+type Menu = { x: number; y: number; row: Row | null; rows: Row[] };
 
 type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsEntry };
 
@@ -48,7 +52,7 @@ type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsE
 type Dialog =
   | { kind: 'create'; dir: string; folder: boolean }
   | { kind: 'rename'; row: Row; dir: string }
-  | { kind: 'delete'; row: Row; dir: string }
+  | { kind: 'delete'; rows: Row[] }
   | { kind: 'copy'; text: string };
 
 /**
@@ -76,6 +80,9 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   // it is the only thing the persistence needs, and deriving it keeps the
   // reset effect below honest about what it is resetting to.
   const scope = treeScope(sessionId, vpsId ?? '', cwd ?? '');
+  // Unlike expansion, selection follows the folder when opening a file swaps
+  // the session ToolPanel for the editor ToolPanel (sessionId becomes null).
+  const selectionScope = treeSelectionScope(vpsId, cwd);
   const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(scope));
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
@@ -88,12 +95,36 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   }, [vpsId, cwd]);
   const inflight = useRef<Set<string>>(new Set());
   const [menu, setMenu] = useState<Menu | null>(null);
+  // Explorer selection is deliberately separate from `activeFile`: active is
+  // the file shown in the editor, selected is the transient Ctrl/Shift set a
+  // context-menu action will target. Paths remain stable as rows move.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => readTreeSelection(selectionScope).selected,
+  );
+  const selectionAnchor = useRef<string | null>(readTreeSelection(selectionScope).anchor);
+  // Capture modifiers at mouse-down, as desktop explorers do. Looking only at
+  // `click` can miss a key released between press and release and accidentally
+  // navigate on what began as a Ctrl/Shift selection gesture.
+  const pressedSelection = useRef<{ path: string; toggle: boolean; range: boolean } | null>(null);
+  const lastClickWasSelectionOnly = useRef(false);
+  const replaceSelection = useCallback((next: Set<string>, anchor: string | null) => {
+    // Persist BEFORE setState: opening a file synchronously unmounts this tree,
+    // so an effect cannot be responsible for handing state to its replacement.
+    writeTreeSelection(selectionScope, next, anchor);
+    selectionAnchor.current = anchor;
+    setSelected(next);
+  }, [selectionScope]);
   // File history — the repo that owns the file is resolved from the workspace.
   const [history, setHistory] = useState<{ path: string; repo: string | null } | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   // Row being dragged, for the dimmed styling only — the payload itself rides
   // in the dataTransfer, so nothing here is load-bearing for the drop.
   const [dragPath, setDragPath] = useState<string | null>(null);
+  // Destructive RPCs can take seconds over SSH. The confirm closes immediately
+  // and these paths remain in the tree, red + disabled, until the background
+  // batch settles and the affected directories are re-listed.
+  const [deletingPaths, setDeletingPaths] = useState<Set<string>>(() => new Set());
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // The file the main pane is showing, when it belongs to THIS tree. Read from
   // the tab store rather than taken as a prop: the same panel renders beside
@@ -157,6 +188,11 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     revealedRef.current = null;
     expandedForRef.current = null;
   }, [scope]);
+  useEffect(() => {
+    const restored = readTreeSelection(selectionScope);
+    setSelected(restored.selected);
+    selectionAnchor.current = restored.anchor;
+  }, [selectionScope]);
   useEffect(() => { void load(''); }, [load]);
 
   useEffect(() => {
@@ -277,6 +313,20 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     walk('', 0);
     return out;
   }, [children, expanded]);
+  const visiblePaths = useMemo(() => rows.map((row) => row.path), [rows]);
+
+  // A file opened from a restored tab is the natural first endpoint for a
+  // Shift selection even before the user has clicked inside this tree.
+  useEffect(() => {
+    if (!activeFile) return;
+    setSelected((current) => {
+      if (current.size) return current;
+      const next = new Set([activeFile]);
+      writeTreeSelection(selectionScope, next, activeFile);
+      selectionAnchor.current = activeFile;
+      return next;
+    });
+  }, [activeFile, selectionScope]);
 
   /** The folder a row LIVES in. */
   const parentOf = (row: Row): string => {
@@ -324,9 +374,52 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     if (next === row.name) { setDialog(null); return; }
     await runOp(() => api.fsOp(vpsId, { root: cwd, op: 'rename', path: row.path, to: dir ? `${dir}/${next}` : next }), dir);
   }
-  async function submitDelete(row: Row, dir: string) {
+  function startDelete(rowsToDelete: Row[]) {
     if (!vpsId || !cwd) return;
-    await runOp(() => api.fsOp(vpsId, { root: cwd, op: 'delete', path: row.path, recursive: row.dir }), dir);
+    // A selected folder subsumes selected descendants. Removing those calls is
+    // important: otherwise the parent succeeds and every child falsely fails
+    // as "missing" immediately afterwards.
+    const targets = collapseTreeDeletePaths(rowsToDelete);
+    if (!targets.length) return;
+    setDialog(null);
+    setDeleteError(null);
+    setDeletingPaths((current) => new Set([...current, ...targets.map((row) => row.path)]));
+    // It is no longer an actionable selection; the red pending state is the
+    // visual ownership until completion.
+    setSelected((current) => {
+      const next = new Set([...current].filter((path) =>
+        !targets.some((row) => path === row.path || path.startsWith(`${row.path}/`)),
+      ));
+      writeTreeSelection(selectionScope, next, selectionAnchor.current);
+      return next;
+    });
+
+    void Promise.all(targets.map(async (row) => {
+      try {
+        const result = await api.fsOp(vpsId, {
+          root: cwd, op: 'delete', path: row.path, recursive: row.dir,
+        });
+        return { row, result, error: result.ok ? null : (result.error ?? 'failed') };
+      } catch (e: unknown) {
+        return { row, result: null, error: e instanceof Error ? e.message : String(e) };
+      }
+    })).then((results) => {
+      const failed = results.filter((result) => result.error != null);
+      const affectedDirs = new Set(targets.map(parentOf));
+      for (const dir of affectedDirs) reload(dir);
+      if (failed.length) {
+        const first = failed[0];
+        setDeleteError(failed.length === 1
+          ? `${first.row.path}: ${first.error}`
+          : `${failed.length} items could not be deleted (first: ${first.row.path}: ${first.error})`);
+      }
+    }).finally(() => {
+      setDeletingPaths((current) => {
+        const next = new Set(current);
+        for (const row of targets) next.delete(row.path);
+        return next;
+      });
+    });
   }
   /** What the agent needs to act on this row: the path as it exists ON the VPS.
    *  `row.path` is relative to the session cwd. */
@@ -375,13 +468,23 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
 
   return (
     <div className="tree-tab"
-         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, row: null }); }}>
+         onContextMenu={(e) => {
+           e.preventDefault();
+           replaceSelection(new Set(), null);
+           setMenu({ x: e.clientX, y: e.clientY, row: null, rows: [] });
+         }}>
       <div className="tt-head">
         <span className="tt-root" title={cwd}>{cwd.split('/').filter(Boolean).pop() ?? cwd}</span>
         <span className="gt-spacer" />
         <button className="gt-mini" onClick={() => { setChildren(new Map()); void load('', true); }}
           title="reload the tree">↻</button>
       </div>
+      {deleteError && (
+        <div className="tt-op-error" role="alert">
+          <span>{deleteError}</span>
+          <button type="button" onClick={() => setDeleteError(null)} aria-label="dismiss delete error">×</button>
+        </div>
+      )}
 
       {menu && (
         <>
@@ -391,22 +494,26 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
               click that opened it. */}
           <div className="tt-menu" style={{
             left: Math.min(menu.x, window.innerWidth - 210),
-            top: Math.min(menu.y, window.innerHeight - (menu.row ? 250 : 120)),
+            top: Math.min(menu.y, window.innerHeight - (menu.rows.length > 1 ? 100 : menu.row ? 250 : 120)),
           }}>
             {/* What the menu acts on. Without it the row-less menu (right-click
                 on the empty space below the rows) gave no clue that "New File"
                 lands in the ROOT and not in whatever was last clicked. */}
             <div className="tt-menu-head" title={menu.row ? menu.row.path : cwd}>
               <IconForKind kind={fileKind(menu.row?.name ?? '', menu.row ? menu.row.dir : true)} open={!menu.row} />
-              <span>{menu.row ? menu.row.name : (cwd.split('/').filter(Boolean).pop() ?? cwd)}</span>
+              <span>{menu.rows.length > 1
+                ? `${menu.rows.length} items selected`
+                : menu.row ? menu.row.name : (cwd.split('/').filter(Boolean).pop() ?? cwd)}</span>
             </div>
-            <button onClick={() => openDialog({ kind: 'create', dir: dirOf(menu.row), folder: false })}>
-              <IconFilePlus />New File…
-            </button>
-            <button onClick={() => openDialog({ kind: 'create', dir: dirOf(menu.row), folder: true })}>
-              <IconFolderPlus />New Folder…
-            </button>
-            {menu.row && <>
+            {menu.rows.length <= 1 && <>
+              <button onClick={() => openDialog({ kind: 'create', dir: dirOf(menu.row), folder: false })}>
+                <IconFilePlus />New File…
+              </button>
+              <button onClick={() => openDialog({ kind: 'create', dir: dirOf(menu.row), folder: true })}>
+                <IconFolderPlus />New Folder…
+              </button>
+            </>}
+            {menu.row && menu.rows.length === 1 && <>
               <div className="tt-menu-sep" />
               {/* The drag gesture's equivalent for touch, where HTML5 drag and
                   drop does not exist at all — and the panel is a drawer over
@@ -427,10 +534,15 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
               <button onClick={() => openDialog({ kind: 'rename', row: menu.row!, dir: parentOf(menu.row!) })}>
                 <IconRename />Rename…
               </button>
-              <button className="danger" onClick={() => openDialog({ kind: 'delete', row: menu.row!, dir: parentOf(menu.row!) })}>
+              <button className="danger" onClick={() => openDialog({ kind: 'delete', rows: menu.rows })}>
                 <IconDelete />Delete
               </button>
             </>}
+            {menu.rows.length > 1 && (
+              <button className="danger" onClick={() => openDialog({ kind: 'delete', rows: menu.rows })}>
+                <IconDelete />Delete {menu.rows.length} Items
+              </button>
+            )}
           </div>
         </>
       )}
@@ -466,19 +578,27 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
       )}
       {dialog?.kind === 'delete' && (
         <ConfirmModal
-          title={dialog.row.dir ? 'delete folder' : 'delete file'}
-          confirmLabel="delete"
+          title={dialog.rows.length > 1
+            ? `delete ${dialog.rows.length} items`
+            : dialog.rows[0].dir ? 'delete folder' : 'delete file'}
+          confirmLabel={dialog.rows.length > 1 ? `delete ${dialog.rows.length}` : 'delete'}
           busyLabel="deleting…"
           confirmOnEnter
-          onConfirm={() => submitDelete(dialog.row, dialog.dir)}
+          onConfirm={() => startDelete(dialog.rows)}
           onClose={() => setDialog(null)}
         >
-          <div className="confirm-target">
-            <span className="ct-name">{dialog.row.name}</span>
-            <span className="ct-sub">{cwd}/{dialog.row.path}</span>
-          </div>
+          {dialog.rows.length === 1 ? (
+            <div className="confirm-target">
+              <span className="ct-name">{dialog.rows[0].name}</span>
+              <span className="ct-sub">{cwd}/{dialog.rows[0].path}</span>
+            </div>
+          ) : (
+            <ul className="confirm-list">
+              {dialog.rows.map((row) => <li key={row.path} title={`${cwd}/${row.path}`}>{row.path}</li>)}
+            </ul>
+          )}
           <p className="confirm-text">
-            {dialog.row.dir ? 'This deletes the folder and everything in it. ' : ''}
+            {dialog.rows.some((row) => row.dir) ? 'Selected folders and everything in them will be deleted. ' : ''}
             It is not undoable from here, and an agent may be working in this tree.
           </p>
         </ConfirmModal>
@@ -510,12 +630,19 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             // Absolute path: the activity map is per VPS, not per tree root.
             const act = r.dir ? undefined : activity.get(`${cwd}/${r.path}`);
             const isActive = !r.dir && r.path === activeFile;
+            const isSelected = selected.has(r.path);
+            const isDeleting = [...deletingPaths].some((path) =>
+              r.path === path || r.path.startsWith(`${path}/`),
+            );
             return (
               <li key={r.path}>
                 <button
                   ref={isActive ? activeRowRef : undefined}
                   aria-current={isActive ? 'true' : undefined}
-                  className={`tt-row ${r.dir ? 'is-dir' : 'is-file'}${isActive ? ' active' : ''}${r.entry.ignored ? ' ignored' : ''}${st ? ' g-' + st.cls : ''}`}
+                  aria-pressed={isSelected}
+                  aria-busy={isDeleting || undefined}
+                  disabled={isDeleting}
+                  className={`tt-row ${r.dir ? 'is-dir' : 'is-file'}${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${isDeleting ? ' deleting' : ''}${r.entry.ignored ? ' ignored' : ''}${st ? ' g-' + st.cls : ''}`}
                   style={{ paddingLeft: 4 + r.depth * 11 }}
                   // Drag a row into the chat to put its path in the message.
                   // Only when there IS a chat to drop on: beside the file
@@ -532,19 +659,73 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
                   }}
                   onDragEnd={() => setDragPath(null)}
                   data-dragging={dragPath === r.path ? '' : undefined}
-                  onClick={() => (r.dir ? toggle(r.path) : openFile(r.path, false))}
-                  onDoubleClick={() => { if (!r.dir) openFile(r.path, true); }}
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    const toggleSelection = e.ctrlKey || e.metaKey;
+                    const rangeSelection = e.shiftKey;
+                    pressedSelection.current = isTreeSelectionOnly({
+                      toggle: toggleSelection, range: rangeSelection,
+                    }) ? { path: r.path, toggle: toggleSelection, range: rangeSelection } : null;
+                  }}
+                  onClick={(e) => {
+                    const pressed = pressedSelection.current?.path === r.path
+                      ? pressedSelection.current : null;
+                    pressedSelection.current = null;
+                    const toggleSelection = pressed?.toggle ?? (e.ctrlKey || e.metaKey);
+                    const rangeSelection = pressed?.range ?? e.shiftKey;
+                    const selectionOnly = isTreeSelectionOnly({
+                      toggle: toggleSelection, range: rangeSelection,
+                    });
+                    lastClickWasSelectionOnly.current = selectionOnly;
+                    const next = selectTreeRow(
+                      visiblePaths, selected, selectionAnchor.current, r.path,
+                      { toggle: toggleSelection, range: rangeSelection },
+                    );
+                    replaceSelection(next.selected, next.anchor);
+                    // Modifier clicks are selection gestures, not navigation:
+                    // in particular, Shift-clicking a folder inside a range
+                    // must not collapse the rows that were just selected.
+                    if (selectionOnly) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      return;
+                    }
+                    if (r.dir) toggle(r.path);
+                    else openFile(r.path, false);
+                  }}
+                  onDoubleClick={(e) => {
+                    const selectionOnly = lastClickWasSelectionOnly.current
+                      || isTreeSelectionOnly({
+                        toggle: e.ctrlKey || e.metaKey, range: e.shiftKey,
+                      });
+                    lastClickWasSelectionOnly.current = false;
+                    if (selectionOnly) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      return;
+                    }
+                    if (!r.dir) openFile(r.path, true);
+                  }}
                   onContextMenu={(e) => {
                     // stopPropagation, or the container's handler below runs
                     // straight after and replaces this with a row-less menu.
                     e.preventDefault(); e.stopPropagation();
-                    setMenu({ x: e.clientX, y: e.clientY, row: r });
+                    const contextRows = selected.has(r.path)
+                      ? rows.filter((row) => selected.has(row.path))
+                      : [r];
+                    if (!selected.has(r.path)) {
+                      replaceSelection(new Set([r.path]), r.path);
+                    }
+                    setMenu({ x: e.clientX, y: e.clientY, row: r, rows: contextRows });
                   }}
-                  title={err ? `${r.path} — ${err}` : `${r.path}${st ? ` · ${st.label}` : ''}${r.entry.ignored ? ' · git-ignored' : ''}`}
+                  title={err
+                    ? `${r.path} — ${err}`
+                    : `${r.path}${st ? ` · ${st.label}` : ''}${r.entry.ignored ? ' · git-ignored' : ''} · Ctrl/Cmd-click to add, Shift-click for a range`}
                 >
                   <span className="tt-caret">{r.dir ? (busy ? '·' : isOpen ? '▾' : '▸') : ''}</span>
                   <IconForKind kind={kind} open={isOpen} className="tt-ico" />
                   <span className="tt-name">{r.name}</span>
+                  {isDeleting && <span className="tt-deleting">deleting…</span>}
                   {r.entry.symlink && <span className="tt-link" title="symlink">↗</span>}
                   {/* Files carry the letter; folders carry only the colour, so
                       the gutter stays a single column of real changes. */}

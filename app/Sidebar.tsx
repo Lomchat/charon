@@ -9,6 +9,7 @@ import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, parseAgentLastError } from './vpsHealth';
+import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -71,6 +72,8 @@ type Props = {
   vpsFolders: VpsFolder[];
   vpsPaths: VpsPath[];
   sessions: SessionListItem[];
+  /** Sessions whose permanent DELETE is running in the background. */
+  deletingSessionIds?: ReadonlySet<string>;
   shells: ShellListItem[];
   // Agent install sessions. In-memory only, like the shells. Listed per
   // VPS. An install session appears above the cards when active OR
@@ -89,7 +92,7 @@ type Props = {
   onScan: (vpsId: string) => void;
   // "Manage VPS & folders" button in the sidebar toolbar.
   onOpenData: () => void;
-  onContext?: (session: SessionListItem, x: number, y: number) => void;
+  onContext?: (sessions: SessionListItem[], x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
   onContextInstall?: (install: InstallInfo, x: number, y: number) => void;
   editingId?: string | null;
@@ -141,6 +144,7 @@ export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 
 export default function Sidebar({
   vpsList, vpsFolders, sessions, shells, installs,
+  deletingSessionIds = new Set(),
   selectedId, selectedShellId, selectedInstallId,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   onNew, onNewShell, onScan, onOpenData,
@@ -159,6 +163,28 @@ export default function Sidebar({
   // denser default keeps a many-VPS fleet scannable. Opt back IN via the
   // "details" toggle, persisted as DETAILS_KEY==='1'.
   const [showDetails, setShowDetails] = useState(false);
+  // Browser-local Windows-style selection. `selectedId` remains the ONE open
+  // workspace tab; this set is only what a bulk context action targets.
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
+  const sessionSelectionAnchor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedId) return;
+    setSelectedSessionIds((current) => {
+      if (current.size) return current;
+      sessionSelectionAnchor.current = selectedId;
+      return new Set([selectedId]);
+    });
+  }, [selectedId]);
+  useEffect(() => {
+    const live = new Set(sessions.map((session) => session.id));
+    setSelectedSessionIds((current) => {
+      const next = new Set([...current].filter((id) => live.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    if (sessionSelectionAnchor.current && !live.has(sessionSelectionAnchor.current)) {
+      sessionSelectionAnchor.current = null;
+    }
+  }, [sessions]);
   useEffect(() => {
     try {
       if (localStorage.getItem(PAUSED_KEY) === '0') setShowPaused(false);
@@ -269,6 +295,39 @@ export default function Sidebar({
       .filter((sh) => sh.vpsId === vpsId)
       .filter((sh) => showPaused || !sh.exited)
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
+  }
+
+  // Exact visual order, excluding collapsed folders and rows hidden by the
+  // paused filter. Shift must select what is actually between the endpoints,
+  // not invisible cards.
+  const visibleSessionIds = sortedFolders.flatMap((folder) => {
+    if (folder.collapsed === 1) return [];
+    const folderVps = folder.id === '__orphans__'
+      ? vpsList.filter((v) => !vpsFolders.some((known) => known.id === v.folderId))
+      : (vpsByFolder.get(folder.id) ?? []);
+    return folderVps.flatMap((vps) => sessionsFor(vps.id).map((session) => session.id));
+  });
+
+  function selectSessionGesture(session: SessionListItem, modifiers: TreeSelectionModifiers): boolean {
+    const next = selectTreeRow(
+      visibleSessionIds, selectedSessionIds, sessionSelectionAnchor.current, session.id, modifiers,
+    );
+    setSelectedSessionIds(next.selected);
+    sessionSelectionAnchor.current = next.anchor;
+    return isTreeSelectionOnly(modifiers);
+  }
+
+  function openSessionContext(session: SessionListItem, x: number, y: number) {
+    const ids = selectedSessionIds.has(session.id)
+      ? visibleSessionIds.filter((id) => selectedSessionIds.has(id))
+      : [session.id];
+    if (!selectedSessionIds.has(session.id)) {
+      setSelectedSessionIds(new Set([session.id]));
+      sessionSelectionAnchor.current = session.id;
+    }
+    const byId = new Map(sessions.map((candidate) => [candidate.id, candidate]));
+    const targets = ids.map((id) => byId.get(id)).filter((candidate): candidate is SessionListItem => !!candidate);
+    if (targets.length) onContext?.(targets, x, y);
   }
 
   // "Agent out of date" = this hub SHIPS a strictly newer `__version__` than
@@ -411,9 +470,11 @@ export default function Sidebar({
                   codexLatestVersion,
                   codexCliLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
+                  deletingSessionIds,
                   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
+                  selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
                   onNew, onNewShell, onScan,
-                  onContext, onContextShell, onContextInstall,
+                  onContext: openSessionContext, onContextShell, onContextInstall,
                   editingId, onRenameSubmit, onRenameCancel,
                   onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
                   updatingAgentVpsIds, refreshingAgentVpsIds,
@@ -447,6 +508,7 @@ type VpsRenderOpts = {
   codexLatestVersion?: string | null;
   codexCliLatestVersion?: string | null;
   selectedId: string | null;
+  deletingSessionIds: ReadonlySet<string>;
   selectedShellId: string | null;
   selectedInstallId: string | null;
   onSelect: (id: string, pin?: boolean) => void;
@@ -454,6 +516,8 @@ type VpsRenderOpts = {
   onSelectInstall: (id: string) => void;
   /** Reorder the sessions of ONE vps (drag & drop). §14.80 */
   onReorderSessions?: (vpsId: string, ids: string[]) => void;
+  selectedSessionIds: ReadonlySet<string>;
+  onSessionSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
@@ -477,8 +541,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     sessionHandles,
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion, codexCliLatestVersion,
-    selectedId, selectedShellId, selectedInstallId,
+    selectedId, selectedShellId, selectedInstallId, deletingSessionIds,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
+    selectedSessionIds, onSessionSelectionGesture,
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
@@ -737,9 +802,12 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             vpsId={v.id}
             sessions={vpsSessions}
             selectedId={selectedId}
+            selectedSessionIds={selectedSessionIds}
+            deletingSessionIds={deletingSessionIds}
             sessionHandles={sessionHandles}
           showDetails={showDetails}
             onSelect={onSelect}
+            onSelectionGesture={onSessionSelectionGesture}
             onContext={onContext}
             editingId={editingId}
             onRenameSubmit={onRenameSubmit}
@@ -826,15 +894,19 @@ const STATUS_TEXT: Record<string, string> = {
  * modal, which already owns that with @dnd-kit.
  */
 function SessionList({
-  vpsId, sessions, selectedId, showDetails, sessionHandles, onSelect, onContext,
+  vpsId, sessions, selectedId, selectedSessionIds, deletingSessionIds,
+  showDetails, sessionHandles, onSelect, onSelectionGesture, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
 }: {
   vpsId: string;
   sessions: SessionListItem[];
   selectedId: string | null;
+  selectedSessionIds: ReadonlySet<string>;
+  deletingSessionIds: ReadonlySet<string>;
   showDetails: boolean;
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   onSelect: (id: string, pin?: boolean) => void;
+  onSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
@@ -847,28 +919,37 @@ function SessionList({
       {sessions.map((s) => (
         <SessionRow
           key={s.id} s={s}
+          deleting={deletingSessionIds.has(s.id)}
+          multiSelected={selectedSessionIds.has(s.id)}
           handle={sessionHandles?.get(s.id) ?? null}
           selected={s.id === selectedId}
           showDetails={showDetails}
           onSelect={onSelect}
+          onSelectionGesture={onSelectionGesture}
           onContext={onContext}
           editing={editingId === s.id}
           onRenameSubmit={onRenameSubmit}
           onRenameCancel={onRenameCancel}
-          dnd={onReorder ? dnd.itemProps(s.id) : undefined}
+          dnd={onReorder && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
         />
       ))}
     </>
   );
 }
 
-function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, editing, onRenameSubmit, onRenameCancel, dnd }: {
+function SessionRow({
+  s, handle, selected, multiSelected, deleting, showDetails,
+  onSelect, onSelectionGesture, onContext, editing, onRenameSubmit, onRenameCancel, dnd,
+}: {
   s: SessionListItem;
   /** Stable provider-neutral Charon handle on this VPS. */
   handle?: { handle: string; confirmed: boolean } | null;
   selected: boolean;
+  multiSelected: boolean;
+  deleting: boolean;
   showDetails: boolean;
   onSelect: (id: string, pin?: boolean) => void;
+  onSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   editing?: boolean;
   onRenameSubmit?: (id: string, name: string) => void;
@@ -877,7 +958,9 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
 }) {
   // Touch long-press → context menu (mobile has no right-click). Must run
   // before the `editing` early-return to keep hook order stable. §11.
-  const lp = useLongPress((c) => { onContext?.(s, c.x, c.y); });
+  const lp = useLongPress((c) => { if (!deleting) onContext?.(s, c.x, c.y); });
+  const pressedSelection = useRef<TreeSelectionModifiers | null>(null);
+  const lastClickWasSelectionOnly = useRef(false);
   const baseStatus = s.liveStatus ?? s.status;
   const effective = (s.pendingPermissions ?? 0) > 0 && baseStatus === 'active' ? 'waiting' : baseStatus;
   const dotClass = DOT_CLASS[effective] ?? 'dot-gray';
@@ -911,19 +994,51 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
     <button
       type="button"
       data-tab-id={s.id}
-      className={`cs-card${selected ? ' selected' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
-      onClick={() => { if (lp.consume()) return; onSelect(s.id); }}
-      onDoubleClick={() => onSelect(s.id, true)}
+      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${effective === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
+      disabled={deleting}
+      aria-busy={deleting || undefined}
+      aria-pressed={multiSelected}
+      onClick={(e) => {
+        if (deleting || lp.consume()) return;
+        const modifiers = pressedSelection.current ?? {
+          toggle: e.ctrlKey || e.metaKey, range: e.shiftKey,
+        };
+        pressedSelection.current = null;
+        const selectionOnly = onSelectionGesture(s, modifiers);
+        lastClickWasSelectionOnly.current = selectionOnly;
+        if (selectionOnly) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        onSelect(s.id);
+      }}
+      onDoubleClick={(e) => {
+        const selectionOnly = lastClickWasSelectionOnly.current
+          || isTreeSelectionOnly({ toggle: e.ctrlKey || e.metaKey, range: e.shiftKey });
+        lastClickWasSelectionOnly.current = false;
+        if (deleting || selectionOnly) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        onSelect(s.id, true);
+      }}
       {...(dnd ?? {})}
-      onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        const modifiers = { toggle: e.ctrlKey || e.metaKey, range: e.shiftKey };
+        pressedSelection.current = isTreeSelectionOnly(modifiers) ? modifiers : null;
+      }}
+      onContextMenu={(e) => { if (!onContext || deleting) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
       {...lp.handlers}
-      title={`${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
+      title={deleting ? `Deleting ${headline}…` : `${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
       suppressHydrationWarning
       style={colorToken ? { ['--c' as any]: colorToCss(colorToken) } : undefined}
     >
       <span className="cs-card-stripe" />
       <div className="cs-card-top">
-        <span className={`dot ${dotClass}`} />
+        <span className={`dot ${deleting ? 'dot-red' : dotClass}`} />
         <span className="cs-card-glyph"><AgentLogo kind={(s.kind as AgentKind) ?? 'claude'} size={14} /></span>
         <span className="cs-card-name">{headline}</span>
         {unread && (
@@ -935,7 +1050,9 @@ function SessionRow({ s, handle, selected, showDetails, onSelect, onContext, edi
         {!!s.subscribers && s.subscribers > 1 && (
           <span className="cs-multi" title={`${s.subscribers} connected clients`}>×{s.subscribers}</span>
         )}
-        <span className={`cs-state ${effective}`}>{STATUS_TEXT[effective] ?? effective}</span>
+        <span className={`cs-state ${deleting ? 'deleting' : effective}`}>
+          {deleting ? 'deleting…' : (STATUS_TEXT[effective] ?? effective)}
+        </span>
       </div>
       {showDetails && showPreview && <div className="cs-card-preview">{preview}</div>}
       {showDetails && (

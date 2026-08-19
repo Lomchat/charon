@@ -9,6 +9,7 @@ import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/claude/tabs';
 import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
 import { ensureSessionHandles } from './agent/sessionHandles';
+import { armScheduledResumes } from './agent/scheduledResume';
 
 // ── Boot seed, retryable per sub-system (P1.6) ──────────────────────────────
 // Since §14.45 this is the GUARANTEED agent-arming path (instrumentation.ts
@@ -63,6 +64,9 @@ const STEPS: Step[] = [
   // the onStatus('connected')→reconcile self-healing hook. THE load-bearing
   // step (§14.45).
   { name: 'autoConnect', run: () => autoConnectAgentsIfNeeded() },
+  // Durable rate-limit recovery jobs. Requeues a job claimed immediately
+  // before a crash, then arms one unref'd timer for the earliest UTC instant.
+  { name: 'scheduledResumes', run: () => armScheduledResumes() },
   // Workspace layout (§14.78): drop tabs whose referent is gone — install
   // tabs ALWAYS (installs are in-memory and never survive a restart) — then
   // seed one pinned tab per live session the very first time, so the bar

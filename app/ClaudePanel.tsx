@@ -37,6 +37,7 @@ import {
   IconMenu, IconPanelRight,
 } from './icons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
+import { canResumeSession, canSleepSession } from './sessionBulkActions';
 
 // Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
 // chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
@@ -197,7 +198,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // ACTIVE SESSION live in `<ClaudeSessionView>` via the hook.
   const [error, setError] = useState<{ msg: string; canResume?: boolean } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<
-    | { kind: 'session'; session: SessionListItem; x: number; y: number }
+    | { kind: 'session'; sessions: SessionListItem[]; x: number; y: number }
     | { kind: 'shell'; shell: ShellListItem; x: number; y: number }
     | { kind: 'install'; install: InstallInfo; x: number; y: number }
     | null
@@ -206,7 +207,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [handleEditor, setHandleEditor] = useState<SessionListItem | null>(null);
   // "Delete permanently" confirmation — styled modal instead of the native
   // confirm(). Holds the target session while the dialog is open.
-  const [confirmDelete, setConfirmDelete] = useState<SessionListItem | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<SessionListItem[] | null>(null);
+  // Confirmation closes immediately; the card stays visible and red until
+  // the DELETE request settles. Shared by Claude and Codex rows.
+  const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(() => new Set());
   // "You are about to discard an unsaved buffer" — the ONLY close that asks.
   // `run` is the close that was requested (one tab, a folder, a machine), held
   // until the answer comes back so the dialog can't do a different thing than
@@ -853,14 +857,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     [selected, vpsList],
   );
 
-  // Handed down to <Message>: an assistant bubble that IS the "OAuth token
-  // expired" message gets a "Sign in to Claude" button, so the fix is one
-  // click from the error (§14.65). Stable across renders except when the VPS
-  // itself changes — <Message> is memoized and must not get a fresh identity
-  // on every parent render (§14.38).
+  // Handed down to <Message>: a durable authentication-error bubble opens the
+  // matching provider login (Claude hosted OAuth / Codex device code). Stable
+  // across renders because <Message> is memoized (§14.38/65/68).
   const reauthSelectedVps = useCallback(() => {
-    if (selectedVps) setLoginVps(selectedVps);
-  }, [selectedVps]);
+    if (!selectedVps) return;
+    if ((selected?.kind ?? 'claude') === 'codex') setCodexLoginVps(selectedVps);
+    else setLoginVps(selectedVps);
+  }, [selected?.kind, selectedVps]);
 
   // Hydrate the current VPS's usage on select (SSE is live-only, §14.14): a
   // freshly-mounted tab has no snapshot until the next 60s poll — fetch once so
@@ -1096,7 +1100,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     const x = e.clientX; const y = e.clientY;
     if (t.kind === 'session') {
       const sess = sessions.find((z) => z.id === t.ref);
-      if (sess) setCtxMenu({ kind: 'session', session: sess, x, y });
+      if (sess) setCtxMenu({ kind: 'session', sessions: [sess], x, y });
     } else if (t.kind === 'shell') {
       const sh = shells.find((z) => z.id === t.ref);
       if (sh) setCtxMenu({ kind: 'shell', shell: sh, x, y });
@@ -1420,13 +1424,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // it's reversible (resume reopens the session). The active session's
   // header button remains the main entry point, but right-clicking in the
   // sidebar lets us pause a session without having to focus it.
-  async function sleepOne(id: string) {
-    try {
-      await api.sleepClaudeSession(id);
+  function runSessionLifecycle(action: 'sleep' | 'resume', targets: SessionListItem[]) {
+    const eligible = targets.filter(action === 'sleep' ? canSleepSession : canResumeSession);
+    if (!eligible.length) return;
+    const call = action === 'sleep' ? api.sleepClaudeSession : api.resumeClaudeSession;
+    void Promise.allSettled(eligible.map((session) => call(session.id))).then((results) => {
+      const failed = results.filter((result) => result.status === 'rejected');
+      if (failed.length) {
+        const first = failed[0] as PromiseRejectedResult;
+        setError({
+          msg: `${action}: ${failed.length}/${eligible.length} failed — ${first.reason?.message ?? first.reason}`,
+        });
+      }
       refreshSessions();
-    } catch (e: any) {
-      setError({ msg: 'sleep: ' + (e?.message ?? e) });
-    }
+    });
   }
 
   async function archiveOne(id: string) {
@@ -1448,14 +1459,27 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // — the rework merged kill→delete (cf. CLAUDE.md §10). To pause the
   // session without losing it, use `doSleep` (reversible) in
   // `<ClaudeSessionView>`.
-  async function deleteSessionOne(id: string) {
-    try {
-      await api.deleteClaudeSession(id);
+  function deleteSessionOne(id: string) {
+    if (deletingSessionIds.has(id)) return;
+    setDeletingSessionIds((current) => new Set(current).add(id));
+    void api.deleteClaudeSession(id).then(() => {
+      // The sessions_changed event normally wins this race; patch locally too
+      // so a dropped SSE never leaves a completed red card behind.
+      setSessions((current) => current.filter((session) => session.id !== id));
       if (id === selectedId) setSelectedId(null);
       refreshSessions();
-    } catch (e: any) {
+    }).catch((e: any) => {
+      // The row stays in place and loses its deleting treatment, making retry
+      // possible. The existing cross-session error surface carries the reason.
       setError({ msg: 'delete: ' + (e?.message ?? e) });
-    }
+      refreshSessions();
+    }).finally(() => {
+      setDeletingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    });
   }
 
   async function patchSession(id: string, body: { name?: string | null; color?: string | null; cwd?: string }) {
@@ -1706,6 +1730,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         vpsFolders={vpsFolders}
         vpsPaths={vpsPaths}
         sessions={sessions}
+        deletingSessionIds={deletingSessionIds}
         shells={shells}
         installs={installs}
         selectedId={selectedId}
@@ -1725,7 +1750,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
-        onContext={(s, x, y) => setCtxMenu({ kind: 'session', session: s, x, y })}
+        onContext={(targets, x, y) => {
+          const available = targets.filter((session) => !deletingSessionIds.has(session.id));
+          if (available.length) setCtxMenu({ kind: 'session', sessions: available, x, y });
+        }}
         onContextShell={(sh, x, y) => setCtxMenu({ kind: 'shell', shell: sh, x, y })}
         onContextInstall={(inst, x, y) => setCtxMenu({ kind: 'install', install: inst, x, y })}
         editingId={editingId}
@@ -2044,13 +2072,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         <ClaudeLoginModal vps={loginVps} onClose={closeLoginConsole} />
       )}
 
-      {ctxMenu && ctxMenu.kind === 'session' && (
-        <SessionContextMenu
-          title={ctxMenu.session.name || ctxMenu.session.cwd.split('/').slice(-2).join('/')}
-          subtitle={ctxMenu.session.cwd}
+      {ctxMenu && ctxMenu.kind === 'session' && (() => {
+        const targets = ctxMenu.sessions;
+        const single = targets.length === 1 ? targets[0] : null;
+        const sleepTargets = targets.filter(canSleepSession);
+        const resumeTargets = targets.filter(canResumeSession);
+        return <SessionContextMenu
+          title={single
+            ? (single.name || single.cwd.split('/').slice(-2).join('/'))
+            : `${targets.length} sessions selected`}
+          subtitle={single ? single.cwd : 'bulk session actions'}
           x={ctxMenu.x}
           y={ctxMenu.y}
-          currentColor={(ctxMenu.session as any).color}
+          currentColor={single ? (single as any).color : null}
           // No `onKill` here: the kill→delete rework merged the two
           // actions. Only `onDelete` remains for Claude sessions. The
           // shells/installs below keep their `onKill` (= close).
@@ -2059,20 +2093,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // makes sense (active/thinking/starting/failed). For sleeping/error/killed,
           // the item disappears from the menu (the "resume" button in the
           // chat header takes care of waking up the session; we don't duplicate here).
-          onRename={() => setEditingId(ctxMenu.session.id)}
-          onEditHandle={() => setHandleEditor(ctxMenu.session)}
-          onEditCwd={() => editSessionCwd(ctxMenu.session)}
-          onColor={(color) => patchSession(ctxMenu.session.id, { color })}
-          onSleep={
-            ['active', 'thinking', 'starting', 'failed', 'background'].includes(ctxMenu.session.status)
-              ? () => sleepOne(ctxMenu.session.id)
-              : undefined
-          }
-          onArchive={() => archiveOne(ctxMenu.session.id)}
-          onDelete={() => setConfirmDelete(ctxMenu.session)}
+          showRename={!!single}
+          showColor={!!single}
+          onRename={single ? () => setEditingId(single.id) : undefined}
+          onEditHandle={single ? () => setHandleEditor(single) : undefined}
+          onEditCwd={single ? () => editSessionCwd(single) : undefined}
+          onColor={single ? (color) => patchSession(single.id, { color }) : undefined}
+          onSleep={sleepTargets.length ? () => runSessionLifecycle('sleep', sleepTargets) : undefined}
+          sleepLabel={sleepTargets.length > 1 ? `💤 Sleep ${sleepTargets.length} sessions` : '💤 Sleep'}
+          onResume={resumeTargets.length ? () => runSessionLifecycle('resume', resumeTargets) : undefined}
+          resumeLabel={resumeTargets.length > 1 ? `Resume ${resumeTargets.length} sessions` : 'Resume'}
+          onArchive={single ? () => archiveOne(single.id) : undefined}
+          onDelete={() => setConfirmDelete(targets)}
+          deleteLabel={targets.length > 1 ? `Delete ${targets.length} permanently` : 'Delete permanently'}
           onClose={() => setCtxMenu(null)}
         />
-      )}
+      })()}
       {ctxMenu && ctxMenu.kind === 'shell' && (
         <SessionContextMenu
           title={ctxMenu.shell.name || `⌨ ${ctxMenu.shell.cwd ?? '~'}`}
@@ -2165,27 +2201,33 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
       {confirmDelete && (
         <ConfirmModal
-          title="Delete session"
-          confirmLabel="delete permanently"
+          title={confirmDelete.length === 1 ? 'Delete session' : `Delete ${confirmDelete.length} sessions`}
+          confirmLabel={confirmDelete.length === 1 ? 'delete permanently' : `delete ${confirmDelete.length} permanently`}
           busyLabel="deleting…"
-          onConfirm={async () => {
-            // deleteSessionOne catches its own errors (→ error banner), so
-            // we always close the dialog afterwards.
-            await deleteSessionOne(confirmDelete.id);
+          onConfirm={() => {
+            // Start, close, then let the red sidebar card own progress.
+            for (const session of confirmDelete) deleteSessionOne(session.id);
             setConfirmDelete(null);
           }}
           onClose={() => setConfirmDelete(null)}
         >
-          <div className="confirm-target">
-            <span className="ct-name">
-              {confirmDelete.name || confirmDelete.cwd.split('/').slice(-2).join('/')}
-            </span>
-            <span className="ct-sub">{confirmDelete.cwd}</span>
-          </div>
+          {confirmDelete.length === 1 ? (
+            <div className="confirm-target">
+              <span className="ct-name">
+                {confirmDelete[0].name || confirmDelete[0].cwd.split('/').slice(-2).join('/')}
+              </span>
+              <span className="ct-sub">{confirmDelete[0].cwd}</span>
+            </div>
+          ) : (
+            <ul className="confirm-list">
+              {confirmDelete.map((session) => (
+                <li key={session.id}>{session.name || session.cwd.split('/').slice(-2).join('/')}</li>
+              ))}
+            </ul>
+          )}
           <p className="confirm-text">
-            The session and its whole history (messages, permissions, logs)
-            will be permanently deleted. This cannot be undone — to keep it
-            around, pause it instead.
+            {confirmDelete.length === 1 ? 'The session and its whole history' : 'These sessions and their whole histories'}
+            {' (messages, permissions, logs) will be permanently deleted. This cannot be undone — to keep them around, pause them instead.'}
           </p>
         </ConfirmModal>
       )}

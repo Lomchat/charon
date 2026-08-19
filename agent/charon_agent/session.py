@@ -514,6 +514,11 @@ class AgentSession:
         self._usage_cur_out = 0         # output tokens of the in-flight message
         self._usage_last_emit = 0.0     # monotonic ts of the last throttled live emit
         self._claude_stderr_lines: list[str] = []
+        # A SystemMessage can veto a prompt before it ever reaches the model
+        # (notably an SDK callback-hook timeout). Claude Code still follows
+        # that warning with ResultMessage(subtype="success"), so carry the
+        # blocking reason to the Result translator and make the stop honest.
+        self._blocking_turn_error: str | None = None
         self._plan_accepted = False
         self._stopped = asyncio.Event()
         self._ready_evt = asyncio.Event()
@@ -1373,29 +1378,6 @@ class AgentSession:
             except Exception:
                 pass
 
-    async def _on_user_prompt(self, input_data, tool_use_id, context):
-        """Surface a prompt this session did not receive from its user.
-
-        Only cross-session messages are forwarded: an ordinary prompt is
-        already in the transcript (the hub appends it optimistically when it
-        sends one), so echoing every submission here would duplicate them all.
-        The envelope is the discriminator, and it is also the only place the
-        sender's name exists.
-        """
-        d = input_data if isinstance(input_data, dict) else {}
-        raw = d.get("prompt")
-        if not isinstance(raw, str) or "cross-session-message" not in raw:
-            return {}
-        peer = _parse_cross_session(raw)
-        if not peer or not peer["text"].strip():
-            return {}
-        try:
-            self._emit("external_message", origin="peer", text=peer["text"],
-                       **({"from": peer["from"]} if peer["from"] else {}))
-        except Exception:
-            pass
-        return {}
-
     async def _on_stop_hook(self, input_data, tool_use_id, context):
         """The turn ended — report what is STILL RUNNING, authoritatively.
 
@@ -1774,7 +1756,13 @@ class AgentSession:
                     if self.write_cli_title(self.name):
                         self._cli_title_value = self.name
 
-                stop_ev: dict[str, Any] = {"event": "stop", "subtype": subtype or ""}
+                blocking_turn_error = self._blocking_turn_error
+                stop_ev: dict[str, Any] = {
+                    "event": "stop",
+                    # Claude Code reports a hook-vetoed prompt as success even
+                    # though preventContinuation means the model never ran.
+                    "subtype": "error" if blocking_turn_error else (subtype or ""),
+                }
                 for key, wire in (
                     ("terminal_reason", "terminal_reason"),
                     ("stop_reason", "stop_reason"),
@@ -1785,6 +1773,10 @@ class AgentSession:
                         stop_ev[wire] = v
                 if getattr(ev, "is_error", None) is True:
                     stop_ev["is_error"] = True
+                if blocking_turn_error:
+                    stop_ev["is_error"] = True
+                    stop_ev["terminal_reason"] = "hook_blocked"
+                    self._blocking_turn_error = None
                 out.append(stop_ev)
             elif ev_type == "RateLimitEvent":
                 # Rate-limit state, free and out-of-band-free.
@@ -1816,7 +1808,30 @@ class AgentSession:
                 sub = getattr(ev, "subtype", None)
                 sdata = getattr(ev, "data", None)
                 sdata = sdata if isinstance(sdata, dict) else {}
-                if sub == "compact_boundary":
+                if sub == "informational":
+                    content = sdata.get("content")
+                    prevented = (
+                        sdata.get("preventContinuation") is True
+                        or sdata.get("prevent_continuation") is True
+                    )
+                    # The CLI currently sets both fields, but key the fallback
+                    # on its stable human-readable verdict too so a casing/
+                    # parser change cannot turn the same blocked prompt silent.
+                    hook_blocked = (
+                        isinstance(content, str)
+                        and "operation blocked by hook" in content.lower()
+                    )
+                    if prevented or hook_blocked:
+                        reason = content.strip() if isinstance(content, str) and content.strip() else (
+                            "Claude Code reported preventContinuation without a reason."
+                        )
+                        msg = (
+                            "Claude blocked the prompt before it reached the model: "
+                            + reason
+                        )[:2000]
+                        self._blocking_turn_error = msg
+                        out.append({"event": "error", "msg": msg})
+                elif sub == "compact_boundary":
                     # The CLI just replaced the conversation with a summary. Our
                     # OWN transcript keeps every message (it lives in the hub's
                     # SQLite, not in the CLI's), so nothing is lost — but from
@@ -1870,6 +1885,7 @@ class AgentSession:
         self._usage_in = self._usage_cache = 0
         self._usage_committed_out = self._usage_cur_out = 0
         self._usage_last_emit = 0.0
+        self._blocking_turn_error = None
         self.status = "thinking"
         self._emit("status", status="thinking")
 
@@ -1932,13 +1948,6 @@ class AgentSession:
                     # ends (§14.91), plus the final assistant text. Native
                     # Python event — no mcp_tool indirection needed.
                     "Stop": [HookMatcher(hooks=[self._on_stop_hook])],
-                    # THE only channel that sees a peer message. The SDK does
-                    # NOT surface cross-session prompts on receive_messages():
-                    # measured on the fleet, the stream went session_id →
-                    # session_info → assistant_text with no UserMessage at all,
-                    # while the CLI transcript held the envelope. The hook fires
-                    # on every submitted prompt, peer-injected ones included.
-                    "UserPromptSubmit": [HookMatcher(hooks=[self._on_user_prompt])],
                 },
                 stderr=self._on_claude_stderr,
                 can_use_tool=self._can_use_tool,
@@ -2052,7 +2061,11 @@ class AgentSession:
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
-                        self._emit("error", msg=self._format_err("stream", e))
+                        # The sole SDK reader is gone, so the session cannot
+                        # produce another response until it is restarted. Mark
+                        # this as blocking: the hub persists a durable error
+                        # message instead of leaving only a transient banner.
+                        self._emit("error", msg=self._format_err("stream", e), fatal=True)
                         # Unblock the stdin loop so the session winds down
                         # instead of sitting deaf forever.
                         await self._stdin_queue.put(None)
@@ -2088,6 +2101,10 @@ class AgentSession:
                                 self._end_turn()
                         except Exception as e:
                             self._emit("error", msg=self._format_err("query", e))
+                            # Match Codex's failed TurnCompleted notification:
+                            # a failed send is a failed TURN (session remains
+                            # connected), and the hub can offer Continue.
+                            self._emit("stop", subtype="error")
                             # No turn will stream after a failed send — don't
                             # leave the pill stuck on 'thinking'.
                             self._end_turn()

@@ -15,7 +15,7 @@ import { subscribeGlobalSessionEvents, setSessionFocusChecker, type GlobalSessio
 //     (for sidebar badges + cross-session permissions popup).
 //   - "High-volume" events (assistant_text, thinking, tool_use, tool_result,
 //     edit_snapshot, user_echo, stop, prefill_input,
-//     reconnecting) → forwarded ONLY to the connection that has the session
+//     reconnecting, blocking_error, scheduled_resume) → forwarded ONLY to the connection that has the session
 //     in focus. The client loads the history via GET in parallel.
 //
 // When a client switches focus:

@@ -72,6 +72,8 @@ beforeEach(() => {
   db.delete(schema.claudePendingPermissions).run();
   db.delete(schema.claudeSessions).run();
   setSetting('codex.default_approvals_reviewer', 'user');
+  setSetting('claude.default_permission_mode', 'normal');
+  setSetting('codex.default_permission_mode', 'workspace-write');
 });
 
 describe('provider-aware permission scope', () => {
@@ -156,6 +158,23 @@ describe('provider-aware permission scope', () => {
     expect(agentMocks.call).toHaveBeenCalledWith('start_session', expect.objectContaining({
       session_id: created.id,
       codex_config: expect.objectContaining({ approvalsReviewer: 'auto_review' }),
+    }));
+  });
+
+  it.each([
+    ['claude', 'claude.default_permission_mode', 'auto'],
+    ['codex', 'codex.default_permission_mode', 'accept-all'],
+  ] as const)('copies the configured %s mode into a new session', async (kind, key, mode) => {
+    setSetting(key, mode);
+    const created = await startNewSession({
+      vpsId: VPS_ID, cwd: '/tmp/project', kind,
+    });
+    const row = db.select().from(schema.claudeSessions).all()
+      .find((candidate: any) => candidate.id === created.id);
+
+    expect(row.permissionMode).toBe(mode);
+    expect(agentMocks.call).toHaveBeenCalledWith('start_session', expect.objectContaining({
+      session_id: created.id, permission_mode: mode,
     }));
   });
 });

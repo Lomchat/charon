@@ -50,7 +50,7 @@ describe('provider capability contract', () => {
 
 describe('provider-specific modes and efforts', () => {
   it('keeps mode namespaces disjoint and defaults valid', () => {
-    expect(defaultSessionMode('claude', 'create')).toBe('auto');
+    expect(defaultSessionMode('claude', 'create')).toBe('normal');
     expect(defaultSessionMode('claude', 'runtime')).toBe('normal');
     expect(defaultSessionMode('codex', 'create')).toBe('workspace-write');
     expect(defaultSessionMode('codex', 'runtime')).toBe('workspace-write');
@@ -61,6 +61,8 @@ describe('provider-specific modes and efforts', () => {
     }
     expect(isSessionMode('claude', 'plan')).toBe(true);
     expect(isSessionMode('codex', 'plan')).toBe(false);
+    expect(isSessionMode('codex', 'accept-all')).toBe(true);
+    expect(isSessionMode('claude', 'accept-all')).toBe(false);
   });
 
   it('does not leak provider-only effort levels', () => {

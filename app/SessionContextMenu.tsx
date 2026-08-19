@@ -40,15 +40,19 @@ type Props = {
   onEditHandle?: () => void;
   onColor?: (color: RowColor) => void;
   onEditCwd?: () => void;            // "Change folder" option
-  onSleep?: () => void;              // "💤 Sleep" — for active Claude
+  onSleep?: () => void;              // "💤 Sleep" — for active sessions
                                      // sessions. The caller only passes it
                                      // if the session is in a state where
                                      // "sleep" makes sense (= not already
                                      // sleeping/error). Placed above
                                      // Delete.
+  sleepLabel?: string;
+  onResume?: () => void;
+  resumeLabel?: string;
   onKill?: () => void;               // "Close" — shell/install only
   onArchive?: () => void;            // common reversible workspace archive
   onDelete?: () => void;
+  deleteLabel?: string;
   onClose: () => void;
 };
 
@@ -56,7 +60,9 @@ export default function SessionContextMenu({
   title, subtitle, x, y, currentColor, canKill = true, killLabel = 'Close',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
-  onRename, onEditHandle, onColor, onEditCwd, onSleep, onKill, onArchive, onDelete, onClose,
+  onRename, onEditHandle, onColor, onEditCwd,
+  onSleep, sleepLabel = '💤 Sleep', onResume, resumeLabel = 'Resume',
+  onKill, onArchive, onDelete, deleteLabel = 'Delete permanently', onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -162,7 +168,12 @@ export default function SessionContextMenu({
         <button
           type="button"
           onClick={() => { onSleep(); onClose(); }}
-        >💤 Sleep</button>
+        >{sleepLabel}</button>
+      )}
+      {onResume && (
+        <button type="button" onClick={() => { onResume(); onClose(); }}>
+          {resumeLabel}
+        </button>
       )}
       {onArchive && (
         <button type="button" onClick={() => { onArchive(); onClose(); }}>
@@ -184,7 +195,7 @@ export default function SessionContextMenu({
           type="button"
           className="danger"
           onClick={() => { onDelete(); onClose(); }}
-        >Delete permanently</button>
+        >{deleteLabel}</button>
       )}
     </div>
   );

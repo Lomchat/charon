@@ -5,6 +5,7 @@ import { getAgentClientForVpsId } from './AgentClientPool';
 import {
   emitGlobalAccountUsage, setUsagePollTrigger, setCodexUsagePollTrigger,
   setCodexUsagePushHandler,
+  setUsageResetResolver,
 } from './sessionOps';
 import type { AgentUsageResult, AgentCodexUsageResult, CodexRateWindow } from './types';
 import { getSetting, setSetting } from '@/lib/server/claude/settings';
@@ -634,3 +635,18 @@ export function triggerCodexUsagePoll(vpsId: string): void {
 
 setCodexUsagePollTrigger(triggerCodexUsagePoll);
 setCodexUsagePushHandler(ingestCodexUsagePush);
+setUsageResetResolver((vpsId, kind) => {
+  const snapshot = kind === 'codex' ? getCodexUsageSnapshot(vpsId) : getUsageSnapshot(vpsId);
+  if (!snapshot?.ok) return null;
+  const exhausted: number[] = [];
+  const future: number[] = [];
+  const add = (percent: number | null | undefined, reset: string | null | undefined) => {
+    const at = reset ? Date.parse(reset) : NaN;
+    if (!Number.isFinite(at) || at < Date.now() - 60_000) return;
+    (percent != null && percent >= 100 ? exhausted : future).push(at);
+  };
+  add(snapshot.fiveHour?.utilization, snapshot.fiveHour?.resetsAt);
+  add(snapshot.sevenDay?.utilization, snapshot.sevenDay?.resetsAt);
+  for (const limit of snapshot.limits ?? []) add(limit.percent, limit.resetsAt);
+  return exhausted.length ? Math.max(...exhausted) : future.length ? Math.min(...future) : null;
+});

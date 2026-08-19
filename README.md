@@ -58,12 +58,15 @@ app-server). Both speak the same UI:
   file patches, generated images, compaction boundaries, background work and
   structured JSON results appear as they happen. A conversation-only switch
   can hide operational cards without deleting them.
-- **Human approval gates.** Both providers surface command, file and tool
-  approvals as the same cards with _allow once_, session-scoped approval and
-  _deny_. Codex additionally exposes its human / `auto_review` reviewer,
-  permission profiles and exact Guardian-denial retry. Claude keeps its
-  per-tool “always allow” list. Web Push and Telegram can alert you when either
-  provider is waiting.
+- **Approval modes with an explicit escape hatch.** Both providers surface
+  command, file and tool approvals as the same cards with _allow once_,
+  session-scoped approval and _deny_. Both also expose an **Accept all** mode
+  that deliberately runs without approval prompts; safer source defaults are
+  Claude Normal and Codex Workspace, with per-provider defaults configurable
+  in Settings. Codex additionally supports a globally configured automatic
+  reviewer, permission profiles and exact Guardian-denial retry. Claude keeps
+  its per-tool “always allow” list. Web Push and Telegram can alert you when
+  either provider is waiting.
 - **The complete session lifecycle.** Create, import, resume, sleep, archive,
   unarchive, rename and delete sessions from the same UI. Every session also
   has a stable `@handle`: changing its display title never breaks its address.
@@ -98,7 +101,7 @@ app-server). Both speak the same UI:
 - **Detailed per-session configuration.** Common model, effort, instructions
   and JSON output schema controls; Claude fallback model, skills and
   environment; Codex sandbox, personality, reasoning-summary level, service
-  tier, provider, environment, ephemeral threads and bounded
+  tier, provider, environment, ephemeral threads, execution/approval mode and bounded
   `config.toml`-style overrides (including MCP configuration).
 - **Search and identity.** Full-text search covers stored session history;
   imported terminal sessions retain their native transcript identity; the

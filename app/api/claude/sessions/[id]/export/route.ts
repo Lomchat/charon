@@ -49,6 +49,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       lines.push('```');
       lines.push(m.content.slice(0, 6000));
       lines.push('```');
+    } else if (m.role === 'error') {
+      let p: any = null; try { p = JSON.parse(m.content); } catch {}
+      lines.push(`## ⚠ ${p?.provider ?? sess.kind ?? 'agent'} error — _${ts}_`);
+      lines.push('');
+      lines.push(String(p?.message ?? m.content));
+    } else if (m.role === 'scheduled_resume') {
+      let p: any = null; try { p = JSON.parse(m.content); } catch {}
+      lines.push(`## Automatic resume: ${p?.status ?? 'scheduled'} — _${ts}_`);
+      lines.push('');
+      if (Number.isFinite(p?.runAt)) lines.push(`Scheduled for ${new Date(p.runAt).toISOString()}.`);
+      lines.push(String(p?.content ?? m.content));
     } else if (m.role === 'edit_snapshot') {
       let p: any = null; try { p = JSON.parse(m.content); } catch {}
       if (p?.phase === 'after') {

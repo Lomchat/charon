@@ -8,14 +8,17 @@ export type SessionProvider = 'claude' | 'codex';
 export type CapabilityLevel = 'native' | 'adapted' | 'none';
 
 export type ClaudeMode = 'normal' | 'acceptEdits' | 'auto' | 'plan';
-export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'full-access';
+/** Historical name kept for API compatibility. `accept-all` is a combined
+ * Codex mode: danger-full-access sandbox plus approvalPolicy=never. */
+export type CodexSandboxMode =
+  | 'read-only' | 'workspace-write' | 'full-access' | 'accept-all';
 export type SessionMode = ClaudeMode | CodexSandboxMode;
 
 export const CLAUDE_PERMISSION_MODES: readonly ClaudeMode[] = [
   'normal', 'acceptEdits', 'auto', 'plan',
 ];
 export const CODEX_SANDBOX_MODES: readonly CodexSandboxMode[] = [
-  'read-only', 'workspace-write', 'full-access',
+  'read-only', 'workspace-write', 'full-access', 'accept-all',
 ];
 
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'] as const;
@@ -32,15 +35,14 @@ export function isSessionMode(provider: SessionProvider, value: unknown): value 
   return typeof value === 'string' && sessionModes(provider).includes(value as SessionMode);
 }
 
-/** New sessions are deliberately permissive-with-cards for Claude; corrupted
- * persisted state falls back to normal. Codex's sandbox default is identical
- * in both contexts. */
+/** Safe source defaults. Instance settings may override these for new
+ * sessions; corrupted persisted state always falls back here. */
 export function defaultSessionMode(
   provider: SessionProvider,
-  context: 'create' | 'runtime' = 'runtime',
+  _context: 'create' | 'runtime' = 'runtime',
 ): SessionMode {
   if (provider === 'codex') return 'workspace-write';
-  return context === 'create' ? 'auto' : 'normal';
+  return 'normal';
 }
 
 export function isSessionEffort(provider: SessionProvider, value: unknown): value is SessionEffort {

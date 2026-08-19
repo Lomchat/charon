@@ -13,7 +13,7 @@ const MAX_LEN = 600;
 const ERROR_OPENER =
   /^\s*(?:api error\s*:|authentication error\b|authentication failed\b|auth failed\b|failed to authenticate\b|oauth error\b|unauthorized\b)/i;
 
-export type TerminalClaudeErrorKind = 'authentication' | 'api';
+export type TerminalClaudeErrorKind = 'authentication' | 'rate_limit' | 'api';
 
 /**
  * Classify a final Claude assistant bubble that represents a failed turn.
@@ -29,6 +29,9 @@ export function classifyTerminalClaudeError(
     return null;
   }
   if (isClaudeAuthExpired(t)) return 'authentication';
+  if (/^(?:you(?:'ve| have) hit your session limit|rate[\s-]?limit(?:ed| exceeded)?\b|api error:\s*429\b)/i.test(t)) {
+    return 'rate_limit';
+  }
   if (isTurnInterrupted(t, model)) return 'api';
   if (!ERROR_OPENER.test(t)) return null;
   return /\b(auth(?:entication)?|oauth|credential|token|unauthori[sz]ed|sign[\s-]?in|login)\b/i.test(t)

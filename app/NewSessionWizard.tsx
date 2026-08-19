@@ -13,7 +13,7 @@ import type {
   AgentKind, CodexSessionConfig, ProviderSessionConfig,
 } from '@/lib/types/api';
 import {
-  CODEX_SANDBOX_MODES, defaultSessionMode, sessionCapabilities,
+  CODEX_SANDBOX_MODES, sessionCapabilities,
   type CodexSandboxMode,
 } from '@/lib/sessionCapabilities';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
@@ -33,7 +33,8 @@ const DEFAULT_FOLDER_ID = 'default';
 const CODEX_MODE_DESC: Record<CodexSandboxMode, string> = {
   'read-only': 'can read files & run read-only commands; no writes',
   'workspace-write': 'can edit files in the workspace; network off by default',
-  'full-access': 'no sandbox — full file & network access (danger)',
+  'full-access': 'no sandbox, but sensitive actions can still ask',
+  'accept-all': 'no sandbox and no approval prompts (danger)',
 };
 
 type Props = {
@@ -118,7 +119,7 @@ export default function NewSessionWizard({
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
-  const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode>('workspace-write');
+  const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode | ''>('');
   const [baseInstructions, setBaseInstructions] = useState('');
   const [developerInstructions, setDeveloperInstructions] = useState('');
   const [codexOverrides, setCodexOverrides] = useState('');
@@ -131,7 +132,9 @@ export default function NewSessionWizard({
   const [sessionEnv, setSessionEnv] = useState('');
   const [codexBin, setCodexBin] = useState('');
   const [claudeSkills, setClaudeSkills] = useState('');
-  const [globalDefaults, setGlobalDefaults] = useState<{ model: string; fallbackModel: string; effort: string } | null>(null);
+  const [globalDefaults, setGlobalDefaults] = useState<{
+    model: string; fallbackModel: string; effort: string; codexMode: string;
+  } | null>(null);
 
   // Enter validates the CURRENT step, wherever focus is. Each step's own
   // control handles Enter itself (search box, path input, name input); this is
@@ -171,13 +174,16 @@ export default function NewSessionWizard({
         model: s['claude.default_model'] ?? '',
         fallbackModel: s['claude.default_fallback_model'] ?? '',
         effort: s['claude.default_effort'] ?? '',
+        codexMode: s['codex.default_permission_mode'] ?? 'workspace-write',
       }))
       .catch(() => {});
   }, [kind]);
 
   // Reset per-backend config when the backend switches (model ids / efforts
   // aren't comparable across Claude and Codex).
-  useEffect(() => { setModel(''); setFallbackModel(''); setEffort(''); }, [selKind]);
+  useEffect(() => {
+    setModel(''); setFallbackModel(''); setEffort(''); setCodexSandbox('');
+  }, [selKind]);
 
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
   const agentLabel = selKind === 'codex' ? 'Codex agent' : 'Claude agent';
@@ -537,8 +543,9 @@ export default function NewSessionWizard({
           vpsId: vps.id, cwd: path!.trim(),
           name: name.trim() || null,
           kind: selKind,
-          // Codex mode = a sandbox level; Claude keeps the historical 'auto'.
-          permissionMode: isCodex ? codexSandbox : defaultSessionMode(selKind, 'create'),
+          // Blank means the installation default. The server resolves and
+          // persists it atomically, so a slow settings fetch cannot race this.
+          permissionMode: isCodex && codexSandbox ? codexSandbox : undefined,
           model: model.trim() || null,
           // Codex has no fallback-model concept (server ignores it anyway).
           fallbackModel: capabilities.fallbackModel === 'none' ? null : (fallbackModel.trim() || null),
@@ -814,7 +821,7 @@ export default function NewSessionWizard({
             {kind === 'agent' && (
               <div className="wiz-adv">
                 <button className="wiz-adv-toggle" onClick={() => setShowAdv((v) => !v)}>
-                  {showAdv ? '▾' : '▸'} advanced · model, instructions{isCodex ? ', effort & sandbox' : ', effort & skills'}
+                  {showAdv ? '▾' : '▸'} advanced · model, instructions{isCodex ? ', effort & mode' : ', effort & skills'}
                 </button>
                 {showAdv && (
                   <div className="wiz-adv-body">
@@ -826,8 +833,9 @@ export default function NewSessionWizard({
                         <label className="wiz-adv-field">effort
                           <CodexEffortPicker vpsId={vps.id} value={effort} onChange={setEffort} modelId={model} inheritPlaceholder="Codex default" />
                         </label>
-                        <label className="wiz-adv-field">sandbox
-                          <select value={codexSandbox} onChange={(e) => setCodexSandbox(e.target.value as CodexSandboxMode)}>
+                        <label className="wiz-adv-field">mode
+                          <select value={codexSandbox} onChange={(e) => setCodexSandbox(e.target.value as CodexSandboxMode | '')}>
+                            <option value="">default — {globalDefaults?.codexMode || 'workspace-write'}</option>
                             {CODEX_SANDBOX_MODES.map((m) => (
                               <option key={m} value={m}>{m} — {CODEX_MODE_DESC[m]}</option>
                             ))}

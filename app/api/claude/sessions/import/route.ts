@@ -5,7 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
 import { importCodexRolloutMessages } from '@/lib/server/claude/importCodexRollout';
-import { defaultSessionMode, isSessionMode } from '@/lib/sessionCapabilities';
+import { isSessionMode } from '@/lib/sessionCapabilities';
 import { deriveMessageStorage } from '@/lib/server/claude/messageWire';
 
 // POST /api/claude/sessions/import
@@ -36,12 +36,11 @@ export async function POST(req: Request) {
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
   try {
-    // The mode namespaces are disjoint: Claude PermissionModes vs Codex
-    // sandbox levels. Validating with the wrong list would silently hand the
-    // agent a mode it coerces back to its default (§14.59).
+    // The mode namespaces are disjoint. If there is no explicit valid mode,
+    // importExistingSession resolves the installation default.
     const permissionMode = isSessionMode(kind, body.permissionMode)
       ? body.permissionMode
-      : defaultSessionMode(kind, 'create');
+      : undefined;
     const id = await importExistingSession({
       vpsId, cwd, claudeSessionId, kind,
       name: body.name ? String(body.name) : null,

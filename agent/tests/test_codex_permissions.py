@@ -7,7 +7,10 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from charon_agent.codex_session import CodexSession  # noqa: E402
+from charon_agent.codex_session import (  # noqa: E402
+    CodexSession, _approval_policy_wire, _sandbox_mode_wire,
+    _sandbox_policy_wire,
+)
 
 
 def session():
@@ -21,6 +24,90 @@ def session():
 
 
 class TestCodexPermissions(unittest.TestCase):
+    def test_accept_all_combines_unrestricted_sandbox_and_no_prompts(self):
+        s = CodexSession(
+            "codex-unrestricted", cwd="/tmp", name="test",
+            permission_mode="accept-all", claude_session_id=None,
+            emit=lambda _event: None, on_state_change=lambda: None,
+        )
+        self.assertEqual(s.permission_mode, "accept-all")
+        self.assertEqual(_sandbox_mode_wire(s.permission_mode), "danger-full-access")
+        self.assertEqual(_sandbox_policy_wire(s.permission_mode), {"type": "dangerFullAccess"})
+        self.assertEqual(_approval_policy_wire(s.permission_mode), "never")
+
+    def test_interactive_modes_keep_on_request_approval(self):
+        self.assertEqual(_approval_policy_wire("workspace-write"), "on-request")
+        self.assertEqual(_approval_policy_wire("full-access"), "on-request")
+        self.assertEqual(_approval_policy_wire("read-only"), "never")
+
+    def test_accept_all_reaches_thread_and_every_turn(self):
+        async def main():
+            calls = {}
+
+            class Raw:
+                async def thread_start(self, params):
+                    calls["thread"] = params
+                    return types.SimpleNamespace(thread=types.SimpleNamespace(id="thread-new"))
+
+                async def turn_start(self, thread_id, content, params):
+                    calls["turn"] = params
+                    return types.SimpleNamespace(turn=types.SimpleNamespace(id="turn-new"))
+
+            class AsyncThread:
+                def __init__(self, _client, thread_id):
+                    self.id = thread_id
+
+            class AsyncTurnHandle:
+                def __init__(self, _client, thread_id, turn_id):
+                    self.thread_id = thread_id
+                    self.turn_id = turn_id
+
+            package = types.ModuleType("openai_codex"); package.__path__ = []
+            api = types.ModuleType("openai_codex.api")
+            api.AsyncThread = AsyncThread
+            api.AsyncTurnHandle = AsyncTurnHandle
+            client = types.SimpleNamespace(_client=Raw())
+            s = CodexSession(
+                "codex-unrestricted", cwd="/tmp", name="test",
+                permission_mode="accept-all", claude_session_id=None,
+                emit=lambda _event: None, on_state_change=lambda: None,
+                codex_config={"permissionProfile": ":workspace"},
+            )
+            s._client = client
+            with mock.patch.dict(sys.modules, {
+                "openai_codex": package,
+                "openai_codex.api": api,
+            }):
+                thread = await s._sdk_thread_start(client, resume=False)
+                await s._sdk_turn(thread, "do it")
+
+            self.assertEqual(calls["thread"]["approvalPolicy"], "never")
+            self.assertEqual(calls["thread"]["sandbox"], "danger-full-access")
+            self.assertNotIn("permissions", calls["thread"])
+            self.assertEqual(calls["turn"]["approvalPolicy"], "never")
+            self.assertEqual(calls["turn"]["sandboxPolicy"], {"type": "dangerFullAccess"})
+
+        asyncio.run(main())
+
+    def test_accept_all_defensively_accepts_residual_sdk_gates(self):
+        s, emitted = session()
+        s.permission_mode = "accept-all"
+        requested = {"network": {"enabled": True}}
+
+        self.assertEqual(s._sdk_approval_handler(
+            "item/commandExecution/requestApproval", {"itemId": "cmd-1"},
+        ), {"decision": "acceptForSession"})
+        self.assertEqual(s._sdk_approval_handler(
+            "item/fileChange/requestApproval", {"itemId": "edit-1"},
+        ), {"decision": "acceptForSession"})
+        self.assertEqual(s._sdk_approval_handler(
+            "item/permissions/requestApproval", {"permissions": requested},
+        ), {"permissions": requested, "scope": "session"})
+        self.assertEqual(s._sdk_approval_handler(
+            "mcpServer/elicitation/request", {"mode": "url"},
+        ), {"action": "accept", "content": {}})
+        self.assertEqual(emitted, [])
+
     def test_guardian_denial_is_kept_for_one_exact_override(self):
         s, _ = session()
         review = types.SimpleNamespace(

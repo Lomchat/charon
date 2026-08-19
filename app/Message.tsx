@@ -5,8 +5,12 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
+import { IconClipboard } from './icons';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
+import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError';
+import { parseScheduledResume } from '@/lib/scheduledResume';
+import { resolveResetAtMs } from '@/lib/rateLimitReset';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -51,9 +55,11 @@ type Props = {
   // the middle of the history has already been dealt with) and never while a
   // turn is running. MUST be a stable reference (memo, §14.38).
   onContinue?: () => void;
+  onScheduleResume?: () => Promise<void>;
+  onCancelScheduledResume?: (scheduleId: string) => Promise<void>;
 };
 
-function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, orphaned = false }: Props) {
+function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -64,10 +70,22 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   if (m.role === 'compaction') return <CompactionMarker m={m} kind={kind} />;
   if (m.role === 'forkpoint') return <ForkMarker m={m} />;
   if (m.role === 'plan') return <PlanCard m={m} />;
+  if (m.role === 'scheduled_resume') {
+    const scheduled = parseScheduledResume(m.content);
+    return scheduled ? <ScheduledResumeMessage m={m} scheduled={scheduled} onCancel={onCancelScheduledResume} /> : null;
+  }
   // Low-level Codex lifecycle signals used to render as expandable raw-JSON
   // cards. They are session state, not conversation, and are now deliberately
   // absent from the transcript (old cached rows included).
   if (m.role === 'activity') return null;
+  if (m.role === 'error') {
+    const parsed = parseSessionError(m.content);
+    const error = parsed ?? {
+      type: 'session_error', provider: kind, kind: 'api', message: m.content,
+      action: null, fatal: false, resetAt: null,
+    } satisfies SessionErrorPayload;
+    return <SessionErrorMessage m={m} error={error} onReauth={onReauth} onContinue={onContinue} onScheduleResume={onScheduleResume} />;
+  }
 
   const isAssistant = m.role === 'assistant';
   // A message relayed from ANOTHER session drives the turn exactly like one the
@@ -108,7 +126,12 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
             {m.model}
           </span>
         )}
-        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+        {m.createdAt > 0 && (
+          <span className="bubble-h-meta">
+            <time>{fmtTime(m.createdAt)}</time>
+            <CopyMessageButton content={m.content} />
+          </span>
+        )}
       </header>
       <div className="content md">
         {isAssistant ? (
@@ -130,6 +153,15 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
           <span>{m.content}</span>
         )}
       </div>
+      {/* Bottom mirror of the header's date/time + copy — the same info at
+          the end of a long message, so a reader doesn't have to scroll back
+          up to see when it was sent or to copy it. */}
+      {m.createdAt > 0 && (
+        <footer className="bubble-f">
+          <time>{fmtTime(m.createdAt)}</time>
+          <CopyMessageButton content={m.content} />
+        </footer>
+      )}
       {isAssistant && onReauth && kind === 'claude' && isClaudeAuthExpired(m.content) && (
         <div className="bubble-reauth">
           <span>This VPS's Claude sign-in has expired — the session can't run until it's renewed.</span>
@@ -140,6 +172,104 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
       )}
       {isAssistant && onContinue && isTurnInterrupted(m.content, m.model) && (
         <ContinueCta onContinue={onContinue} />
+      )}
+    </div>
+  );
+}
+
+function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume }: {
+  m: Msg;
+  error: SessionErrorPayload;
+  onReauth?: () => void;
+  onContinue?: () => void;
+  onScheduleResume?: () => Promise<void>;
+}) {
+  const firstLine = error.message.split('\n')[0].slice(0, 500);
+  const hasDetails = error.message.includes('\n') || error.message.length > firstLine.length;
+  const kindLabel = error.kind === 'authentication' ? 'authentication'
+    : error.kind === 'rate_limit' ? 'rate limit'
+    : error.kind === 'transport' ? 'connection' : 'API';
+  const resetAt = error.kind === 'rate_limit' ? resolveResetAtMs(error.resetAt, error.message) : null;
+  return (
+    <div className="bubble role-error" data-msg-role="error">
+      <header className="bubble-h">
+        <span className="tag">error</span>
+        <AgentLogo kind={error.provider} size={12} className="bubble-agent-logo" />
+        <span className="error-kind">{kindLabel}</span>
+        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+      </header>
+      <div className="content error-message">{firstLine}</div>
+      {hasDetails && (
+        <details className="error-details">
+          <summary>show technical details</summary>
+          <pre>{error.message}</pre>
+        </details>
+      )}
+      {error.action === 'sign_in' && onReauth && (
+        <div className="bubble-reauth">
+          <span>{error.provider === 'codex' ? 'Codex' : 'Claude'} is not signed in on this VPS — this session cannot continue until it is renewed.</span>
+          <button type="button" className="wiz-btn primary" onClick={onReauth}>
+            Sign in to {error.provider === 'codex' ? 'Codex' : 'Claude'}
+          </button>
+        </div>
+      )}
+      {error.action === 'continue' && onContinue && <ContinueCta onContinue={onContinue} />}
+      {resetAt && onScheduleResume && (
+        <ScheduleResumeCta resetAt={resetAt} onSchedule={onScheduleResume} />
+      )}
+    </div>
+  );
+}
+
+function formatReset(instant: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium', timeStyle: 'long',
+  }).format(new Date(instant));
+}
+
+function ScheduleResumeCta({ resetAt, onSchedule }: { resetAt: number; onSchedule: () => Promise<void> }) {
+  const [state, setState] = useState<'idle' | 'saving' | 'error'>('idle');
+  return (
+    <div className="bubble-continue scheduled-resume-cta">
+      <span>The limit resets at {formatReset(resetAt)}. Charon will wait an extra two minutes before sending.</span>
+      <button type="button" className="wiz-btn primary" disabled={state === 'saving'} onClick={async () => {
+        setState('saving');
+        try { await onSchedule(); } catch { setState('error'); }
+      }}>
+        {state === 'saving' ? 'scheduling…' : state === 'error' ? 'retry scheduling' : 'Resume after reset'}
+      </button>
+    </div>
+  );
+}
+
+function ScheduledResumeMessage({ m, scheduled, onCancel }: {
+  m: Msg;
+  scheduled: NonNullable<ReturnType<typeof parseScheduledResume>>;
+  onCancel?: (scheduleId: string) => Promise<void>;
+}) {
+  const [cancelling, setCancelling] = useState(false);
+  const label = scheduled.status === 'sent' ? 'automatic resume sent'
+    : scheduled.status === 'sending' ? 'sending automatic resume…'
+    : scheduled.status === 'cancelled' ? 'automatic resume cancelled'
+    : scheduled.attempts ? 'automatic resume retry scheduled' : 'automatic resume scheduled';
+  return (
+    <div className="bubble role-scheduled-resume" data-msg-role="scheduled_resume">
+      <header className="bubble-h">
+        <span className="tag">scheduled</span>
+        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+      </header>
+      <div className="content">
+        <strong>{label}</strong>
+        {scheduled.status === 'scheduled' && <span> for {formatReset(scheduled.runAt)}</span>}
+        {scheduled.status === 'sent' && scheduled.sentAt && <span> at {formatReset(scheduled.sentAt)}</span>}
+        <div className="scheduled-resume-prompt">“{scheduled.content}”</div>
+        {scheduled.lastError && <div className="scheduled-resume-error">Last attempt failed: {scheduled.lastError}</div>}
+      </div>
+      {scheduled.status === 'scheduled' && onCancel && (
+        <button type="button" className="wiz-btn" disabled={cancelling} onClick={async () => {
+          setCancelling(true);
+          try { await onCancel(scheduled.scheduleId); } finally { setCancelling(false); }
+        }}>{cancelling ? 'cancelling…' : 'Cancel'}</button>
       )}
     </div>
   );
@@ -409,5 +539,36 @@ function extractPatchFiles(patch: string): string[] {
 
 function fmtTime(ts: number): string {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  // hour12: false — every bubble timestamp (header + footer, all roles) reads
+  // in 24h time, no AM/PM.
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+// "copy the whole message" — sits next to the timestamp, top and bottom of
+// the main chat bubble (§ CLAUDE.md 11). Its own component (not inlined in
+// Message) so its `copied` flash is a local hook with no rules-of-hooks
+// entanglement with Message's early returns for the other roles.
+function CopyMessageButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  const onClick = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API needs a secure context — nothing sensible to fall back
+      // to inline here (unlike copyPath's alert(), a whole message is too
+      // long for a prompt), so this quietly no-ops.
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`bubble-copy-btn${copied ? ' copied' : ''}`}
+      onClick={onClick}
+      title={copied ? 'copied' : 'copy the message text'}
+    >
+      {copied ? '✓' : <IconClipboard />}
+    </button>
+  );
 }

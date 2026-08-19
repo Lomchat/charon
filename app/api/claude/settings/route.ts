@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
+import { isSessionMode } from '@/lib/sessionCapabilities';
 
 const ALLOWED_KEYS = [
   'ssh.private_key_path',
@@ -14,10 +15,12 @@ const ALLOWED_KEYS = [
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',
+  'claude.default_permission_mode',
   // Codex (OpenAI) global defaults + auto-update toggle. codex.latest_version(_at)
   // are written by the freshness sync, never accepted from a settings POST.
   'codex.default_model',
   'codex.default_effort',
+  'codex.default_permission_mode',
   'codex.default_approvals_reviewer',
   'codex.auto_update',
   // Optional hub-side Anthropic API key, used only to auto-sync the model
@@ -90,6 +93,19 @@ export async function POST(req: Request) {
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED_KEYS.includes(k)) continue;
     const val = String(v);
+    if (k === 'claude.default_permission_mode' && !isSessionMode('claude', val)) {
+      rejected.push(k);
+      continue;
+    }
+    if (k === 'codex.default_permission_mode' && !isSessionMode('codex', val)) {
+      rejected.push(k);
+      continue;
+    }
+    if (k === 'codex.default_approvals_reviewer'
+        && val !== 'user' && val !== 'auto_review') {
+      rejected.push(k);
+      continue;
+    }
     // A masked secret round-tripping from the settings form means "unchanged".
     if ((SECRET_KEYS as readonly string[]).includes(k) && val.startsWith(MASK_PREFIX)) continue;
     // The claude.api_key start+end preview round-trips as "unchanged" — a real

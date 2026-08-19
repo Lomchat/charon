@@ -1027,6 +1027,26 @@ export function useClaudeSessionStream(
         case 'error':
           setError({ msg: ev.msg });
           break;
+        case 'blocking_error':
+          // The raw `error` event may have painted a transient banner a moment
+          // earlier. This durable chat row is now the authoritative surface;
+          // keep one error, not a banner plus the same message underneath.
+          setError(null);
+          setMessages((prev) => {
+            const id = ev.messageId ? `m${ev.messageId}` : 'e' + Date.now() + Math.random();
+            const next = { id, role: 'error', content: JSON.stringify(ev.error), createdAt: ev.createdAt };
+            const idx = prev.findIndex((m) => m.id === id);
+            return idx < 0 ? [...prev, next] : prev.map((m, i) => i === idx ? next : m);
+          });
+          break;
+        case 'scheduled_resume':
+          setMessages((prev) => {
+            const id = `m${ev.messageId}`;
+            const next = { id, role: 'scheduled_resume', content: ev.content, createdAt: ev.createdAt };
+            const idx = prev.findIndex((m) => m.id === id);
+            return idx < 0 ? [...prev, next] : prev.map((m, i) => i === idx ? next : m);
+          });
+          break;
         case 'permission_request':
           flushAssistantBuf();
           setPermQueue((q) => q.some((p) => p.id === ev.id) ? q : [...q, {

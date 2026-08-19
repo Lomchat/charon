@@ -13,8 +13,8 @@ export type AgentKind = SessionProvider;
 
 export type PermissionMode = ClaudeMode;
 
-// Codex's "mode" is a SANDBOX level (the guardrail). Human/auto approval is
-// independent (`approvalsReviewer`) and uses the common permission cards.
+// Codex's ordinary modes are SANDBOX levels. `accept-all` deliberately adds
+// approvalPolicy=never; human/auto review otherwise stays independent.
 // Both mode namespaces share the historical permission_mode DB field.
 export type CodexSandboxMode = ProviderCodexSandboxMode;
 

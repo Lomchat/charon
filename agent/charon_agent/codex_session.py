@@ -90,14 +90,16 @@ StateSaveCallback = Callable[[], Awaitable[None] | None]
 
 
 # ── Charon per-session "mode" → Codex sandbox + approval ─────────────────────
-# A Charon "permission mode" for a Codex session picks a SANDBOX level. Human
-# review is enabled independently through approvalsReviewer=user below.
+# A Charon "permission mode" normally picks a SANDBOX level. ``accept-all`` is
+# deliberately the one combined escape hatch: danger-full-access plus
+# approvalPolicy=never, matching Claude's total-bypass ``auto`` mode.
 #   read-only     → the agent can read/analyze but not modify or run mutating
 #                   commands (sandbox read-only + deny escalations).
 #   workspace-write→ (DEFAULT) read + write the workspace + run commands,
 #                   escalations auto-reviewed.
 #   full-access   → no sandbox restrictions (danger), escalations auto-reviewed.
-CODEX_MODES = ("read-only", "workspace-write", "full-access")
+#   accept-all    → no sandbox AND no approval cards (DANGER).
+CODEX_MODES = ("read-only", "workspace-write", "full-access", "accept-all")
 DEFAULT_CODEX_MODE = "workspace-write"
 
 
@@ -105,7 +107,7 @@ def _mode_to_sandbox_approval(mode: str):
     """Return (Sandbox, ApprovalMode) for a Charon Codex mode string."""
     if mode == "read-only":
         return Sandbox.read_only, ApprovalMode.deny_all
-    if mode == "full-access":
+    if mode in ("full-access", "accept-all"):
         return Sandbox.full_access, ApprovalMode.auto_review
     # workspace-write (default) + anything unknown
     return Sandbox.workspace_write, ApprovalMode.auto_review
@@ -114,7 +116,7 @@ def _mode_to_sandbox_approval(mode: str):
 def _sandbox_mode_wire(mode: str) -> str:
     if mode == "read-only":
         return "read-only"
-    if mode == "full-access":
+    if mode in ("full-access", "accept-all"):
         return "danger-full-access"
     return "workspace-write"
 
@@ -122,9 +124,19 @@ def _sandbox_mode_wire(mode: str) -> str:
 def _sandbox_policy_wire(mode: str) -> dict[str, Any]:
     if mode == "read-only":
         return {"type": "readOnly"}
-    if mode == "full-access":
+    if mode in ("full-access", "accept-all"):
         return {"type": "dangerFullAccess"}
     return {"type": "workspaceWrite"}
+
+
+def _approval_policy_wire(mode: str) -> str:
+    """Modern app-server approval policy for one Charon mode.
+
+    Read-only fails closed instead of offering an escalation out of its
+    sandbox. Accept-all is the explicit opposite: the sandbox is already
+    unrestricted and Codex must never pause for a permission card.
+    """
+    return "never" if mode in ("read-only", "accept-all") else "on-request"
 
 
 # These streams are unrelated to Charon's text chat and can be very large.
@@ -548,7 +560,7 @@ class CodexSession:
         self.handle = handle or None
         self.peer_mcp = dict(peer_mcp) if isinstance(peer_mcp, dict) else None
         # For a Codex session, permission_mode holds a Codex mode string
-        # (read-only / workspace-write / full-access). Accept the legacy
+        # (read-only / workspace-write / full-access / accept-all). Accept the legacy
         # Claude modes too and coerce them to a sane Codex default so a mode
         # value written before this session was tagged doesn't break start.
         self.permission_mode = permission_mode if permission_mode in CODEX_MODES else DEFAULT_CODEX_MODE
@@ -575,7 +587,7 @@ class CodexSession:
                    if isinstance(cfg.get("env"), dict) else {},
             "codex_bin": cfg.get("codexBin") if isinstance(cfg.get("codexBin"), str) else None,
             "approvals_reviewer": cfg.get("approvalsReviewer")
-            if cfg.get("approvalsReviewer") in ("user", "auto_review") else "user",
+            if cfg.get("approvalsReviewer") in ("user", "auto_review") else "auto_review",
             "permission_profile": cfg.get("permissionProfile")
             if isinstance(cfg.get("permissionProfile"), str) and cfg.get("permissionProfile").strip() else None,
         }
@@ -745,7 +757,8 @@ class CodexSession:
             self._emit("error", msg=f"interrupt: {e}")
 
     async def set_permission_mode(self, mode: str) -> None:
-        # For Codex, "mode" is the sandbox level; applies on the NEXT turn.
+        # Applies on the NEXT turn. Three modes select only a sandbox level;
+        # accept-all additionally switches the approval policy to ``never``.
         if mode not in CODEX_MODES:
             mode = DEFAULT_CODEX_MODE
         self.permission_mode = mode
@@ -773,7 +786,7 @@ class CodexSession:
                     break
             return {
                 "ok": True,
-                "reviewer": self.codex_config.get("approvals_reviewer", "user"),
+                "reviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
                 "permission_profile": self.codex_config.get("permission_profile"),
                 "profiles": rows,
                 "denials": [dict(row) for row in self._guardian_denials],
@@ -786,7 +799,7 @@ class CodexSession:
             if getattr(e, "code", None) == -32601:
                 return {
                     "ok": True,
-                    "reviewer": self.codex_config.get("approvals_reviewer", "user"),
+                    "reviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
                     "permission_profile": self.codex_config.get("permission_profile"),
                     "profiles": [],
                     "denials": [dict(row) for row in self._guardian_denials],
@@ -807,8 +820,12 @@ class CodexSession:
         # legacy sandbox are deliberately mutually exclusive. Reviewer is also
         # sent on every turn, so changing it never requires a restart.
         if self._client is not None and self.claude_session_id:
-            params: dict[str, Any] = {"approvalsReviewer": reviewer, "cwd": self.cwd}
-            if permission_profile:
+            params: dict[str, Any] = {
+                "approvalsReviewer": reviewer,
+                "approvalPolicy": _approval_policy_wire(self.permission_mode),
+                "cwd": self.cwd,
+            }
+            if permission_profile and self.permission_mode != "accept-all":
                 params["permissions"] = permission_profile
             else:
                 params["sandbox"] = _sandbox_mode_wire(self.permission_mode)
@@ -1120,7 +1137,7 @@ class CodexSession:
                     "developerInstructions": self.codex_config.get("developer_instructions"),
                     "modelProvider": self.codex_config.get("model_provider"),
                     "serviceTier": self.codex_config.get("service_tier"),
-                    "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+                    "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
                 }.items() if v is not None}
                 result = await client._client.thread_fork(self.claude_session_id, params)
                 from openai_codex.api import AsyncThread
@@ -1387,7 +1404,7 @@ class CodexSession:
         if kept:
             result = await self._client._client.thread_fork(old_id, {
                 "cwd": self.cwd, "lastTurnId": getattr(kept[-1], "id", None),
-                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
             })
             from openai_codex.api import AsyncThread
             new_thread = AsyncThread(self._client, result.thread.id)
@@ -1856,11 +1873,32 @@ class CodexSession:
             "mcpServer/elicitation/request",
         }:
             return {}
+        request = dict(params or {})
+        # ``approvalPolicy=never`` is the primary accept-all mechanism. Keep a
+        # defensive answer here too: older app-server builds and individual
+        # MCP servers may still issue a gate even under ``never``. Functional
+        # questions (requestUserInput and form elicitation) still need values
+        # from the human and are therefore deliberately not auto-answered.
+        if self.permission_mode == "accept-all":
+            if method in (
+                "item/commandExecution/requestApproval",
+                "item/fileChange/requestApproval",
+            ):
+                return {"decision": "acceptForSession"}
+            if method == "item/permissions/requestApproval":
+                return {
+                    "permissions": request.get("permissions") or {},
+                    "scope": "session",
+                }
+            if method == "mcpServer/elicitation/request" and request.get("mode") not in (
+                "form", "openai/form",
+            ):
+                return {"action": "accept", "content": {}}
         loop = self._loop
         if loop is None or loop.is_closed():
             return {"decision": "cancel"}
         pending = asyncio.run_coroutine_threadsafe(
-            self._await_sdk_request(method, dict(params or {})), loop
+            self._await_sdk_request(method, request), loop
         )
         try:
             return pending.result(timeout=1810.0)
@@ -1904,11 +1942,11 @@ class CodexSession:
     async def _sdk_thread_start(self, client: Any, *, resume: bool) -> Any:
         params: dict[str, Any] = {
             "cwd": self.cwd,
-            "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            "approvalPolicy": _approval_policy_wire(self.permission_mode),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
         }
         profile = self.codex_config.get("permission_profile")
-        if profile:
+        if profile and self.permission_mode != "accept-all":
             params["permissions"] = profile
         else:
             params["sandbox"] = _sandbox_mode_wire(self.permission_mode)
@@ -1948,13 +1986,14 @@ class CodexSession:
         from openai_codex.api import AsyncTurnHandle
 
         params: dict[str, Any] = {
-            "approvalPolicy": "never" if self.permission_mode == "read-only" else "on-request",
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            "approvalPolicy": _approval_policy_wire(self.permission_mode),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
         }
         # A named profile is thread-scoped and cannot be combined with legacy
         # sandbox settings. With no profile, preserve the existing per-turn
         # sandbox override.
-        if not self.codex_config.get("permission_profile"):
+        if (self.permission_mode == "accept-all"
+                or not self.codex_config.get("permission_profile")):
             params["sandboxPolicy"] = _sandbox_policy_wire(self.permission_mode)
         if self.model:
             params["model"] = self.model
@@ -2074,7 +2113,7 @@ class CodexSession:
             "modelProvider": self.codex_config.get("model_provider"),
             "env": self.codex_config.get("env", {}),
             "codexBin": self.codex_config.get("codex_bin"),
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "user"),
+            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
             "permissionProfile": self.codex_config.get("permission_profile"),
         }
 
@@ -2346,7 +2385,9 @@ class CodexSession:
                 out.append({"event": "usage", **final})
                 if str(status) == "failed":
                     err = getattr(turn, "error", None)
-                    msg = getattr(err, "message", None) or "turn failed"
+                    msg = getattr(err, "message", None) or (
+                        err if isinstance(err, str) else "turn failed"
+                    )
                     out.append({"event": "error", "msg": str(msg)})
                 subtype = "interrupted" if str(status) == "interrupted" else (
                     "error" if str(status) == "failed" else "")
@@ -2356,7 +2397,12 @@ class CodexSession:
                 err = getattr(payload, "error", None)
                 will_retry = bool(getattr(payload, "will_retry", False))
                 msg = getattr(err, "message", None) or (err if isinstance(err, str) else str(err))
-                out.append({"event": "error", "msg": str(msg), "fatal": not will_retry})
+                # `will_retry=False` means app-server will not retry THIS
+                # request; it does not mean the resident session is dead.
+                # TurnCompleted supplies subtype=error and the hub then offers
+                # Continue. Reserve fatal=True for init/client failures that
+                # are followed by status=error.
+                out.append({"event": "error", "msg": str(msg), "fatal": False})
 
             elif pt not in (
                 "TurnStartedNotification", "ReasoningSummaryPartAddedNotification",

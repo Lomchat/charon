@@ -58,6 +58,12 @@ function sessionStatus(): string | undefined {
     .find((row: any) => row.id === SID)?.status;
 }
 
+function persistedErrors(): any[] {
+  return db.select().from(schema.claudeSessionMessages).all()
+    .filter((row: any) => row.sessionId === SID && row.role === 'error')
+    .map((row: any) => JSON.parse(row.content));
+}
+
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
   db = dbMod.db;
@@ -85,6 +91,7 @@ beforeEach(() => {
   db.insert(schema.claudeSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'active',
   }).run();
+  db.update(schema.vps).set({ claudeLoggedIn: 1, codexLoggedIn: 1 }).run();
 });
 
 describe('terminal Claude assistant errors', () => {
@@ -108,6 +115,9 @@ describe('terminal Claude assistant errors', () => {
 
     expect(stream.status).toBe('failed');
     expect(sessionStatus()).toBe('failed');
+    // Claude already supplied the visible assistant bubble; do not duplicate
+    // it with a second role='error' message.
+    expect(persistedErrors()).toEqual([]);
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
       expect.stringContaining('Claude ended with an API error'),
@@ -180,6 +190,9 @@ describe('terminal Claude assistant errors', () => {
 
     expect(stream.status).toBe('error');
     expect(sessionStatus()).toBe('error');
+    expect(persistedErrors()).toMatchObject([{
+      provider: 'claude', message: 'client transport died', fatal: true,
+    }]);
   });
 
   it('replay clears an older failed turn when a later assistant turn succeeded', () => {
@@ -257,9 +270,76 @@ describe('terminal Claude assistant errors', () => {
 
     expect(stream.status).toBe('failed');
     expect(sessionStatus()).toBe('failed');
+    expect(persistedErrors()).toMatchObject([{
+      type: 'session_error', provider: 'codex', kind: 'api',
+      message: 'turn: app-server rejected the request', action: 'continue', fatal: false,
+    }]);
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
       .toContain('Codex ended with an API error');
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
       .not.toContain('finished its response');
+  });
+
+  it('turns a prompt-hook veto into a durable failure instead of a false success', () => {
+    const stream = createStream('claude');
+    stream._onAgentEvent({
+      event: 'error', session_id: SID,
+      msg: 'Claude blocked the prompt before it reached the model: UserPromptSubmit hook callback timed out after 30000ms',
+      seq: 45,
+    });
+    stream._onAgentEvent({
+      event: 'stop', session_id: SID, subtype: 'error',
+      terminal_reason: 'hook_blocked', is_error: true, seq: 46,
+    });
+    // The daemon returns to idle after ResultMessage; the failed-turn latch
+    // must remain until the user explicitly retries.
+    stream._onAgentEvent({
+      event: 'status', session_id: SID, status: 'active', seq: 47,
+    });
+
+    expect(stream.status).toBe('failed');
+    expect(sessionStatus()).toBe('failed');
+    expect(persistedErrors()).toMatchObject([{
+      provider: 'claude', kind: 'api', action: 'continue', fatal: false,
+    }]);
+    expect(persistedErrors()[0].message).toContain('blocked the prompt');
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+      .not.toContain('finished its response');
+  });
+
+  it('persists a Codex auth failure with sign-in recovery and updates VPS health', () => {
+    const stream = createStream('codex');
+    stream._onAgentEvent({
+      event: 'error', session_id: SID, msg: 'Not logged in. Run codex login.', seq: 50,
+    });
+    stream._onAgentEvent({
+      event: 'stop', session_id: SID, subtype: 'error', seq: 51,
+    });
+
+    expect(persistedErrors()).toMatchObject([{
+      provider: 'codex', kind: 'authentication', action: 'sign_in',
+    }]);
+    const [vps] = db.select().from(schema.vps).all();
+    expect(vps.codexLoggedIn).toBe(0);
+  });
+
+  it('persists Claude quota reset as a UTC instant for automatic recovery', () => {
+    const stream = createStream('claude');
+    stream._onAgentEvent({
+      event: 'rate_limit', session_id: SID, status: 'limited',
+      resets_at: 1_800_000_000, seq: 60,
+    });
+    stream._onAgentEvent({
+      event: 'assistant_text', session_id: SID,
+      delta: 'API Error: 429 rate limit exceeded', seq: 61,
+    });
+    stream._onAgentEvent({
+      event: 'stop', session_id: SID, subtype: 'error', seq: 62,
+    });
+
+    expect(persistedErrors()).toMatchObject([{
+      provider: 'claude', kind: 'rate_limit', action: null,
+      resetAt: 1_800_000_000_000,
+    }]);
   });
 });

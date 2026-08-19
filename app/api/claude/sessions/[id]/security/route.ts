@@ -3,7 +3,16 @@ import { eq } from 'drizzle-orm';
 import { db, claudeSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import { getSetting } from '@/lib/server/claude/settings';
 import type { CodexSessionConfig } from '@/lib/types/api';
+
+function configuredReviewer(config: CodexSessionConfig): 'user' | 'auto_review' {
+  if (config.approvalsReviewer === 'user' || config.approvalsReviewer === 'auto_review') {
+    return config.approvalsReviewer;
+  }
+  return getSetting('codex.default_approvals_reviewer') === 'user'
+    ? 'user' : 'auto_review';
+}
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();
@@ -25,7 +34,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // a runtime that can enumerate them.
   return NextResponse.json({
     ok: true,
-    reviewer: configured.approvalsReviewer === 'auto_review' ? 'auto_review' : 'user',
+    reviewer: configuredReviewer(configured),
     permission_profile: typeof configured.permissionProfile === 'string'
       ? configured.permissionProfile : null,
     profiles: [], denials: [], applied: false,
@@ -47,9 +56,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json(result, { status: result?.ok ? 200 : 400 });
   }
 
-  // Reviewer and profile are independent controls in the UI. Accept a partial
-  // patch and fill the other field from durable config so a stale inspector
-  // cannot accidentally undo a reviewer change made beside the composer.
+  // Reviewer and profile are independent. Accept a partial patch and preserve
+  // the other durable field; reviewer defaults are configured globally.
   const [row] = db.select({ codexConfig: claudeSessions.codexConfig, status: claudeSessions.status })
     .from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
@@ -59,7 +67,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const hasReviewer = Object.prototype.hasOwnProperty.call(body, 'reviewer');
   const reviewer = hasReviewer
     ? (body?.reviewer === 'auto_review' ? 'auto_review' : body?.reviewer === 'user' ? 'user' : null)
-    : current.approvalsReviewer === 'auto_review' ? 'auto_review' : 'user';
+    : configuredReviewer(current);
   const hasProfile = Object.prototype.hasOwnProperty.call(body, 'permissionProfile');
   const permissionProfile = hasProfile
     ? (body?.permissionProfile == null ? null

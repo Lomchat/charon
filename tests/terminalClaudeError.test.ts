@@ -24,6 +24,15 @@ describe('classifyTerminalClaudeError', () => {
       .toBe('authentication');
   });
 
+  it('classifies an exhausted session window without offering generic retry semantics', () => {
+    expect(classifyTerminalClaudeError(
+      "You've hit your session limit · resets 4:40pm (Europe/Paris)",
+      SYNTHETIC_MODEL,
+    )).toBe('rate_limit');
+    expect(classifyTerminalClaudeError('API Error: 429 rate limit exceeded', SYNTHETIC_MODEL))
+      .toBe('rate_limit');
+  });
+
   it('does not classify quoted, fenced, long, or ordinary prose', () => {
     expect(classifyTerminalClaudeError('> API Error: 500 Internal Server Error')).toBeNull();
     expect(classifyTerminalClaudeError('```\nAPI Error: 500 Internal Server Error\n```', SYNTHETIC_MODEL))

@@ -52,6 +52,10 @@ const PATTERNS: RegExp[] = [
 /** Accepted only when the CLI itself marked the bubble `<synthetic>`. */
 const SYNTHETIC_PATTERN = /^\s*api error\b/i;
 
+/** Failures for which retrying the same prompt cannot help. */
+const NON_CONTINUABLE_PATTERN =
+  /^\s*(?:api error:\s*)?(?:401|403|429)\b|^\s*(?:you(?:'|’)ve hit your session limit|rate limit\b|quota\b|failed to authenticate\b)/i;
+
 /**
  * True when `text` is the CLI reporting that it dropped the turn mid-response
  * — i.e. the session is fine and a plain "Continue" resumes the work.
@@ -68,6 +72,9 @@ export function isTurnInterrupted(
   if (!t || t.length > MAX_LEN) return false;
   // A fenced/quoted block is someone DISCUSSING the error, not hitting it.
   if (t.startsWith('```') || t.startsWith('>')) return false;
+  // `<synthetic>` also labels authentication and quota reports. Those need a
+  // Sign in action or a reset time, never a misleading Continue button.
+  if (NON_CONTINUABLE_PATTERN.test(t)) return false;
   if (model === SYNTHETIC_MODEL) return SYNTHETIC_PATTERN.test(t);
   return PATTERNS.some((re) => re.test(t));
 }

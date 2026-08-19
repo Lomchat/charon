@@ -150,7 +150,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // openai-codex) and how the hub resolves config/model/effort/mode + which
   // logo the sidebar paints. For a Codex session, claudeSessionId holds the
   // Codex THREAD id (the resume handle), permissionMode holds a Codex sandbox
-  // mode ('read-only' | 'workspace-write' | 'full-access'), effort is a Codex
+  // mode ('read-only' | 'workspace-write' | 'full-access' | 'accept-all'), effort is a Codex
   // reasoning-effort, model is a Codex model id, and fallbackModel is unused
   // (Codex has no fallback-model concept). cf. CLAUDE.md §14.59.
   kind: text('kind').notNull().default('claude'),
@@ -323,6 +323,31 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // Latest before/after snapshot per path without parsing every JSON body.
   index('idx_claude_session_messages_snapshot_lookup')
     .on(t.sessionId, t.role, t.snapshotFilePath, t.snapshotPhase, t.id),
+]);
+
+// One durable, idempotent auto-resume job created from a rate-limit error.
+// `runAt` is UTC epoch milliseconds (provider epochs are normalized once at
+// ingress); `messageId` points at the status card visible in the transcript.
+export const sessionScheduledResumes = sqliteTable('session_scheduled_resumes', {
+  id: text('id').primaryKey(),
+  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sourceMessageId: integer('source_message_id').notNull().references(() => claudeSessionMessages.id, { onDelete: 'cascade' }),
+  messageId: integer('message_id').notNull().references(() => claudeSessionMessages.id, { onDelete: 'cascade' }),
+  content: text('content').notNull(),
+  runAt: integer('run_at').notNull(),
+  status: text('status').notNull().default('scheduled'),
+  attempts: integer('attempts').notNull().default(0),
+  clientMessageId: text('client_message_id').notNull(),
+  userMessageId: integer('user_message_id').references(() => claudeSessionMessages.id, { onDelete: 'set null' }),
+  lastError: text('last_error'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),
+  sentAt: integer('sent_at'),
+}, (t) => [
+  uniqueIndex('uq_session_scheduled_resumes_source').on(t.sourceMessageId),
+  uniqueIndex('uq_session_scheduled_resumes_message').on(t.messageId),
+  index('idx_session_scheduled_resumes_due').on(t.status, t.runAt),
+  index('idx_session_scheduled_resumes_session').on(t.sessionId, t.status),
 ]);
 
 export const claudePendingPermissions = sqliteTable('claude_pending_permissions', {
@@ -516,6 +541,7 @@ export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
 export type ClaudeSession = typeof claudeSessions.$inferSelect;
 export type ClaudeSessionMessageRow = typeof claudeSessionMessages.$inferSelect;
+export type SessionScheduledResume = typeof sessionScheduledResumes.$inferSelect;
 // Internal compact-storage fields are deliberately not part of the API type:
 // route projections expose `wireContent ?? content` under the original
 // `content` key and never leak a second copy or implementation metadata.

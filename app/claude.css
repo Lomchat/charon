@@ -158,7 +158,7 @@
   padding: 4px 10px; border: 1px solid var(--gold-deep);
   font-family: var(--display); font-size: 10px;
   letter-spacing: 0.18em; text-transform: uppercase;
-  color: var(--parchment);
+  color: var(--parchment); white-space: nowrap;
 }
 .status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .status-green       { color: #a0c87b; }
@@ -629,7 +629,26 @@
 .cs-card.compact { padding-top: 6px; padding-bottom: 5px; }
 .cs-card:hover { border-color: var(--gold); background: rgba(34,39,51,0.7); }
 .cs-card.selected { border-color: var(--gold); background: rgba(138,180,228,0.12); }
+.cs-card.multi-selected {
+  border-color: #8ab4e4;
+  background: rgba(138,180,228,0.20);
+  box-shadow: inset 0 0 0 1px rgba(138,180,228,0.28);
+}
+.cs-card.selected.multi-selected { border-color: var(--gold-bright); }
 .cs-card.is-sleeping { opacity: 0.6; }
+.cs-card.is-sleeping.multi-selected { opacity: 0.86; }
+.cs-card.deleting, .cs-card.deleting:hover {
+  cursor: wait; opacity: 0.78;
+  border-color: var(--crimson);
+  background: rgba(216,117,127,0.12);
+  box-shadow: inset 0 0 0 1px rgba(216,117,127,0.25);
+  animation: delete-row-pulse 1.25s ease-in-out infinite;
+}
+.cs-card.deleting .cs-card-name, .cs-card.deleting .cs-card-glyph { color: var(--crimson); }
+@keyframes delete-row-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(216,117,127,0.18); }
+  50% { box-shadow: inset 0 0 12px 1px rgba(216,117,127,0.38); }
+}
 .cs-card.attention {
   border-color: #f0a060; box-shadow: inset 0 0 0 1px rgba(240,160,96,0.3);
   animation: row-pulse 1.6s infinite ease-in-out;
@@ -671,6 +690,7 @@
 }
 .cs-state.active { color: #a0c87b; border-color: rgba(160,200,123,0.4); }
 .cs-state.failed, .cs-state.error { color: var(--crimson); border-color: var(--crimson-deep); }
+.cs-state.deleting { color: var(--crimson); border-color: var(--crimson); }
 .cs-state.thinking, .cs-state.starting { color: var(--gold-bright); }
 .cs-state.waiting { color: #f0a060; border-color: rgba(240,160,96,0.5); }
 .cs-state.background { color: var(--violet-bright); border-color: rgba(178,148,232,0.45); }
@@ -1557,11 +1577,36 @@
   margin-bottom: 4px;
   font-size: 11px;
 }
-.bubble .bubble-h time {
+.bubble .bubble-h time,
+.bubble .bubble-f time {
   font-family: var(--mono); font-size: 10px;
   color: var(--parchment-soft); opacity: 0.55;
   margin-left: auto;
 }
+/* Header date/time + copy live together at the far right of `.bubble-h`; the
+   wrapper (not `time` itself) owns the push-right so the copy button sits
+   snug against the time instead of also floating off to its own margin. */
+.bubble .bubble-h .bubble-h-meta {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 6px;
+}
+.bubble .bubble-h .bubble-h-meta time { margin-left: 0; }
+/* Bottom mirror of the header meta (§ CLAUDE.md 11) — same info, end of a
+   long message, right-aligned like the header. */
+.bubble .bubble-f {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px;
+  margin-top: 6px;
+}
+.bubble-copy-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; padding: 1px;
+  color: var(--parchment-soft); opacity: 0.55;
+  cursor: pointer; line-height: 1;
+  transition: opacity 0.12s, color 0.12s;
+}
+.bubble-copy-btn:hover { opacity: 1; color: var(--gold-bright); }
+.bubble-copy-btn svg { width: 11px; height: 11px; display: block; }
+.bubble-copy-btn.copied { opacity: 1; color: #7fbf7f; font-size: 11px; }
 /* ── Background tasks bar + modal (cf. app/BgTasksBar.tsx, app/bgTasks.ts) ──
    Slim clickable status line docked above the chat input while the session
    has background processes (Bash run_in_background); click → detail modal. */
@@ -1698,6 +1743,26 @@
 .bubble.role-user { border-color: var(--teal-deep); background: rgba(134,197,216,0.07); }
 .bubble.role-user .tag { color: var(--teal); }
 .bubble.role-assistant { border-color: var(--gold); background: rgba(138,180,228,0.05); }
+.bubble.role-error { border-color: rgba(224,103,103,0.72); background: rgba(161,48,48,0.10); }
+.bubble.role-error .tag { color: #e67a7a; }
+.bubble.role-error .error-kind {
+  font-family: var(--mono); font-size: 9.5px; color: #e7a0a0; opacity: 0.8;
+}
+.bubble.role-error .error-message { color: #f0c7c7; }
+.bubble.role-error .error-details { margin-top: 8px; color: var(--parchment-soft); }
+.bubble.role-error .error-details summary { cursor: pointer; font-size: 10.5px; opacity: 0.7; }
+.bubble.role-error .error-details pre {
+  max-height: 240px; overflow: auto; margin: 7px 0 0; padding: 8px;
+  border-radius: 5px; background: rgba(0,0,0,0.28); white-space: pre-wrap;
+  overflow-wrap: anywhere; font: 10px/1.45 var(--mono);
+}
+.bubble.role-scheduled-resume {
+  border-color: rgba(134,197,216,0.55); background: rgba(134,197,216,0.07);
+}
+.bubble.role-scheduled-resume .tag { color: var(--teal); }
+.bubble.role-scheduled-resume .wiz-btn { margin-top: 9px; }
+.scheduled-resume-prompt { margin-top: 7px; color: var(--parchment-soft); font-style: italic; }
+.scheduled-resume-error { margin-top: 7px; color: #e7a0a0; font-size: 11px; }
 .bubble.role-assistant .tag { color: var(--gold-bright); }
 .bubble.role-assistant.streaming::after {
   content: '▍'; color: var(--gold-bright); animation: cpulse 1s infinite ease-in-out;
@@ -1967,6 +2032,22 @@
   color: var(--gold-bright);
   font-family: var(--display); font-size: 10px;
   letter-spacing: 0.18em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.thinking-bar .t-interrupt {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--crimson-deep);
+  border-radius: 3px;
+  background: rgba(117, 50, 58, 0.08);
+  color: var(--crimson);
+  font-family: var(--display); font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer;
+}
+.thinking-bar .t-interrupt:hover {
+  border-color: var(--crimson);
+  background: rgba(117, 50, 58, 0.16);
 }
 .thinking-bar .t-tool {
   display: inline-flex; align-items: center; gap: 6px;
@@ -4065,18 +4146,9 @@
 .claude-input-bar .mode-switch .m-btn.on.full-access {
   background: rgba(255,120,90,0.14); border-color: #ff785a; color: #ff785a;
 }
-.claude-input-bar .mode-switch .m-btn.reviewer-toggle {
-  margin-top: 3px; border-style: dashed; min-width: 138px;
+.claude-input-bar .mode-switch .m-btn.on.accept-all {
+  background: rgba(255,215,0,0.14); border-color: #ffd700; color: #ffd700;
 }
-.claude-input-bar .mode-switch .m-btn.reviewer-toggle .reviewer-state {
-  margin-left: auto; font-family: var(--mono); font-size: 9px;
-  letter-spacing: 0.08em; color: var(--parchment-soft);
-}
-.claude-input-bar .mode-switch .m-btn.reviewer-toggle.on {
-  background: rgba(127,191,127,0.12); border-color: #7fbf7f;
-  border-style: solid; color: #9bd49b;
-}
-.claude-input-bar .mode-switch .m-btn.reviewer-toggle.on .reviewer-state { color: #9bd49b; }
 
 /* Codex unified-diff: dimmed file/patch header lines (--- +++ @@ envelopes). */
 .dline.meta { color: var(--parchment-soft); opacity: 0.5; }
@@ -4820,6 +4892,14 @@
   color: var(--parchment);
 }
 .tt-row:hover { background: rgba(138,180,228,0.10); }
+/* Ctrl/Cmd and Shift selection is transient and may cover many rows. Keep it
+   distinct from `.active` below, which means "open in the editor" and can be
+   only one file. The outline survives git text colours and ignored opacity. */
+.tt-row.selected {
+  background: rgba(138,180,228,0.24);
+  outline: 1px solid rgba(138,180,228,0.38);
+  outline-offset: -1px;
+}
 /* The file the main pane is showing. Its folders are opened for it, so the
    tree always answers "where am I" without being searched. The left bar is
    what survives the git colours: a changed open file is already amber or
@@ -4827,6 +4907,29 @@
 .tt-row.active {
   background: rgba(138,180,228,0.16);
   box-shadow: inset 2px 0 0 var(--gold-bright);
+}
+.tt-row.active.selected { background: rgba(138,180,228,0.28); }
+.tt-row.deleting, .tt-row.deleting:hover {
+  opacity: 0.72; cursor: wait;
+  background: rgba(216,117,127,0.12);
+  outline: 1px solid rgba(216,117,127,0.55);
+  outline-offset: -1px;
+}
+.tt-row.deleting .tt-ico, .tt-row.deleting .tt-name { color: var(--crimson); }
+.tt-deleting {
+  flex: none; color: var(--crimson); font-size: 9px; letter-spacing: 0.03em;
+  animation: cpulse 1.2s ease-in-out infinite;
+}
+.tt-op-error {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 0 3px; padding: 6px 8px; border-radius: 4px;
+  border: 1px solid var(--crimson-deep); background: rgba(216,117,127,0.10);
+  color: var(--crimson); font: 10px/1.35 var(--mono);
+}
+.tt-op-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tt-op-error button {
+  flex: none; padding: 0 2px; border: 0; background: none; color: inherit;
+  cursor: pointer; font: inherit;
 }
 .tt-row.active .tt-name { color: var(--gold-bright); }
 .tt-row.active.ignored { opacity: 0.75; }

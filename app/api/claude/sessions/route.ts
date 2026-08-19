@@ -12,7 +12,7 @@ import type {
 import type { SessionMode } from '@/lib/server/agent/types';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
-import { defaultSessionMode, isSessionMode } from '@/lib/sessionCapabilities';
+import { isSessionMode } from '@/lib/sessionCapabilities';
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -201,14 +201,12 @@ export async function POST(req: Request) {
     );
   }
 
-  // Kind-aware mode validation + default. Claude: a PermissionMode (default
-  // 'auto'). Codex: a sandbox level (default 'workspace-write'). Codex's
-  // human reviewer is an independent safety control stored in codexConfig.
-  const permissionMode = (
-    isSessionMode(kind, body.permissionMode)
-      ? body.permissionMode
-      : defaultSessionMode(kind, 'create')
-  ) as SessionMode;
+  // A valid explicit override wins. Omitted/invalid values are resolved in
+  // startNewSession from the installation setting, with the safe source
+  // fallback (Claude normal / Codex workspace-write).
+  const permissionMode = isSessionMode(kind, body.permissionMode)
+    ? body.permissionMode as SessionMode
+    : undefined;
   // Normalize the per-session config. Empty strings → null so the default-
   // resolution path in startNewSession treats them as "inherit global default"
   // (claude.default_* or codex.default_*). Effort is forwarded as a raw string;

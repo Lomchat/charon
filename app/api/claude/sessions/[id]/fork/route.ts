@@ -263,7 +263,6 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
       cwd: source.cwd,
       name,
       kind: 'codex',
-      permissionMode: 'workspace-write',
     });
     const client = getAgentClientForVpsId(source.vpsId);
     const batches = batchCodexHistoryItems(newId, items);
@@ -391,7 +390,6 @@ async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: 
       cwd: source.cwd,
       name,
       kind: 'claude',
-      permissionMode: 'normal',
     });
     const client = getAgentClientForVpsId(source.vpsId);
     for (let i = 0; i < chunks.length; i += 1) {

@@ -8,6 +8,8 @@ import {
   type CodexSandboxMode, type SessionMode,
 } from '@/lib/sessionCapabilities';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
+import { parseSessionError } from '@/lib/sessionError';
+import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
 import { refreshGit, useGitStatus, workspaceAheadBehind, workspaceDirtyCount } from './gitStore';
@@ -49,7 +51,8 @@ import HeaderContextGauge from './HeaderContextGauge';
 // ─────────────────────────────────────────────────────────────────────────────
 // Component that renders the entire "active session" area of the desktop
 // dashboard:
-//   - Actions bar (sleep / resume / interrupt / force-stop) — permanent
+//   - Actions bar (sleep / resume / force-stop) — permanent; interrupt lives
+//     beside the transient ThinkingBar label while a turn is running
 //     deletion goes through the context menu (right-click on the sidebar),
 //     not through a button in the bar (cf. kill→delete rework: only
 //     `sleep` is reversible, everything else destroys)
@@ -83,7 +86,8 @@ type Props = {
   siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
   selectedVps: Vps | null;
   // Opens the Claude sign-in modal for this session's VPS — handed down to
-  // <Message> so an "OAuth token expired" bubble carries its own fix (§14.65).
+  // <Message> so a provider authentication-error bubble carries its own fix
+  // (Claude hosted OAuth or Codex device-code login, §14.65/68).
   onReauth?: () => void;
   // Sound + native Notification handled by the parent (cross-session), but
   // we can still play a beep on stop if configured.
@@ -381,14 +385,42 @@ export default function ClaudeSessionView({
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role === 'event' || m.role === 'edit_snapshot') continue;
-      return m.role === 'assistant' && isTurnInterrupted(m.content, m.model) ? m.id : null;
+      if (m.role === 'assistant' && isTurnInterrupted(m.content, m.model)) return m.id;
+      if (m.role === 'error' && parseSessionError(m.content)?.action === 'continue') return m.id;
+      return null;
     }
     return null;
   }, [messages, status, currentAssistant]);
 
+  const schedulableMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'event' || m.role === 'edit_snapshot') continue;
+      const parsed = m.role === 'error' ? parseSessionError(m.content) : null;
+      return parsed?.kind === 'rate_limit' && resolveResetAtMs(parsed.resetAt, parsed.message) ? m.id : null;
+    }
+    return null;
+  }, [messages]);
+
   // Stable ref (memo(Message), §14.38). `send` is optimistic, so the user
   // bubble appears at once and `continuableMsgId` goes null on the next render.
   const sendContinue = useCallback(() => { void streamSend('Continue'); }, [streamSend]);
+  const scheduleResume = useCallback(async (messageId: string) => {
+    const sourceMessageId = Number(messageId.replace(/^m/, ''));
+    if (!Number.isSafeInteger(sourceMessageId)) throw new Error('invalid rate-limit message');
+    const res = await fetch(`/api/claude/sessions/${sessionId}/scheduled-resume`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sourceMessageId }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'could not schedule resume');
+  }, [sessionId]);
+  const cancelScheduledResume = useCallback(async (scheduleId: string) => {
+    const res = await fetch(`/api/claude/sessions/${sessionId}/scheduled-resume`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scheduleId }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'could not cancel resume');
+  }, [sessionId]);
   const revertAndRefresh = useCallback(() => { onAfterRevert?.(); }, [onAfterRevert]);
 
   const stepCount = useMemo(() => {
@@ -717,7 +749,6 @@ export default function ClaudeSessionView({
           ) : (
             <button onClick={doSleep}>sleep</button>
           )}
-          <button onClick={interrupt} disabled={status !== 'thinking'}>interrupt</button>
           <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
             disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
             title={status === 'sleeping' || status === 'error'
@@ -820,6 +851,9 @@ export default function ClaudeSessionView({
                   onReauth={onReauth}
                   continuableMsgId={continuableMsgId}
                   onContinue={sendContinue}
+                  onScheduleResume={scheduleResume}
+                  onCancelScheduledResume={cancelScheduledResume}
+                  schedulableMsgId={schedulableMsgId}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -904,6 +938,7 @@ export default function ClaudeSessionView({
         {status === 'thinking' && (
           <ThinkingBar
             label={sessionKind === 'codex' ? 'Codex is thinking' : 'Claude is thinking'}
+            onInterrupt={interrupt}
             currentTool={showTools ? currentTool : null}
             stepCount={showTools ? stepCount : 0}
             startedAt={turnStartedAt}
@@ -1020,13 +1055,16 @@ export default function ClaudeSessionView({
 // inside a memoized child means a delta no longer creates/reconciles hundreds
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
-  renderable, kind, onReauth, continuableMsgId, onContinue, turnInFlight,
+  renderable, kind, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
   kind: AgentKind;
   onReauth?: () => void;
   continuableMsgId: string | null;
+  schedulableMsgId: string | null;
   onContinue: () => void;
+  onScheduleResume: (messageId: string) => Promise<void>;
+  onCancelScheduledResume: (scheduleId: string) => Promise<void>;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1039,6 +1077,8 @@ const MessageHistory = memo(function MessageHistory({
       key={msg.id} m={msg} attachedResult={attached} kind={kind}
       onReauth={onReauth}
       onContinue={msg.id === continuableMsgId ? onContinue : undefined}
+      onScheduleResume={msg.id === schedulableMsgId ? () => onScheduleResume(msg.id) : undefined}
+      onCancelScheduledResume={onCancelScheduledResume}
       orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
     />
   ));
@@ -1056,7 +1096,8 @@ const MessageHistory = memo(function MessageHistory({
 const CODEX_MODE_META: Record<CodexSandboxMode, { glyph: string; label: string; title: string }> = {
   'read-only': { glyph: '⊘', label: 'read only', title: 'read-only — can read files & run read-only commands; no writes' },
   'workspace-write': { glyph: '✎', label: 'workspace', title: 'workspace write — can edit files in the workspace; network off by default' },
-  'full-access': { glyph: '⚡', label: 'full access', title: 'full access — no sandbox, full file & network access (DANGER)' },
+  'full-access': { glyph: '⚡', label: 'full access', title: 'full access — no sandbox, but sensitive actions can still request approval (DANGER)' },
+  'accept-all': { glyph: '▶▶', label: 'accept all', title: 'accept all — no sandbox and no approval prompts (DANGER)' },
 };
 
 const ChatInputBar = memo(function ChatInputBar({
@@ -1083,59 +1124,10 @@ const ChatInputBar = memo(function ChatInputBar({
   siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
 }) {
   const isCodex = kind === 'codex';
-  const capabilities = sessionCapabilities(kind);
-  const hasAutoReviewer = capabilities.autoReviewer !== 'none';
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
-  const [codexReviewer, setCodexReviewer] = useState<'user' | 'auto_review'>('user');
-  const [reviewerReady, setReviewerReady] = useState(false);
-  const [reviewerBusy, setReviewerBusy] = useState(false);
-  const [reviewerDeferred, setReviewerDeferred] = useState(false);
-  const [reviewerError, setReviewerError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!hasAutoReviewer) return;
-    const controller = new AbortController();
-    setReviewerReady(false);
-    setReviewerError(null);
-    void fetch(`/api/claude/sessions/${sessionId}/security`, { signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json().catch(() => null);
-        if (!response.ok || !data?.ok) throw new Error(data?.error || 'reviewer unavailable');
-        if (!controller.signal.aborted) {
-          setCodexReviewer(data.reviewer === 'auto_review' ? 'auto_review' : 'user');
-          setReviewerDeferred(data.applied === false);
-          setReviewerReady(true);
-        }
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) setReviewerError(String(error?.message || error));
-      });
-    return () => controller.abort();
-  }, [hasAutoReviewer, sessionId]);
-
-  const toggleCodexReviewer = useCallback(async () => {
-    if (!hasAutoReviewer || !reviewerReady || reviewerBusy) return;
-    const next = codexReviewer === 'auto_review' ? 'user' : 'auto_review';
-    setReviewerBusy(true);
-    setReviewerError(null);
-    try {
-      const response = await fetch(`/api/claude/sessions/${sessionId}/security`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reviewer: next }),
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.ok) throw new Error(data?.error || 'reviewer update failed');
-      setCodexReviewer(data.reviewer === 'auto_review' ? 'auto_review' : 'user');
-      setReviewerDeferred(data.applied === false);
-    } catch (error: any) {
-      setReviewerError(String(error?.message || error));
-    } finally {
-      setReviewerBusy(false);
-    }
-  }, [codexReviewer, hasAutoReviewer, reviewerBusy, reviewerReady, sessionId]);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1370,9 +1362,10 @@ const ChatInputBar = memo(function ChatInputBar({
   return (
     <footer className="claude-input-bar">
       {isCodex ? (
-        // Sandbox and reviewer are independent, but both are safety controls
-        // the user needs beside the prompt — not hidden in the calls panel.
-        <div className="mode-switch codex" role="group" aria-label="Codex safety controls">
+        // The automatic reviewer is a fleet default in Settings. Per-session
+        // controls only select execution semantics; accept-all is the one
+        // explicit sandbox+approval bypass, parallel to Claude's auto mode.
+        <div className="mode-switch codex" role="radiogroup" aria-label="Codex permission mode">
           {CODEX_SANDBOX_MODES.map((m) => {
             const meta = CODEX_MODE_META[m];
             return (
@@ -1388,24 +1381,6 @@ const ChatInputBar = memo(function ChatInputBar({
               </button>
             );
           })}
-          {hasAutoReviewer && <button
-            type="button" role="switch"
-            aria-checked={codexReviewer === 'auto_review'}
-            className={`m-btn reviewer-toggle${codexReviewer === 'auto_review' ? ' on' : ''}`}
-            disabled={!reviewerReady || reviewerBusy}
-            onClick={() => void toggleCodexReviewer()}
-            title={reviewerError || (reviewerDeferred
-              ? 'Saved in Charon — applies when this Codex session next resumes on the updated agent'
-              : codexReviewer === 'auto_review'
-              ? 'Approve for me is ON — Codex auto-reviews permission escalations; click to ask you instead'
-              : 'Approve for me is OFF — Codex asks you; click to let its reviewer decide')}
-          >
-            <span className="m-glyph">✓</span>
-            <span className="m-label">approve for me</span>
-            <span className="reviewer-state">{reviewerBusy ? '…' : reviewerDeferred
-              ? `${codexReviewer === 'auto_review' ? 'on' : 'off'} · resume`
-              : codexReviewer === 'auto_review' ? 'on' : 'off'}</span>
-          </button>}
         </div>
       ) : (
         <div className="mode-switch" role="radiogroup" aria-label="permission mode">
@@ -1698,12 +1673,13 @@ function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: (
 }
 
 function ThinkingBar({
-  currentTool, stepCount, startedAt, tokens, label = 'Claude is thinking',
+  currentTool, stepCount, startedAt, tokens, onInterrupt, label = 'Claude is thinking',
 }: {
   currentTool: ToolCallEntry | null;
   stepCount: number;
   startedAt: number | null;
   tokens: number | null;
+  onInterrupt: () => void | Promise<void>;
   label?: string;
 }) {
   const [tick, setTick] = useState(0);
@@ -1717,6 +1693,12 @@ function ThinkingBar({
     <div className="thinking-bar">
       <span className="t-dot" />
       <span className="t-label">{label}</span>
+      <button
+        type="button"
+        className="t-interrupt"
+        onClick={() => { void onInterrupt(); }}
+        title="Interrupt the current turn"
+      >interrupt</button>
       {currentTool && (
         <span className="t-tool">
           <span className="sep">·</span>

@@ -25,6 +25,24 @@ def session():
 
 
 class CodexNotificationTranslation(unittest.TestCase):
+    def test_failed_turn_keeps_the_provider_message_and_stops_as_error(self):
+        turn = types.SimpleNamespace(
+            status=types.SimpleNamespace(value="failed"),
+            error="request timed out", duration_ms=12,
+        )
+        out = session()._translate(ev("TurnCompletedNotification", turn=turn))
+        self.assertIn({"event": "error", "msg": "request timed out"}, out)
+        self.assertIn({"event": "stop", "subtype": "error"}, out)
+
+    def test_non_retrying_request_error_is_not_a_dead_session(self):
+        error = types.SimpleNamespace(message="stream disconnected")
+        out = session()._translate(ev(
+            "ErrorNotification", error=error, will_retry=False,
+        ))
+        self.assertEqual(out, [{
+            "event": "error", "msg": "stream disconnected", "fatal": False,
+        }])
+
     def test_command_output_is_live_progress(self):
         out = session()._translate(ev(
             "CommandExecutionOutputDeltaNotification", item_id="cmd-1", delta="building\n"

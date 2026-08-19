@@ -100,6 +100,9 @@ const DEFAULTS = {
   'claude.default_model': '',
   'claude.default_fallback_model': '',
   'claude.default_effort': '',
+  // Safe source default. An installation may explicitly choose Claude's
+  // total-bypass `auto` mode in Settings; new sessions copy the resolved mode.
+  'claude.default_permission_mode': 'normal',
   // Global defaults for Codex model / effort (multi-agent support). Empty
   // string = not set → the agent passes nothing → Codex default applies. New
   // Codex-kind sessions inherit these unless overridden at create time. Codex
@@ -108,10 +111,12 @@ const DEFAULTS = {
   // 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'. cf. CLAUDE.md §14.59.
   'codex.default_model': '',
   'codex.default_effort': '',
-  // New sessions ask the user by default. `auto_review` delegates approval
-  // decisions to Codex's reviewer; the composer can still toggle it per
-  // session. This default is copied into each new session row.
-  'codex.default_approvals_reviewer': 'user',
+  // Safe source default. `accept-all` remains an explicit installation choice
+  // because it combines danger-full-access with approvalPolicy=never.
+  'codex.default_permission_mode': 'workspace-write',
+  // Auto-review is the normal Codex behavior. It is configured globally here,
+  // not beside every composer, and copied into each new session row.
+  'codex.default_approvals_reviewer': 'auto_review',
   // Fleet-wide openai-codex auto-update toggle (parallel to sdk.auto_update).
   // ON by default. User-editable (SettingsModal). cf. codexWatch (future).
   'codex.auto_update': 'true',

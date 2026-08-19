@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged, getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { pinTabForRef } from '@/lib/server/claude/tabs';
+import { cancelPendingScheduledResumes } from '@/lib/server/agent/scheduledResume';
 
 // POST /api/claude/sessions/[id]/input
 // Body: { content } -> user_message; or { type: 'interrupt' }
@@ -37,6 +38,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (normalized?.some((item: unknown) => item == null)) {
       return NextResponse.json({ error: 'unsupported codex input item' }, { status: 400 });
     }
+    // A manual prompt supersedes any delayed quota-recovery prompt for this
+    // session; leaving it armed would unexpectedly send a second continuation.
+    cancelPendingScheduledResumes(id);
     await stream.sendUserMessage(content, normalized as Array<Record<string, unknown>> | undefined);
     // Talking to a session is the clearest possible signal that its tab has
     // stopped being a preview. Pin it so the next thing opened in this folder

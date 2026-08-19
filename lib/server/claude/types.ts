@@ -1,6 +1,7 @@
 // Events exchanged between the Python bridge and the SessionWorker (and to the
 // SSE clients). We keep a wide TS union + guard helpers.
 import type { ClaudeEffort, ClaudeMode } from '@/lib/sessionCapabilities';
+import type { SessionErrorPayload } from '@/lib/sessionError';
 
 // One sub-agent inside a running Workflow-tool task (from the SDK's raw
 // TaskProgressMessage.workflow_progress[]). Carried by bg_task_progress. §14.54.
@@ -180,6 +181,11 @@ export type AccountUsage = {
 export type SyntheticEvent =
   | { type: 'status'; status: WorkerStatus }
   | { type: 'user_echo'; content: string; createdAt: number }
+  // A blocking provider/SDK failure persisted as role='error'. Unlike the
+  // transient raw `error` event, this survives reload and may carry a concrete
+  // recovery action (sign in / continue).
+  | { type: 'blocking_error'; error: SessionErrorPayload; createdAt: number; messageId?: number }
+  | { type: 'scheduled_resume'; messageId: number; content: string; createdAt: number }
   | { type: 'history_begin' }
   | { type: 'history_end' }
   // Shell lifecycle status fanned onto the global SSE bus (sessionId = shellId).

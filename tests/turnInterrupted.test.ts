@@ -51,6 +51,13 @@ describe('isTurnInterrupted', () => {
       "You've hit your session limit · resets 4:40pm (Europe/Paris)", SYNTHETIC_MODEL,
     )).toBe(false);
     expect(isTurnInterrupted("You've hit your session limit · resets 7:20pm (Europe/Paris)")).toBe(false);
+    expect(isTurnInterrupted('API Error: 429 rate limit exceeded', SYNTHETIC_MODEL)).toBe(false);
+    expect(isTurnInterrupted('API Error: 429 quota exhausted')).toBe(false);
+  });
+
+  it('does NOT turn an authentication CTA into Continue', () => {
+    expect(isTurnInterrupted('API Error: 401 OAuth access token has expired.', SYNTHETIC_MODEL)).toBe(false);
+    expect(isTurnInterrupted('Failed to authenticate. API Error: 401 Unauthorized', SYNTHETIC_MODEL)).toBe(false);
   });
 
   it('does NOT match an agent NARRATING the error', () => {

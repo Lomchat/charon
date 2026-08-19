@@ -8,6 +8,18 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { invalidateModels } from './modelsCache';
+import { CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES } from '@/lib/sessionCapabilities';
+
+const MODE_LABEL: Record<string, string> = {
+  normal: 'normal — ask before tools',
+  acceptEdits: 'accept edits — edits without asking',
+  auto: 'accept all — never ask',
+  plan: 'plan mode — read and plan',
+  'read-only': 'read only — no writes',
+  'workspace-write': 'workspace — write inside the project',
+  'full-access': 'full access — unrestricted sandbox, approvals remain',
+  'accept-all': 'accept all — unrestricted and never ask',
+};
 
 type Props = {
   onClose: () => void;
@@ -201,6 +213,16 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                         inheritPlaceholder="SDK default"
                       />
                     </label>
+                    <label>default mode
+                      <select
+                        value={s['claude.default_permission_mode'] ?? 'normal'}
+                        onChange={(e) => set('claude.default_permission_mode', e.target.value)}
+                      >
+                        {CLAUDE_PERMISSION_MODES.map((mode) => (
+                          <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
+                        ))}
+                      </select>
+                    </label>
 
                     <div className="settings-sub">model catalog</div>
                     <label>Anthropic API key (catalog sync only — never inference)
@@ -283,19 +305,28 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                         </label>
                       </>
                     )}
+                    <label>default mode
+                      <select
+                        value={s['codex.default_permission_mode'] ?? 'workspace-write'}
+                        onChange={(e) => set('codex.default_permission_mode', e.target.value)}
+                      >
+                        {CODEX_SANDBOX_MODES.map((mode) => (
+                          <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
+                        ))}
+                      </select>
+                    </label>
                     <div className="switch-row">
-                      <span>approve for me by default</span>
+                      <span>automatic approval reviewer</span>
                       <Toggle
-                        checked={(s['codex.default_approvals_reviewer'] ?? 'user') === 'auto_review'}
+                        checked={(s['codex.default_approvals_reviewer'] ?? 'auto_review') === 'auto_review'}
                         onChange={(v) => set('codex.default_approvals_reviewer', v ? 'auto_review' : 'user')}
-                        label="let the Codex reviewer decide approvals by default"
+                        label="let the Codex reviewer decide approvals for new sessions"
                       />
                     </div>
                     <p className="set-meta">
-                      New sessions inherit this choice. Sandbox and reviewer are
-                      independent; interactive requests use the same permission
-                      cards as Claude, and “approve for me” is also switchable
-                      beside the Codex composer.
+                      New sessions inherit this reviewer. It may still escalate
+                      sensitive actions; choose “accept all” as the mode when no
+                      approval card should ever appear.
                     </p>
                   </>
                 )}

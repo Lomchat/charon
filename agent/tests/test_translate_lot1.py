@@ -16,6 +16,7 @@ does not raise, it just makes the feature disappear.
 stdlib unittest only. Run with:
     python3 agent/tests/test_translate_lot1.py
 """
+import inspect
 import os
 import sys
 import types
@@ -42,6 +43,7 @@ def _fake_self():
         _usage_committed_out=0,
         _usage_cur_out=0,
         _usage_last_emit=0.0,
+        _blocking_turn_error=None,
         # The stop branch retries the CLI title write (agent 0.38.1), so the
         # double needs these too — _translate wraps everything in a try/except,
         # so a missing attribute would silently swallow the whole `stop` event
@@ -181,6 +183,36 @@ class SystemMessageTranslation(unittest.TestCase):
         self.assertEqual(translate(_ev("SystemMessage", subtype="informational",
                                        data={"x": 1})), [])
 
+    def test_blocking_hook_warning_makes_the_following_stop_an_error(self):
+        fake = _fake_self()
+        warning = AgentSession._translate(fake, _ev(
+            "SystemMessage", subtype="informational", data={
+                "content": (
+                    "UserPromptSubmit operation blocked by hook:\n"
+                    "UserPromptSubmit hook callback timed out after 30000ms"
+                ),
+                "preventContinuation": True,
+            },
+        ))
+        err = one(warning, "error")
+        self.assertIn("blocked the prompt before it reached the model", err["msg"])
+
+        stop = one(AgentSession._translate(
+            fake, _ev("ResultMessage", subtype="success", usage={})
+        ), "stop")
+        self.assertEqual(stop["subtype"], "error")
+        self.assertEqual(stop["terminal_reason"], "hook_blocked")
+        self.assertTrue(stop["is_error"])
+        self.assertIsNone(fake._blocking_turn_error)
+
+
+class PromptHookSafety(unittest.TestCase):
+    def test_user_prompt_submit_callback_is_not_registered(self):
+        # The provider-neutral peer bus emits external_message itself. Putting
+        # a Python callback on every user prompt lets a control-channel timeout
+        # veto the prompt before the model sees it.
+        self.assertNotIn('"UserPromptSubmit"', inspect.getsource(AgentSession._run))
+
 
 class UserMessageOrigin(unittest.TestCase):
     def test_peer_message_is_surfaced(self):
@@ -284,36 +316,6 @@ class CrossSessionMessage(unittest.TestCase):
                  "external_message")
         self.assertEqual(ev["text"], "regenerate the types")
 
-
-class UserPromptSubmitHook(unittest.TestCase):
-    """⚠ The SDK does NOT surface a peer message on receive_messages(). Measured
-    on the fleet: the stream went session_id → session_info → assistant_text with
-    no UserMessage at all, while the CLI transcript held the envelope. The
-    UserPromptSubmit hook is the only channel that sees it."""
-
-    ENV = ('Another Claude session sent a message:\n'
-           '<cross-session-message from="uds:/x.sock" from-name="bug" from-mode="prompting">\n'
-           'bonjour\n</cross-session-message>\n\nThis came from another Claude session…')
-
-    def _run(self, prompt):
-        import asyncio
-        out = []
-        fake = types.SimpleNamespace(_emit=lambda ev, **kw: out.append((ev, kw)))
-        asyncio.run(AgentSession._on_user_prompt(fake, {"prompt": prompt}, None, None))
-        return out
-
-    def test_peer_message_is_emitted_with_its_sender(self):
-        self.assertEqual(self._run(self.ENV),
-                         [("external_message",
-                           {"origin": "peer", "text": "bonjour", "from": "bug"})])
-
-    def test_an_ordinary_prompt_stays_silent(self):
-        # The hub already appends what IT sent; echoing every submission here
-        # would duplicate every user message in the transcript.
-        self.assertEqual(self._run("un prompt normal"), [])
-
-    def test_malformed_input_is_not_fatal(self):
-        self.assertEqual(self._run(None), [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,6 +63,23 @@ class TestPeerBus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event["source_session_id"], "source")
         self.assertEqual(event["message_id"], result["message_id"])
 
+    async def test_delivery_to_claude_does_not_depend_on_a_prompt_hook(self):
+        # UserPromptSubmit used to mirror native Claude peer envelopes, but a
+        # stuck SDK callback could veto every ordinary prompt. The Charon bus
+        # owns delivery and persistence before the target provider processes
+        # the envelope, so a Claude target needs no prompt hook at all.
+        self.target.kind = "claude"
+        result = await self.server._handle_meta_rpc("peer_send", {
+            "source_session_id": "source", "handle": "api", "message": "bonjour",
+        }, None)
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(self.target.inputs), 1)
+        self.assertIn("<charon-peer-message", self.target.inputs[0])
+        event = self.server.rings["target"][-1]
+        self.assertEqual(event["event"], "external_message")
+        self.assertEqual(event["text"], "bonjour")
+        self.assertEqual(event["from"], "frontend")
+
     async def test_sleeping_target_is_rejected(self):
         self.target.status = "sleeping"
         with self.assertRaises(RpcError) as caught:
