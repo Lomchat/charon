@@ -92,6 +92,22 @@ export type BgTaskProgressEventLike = {
 // tool_use id, consumed by the matching 'started' event.
 export type BgLaunchCandidate = { command: string | null; description: string | null };
 
+// Codex has no per-task `stop_task`: its background work IS the app-server's
+// background-terminal registry, reconciled agent-side into the common bg_task
+// lifecycle (§14.95) under this prefix. So a Codex bg row's task id CARRIES the
+// process id, which is exactly what `stop_background_terminal` takes — the one
+// bridge between the two vocabularies, hence one definition shared by the bar
+// (dedup vs the live registry) and by the hub's kill routing.
+export const CODEX_TERMINAL_TASK_PREFIX = 'codex-terminal:';
+
+/** The Codex process id inside a reconciled bg task id, or null when this row
+ *  is not a background terminal (a sub-agent spawn, say — nothing the provider
+ *  can stop one at a time). */
+export function codexTerminalProcessId(taskId: string): string | null {
+  if (!taskId.startsWith(CODEX_TERMINAL_TASK_PREFIX)) return null;
+  return taskId.slice(CODEX_TERMINAL_TASK_PREFIX.length) || null;
+}
+
 // The SDK's own vocabulary spans TWO lifecycles that must be read the same
 // way: `task_notification` reports completed|failed|stopped, `task_updated`
 // reports pending|running|paused|completed|failed|killed (the CLI maps killed

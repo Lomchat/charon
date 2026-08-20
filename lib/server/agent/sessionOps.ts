@@ -36,6 +36,7 @@ import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
 import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
+import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
 import {
   defaultSessionMode, isSessionEffort, isSessionMode,
@@ -2912,14 +2913,39 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
   if (!row) throw new Error('session not found');
   const client = getAgentClientForVpsId(row.vpsId);
+  // `stop_bg_task` is the SDK's `stop_task` — Claude-only, and the agent
+  // answers -32602 for anything else. A Codex session's rows in the same bar
+  // are its native background terminals reconciled into the common lifecycle
+  // (§14.95), so the kill is `stop_background_terminal` and the process id is
+  // already in the task id. Translated HERE, not agent-side, so it works on
+  // every agent already deployed (the RPC exists since 0.53.0) instead of
+  // needing a fleet rollout.
+  const isCodex = row.kind === 'codex';
+  const processId = isCodex ? codexTerminalProcessId(taskId) : null;
+  if (isCodex && !processId) {
+    // Sub-agent spawns and peer turns: real background work, but the provider
+    // exposes no per-item stop. Say what DOES stop it.
+    throw new Error('Codex cannot stop this item on its own — interrupt the turn to stop its work');
+  }
   try {
-    await client.call('stop_bg_task', { session_id: sessionId, task_id: taskId });
+    const res: any = processId
+      ? await client.call('stop_background_terminal', { session_id: sessionId, process_id: processId })
+      : await client.call('stop_bg_task', { session_id: sessionId, task_id: taskId });
+    // The terminal RPC answers an ENVELOPE rather than raising (§14.95), and a
+    // `terminated:false` is a refusal, not an ack — surfacing it is the whole
+    // difference between "still running" and a button that silently did nothing.
+    if (processId && res && typeof res === 'object') {
+      if (res.ok === false) throw new Error(String(res.error || 'the agent refused to stop this process'));
+      if (res.terminated === false) throw new Error('the process did not terminate');
+    }
   } catch (e) {
-    // -32601: the agent predates 0.35.0. Detected from the RPC error rather
+    // -32601: the agent predates the RPC. Detected from the RPC error rather
     // than from vps.agentVersion, which lags a rollout (§14.76). Say what to
     // do — "no such method" in a toast is not an instruction.
     if (e instanceof AgentRpcError && e.code === -32601) {
-      throw new Error("this VPS's agent is too old to stop a task — update it (needs 0.35.0)");
+      throw new Error(processId
+        ? "this VPS's agent is too old to stop a background process — update it (needs 0.53.0)"
+        : "this VPS's agent is too old to stop a task — update it (needs 0.35.0)");
     }
     throw e;
   }

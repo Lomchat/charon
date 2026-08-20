@@ -1673,6 +1673,12 @@
 }
 .bgtask-kill:disabled { cursor: default; opacity: 0.4; }
 .bgtask-killerr { font-size: 10.5px; margin-top: 5px; color: #e67a7a; }
+/* Stands where ⊘ would be when the provider has no per-item stop (Codex
+   sub-agent work): the absence of the button needs a reason, not a gap. */
+.bgtask-nostop {
+  margin-left: 8px; flex: none; font-size: 9.5px; letter-spacing: 0.04em;
+  color: var(--parchment-soft); opacity: 0.4; white-space: nowrap; cursor: help;
+}
 
 /* Workflow-tool run badge + live token counter (bg_task_progress, §14.54). */
 .bgtask-badge.workflow {

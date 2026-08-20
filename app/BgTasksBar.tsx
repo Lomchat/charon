@@ -1,7 +1,7 @@
 'use client';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { sessionApi } from '@/lib/api';
-import { effectiveBgStatus } from './bgTasks';
+import { CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 
 type CodexTerminal = {
@@ -152,7 +152,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
     [tasks, nowS],
   );
   const terminalTaskIds = useMemo(
-    () => new Set(terminals.map((term) => `codex-terminal:${terminalId(term)}`)),
+    () => new Set(terminals.map((term) => `${CODEX_TERMINAL_TASK_PREFIX}${terminalId(term)}`)),
     [terminals],
   );
   const taskView = useMemo(
@@ -237,6 +237,11 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
                 const meta = STATUS_META[status] ?? STATUS_META.stale;
                 const end = t.endedAt ?? nowS;
                 const kstate = killing[t.taskId];
+                // A Codex row is stoppable only when it IS a background
+                // terminal (its task id carries the process id): the provider
+                // has no per-item stop for a sub-agent spawn, so offering ⊘
+                // there could only ever produce an error toast.
+                const stoppable = provider !== 'codex' || !!codexTerminalProcessId(t.taskId);
                 return (
                   <div key={t.taskId} className={`bgtask-row ${meta.cls}`}>
                     <div className="bgtask-head">
@@ -253,7 +258,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
                           : `${fmtElapsed(t.startedAt, end)} · ended ${new Date(end * 1000).toLocaleTimeString()}`}
                         {t.usage && (t.usage.tokens ?? 0) > 0 && <span className="bgtask-usage"> · ↑{t.usage.tokens} tok</span>}
                       </span>
-                      {status === 'running' && (
+                      {status === 'running' && (stoppable ? (
                         // Kills the TASK, not the session — the agent keeps
                         // working. The row stays "running" until the CLI's own
                         // terminal event lands (§14.18).
@@ -266,7 +271,14 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
                         >
                           {kstate === 'pending' ? 'stopping…' : '⊘ stop'}
                         </button>
-                      )}
+                      ) : (
+                        <span
+                          className="bgtask-nostop"
+                          title="Codex has no per-item stop for this kind of work — interrupt the turn to end it"
+                        >
+                          no per-item stop
+                        </span>
+                      ))}
                     </div>
                     {kstate && kstate !== 'pending' && (
                       <div className="bgtask-killerr">could not stop: {kstate}</div>
