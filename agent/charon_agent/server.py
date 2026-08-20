@@ -117,6 +117,17 @@ RING_SIZE = 2000  # events buffered per session for late subscribers
 # small dicts (~200 bytes typical), so 2000 events × ~16 active sessions
 # fits in a few MB.
 
+# Single-instance guard (>= 0.72.0, §14.97). Two daemons on one state.json
+# is not a degraded mode, it is silent data corruption — so a startup that
+# finds a LIVE owner refuses instead of stealing the socket.
+SOCKET_PROBE_TIMEOUT_S = 3.0
+EXIT_ALREADY_RUNNING = 4
+
+
+class AlreadyRunning(RuntimeError):
+    """Another live daemon already owns this instance's socket."""
+
+
 _PEER_HANDLE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 _PEER_LIVE_STATUSES = frozenset({"starting", "active", "thinking", "background", "failed"})
 _PEER_MESSAGE_MAX = 16_384
@@ -128,6 +139,7 @@ class Server:
     def __init__(self, *, socket_path: Path, state_path: Path) -> None:
         self.socket_path = socket_path
         self.state_path = state_path
+        self._socket_ino: int | None = None   # set at bind (§14.97)
         # Durable event logs live next to state.json, in ~/.charon/events/.
         self.events_dir = state_path.parent / "events"
         # Persistent PTY shells (>= 0.7.0). Same _emit + rings + subscribers
@@ -1558,6 +1570,19 @@ class Server:
                 await s.apply_session_config(incoming_config)
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
+            # ⚠ Status said stopped; the RUN may disagree. Starting a second
+            # one over a live task gives one session two provider clients:
+            # Codex's newcomer then cannot take the thread's writer lock
+            # ("already has an active writer") while the older app-server
+            # holds it — and that older process is now unreachable, so the
+            # lock never comes back (§14.97). Stop it first, always.
+            old_run = getattr(s, "_main_task", None)
+            if old_run is not None and not old_run.done():
+                try:
+                    await s.stop(mark="sleeping")
+                except Exception as e:
+                    print(f"[server] resume: stopping the previous run failed: {e}",
+                          file=sys.stderr, flush=True)
             # Claude's native --name is start-time only. The common handle was
             # already applied above even when this resume is a noop.
             # Reset internal state so we can restart cleanly
@@ -1810,9 +1835,53 @@ class Server:
         return sh
 
     # ── Server lifecycle ─────────────────────────────────────────────────────
+    async def _socket_owner_pid(self) -> int | None:
+        """Who is listening on our socket right now — None if nobody is.
+
+        Connecting is the proof: a socket FILE left behind by a dead daemon
+        refuses the connection (ECONNREFUSED), a live one accepts. `hello`
+        is asked only to NAME the owner in the refusal message, so a wedged
+        daemon that accepts but never answers still counts as alive (0).
+        """
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(str(self.socket_path)),
+                timeout=SOCKET_PROBE_TIMEOUT_S,
+            )
+        except (OSError, asyncio.TimeoutError):
+            return None
+        try:
+            writer.write(b'{"id":0,"method":"hello"}\n')
+            await writer.drain()
+            line = await asyncio.wait_for(
+                reader.readline(), timeout=SOCKET_PROBE_TIMEOUT_S)
+            result = json.loads(line.decode("utf-8", "replace")).get("result")
+            pid = result.get("pid") if isinstance(result, dict) else None
+            return pid if isinstance(pid, int) else 0
+        except Exception:
+            return 0  # accepted the connection ⇒ alive, name unknown
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
     async def serve(self) -> None:
-        # Clean stale socket
+        # ⚠ A socket FILE is NOT proof of a dead daemon, and unlinking it
+        # blind (what we did before 0.72.0) is how ONE box ends up with TWO
+        # daemons on one state.json: both restore the same sessions, both
+        # spawn provider children, and the loser's Codex app-server keeps the
+        # thread's native writer lock forever — every later resume then dies
+        # with "already has an active writer" while orphan CLIs burn GBs.
+        # Probe first: only a socket nobody answers on is stale (§14.97).
         if self.socket_path.exists():
+            owner = await self._socket_owner_pid()
+            if owner is not None:
+                raise AlreadyRunning(
+                    f"another charon-agent already owns {self.socket_path}"
+                    + (f" (pid {owner})" if owner else "")
+                )
             try:
                 self.socket_path.unlink()
             except OSError as e:
@@ -1894,6 +1963,13 @@ class Server:
             os.chmod(self.socket_path, 0o600)
         except OSError:
             pass
+        # Remember WHICH socket is ours: shutdown must not unlink a path that
+        # now belongs to somebody else (the other half of §14.97 — a stale
+        # daemon's polite SIGTERM cleanup would cut the live one off the hub).
+        try:
+            self._socket_ino: int | None = os.stat(self.socket_path).st_ino
+        except OSError:
+            self._socket_ino = None
 
         print(
             f"[server] charon-agent {__version__} listening on {self.socket_path} "
@@ -1938,7 +2014,8 @@ class Server:
             except Exception:
                 pass
             try:
-                self.socket_path.unlink()
+                if os.stat(self.socket_path).st_ino == self._socket_ino:
+                    self.socket_path.unlink()
             except OSError:
                 pass
         print("[server] bye", file=sys.stderr, flush=True)

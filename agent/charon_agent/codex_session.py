@@ -2850,6 +2850,7 @@ class CodexSession:
             pass
 
     async def _run(self) -> None:
+        client = None
         try:
             self._loop = asyncio.get_running_loop()
             client = AsyncCodex(self._session_sdk_config())
@@ -2860,6 +2861,18 @@ class CodexSession:
                 await self._initialize_sdk(client)
             self._client = client
         except Exception as e:
+            # Initialization can fail AFTER the app-server child was spawned.
+            # Returning without closing leaves it holding this thread's native
+            # writer lock, so the next resume can never take it (§14.97).
+            if client is not None:
+                try:
+                    res = client.close()
+                    if asyncio.iscoroutine(res):
+                        await asyncio.wait_for(res, timeout=5.0)
+                except Exception:
+                    pass
+                if self._client is client:
+                    self._client = None
             self.status = "error"
             self._error_msg = f"AsyncCodex init: {e}"
             self._emit("error", msg=self._error_msg, fatal=True)
@@ -2999,6 +3012,23 @@ class CodexSession:
             self._emit("status", status="error")
         finally:
             me = asyncio.current_task()
+            if not (self._main_task is None or self._main_task is me):
+                # A NEWER _run took over this session (resume after an error).
+                # `self._client` is already its client, so the owner branch
+                # below would skip mine — and an unclosed AsyncCodex leaves
+                # its app-server child alive, holding the thread's native
+                # writer lock. Every later resume of that thread then fails
+                # with "already has an active writer" until someone kills the
+                # process by hand: close MY client, whoever owns the session
+                # now (§14.97).
+                try:
+                    if client is not None and client is not self._client:
+                        res = client.close()
+                        if asyncio.iscoroutine(res):
+                            await asyncio.wait_for(res, timeout=5.0)
+                except Exception as e:
+                    print(f"codex: superseded client close failed: {e}",
+                          file=sys.stderr)
             if self._main_task is None or self._main_task is me:
                 await self._stop_fs_watch()
                 global_task = self._global_task

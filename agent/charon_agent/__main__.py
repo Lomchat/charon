@@ -71,12 +71,19 @@ def main(argv: list[str] | None = None) -> int:
         return peer_mcp_main(args.peer_mcp, str(socket_path))
 
     # Daemon mode
-    from .server import Server
+    from .server import AlreadyRunning, EXIT_ALREADY_RUNNING, Server
     server = Server(socket_path=socket_path, state_path=state_path)
     try:
         asyncio.run(server.serve())
     except KeyboardInterrupt:
         pass
+    except AlreadyRunning as e:
+        # Loud and non-zero rather than a silent second daemon on the same
+        # state.json (§14.97). Under `Restart=always` systemd will retry, so
+        # the unit visibly flaps until the leftover process is killed —
+        # exactly the signal that was missing when it went unnoticed.
+        print(f"[server] refusing to start: {e}", file=sys.stderr, flush=True)
+        return EXIT_ALREADY_RUNNING
     return 0
 
 
