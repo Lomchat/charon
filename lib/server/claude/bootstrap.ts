@@ -238,6 +238,20 @@ StandardError=append:${AGENT_LOG_SYSTEMD}
 WantedBy=default.target
 `;
 
+// Since agent 0.72.0 a daemon REFUSES to start while another one still owns
+// the socket (§14.97) — the fix for two daemons on one state.json. systemd's
+// `restart` is synchronous (old stops, then new starts), but these nohup
+// fallback paths have no supervisor to retry for them, so wait for the old
+// process to actually be gone instead of guessing a sleep. Bounded at ~5s:
+// a daemon that will not die is a problem the next ping must report, not one
+// to hang the install on.
+const WAIT_FOR_AGENT_EXIT = [
+  'for _i in 1 2 3 4 5 6 7 8 9 10; do',
+  `  pgrep -f '${AGENT_PKILL_PATTERN}' >/dev/null 2>&1 || break`,
+  '  sleep 0.5',
+  'done',
+].join('\n');
+
 async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok: boolean; mode: 'systemd' | 'nohup'; detail: string }> {
   // Try systemd-user: drop the unit, enable-linger, daemon-reload, restart.
   // IMPORTANT: on a fresh VPS where the user (often root) has NEVER had
@@ -299,6 +313,7 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
     //  - the trailing `$` spares the shell HOLDERS, whose cmdline continues
     //    past the pyz — they are exactly what must survive a restart (§14.44).
     `pkill -f '${AGENT_PKILL_PATTERN}' || true`,
+    WAIT_FOR_AGENT_EXIT,
     // Launch the daemon in the background, detached. The final `&` is
     // followed by a newline (join('\n')), so no broken `&;`.
     `nohup setsid sh -c 'exec ${agentHomeEnvPrefix('home')}${PY_LOOKUP} ${REMOTE_AGENT_PATH}' >> ${AGENT_LOG_TILDE} 2>&1 < /dev/null &`,
@@ -782,7 +797,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       '# leading dir anchor keeps a co-tenant hub alive, §14.70) and NOT the',
       '# shell holders (their cmdline continues past .pyz, hence the $ anchor).',
       `pkill -f '${AGENT_PKILL_PATTERN}' 2>/dev/null || true`,
-      'sleep 0.5',
+      WAIT_FOR_AGENT_EXIT,
       `if [ -x "${SHARED_VENV_PY_HOME}" ]; then`,
       `  PY="${SHARED_VENV_PY_HOME}"`,
       'else',
