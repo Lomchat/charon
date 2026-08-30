@@ -95,10 +95,12 @@ METHODS = {
     # gated on an expected sha so a save cannot silently clobber a file a
     # coding agent wrote in the meantime.
     "fs_write",
-    # Explorer context menu (agent >= 0.27.0): create, rename, delete. Same
-    # containment as the reads, and none of them clobbers silently.
+    # Explorer context menu (agent >= 0.27.0): create, rename, delete, plus
+    # same-folder symlink creation (>= 0.75.0). Same containment as the reads,
+    # and none of them clobbers silently.
     "fs_mkdir",
     "fs_rename",
+    "fs_symlink",
     "fs_delete",
     # Search across the tree for the ToolPanel search tab (agent >= 0.29.0):
     # text inside files, or file names, with include/exclude globs. Read-only,
@@ -145,6 +147,9 @@ METHODS = {
     "resume_session",
     "peer_list",
     "peer_send",
+    "peer_status",
+    "peer_conversation",
+    "peer_inbox",
     "subscribe",
     "unsubscribe",
     "send_input",

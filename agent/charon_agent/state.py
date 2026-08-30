@@ -45,10 +45,21 @@ def load_state(path: Path) -> dict[str, Any]:
         return {"version": STATE_VERSION, "sessions": []}
 
 
-def save_state(path: Path, sessions: list[dict[str, Any]]) -> None:
+def save_state(
+    path: Path,
+    sessions: list[dict[str, Any]],
+    *,
+    peer_messages: list[dict[str, Any]] | None = None,
+) -> None:
     """Atomic write: tmp + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": STATE_VERSION, "sessions": sessions}
+    if peer_messages:
+        # Provider-neutral peer request/reply ledger. Kept beside the session
+        # lifecycle so a daemon restart cannot turn "processing" into
+        # "unknown" or lose a reply that has not yet been injected into its
+        # source session. Older agents ignore this additive top-level key.
+        data["peer_messages"] = peer_messages
     fd, tmp_path = tempfile.mkstemp(
         prefix=".state.", suffix=".json.tmp", dir=str(path.parent)
     )

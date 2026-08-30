@@ -13,12 +13,15 @@ What's worth pinning here is containment and honesty:
 stdlib unittest only. Run with:
     python3 agent/tests/test_fsnav_tree.py
 """
+import io
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -301,6 +304,223 @@ class WriteTest(unittest.TestCase):
         r = F.fs_delete(self.root, "a.txt", expected_sha256=expected)
         self.assertTrue(r["ok"], r)
         self.assertFalse(os.path.exists(os.path.join(self.root, "a.txt")))
+
+
+class SymlinkTest(unittest.TestCase):
+    """The context-menu link is relative, local and never clobbers."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-symlink-")
+        os.makedirs(os.path.join(self.root, "nested"))
+        with open(os.path.join(self.root, "nested", "AGENTS.md"), "w") as f:
+            f.write("shared instructions\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_creates_relative_link_and_both_names_share_content(self):
+        r = F.fs_symlink(
+            self.root, "nested/AGENTS.md", "nested/CLAUDE.md",
+        )
+        self.assertTrue(r["ok"], r)
+        link = os.path.join(self.root, "nested", "CLAUDE.md")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.readlink(link), "AGENTS.md")
+        with open(os.path.join(self.root, "nested", "AGENTS.md"), "a") as f:
+            f.write("one source\n")
+        with open(link) as f:
+            self.assertEqual(f.read(), "shared instructions\none source\n")
+
+    def test_delete_removes_the_link_and_preserves_its_target(self):
+        created = F.fs_symlink(
+            self.root, "nested/AGENTS.md", "nested/CLAUDE.md",
+        )
+        self.assertTrue(created["ok"], created)
+
+        deleted = F.fs_delete(self.root, "nested/CLAUDE.md")
+        self.assertTrue(deleted["ok"], deleted)
+        self.assertFalse(os.path.lexists(os.path.join(self.root, "nested", "CLAUDE.md")))
+        target = os.path.join(self.root, "nested", "AGENTS.md")
+        self.assertTrue(os.path.isfile(target))
+        with open(target) as f:
+            self.assertEqual(f.read(), "shared instructions\n")
+
+    def test_delete_does_not_follow_a_symlinked_parent_outside_root(self):
+        outside_dir = tempfile.mkdtemp(prefix="charon-symlink-outside-")
+        outside_file = os.path.join(outside_dir, "keep.txt")
+        with open(outside_file, "w") as f:
+            f.write("keep\n")
+        os.symlink(outside_dir, os.path.join(self.root, "escape"))
+        try:
+            deleted = F.fs_delete(self.root, "escape/keep.txt")
+            self.assertFalse(deleted["ok"])
+            self.assertEqual(deleted["reason"], "bad_path")
+            self.assertTrue(os.path.isfile(outside_file))
+        finally:
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
+    def test_existing_counterpart_is_never_replaced(self):
+        counterpart = os.path.join(self.root, "nested", "CLAUDE.md")
+        with open(counterpart, "w") as f:
+            f.write("keep me\n")
+        r = F.fs_symlink(
+            self.root, "nested/AGENTS.md", "nested/CLAUDE.md",
+        )
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "exists")
+        self.assertFalse(os.path.islink(counterpart))
+        with open(counterpart) as f:
+            self.assertEqual(f.read(), "keep me\n")
+
+    def test_cross_folder_link_is_refused(self):
+        r = F.fs_symlink(self.root, "nested/AGENTS.md", "CLAUDE.md")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "bad_path")
+        self.assertFalse(os.path.lexists(os.path.join(self.root, "CLAUDE.md")))
+
+    def test_missing_directory_and_outside_target_are_refused(self):
+        missing = F.fs_symlink(
+            self.root, "nested/AGENTS.md", "missing/CLAUDE.md",
+        )
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["reason"], "missing")
+
+        outside = tempfile.NamedTemporaryFile(mode="w", delete=False)
+        outside.write("outside")
+        outside.close()
+        try:
+            escaped = F.fs_symlink(self.root, outside.name, "AGENTS.md")
+            self.assertFalse(escaped["ok"])
+            self.assertEqual(escaped["reason"], "bad_path")
+        finally:
+            os.unlink(outside.name)
+
+
+class FileStreamTest(unittest.TestCase):
+    """Large downloads stream exact ranges and remain root-contained."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-file-stream-")
+        self.path = os.path.join(self.root, "artifact.bin")
+        with open(self.path, "wb") as f:
+            f.write(bytes(range(256)) * 32769)  # 256 bytes beyond the 8MiB preview cap
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_streams_the_complete_file_without_a_preview_cap(self):
+        output = io.BytesIO()
+        code, error = F.stream_file_to(self.root, "artifact.bin", output)
+        self.assertEqual((code, error), (0, None))
+        with open(self.path, "rb") as f:
+            self.assertEqual(output.getvalue(), f.read())
+
+    def test_streams_one_exact_http_range(self):
+        output = io.BytesIO()
+        code, error = F.stream_file_to(
+            self.root, "artifact.bin", output, offset=1234, length=9876,
+        )
+        self.assertEqual((code, error), (0, None))
+        with open(self.path, "rb") as f:
+            f.seek(1234)
+            self.assertEqual(output.getvalue(), f.read(9876))
+
+    def test_rejects_stale_metadata_and_invalid_ranges_before_writing(self):
+        version = F.fs_stat(self.root, "artifact.bin")["version"]
+        with open(self.path, "ab") as f:
+            f.write(b"changed")
+        stale = io.BytesIO()
+        code, _ = F.stream_file_to(
+            self.root, "artifact.bin", stale, expected_version=version,
+        )
+        self.assertEqual(code, F.STREAM_STALE)
+        self.assertEqual(stale.getvalue(), b"")
+
+        invalid = io.BytesIO()
+        code, _ = F.stream_file_to(
+            self.root, "artifact.bin", invalid,
+            offset=os.path.getsize(self.path) + 1, length=1,
+        )
+        self.assertEqual(code, F.STREAM_BAD_RANGE)
+        self.assertEqual(invalid.getvalue(), b"")
+
+    def test_rejects_a_symlink_escape(self):
+        outside = tempfile.NamedTemporaryFile(delete=False)
+        outside.write(b"secret")
+        outside.close()
+        os.symlink(outside.name, os.path.join(self.root, "escape.bin"))
+        try:
+            output = io.BytesIO()
+            code, _ = F.stream_file_to(self.root, "escape.bin", output)
+            self.assertEqual(code, F.STREAM_BAD_PATH)
+            self.assertEqual(output.getvalue(), b"")
+        finally:
+            os.unlink(outside.name)
+
+
+class DirectoryZipStreamTest(unittest.TestCase):
+    """Folder downloads are valid streaming ZIPs and never follow links."""
+
+    class UnseekableOutput(io.BytesIO):
+        def seekable(self):
+            return False
+
+        def seek(self, *args, **kwargs):
+            raise io.UnsupportedOperation("stream is not seekable")
+
+        def tell(self):
+            raise io.UnsupportedOperation("stream has no position")
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-zip-stream-")
+        os.makedirs(os.path.join(self.root, "project", "nested", "empty"))
+        with open(os.path.join(self.root, "project", "hello.txt"), "wb") as f:
+            f.write(b"hello\n")
+        with open(os.path.join(self.root, "project", "nested", "data.bin"), "wb") as f:
+            f.write(bytes(range(256)) * 4097)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_streams_a_valid_zip_to_an_unseekable_output(self):
+        output = self.UnseekableOutput()
+        code, error = F.stream_directory_zip_to(self.root, "project", output)
+        self.assertEqual((code, error), (0, None))
+        with zipfile.ZipFile(io.BytesIO(output.getvalue())) as archive:
+            self.assertEqual(archive.read("project/hello.txt"), b"hello\n")
+            self.assertEqual(
+                archive.read("project/nested/data.bin"),
+                bytes(range(256)) * 4097,
+            )
+            self.assertIn("project/nested/empty/", archive.namelist())
+            self.assertIsNone(archive.testzip())
+
+    def test_stores_an_outside_symlink_instead_of_following_it(self):
+        outside = tempfile.NamedTemporaryFile(delete=False)
+        outside.write(b"must not enter the archive")
+        outside.close()
+        os.symlink(outside.name, os.path.join(self.root, "project", "outside-link"))
+        try:
+            output = io.BytesIO()
+            code, error = F.stream_directory_zip_to(self.root, "project", output)
+            self.assertEqual((code, error), (0, None))
+            with zipfile.ZipFile(io.BytesIO(output.getvalue())) as archive:
+                info = archive.getinfo("project/outside-link")
+                self.assertTrue(stat.S_ISLNK(info.external_attr >> 16))
+                self.assertEqual(archive.read(info), os.fsencode(outside.name))
+                self.assertNotIn(b"must not enter the archive", output.getvalue())
+        finally:
+            os.unlink(outside.name)
+
+    def test_rejects_a_file_and_an_escape_before_writing(self):
+        for path, expected in [
+            ("project/hello.txt", F.STREAM_NOT_DIRECTORY),
+            ("../outside", F.STREAM_BAD_PATH),
+        ]:
+            output = io.BytesIO()
+            code, _ = F.stream_directory_zip_to(self.root, path, output)
+            self.assertEqual(code, expected)
+            self.assertEqual(output.getvalue(), b"")
 
 
 if __name__ == "__main__":

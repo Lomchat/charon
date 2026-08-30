@@ -191,6 +191,35 @@ describe('rebuildStateFromMessages', () => {
     expect(s.edits.get('/f')!.truncated).toBe(true);
   });
 
+  it('collapses peer delivery status updates and keeps the correlated reply', () => {
+    const rows = [
+      row('event', JSON.stringify({
+        type: 'peer_message_status', messageId: 'm-peer', conversationId: 'conv',
+        target: 'b', targetProvider: 'codex', text: 'bonjour', status: 'accepted',
+      })),
+      row('event', JSON.stringify({
+        type: 'peer_message_status', messageId: 'm-peer', conversationId: 'conv',
+        target: 'b', targetProvider: 'codex', text: 'bonjour', status: 'replied',
+      })),
+      row('event', JSON.stringify({
+        type: 'external_message', origin: 'charon_peer_reply', text: 'salut',
+        from: 'b', fromProvider: 'codex', messageId: 'reply',
+        replyTo: 'm-peer', conversationId: 'conv',
+      })),
+    ];
+    const s = rebuildStateFromMessages(rows, 'active');
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[0]).toMatchObject({
+      id: 'peer:m-peer', role: 'peer_status', content: 'bonjour',
+      peerStatus: 'replied', peerTarget: 'b', conversationId: 'conv',
+      peerError: null,
+    });
+    expect(s.messages[1]).toMatchObject({
+      role: 'external', content: 'salut', from: 'b', replyTo: 'm-peer',
+      conversationId: 'conv',
+    });
+  });
+
   // --- robustness: malformed JSON ---
 
   it('silently skips malformed tool_use / tool_result / event / edit_snapshot JSON without throwing', () => {

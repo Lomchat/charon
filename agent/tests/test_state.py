@@ -178,6 +178,13 @@ class TestSaveLoadRoundTrip(StateTestBase):
         self.assertEqual(raw["version"], STATE_VERSION)
         self.assertEqual(raw["sessions"], [{"session_id": "x"}])
 
+    def test_peer_message_ledger_round_trips_as_additive_state(self):
+        peers = [{"message_id": "m1", "source_session_id": "a",
+                  "target_session_id": "b", "status": "processing"}]
+        save_state(self.path, [{"session_id": "a"}], peer_messages=peers)
+        loaded = load_state(self.path)
+        self.assertEqual(loaded["peer_messages"], peers)
+
     def test_save_creates_parent_dirs(self):
         nested = self.dir / "deep" / "nest" / "state.json"
         save_state(nested, [{"session_id": "z"}])

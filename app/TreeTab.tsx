@@ -1,15 +1,15 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry } from '@/lib/types/api';
 import { buildGitDecorations, fileStatusLabel, repoForPath, useGitStatus } from './gitStore';
 import HistoryModal from './HistoryModal';
-import { IconClockHistory, IconEye } from './icons';
+import { IconClockHistory, IconDownload, IconEye } from './icons';
 import { activityLabel, useFileActivity } from './fileActivityStore';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import {
   IconForKind, fileKind, IconFolder,
-  IconFilePlus, IconFolderPlus, IconCopy, IconRename, IconDelete, IconInsert,
+  IconFilePlus, IconFolderPlus, IconCopy, IconRename, IconDelete, IconInsert, IconSymlink,
 } from './fileIcons';
 import { IconClipboard, IconFileEarmark, IconPencil } from './icons';
 import ConfirmModal from './ConfirmModal';
@@ -21,6 +21,8 @@ import {
   collapseTreeDeletePaths, isTreeSelectionOnly, readTreeSelection, selectTreeRow,
   treeSelectionScope, writeTreeSelection,
 } from './treeSelection';
+import { missingInstructionSymlink } from './instructionSymlink';
+import { positionContextMenu } from './contextMenuPosition';
 
 type Props = {
   vpsId: string | null;
@@ -95,6 +97,13 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   }, [vpsId, cwd]);
   const inflight = useRef<Set<string>>(new Set());
   const [menu, setMenu] = useState<Menu | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // Keep the menu identity with its measured position. A newly opened menu
+  // may have a different action count/height, so reusing the previous menu's
+  // coordinates for even one paint would recreate the bottom-edge flash.
+  const [menuPos, setMenuPos] = useState<{
+    menu: Menu; left: number; top: number;
+  } | null>(null);
   // Explorer selection is deliberately separate from `activeFile`: active is
   // the file shown in the editor, selected is the transient Ctrl/Shift set a
   // context-menu action will target. Paths remain stable as rows move.
@@ -124,7 +133,33 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   // and these paths remain in the tree, red + disabled, until the background
   // batch settles and the affected directories are re-listed.
   const [deletingPaths, setDeletingPaths] = useState<Set<string>>(() => new Set());
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const place = () => {
+      const rect = el.getBoundingClientRect();
+      const pos = positionContextMenu(
+        menu.x, menu.y, rect.width, rect.height,
+        window.innerWidth, window.innerHeight,
+      );
+      setMenuPos({ menu, ...pos });
+    };
+    // Measure before paint, then keep the box contained if a mobile viewport
+    // rotates/resizes or an action changes its rendered dimensions.
+    place();
+    window.addEventListener('resize', place);
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(place);
+    observer?.observe(el);
+    return () => {
+      window.removeEventListener('resize', place);
+      observer?.disconnect();
+    };
+  }, [menu]);
 
   // The file the main pane is showing, when it belongs to THIS tree. Read from
   // the tab store rather than taken as a prop: the same panel renders beside
@@ -374,6 +409,28 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     if (next === row.name) { setDialog(null); return; }
     await runOp(() => api.fsOp(vpsId, { root: cwd, op: 'rename', path: row.path, to: dir ? `${dir}/${next}` : next }), dir);
   }
+  async function createInstructionSymlink(row: Row, linkName: string) {
+    if (!vpsId || !cwd) return;
+    const dir = parentOf(row);
+    const linkPath = dir ? `${dir}/${linkName}` : linkName;
+    // This action is non-destructive and needs no confirmation. Close the menu
+    // immediately, then surface a race/refusal inline above the tree; the agent
+    // is authoritative and never replaces an existing counterpart.
+    setMenu(null);
+    setOpError(null);
+    try {
+      const result = await api.fsOp(vpsId, {
+        root: cwd,
+        op: 'symlink',
+        path: row.path,
+        to: linkPath,
+      });
+      if (!result.ok) throw new Error(result.error ?? 'could not create symlink');
+      reload(dir);
+    } catch (e: unknown) {
+      setOpError(`${linkPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   function startDelete(rowsToDelete: Row[]) {
     if (!vpsId || !cwd) return;
     // A selected folder subsumes selected descendants. Removing those calls is
@@ -382,7 +439,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     const targets = collapseTreeDeletePaths(rowsToDelete);
     if (!targets.length) return;
     setDialog(null);
-    setDeleteError(null);
+    setOpError(null);
     setDeletingPaths((current) => new Set([...current, ...targets.map((row) => row.path)]));
     // It is no longer an actionable selection; the red pending state is the
     // visual ownership until completion.
@@ -409,7 +466,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
       for (const dir of affectedDirs) reload(dir);
       if (failed.length) {
         const first = failed[0];
-        setDeleteError(failed.length === 1
+        setOpError(failed.length === 1
           ? `${first.row.path}: ${first.error}`
           : `${failed.length} items could not be deleted (first: ${first.row.path}: ${first.error})`);
       }
@@ -452,6 +509,16 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     return null;
   };
 
+  // A visible row's parent has necessarily been listed, so the same snapshot
+  // tells us whether its conventional sibling already exists. A later race is
+  // harmless: fs_symlink uses lexists and refuses to clobber it.
+  const instructionSymlink = menu?.row && menu.rows.length === 1 && !menu.row.dir
+    ? missingInstructionSymlink(
+      menu.row.name,
+      (children.get(parentOf(menu.row)) ?? []).map((entry) => entry.name),
+    )
+    : null;
+
   if (!vpsId || !cwd) return <div className="tp-empty">no folder for this session</div>;
 
   const rootErr = errors.get('');
@@ -479,23 +546,25 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
         <button className="gt-mini" onClick={() => { setChildren(new Map()); void load('', true); }}
           title="reload the tree">↻</button>
       </div>
-      {deleteError && (
+      {opError && (
         <div className="tt-op-error" role="alert">
-          <span>{deleteError}</span>
-          <button type="button" onClick={() => setDeleteError(null)} aria-label="dismiss delete error">×</button>
+          <span>{opError}</span>
+          <button type="button" onClick={() => setOpError(null)} aria-label="dismiss file operation error">×</button>
         </div>
       )}
 
       {menu && (
         <>
           <div className="tt-menu-scrim" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
-          {/* Clamped by the menu's OWN height: the root menu is two entries and
-              flipping it 250px up the screen would leave it nowhere near the
-              click that opened it. */}
-          <div className="tt-menu" style={{
-            left: Math.min(menu.x, window.innerWidth - 210),
-            top: Math.min(menu.y, window.innerHeight - (menu.rows.length > 1 ? 100 : menu.row ? 250 : 120)),
-          }}>
+          <div
+            ref={menuRef}
+            className="tt-menu"
+            style={{
+              left: menuPos?.menu === menu ? menuPos.left : menu.x,
+              top: menuPos?.menu === menu ? menuPos.top : menu.y,
+              visibility: menuPos?.menu === menu ? 'visible' : 'hidden',
+            }}
+          >
             {/* What the menu acts on. Without it the row-less menu (right-click
                 on the empty space below the rows) gave no clue that "New File"
                 lands in the ROOT and not in whatever was last clicked. */}
@@ -505,6 +574,36 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
                 ? `${menu.rows.length} items selected`
                 : menu.row ? menu.row.name : (cwd.split('/').filter(Boolean).pop() ?? cwd)}</span>
             </div>
+            {/* The instruction-file bridge is exceptional and intentionally
+                first: it appears only on the one row it can act on, in its own
+                section rather than buried among ordinary rename/delete ops. */}
+            {instructionSymlink && menu.row && (
+              <>
+                <button
+                  title={`${instructionSymlink} → ${menu.row.name}`}
+                  onClick={() => void createInstructionSymlink(menu.row!, instructionSymlink)}
+                >
+                  <IconSymlink />Create {instructionSymlink} Symlink
+                </button>
+                <div className="tt-menu-sep" />
+              </>
+            )}
+            {menu.rows.length <= 1 && (
+              <>
+                <a
+                  href={api.fsFileUrl(vpsId, cwd, menu.row?.path ?? '.', {
+                    archive: !menu.row || menu.row.dir ? 'zip' : undefined,
+                  })}
+                  download={!menu.row
+                    ? `${cwd.split('/').filter(Boolean).pop() ?? 'folder'}.zip`
+                    : menu.row.dir ? `${menu.row.name}.zip` : menu.row.name}
+                  onClick={() => setMenu(null)}
+                >
+                  <IconDownload />{!menu.row || menu.row.dir ? 'Download as ZIP' : 'Download'}
+                </a>
+                <div className="tt-menu-sep" />
+              </>
+            )}
             {menu.rows.length <= 1 && <>
               <button onClick={() => openDialog({ kind: 'create', dir: dirOf(menu.row), folder: false })}>
                 <IconFilePlus />New File…

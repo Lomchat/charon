@@ -3,11 +3,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import os
 import sys
 from pathlib import Path
 
 from . import __version__
+
+
+def _decode_stream_arg(raw: str) -> str:
+    """Decode one URL-safe base64 CLI argument emitted by the hub."""
+    padded = raw + "=" * (-len(raw) % 4)
+    try:
+        return base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as e:
+        raise ValueError("invalid stream argument") from e
 
 
 def _default_state_dir() -> Path:
@@ -36,6 +47,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="stdio ↔ socket proxy mode (used by Charon over SSH)")
     p.add_argument("--peer-mcp", metavar="SOURCE_SESSION_ID", default=None,
                    help="internal: expose the provider-neutral peer bus over stdio MCP")
+    stream_mode = p.add_mutually_exclusive_group()
+    stream_mode.add_argument("--stream-file", nargs=2, metavar=("ROOT_B64", "PATH_B64"), default=None,
+                             help="internal: stream one contained file over stdout")
+    stream_mode.add_argument("--stream-zip", nargs=2, metavar=("ROOT_B64", "PATH_B64"), default=None,
+                             help="internal: stream one contained directory as ZIP over stdout")
+    p.add_argument("--offset", type=int, default=0,
+                   help="stream-file: first byte offset")
+    p.add_argument("--length", type=int, default=None,
+                   help="stream-file: exact byte count")
+    p.add_argument("--expected-version", default=None,
+                   help="stream-file: base64url fs_stat version precondition")
     # ── Shell holder mode (>= 0.10.0) ──
     # A detached per-shell process owning the PTY + bash so the shell
     # survives agent restarts. Spawned BY the agent, never by hand.
@@ -50,6 +72,36 @@ def main(argv: list[str] | None = None) -> int:
     state_dir = _default_state_dir()
     socket_path = args.socket or _default_socket(state_dir)
     state_path = args.state or _default_state_file(state_dir)
+
+    if args.stream_file:
+        from .fsnav import STREAM_BAD_PATH, stream_file_to
+        try:
+            root, path = (_decode_stream_arg(v) for v in args.stream_file)
+            expected = (_decode_stream_arg(args.expected_version)
+                        if args.expected_version is not None else None)
+        except ValueError as e:
+            print(str(e), file=sys.stderr, flush=True)
+            return STREAM_BAD_PATH
+        code, error = stream_file_to(
+            root, path, sys.stdout.buffer,
+            offset=args.offset, length=args.length,
+            expected_version=expected,
+        )
+        if error:
+            print(error, file=sys.stderr, flush=True)
+        return code
+
+    if args.stream_zip:
+        from .fsnav import STREAM_BAD_PATH, stream_directory_zip_to
+        try:
+            root, path = (_decode_stream_arg(v) for v in args.stream_zip)
+        except ValueError as e:
+            print(str(e), file=sys.stderr, flush=True)
+            return STREAM_BAD_PATH
+        code, error = stream_directory_zip_to(root, path, sys.stdout.buffer)
+        if error:
+            print(error, file=sys.stderr, flush=True)
+        return code
 
     if args.shell_holder:
         from .holder import holder_main

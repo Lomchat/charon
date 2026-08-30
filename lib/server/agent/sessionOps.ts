@@ -1378,6 +1378,27 @@ export class SessionStream {
           ...(ev.from_provider ? { fromProvider: ev.from_provider } : {}),
           ...(ev.source_session_id ? { sourceSessionId: ev.source_session_id } : {}),
           ...(ev.message_id ? { messageId: ev.message_id } : {}),
+          ...(ev.conversation_id ? { conversationId: ev.conversation_id } : {}),
+          ...(ev.reply_to ? { replyTo: ev.reply_to } : {}),
+          ...(ev.expects_reply !== undefined ? { expectsReply: ev.expects_reply } : {}),
+        };
+        this._persist('event', payload);
+        this._broadcast(payload);
+        break;
+      }
+      case 'peer_message_status': {
+        if (this._replayAlreadyPersisted(ev)) break;
+        const payload = {
+          type: 'peer_message_status' as const,
+          messageId: ev.message_id,
+          conversationId: ev.conversation_id,
+          ...(ev.target_session_id ? { targetSessionId: ev.target_session_id } : {}),
+          ...(ev.target ? { target: ev.target } : {}),
+          ...(ev.target_provider ? { targetProvider: ev.target_provider } : {}),
+          ...(ev.text ? { text: ev.text } : {}),
+          status: ev.status,
+          ...(ev.error ? { error: ev.error } : {}),
+          ...(ev.reply_id ? { replyId: ev.reply_id } : {}),
         };
         this._persist('event', payload);
         this._broadcast(payload);

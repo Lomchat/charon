@@ -155,6 +155,24 @@ export function rebuildStateFromMessages(
             fromProvider: ev.fromProvider === 'claude' || ev.fromProvider === 'codex'
               ? ev.fromProvider : null,
             sourceSessionId: typeof ev.sourceSessionId === 'string' ? ev.sourceSessionId : null,
+            messageId: typeof ev.messageId === 'string' ? ev.messageId : null,
+            conversationId: typeof ev.conversationId === 'string' ? ev.conversationId : null,
+            replyTo: typeof ev.replyTo === 'string' ? ev.replyTo : null,
+          });
+        }
+        if (ev.type === 'peer_message_status' && typeof ev.messageId === 'string') {
+          const peerStatus = ['accepted', 'processing', 'replied', 'failed', 'timed_out']
+            .includes(String(ev.status)) ? ev.status : 'failed';
+          replaceLiveMessage({
+            id: `peer:${ev.messageId}`, role: 'peer_status',
+            content: String(ev.text ?? ''), createdAt: m.createdAt,
+            messageId: ev.messageId,
+            conversationId: typeof ev.conversationId === 'string' ? ev.conversationId : null,
+            peerStatus,
+            peerTarget: typeof ev.target === 'string' ? ev.target : null,
+            peerError: typeof ev.error === 'string' ? ev.error : null,
+            fromProvider: ev.targetProvider === 'claude' || ev.targetProvider === 'codex'
+              ? ev.targetProvider : null,
           });
         }
       } catch {}

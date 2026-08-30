@@ -14,7 +14,7 @@ import {
 } from './lspClient';
 import LspPicker from './LspPicker';
 import HistoryModal from './HistoryModal';
-import { IconClockHistory } from './icons';
+import { IconClockHistory, IconDownload } from './icons';
 import PromptModal from './PromptModal';
 import { subscribeFsChanged } from './fsChangeBus';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
@@ -392,8 +392,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
             only answer "not tracked" is worse than no button. */}
         {history && (
           <button className="fe-hist" onClick={() => setHistoryOpen(true)}
-                  title={`commit history for ${history.rel}`}>
-            <IconClockHistory /> history
+                  title={`Git commit history for ${history.rel}`}>
+            <IconClockHistory /> Git history
           </button>
         )}
         {!media && !readOnly && (
@@ -402,7 +402,9 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
             {saving ? 'saving…' : 'save'}
           </button>
         )}
-        <a className="fe-dl" href={rawUrl} download={name} title="download">get</a>
+        <a className="fe-dl" href={rawUrl} download={name} title={`download ${name}`}>
+          <IconDownload /> Download
+        </a>
       </header>
 
       {note && <div className={`fe-note ${note.kind}`}>{note.text}</div>}
@@ -477,15 +479,17 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                 <span className="fe-lsp-text">{lspText}</span>
                 {lsp.live && lsp.diagnostics.length > 0 && (
                   <>
-                    <button className="fe-lsp-btn" onClick={() => stepProblem(-1)} title="previous problem (Shift+F8)">▲</button>
-                    <button className="fe-lsp-btn" onClick={() => stepProblem(1)} title="next problem (F8)">▼</button>
+                    <button className="fe-lsp-btn" onClick={() => stepProblem(-1)}
+                      title="previous problem (Shift+F8)">Previous problem</button>
+                    <button className="fe-lsp-btn" onClick={() => stepProblem(1)}
+                      title="next problem (F8)">Next problem</button>
                   </>
                 )}
                 <span className="gt-spacer" />
                 {lsp.live && (
                   <button className="fe-lsp-btn wide" disabled={!!busyLsp || readOnly}
                     onClick={() => void doFormat()} title="format this file with the language server">
-                    {busyLsp === 'format' ? '…' : 'format'}
+                    {busyLsp === 'format' ? '…' : 'Format file'}
                   </button>
                 )}
                 {lsp.live && <span className="fe-lsp-hint">⌘/Ctrl+click → definition · Shift → references · F2 rename</span>}

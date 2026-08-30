@@ -7,7 +7,8 @@ import { AgentRpcError } from '@/lib/server/agent/types';
 import { invalidateGitStatus } from '@/lib/server/claude/git';
 import type { FsOpBody, FsOpResponse } from '@/lib/types/api';
 
-// POST /api/vps/[id]/fs/op  { root, op: 'mkdir'|'rename'|'delete', path, to?, recursive? }
+// POST /api/vps/[id]/fs/op
+// { root, op: 'mkdir'|'rename'|'symlink'|'delete', path, to?, recursive? }
 //
 // The explorer's context menu, behind ONE route rather than three: they share
 // the VPS lookup, the agent gating, the git invalidation and the failure
@@ -30,13 +31,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const root = String(body?.root ?? '');
   const path = String(body?.path ?? '');
   const op = String(body?.op ?? '');
-  if (!root || !path || !['mkdir', 'rename', 'delete'].includes(op)) {
+  if (!root || !path || !['mkdir', 'rename', 'symlink', 'delete'].includes(op)) {
     return NextResponse.json<FsOpResponse>({ ok: false, error: 'root, path and a valid op are required' }, { status: 400 });
   }
 
-  const method = op === 'mkdir' ? 'fs_mkdir' : op === 'rename' ? 'fs_rename' : 'fs_delete';
+  const method = op === 'mkdir'
+    ? 'fs_mkdir'
+    : op === 'rename'
+      ? 'fs_rename'
+      : op === 'symlink'
+        ? 'fs_symlink'
+        : 'fs_delete';
   const rpcParams: Record<string, unknown> = { root, path };
-  if (op === 'rename') rpcParams.to = String(body?.to ?? '');
+  if (op === 'rename' || op === 'symlink') rpcParams.to = String(body?.to ?? '');
   if (op === 'delete') rpcParams.recursive = !!body?.recursive;
 
   try {
@@ -52,7 +59,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (e instanceof AgentRpcError && e.code === -32601) {
       return NextResponse.json<FsOpResponse>({
         ok: false, reason: 'unsupported',
-        error: 'this VPS runs an agent older than 0.27.0 — update it to manage files',
+        error: op === 'symlink'
+          ? 'this VPS runs an agent older than 0.75.0 — update it to create symlinks'
+          : 'this VPS runs an agent older than 0.27.0 — update it to manage files',
       });
     }
     const msg = e instanceof Error ? e.message : String(e);

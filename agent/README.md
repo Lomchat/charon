@@ -6,7 +6,7 @@ plus persistent PTY shells. Charon (the Next.js hub) drives it over **one
 multiplexed SSH per VPS**, speaking line-delimited JSON-RPC to the daemon's
 Unix socket `~/.charon/agent.sock`.
 
-Current `__version__`: **0.71.0** (`charon_agent/__init__.py`).
+Current `__version__`: **0.78.0** (`charon_agent/__init__.py`).
 
 The **protocol spec is [`charon_agent/protocol.py`](charon_agent/protocol.py)**
 (error codes + the canonical `METHODS` set). Its TypeScript mirror is
@@ -19,7 +19,7 @@ architectural **motivation and current consequences** (not a protocol catalog).
 ## Layout
 
 ```
-charon_agent/__main__.py      CLI: daemon | --connect | --shell-holder (internal)
+charon_agent/__main__.py      CLI: daemon | --connect | --stream-file/zip | holder
 charon_agent/server.py        asyncio Unix server, JSON-RPC dispatch, per-session
                               ring (RING_SIZE=2000), subscribers, send queue
 charon_agent/session.py       Claude session: wraps ClaudeSDKClient, hooks,

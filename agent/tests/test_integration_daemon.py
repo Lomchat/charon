@@ -240,6 +240,40 @@ class TestDaemonIntegration(unittest.TestCase):
             self.assertTrue(got[1].get("result", {}).get("pong"))
             self.assertTrue(got[2].get("result", {}).get("agent_version"))
 
+    def test_fs_write_larger_than_default_stream_limit_stays_connected(self):
+        """A valid editor save must not tear down the agent connection.
+
+        asyncio's default Unix-stream reader limit is 64 KiB.  Before 0.74.0,
+        a source file above that size raised LimitOverrunError in Client.run,
+        closed the socket, and surfaced through SSH as the misleading
+        ``connection lost (ssh exit code=0)``.  Exercise the real daemon with a
+        request comfortably above 64 KiB, then prove the same client survives.
+        """
+        content = "# large editor save\n" + ("value = 'charon'\n" * 8_192)
+        params = {
+            "root": self.home,
+            "path": "large-save.py",
+            "content": content,
+            "expected_sha256": "",
+        }
+        encoded = (json.dumps({
+            "id": 1,
+            "method": "fs_write",
+            "params": params,
+        }) + "\n").encode()
+        self.assertGreater(len(encoded), 65_536)
+
+        c = _Conn(self.sock)
+        try:
+            result = c.call("fs_write", params)
+            self.assertTrue(result.get("ok"), result)
+            with open(os.path.join(self.home, "large-save.py"),
+                      "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), content)
+            self.assertTrue(c.call("ping").get("pong"))
+        finally:
+            c.close()
+
     def test_shell_output_is_durable_and_replays_on_reconnect(self):
         shell_id = "abc123def4567890"  # 16-hex shell id
         c = _Conn(self.sock)

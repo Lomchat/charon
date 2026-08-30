@@ -56,6 +56,12 @@ export type BootstrapEvent = {
 const PY_CHAIN =
   'command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3.10';
 
+// systemd's default TimeoutStopSec is 90s. A busy daemon can legitimately
+// need most of it to close many provider sessions, so the update SSH command
+// must outlive systemd instead of reporting a false failure at 20s while the
+// remote restart is still completing.
+const AGENT_RESTART_TIMEOUT_MS = 120_000;
+
 // The agent and the SDK always run in a dedicated venv at ~/.charon/venv.
 // Benefits: no conflict with system packages, works around PEP 668
 // (Debian 12 / Ubuntu 23+ refuse `pip install --user` by default), and
@@ -811,7 +817,7 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       'sleep 1',
       'echo OK_NOHUP',
     ].join('\n');
-    const rr = await sshExec(vps, restartCmd, { timeoutMs: 20_000, session });
+    const rr = await sshExec(vps, restartCmd, { timeoutMs: AGENT_RESTART_TIMEOUT_MS, session });
     if (!rr.ok || !(rr.stdout.includes('OK_SYSTEMD') || rr.stdout.includes('OK_NOHUP'))) {
       const tail = (rr.stderr.slice(-300) || rr.stdout.slice(-300) || `exit ${rr.code}`).trim();
       return { ok: false, detail: `restart failed: ${tail}` };

@@ -6,6 +6,7 @@ import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { IconClipboard } from './icons';
+import { hastText } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError';
@@ -26,6 +27,7 @@ const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMark
 ];
 const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']> = {
   a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  pre: CodeBlock,
 };
 
 type Props = {
@@ -93,13 +95,19 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
   // what changes is WHO sent it, and that belongs next to the role, the same
   // way an assistant bubble carries the model that produced it.
   const isExternal = m.role === 'external';
+  const isPeerStatus = m.role === 'peer_status';
+  const peerStatusLabel = m.peerStatus === 'accepted' ? 'accepted'
+    : m.peerStatus === 'processing' ? 'processing'
+    : m.peerStatus === 'replied' ? 'replied'
+    : m.peerStatus === 'timed_out' ? 'timed out'
+    : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
       className={`bubble role-${m.role}${streaming ? ' streaming' : ''}`}
       data-msg-role={m.role}
     >
       <header className="bubble-h">
-        <span className="tag">{isExternal ? 'user' : m.role}</span>
+        <span className="tag">{isExternal ? 'user' : isPeerStatus ? 'sent' : m.role}</span>
         {isExternal && (
           <span
             className="from-chip"
@@ -112,6 +120,17 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
         )}
         {isExternal && m.fromProvider && (
           <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
+        )}
+        {isPeerStatus && (
+          <span className="from-chip" title="Charon peer request destination">
+            {m.peerTarget ? `to @${m.peerTarget}` : 'to peer session'}
+          </span>
+        )}
+        {isPeerStatus && m.fromProvider && (
+          <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
+        )}
+        {isPeerStatus && peerStatusLabel && (
+          <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
         )}
         {/* Per-message agent attribution (assistant only): a small Claude/Codex
             logo so it's always clear which backend is speaking, next to the
@@ -153,6 +172,9 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
           <span>{m.content}</span>
         )}
       </div>
+      {isPeerStatus && m.peerError && (
+        <div className="peer-error">{m.peerError}</div>
+      )}
       {/* Bottom mirror of the header's date/time + copy — the same info at
           the end of a long message, so a reader doesn't have to scroll back
           up to see when it was sent or to copy it. */}
@@ -432,7 +454,7 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
           : <span className="tu-running"><span className="dot" /> running</span>)}
         {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
       </header>
-      {openInput && <pre className="tu-detail">{JSON.stringify(input, null, 2)}</pre>}
+      {openInput && <DetailPre className="tu-detail" text={JSON.stringify(input, null, 2)} />}
       {resultObj && (
         <div className="tu-result">
           <div className="tr-line" onClick={() => resultIsLong && setOpenResult((v) => !v)} style={{ cursor: resultIsLong ? 'pointer' : 'default' }}>
@@ -442,10 +464,15 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
             {resultIsLong && <span className="caret">{openResult ? '▾' : '▸'}</span>}
           </div>
           {openResult && resultIsLong && (
-            <pre className="tr-detail">
-              {resultObj.content.slice(0, 8000)}
-              {resultObj.content.length > 8000 ? `\n[…truncated ${resultObj.content.length - 8000} chars]` : ''}
-            </pre>
+            <DetailPre
+              className="tr-detail"
+              text={
+                resultObj.content.slice(0, 8000) +
+                (resultObj.content.length > 8000
+                  ? `\n[…truncated ${resultObj.content.length - 8000} chars]`
+                  : '')
+              }
+            />
           )}
         </div>
       )}
@@ -472,7 +499,10 @@ function ToolResultCard({ m }: { m: Msg }) {
         <span className="tr-preview">{preview}{content.length > 120 ? '…' : ''}</span>
       </header>
       {(open || !isLong) && (
-        <pre className="tr-detail">{content.slice(0, 8000)}{content.length > 8000 ? `\n[…truncated ${content.length - 8000} chars]` : ''}</pre>
+        <DetailPre
+          className="tr-detail"
+          text={content.slice(0, 8000) + (content.length > 8000 ? `\n[…truncated ${content.length - 8000} chars]` : '')}
+        />
       )}
     </div>
   );
@@ -544,31 +574,72 @@ function fmtTime(ts: number): string {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 }
 
-// "copy the whole message" — sits next to the timestamp, top and bottom of
-// the main chat bubble (§ CLAUDE.md 11). Its own component (not inlined in
-// Message) so its `copied` flash is a local hook with no rules-of-hooks
-// entanglement with Message's early returns for the other roles.
-function CopyMessageButton({ content }: { content: string }) {
+// THE clipboard action, shared by every copy affordance in a bubble (whole
+// message, fenced code block, tool JSON/output pane). One component (not
+// inlined in Message) so the `copied` flash is a local hook with no
+// rules-of-hooks entanglement with Message's early returns for the other
+// roles — and so the three anchors can't drift apart.
+function CopyButton({ text, className, title }: { text: string; className: string; title: string }) {
   const [copied, setCopied] = useState(false);
-  const onClick = async () => {
+  const onClick = async (e: React.MouseEvent) => {
+    // Several of these sit inside cards whose header/line toggles open on
+    // click; copying must not also fold the thing you're copying.
+    e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(content);
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
       // Clipboard API needs a secure context — nothing sensible to fall back
-      // to inline here (unlike copyPath's alert(), a whole message is too
-      // long for a prompt), so this quietly no-ops.
+      // to inline here (unlike copyPath's alert(), a whole message or code
+      // block is too long for a prompt), so this quietly no-ops.
     }
   };
   return (
     <button
       type="button"
-      className={`bubble-copy-btn${copied ? ' copied' : ''}`}
+      className={`${className}${copied ? ' copied' : ''}`}
       onClick={onClick}
-      title={copied ? 'copied' : 'copy the message text'}
+      title={copied ? 'copied' : title}
     >
       {copied ? '✓' : <IconClipboard />}
     </button>
+  );
+}
+
+// "copy the whole message" — sits next to the timestamp, top and bottom of
+// the main chat bubble (§ CLAUDE.md 11).
+function CopyMessageButton({ content }: { content: string }) {
+  return <CopyButton text={content} className="bubble-copy-btn" title="copy the message text" />;
+}
+
+// A fenced code block in an assistant answer (`<pre><code class="hljs
+// language-js">`) gets its OWN copy button: the bubble-level one copies the
+// surrounding prose too, which is exactly wrong when the block is a snippet
+// you're about to paste into a file or a shell. The button hangs off the
+// WRAPPER, never inside the `<pre>` — that element scrolls horizontally
+// (`.content.md pre`), and a button inside it slides out of view on the first
+// long line.
+function CodeBlock({ node, children, ...props }: React.ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
+  const text = hastText(node);
+  return (
+    <div className="code-block">
+      <pre {...props}>{children}</pre>
+      {text.trim() !== '' && (
+        <CopyButton text={text} className="code-copy-btn" title="copy this code block" />
+      )}
+    </div>
+  );
+}
+
+// The tool cards' raw panes — the request JSON and the tool output — are code
+// blocks too, just not markdown ones: same wrapper, same corner button, so
+// "copy that" means one thing everywhere in the transcript.
+function DetailPre({ className, text }: { className: string; text: string }) {
+  return (
+    <div className="code-block">
+      <pre className={className}>{text}</pre>
+      <CopyButton text={text} className="code-copy-btn" title="copy this block" />
+    </div>
   );
 }

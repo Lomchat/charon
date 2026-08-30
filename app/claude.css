@@ -368,7 +368,12 @@
 /* Session context menu */
 .session-ctx-menu {
   position: fixed; z-index: 500;
-  min-width: 200px;
+  min-width: min(200px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto; overscroll-behavior: contain;
+  box-sizing: border-box;
   background: linear-gradient(180deg, #1c1f29, #181b24);
   border: 1px solid var(--gold);
   box-shadow: 0 8px 24px rgba(0,0,0,0.6);
@@ -1607,6 +1612,36 @@
 .bubble-copy-btn:hover { opacity: 1; color: var(--gold-bright); }
 .bubble-copy-btn svg { width: 11px; height: 11px; display: block; }
 .bubble-copy-btn.copied { opacity: 1; color: #7fbf7f; font-size: 11px; }
+/* Per-code-block copy (cf. app/Message.tsx § CodeBlock/DetailPre): markdown
+   fenced blocks and the tool cards' JSON/output panes. The button is a child
+   of the WRAPPER, not of the <pre> — the <pre> scrolls (x on markdown blocks,
+   y on the tool panes) and a button inside it scrolls away. Always visible,
+   not hover-only: the same UI runs on phones (§11), where there is no hover;
+   the opaque chip is what keeps it readable over the code underneath. */
+.code-block { position: relative; }
+/* The tool panes scroll VERTICALLY (max-height + auto), so their scrollbar
+   runs down the right edge — exactly where the button is anchored. Thin, like
+   `.tab-row`'s, so the two don't fight over the corner. */
+.code-block > .tu-detail, .code-block > .tr-detail { scrollbar-width: thin; }
+.code-block > .tu-detail::-webkit-scrollbar,
+.code-block > .tr-detail::-webkit-scrollbar { width: 6px; }
+.code-block > .tu-detail::-webkit-scrollbar-thumb,
+.code-block > .tr-detail::-webkit-scrollbar-thumb { background: var(--gold-deep); }
+.code-block > .tu-detail::-webkit-scrollbar-track,
+.code-block > .tr-detail::-webkit-scrollbar-track { background: transparent; }
+.code-copy-btn {
+  position: absolute; top: 6px; right: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(10,12,18,0.85); border: 1px solid var(--gold-deep);
+  border-radius: 2px; padding: 3px 4px;
+  color: var(--parchment-soft); opacity: 0.6;
+  cursor: pointer; line-height: 1;
+  transition: opacity 0.12s, color 0.12s;
+}
+.code-block:hover .code-copy-btn, .code-copy-btn:focus-visible { opacity: 1; }
+.code-copy-btn:hover { opacity: 1; color: var(--gold-bright); }
+.code-copy-btn svg { width: 11px; height: 11px; display: block; }
+.code-copy-btn.copied { opacity: 1; color: #7fbf7f; font-size: 11px; }
 /* ── Background tasks bar + modal (cf. app/BgTasksBar.tsx, app/bgTasks.ts) ──
    Slim clickable status line docked above the chat input while the session
    has background processes (Bash run_in_background); click → detail modal. */
@@ -1780,6 +1815,12 @@
    this session's point of view. */
 .bubble.role-external { border-color: var(--teal-deep); background: rgba(134,197,216,0.07); }
 .bubble.role-external .tag { color: var(--teal); }
+.bubble.role-peer_status { border-color: var(--teal-deep); background: rgba(134,197,216,0.045); }
+.bubble.role-peer_status .tag { color: var(--teal); }
+.peer-state { margin-left: .2rem; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.peer-state.replied { color: var(--green); }
+.peer-state.failed, .peer-state.timed_out { color: var(--red); }
+.peer-error { margin-top: 7px; color: #f0c7c7; font-size: 11px; }
 /* Sender chip — same slot and weight as the model chip on an assistant
    bubble, because it answers the same question: who produced this. */
 .bubble .from-chip {
@@ -2902,7 +2943,7 @@
   line-height: 1.4;
 }
 .files-list .f-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
-/* `open` and `get` are <a> (a real navigation / download), insert / copy /
+/* `open` and `download` are <a> (a real navigation / download), insert / copy /
    remove are <button> — but the row must read as ONE row of peers, so the three
    rules below list EVERY action explicitly. Styling them via `button` + `.f-dl`
    alone is what once left `open` rendering as a bare blue link. */
@@ -5184,16 +5225,16 @@
   font-family: var(--display); font-size: 9.5px; letter-spacing: 0.14em;
   text-transform: uppercase; padding: 5px 10px; cursor: pointer;
 }
+.fe-dl, .fe-hist { display: inline-flex; align-items: center; gap: 5px; }
 .fe-save:hover:not(:disabled), .fe-dl:hover, .fe-hist:hover {
   color: var(--gold-bright); border-color: var(--gold);
 }
 .fe-save:disabled { opacity: 0.35; cursor: default; }
 /* Sits with save/get, but reading is not writing: quieter until hovered. */
 .fe-hist {
-  display: inline-flex; align-items: center; gap: 5px;
   color: var(--parchment-soft); border-color: rgba(216,168,90,0.22);
 }
-.fe-hist svg { width: 11px; height: 11px; }
+.fe-hist svg, .fe-dl svg { width: 11px; height: 11px; }
 /* Under 700px the header has to choose: the path and saving win. */
 @media (max-width: 700px) { .fe-hist span, .fe-hist { font-size: 0; padding: 5px 7px; } .fe-hist svg { width: 13px; height: 13px; } }
 .fe-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
@@ -5404,7 +5445,13 @@
 /* ── Explorer context menu (§14.80) ──────────────────────────────────────── */
 .tt-menu-scrim { position: fixed; inset: 0; z-index: 400; }
 .tt-menu {
-  position: fixed; z-index: 401; min-width: 196px;
+  position: fixed; z-index: 401;
+  min-width: min(196px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto; overscroll-behavior: contain;
+  box-sizing: border-box;
   display: flex; flex-direction: column;
   background: var(--stone); border: 1px solid var(--gold-deep);
   border-radius: 5px; padding: 4px; box-shadow: 0 8px 22px rgba(0,0,0,0.5);
@@ -5420,15 +5467,15 @@
 }
 .tt-menu-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tt-menu-head svg { width: 12px; height: 12px; flex-shrink: 0; opacity: 0.85; }
-.tt-menu button {
+.tt-menu button, .tt-menu a {
   display: flex; align-items: center; gap: 8px;
   background: transparent; border: 0; text-align: left; cursor: pointer;
   color: var(--parchment); font-family: var(--mono); font-size: 11px;
-  padding: 6px 9px; border-radius: 3px;
+  padding: 6px 9px; border-radius: 3px; text-decoration: none;
 }
-.tt-menu button svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; }
-.tt-menu button:hover:not(:disabled) { background: rgba(138,180,228,0.14); color: var(--gold-bright); }
-.tt-menu button:hover:not(:disabled) svg { opacity: 1; }
+.tt-menu button svg, .tt-menu a svg { width: 13px; height: 13px; flex-shrink: 0; opacity: 0.75; }
+.tt-menu button:hover:not(:disabled), .tt-menu a:hover { background: rgba(138,180,228,0.14); color: var(--gold-bright); }
+.tt-menu button:hover:not(:disabled) svg, .tt-menu a:hover svg { opacity: 1; }
 .tt-menu button:disabled { opacity: 0.4; cursor: default; }
 .tt-menu button.danger { color: #e0736b; }
 .tt-menu-sep { height: 1px; background: var(--gold-deep); margin: 4px 2px; opacity: 0.6; }

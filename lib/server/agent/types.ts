@@ -306,6 +306,14 @@ export type AgentEvent = (
   | {
       event: 'external_message'; session_id: string; origin: string; text: string; from?: string;
       from_provider?: AgentKind; source_session_id?: string; message_id?: string;
+      conversation_id?: string; reply_to?: string; expects_reply?: boolean;
+    }
+  | {
+      event: 'peer_message_status'; session_id: string; message_id: string;
+      conversation_id: string; target_session_id?: string; target?: string;
+      target_provider?: AgentKind; text?: string;
+      status: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out';
+      error?: string; reply_id?: string;
     }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
@@ -365,9 +373,10 @@ export type AgentMethodName =
   | 'fs_stat'
   // Text write for the editor (agent >= 0.26.0) - atomic, sha-gated.
   | 'fs_write'
-  // Explorer context menu (agent >= 0.27.0).
+  // Explorer context menu (agent >= 0.27.0, symlink >= 0.75.0).
   | 'fs_mkdir'
   | 'fs_rename'
+  | 'fs_symlink'
   | 'fs_delete'
   // Search across the tree (agent >= 0.29.0) - grep inside files, or match
   // file names. Bounded in files, matches and wall clock, and every bound it
@@ -411,6 +420,9 @@ export type AgentMethodName =
   | 'resume_session'
   | 'peer_list'
   | 'peer_send'
+  | 'peer_status'
+  | 'peer_conversation'
+  | 'peer_inbox'
   | 'subscribe'
   | 'unsubscribe'
   | 'send_input'

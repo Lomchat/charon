@@ -22,6 +22,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS
+
 try:
     from claude_agent_sdk import (
         ClaudeAgentOptions,
@@ -94,6 +96,8 @@ AUTO_ALLOW_TOOLS = {
     # state, size and rate limit; asking again at the provider layer makes
     # ordinary @session communication unusably noisy.
     "mcp__charon_peer__list_sessions", "mcp__charon_peer__send_message",
+    "mcp__charon_peer__get_message_status", "mcp__charon_peer__get_conversation",
+    "mcp__charon_peer__list_inbox",
 }
 
 # Tools auto-allowed in plan mode only
@@ -523,6 +527,12 @@ class AgentSession:
         self._stopped = asyncio.Event()
         self._ready_evt = asyncio.Event()
         self._error_msg: str | None = None
+        # Runtime-only correlation for a turn driven by peer_send. The server
+        # consumes this private marker before persistence/broadcast and uses it
+        # to return exactly this turn's final assistant answer to the sender.
+        self._active_peer_request_id: str | None = None
+        self._peer_turn_done = asyncio.Event()
+        self._peer_turn_done.set()
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -584,10 +594,13 @@ class AgentSession:
             old_task.cancel()  # fire-and-forget: we don't wait
         await self._save_state()
 
-    async def send_input(self, content: str) -> None:
+    async def send_input(self, content: str, *, peer_request_id: str | None = None) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
-        await self._stdin_queue.put({"type": "user_message", "content": content})
+        await self._stdin_queue.put({
+            "type": "user_message", "content": content,
+            "peer_request_id": peer_request_id,
+        })
 
     async def interrupt(self) -> None:
         if self._client is None:
@@ -1049,10 +1062,20 @@ class AgentSession:
     def _emit(self, event: str, **fields: Any) -> None:
         msg = {"event": event, "session_id": self.session_id}
         msg.update(fields)
+        peer_request_id = getattr(self, "_active_peer_request_id", None)
+        if peer_request_id:
+            msg["_peer_request_id"] = peer_request_id
         try:
             self._emit_to_server(msg)
         except Exception:
             traceback.print_exc(file=sys.stderr)
+
+    def _wire_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        msg = {"session_id": self.session_id, **event}
+        peer_request_id = getattr(self, "_active_peer_request_id", None)
+        if peer_request_id:
+            msg["_peer_request_id"] = peer_request_id
+        return msg
 
     async def _save_state(self) -> None:
         try:
@@ -1906,6 +1929,8 @@ class AgentSession:
             appended.append("Session instructions:\n" + base.strip())
         if isinstance(developer, str) and developer.strip():
             appended.append("Developer instructions:\n" + developer.strip())
+        if self.peer_mcp:
+            appended.append("Charon peer communication rules:\n" + PEER_MODEL_INSTRUCTIONS)
         if appended:
             # Claude exposes one append channel rather than separate base and
             # developer slots. Preserve the Claude Code preset (tools, project
@@ -2053,11 +2078,11 @@ class AgentSession:
                                 # to 'thinking' as early as possible.)
                                 self._begin_turn()
                             for out in self._translate(ev):
-                                self._emit_to_server({
-                                    "session_id": self.session_id, **out
-                                })
+                                self._emit_to_server(self._wire_event(out))
                             if ev_type == "ResultMessage":
                                 self._end_turn()
+                                self._active_peer_request_id = None
+                                self._peer_turn_done.set()
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
@@ -2066,6 +2091,9 @@ class AgentSession:
                         # this as blocking: the hub persists a durable error
                         # message instead of leaving only a transient banner.
                         self._emit("error", msg=self._format_err("stream", e), fatal=True)
+                        if self._active_peer_request_id:
+                            self._emit("stop", subtype="error", is_error=True)
+                        self._peer_turn_done.set()
                         # Unblock the stdin loop so the session winds down
                         # instead of sitting deaf forever.
                         await self._stdin_queue.put(None)
@@ -2089,16 +2117,27 @@ class AgentSession:
                         if msg.get("type") != "user_message":
                             continue
                         content = msg.get("content") or ""
+                        self._active_peer_request_id = (
+                            msg.get("peer_request_id")
+                            if isinstance(msg.get("peer_request_id"), str) else None
+                        )
+                        if self._active_peer_request_id:
+                            self._peer_turn_done.clear()
                         self._begin_turn()
                         try:
                             await client.query(content)
+                            if use_reader and self._active_peer_request_id:
+                                # query() only sends. Hold the input loop until
+                                # the sole reader sees this correlated turn's
+                                # ResultMessage, otherwise a queued human input
+                                # could overwrite the request id mid-stream.
+                                await self._peer_turn_done.wait()
                             if not use_reader:
                                 async for ev in client.receive_response():
                                     for out in self._translate(ev):
-                                        self._emit_to_server({
-                                            "session_id": self.session_id, **out
-                                        })
+                                        self._emit_to_server(self._wire_event(out))
                                 self._end_turn()
+                                self._active_peer_request_id = None
                         except Exception as e:
                             self._emit("error", msg=self._format_err("query", e))
                             # Match Codex's failed TurnCompleted notification:
@@ -2108,6 +2147,8 @@ class AgentSession:
                             # No turn will stream after a failed send — don't
                             # leave the pill stuck on 'thinking'.
                             self._end_turn()
+                            self._active_peer_request_id = None
+                            self._peer_turn_done.set()
                 finally:
                     if reader_task is not None:
                         reader_task.cancel()

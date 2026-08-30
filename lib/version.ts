@@ -30,6 +30,19 @@ export function compareVersions(a: string | null | undefined, b: string | null |
   return 0;
 }
 
+/**
+ * A version as SHOWN to a human: a trailing `.0` is noise in a notification
+ * ("1.123.0" → "1.123", "0.147.0" → "0.147"), never trimmed below two
+ * segments ("1.0.0" → "1.0"). DISPLAY ONLY — comparisons, dedup keys and
+ * anything persisted keep the raw string.
+ */
+export function displayVersion(v: string | null | undefined): string {
+  let s = String(v ?? '').trim();
+  if (!s) return '';
+  while (s.endsWith('.0') && s.split('.').length > 2) s = s.slice(0, -2);
+  return s;
+}
+
 /** True when both versions are known and `installed` is strictly older. */
 export function isVersionOutdated(installed: string | null | undefined, latest: string | null | undefined): boolean {
   if (!installed || !latest) return false;

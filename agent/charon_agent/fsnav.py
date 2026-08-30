@@ -7,8 +7,8 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   the hub falls back to a one-shot ssh `ls` (~0.5s of sshd session setup) for
   older agents.
 - `fs_list` / `fs_read` (agent >= 0.25.0), `fs_write` (>= 0.26.0),
-  `fs_stat` (>= 0.28.0) and
-  `fs_mkdir` / `fs_rename` / `fs_delete` (>= 0.27.0) — the file tree in the
+  `fs_stat` (>= 0.28.0), `fs_mkdir` / `fs_rename` / `fs_delete` (>= 0.27.0)
+  and `fs_symlink` (>= 0.75.0) — the file tree in the
   ToolPanel, its editor, and its context menu. Deliberately separate from
   `list_dir` rather than an extension of it: that one is on the hot path of
   every keystroke in the wizard and returns directories only, and widening its
@@ -34,7 +34,8 @@ import stat
 import subprocess
 import tempfile
 import time
-from typing import Any
+import zipfile
+from typing import Any, BinaryIO
 
 MAX_ENTRIES = 400
 # One directory at a time, so this is a per-directory cap, not a repo cap.
@@ -96,6 +97,28 @@ def _contained(root: str, target: str) -> str | None:
     if real != real_root and not real.startswith(real_root + os.sep):
         return None
     return real
+
+
+def _contained_entry(root: str, target: str) -> str | None:
+    """Spelled final entry if its resolved parent stays under ``root``.
+
+    Mutations that remove one directory entry must not resolve that final
+    entry: doing so would make deleting a symlink unlink its target instead.
+    The parent is still resolved, so a symlink in an earlier path component
+    cannot escape the explorer root.
+    """
+    try:
+        real_root = os.path.realpath(os.path.expanduser(root))
+        spelled = os.path.join(real_root, os.path.expanduser(target or ""))
+        name = os.path.basename(spelled)
+        if name in ("", ".", ".."):
+            return None
+        parent = os.path.realpath(os.path.dirname(spelled))
+    except (OSError, ValueError):
+        return None
+    if parent != real_root and not parent.startswith(real_root + os.sep):
+        return None
+    return os.path.join(parent, name)
 
 
 def _ignored_names(directory: str, names: list[str]) -> set[str]:
@@ -274,6 +297,197 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+# Dedicated CLI streaming exit codes. This path deliberately does NOT ride
+# the line-delimited JSON-RPC connection: base64/JSON would add 33% and force
+# either the agent or hub to hold the file in memory, which is untenable for
+# multi-gigabyte workspace artifacts.
+STREAM_BAD_PATH = 20
+STREAM_MISSING = 21
+STREAM_NOT_FILE = 22
+STREAM_STALE = 23
+STREAM_BAD_RANGE = 24
+STREAM_IO_ERROR = 25
+STREAM_NOT_DIRECTORY = 26
+
+
+def stream_file_to(
+    root: str,
+    path: str,
+    output: BinaryIO,
+    *,
+    offset: int = 0,
+    length: int | None = None,
+    expected_version: str | None = None,
+) -> tuple[int, str | None]:
+    """Copy one contained file range to a binary output without buffering it.
+
+    Used only by ``charon-agent --stream-file`` over a dedicated SSH channel.
+    ``expected_version`` is the preceding ``fs_stat`` token: checking it after
+    open keeps the HTTP Content-Length/Range metadata tied to the exact inode
+    being streamed instead of silently serving a replacement with stale
+    headers.
+    """
+    if offset < 0 or length is not None and length < 0:
+        return STREAM_BAD_RANGE, "invalid byte range"
+    target = _contained(root, path)
+    if target is None:
+        return STREAM_BAD_PATH, "path outside the root"
+    try:
+        with open(target, "rb", buffering=0) as source:
+            st = os.fstat(source.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return STREAM_NOT_FILE, "not a regular file"
+            current_version = _version_from_stat(st)
+            if expected_version is not None and current_version != expected_version:
+                return STREAM_STALE, "file changed before the download started"
+            if offset > st.st_size:
+                return STREAM_BAD_RANGE, "range starts beyond end of file"
+            remaining = st.st_size - offset if length is None else length
+            if offset + remaining > st.st_size:
+                return STREAM_BAD_RANGE, "range extends beyond end of file"
+
+            source.seek(offset)
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    return STREAM_IO_ERROR, "file became shorter during download"
+                try:
+                    output.write(chunk)
+                except BrokenPipeError:
+                    # Browser cancellation closes SSH stdout. It is not an
+                    # agent failure and must stop reading the disk promptly.
+                    return 0, None
+                remaining -= len(chunk)
+            try:
+                output.flush()
+            except BrokenPipeError:
+                return 0, None
+            return 0, None
+    except FileNotFoundError:
+        return STREAM_MISSING, "file not found"
+    except PermissionError:
+        return STREAM_IO_ERROR, "permission denied"
+    except IsADirectoryError:
+        return STREAM_NOT_FILE, "not a regular file"
+    except OSError as e:
+        return STREAM_IO_ERROR, str(e)
+
+
+def _zip_info(name: str, st: os.stat_result, *, directory: bool = False) -> zipfile.ZipInfo:
+    """Build one Unix-aware, timestamp-safe archive member."""
+    when = time.localtime(st.st_mtime)
+    # ZIP's DOS timestamp has a deliberately narrow representable range.
+    year = min(2107, max(1980, when.tm_year))
+    member = name.rstrip("/") + "/" if directory else name
+    info = zipfile.ZipInfo(
+        member,
+        (year, when.tm_mon, when.tm_mday, when.tm_hour, when.tm_min, when.tm_sec),
+    )
+    info.create_system = 3  # Unix: external_attr carries the real file type/mode.
+    info.external_attr = (st.st_mode & 0xFFFF) << 16
+    if directory:
+        info.external_attr |= 0x10
+        info.compress_type = zipfile.ZIP_STORED
+    else:
+        info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+def stream_directory_zip_to(root: str, path: str, output: BinaryIO) -> tuple[int, str | None]:
+    """Stream one contained directory as a ZIP without a temp archive.
+
+    The selected directory is the archive's top-level member. Regular files
+    are opened with ``O_NOFOLLOW`` where available; symlinks are stored as
+    symlinks instead of dereferenced, so a link cannot pull an outside tree
+    into the download or create a recursive walk. ``zipfile`` writes data
+    descriptors when ``output`` is unseekable, which makes stdout a genuine
+    streaming target even though the central directory lands at EOF.
+    """
+    target = _contained(root, path)
+    if target is None:
+        return STREAM_BAD_PATH, "path outside the root"
+    if not os.path.exists(target):
+        return STREAM_MISSING, "directory not found"
+    if not os.path.isdir(target):
+        return STREAM_NOT_DIRECTORY, "not a directory"
+
+    archive_root = os.path.basename(os.path.normpath(target)) or "archive"
+
+    def add_tree(archive: zipfile.ZipFile, directory: str, archive_dir: str) -> None:
+        try:
+            directory_stat = os.stat(directory, follow_symlinks=False)
+        except FileNotFoundError:
+            return  # A concurrently removed subtree simply misses the snapshot.
+        archive.writestr(_zip_info(archive_dir, directory_stat, directory=True), b"")
+        try:
+            with os.scandir(directory) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name)
+        except FileNotFoundError:
+            return
+
+        for entry in entries:
+            member = f"{archive_dir}/{entry.name}"
+            try:
+                entry_stat = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(entry_stat.st_mode):
+                    info = _zip_info(member, entry_stat)
+                    info.compress_type = zipfile.ZIP_STORED
+                    archive.writestr(
+                        info,
+                        os.readlink(entry.path).encode("utf-8", "surrogateescape"),
+                    )
+                    continue
+                if stat.S_ISDIR(entry_stat.st_mode):
+                    add_tree(archive, entry.path, member)
+                    continue
+                if not stat.S_ISREG(entry_stat.st_mode):
+                    continue  # Never read devices, sockets or FIFOs into a ZIP.
+
+                flags = os.O_RDONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                fd = os.open(entry.path, flags)
+                try:
+                    opened_stat = os.fstat(fd)
+                    if not stat.S_ISREG(opened_stat.st_mode):
+                        continue
+                    info = _zip_info(member, opened_stat)
+                    info.file_size = opened_stat.st_size
+                    with os.fdopen(fd, "rb") as source:
+                        fd = -1
+                        with archive.open(
+                            info, "w",
+                            force_zip64=opened_stat.st_size >= 2 * 1024 * 1024 * 1024,
+                        ) as destination:
+                            while True:
+                                chunk = source.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                destination.write(chunk)
+                finally:
+                    if fd >= 0:
+                        os.close(fd)
+            except FileNotFoundError:
+                continue
+
+    try:
+        with zipfile.ZipFile(
+            output, mode="w", compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6, allowZip64=True,
+        ) as archive:
+            add_tree(archive, target, archive_root)
+        output.flush()
+        return 0, None
+    except BrokenPipeError:
+        # The HTTP client cancelled; stopping the disk walk is success from the
+        # daemon's perspective and avoids a noisy agent error.
+        return 0, None
+    except PermissionError:
+        return STREAM_IO_ERROR, "permission denied"
+    except OSError as e:
+        return STREAM_IO_ERROR, str(e)
+
+
 def _file_sha(path: str) -> str | None:
     """sha256 of a file's bytes, or None if it can't be read."""
     try:
@@ -417,6 +631,69 @@ def fs_rename(root: str, path: str, to: str) -> dict[str, Any]:
         return {"ok": False, "error": str(e), "reason": "error"}
 
 
+def fs_symlink(root: str, path: str, to: str) -> dict[str, Any]:
+    """Create a relative same-directory symlink to one existing file.
+
+    The explorer uses this for the conventional ``AGENTS.md`` / ``CLAUDE.md``
+    pair.  The RPC stays generally useful, but deliberately permits only a
+    file in the same directory: a relative target keeps the checkout movable,
+    containment stays obvious, and a browser action cannot manufacture a link
+    into another part of the workspace by mistake.  The destination is never
+    replaced, including when it is already a broken symlink.
+    """
+    try:
+        source_raw = (path or "").strip()
+        link_raw = (to or "").strip()
+        if not source_raw or not link_raw or "\0" in source_raw or "\0" in link_raw:
+            return {"ok": False, "error": "invalid path", "reason": "bad_path"}
+
+        real_root = os.path.realpath(os.path.expanduser(root))
+        source_abs = source_raw if os.path.isabs(source_raw) else os.path.join(real_root, source_raw)
+        link_abs = link_raw if os.path.isabs(link_raw) else os.path.join(real_root, link_raw)
+        source_name = os.path.basename(source_abs)
+        link_name = os.path.basename(link_abs)
+        if source_name in ("", ".", "..") or link_name in ("", ".", ".."):
+            return {"ok": False, "error": "invalid path", "reason": "bad_path"}
+
+        source_parent_rel = os.path.dirname(os.path.relpath(source_abs, real_root)) or "."
+        link_parent_rel = os.path.dirname(os.path.relpath(link_abs, real_root)) or "."
+        source_parent = _contained(root, source_parent_rel)
+        link_parent = _contained(root, link_parent_rel)
+        if source_parent is None or link_parent is None:
+            return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        if not os.path.isdir(source_parent) or not os.path.isdir(link_parent):
+            return {"ok": False, "error": "folder not found", "reason": "missing"}
+        if source_parent != link_parent:
+            return {
+                "ok": False,
+                "error": "a symlink can only target a file in the same folder",
+                "reason": "bad_path",
+            }
+
+        source_spelled = os.path.join(source_parent, source_name)
+        source = _contained(root, source_spelled)
+        if source is None:
+            return {"ok": False, "error": "symlink target is outside the root", "reason": "bad_path"}
+        if not os.path.isfile(source):
+            return {"ok": False, "error": "source file not found", "reason": "missing"}
+
+        link = os.path.join(link_parent, link_name)
+        if os.path.lexists(link):
+            return {"ok": False, "error": "a file with that name already exists", "reason": "exists"}
+        os.symlink(source_name, link)
+        return {
+            "ok": True,
+            "path": os.path.relpath(link, real_root),
+            "target": source_name,
+        }
+    except FileExistsError:
+        return {"ok": False, "error": "a file with that name already exists", "reason": "exists"}
+    except PermissionError:
+        return {"ok": False, "error": "permission denied", "reason": "error"}
+    except OSError as e:
+        return {"ok": False, "error": str(e), "reason": "error"}
+
+
 def fs_delete(root: str, path: str, recursive: bool = False,
               expected_sha256: str | None = None) -> dict[str, Any]:
     """Delete a file, or a directory when `recursive`.
@@ -430,7 +707,10 @@ def fs_delete(root: str, path: str, recursive: bool = False,
     snapshot, the older UI action must not delete the newer work.
     """
     try:
-        target = _contained(root, path)
+        # Resolve the parent for containment, but preserve the last directory
+        # entry. `_contained()` follows a final symlink and would therefore
+        # delete the linked file while leaving a broken link in the tree.
+        target = _contained_entry(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
         # Deleting the root itself would take the session's cwd with it.

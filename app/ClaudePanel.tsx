@@ -267,6 +267,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, [loginVps]);
   // Ephemeral SSH shells. Live list (polled on mount, updated locally).
   const [shells, setShells] = useState<ShellListItem[]>([]);
+  // Shells created with no explicit cwd start in the SSH user's home and are
+  // historically stored as cwd=null. The IDE APIs need an absolute root, so
+  // resolve `~` lazily once per VPS when such a shell is selected.
+  const [shellHomeByVps, setShellHomeByVps] = useState<Record<string, string>>({});
   // If non-null, a shell is displayed in the main panel (instead of the chat).
   // Initialized from `?shell=` so a shell-idle notification tap opens it.
   const [selectedShellId, setSelectedShellId] = useState<string | null>(queryParamShell);
@@ -852,10 +856,34 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   //  this lives in `<ClaudeSessionView>` after the refactor.]
 
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
+  const selectedShell = selectedShellId ? shells.find((s) => s.id === selectedShellId) ?? null : null;
+  const selectedShellVps = selectedShell
+    ? vpsList.find((v) => v.id === selectedShell.vpsId) ?? null
+    : null;
+  const selectedShellWorkspaceRoot = selectedShell
+    ? (selectedShell.cwd?.trim() || shellHomeByVps[selectedShell.vpsId] || null)
+    : null;
   const selectedVps = useMemo<Vps | null>(
     () => (selected ? vpsList.find((v) => v.id === selected.vpsId) ?? null : null),
     [selected, vpsList],
   );
+
+  useEffect(() => {
+    const vpsId = selectedShell?.vpsId;
+    if (!vpsId || selectedShell.cwd?.trim() || shellHomeByVps[vpsId]) return;
+    let cancelled = false;
+    api.listVpsDirs(vpsId, '~')
+      .then((result) => {
+        const root = result.ok && result.exists !== false ? result.resolved?.trim() : '';
+        if (!cancelled && root) {
+          setShellHomeByVps((current) => current[vpsId] === root
+            ? current
+            : { ...current, [vpsId]: root });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedShell?.vpsId, selectedShell?.cwd, shellHomeByVps]);
 
   // Handed down to <Message>: a durable authentication-error bubble opens the
   // matching provider login (Claude hosted OAuth / Codex device code). Stable
@@ -1572,10 +1600,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     }
     return out;
   }, [mountedShellIds, selectedShellId, shells]);
-  const selectedShellExists = !!selectedShellId && shells.some((s) => s.id === selectedShellId);
+  const selectedShellExists = !!selectedShell;
 
   return (
-    <div className={`claude-root${selectedShellId && !selectedFile ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
+    <div className={`claude-root has-tools${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
       {/* Backdrop behind any open drawer (mobile only; CSS-gated). Tap to close. */}
       <div className="drawer-backdrop" onClick={closeDrawers} aria-hidden />
       <header className="claude-head">
@@ -1617,6 +1645,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           </div>
           {selected && selectedVps && (
             <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
+          )}
+          {!selected && selectedShell && selectedShellVps && (
+            <span className="ctx">{selectedShellVps.name}:{selectedShellWorkspaceRoot ?? '~'}</span>
           )}
           {!!selected?.subscribers && selected.subscribers > 1 && (
             <span className="multi-pill" title={`${selected.subscribers} clients connected to this session`}>
@@ -1699,7 +1730,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             tools-toggle (ToolPanel drawer, ≤1100px) moved here from inside
             head-right for the same reason. cf. CLAUDE.md §14.58 / §11. */}
         <div className="head-toggles">
-        {selectedId && (
+        {(selectedId || selectedShellExists || selectedFile) && (
           <button
             className="head-btn m-only tools-toggle"
             onClick={() => { setToolsOpen(true); setNavOpen(false); setUsageOpen(false); }}
@@ -1880,13 +1911,27 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           />
         );
       })() : selectedShellId ? (
-        // The actual <ShellTerminal>s live in the persistent layer rendered
-        // below (kept mounted across session switches so the live shell +
-        // its scrollback survive). Here we only render the not-found
-        // fallback when the selected shell row no longer exists.
-        selectedShellExists ? null : (
-          <main className="claude-main"><div className="bar-empty">shell not found</div></main>
-        )
+        <>
+          {/* The actual terminal lives in the persistent layer below. Its IDE
+              is workspace-scoped, exactly like the panel beside a file: the
+              shell contributes only its VPS and startup cwd. */}
+          {selectedShellExists ? (
+            <ToolPanel
+              key={`shell-tools:${selectedShellId}`}
+              sessionId={null}
+              workspaceOnly
+              toolCalls={[]}
+              edits={emptyEdits}
+              onRevert={() => {}}
+              vpsId={selectedShell!.vpsId}
+              cwd={selectedShellWorkspaceRoot}
+              onOpenSession={(id) => openSessionById(id, false)}
+              onReveal={() => setToolsOpen(true)}
+            />
+          ) : (
+            <main className="claude-main"><div className="bar-empty">shell not found</div></main>
+          )}
+        </>
       ) : selected ? (
         // Error boundary: a render error in the chat subtree (hydration
         // mismatch, transient undefined, bad markdown) must NOT permanently

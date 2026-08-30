@@ -26,6 +26,10 @@ import type { ToolCallEntry, EditSnapshot } from './sessionTypes';
 
 type Props = {
   sessionId: string | null;
+  /** Workspace-only surface for SSH shells: Files, Search and Git need only
+   *  `(vpsId, cwd)`. Session edits, attachments and provider telemetry have
+   *  no meaning without an agent session, so do not show empty tabs for them. */
+  workspaceOnly?: boolean;
   // Backend of the session. Codex ships a ready-made UNIFIED DIFF (in the edit
   // snapshot's `after`, before=null) instead of a before/after pair — rendered
   // as a raw patch. cf. CLAUDE.md §14.59.
@@ -94,7 +98,7 @@ const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React
 ];
 
 function ToolPanel({
-  sessionId, kind = 'claude', toolCalls, edits, onRevert,
+  sessionId, workspaceOnly = false, kind = 'claude', toolCalls, edits, onRevert,
   attachments = [], onRemoveAttachment, onInsertPath, onOpenSession,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal, context = null, contextLoaded = false, contextLoading = false,
@@ -102,6 +106,9 @@ function ToolPanel({
   compactError = null,
 }: Props) {
   const [tab, setTab] = useState<Tab>('tree');
+  const visibleTabs = workspaceOnly
+    ? TABS.filter(({ id }) => id === 'tree' || id === 'search' || id === 'git')
+    : TABS;
   // Hide content-less skeleton entries (edit_snapshot content is stripped by
   // the GET and refilled lazily — CLAUDE.md §14 gotcha 41). A both-null entry
   // has no diff to show; it appears once loadEdits fills its content.
@@ -115,9 +122,17 @@ function ToolPanel({
   // afterwards without the parent yanking them back.
   useEffect(() => {
     if (!requestedTab) return;
+    if (workspaceOnly && requestedTab !== 'tree' && requestedTab !== 'search' && requestedTab !== 'git') return;
     setTab(requestedTab);
     onTabConsumed?.();
-  }, [requestedTab, onTabConsumed]);
+  }, [requestedTab, onTabConsumed, workspaceOnly]);
+
+  // React can reuse this component while its owner switches from a chat to
+  // an SSH shell. Never preserve an agent-only active tab into the
+  // workspace-only surface, where it would leave the body blank.
+  useEffect(() => {
+    if (workspaceOnly && tab !== 'tree' && tab !== 'search' && tab !== 'git') setTab('tree');
+  }, [workspaceOnly, tab]);
 
   // Ctrl/Cmd+Shift+F — search across files. Bound here rather than in either
   // parent because this component is the only thing both call sites have in
@@ -154,7 +169,7 @@ function ToolPanel({
   return (
     <aside className="tool-panel">
       <nav className="tp-tabs">
-        {TABS.map(({ id, label, Icon }) => {
+        {visibleTabs.map(({ id, label, Icon }) => {
           const on = tab === id;
           const n = counts[id];
           return (
@@ -174,7 +189,7 @@ function ToolPanel({
         })}
       </nav>
       <div className="tp-body">
-        {tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
+        {!workspaceOnly && tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
         {tab === 'git' && <GitTab sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
         {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
@@ -183,7 +198,7 @@ function ToolPanel({
             first Tools click; context is the header's shared request.
             `hidden` avoids layout/paint cost, and the key prevents one
             session's last-known data flashing in the next. */}
-        <div className="tp-calls-pane" hidden={tab !== 'calls'}>
+        {!workspaceOnly && <div className="tp-calls-pane" hidden={tab !== 'calls'}>
           {sessionId && <SessionInsight
             key={`${sessionId}:${kind}`}
             sessionId={sessionId}
@@ -203,8 +218,8 @@ function ToolPanel({
           >
             <CallsTab calls={toolCalls} />
           </InsightSection>
-        </div>
-        {tab === 'files' && (
+        </div>}
+        {!workspaceOnly && tab === 'files' && (
           <FilesTab
             sessionId={sessionId}
             attachments={attachments}
@@ -367,10 +382,10 @@ function FilesTab({ sessionId, attachments, onRemove, onInsert }: {
               </a>
             )}
             <button type="button" onClick={() => onInsert?.(a.remotePath)} title="insert this path into the message">
-              <IconPlusSquare /> insert
+              <IconPlusSquare /> Insert path
             </button>
             <button type="button" onClick={() => copyPath(a)} title="copy the path on the VPS">
-              <IconClipboard /> {copied === a.id ? 'copied' : 'copy'}
+              <IconClipboard /> {copied === a.id ? 'Copied' : 'Copy path'}
             </button>
             {sessionId && (
               <a
@@ -379,7 +394,7 @@ function FilesTab({ sessionId, attachments, onRemove, onInsert }: {
                 download={a.name}
                 title="download the copy kept by Charon"
               >
-                <IconDownload /> get
+                <IconDownload /> Download
               </a>
             )}
             <button

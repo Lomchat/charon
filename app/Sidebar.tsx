@@ -976,6 +976,14 @@ function SessionRow({
   const preview = (s.firstUserMessage ?? '').replace(/\s+/g, ' ').trim();
   const headline = s.name || (preview ? preview.slice(0, 60) : s.cwd.split('/').slice(-2).join('/'));
   const age = formatAge(s.createdAt);
+  const tooltip = [
+    headline,
+    handle ? `@${handle.handle}` : null,
+    '',
+    s.cwd,
+    `Created: ${age || '?'}`,
+    preview ? `\n${preview}` : null,
+  ].filter((line): line is string => line !== null).join('\n');
   const showPreview = !!preview && preview !== headline && !headline.startsWith(preview.slice(0, 30));
   const needsAttention = (s.pendingPermissions ?? 0) > 0;
   // "Finished, unread": the session ended a turn while you weren't looking and
@@ -1032,7 +1040,7 @@ function SessionRow({
       }}
       onContextMenu={(e) => { if (!onContext || deleting) return; e.preventDefault(); onContext(s, e.clientX, e.clientY); }}
       {...lp.handlers}
-      title={deleting ? `Deleting ${headline}…` : `${s.cwd}\nCreated: ${age || '?'}${preview ? '\n\n' + preview : ''}`}
+      title={deleting ? `Deleting ${headline}…` : tooltip}
       suppressHydrationWarning
       style={colorToken ? { ['--c' as any]: colorToCss(colorToken) } : undefined}
     >

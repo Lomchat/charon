@@ -1134,7 +1134,30 @@ export function useClaudeSessionStream(
             from: (ev as { from?: string }).from ?? null,
             fromProvider: (ev as { fromProvider?: 'claude' | 'codex' }).fromProvider ?? null,
             sourceSessionId: (ev as { sourceSessionId?: string }).sourceSessionId ?? null,
+            messageId: (ev as { messageId?: string }).messageId ?? null,
+            conversationId: (ev as { conversationId?: string }).conversationId ?? null,
+            replyTo: (ev as { replyTo?: string }).replyTo ?? null,
           }]);
+          break;
+        case 'peer_message_status':
+          flushAssistantBuf();
+          setMessages((prev) => {
+            const message: Msg = {
+              id: `peer:${ev.messageId}`, role: 'peer_status',
+              content: ev.text ?? '', createdAt: Math.floor(Date.now() / 1000),
+              messageId: ev.messageId,
+              conversationId: ev.conversationId,
+              peerStatus: ev.status,
+              peerTarget: ev.target ?? null,
+              peerError: ev.error ?? null,
+              fromProvider: ev.targetProvider ?? null,
+            };
+            const idx = prev.findIndex((m) => m.id === message.id);
+            if (idx < 0) return [...prev, message];
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...message };
+            return next;
+          });
           break;
         case 'mode_changed':
           setPermissionMode(ev.mode);

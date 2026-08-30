@@ -24,6 +24,7 @@ from .fsnav import (
     fs_write as _fs_write,
     fs_mkdir as _fs_mkdir,
     fs_rename as _fs_rename,
+    fs_symlink as _fs_symlink,
     fs_delete as _fs_delete,
     fs_search as _fs_search,
 )
@@ -117,6 +118,13 @@ RING_SIZE = 2000  # events buffered per session for late subscribers
 # small dicts (~200 bytes typical), so 2000 events × ~16 active sessions
 # fits in a few MB.
 
+# One RPC request is one JSON line.  fs_write accepts 2 MiB of UTF-8 text and
+# JSON escaping can expand an ASCII control character to six bytes, so the
+# asyncio default (64 KiB) is far below the public write contract.  Keep an
+# explicit hard bound large enough for the worst valid editor save while still
+# protecting the daemon from an unbounded client line.
+RPC_READER_LIMIT = 16 * 1024 * 1024
+
 # Single-instance guard (>= 0.72.0, §14.97). Two daemons on one state.json
 # is not a degraded mode, it is silent data corruption — so a startup that
 # finds a LIVE owner refuses instead of stealing the socket.
@@ -133,6 +141,10 @@ _PEER_LIVE_STATUSES = frozenset({"starting", "active", "thinking", "background",
 _PEER_MESSAGE_MAX = 16_384
 _PEER_RATE_WINDOW_S = 60.0
 _PEER_RATE_MAX = 20
+_PEER_LEDGER_MAX = 200
+_PEER_REPLY_TIMEOUT_S = 10 * 60
+_PEER_RECEIVE_STATUSES = frozenset({"active", "failed"})
+_PEER_FINAL_STATUSES = frozenset({"replied", "failed"})
 
 
 class Server:
@@ -184,6 +196,14 @@ class Server:
         # can accidentally make two sessions bounce messages forever; cap each
         # source without coupling it to ordinary user prompts.
         self.peer_send_times: dict[str, deque[float]] = {}
+        # Correlated request/reply ledger. One target may own only one peer
+        # request at a time; that reservation makes the target's next provider
+        # turn unambiguous. The bounded ledger is persisted in state.json and
+        # powers the MCP status/inbox tools as well as restart recovery.
+        self.peer_messages: dict[str, dict[str, Any]] = {}
+        self.peer_target_active: dict[str, str] = {}
+        self.peer_timeout_tasks: dict[str, asyncio.Task] = {}
+        self.peer_reply_inflight: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -201,7 +221,11 @@ class Server:
             try:
                 sessions = [s.to_persist() for s in self.sessions.values()]
                 # save_state is sync (short file). No need for a threadpool.
-                save_state(self.state_path, sessions)
+                save_state(
+                    self.state_path,
+                    sessions,
+                    peer_messages=self._peer_messages_for_state(),
+                )
             except Exception:
                 traceback.print_exc(file=sys.stderr)
 
@@ -218,6 +242,313 @@ class Server:
             await self._save_state_now()
         finally:
             self._save_pending = False
+
+    # ── Provider-neutral peer request/reply ledger ──────────────────────────
+    @staticmethod
+    def _peer_bounded_text(value: Any, limit: int = _PEER_MESSAGE_MAX) -> str:
+        """Return valid UTF-8 capped by bytes, never by Python characters."""
+        raw = str(value or "").encode("utf-8")
+        if len(raw) <= limit:
+            return raw.decode("utf-8")
+        return raw[:limit].decode("utf-8", "ignore")
+
+    def _prune_peer_messages(self) -> None:
+        """Bound completed history without dropping live routing state."""
+        overflow = len(self.peer_messages) - _PEER_LEDGER_MAX
+        if overflow <= 0:
+            return
+        removable: list[tuple[float, str]] = []
+        for message_id, row in self.peer_messages.items():
+            status = row.get("status")
+            target_id = row.get("target_session_id")
+            reserved = isinstance(target_id, str) \
+                and self.peer_target_active.get(target_id) == message_id
+            injection = row.get("reply_injection")
+            if status == "failed" \
+                    or (status == "replied" and injection not in ("pending", "sending")) \
+                    or (status == "timed_out" and not reserved):
+                removable.append((
+                    float(row.get("updated_at") or row.get("created_at") or 0),
+                    message_id,
+                ))
+        removable.sort()
+        for _, message_id in removable[:overflow]:
+            task = self.peer_timeout_tasks.pop(message_id, None)
+            if task is not None and not task.done():
+                task.cancel()
+            self.peer_messages.pop(message_id, None)
+
+    def _peer_messages_for_state(self) -> list[dict[str, Any]]:
+        self._prune_peer_messages()
+        ordered = sorted(
+            self.peer_messages.items(),
+            key=lambda item: float(item[1].get("updated_at")
+                                   or item[1].get("created_at") or 0),
+        )
+        protected = [row for message_id, row in ordered
+                     if row.get("status") in ("accepted", "processing")
+                     or row.get("reply_injection") in ("pending", "sending")
+                     or (row.get("status") == "timed_out"
+                         and self.peer_target_active.get(row.get("target_session_id"))
+                         == message_id)]
+        protected_ids = {id(row) for row in protected}
+        remaining = max(0, _PEER_LEDGER_MAX - len(protected))
+        completed = [row for _, row in ordered if id(row) not in protected_ids]
+        rows = protected + completed[-remaining:] if remaining else protected
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            # Runtime-only streaming/completion guards never belong on disk.
+            out.append({k: v for k, v in row.items()
+                        if not k.startswith("_")})
+        return out
+
+    def _restore_peer_messages(self, raw: Any) -> None:
+        if not isinstance(raw, list):
+            return
+        for candidate in raw[-_PEER_LEDGER_MAX:]:
+            if not isinstance(candidate, dict):
+                continue
+            mid = candidate.get("message_id")
+            source_id = candidate.get("source_session_id")
+            target_id = candidate.get("target_session_id")
+            if not all(isinstance(v, str) and v for v in (mid, source_id, target_id)):
+                continue
+            row = dict(candidate)
+            row["message_id"] = mid
+            row["source_session_id"] = source_id
+            row["target_session_id"] = target_id
+            row["status"] = str(row.get("status") or "failed")
+            row["text"] = self._peer_bounded_text(row.get("text"))
+            reply = row.get("reply")
+            if isinstance(reply, str):
+                row["reply"] = self._peer_bounded_text(reply)
+            self.peer_messages[mid] = row
+            if row["status"] in ("accepted", "processing"):
+                self.peer_target_active[target_id] = mid
+
+    @staticmethod
+    def _peer_public(row: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "message_id", "conversation_id", "source_session_id", "source_handle",
+            "source_provider", "target_session_id", "target_handle", "target_provider",
+            "text", "status", "created_at", "updated_at", "reply", "reply_id",
+            "error", "reply_injection",
+        )
+        return {key: row[key] for key in keys if key in row}
+
+    def _peer_for_source(self, source_id: str, message_id: str) -> dict[str, Any]:
+        row = self.peer_messages.get(message_id)
+        if row is None:
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer message not found")
+        if source_id not in (row.get("source_session_id"), row.get("target_session_id")):
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer message not found")
+        return row
+
+    def _emit_peer_status(self, row: dict[str, Any]) -> None:
+        source_id = row.get("source_session_id")
+        if not isinstance(source_id, str) or not source_id:
+            return
+        payload: dict[str, Any] = {
+            "event": "peer_message_status",
+            "session_id": source_id,
+            "message_id": row.get("message_id"),
+            "conversation_id": row.get("conversation_id"),
+            "target_session_id": row.get("target_session_id"),
+            "target": row.get("target_handle"),
+            "target_provider": row.get("target_provider"),
+            "text": row.get("text"),
+            "status": row.get("status"),
+        }
+        if row.get("error"):
+            payload["error"] = row["error"]
+        if row.get("reply_id"):
+            payload["reply_id"] = row["reply_id"]
+        self._emit(payload)
+
+    def _arm_peer_timeout(self, message_id: str) -> None:
+        old = self.peer_timeout_tasks.pop(message_id, None)
+        if old is not None and not old.done():
+            old.cancel()
+        row = self.peer_messages.get(message_id)
+        if row is None or row.get("status") in _PEER_FINAL_STATUSES:
+            return
+        created = float(row.get("created_at") or time.time())
+        remaining = max(0.0, _PEER_REPLY_TIMEOUT_S - (time.time() - created))
+
+        async def expire() -> None:
+            try:
+                await asyncio.sleep(remaining)
+                current = self.peer_messages.get(message_id)
+                if current is None or current.get("status") in _PEER_FINAL_STATUSES:
+                    return
+                current["status"] = "timed_out"
+                current["updated_at"] = time.time()
+                target_id = current.get("target_session_id")
+                target = self.sessions.get(target_id) if isinstance(target_id, str) else None
+                # Keep the reservation while a late/resumed turn is still in
+                # flight so its eventual stop remains correlatable. Once idle,
+                # release it and let a new peer request use the target.
+                if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id \
+                        and str(getattr(target, "status", "error")) in _PEER_RECEIVE_STATUSES:
+                    self.peer_target_active.pop(target_id, None)
+                self._emit_peer_status(current)
+                self.schedule_save()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self.peer_timeout_tasks.pop(message_id, None)
+
+        self.peer_timeout_tasks[message_id] = asyncio.create_task(
+            expire(), name=f"peer-timeout-{message_id[:8]}"
+        )
+
+    def _observe_peer_event(self, message_id: str, payload: dict[str, Any]) -> None:
+        row = self.peer_messages.get(message_id)
+        if row is None or row.get("status") in _PEER_FINAL_STATUSES:
+            return
+        if payload.get("session_id") != row.get("target_session_id"):
+            return
+        event = payload.get("event")
+        if event == "status" and payload.get("status") in _PEER_RECEIVE_STATUSES \
+                and row.get("status") == "timed_out":
+            target_id = row.get("target_session_id")
+            if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id:
+                self.peer_target_active.pop(target_id, None)
+            return
+        if event == "status" and payload.get("status") == "thinking" \
+                and row.get("status") == "accepted":
+            row["status"] = "processing"
+            row["updated_at"] = time.time()
+            self._emit_peer_status(row)
+            self.schedule_save()
+            return
+        if event == "assistant_text":
+            delta = payload.get("delta")
+            if isinstance(delta, str) and delta:
+                buf = str(row.get("_reply_buffer") or "") + delta
+                row["_reply_buffer"] = self._peer_bounded_text(buf)
+            return
+        if event == "error" and not row.get("_turn_error"):
+            msg = payload.get("msg")
+            if isinstance(msg, str) and msg:
+                row["_turn_error"] = msg[:2000]
+            return
+        if event != "stop" or row.get("_completing"):
+            return
+        row["_completing"] = True
+        failed = payload.get("subtype") == "error" or payload.get("is_error") is True
+        asyncio.create_task(
+            self._complete_peer_request(message_id, failed=failed),
+            name=f"peer-complete-{message_id[:8]}",
+        )
+
+    async def _complete_peer_request(self, message_id: str, *, failed: bool) -> None:
+        row = self.peer_messages.get(message_id)
+        if row is None:
+            return
+        target_id = row.get("target_session_id")
+        if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id:
+            self.peer_target_active.pop(target_id, None)
+        timeout = self.peer_timeout_tasks.pop(message_id, None)
+        if timeout is not None and not timeout.done():
+            timeout.cancel()
+        reply = str(row.pop("_reply_buffer", "")).strip()
+        turn_error = str(row.pop("_turn_error", "")).strip()
+        row.pop("_completing", None)
+        row["updated_at"] = time.time()
+        if failed or not reply:
+            row["status"] = "failed"
+            row["error"] = turn_error or ("target turn produced no assistant reply"
+                                            if not reply else "target turn failed")
+            self._emit_peer_status(row)
+            await self._save_state_now()
+            return
+
+        row["status"] = "replied"
+        row["reply"] = reply
+        row["reply_id"] = uuid.uuid4().hex
+        row["reply_injection"] = "pending"
+        self._emit_peer_status(row)
+        # The source transcript gets the actual reply as a durable peer event;
+        # this is independent from model injection, so no crash can hide the
+        # answer from the human even if the source is sleeping.
+        self._emit({
+            "event": "external_message",
+            "session_id": row["source_session_id"],
+            "origin": "charon_peer_reply",
+            "text": reply,
+            "from": row.get("target_handle"),
+            "from_provider": row.get("target_provider"),
+            "source_session_id": row.get("target_session_id"),
+            "message_id": row["reply_id"],
+            "reply_to": message_id,
+            "conversation_id": row.get("conversation_id"),
+            "expects_reply": False,
+        })
+        await self._save_state_now()
+        self._schedule_peer_reply_injection(message_id)
+
+    def _schedule_peer_reply_injection(self, message_id: str) -> None:
+        row = self.peer_messages.get(message_id)
+        if row is None or row.get("status") != "replied" \
+                or row.get("reply_injection") != "pending" \
+                or message_id in self.peer_reply_inflight:
+            return
+        self.peer_reply_inflight.add(message_id)
+        asyncio.create_task(
+            self._inject_peer_reply(message_id),
+            name=f"peer-reply-{message_id[:8]}",
+        )
+
+    async def _inject_peer_reply(self, message_id: str) -> None:
+        try:
+            row = self.peer_messages.get(message_id)
+            if row is None:
+                return
+            deadline = time.monotonic() + _PEER_REPLY_TIMEOUT_S
+            source_id = row.get("source_session_id")
+            source = self.sessions.get(source_id)
+            while source is not None and (
+                    str(getattr(source, "status", "error")) not in _PEER_RECEIVE_STATUSES
+                    or (isinstance(source_id, str) and source_id in self.peer_target_active)):
+                if time.monotonic() >= deadline:
+                    return
+                await asyncio.sleep(0.25)
+                source = self.sessions.get(row.get("source_session_id"))
+            if source is None or row.get("reply_injection") != "pending":
+                return
+            row["reply_injection"] = "sending"
+            await self._save_state_now()
+            envelope = (
+                f'<charon-peer-reply from="@{row.get("target_handle")}" '
+                f'provider="{row.get("target_provider")}" '
+                f'message-id="{row.get("reply_id")}" reply-to="{message_id}" '
+                f'conversation-id="{row.get("conversation_id")}">\n'
+                f'{row.get("reply") or ""}\n</charon-peer-reply>\n\n'
+                "This is the correlated reply to your earlier Charon peer request. "
+                "Present or use it normally. Do not send an automatic acknowledgement "
+                "or reply merely because it arrived; contact the peer again only when "
+                "the user or the task genuinely requires a follow-up."
+            )
+            await source.send_input(envelope)
+            row["reply_injection"] = "done"
+            row["updated_at"] = time.time()
+            await self._save_state_now()
+        except Exception as exc:
+            row = self.peer_messages.get(message_id)
+            if row is not None and row.get("reply_injection") == "sending":
+                row["reply_injection"] = "pending"
+                row["injection_error"] = str(exc)[:1000]
+                self.schedule_save()
+        finally:
+            self.peer_reply_inflight.discard(message_id)
+
+    def _resume_peer_runtime(self) -> None:
+        for message_id, row in list(self.peer_messages.items()):
+            if row.get("status") in ("accepted", "processing"):
+                self._arm_peer_timeout(message_id)
+            if row.get("status") == "replied" and row.get("reply_injection") == "pending":
+                self._schedule_peer_reply_injection(message_id)
 
     # ── Sessions ─────────────────────────────────────────────────────────────
     def _emit(self, payload: dict[str, Any]) -> None:
@@ -241,9 +572,24 @@ class Server:
         IDs are globally unique in practice (sessions: 32-hex UUID, shells:
         16-hex) so there's no key collision.
         """
+        # Session implementations tag provider events belonging to a peer
+        # request with an internal correlation id. Consume it here before the
+        # event is persisted/broadcast: the public protocol carries the stable
+        # message/conversation ids on dedicated peer events, not this runtime
+        # implementation detail.
+        peer_request_id = payload.pop("_peer_request_id", None)
+        if isinstance(peer_request_id, str) and peer_request_id:
+            self._observe_peer_event(peer_request_id, payload)
         sid = payload.get("session_id")
         if not isinstance(sid, str):
             return
+        if not peer_request_id:
+            # Restart recovery: a provider can resume the correlated turn
+            # after its Python session object lost the runtime marker. The
+            # persisted one-target reservation makes that stream unambiguous.
+            resumed_peer_id = self.peer_target_active.get(sid)
+            if resumed_peer_id:
+                self._observe_peer_event(resumed_peer_id, payload)
         event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
         is_shell = event_name.startswith("shell_")
         # TRANSIENT shell events are broadcast live (+ fanned to watchers) but
@@ -290,6 +636,12 @@ class Server:
             targets = set(targets) | self.shell_watchers
         for client in list(targets):
             client.send_json(payload)
+        if event_name == "ready":
+            for message_id, row in list(self.peer_messages.items()):
+                if row.get("source_session_id") == sid \
+                        and row.get("status") == "replied" \
+                        and row.get("reply_injection") == "pending":
+                    self._schedule_peer_reply_injection(message_id)
 
     def _make_session(
         self,
@@ -452,6 +804,7 @@ class Server:
         (a user's first query never actually initialized them).
         """
         state = load_state(self.state_path)
+        self._restore_peer_messages(state.get("peer_messages"))
         sessions = state.get("sessions", []) or []
         for row in sessions:
             try:
@@ -518,7 +871,7 @@ class Server:
     # of methods is unchanged (cf. protocol.METHODS).
     _META_METHODS = frozenset({
         "cli_agents",
-        "peer_list", "peer_send",
+        "peer_list", "peer_send", "peer_status", "peer_conversation", "peer_inbox",
         "hello", "ping", "list_sessions", "get_usage",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
@@ -530,7 +883,7 @@ class Server:
         "git_log", "git_show",
         "lsp_status", "lsp_open", "lsp_close", "lsp_diagnostics", "lsp_request",
         "lsp_apply_edit", "lsp_stop",
-        "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_delete",
+        "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_symlink", "fs_delete",
         "fs_search",
     })
     _SESSION_METHODS = frozenset({
@@ -606,10 +959,46 @@ class Server:
                     "provider": getattr(sess, "kind", "claude"),
                     "status": status,
                     "cwd": getattr(sess, "cwd", None),
-                    "available": status in _PEER_LIVE_STATUSES,
+                    "available": status in _PEER_RECEIVE_STATUSES
+                    and str(getattr(sess, "session_id", "")) not in self.peer_target_active,
                 })
             rows.sort(key=lambda row: (not row["available"], row["handle"]))
             return {"ok": True, "sessions": rows}
+
+        if method == "peer_status":
+            source_id = params.get("source_session_id")
+            message_id = params.get("message_id")
+            if not isinstance(source_id, str) or source_id not in self.sessions:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+            if not isinstance(message_id, str) or not message_id:
+                raise RpcError(ERR_INVALID_PARAMS, "message_id is required")
+            return {"ok": True, "message": self._peer_public(
+                self._peer_for_source(source_id, message_id)
+            )}
+
+        if method == "peer_conversation":
+            source_id = params.get("source_session_id")
+            conversation_id = params.get("conversation_id")
+            if not isinstance(source_id, str) or source_id not in self.sessions:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+            if not isinstance(conversation_id, str) or not conversation_id:
+                raise RpcError(ERR_INVALID_PARAMS, "conversation_id is required")
+            rows = [self._peer_public(row) for row in self.peer_messages.values()
+                    if row.get("conversation_id") == conversation_id
+                    and source_id in (row.get("source_session_id"), row.get("target_session_id"))]
+            rows.sort(key=lambda row: float(row.get("created_at") or 0))
+            if not rows:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer conversation not found")
+            return {"ok": True, "conversation_id": conversation_id, "messages": rows}
+
+        if method == "peer_inbox":
+            source_id = params.get("source_session_id")
+            if not isinstance(source_id, str) or source_id not in self.sessions:
+                raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+            rows = [self._peer_public(row) for row in self.peer_messages.values()
+                    if source_id in (row.get("source_session_id"), row.get("target_session_id"))]
+            rows.sort(key=lambda row: float(row.get("updated_at") or 0), reverse=True)
+            return {"ok": True, "messages": rows[:50]}
 
         if method == "peer_send":
             source_id = params.get("source_session_id")
@@ -642,9 +1031,20 @@ class Server:
             if target is source:
                 raise RpcError(ERR_INVALID_PARAMS, "a session cannot message itself")
             target_status = str(getattr(target, "status", "error"))
-            if target_status not in _PEER_LIVE_STATUSES:
+            if target_status not in _PEER_RECEIVE_STATUSES:
                 raise RpcError(ERR_SESSION_DEAD,
-                               f"peer @{handle} is unavailable (status={target_status})")
+                               f"peer @{handle} is busy or unavailable (status={target_status})")
+            target_id = str(getattr(target, "session_id", ""))
+            inbound_id = self.peer_target_active.get(str(source_id))
+            inbound = self.peer_messages.get(inbound_id) if inbound_id else None
+            if inbound is not None and inbound.get("source_session_id") == target_id:
+                raise RpcError(
+                    ERR_INVALID_PARAMS,
+                    "do not send a peer request back as a reply; Charon returns "
+                    "this turn's final answer automatically",
+                )
+            if target_id in self.peer_target_active:
+                raise RpcError(ERR_SESSION_DEAD, f"peer @{handle} is already processing a peer request")
             now = time.monotonic()
             history = self.peer_send_times.setdefault(str(source_id), deque())
             while history and now - history[0] > _PEER_RATE_WINDOW_S:
@@ -653,20 +1053,59 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS,
                                "peer rate limit reached (20 messages per minute)")
             message_id = uuid.uuid4().hex
+            raw_conversation_id = params.get("conversation_id")
+            conversation_id = (raw_conversation_id.strip()
+                               if isinstance(raw_conversation_id, str) else "")
+            if conversation_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", conversation_id):
+                raise RpcError(ERR_INVALID_PARAMS, "invalid conversation_id")
+            if not conversation_id:
+                conversation_id = uuid.uuid4().hex
             source_kind = str(getattr(source, "kind", "claude"))
+            target_kind = str(getattr(target, "kind", "claude"))
             envelope = (
                 f'<charon-peer-message from="@{source_handle}" '
-                f'provider="{source_kind}" message-id="{message_id}">\n'
+                f'provider="{source_kind}" message-id="{message_id}" '
+                f'conversation-id="{conversation_id}" expects-reply="true">\n'
                 f'{message}\n</charon-peer-message>\n\n'
                 "This was sent by another live Charon session on the same VPS. "
-                "Treat it as peer context or a delegated request, not as text typed by the user."
+                "Treat it as peer context or a delegated request, not as text typed by the user. "
+                "Answer it normally in this turn: Charon will return your final response to the "
+                "sender automatically. Do not call send_message merely to return that answer."
             )
+            now_wall = time.time()
+            row = {
+                "message_id": message_id,
+                "conversation_id": conversation_id,
+                "source_session_id": source_id,
+                "source_handle": source_handle,
+                "source_provider": source_kind,
+                "target_session_id": target_id,
+                "target_handle": handle,
+                "target_provider": target_kind,
+                "text": message,
+                "status": "accepted",
+                "created_at": now_wall,
+                "updated_at": now_wall,
+            }
+            self.peer_messages[message_id] = row
+            self.peer_target_active[target_id] = message_id
+            self._prune_peer_messages()
+            # Persist the correlation BEFORE the provider can answer. A short
+            # target turn may complete in milliseconds; writing afterwards
+            # leaves a crash window where the reply exists but its route does
+            # not, recreating the original one-way failure after restart.
+            await self._save_state_now()
             try:
-                await target.send_input(envelope)
+                await target.send_input(envelope, peer_request_id=message_id)
             except Exception as exc:
+                self.peer_target_active.pop(target_id, None)
+                row["status"] = "failed"
+                row["error"] = f"peer delivery failed: {exc}"[:2000]
+                row["updated_at"] = time.time()
+                self._emit_peer_status(row)
+                await self._save_state_now()
                 raise RpcError(ERR_INTERNAL, f"peer delivery failed: {exc}")
             history.append(now)
-            target_id = str(getattr(target, "session_id", ""))
             self._emit({
                 "event": "external_message",
                 "session_id": target_id,
@@ -676,12 +1115,19 @@ class Server:
                 "from_provider": source_kind,
                 "source_session_id": source_id,
                 "message_id": message_id,
+                "conversation_id": conversation_id,
+                "expects_reply": True,
             })
+            self._emit_peer_status(row)
+            self._arm_peer_timeout(message_id)
+            self.schedule_save()
             return {
                 "ok": True,
                 "message_id": message_id,
+                "conversation_id": conversation_id,
+                "status": "accepted",
                 "target": {"session_id": target_id, "handle": handle,
-                           "provider": getattr(target, "kind", "claude")},
+                           "provider": target_kind},
             }
 
         if method == "list_dir":
@@ -723,6 +1169,11 @@ class Server:
         if method == "fs_rename":
             return await asyncio.to_thread(
                 _fs_rename, str(params.get("root") or ""), str(params.get("path") or ""),
+                str(params.get("to") or ""))
+
+        if method == "fs_symlink":
+            return await asyncio.to_thread(
+                _fs_symlink, str(params.get("root") or ""), str(params.get("path") or ""),
                 str(params.get("to") or ""))
 
         if method == "fs_delete":
@@ -1894,6 +2345,7 @@ class Server:
             pass
 
         await self._restore_existing()
+        self._resume_peer_runtime()
 
         # Cleanup orphan event logs: any .jsonl file in ~/.charon/events/
         # whose session_id is not in our restored state. These accumulate
@@ -1957,7 +2409,9 @@ class Server:
                   file=sys.stderr, flush=True)
 
         server = await asyncio.start_unix_server(
-            self._handle_client, path=str(self.socket_path)
+            self._handle_client,
+            path=str(self.socket_path),
+            limit=RPC_READER_LIMIT,
         )
         try:
             os.chmod(self.socket_path, 0o600)
@@ -2000,6 +2454,9 @@ class Server:
                 await serve_task
             except asyncio.CancelledError:
                 pass
+            for task in list(self.peer_timeout_tasks.values()):
+                task.cancel()
+            self.peer_timeout_tasks.clear()
             # Save final state and stop sessions
             await self._save_state_now()
             for s in list(self.sessions.values()):
@@ -2194,6 +2651,15 @@ class Client:
             try:
                 line = await self.reader.readline()
             except (asyncio.IncompleteReadError, ConnectionResetError):
+                break
+            except ValueError as e:
+                # StreamReader raises ValueError after LimitOverrunError when a
+                # line crosses RPC_READER_LIMIT.  The request id lives at the
+                # far end of an incomplete JSON line, so no correlated RPC
+                # response is possible; close only this client, without an
+                # unhandled task traceback or any daemon-wide impact.
+                print(f"[server] rejected oversized RPC line: {e}",
+                      file=sys.stderr, flush=True)
                 break
             if not line:
                 break

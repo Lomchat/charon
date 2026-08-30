@@ -13,12 +13,18 @@ import sys
 from typing import Any
 
 
-_INSTRUCTIONS = (
-    "Communicate with other live Charon sessions on this VPS. When the user "
-    "mentions an @handle or asks you to contact another session, call "
-    "list_sessions to resolve it, then send_message. Never claim delivery "
-    "unless send_message reports ok, and avoid autonomous message loops."
+PEER_MODEL_INSTRUCTIONS = (
+    "This is the authoritative channel for Charon @handles on this VPS. When "
+    "the user mentions an @handle or asks you to contact another Charon session, "
+    "you MUST call list_sessions and then send_message; do not use provider-native "
+    "collaboration tools and never claim a handle is unavailable without listing. "
+    "send_message confirms acceptance, not a reply. Use get_message_status, "
+    "get_conversation or list_inbox when asked whether a peer answered. Charon "
+    "automatically returns the target turn's final answer, so an incoming peer "
+    "request should be answered normally; do not send a redundant acknowledgement. "
+    "Only contact the peer again for a genuine follow-up and avoid autonomous loops."
 )
+_INSTRUCTIONS = PEER_MODEL_INSTRUCTIONS
 
 _TOOLS = [
     {
@@ -41,11 +47,49 @@ _TOOLS = [
             "properties": {
                 "handle": {"type": "string", "description": "Target session handle, e.g. api or @api"},
                 "message": {"type": "string", "description": "Message or task for the target session"},
+                "conversation_id": {
+                    "type": "string",
+                    "description": "Optional existing conversation id for an explicit follow-up",
+                },
             },
             "required": ["handle", "message"],
             "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+    },
+    {
+        "name": "get_message_status",
+        "description": (
+            "Get the authoritative state of one sent or received peer message: "
+            "accepted, processing, replied, failed or timed_out."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"message_id": {"type": "string"}},
+            "required": ["message_id"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
+    },
+    {
+        "name": "get_conversation",
+        "description": "Get the correlated messages and replies in one Charon peer conversation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"conversation_id": {"type": "string"}},
+            "required": ["conversation_id"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
+    },
+    {
+        "name": "list_inbox",
+        "description": (
+            "List recent peer requests and replies involving this session. Use this "
+            "instead of guessing whether another session has answered."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
     },
 ]
 
@@ -114,6 +158,21 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                     "source_session_id": source_session_id,
                     "handle": args.get("handle"),
                     "message": args.get("message"),
+                    "conversation_id": args.get("conversation_id"),
+                })
+            elif name == "get_message_status":
+                value = _agent_call(socket_path, "peer_status", {
+                    "source_session_id": source_session_id,
+                    "message_id": args.get("message_id"),
+                })
+            elif name == "get_conversation":
+                value = _agent_call(socket_path, "peer_conversation", {
+                    "source_session_id": source_session_id,
+                    "conversation_id": args.get("conversation_id"),
+                })
+            elif name == "list_inbox":
+                value = _agent_call(socket_path, "peer_inbox", {
+                    "source_session_id": source_session_id,
                 })
             else:
                 raise RuntimeError(f"unknown peer tool: {name}")

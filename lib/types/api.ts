@@ -217,12 +217,12 @@ export type FsWriteResponse = {
   version?: string | null;
 };
 
-// Explorer context menu (agent >= 0.27.0). One route, one shape.
+// Explorer context menu (agent >= 0.27.0, symlink >= 0.75.0). One route, one shape.
 export type FsOpBody = {
   root: string;
-  op: 'mkdir' | 'rename' | 'delete';
+  op: 'mkdir' | 'rename' | 'symlink' | 'delete';
   path: string;
-  /** rename only — the destination, relative to `root`. */
+  /** rename/symlink — the destination, relative to `root`. */
   to?: string;
   /** delete only — required for a non-empty directory. */
   recursive?: boolean;
@@ -234,6 +234,8 @@ export type FsOpResponse = {
   /** 'exists' / 'not_empty' are questions for the user, not failures. */
   reason?: 'bad_path' | 'exists' | 'missing' | 'not_empty' | 'offline' | 'unsupported' | 'error';
   path?: string;
+  /** symlink only — its relative target name. */
+  target?: string;
 };
 
 // ── Search across the tree (agent >= 0.29.0, §14.84) ───────────────────────

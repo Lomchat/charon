@@ -127,6 +127,14 @@ export const IconInsert = (p: P) => (
     <path d="M3 13.3h10" />
   </svg>
 );
+// Two chain links — create another filename that resolves to this file.
+export const IconSymlink = (p: P) => (
+  <svg {...stroke} {...p}>
+    <path d="M6.3 9.7 5.1 11a2.2 2.2 0 0 1-3.1-3.1l2.2-2.2a2.2 2.2 0 0 1 3.1 0" />
+    <path d="m9.7 6.3 1.2-1.2A2.2 2.2 0 0 1 14 8.2l-2.2 2.2a2.2 2.2 0 0 1-3.1 0" />
+    <path d="m5.8 10.2 4.4-4.4" />
+  </svg>
+);
 export const IconRename = (p: P) => (
   <svg {...stroke} {...p}>
     <path d="M11.2 2.8a1.4 1.4 0 0 1 2 2L6.4 11.6l-2.6.6.6-2.6z" />

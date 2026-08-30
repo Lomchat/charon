@@ -27,6 +27,12 @@ export type Msg = {
   from?: string | null;
   fromProvider?: 'claude' | 'codex' | null;
   sourceSessionId?: string | null;
+  messageId?: string | null;
+  conversationId?: string | null;
+  replyTo?: string | null;
+  peerStatus?: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out' | null;
+  peerTarget?: string | null;
+  peerError?: string | null;
 };
 
 export type PlanStep = { step: string; status: string };

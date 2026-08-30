@@ -47,6 +47,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS
+
 try:
     from openai_codex import (
         AsyncCodex,
@@ -637,6 +639,7 @@ class CodexSession:
         # itself exposes in its /approve picker; they are runtime state, not
         # durable authorization grants.
         self._guardian_denials: list[dict[str, Any]] = []
+        self._active_peer_request_id: str | None = None
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -727,12 +730,18 @@ class CodexSession:
         self._stopped.set()
         await self._save_state()
 
-    async def send_input(self, content: str, codex_inputs: list[dict[str, Any]] | None = None) -> None:
+    async def send_input(
+        self,
+        content: str,
+        codex_inputs: list[dict[str, Any]] | None = None,
+        *,
+        peer_request_id: str | None = None,
+    ) -> None:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
         # Mid-turn: steer the live turn (parity with Claude's mid-turn query).
         turn = self._active_turn
-        if turn is not None and self.status == "thinking":
+        if turn is not None and self.status == "thinking" and not peer_request_id:
             try:
                 res = turn.steer(codex_inputs or content)
                 if asyncio.iscoroutine(res):
@@ -742,7 +751,8 @@ class CodexSession:
                 self._emit("error", msg=f"steer: {e}")
                 # fall through to queue for the next turn
         await self._stdin_queue.put({"type": "user_message", "content": content,
-                                     "codex_inputs": codex_inputs})
+                                     "codex_inputs": codex_inputs,
+                                     "peer_request_id": peer_request_id})
 
     async def interrupt(self) -> None:
         turn = self._active_turn
@@ -1027,9 +1037,10 @@ class CodexSession:
         ``thread_start`` has returned; wait for that boundary instead of racing
         a request against a thread that does not exist yet.
 
-        The Charon socket accepts one line below 64 KiB.  The hub therefore
-        sends several bounded batches; validate each one again here because a
-        protocol endpoint must not trust its caller.
+        This endpoint deliberately keeps each provider handoff below 56 KiB
+        even though the common RPC transport has a larger bounded reader.
+        The hub therefore sends several batches; validate each one again here
+        because a protocol endpoint must not trust its caller.
         """
         if not isinstance(items, list) or not items:
             raise ValueError("items must be a non-empty list")
@@ -1102,6 +1113,13 @@ class CodexSession:
             env=self.codex_config.get("env") or None,
             codex_bin=self.codex_config.get("codex_bin") or None,
         )
+
+    def _peer_developer_instructions(self) -> str | None:
+        existing = self.codex_config.get("developer_instructions")
+        parts = [existing.strip()] if isinstance(existing, str) and existing.strip() else []
+        if getattr(self, "peer_mcp", None):
+            parts.append("Charon peer communication rules:\n" + PEER_MODEL_INSTRUCTIONS)
+        return "\n\n".join(parts) or None
 
     async def _fork_with_transient_client(
         self,
@@ -1511,7 +1529,12 @@ class CodexSession:
                 for delay in (0.0, 0.05, 0.2, 0.5):
                     if delay:
                         await asyncio.sleep(delay)
-                    if await self._attach_active_external_turn():
+                    # A correlated peer request owns a distinct response. Do
+                    # not steer it into a native turn that raced our idle
+                    # status; failing that start is safer than attributing an
+                    # unrelated turn's answer to the peer request.
+                    if not self._active_peer_request_id \
+                            and await self._attach_active_external_turn():
                         return
             except asyncio.CancelledError:
                 raise
@@ -1960,6 +1983,8 @@ class CodexSession:
             ("model_provider", "modelProvider"),
         ):
             value = self.codex_config.get(src)
+            if src == "developer_instructions":
+                value = self._peer_developer_instructions()
             if value is not None:
                 params[dst] = _enum_val(value)
         if not resume and self.codex_config.get("ephemeral"):
@@ -2053,10 +2078,20 @@ class CodexSession:
     def _emit(self, event: str, **fields: Any) -> None:
         msg = {"event": event, "session_id": self.session_id}
         msg.update(fields)
+        peer_request_id = getattr(self, "_active_peer_request_id", None)
+        if peer_request_id:
+            msg["_peer_request_id"] = peer_request_id
         try:
             self._emit_to_server(msg)
         except Exception:
             traceback.print_exc(file=sys.stderr)
+
+    def _wire_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        msg = {"session_id": self.session_id, **event}
+        peer_request_id = getattr(self, "_active_peer_request_id", None)
+        if peer_request_id:
+            msg["_peer_request_id"] = peer_request_id
+        return msg
 
     async def _save_state(self) -> None:
         try:
@@ -2126,7 +2161,7 @@ class CodexSession:
         if type(payload).__name__ == "TurnCompletedNotification":
             await self._sync_background_terminals()
         for event in events:
-            self._emit_to_server({"session_id": self.session_id, **event})
+            self._emit_to_server(self._wire_event(event))
 
     def _translate(self, payload: Any) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -2791,7 +2826,7 @@ class CodexSession:
                 if thread_id and self.claude_session_id and thread_id != self.claude_session_id:
                     continue
                 for event in self._translate(payload):
-                    self._emit_to_server({"session_id": self.session_id, **event})
+                    self._emit_to_server(self._wire_event(event))
                 if type(payload).__name__ == "ThreadStatusChangedNotification":
                     status = getattr(payload, "status", None)
                     status = getattr(status, "root", status)
@@ -2956,6 +2991,10 @@ class CodexSession:
                     continue
                 content = msg.get("content") or ""
                 turn_input = msg.get("codex_inputs") or content
+                self._active_peer_request_id = (
+                    msg.get("peer_request_id")
+                    if isinstance(msg.get("peer_request_id"), str) else None
+                )
                 try:
                     if await self._attach_active_external_turn():
                         turn = self._active_turn
@@ -3003,6 +3042,7 @@ class CodexSession:
                     self._starting_turn = False
                     self._active_turn = None
                 self._end_turn()
+                self._active_peer_request_id = None
         except asyncio.CancelledError:
             raise
         except Exception as e:

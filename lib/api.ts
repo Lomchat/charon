@@ -229,9 +229,14 @@ export const api = {
    */
   searchFs: (id: string, body: FsSearchQuery) =>
     send<FsSearchResponse>('POST', `/api/vps/${id}/fs/search`, body, { timeoutMs: 45_000 }),
-  // URL for the BYTES — an <img>/<audio>/<video> src, or a download.
-  fsFileUrl: (id: string, root: string, path: string, opts: { inline?: boolean } = {}) =>
-    `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${opts.inline ? 'inline=1' : 'raw=1'}`,
+  // URL for the BYTES — media, a file download, or a streamed directory ZIP.
+  fsFileUrl: (
+    id: string, root: string, path: string,
+    opts: { inline?: boolean; archive?: 'zip' } = {},
+  ) =>
+    `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&${
+      opts.archive === 'zip' ? 'archive=zip' : opts.inline ? 'inline=1' : 'raw=1'
+    }`,
 
   /** Sidebar order of the sessions inside ONE vps (§14.80). */
   reorderSessions: (vpsId: string, ids: string[]) =>
