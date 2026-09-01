@@ -4,6 +4,7 @@ import {
   effectiveBgStatus,
   applyBgTaskEvent,
   BG_TASK_MAX_AGE_S,
+  reconcileAuthoritativeBgTasks,
   type BgTask,
 } from '@/app/bgTasks';
 
@@ -57,6 +58,51 @@ describe('isTerminalBgStatus — the SDK vocabulary', () => {
     expect(isTerminalBgStatus(null)).toBe(false);
     expect(isTerminalBgStatus(42)).toBe(false);
     expect(isTerminalBgStatus('')).toBe(false);
+  });
+});
+
+describe('reconcileAuthoritativeBgTasks — pagination cannot hide live work', () => {
+  const task = (taskId: string, status: BgTask['status'], startedAt: number): BgTask => ({
+    taskId, description: taskId, command: null, toolUseId: null, taskType: 'local_bash',
+    status, startedAt, endedAt: status === 'running' ? null : startedAt + 10,
+    outputFile: null, summary: null, workflowName: null, usage: null,
+    lastToolName: null, agents: null,
+  });
+
+  it('injects an active task that lies outside the visible message window', () => {
+    const out = reconcileAuthoritativeBgTasks([], [task('hidden-old-task', 'running', 100)]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ taskId: 'hidden-old-task', status: 'running' });
+  });
+
+  it('drops a partial-window running row absent from the authoritative set', () => {
+    expect(reconcileAuthoritativeBgTasks([task('already-ended', 'running', 100)], []))
+      .toEqual([]);
+  });
+
+  it('keeps recent completion rows alongside the authoritative active set', () => {
+    const out = reconcileAuthoritativeBgTasks(
+      [task('done', 'completed', 100)],
+      [task('running', 'running', 200)],
+    );
+    expect(out.map((entry) => [entry.taskId, entry.status])).toEqual([
+      ['running', 'running'],
+      ['done', 'completed'],
+    ]);
+  });
+
+  it('preserves richer command/progress fields from the visible live row', () => {
+    const local = {
+      ...task('running', 'running', 100),
+      command: 'bun run benchmark',
+      usage: { tokens: 12, toolUses: 2, durationMs: 3000 },
+    };
+    const compact = { ...task('running', 'running', 100), description: 'benchmark' };
+    expect(reconcileAuthoritativeBgTasks([local], [compact])[0]).toMatchObject({
+      description: 'benchmark',
+      command: 'bun run benchmark',
+      usage: { tokens: 12, toolUses: 2, durationMs: 3000 },
+    });
   });
 });
 

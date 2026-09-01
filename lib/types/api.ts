@@ -838,6 +838,39 @@ export type PendingExitPlanPayload = {
   createdAt: number;
 };
 
+// Compact, provider-neutral projection of ONE background work item. The
+// session-detail endpoint returns the currently running set independently of
+// chat pagination so a task launched outside the visible message window can
+// never leave the sidebar and the composer bar disagreeing.
+export type SessionBackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'killed' | 'stale';
+export type SessionBackgroundTaskAgent = {
+  index: number | null;
+  label: string | null;
+  state: string | null;
+  model: string | null;
+  phaseTitle: string | null;
+  tokens: number | null;
+  toolCalls: number | null;
+  durationMs: number | null;
+  resultPreview: string | null;
+};
+export type SessionBackgroundTask = {
+  taskId: string;
+  description: string | null;
+  command: string | null;
+  toolUseId: string | null;
+  taskType: string | null;
+  status: SessionBackgroundTaskStatus;
+  startedAt: number;
+  endedAt: number | null;
+  outputFile: string | null;
+  summary: string | null;
+  workflowName: string | null;
+  usage: { tokens: number | null; toolUses: number | null; durationMs: number | null } | null;
+  lastToolName: string | null;
+  agents: SessionBackgroundTaskAgent[] | null;
+};
+
 export type ClaudeSessionDetailResponse = {
   session: ClaudeSession;
   liveStatus: WorkerStatus | string;
@@ -865,6 +898,10 @@ export type ClaudeSessionDetailResponse = {
   // user has a reliable source of truth — independent of the LLM's
   // self-identification (which is famously unreliable, training cutoff).
   effectiveModel?: string | null;
+  // Authoritative ACTIVE registry derived from the full persisted bg_task
+  // history, not from the paginated `messages` window. Optional so a cached
+  // response produced by an older hub remains usable during rolling deploys.
+  backgroundTasks?: SessionBackgroundTask[];
   pendingPermissions: PendingPermissionPayload[];
   pendingQuestions: PendingQuestionPayload[];
   pendingExitPlans: PendingExitPlanPayload[];

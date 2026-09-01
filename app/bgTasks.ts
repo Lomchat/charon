@@ -16,47 +16,17 @@
 // 'started' event in stream order, so candidates are registered by the time
 // they're consumed.
 
-export type BgTaskStatus = 'running' | 'completed' | 'failed' | 'killed' | 'stale';
+import type {
+  SessionBackgroundTask,
+  SessionBackgroundTaskAgent,
+  SessionBackgroundTaskStatus,
+} from '@/lib/types/api';
 
-export type BgTask = {
-  taskId: string;
-  // Human description from the CLI (TaskStartedMessage.description).
-  description: string | null;
-  // The launched shell command (from the Bash tool_use input) — null for
-  // non-bash tasks (background subagents) or if the launch wasn't observed.
-  command: string | null;
-  toolUseId: string | null;
-  taskType: string | null; // e.g. 'local_bash', 'local_workflow', agent tasks…
-  status: BgTaskStatus;
-  startedAt: number; // epoch seconds
-  endedAt: number | null;
-  outputFile: string | null;
-  // Completion summary from the notification ("Background command "…"
-  // completed (exit code 0)").
-  summary: string | null;
-  // Workflow-tool runs (taskType 'local_workflow'): the script name.
-  workflowName: string | null;
-  // Live progress from TRANSIENT bg_task_progress (not persisted → null after a
-  // refetch). `agents` = a Workflow run's per-sub-agent fan-out (§14.54).
-  usage: BgTaskUsage | null;
-  lastToolName: string | null;
-  agents: BgAgent[] | null;
-};
-
-// One sub-agent inside a running Workflow-tool task.
-export type BgAgent = {
-  index: number | null;
-  label: string | null;
-  state: string | null; // 'start' | 'done' | …
-  model: string | null;
-  phaseTitle: string | null;
-  tokens: number | null;
-  toolCalls: number | null;
-  durationMs: number | null;
-  resultPreview: string | null;
-};
-
-export type BgTaskUsage = { tokens: number | null; toolUses: number | null; durationMs: number | null };
+// Keep the short UI vocabulary while the public API owns the wire shape.
+export type BgTaskStatus = SessionBackgroundTaskStatus;
+export type BgTask = SessionBackgroundTask;
+export type BgAgent = SessionBackgroundTaskAgent;
+export type BgTaskUsage = NonNullable<SessionBackgroundTask['usage']>;
 
 // Wire/persisted shape (WorkerEvent 'bg_task' / role='event' row payload).
 export type BgTaskEventLike = {
@@ -298,6 +268,45 @@ export function bgTasksToArray(map: Map<string, BgTask>): BgTask[] {
     return ar === 0 ? a.startedAt - b.startedAt : (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt);
   });
   return arr;
+}
+
+/** Reconcile the paginated chat rebuild with the server's full-history active
+ * snapshot. Recent completed rows stay visible for the normal completion
+ * grace, but the server alone decides which tasks are still running. */
+export function reconcileAuthoritativeBgTasks(
+  rebuilt: BgTask[],
+  authoritative: BgTask[] | undefined,
+): BgTask[] {
+  if (!Array.isArray(authoritative)) return rebuilt;
+
+  const next = new Map<string, BgTask>();
+  const localById = new Map(rebuilt.map((task) => [task.taskId, task] as const));
+  for (const task of rebuilt) {
+    // A running row absent from the full-history snapshot is incomplete
+    // pagination, a terminal event we did not load, or an aged-out task. In
+    // every case it must not be presented as live work.
+    if (task.status !== 'running') next.set(task.taskId, { ...task });
+  }
+  for (const task of authoritative) {
+    const local = localById.get(task.taskId);
+    next.set(task.taskId, {
+      ...(local ?? task),
+      ...task,
+      // The compact server projection has lifecycle metadata but deliberately
+      // does not scan every tool_use just to recover a command. Keep richer
+      // fields already present in the visible window/live progress stream.
+      description: task.description ?? local?.description ?? null,
+      command: task.command ?? local?.command ?? null,
+      outputFile: task.outputFile ?? local?.outputFile ?? null,
+      workflowName: task.workflowName ?? local?.workflowName ?? null,
+      usage: task.usage ?? local?.usage ?? null,
+      lastToolName: task.lastToolName ?? local?.lastToolName ?? null,
+      agents: task.agents ?? local?.agents ?? null,
+      status: 'running',
+      endedAt: null,
+    });
+  }
+  return bgTasksToArray(next);
 }
 
 /** True when the tool_use is a background launch we should keep as a

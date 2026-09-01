@@ -1,7 +1,10 @@
 import 'server-only';
 import { and, asc, eq, like } from 'drizzle-orm';
 import { db, claudeSessionMessages } from '@/lib/db';
-import { BG_TASK_MAX_AGE_S, isTerminalBgStatus } from '@/app/bgTasks';
+import {
+  applyBgTaskEvent, BG_TASK_MAX_AGE_S, bgTasksToArray, isTerminalBgStatus,
+  type BgTask,
+} from '@/app/bgTasks';
 
 /**
  * "Does this session still have background work running?" — hub-side.
@@ -44,11 +47,11 @@ export function isBgTaskDone(
  *  Full-history scan: cheap enough at the call rate (stream hydration once per
  *  session, and one auto-update tick every 30 min), and the alternative is a
  *  column that can silently disagree with the rows it is derived from. */
-export function runningBgTasksFromDb(sessionId: string): Map<string, number> {
-  const running = new Map<string, number>(); // taskId → startedAt
-  let rows: { content: string; createdAt: number }[];
+type BgTaskRow = { content: string; createdAt: number };
+
+function bgTaskRowsFromDb(sessionId: string): BgTaskRow[] {
   try {
-    rows = db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt })
+    return db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt })
       .from(claudeSessionMessages)
       .where(and(
         eq(claudeSessionMessages.sessionId, sessionId),
@@ -57,16 +60,61 @@ export function runningBgTasksFromDb(sessionId: string): Map<string, number> {
       ))
       .orderBy(asc(claudeSessionMessages.id))
       .all();
-  } catch { return running; }
-  for (const r of rows) {
+  } catch { return []; }
+}
+
+function reduceBgTasksFromDb(sessionId: string): {
+  running: Map<string, number>;
+  details: Map<string, BgTask>;
+} {
+  const running = new Map<string, number>(); // taskId → startedAt
+  const details = new Map<string, BgTask>();
+  for (const r of bgTaskRowsFromDb(sessionId)) {
     try {
       const ev = JSON.parse(r.content);
       if (ev?.type !== 'bg_task' || !ev.taskId) continue;
+      applyBgTaskEvent(details, ev, r.createdAt);
       if (isBgTaskDone(ev)) running.delete(ev.taskId);
       else if (!running.has(ev.taskId)) running.set(ev.taskId, r.createdAt);
     } catch { /* a corrupt row must not blind the whole registry */ }
   }
-  return running;
+  return { running, details };
+}
+
+export function runningBgTasksFromDb(sessionId: string): Map<string, number> {
+  return reduceBgTasksFromDb(sessionId).running;
+}
+
+/** Compact ACTIVE-task projection for the session-detail API. Unlike the
+ * chat window it scans the complete lifecycle, then applies the same 24h
+ * belief cap as the status/quiet-gate reducer. */
+export function runningBgTaskDetailsFromDb(
+  sessionId: string,
+  nowS = Math.floor(Date.now() / 1000),
+): BgTask[] {
+  const { running, details } = reduceBgTasksFromDb(sessionId);
+  pruneStaleBgTasks(running, nowS);
+  const active = new Map<string, BgTask>();
+  for (const [taskId, startedAt] of running) {
+    const detail = details.get(taskId);
+    active.set(taskId, {
+      taskId,
+      description: detail?.description ?? null,
+      command: detail?.command ?? null,
+      toolUseId: detail?.toolUseId ?? null,
+      taskType: detail?.taskType ?? null,
+      status: 'running',
+      startedAt,
+      endedAt: null,
+      outputFile: detail?.outputFile ?? null,
+      summary: null,
+      workflowName: detail?.workflowName ?? null,
+      usage: null,
+      lastToolName: null,
+      agents: null,
+    });
+  }
+  return bgTasksToArray(active);
 }
 
 /** Drop the tasks too old to still be believed. Mutates, and answers whether

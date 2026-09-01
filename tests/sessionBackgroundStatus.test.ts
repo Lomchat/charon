@@ -37,6 +37,7 @@ let db: any;
 let schema: any;
 let SessionStream: any;
 let recordedSessionUsage: any;
+let runningBgTaskDetailsFromDb: any;
 
 function createStream(status: string = 'active', kind: 'claude' | 'codex' = 'claude') {
   return new SessionStream({
@@ -74,6 +75,7 @@ beforeAll(async () => {
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
   ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
+  ({ runningBgTaskDetailsFromDb } = await import('@/lib/server/claude/bgTaskState'));
 });
 
 beforeEach(() => {
@@ -304,5 +306,29 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(revived.hasRunningBgTasks()).toBe(true);
     revived._onAgentEvent({ event: 'status', session_id: SID, status: 'active', seq: 2 });
     expect(revived.status).toBe('background');
+  });
+
+  it('projects a running task even after it falls beyond the 200-message chat window', () => {
+    const stream = createStream();
+    stream._onAgentEvent({
+      ...bgTask(1, 'started', 'task-beyond-window'),
+      description: 'wait for the long benchmark',
+      task_type: 'local_bash',
+    });
+    db.insert(schema.claudeSessionMessages).values(Array.from({ length: 201 }, (_, i) => ({
+      sessionId: SID,
+      role: 'user',
+      content: `later message ${i}`,
+      createdAt: Math.floor(Date.now() / 1000) + i + 1,
+    }))).run();
+
+    expect(runningBgTaskDetailsFromDb(SID)).toEqual([
+      expect.objectContaining({
+        taskId: 'task-beyond-window',
+        description: 'wait for the long benchmark',
+        taskType: 'local_bash',
+        status: 'running',
+      }),
+    ]);
   });
 });

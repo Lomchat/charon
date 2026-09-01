@@ -13,6 +13,7 @@ import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
 import { orderChronologically } from '@/lib/server/claude/messageOrder';
 import { loadMessageWindow, publicMessageColumns } from '@/lib/server/claude/messageWindow';
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
+import { runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
 
 /**
  * The Claude SDK stores each session in
@@ -155,6 +156,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   let messages: ClaudeSessionMessage[];
   let hasMore: boolean;
   let oldestChatId: number | null;
+  let includeBackgroundSnapshot = false;
   const windowStarted = performance.now();
   if (since != null) {
     // Delta mode: every row with id > since. Cap at 1000 just in case
@@ -174,6 +176,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 200), 1), 1000);
     const beforeRaw = url.searchParams.get('before');
     const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : null;
+    includeBackgroundSnapshot = before == null;
     const win = loadMessageWindow(id, limit, before);
     messages = win.messages;
     hasMore = win.hasMore;
@@ -199,6 +202,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .where(eq(claudeSessionMessages.sessionId, id))
     .get();
   const maxMessageId = maxRow?.m ?? 0;
+  // The chat is paginated, task liveness is not. A compact full-history
+  // projection prevents a task older than the latest 200 chat rows from
+  // keeping the session violet while disappearing from the composer bar.
+  // Delta and load-older calls omit it: live SSE patches task state, and any
+  // missed delta triggers a clean root-window refetch.
+  const backgroundTasks = includeBackgroundSnapshot
+    ? runningBgTaskDetailsFromDb(id)
+    : undefined;
 
   // Pendings (permission/question/exit_plan) — returned so the client can
   // display them immediately on refetch without having to wait for the SSE
@@ -220,6 +231,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     hasMore,
     oldestChatId,
     maxMessageId,
+    backgroundTasks,
     // Assistant text currently being accumulated (not yet persisted). Empty
     // if no active streaming. The client injects it into its assistantBuf
     // to show "where we are" without replaying the deltas.

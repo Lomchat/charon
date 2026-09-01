@@ -7,7 +7,8 @@ import type {
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
 import {
-  applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
+  applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse,
+  markRunningBgTasksStale, reconcileAuthoritativeBgTasks,
   type BgTask, type BgLaunchCandidate,
 } from './bgTasks';
 import { publishFsChanged } from './fsChangeBus';
@@ -445,11 +446,15 @@ export function useClaudeSessionStream(
     setMessages(rebuilt.messages);
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
-    // Background-task registry: replace wholesale (the rebuild IS the source
-    // of truth — bg_task rows are persisted). Keep the live ref map in sync
-    // so subsequent SSE events patch on top of the rebuilt state.
-    bgTasksRef.current = new Map(rebuilt.bgTasks.map((t) => [t.taskId, { ...t }]));
-    setBgTasks(rebuilt.bgTasks);
+    // The visible message window is paginated, so it cannot be the liveness
+    // oracle: a task launched >200 chat rows ago may still run. Reconcile its
+    // recent completion cards with the API's compact full-history ACTIVE set.
+    const reconciledBgTasks = reconcileAuthoritativeBgTasks(
+      rebuilt.bgTasks,
+      r.backgroundTasks as BgTask[] | undefined,
+    );
+    bgTasksRef.current = new Map(reconciledBgTasks.map((t) => [t.taskId, { ...t }]));
+    setBgTasks(reconciledBgTasks);
     // Merge (not replace): the rebuilt edits carry no content (the GET strips
     // edit_snapshot content — CLAUDE.md §14 gotcha 41). Keep already-loaded
     // diff content; the auto-load effect refills any stripped skeletons.
