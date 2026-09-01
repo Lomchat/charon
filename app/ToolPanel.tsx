@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { createPatch } from 'diff';
 import { api } from '@/lib/api';
@@ -13,6 +13,14 @@ import TreeTab from './TreeTab';
 import SearchTab from './SearchTab';
 import { useGitStatus, workspaceDirtyCount } from './gitStore';
 import { IconTree } from './fileIcons';
+import { workspaceScopeKey } from './workspaceScope';
+import {
+  readWorkspacePanelScroll,
+  readWorkspacePanelTab,
+  writeWorkspacePanelScroll,
+  writeWorkspacePanelTab,
+  type WorkspacePanelTab,
+} from './workspacePanelState';
 import {
   IconClipboard, IconDiff, IconDownload, IconEye, IconFileEarmark, IconGitBranch,
   IconPaperclip, IconPlusSquare, IconSearch, IconTools, IconTrash,
@@ -74,7 +82,7 @@ const SessionInsight = dynamic(() => import('./SessionInsight'), {
   loading: () => <div className="si-bootstrap" role="status">loading session details…</div>,
 });
 
-export type Tab = 'edits' | 'git' | 'tree' | 'search' | 'files' | 'calls';
+export type Tab = WorkspacePanelTab;
 
 // Six tabs in 340px: the labels alone (10px, letter-spacing .16em, uppercase)
 // do not fit. Only the ACTIVE tab is labelled; the others are icon-only and
@@ -105,7 +113,26 @@ function ToolPanel({
   onRefreshContext, onCompact, compacting = false, compactDisabled = true,
   compactError = null,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('tree');
+  // The right sidebar belongs to the tab-row GROUP `(vpsId, cwd)`, not to the
+  // entity currently filling the main pane. ClaudeSessionView is keyed by
+  // session and file/shell views live in other branches, so this small shared
+  // store is what makes their remounted ToolPanels resume the same surface.
+  const panelScope = workspaceScopeKey(vpsId, cwd);
+  const [tabState, setTabState] = useState<{ scope: string; tab: Tab }>(() => ({
+    scope: panelScope,
+    tab: readWorkspacePanelTab(vpsId, cwd),
+  }));
+  // Derive synchronously on a workspace prop change, so React cannot paint
+  // workspace B once with workspace A's selected tab before the effect runs.
+  const tab = tabState.scope === panelScope ? tabState.tab : readWorkspacePanelTab(vpsId, cwd);
+  const setTab = useCallback((next: Tab) => {
+    writeWorkspacePanelTab(vpsId, cwd, next);
+    setTabState({ scope: panelScope, tab: next });
+  }, [vpsId, cwd, panelScope]);
+  const activeTab: Tab = workspaceOnly && tab !== 'tree' && tab !== 'search' && tab !== 'git'
+    ? 'tree'
+    : tab;
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const visibleTabs = workspaceOnly
     ? TABS.filter(({ id }) => id === 'tree' || id === 'search' || id === 'git')
     : TABS;
@@ -127,12 +154,17 @@ function ToolPanel({
     onTabConsumed?.();
   }, [requestedTab, onTabConsumed, workspaceOnly]);
 
-  // React can reuse this component while its owner switches from a chat to
-  // an SSH shell. Never preserve an agent-only active tab into the
-  // workspace-only surface, where it would leave the body blank.
+  // React can also reuse a ToolPanel while its actual workspace changes.
+  // Restore that folder's own tab; do not carry state across tab-row groups.
   useEffect(() => {
-    if (workspaceOnly && tab !== 'tree' && tab !== 'search' && tab !== 'git') setTab('tree');
-  }, [workspaceOnly, tab]);
+    setTabState({ scope: panelScope, tab: readWorkspacePanelTab(vpsId, cwd) });
+  }, [vpsId, cwd, panelScope]);
+
+  // Scroll is part of "same place" too. Save it under the visible tab before
+  // an entity unmounts, and restore it before paint in the replacement.
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = readWorkspacePanelScroll(vpsId, cwd, activeTab);
+  }, [vpsId, cwd, activeTab]);
 
   // Ctrl/Cmd+Shift+F — search across files. Bound here rather than in either
   // parent because this component is the only thing both call sites have in
@@ -170,7 +202,7 @@ function ToolPanel({
     <aside className="tool-panel">
       <nav className="tp-tabs">
         {visibleTabs.map(({ id, label, Icon }) => {
-          const on = tab === id;
+          const on = activeTab === id;
           const n = counts[id];
           return (
             <button
@@ -188,17 +220,21 @@ function ToolPanel({
           );
         })}
       </nav>
-      <div className="tp-body">
-        {!workspaceOnly && tab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
-        {tab === 'git' && <GitTab sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
-        {tab === 'tree' && <TreeTab vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
-        {tab === 'search' && <SearchTab vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
+      <div
+        ref={bodyRef}
+        className="tp-body"
+        onScroll={(event) => writeWorkspacePanelScroll(vpsId, cwd, activeTab, event.currentTarget.scrollTop)}
+      >
+        {!workspaceOnly && activeTab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
+        {activeTab === 'git' && <GitTab key={`git:${panelScope}`} sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
+        {activeTab === 'tree' && <TreeTab key={`tree:${panelScope}`} vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
+        {activeTab === 'search' && <SearchTab key={`search:${panelScope}`} vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
         {/* Keep the inspector mounted while another tab is visible. Its four
             panel-only requests therefore start with the session, not on the
             first Tools click; context is the header's shared request.
             `hidden` avoids layout/paint cost, and the key prevents one
             session's last-known data flashing in the next. */}
-        {!workspaceOnly && <div className="tp-calls-pane" hidden={tab !== 'calls'}>
+        {!workspaceOnly && <div className="tp-calls-pane" hidden={activeTab !== 'calls'}>
           {sessionId && <SessionInsight
             key={`${sessionId}:${kind}`}
             sessionId={sessionId}
@@ -219,7 +255,7 @@ function ToolPanel({
             <CallsTab calls={toolCalls} />
           </InsightSection>
         </div>}
-        {!workspaceOnly && tab === 'files' && (
+        {!workspaceOnly && activeTab === 'files' && (
           <FilesTab
             sessionId={sessionId}
             attachments={attachments}

@@ -27,8 +27,8 @@ import { positionContextMenu } from './contextMenuPosition';
 type Props = {
   vpsId: string | null;
   cwd: string | null;
-  /** Whose tree this is — the open folders are remembered per session
-   *  (§14.77). Null beside the file editor, where the folder is the identity. */
+  /** Kept for session-aware actions; tree browsing state itself is shared by
+   *  every entity in the `(vpsId, cwd)` workspace (§14.77/78). */
   sessionId?: string | null;
   /** Splice a path into the chat message. Absent when no chat is open (the
    *  explorer also renders beside the file editor) — which is exactly the
@@ -41,6 +41,22 @@ type Props = {
 type Menu = { x: number; y: number; row: Row | null; rows: Row[] };
 
 type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsEntry };
+
+type ListingMemory = { children: Map<string, FsEntry[]>; errors: Map<string, string> };
+const listingMemory = new Map<string, ListingMemory>();
+const MAX_LISTING_WORKSPACES = 30;
+
+function readListingMemory(scope: string): ListingMemory {
+  const saved = listingMemory.get(scope) ?? { children: new Map(), errors: new Map() };
+  listingMemory.delete(scope);
+  listingMemory.set(scope, saved);
+  while (listingMemory.size > MAX_LISTING_WORKSPACES) listingMemory.delete(listingMemory.keys().next().value!);
+  return { children: new Map(saved.children), errors: new Map(saved.errors) };
+}
+
+function writeListingMemory(scope: string, children: Map<string, FsEntry[]>, errors: Map<string, string>): void {
+  listingMemory.set(scope, { children: new Map(children), errors: new Map(errors) });
+}
 
 /**
  * The open dialog, if any. Every mutation the context menu offers goes through
@@ -78,17 +94,21 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   const { workspace } = useGitStatus(vpsId, cwd);
   // Who is reading/writing what on this machine, right now (§14.88).
   const activity = useFileActivity(vpsId);
-  // Identity of THIS tree's open-folder memory. Recomputed rather than stored:
-  // it is the only thing the persistence needs, and deriving it keeps the
-  // reset effect below honest about what it is resetting to.
+  // Identity of this WORKSPACE tree. Sessions, files and SSH shells at this
+  // path deliberately resolve to the same scope.
   const scope = treeScope(sessionId, vpsId ?? '', cwd ?? '');
   // Unlike expansion, selection follows the folder when opening a file swaps
   // the session ToolPanel for the editor ToolPanel (sessionId becomes null).
   const selectionScope = treeSelectionScope(vpsId, cwd);
-  const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => new Map());
+  const initialListing = useMemo(() => readListingMemory(scope), [scope]);
+  const [children, setChildren] = useState<Map<string, FsEntry[]>>(() => initialListing.children);
   const [expanded, setExpanded] = useState<Set<string>>(() => readExpanded(scope));
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
-  const [errors, setErrors] = useState<Map<string, string>>(() => new Map());
+  const [errors, setErrors] = useState<Map<string, string>>(() => initialListing.errors);
+  const childrenRef = useRef(children);
+  const errorsRef = useRef(errors);
+  childrenRef.current = children;
+  errorsRef.current = errors;
   // Single click previews (italic tab, replaced by the next preview in this
   // folder); double click keeps it. Same contract as the sidebar. §14.78
   const openFile = useCallback((rel: string, pin: boolean) => {
@@ -198,27 +218,50 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
         // every editor hides it — anything else stays visible, including
         // dotfiles and gitignored entries (dimmed rather than hidden, so
         // "why is this file missing?" never becomes a question).
-        setChildren((m) => new Map(m).set(path, r.entries.filter((e) => !(e.dir && e.name === '.git'))));
-        setErrors((m) => { if (!m.has(path)) return m; const n = new Map(m); n.delete(path); return n; });
+        setChildren((m) => {
+          const next = new Map(m).set(path, r.entries.filter((e) => !(e.dir && e.name === '.git')));
+          childrenRef.current = next;
+          writeListingMemory(scope, next, errorsRef.current);
+          return next;
+        });
+        setErrors((m) => {
+          if (!m.has(path)) return m;
+          const next = new Map(m); next.delete(path);
+          errorsRef.current = next;
+          writeListingMemory(scope, childrenRef.current, next);
+          return next;
+        });
       } else {
-        setErrors((m) => new Map(m).set(path, r.error ?? 'could not read this directory'));
+        setErrors((m) => {
+          const next = new Map(m).set(path, r.error ?? 'could not read this directory');
+          errorsRef.current = next;
+          writeListingMemory(scope, childrenRef.current, next);
+          return next;
+        });
       }
     } catch (e: unknown) {
-      setErrors((m) => new Map(m).set(path, e instanceof Error ? e.message : String(e)));
+      setErrors((m) => {
+        const next = new Map(m).set(path, e instanceof Error ? e.message : String(e));
+        errorsRef.current = next;
+        writeListingMemory(scope, childrenRef.current, next);
+        return next;
+      });
     } finally {
       inflight.current.delete(path);
       setLoading((s) => { const n = new Set(s); n.delete(path); return n; });
     }
-  }, [vpsId, cwd, isRepo, children]);
+  }, [vpsId, cwd, isRepo, children, scope]);
 
-  // Switching tree: drop the listings (they belong to the old folder) but
-  // RESTORE the folders that were open here last time rather than collapsing
-  // everything, which is what made coming back to a session feel like starting
-  // over. Paths, so a listing that gained or lost entries changes nothing.
+  // Switching workspace restores both the opened paths and its already-read
+  // directory listings. Entity switches within one workspace therefore do no
+  // SSH round-trip and show no empty/loading flash.
   useEffect(() => {
-    setChildren(new Map());
+    const saved = readListingMemory(scope);
+    childrenRef.current = saved.children;
+    errorsRef.current = saved.errors;
+    setChildren(saved.children);
     setExpanded(readExpanded(scope));
-    setErrors(new Map());
+    setErrors(saved.errors);
     inflight.current.clear();
     revealedRef.current = null;
     expandedForRef.current = null;
@@ -543,7 +586,13 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
       <div className="tt-head">
         <span className="tt-root" title={cwd}>{cwd.split('/').filter(Boolean).pop() ?? cwd}</span>
         <span className="gt-spacer" />
-        <button className="gt-mini" onClick={() => { setChildren(new Map()); void load('', true); }}
+        <button className="gt-mini" onClick={() => {
+          const empty = new Map<string, FsEntry[]>();
+          childrenRef.current = empty;
+          setChildren(empty);
+          writeListingMemory(scope, empty, errorsRef.current);
+          void load('', true);
+        }}
           title="reload the tree">↻</button>
       </div>
       {opError && (

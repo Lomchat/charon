@@ -38,6 +38,7 @@ import {
 } from './icons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
+import { DeepLinkGuard } from './deepLinkGuard';
 
 // Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
 // chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
@@ -176,23 +177,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [selectedId, setSelectedId] = useState<string | null>(queryParamShell
     ? null
     : (queryParamSession ?? (initialActiveTab?.kind === 'session' ? initialActiveTab.ref : null)));
-
-  // If the ?session= param changes (notification click or navigation), switch
-
-  // Sync selectedId → URL (?session=...) without spamming history
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (selectedId) {
-      if (url.searchParams.get('session') !== selectedId) {
-        url.searchParams.set('session', selectedId);
-        window.history.replaceState(null, '', url);
-      }
-    } else if (url.searchParams.has('session')) {
-      url.searchParams.delete('session');
-      window.history.replaceState(null, '', url);
-    }
-  }, [selectedId]);
+  // Charon both consumes and produces these query parameters. Keep provenance,
+  // otherwise Next's asynchronous useSearchParams update can reinterpret our
+  // own replaceState as a fresh deep link and bounce between two tabs forever.
+  const sessionDeepLink = useRef(new DeepLinkGuard());
+  const shellDeepLink = useRef(new DeepLinkGuard());
   // `error` stays on the parent: it carries errors from rename/kill/patch etc.
   // which are cross-session actions (not in the active view). Errors for the
   // ACTIVE SESSION live in `<ClaudeSessionView>` via the hook.
@@ -275,31 +264,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Initialized from `?shell=` so a shell-idle notification tap opens it.
   const [selectedShellId, setSelectedShellId] = useState<string | null>(queryParamShell);
 
-  // React to `?shell=` changes (a second notification tap while the tab is
-  // already open). Mirrors the `?session=` reaction above; selecting a shell
-  // clears the session/install selection (mutually exclusive views).
-  useEffect(() => {
-    if (queryParamShell && queryParamShell !== selectedShellId) {
-      setSelectedShellId(queryParamShell);
-      setSelectedId(null);
-      setSelectedInstallId(null);
-    }
-  }, [queryParamShell]); // eslint-disable-line
-
-  // Sync selectedShellId → URL (?shell=...) without spamming history.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const url = new URL(window.location.href);
-    if (selectedShellId) {
-      if (url.searchParams.get('shell') !== selectedShellId) {
-        url.searchParams.set('shell', selectedShellId);
-        window.history.replaceState(null, '', url);
-      }
-    } else if (url.searchParams.has('shell')) {
-      url.searchParams.delete('shell');
-      window.history.replaceState(null, '', url);
-    }
-  }, [selectedShellId]);
   // Agent install sessions. In-memory only (shell pattern). One install
   // per VPS max (cf. installSession.ts § startInstall).
   const [installs, setInstalls] = useState<InstallInfo[]>([]);
@@ -961,23 +925,26 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     void openWorkspaceTab({ vpsId, path, kind, ref, pin });
   }, []);
 
-  // Handled-once guard. This component also WRITES `?session=` from the active
-  // tab, so without it every selection bounced back through here — which is
-  // what pinned a freshly-previewed session a beat after it opened — and every
-  // 15s list poll re-ran it and stole focus back from whatever you had moved to.
-  const handledDeepLink = useRef<string | null>(null);
+  // Consume external deep links without feeding Charon's own URL writes back
+  // into the shared active-tab state. The guard also keeps a new arrival in
+  // charge until its optimistic/server tab mutation has actually settled.
   useEffect(() => {
-    // Moving to something that isn't a session DELETES the param (see the sync
-    // effect above). Forget what we handled, so tapping the same notification
-    // again later is an arrival rather than a swallowed no-op.
-    if (!queryParamSession) { handledDeepLink.current = null; return; }
-    if (handledDeepLink.current === queryParamSession) return;
-    // Our own URL sync, not an arrival: the tab is already the active one.
-    if (activeTab?.kind === 'session' && activeTab.ref === queryParamSession) {
-      handledDeepLink.current = queryParamSession;
+    // A shell link wins if a caller supplied both parameters. Internal URL
+    // writes are atomic, but old bookmarks and external callers may not be.
+    if (queryParamShell) {
+      sessionDeepLink.current.consume(queryParamSession);
+      sessionDeepLink.current.settle(queryParamSession);
       return;
     }
-    handledDeepLink.current = queryParamSession;
+    const activeMatches = !!queryParamSession
+      && activeTab?.kind === 'session' && activeTab.ref === queryParamSession;
+    const isNew = sessionDeepLink.current.consume(queryParamSession);
+    if (activeMatches) {
+      sessionDeepLink.current.settle(queryParamSession);
+      return;
+    }
+    if (!queryParamSession
+      || (!isNew && !sessionDeepLink.current.isAwaiting(queryParamSession))) return;
     // A notification tap must land on a real TAB, not on a pane the bar
     // doesn't show — but as a PREVIEW. Pinning is reserved for having actually
     // worked in a tab (a message, an edit, a double-click); arriving and
@@ -986,6 +953,56 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     if (sess) openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', false);
     else setSelectedId(queryParamSession);
   }, [queryParamSession, sessions, activeTab, openEntityTab]);
+
+  // Shell deep links follow the exact same guarded path. Opening a real
+  // workspace tab (when its row is known) is important: direct selected-state
+  // writes are otherwise overwritten by the active-tab bridge above.
+  useEffect(() => {
+    const activeMatches = !!queryParamShell
+      && activeTab?.kind === 'shell' && activeTab.ref === queryParamShell;
+    const isNew = shellDeepLink.current.consume(queryParamShell);
+    if (activeMatches) {
+      shellDeepLink.current.settle(queryParamShell);
+      return;
+    }
+    if (!queryParamShell
+      || (!isNew && !shellDeepLink.current.isAwaiting(queryParamShell))) return;
+    const sh = shells.find((x) => x.id === queryParamShell);
+    if (sh) openEntityTab('shell', sh.id, sh.vpsId, sh.cwd ?? '', false);
+    else {
+      setSelectedShellId(queryParamShell);
+      setSelectedId(null);
+      setSelectedInstallId(null);
+    }
+  }, [queryParamShell, shells, activeTab, openEntityTab]);
+
+  // Sync the active workspace tab to the URL atomically. Drive this from the
+  // tab itself, not selectedId: the latter updates one effect later and could
+  // overwrite a just-arrived deep link with the previous session. Two separate
+  // replaceState calls also briefly exposed both ?session= and ?shell=.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !workspaceTabsLoaded) return;
+    const url = new URL(window.location.href);
+    const desiredSession = activeTab?.kind === 'session' ? activeTab.ref : null;
+    const desiredShell = activeTab?.kind === 'shell' ? activeTab.ref : null;
+    const currentSession = url.searchParams.get('session');
+    const currentShell = url.searchParams.get('shell');
+    if (currentSession === desiredSession && currentShell === desiredShell) {
+      sessionDeepLink.current.settle(currentSession);
+      shellDeepLink.current.settle(currentShell);
+      return;
+    }
+    if (sessionDeepLink.current.shouldDeferUrlSync(currentSession)
+      || shellDeepLink.current.shouldDeferUrlSync(currentShell)) return;
+
+    sessionDeepLink.current.markInternal(desiredSession);
+    shellDeepLink.current.markInternal(desiredShell);
+    if (desiredSession) url.searchParams.set('session', desiredSession);
+    else url.searchParams.delete('session');
+    if (desiredShell) url.searchParams.set('shell', desiredShell);
+    else url.searchParams.delete('shell');
+    window.history.replaceState(null, '', url);
+  }, [activeTab, workspaceTabsLoaded]);
 
   /**
    * Where you were, per group. Browser-side (not the DB): "the tab I was last
@@ -1767,6 +1784,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         selectedId={selectedId}
         selectedShellId={selectedShellId}
         selectedInstallId={selectedInstallId}
+        activeWorkspace={activeTab ? { vpsId: activeTab.vpsId, path: activeTab.path } : null}
         onSelect={selectClaude}
         onSelectShell={selectShell}
         onSelectInstall={selectInstall}

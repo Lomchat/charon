@@ -9,6 +9,7 @@ import ReviewModal from './ReviewModal';
 import { fileStatusLabel, gitReasonHint, refreshGit, useGitStatus, workspaceDirtyCount } from './gitStore';
 import { IconSparkle } from './icons';
 import { IconExternal } from './fileIcons';
+import { workspaceScopeKey } from './workspaceScope';
 
 type Props = {
   sessionId?: string | null;
@@ -19,6 +20,10 @@ type Props = {
   busy?: boolean;
   onOpenSession?: (sessionId: string) => void;
 };
+
+type RepoUi = { selected: Set<string>; message: string };
+const foldMemory = new Map<string, Map<string, boolean>>();
+const repoUiMemory = new Map<string, RepoUi>();
 
 /**
  * Source control for everything a session can see.
@@ -43,6 +48,7 @@ type Props = {
  */
 export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, busy, onOpenSession }: Props) {
   const { workspace, loading, error } = useGitStatus(vpsId, cwd);
+  const workspaceKey = workspaceScopeKey(vpsId, cwd);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -50,10 +56,13 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
   // default is computed (clean repos start folded, see below) and "the user
   // opened this one" has to outrank it. Browser-side: which project you are
   // working in today is not a thing to sync to your phone.
-  const [folds, setFolds] = useState<Map<string, boolean>>(() => new Map());
+  const [folds, setFolds] = useState<Map<string, boolean>>(
+    () => new Map(foldMemory.get(workspaceKey) ?? []),
+  );
   const toggle = (root: string, isCollapsed: boolean) => setFolds((cur) => {
     const next = new Map(cur);
     next.set(root, !isCollapsed);
+    foldMemory.set(workspaceKey, new Map(next));
     return next;
   });
 
@@ -154,6 +163,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
             loading={loading}
             collapsed={collapsed}
             onToggle={() => toggle(root, collapsed)}
+            uiKey={`${workspaceKey}\u0000${root}`}
           />
         );
       })}
@@ -175,7 +185,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
  * failed push in one must not paint an error over the other.
  */
 function RepoPanel({
-  vpsId, cwd, repo, busy, multi, loading, collapsed, onToggle,
+  vpsId, cwd, repo, busy, multi, loading, collapsed, onToggle, uiKey,
 }: {
   vpsId: string;
   cwd: string;
@@ -185,9 +195,11 @@ function RepoPanel({
   loading: boolean;
   collapsed: boolean;
   onToggle: () => void;
+  uiKey: string;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [message, setMessage] = useState('');
+  const savedUi = repoUiMemory.get(uiKey);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(savedUi?.selected ?? []));
+  const [message, setMessage] = useState(savedUi?.message ?? '');
   const [working, setWorking] = useState<string | null>(null);
   const [note, setNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [openPath, setOpenPath] = useState<string | null>(null);
@@ -197,6 +209,10 @@ function RepoPanel({
   // The repo this section acts on. `cwd` stays the cache key (one workspace,
   // one poll) while `root` is the git target — see §14.83.
   const root = repo.root ?? null;
+
+  useEffect(() => {
+    repoUiMemory.set(uiKey, { selected: new Set(selected), message });
+  }, [uiKey, selected, message]);
 
   const files: GitFileEntry[] = useMemo(() => repo.files ?? [], [repo]);
   const paths = useMemo(() => files.map((f) => f.path), [files]);

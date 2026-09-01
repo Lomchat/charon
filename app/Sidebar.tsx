@@ -10,6 +10,8 @@ import { useLongPress } from './useLongPress';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, parseAgentLastError } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
+import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
+import { mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrderedIds } from './sidebarPathGroups';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -82,6 +84,9 @@ type Props = {
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
+  /** The active tab-row group. Every session/shell at this exact VPS + path
+   *  receives the workspace ring, independently of which entity is open. */
+  activeWorkspace?: WorkspaceScope | null;
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
@@ -146,6 +151,7 @@ export default function Sidebar({
   vpsList, vpsFolders, sessions, shells, installs,
   deletingSessionIds = new Set(),
   selectedId, selectedShellId, selectedInstallId,
+  activeWorkspace = null,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
@@ -305,7 +311,7 @@ export default function Sidebar({
     const folderVps = folder.id === '__orphans__'
       ? vpsList.filter((v) => !vpsFolders.some((known) => known.id === v.folderId))
       : (vpsByFolder.get(folder.id) ?? []);
-    return folderVps.flatMap((vps) => sessionsFor(vps.id).map((session) => session.id));
+    return folderVps.flatMap((vps) => sidebarPathOrderedIds(sessionsFor(vps.id)));
   });
 
   function selectSessionGesture(session: SessionListItem, modifiers: TreeSelectionModifiers): boolean {
@@ -369,6 +375,14 @@ export default function Sidebar({
         <div className="cs-top-row">
           <span className="cs-title">SESSIONS</span>
           <button
+            type="button"
+            className="cs-mobile-refresh"
+            onClick={() => window.location.reload()}
+            title="reload the page"
+            aria-label="reload the page"
+          >↻</button>
+          <button
+            type="button"
             className="cs-manage"
             onClick={onOpenData}
             title="manage VPS, folders and paths"
@@ -470,6 +484,7 @@ export default function Sidebar({
                   codexLatestVersion,
                   codexCliLatestVersion,
                   selectedId, selectedShellId, selectedInstallId,
+                  activeWorkspace,
                   deletingSessionIds,
                   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
                   selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
@@ -511,6 +526,7 @@ type VpsRenderOpts = {
   deletingSessionIds: ReadonlySet<string>;
   selectedShellId: string | null;
   selectedInstallId: string | null;
+  activeWorkspace: WorkspaceScope | null;
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
@@ -541,7 +557,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     sessionHandles,
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion, codexCliLatestVersion,
-    selectedId, selectedShellId, selectedInstallId, deletingSessionIds,
+    selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     selectedSessionIds, onSessionSelectionGesture,
     onNew, onNewShell, onScan,
@@ -796,33 +812,30 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             />
           )}
 
-          {/* Own component so it can hold the reorder hook — renderVpsBox is a
-              plain function and cannot. */}
-          <SessionList
+          {/* One visual + drag container per cwd. Agent sessions and SSH
+              shells share the path heading, but only agent sessions reorder;
+              a native drag cannot cross into another group's hook. */}
+          <WorkspacePathGroups
             vpsId={v.id}
             sessions={vpsSessions}
+            shells={vpsShells}
             selectedId={selectedId}
+            selectedShellId={selectedShellId}
             selectedSessionIds={selectedSessionIds}
             deletingSessionIds={deletingSessionIds}
             sessionHandles={sessionHandles}
-          showDetails={showDetails}
+            showDetails={showDetails}
             onSelect={onSelect}
+            onSelectShell={onSelectShell}
             onSelectionGesture={onSessionSelectionGesture}
             onContext={onContext}
+            onContextShell={onContextShell}
             editingId={editingId}
             onRenameSubmit={onRenameSubmit}
             onRenameCancel={onRenameCancel}
             onReorder={onReorderSessions}
+            activeWorkspace={activeWorkspace}
           />
-          {vpsShells.map((sh) => (
-            <ShellRow
-              key={sh.id} sh={sh}
-              selected={sh.id === selectedShellId}
-              showDetails={showDetails}
-              onSelect={onSelectShell}
-              onContext={onContextShell}
-            />
-          ))}
 
           {vpsSessions.length === 0 && vpsShells.length === 0 && !installRunning && (
             <div className="cs-empty">no session — use ＋ to start one</div>
@@ -886,36 +899,128 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 /**
- * The session list of ONE vps, drag-reorderable.
+ * Sessions and shells of ONE VPS, split by normalized cwd.
  *
- * Sessions only, and never across machines: the sidebar groups by VPS, so a
- * cross-VPS drag would have to mean "move the session to another box", which
- * is not a thing. Reordering VPSes themselves stays in the « VPS & paths »
- * modal, which already owns that with @dnd-kit.
+ * Path-group order follows the first entity currently present in each path,
+ * preserving the existing VPS order. A group component owns its own reorder
+ * hook, which structurally prevents cross-path drops.
  */
-function SessionList({
+function WorkspacePathGroups({
   vpsId, sessions, selectedId, selectedSessionIds, deletingSessionIds,
   showDetails, sessionHandles, onSelect, onSelectionGesture, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
+  activeWorkspace, shells, selectedShellId, onSelectShell, onContextShell,
 }: {
   vpsId: string;
   sessions: SessionListItem[];
+  shells: ShellListItem[];
   selectedId: string | null;
+  selectedShellId: string | null;
   selectedSessionIds: ReadonlySet<string>;
   deletingSessionIds: ReadonlySet<string>;
   showDetails: boolean;
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   onSelect: (id: string, pin?: boolean) => void;
+  onSelectShell: (id: string, pin?: boolean) => void;
   onSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
+  onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
+  editingId?: string | null;
+  onRenameSubmit?: (id: string, name: string) => void;
+  onRenameCancel?: () => void;
+  onReorder?: (vpsId: string, ids: string[]) => void;
+  activeWorkspace: WorkspaceScope | null;
+}) {
+  const groups = useMemo(() => {
+    const byPath = new Map<string, { path: string; sessions: SessionListItem[]; shells: ShellListItem[] }>();
+    const ensure = (path: string) => {
+      let group = byPath.get(path);
+      if (!group) {
+        group = { path, sessions: [], shells: [] };
+        byPath.set(path, group);
+      }
+      return group;
+    };
+    for (const session of sessions) ensure(sidebarPathKey(session.cwd)).sessions.push(session);
+    for (const shell of shells) ensure(sidebarPathKey(shell.cwd)).shells.push(shell);
+    return [...byPath.values()];
+  }, [sessions, shells]);
+
+  return (
+    <>
+      {groups.map((group) => (
+        <SessionPathGroup
+          key={group.path}
+          vpsId={vpsId}
+          path={group.path}
+          sessions={group.sessions}
+          shells={group.shells}
+          allSessions={sessions}
+          selectedId={selectedId}
+          selectedShellId={selectedShellId}
+          selectedSessionIds={selectedSessionIds}
+          deletingSessionIds={deletingSessionIds}
+          showDetails={showDetails}
+          sessionHandles={sessionHandles}
+          activeWorkspace={activeWorkspace}
+          onSelect={onSelect}
+          onSelectShell={onSelectShell}
+          onSelectionGesture={onSelectionGesture}
+          onContext={onContext}
+          onContextShell={onContextShell}
+          editingId={editingId}
+          onRenameSubmit={onRenameSubmit}
+          onRenameCancel={onRenameCancel}
+          onReorder={onReorder}
+        />
+      ))}
+    </>
+  );
+}
+
+function SessionPathGroup({
+  vpsId, path, sessions, shells, allSessions,
+  selectedId, selectedShellId, selectedSessionIds, deletingSessionIds,
+  showDetails, sessionHandles, activeWorkspace,
+  onSelect, onSelectShell, onSelectionGesture, onContext, onContextShell,
+  editingId, onRenameSubmit, onRenameCancel, onReorder,
+}: {
+  vpsId: string;
+  path: string;
+  sessions: SessionListItem[];
+  shells: ShellListItem[];
+  allSessions: SessionListItem[];
+  selectedId: string | null;
+  selectedShellId: string | null;
+  selectedSessionIds: ReadonlySet<string>;
+  deletingSessionIds: ReadonlySet<string>;
+  showDetails: boolean;
+  sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
+  activeWorkspace: WorkspaceScope | null;
+  onSelect: (id: string, pin?: boolean) => void;
+  onSelectShell: (id: string, pin?: boolean) => void;
+  onSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
+  onContext?: (session: SessionListItem, x: number, y: number) => void;
+  onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
   editingId?: string | null;
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onReorder?: (vpsId: string, ids: string[]) => void;
 }) {
-  const dnd = useReorder(sessions.map((s) => s.id), (ids) => onReorder?.(vpsId, ids), { axis: 'y' });
+  const dnd = useReorder(sessions.map((session) => session.id), (orderedPathIds) => {
+    const fullOrder = mergeSidebarPathOrder(allSessions, path, orderedPathIds);
+    if (fullOrder) onReorder?.(vpsId, fullOrder);
+  }, { axis: 'y' });
+  const current = path !== '~' && isSameWorkspace(activeWorkspace, vpsId, path);
+  const count = sessions.length + shells.length;
+
   return (
-    <>
+    <section className={`cs-path-group${current ? ' current' : ''}`}>
+      <div className="cs-path-head" title={path === '~' ? 'default home directory' : path}>
+        <span className="cs-path-mark" aria-hidden />
+        <span className="cs-path-name">{path}</span>
+        <span className="cs-path-count">{count}</span>
+      </div>
       {sessions.map((s) => (
         <SessionRow
           key={s.id} s={s}
@@ -933,7 +1038,17 @@ function SessionList({
           dnd={onReorder && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
         />
       ))}
-    </>
+      {shells.map((sh) => (
+        <ShellRow
+          key={sh.id}
+          sh={sh}
+          selected={sh.id === selectedShellId}
+          showDetails={showDetails}
+          onSelect={onSelectShell}
+          onContext={onContextShell}
+        />
+      ))}
+    </section>
   );
 }
 

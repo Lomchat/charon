@@ -440,15 +440,20 @@
     linear-gradient(rgba(28,31,41,0.6), rgba(28,31,41,0.6)), var(--stone);
   backdrop-filter: blur(6px);
 }
-.cs-top-row { display: flex; align-items: center; }
+.cs-top-row { display: flex; align-items: center; gap: 7px; }
 .cs-title { font-family: var(--display); font-size: 10px; letter-spacing: 0.3em; color: var(--gold-bright); }
-.cs-manage {
+.cs-manage,
+.cs-mobile-refresh {
   margin-left: auto; background: transparent; border: 1px solid var(--gold-deep);
   color: var(--gold); width: 24px; height: 24px; cursor: pointer; border-radius: 5px;
   display: inline-flex; align-items: center; justify-content: center; padding: 0;
 }
+.cs-mobile-refresh {
+  display: none; margin-left: auto; font-size: 18px; line-height: 1;
+}
 .cs-manage svg { width: 14px; height: 14px; display: block; }
-.cs-manage:hover { color: var(--gold-bright); border-color: var(--gold); }
+.cs-manage:hover,
+.cs-mobile-refresh:hover { color: var(--gold-bright); border-color: var(--gold); }
 
 /* global + per-VPS "＋Agent / ＋Shell" (segmented pill) */
 .cs-add { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px;
@@ -677,6 +682,22 @@
   padding: 1px 5px; background: rgba(95,206,143,0.12);
 }
 .cs-card-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, transparent); }
+
+/* Sessions and SSH shells are grouped by cwd. This is intentionally open
+   typography + spacing, not another box around already-boxed cards. The short
+   white marker identifies the active tab-row path without recolouring cards. */
+.cs-path-group { margin-top: 11px; padding-top: 1px; }
+.cs-path-group + .cs-path-group { margin-top: 15px; }
+.cs-path-head {
+  display: flex; align-items: center; gap: 7px;
+  min-width: 0; margin: 0 10px 3px; padding: 0 2px;
+  color: var(--parchment-soft); font-family: var(--mono); font-size: 9px;
+}
+.cs-path-mark { width: 8px; height: 2px; flex: none; border-radius: 2px; background: var(--gold-deep); }
+.cs-path-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cs-path-count { flex: none; opacity: .62; }
+.cs-path-group.current .cs-path-head { color: #fff; }
+.cs-path-group.current .cs-path-mark { width: 14px; background: #fff; }
 .cs-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cs-card .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
 .cs-card-glyph { display: inline-flex; width: 14px; color: var(--gold); flex-shrink: 0; }
@@ -3914,6 +3935,17 @@
   }
   .claude-root.nav-open .claude-sidebar { transform: translateX(0); }
   .claude-head .head-btn.m-only.nav-toggle { display: inline-flex; }
+  .cs-mobile-refresh {
+    display: inline-flex;
+    width: 34px; height: 34px;
+    border-radius: 7px;
+    font-size: 22px;
+  }
+  .cs-top-row .cs-manage {
+    margin-left: 0;
+    width: 34px; height: 34px;
+    border-radius: 7px;
+  }
 
   /* Tighten the header so its button row doesn't overflow a phone width:
      hide the wordmark (logo is enough), the cwd context, and the wide status

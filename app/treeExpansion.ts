@@ -3,11 +3,9 @@
 /**
  * Which folders the explorer has open, remembered across switches (§14.77).
  *
- * Scoped to the SESSION: two sessions on the same repo are two people looking
- * at two different parts of it, and coming back to one of them must not show
- * the other's tree. The panel also renders beside the file editor, where there
- * is no session — that case falls back to `(vpsId, cwd)`, which is the only
- * identity available there.
+ * Scoped to the WORKSPACE `(vpsId, cwd)`: sessions, SSH shells and files in
+ * the same tab-row group are different views of the same folder, so switching
+ * entity must keep the same tree instead of replacing it.
  *
  * Browser-side, like `hub.tabs.lastByGroup.v1` and for the same reason: this is
  * a browsing position, not a workspace fact. Publishing it (§14.78) would make
@@ -68,10 +66,10 @@ function persist(): void {
   }, 400);
 }
 
-/** The identity of one tree. Session when there is one (that is the thing
- *  being switched between), the folder otherwise. */
-export function treeScope(sessionId: string | null, vpsId: string, cwd: string): string {
-  return sessionId ? `s:${sessionId}` : `d:${vpsId}:${cwd}`;
+/** The identity of one tree. `sessionId` remains in the signature for rolling
+ * callers, but deliberately does not participate in the workspace identity. */
+export function treeScope(_sessionId: string | null, vpsId: string, cwd: string): string {
+  return `d:${vpsId}:${cwd.replace(/\/+$/, '') || '/'}`;
 }
 
 /** Folders to open for this scope. Always contains the root. */

@@ -7,6 +7,7 @@ import { IconForKind, fileKind, IconInsert } from './fileIcons';
 import { IconSearch } from './icons';
 import { revealLine } from './revealLine';
 import { setPathDrag } from './pathDrag';
+import { workspaceScopeKey } from './workspaceScope';
 
 type Props = {
   vpsId: string | null;
@@ -40,7 +41,13 @@ const DEFAULTS: Options = {
  * Module-level and deliberately not persisted — a result list goes stale the
  * moment an agent writes a file, so it must not outlive the browser tab.
  */
-type Saved = { query: string; opts: Options; res: FsSearchResponse | null; showGlobs: boolean };
+type Saved = {
+  query: string;
+  opts: Options;
+  res: FsSearchResponse | null;
+  showGlobs: boolean;
+  collapsed: Set<string>;
+};
 const memory = new Map<string, Saved>();
 
 const OPTION_HINTS: Record<'case' | 'word' | 'regex', string> = {
@@ -50,7 +57,7 @@ const OPTION_HINTS: Record<'case' | 'word' | 'regex', string> = {
 };
 
 export default function SearchTab({ vpsId, cwd, onInsertPath }: Props) {
-  const memKey = `${vpsId ?? ''} ${cwd ?? ''}`;
+  const memKey = workspaceScopeKey(vpsId, cwd);
   const saved = memory.get(memKey);
 
   const [query, setQuery] = useState(saved?.query ?? '');
@@ -58,23 +65,29 @@ export default function SearchTab({ vpsId, cwd, onInsertPath }: Props) {
   const [showGlobs, setShowGlobs] = useState(saved?.showGlobs ?? false);
   const [res, setRes] = useState<FsSearchResponse | null>(saved?.res ?? null);
   const [busy, setBusy] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(saved?.collapsed ?? []));
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Latest-wins: a fast typist has three searches in flight and only the last
   // one describes what is on screen.
   const seqRef = useRef(0);
+  // A restored result already answers the restored query. Without this guard,
+  // every session/file/shell switch immediately repeated the whole SSH walk,
+  // making a logically shared sidebar look and behave like a reload.
+  const restoredResultRef = useRef(!!saved?.res && saved.query.trim().length >= 2);
+  const restoredViewRef = useRef(!!saved);
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
   useEffect(() => {
-    memory.set(memKey, { query, opts, res, showGlobs });
-  }, [memKey, query, opts, res, showGlobs]);
+    memory.set(memKey, { query, opts, res, showGlobs, collapsed: new Set(collapsed) });
+  }, [memKey, query, opts, res, showGlobs, collapsed]);
 
   // The box IS the tab, so it takes focus — except on a coarse pointer, where
   // it would raise a keyboard over the results before there are any. Same rule
   // as the VPS filter in the wizard.
   useEffect(() => {
+    if (restoredViewRef.current) return;
     if (typeof window === 'undefined') return;
     if (window.matchMedia?.('(pointer: coarse)').matches) return;
     inputRef.current?.focus();
@@ -107,6 +120,10 @@ export default function SearchTab({ vpsId, cwd, onInsertPath }: Props) {
   // because every keystroke here is an ssh round trip and a repo walk, not a
   // local index.
   useEffect(() => {
+    if (restoredResultRef.current) {
+      restoredResultRef.current = false;
+      return;
+    }
     const q = query.trim();
     if (q.length < 2) { seqRef.current++; setRes(null); setBusy(false); return; }
     const t = window.setTimeout(() => { void run(query, optsRef.current); }, 350);

@@ -6,8 +6,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  * The property that matters is the one that is easy to get wrong by storing
  * the wrong thing: a listing that GAINED or LOST entries must not disturb what
  * is open. That is only true because paths are stored, never indices or
- * offsets — so that is what these tests pin, alongside the scope rule (per
- * session, not per folder) and the bounds.
+ * offsets — so that is what these tests pin, alongside the workspace scope
+ * rule and the bounds.
  */
 
 // The module reads `window.localStorage` at first use; vitest runs in node.
@@ -41,14 +41,11 @@ describe('treeExpansion', () => {
     delete (globalThis as unknown as { window?: unknown }).window;
   });
 
-  it('scopes on the SESSION, and on the folder only when there is none', async () => {
+  it('scopes on the VPS and folder, across every entity in that workspace', async () => {
     await fresh();
-    expect(M.treeScope('sess-a', 'v1', '/srv/app')).toBe('s:sess-a');
-    // Two sessions in the SAME folder are two different trees — that is the
-    // whole point of the session scope.
+    expect(M.treeScope('sess-a', 'v1', '/srv/app')).toBe('d:v1:/srv/app');
     expect(M.treeScope('sess-b', 'v1', '/srv/app'))
-      .not.toBe(M.treeScope('sess-a', 'v1', '/srv/app'));
-    // Beside the file editor there is no session; the folder is the identity.
+      .toBe(M.treeScope('sess-a', 'v1', '/srv/app'));
     expect(M.treeScope(null, 'v1', '/srv/app')).toBe('d:v1:/srv/app');
     expect(M.treeScope(null, 'v2', '/srv/app')).not.toBe(M.treeScope(null, 'v1', '/srv/app'));
   });
@@ -62,12 +59,15 @@ describe('treeExpansion', () => {
     expect(M.readExpanded('s:never-seen')).toEqual(new Set(['']));
   });
 
-  it('keeps each session apart', async () => {
+  it('shares one workspace and keeps different workspaces apart', async () => {
     await fresh();
-    M.writeExpanded('s:a', new Set(['', 'front']));
-    M.writeExpanded('s:b', new Set(['', 'agent', 'agent/tests']));
-    expect(M.readExpanded('s:a')).toEqual(new Set(['', 'front']));
-    expect(M.readExpanded('s:b')).toEqual(new Set(['', 'agent', 'agent/tests']));
+    const app = M.treeScope('a', 'v1', '/srv/app');
+    const sameApp = M.treeScope('b', 'v1', '/srv/app');
+    const agent = M.treeScope('b', 'v1', '/srv/agent');
+    M.writeExpanded(app, new Set(['', 'front']));
+    M.writeExpanded(agent, new Set(['', 'agent', 'agent/tests']));
+    expect(M.readExpanded(sameApp)).toEqual(new Set(['', 'front']));
+    expect(M.readExpanded(agent)).toEqual(new Set(['', 'agent', 'agent/tests']));
   });
 
   it('survives a listing that gained or lost folders', async () => {
