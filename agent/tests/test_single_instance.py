@@ -20,6 +20,7 @@ Covered here:
 import asyncio
 import json
 import os
+import socket
 import sys
 import tempfile
 import unittest
@@ -71,17 +72,17 @@ class SingleInstanceTestCase(unittest.TestCase):
 
     # ── the probe ────────────────────────────────────────────────────────────
     def test_socket_file_with_no_listener_is_stale(self):
-        async def go():
-            # A real socket file whose owner is gone: bind, then close without
-            # unlinking — exactly what a killed daemon leaves behind.
-            srv = await asyncio.start_unix_server(
-                lambda r, w: None, path=str(self.server.socket_path))
-            srv.close()
-            await asyncio.wait_for(srv.wait_closed(), timeout=5)
-            self.assertTrue(self.server.socket_path.exists())
-            return await self.server._socket_owner_pid()
+        # Bind the raw socket, then abandon it exactly as a killed daemon does.
+        # asyncio.start_unix_server cannot model this portably: Python 3.13
+        # removes its socket path on close by default (cleanup_socket=True).
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            stale.bind(str(self.server.socket_path))
+        finally:
+            stale.close()
 
-        self.assertIsNone(asyncio.run(go()))
+        self.assertTrue(self.server.socket_path.exists())
+        self.assertIsNone(asyncio.run(self.server._socket_owner_pid()))
 
     def test_live_owner_is_named_by_its_pid(self):
         async def go():
