@@ -1158,14 +1158,13 @@ const ChatInputBar = memo(function ChatInputBar({
     }
   }, [prefillInput, clearPrefillInput, setInput]);
 
-  // Entering any Claude or Codex session puts the desktop caret straight in
-  // the composer. ClaudeSessionView is keyed by sessionId in ClaudePanel, so a
+  // Entering any Claude or Codex session puts the caret straight in the
+  // composer. ClaudeSessionView is keyed by sessionId in ClaudePanel, so a
   // session switch remounts this bar; if a pending gate or sleeping state hid
-  // it, its later mount focuses it then. Keep coarse pointers exempt: forcing
-  // open a phone keyboard would cover the transcript and sidebar transition.
+  // it, its later mount focuses it then. `autoFocus` on the textarea handles
+  // the commit itself; this next-frame call is a fallback for pane transitions.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (window.matchMedia?.('(pointer: coarse)').matches) return;
     const id = requestAnimationFrame(() => taRef.current?.focus());
     return () => cancelAnimationFrame(id);
   }, [sessionId]);
@@ -1442,6 +1441,7 @@ const ChatInputBar = memo(function ChatInputBar({
       )}
       <textarea
         ref={taRef}
+        autoFocus
         value={input}
         onChange={(e) => {
           setInput(e.target.value);
