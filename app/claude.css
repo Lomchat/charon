@@ -5260,6 +5260,17 @@
 }
 .fe-dirty { flex: none; color: var(--gold-bright); font-size: 10px; }
 .fe-size { flex: none; font-family: var(--mono); font-size: 10px; color: var(--parchment-soft); }
+.fe-view-toggle {
+  flex: none; display: inline-flex; overflow: hidden;
+  border: 1px solid var(--gold-deep); border-radius: 3px;
+}
+.fe-view-toggle button {
+  border: 0; border-right: 1px solid var(--gold-deep); padding: 5px 8px;
+  background: var(--shadow); color: var(--parchment-soft); cursor: pointer;
+  font-family: var(--display); font-size: 9px; letter-spacing: .12em; text-transform: uppercase;
+}
+.fe-view-toggle button:last-child { border-right: 0; }
+.fe-view-toggle button:hover, .fe-view-toggle button.on { color: var(--gold-bright); background: rgba(138,180,228,.12); }
 .fe-save, .fe-dl, .fe-hist, .fe-diff {
   flex: none; background: var(--shadow); border: 1px solid var(--gold-deep);
   color: var(--gold); border-radius: 3px; text-decoration: none;
@@ -5282,6 +5293,74 @@
   .fe-hist svg, .fe-diff svg { width: 13px; height: 13px; }
 }
 .fe-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+
+/* CSV/TSV spreadsheet view. Rows are virtualized by CsvViewer, so a 50k-row
+   file keeps only the viewport in the DOM; fixed geometry makes selection and
+   sticky spreadsheet headers deterministic without a grid dependency. */
+.csv-viewer { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.csv-toolbar {
+  flex: none; display: flex; align-items: center; gap: 10px; min-height: 34px;
+  padding: 5px 10px; border-bottom: 1px solid var(--gold-deep);
+  color: var(--parchment-soft); font-family: var(--mono); font-size: 9.5px;
+  background: rgba(20,22,29,.82);
+}
+.csv-delimiter { opacity: .68; }
+.csv-truncated { color: #e6b566; }
+.csv-spacer { flex: 1; }
+.csv-selection { color: var(--gold-bright); white-space: nowrap; }
+.csv-toolbar button {
+  flex: none; padding: 4px 8px; border: 1px solid var(--gold-deep); border-radius: 3px;
+  background: var(--shadow); color: var(--gold); cursor: pointer;
+  font-family: var(--display); font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+}
+.csv-toolbar button:hover:not(:disabled) { border-color: var(--gold); color: var(--gold-bright); }
+.csv-toolbar button:disabled { opacity: .4; cursor: default; }
+.csv-grid-scroll {
+  flex: 1 1 auto; min-height: 0; overflow: auto; outline: none;
+  background: #171920; user-select: none;
+}
+.csv-grid-scroll:focus-visible { box-shadow: inset 0 0 0 1px rgba(138,180,228,.45); }
+.csv-grid-canvas { position: relative; min-width: 100%; }
+.csv-grid-head, .csv-grid-row { display: flex; width: 100%; height: 28px; }
+.csv-grid-head {
+  position: sticky; top: 0; z-index: 4;
+  background: #222630; box-shadow: 0 1px 0 var(--gold-deep);
+}
+.csv-grid-row { position: absolute; left: 0; }
+.csv-grid-head button, .csv-grid-row > button {
+  flex: 0 0 48px; width: 48px; min-width: 48px; height: 28px; padding: 0 5px;
+  border: 0; border-right: 1px solid #3a3e49; border-bottom: 1px solid #353944;
+  background: #222630; color: #8f96a5; cursor: pointer;
+  font-family: var(--mono); font-size: 9px; text-align: center;
+}
+.csv-grid-head > button:not(.csv-corner) { flex-basis: 180px; width: 180px; min-width: 180px; }
+.csv-grid-head .csv-corner, .csv-grid-row > button {
+  position: sticky; left: 0; z-index: 3;
+}
+.csv-grid-head button:hover, .csv-grid-head button.selected,
+.csv-grid-row > button:hover, .csv-grid-row > button.selected {
+  color: #fff; background: #303746;
+}
+.csv-cell {
+  flex: 0 0 180px; width: 180px; min-width: 180px; height: 28px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 6px 8px; border-right: 1px solid #30343e; border-bottom: 1px solid #30343e;
+  color: #d6d8de; background: #191c23; cursor: cell;
+  font-family: var(--mono); font-size: 10.5px;
+}
+.csv-grid-row.even .csv-cell { background: #1b1e26; }
+.csv-cell.selected { background: rgba(92,132,184,.28) !important; }
+.csv-cell.focus { box-shadow: inset 0 0 0 2px #9cc2ee; }
+.csv-hint {
+  flex: none; padding: 5px 10px; border-top: 1px solid var(--gold-deep);
+  color: #848b98; background: #20232b; font-family: var(--mono); font-size: 8.5px;
+}
+.csv-empty { margin: auto; color: var(--parchment-soft); font-style: italic; }
+@media (max-width: 700px) {
+  .csv-toolbar { flex-wrap: wrap; gap: 6px 9px; }
+  .csv-delimiter { display: none; }
+  .csv-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 .fe-note {
   font-family: var(--mono); font-size: 10.5px; padding: 5px 26px;
   border-bottom: 1px solid rgba(216,168,90,0.15);

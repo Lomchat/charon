@@ -19,6 +19,7 @@ import { IconClockHistory, IconDiff, IconDownload } from './icons';
 import PromptModal from './PromptModal';
 import { subscribeFsChanged } from './fsChangeBus';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
+import CsvViewer from './CsvViewer';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -80,6 +81,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
 
   const name = path.split('/').pop() || path;
   const media = isMediaName(name);
+  const tabular = /\.(csv|tsv)$/i.test(name);
+  const [fileView, setFileView] = useState<'table' | 'text'>(() => tabular ? 'table' : 'text');
   const kind = fileKind(name, false);
   // Live buffer. A ref, not state: the editor already owns the text, and
   // re-rendering this component on every keystroke is exactly the lag §14.38
@@ -138,9 +141,10 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   useEffect(() => {
     if (media) return;
     return subscribeReveal(vpsId, root, path, (line) => {
+      if (tabular) setFileView('text');
       setReveal({ line, nonce: Date.now() });
     });
-  }, [media, vpsId, root, path]);
+  }, [media, tabular, vpsId, root, path]);
 
   const save = useCallback(async (force = false) => {
     if (saving || media) return;
@@ -293,7 +297,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   );
   useEffect(() => { if (!diffTarget) setDiffOpen(false); }, [diffTarget]);
 
-  const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null && !media;
+  const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null
+    && !media && (!tabular || fileView === 'text');
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;
   const lsp = useLsp({
     vpsId: canLsp ? vpsId : null,
@@ -395,6 +400,14 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         <span className="fe-path" title={`${root}/${path}`}>{path}</span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
+        {tabular && res?.content != null && !res.binary && !res.tooLarge && (
+          <span className="fe-view-toggle" role="group" aria-label="CSV view">
+            <button type="button" className={fileView === 'table' ? 'on' : ''}
+                    onClick={() => setFileView('table')}>Table</button>
+            <button type="button" className={fileView === 'text' ? 'on' : ''}
+                    onClick={() => setFileView('text')}>Text</button>
+          </span>
+        )}
         {diffTarget && (
           <button className="fe-diff" onClick={() => setDiffOpen(true)}
                   title={`Open Git diff for ${diffTarget.file.path}`}>
@@ -470,24 +483,28 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                 ⚠ only the first part of this file is shown — saving would truncate it, so it is read-only
               </div>
             )}
-            <CodeEditor
-              doc={res.content}
-              docKey={`${vpsId}:${root}:${path}:${docKey}`}
-              filename={name}
-              readOnly={!!res.truncated}
-              onChange={onChange}
-              onSave={() => void save()}
-              reveal={reveal}
-              lsp={lspTarget}
-              diagnostics={lsp.live ? lsp.diagnostics : EMPTY_DIAGS}
-              onLocations={showLocations}
-              onRename={askRename}
-              onSymbols={(r) => {
-                const list = flattenSymbols(r);
-                if (list.length) setPicker({ kind: 'symbols', title: 'Go to symbol', symbols: list });
-              }}
-            />
-            {lspText && (
+            {tabular && fileView === 'table' ? (
+              <CsvViewer text={buf.current} filename={name} />
+            ) : (
+              <CodeEditor
+                doc={buf.current}
+                docKey={`${vpsId}:${root}:${path}:${docKey}`}
+                filename={name}
+                readOnly={!!res.truncated}
+                onChange={onChange}
+                onSave={() => void save()}
+                reveal={reveal}
+                lsp={lspTarget}
+                diagnostics={lsp.live ? lsp.diagnostics : EMPTY_DIAGS}
+                onLocations={showLocations}
+                onRename={askRename}
+                onSymbols={(r) => {
+                  const list = flattenSymbols(r);
+                  if (list.length) setPicker({ kind: 'symbols', title: 'Go to symbol', symbols: list });
+                }}
+              />
+            )}
+            {(!tabular || fileView === 'text') && lspText && (
               <div className={`fe-lsp${lsp.live ? ' on' : ''}`} title={lsp.status?.install ?? undefined}>
                 <span className="fe-lsp-text">{lspText}</span>
                 {lsp.live && lsp.diagnostics.length > 0 && (
