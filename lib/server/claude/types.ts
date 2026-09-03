@@ -211,7 +211,7 @@ export type SyntheticEvent =
   // `vps.agentStatus` inside AgentClient (hello success / classified exit) so
   // the sidebar badge + action buttons follow reality without an F5. Same
   // bus-reuse trick as shell_status; LOW_VOLUME → broadcast to every tab.
-  | { type: 'vps_status'; agentStatus: 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
+  | { type: 'vps_status'; agentStatus: 'unknown' | 'ok' | 'missing' | 'error'; agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
       // Classified failure ('ssh-auth: …' | 'ssh-unreachable: …' | 'daemon-down: …'
       // | 'error: …', null = cleared) + codex availability — feed the per-VPS
       // health chips (app/vpsHealth.tsx). Keys present only when known

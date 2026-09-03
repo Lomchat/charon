@@ -38,6 +38,7 @@ import {
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
 import { DeepLinkGuard } from './deepLinkGuard';
+import { mergeVpsRuntimeSnapshots } from './vpsRuntimeState';
 
 // Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
 // chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
@@ -141,7 +142,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // OLD builtPyzSha → phantom "update agent" badge on the whole fleet until
   // F5 (and "update" would never clear it: the server deploys the NEW sha,
   // which still ≠ the stale prop). Refreshed from the session-list poll's
-  // `meta` (15s + on session_list_changed). The ref mirrors the state for
+  // `meta` (60s while visible + on session_list_changed). The ref mirrors the state for
   // use inside stable-closure event handlers.
   const [buildMeta, setBuildMeta] = useState({
     builtPyzSha: builtPyzSha ?? null,
@@ -487,7 +488,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // fans a `session_unread` event on the bus (LOW_VOLUME → every tab, even ones
   // not focused on that session). Mirror it onto the local sessions list so the
   // sidebar's green "finished" glow appears / clears without waiting for the
-  // 15s list refresh. Cross-device: the same event also fires on POST /focus
+  // 60s list refresh. Cross-device: the same event also fires on POST /focus
   // (the "read" signal) from any device.
   useEffect(() => {
     const unsub = subscribeAll((ev) => {
@@ -1175,12 +1176,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // re-rendered the Sidebar + main panel → CPU + flicker. Intra-session
   // status changes already arrive via the per-session SSE; the poll only
   // serves to refresh the count badges + detect sessions created on
-  // another client. 15s is amply sufficient.
+  // another client. 60s is sufficient as a convergence backstop.
   const refreshSessions = useCallback(async () => {
     try {
       const r = await api.listClaudeSessions();
       const next = r.sessions as SessionListItem[];
       setSessions((prev) => sameSessionRows(prev, next) ? prev : next);
+      // `vps_status` is deliberately live-only. Converge from SQLite as a
+      // backstop so a suspended/reconnecting tab cannot retain pre-update SDK
+      // versions until F5. Older hubs omit vpsRuntime during rolling deploys.
+      const vpsRuntime = r.vpsRuntime;
+      if (vpsRuntime) {
+        setVpsList((prev) => mergeVpsRuntimeSnapshots(prev, vpsRuntime));
+      }
       // Refresh the staleness baselines (builtPyzSha / PyPI latests) so a
       // long-open tab converges within one poll after a hub deploy — no more
       // phantom "update agent" badges that only F5 could clear.
@@ -1207,7 +1215,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Live per-session STATUS mirror (cross-device dots). `status` events are
   // LOW_VOLUME (every tab gets them, §14.16) but only the focused session's
   // view consumed them — a session going thinking/sleeping on ANOTHER device
-  // only updated this sidebar at the next 15s poll. Patch the list row
+  // only updated this sidebar at the next 60s poll. Patch the list row
   // immediately; the poll remains the convergence backstop (replays or missed
   // events can't wedge anything). 'killed' is a deletion signal — handled by
   // session_list_changed → refreshSessions, skip it here.
@@ -1245,7 +1253,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // is created / imported / deleted on ANY tab or device, sessionOps fans a
   // `session_list_changed` event on the bus (LOW_VOLUME → reaches every tab,
   // even unfocused ones). Refetch the list immediately so the sidebar + tab bar
-  // reflect it without waiting for the 15s poll — this is what makes a session
+  // reflect it without waiting for the 60s poll — this is what makes a session
   // started on a phone appear on the desktop without an F5. The poll stays as a
   // backstop in case an event is missed (SSE drop).
   useEffect(() => {
@@ -1793,7 +1801,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onSelectInstall={selectInstall}
         onReorderSessions={(vpsId, ids) => {
           // Optimistic: the row must land where it was dropped, not snap back
-          // for the length of a request. The 15s list poll is the reconcile.
+          // for the length of a request. The 60s list poll is the reconcile.
           setSessions((prev) => prev.map((s) => (
             s.vpsId === vpsId && ids.includes(s.id) ? { ...s, position: ids.indexOf(s.id) } : s)));
           void api.reorderSessions(vpsId, ids).catch(() => refreshSessions());
@@ -2319,7 +2327,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 const NOTIF_SOUND_URL = '/notif.wav';
 let _notifAudio: HTMLAudioElement | null = null;
 // Debounce: two independent paths can call playBeep for the SAME
-// notification — the SW push message (immediate) and the 15s poll
+// notification — the SW push message (immediate) and the 60s poll
 // (fallback). Swallow calls that land within this window so we don't
 // double-chime. Kept short (2s) so distinct notifications spaced further
 // apart still each chime.

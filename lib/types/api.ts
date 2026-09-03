@@ -806,8 +806,30 @@ export type SessionListItem = ClaudeSession & {
   /** True only while the provider-neutral bus can route this stable handle. */
   addressable?: boolean;
 };
+
+// Non-sensitive VPS fields that can change while the dashboard stays open.
+// The live `vps_status` SSE event is the fast path; this bounded snapshot is
+// the convergence path when an event was missed (suspended tab, reconnect,
+// slow-consumer close). Never return connection credentials from a list poll.
+export type VpsRuntimeSnapshot = Pick<Vps,
+  | 'id'
+  | 'agentStatus'
+  | 'agentVersion'
+  | 'agentPyzSha'
+  | 'agentLastError'
+  | 'sdkVersion'
+  | 'codexAvailable'
+  | 'codexSdkVersion'
+  | 'codexCliVersion'
+  | 'claudeLoggedIn'
+  | 'codexLoggedIn'
+>;
+
 export type ClaudeSessionsListResponse = {
   sessions: SessionListItem[];
+  // Authoritative runtime state for the fleet. Optional for rolling upgrades:
+  // older hubs omit it, while newer clients keep the SSE-only behavior.
+  vpsRuntime?: VpsRuntimeSnapshot[];
   // Live staleness baselines (hub pyz sha + PyPI latests) — refreshed by the
   // client on every list poll so long-open tabs never compare against frozen
   // SSR props (phantom "update agent" badge). Optional: older servers omit it.

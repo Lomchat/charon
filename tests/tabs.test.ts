@@ -12,9 +12,9 @@ import fs from 'node:fs';
 //   * re-opening something already open must NOT evict the group's preview
 //     (the preview might be that very tab);
 //   * pinning is additive — a new pinned tab never displaces the preview;
-//   * closing the active tab moves focus to a neighbour rather than to
-//     nothing, and NEVER touches the underlying session;
-//   * exactly one row is active, always.
+//   * closing the active tab stays in its group: same-group browser history,
+//     then left/right neighbour, or no active pane when the group empties;
+//   * at most one row is active, always.
 
 process.env.DATABASE_URL = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), 'charon-tabs-test-')),
@@ -25,6 +25,7 @@ vi.mock('server-only', () => ({}));
 let db: any;
 let S: any;
 let T: typeof import('@/lib/server/claude/tabs');
+let TabStore: typeof import('@/app/tabStore');
 
 const VPS = 'vps1';
 const OTHER = 'vps2';
@@ -47,12 +48,44 @@ beforeAll(async () => {
     }).run();
   }
   T = await import('@/lib/server/claude/tabs');
+  TabStore = await import('@/app/tabStore');
 });
 
 beforeEach(() => { db.delete(S.tabs).run(); });
 
 const kinds = (list: { kind: string; ref: string }[]) => list.map((t) => `${t.kind}:${t.ref}`);
 const inGroup = (vpsId = VPS, p = P) => T.listTabs().filter((t) => t.vpsId === vpsId && t.path === p);
+
+describe('client close focus', () => {
+  const tab = (id: string, vpsId: string, p: string, position: number) => ({
+    id, vpsId, path: p, position, kind: 'file' as const, ref: `${id}.ts`,
+    pinned: true, active: id === 'c', vpsPos: 0, groupPos: 0,
+  });
+
+  it('uses the immediately previous tab when it is in the same group', () => {
+    const a = tab('a', VPS, P, 0);
+    const b = tab('b', VPS, P, 1);
+    const c = tab('c', VPS, P, 2);
+    expect(TabStore.chooseNextFocusAfterClosing([a, b, c], ['c', 'a', 'b'], c)).toBe('a');
+  });
+
+  it('uses the left neighbour when the immediately previous tab is in another group', () => {
+    const a = tab('a', VPS, P, 0);
+    const b = tab('b', VPS, P, 1);
+    const c = tab('c', VPS, P, 2);
+    const other = tab('other', OTHER, Q, 0);
+    // `a` is older same-group history and must not be searched past `other`.
+    expect(TabStore.chooseNextFocusAfterClosing(
+      [a, b, c, other], ['c', 'other', 'a'], c,
+    )).toBe('b');
+  });
+
+  it('returns no focus when the closing tab is the last in its group', () => {
+    const c = tab('c', VPS, P, 0);
+    const other = tab('other', OTHER, Q, 0);
+    expect(TabStore.chooseNextFocusAfterClosing([c, other], ['c', 'other'], c)).toBeNull();
+  });
+});
 
 describe('opening', () => {
   it('opens a temporary tab and focuses it', () => {
@@ -138,10 +171,12 @@ describe('closing', () => {
     expect(T.closeTab(a.id).nextActiveId).toBe(b.id);
   });
 
-  it('falls to another group rather than to nothing', () => {
+  it('leaves no active pane when the closing tab was alone in its group', () => {
     const other = T.openTab({ vpsId: VPS, path: Q, kind: 'file', ref: 'z.ts', pin: true });
     const here = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
-    expect(T.closeTab(here.id).nextActiveId).toBe(other.id);
+    expect(T.closeTab(here.id).nextActiveId).toBeNull();
+    expect(T.getActiveTab()).toBeNull();
+    expect(T.listTabs().map((t) => t.id)).toContain(other.id);
   });
 
   it('honours the client\'s preferred next focus over the neighbour walk', () => {
@@ -161,6 +196,21 @@ describe('closing', () => {
     const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
     const b = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });
     expect(T.closeTab(b.id, 'a-tab-that-no-longer-exists').nextActiveId).toBe(a.id);
+  });
+
+  it('rejects a preferred tab from another group and uses the left neighbour', () => {
+    const other = T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'z.ts', pin: true });
+    const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
+    const b = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });
+    expect(T.closeTab(b.id, other.id).nextActiveId).toBe(a.id);
+    expect(T.getActiveTab()?.id).toBe(a.id);
+  });
+
+  it('rejects another-group preference and stays empty when the group empties', () => {
+    const other = T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'z.ts', pin: true });
+    const here = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
+    expect(T.closeTab(here.id, other.id).nextActiveId).toBeNull();
+    expect(T.getActiveTab()).toBeNull();
   });
 
   it('closing an inactive tab leaves focus alone', () => {
@@ -195,6 +245,15 @@ describe('closing', () => {
     expect(kinds(inGroup())).toEqual(['file:b.ts']);
     expect(T.getActiveTab()).not.toBeNull();
   });
+
+  it('bulk-closing the active group does not focus another group', () => {
+    T.openTab({ vpsId: OTHER, path: Q, kind: 'file', ref: 'other.ts', pin: true });
+    T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
+    T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'b.ts', pin: true });
+    expect(T.closeTabsWhere({ vpsId: VPS, path: P })).toBe(2);
+    expect(T.getActiveTab()).toBeNull();
+    expect(inGroup(OTHER, Q)).toHaveLength(1);
+  });
 });
 
 describe('reconcile & seed', () => {
@@ -225,11 +284,12 @@ describe('reconcile & seed', () => {
     expect(T.reconcileTabs()).toBe(0);
   });
 
-  it('repairs a table with no active row', () => {
+  it('preserves an intentional table with no active row', () => {
     const a = T.openTab({ vpsId: VPS, path: P, kind: 'file', ref: 'a.ts', pin: true });
     db.update(S.tabs).set({ active: 0 }).run();
     T.reconcileTabs();
-    expect(T.getActiveTab()?.id).toBe(a.id);
+    expect(T.getActiveTab()).toBeNull();
+    expect(T.listTabs().map((t) => t.id)).toContain(a.id);
   });
 
   it('repairs a table with several active rows', () => {

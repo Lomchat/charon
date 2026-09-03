@@ -7,6 +7,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { registerConnection } from '@/lib/server/agent/eventConnections';
 import { peekStream } from '@/lib/server/agent/sessionOps';
 import type { GlobalSessionEvent } from '@/lib/server/agent/sessionOps';
+import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import {
   subscribeInstallBus, listInstalls,
   type InstallBusEvent,
@@ -129,6 +130,27 @@ export async function GET(req: Request) {
       // no longer persisted. The filter is kept as an idempotent safeguard
       // in case pre-migration data resurfaces, but should never match.
       try {
+        // VPS runtime state is live-only after this point, so replay a full,
+        // browser-safe snapshot on EVERY EventSource connection (including
+        // reconnects). We registered first and buffer concurrent live events;
+        // therefore a newer update always drains after this snapshot.
+        for (const v of listVpsRuntimeSnapshots()) {
+          sendNow({
+            type: 'vps_status',
+            sessionId: v.id,
+            agentStatus: v.agentStatus as 'unknown' | 'ok' | 'missing' | 'error',
+            agentVersion: v.agentVersion,
+            agentPyzSha: v.agentPyzSha,
+            agentLastError: v.agentLastError,
+            sdkVersion: v.sdkVersion,
+            codexAvailable: v.codexAvailable,
+            codexSdkVersion: v.codexSdkVersion,
+            codexCliVersion: v.codexCliVersion,
+            claudeLoggedIn: v.claudeLoggedIn,
+            codexLoggedIn: v.codexLoggedIn,
+          });
+        }
+
         const rows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
           .from(claudeSessions).all();
         for (const row of rows) {

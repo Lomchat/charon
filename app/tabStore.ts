@@ -8,10 +8,9 @@
  * and re-sync from `tabs_changed` so another device (or another browser tab)
  * never drifts.
  *
- * Every mutation returns the server's list and overwrites the local one — the
- * server owns the eviction rules (one preview per group, focus fallback on
- * close) and re-deriving them here would be two implementations of the same
- * thing, drifting.
+ * Every mutation returns the server's list and overwrites the local one. The
+ * server validates the eviction/focus rules; the client mirrors the close
+ * choice only for the optimistic frame so a neighbour opens immediately.
  *
  * Dirty state is the exception: it is deliberately LOCAL. An unsaved buffer
  * lives in one browser and cannot be handed to another, so publishing it would
@@ -58,11 +57,30 @@ function touchMru(id: string | null | undefined) {
   if (mru.length > 60) mru.length = 60;
 }
 
-/** The tab focus should fall to when `closingId` goes away. */
-function nextFocusAfterClosing(closingId: string): string | null {
-  const live = new Set(state.tabs.filter((t) => t.id !== closingId).map((t) => t.id));
-  for (const id of mru) if (id !== closingId && live.has(id)) return id;
-  return null;
+/** The tab focus should fall to when `closing` goes away.
+ *
+ * Focus never escapes the closing tab's `(VPS, path)` group. Within that
+ * group, return to the immediately previous tab only if it belongs to that
+ * group. If that previous tab belongs elsewhere (or there is no history), use
+ * the visual neighbour (left first, then right). Closing the group's final tab
+ * deliberately leaves the workspace without an active pane even when another
+ * group still has tabs.
+ */
+export function chooseNextFocusAfterClosing(
+  tabs: TabDTO[], focusHistory: readonly string[], closing: TabDTO,
+): string | null {
+  const siblings = tabs
+    .filter((t) => t.vpsId === closing.vpsId && t.path === closing.path)
+    .slice().sort((a, b) => a.position - b.position);
+  const liveById = new Map(tabs.filter((t) => t.id !== closing.id).map((t) => [t.id, t]));
+  const previous = focusHistory.map((id) => liveById.get(id)).find((t) => t !== undefined);
+  if (previous?.vpsId === closing.vpsId && previous.path === closing.path) return previous.id;
+  const idx = siblings.findIndex((t) => t.id === closing.id);
+  return siblings[idx - 1]?.id ?? siblings[idx + 1]?.id ?? null;
+}
+
+function nextFocusAfterClosing(closing: TabDTO): string | null {
+  return chooseNextFocusAfterClosing(state.tabs, mru, closing);
 }
 
 function commit(next: State) {
@@ -180,10 +198,11 @@ export async function pinTab(id: string): Promise<void> {
 }
 
 export async function closeTab(id: string): Promise<void> {
-  const wasActive = state.tabs.find((t) => t.id === id)?.active ?? false;
-  // Decide the next focus BEFORE the row disappears, from the history rather
-  // than from the geometry of the row.
-  const next = wasActive ? nextFocusAfterClosing(id) : null;
+  const closing = state.tabs.find((t) => t.id === id);
+  const wasActive = closing?.active ?? false;
+  // Decide the next focus BEFORE the row disappears: immediate history when
+  // it stays in-group, otherwise the row's left/right geometry.
+  const next = wasActive && closing ? nextFocusAfterClosing(closing) : null;
   setTabs(state.tabs
     .filter((t) => t.id !== id)
     .map((t) => (next ? { ...t, active: t.id === next } : t)));

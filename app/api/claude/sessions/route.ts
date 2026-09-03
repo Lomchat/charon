@@ -13,6 +13,7 @@ import type { SessionMode } from '@/lib/server/agent/types';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 import { isSessionMode } from '@/lib/sessionCapabilities';
+import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -66,9 +67,8 @@ export async function GET(req: Request) {
     `) as Array<{ sessionId: string; content: string }>;
     const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
-    const agentVersions = new Map(db.select({
-      id: vpsTable.id, version: vpsTable.agentVersion,
-    }).from(vpsTable).all().map((v) => [v.id, v.version] as const));
+    const vpsRuntime = listVpsRuntimeSnapshots();
+    const agentVersions = new Map(vpsRuntime.map((v) => [v.id, v.agentVersion] as const));
 
     const annotated = rows.map((r) => {
       const stream = streams.get(r.id);
@@ -95,11 +95,15 @@ export async function GET(req: Request) {
     });
     return NextResponse.json({
       sessions: annotated,
+      // SSE is the fast path for VPS state, but it is intentionally live-only.
+      // A suspended tab can miss an update event, so every list poll also
+      // carries this small authoritative snapshot and converges without F5.
+      vpsRuntime,
       // Live staleness baselines. These were SSR-only props before: a
       // long-open tab kept comparing vps.agentPyzSha against a FROZEN
       // builtPyzSha, so after a hub deploy + fleet auto-update every tab
       // showed a phantom "update agent" until F5. The client refreshes them
-      // from this poll (15s + on every session_list_changed).
+      // from this poll (60s while visible + on every session_list_changed).
       meta: {
         builtPyzSha: getBuiltPyzSha(),
         builtAgentVersion: getBuiltAgentVersion(),

@@ -26,8 +26,9 @@ import type { TabDTO, TabKind } from '@/lib/types/api';
  *    and making the user say so twice is the kind of friction nobody notices
  *    until it loses their place.
  *
- * `active` is a single row across the whole table (one workspace, one focus).
- * Writes go through `withActive` so it can never be two.
+ * `active` is at most one row across the whole table (one workspace, one
+ * focus). Zero is intentional after closing the final tab of the active
+ * group. Writes go through `setActive` so it can never be two.
  */
 
 const KINDS: TabKind[] = ['session', 'shell', 'install', 'file'];
@@ -235,9 +236,10 @@ export function dropTabsForRef(kind: TabKind, ref: string): boolean {
 /**
  * Close one tab. Returns the tab that should take focus, if this one had it.
  *
- * Focus falls to the left neighbour in the same group, then the right one,
- * then anything else that is open — an editor that lands on a blank pane after
- * a close makes you re-find your place every time.
+ * A client-preferred tab wins only when it belongs to the same `(VPS, path)`
+ * group. Otherwise focus falls to the left neighbour, then the right one. The
+ * final tab of a group leaves no active pane; closing must never jump to
+ * another project or machine.
  */
 export function closeTab(id: string, preferredNextId?: string | null): { closed: boolean; nextActiveId: string | null } {
   const [r] = db.select().from(tabs).where(eq(tabs.id, id)).limit(1).all();
@@ -254,18 +256,20 @@ export function closeTab(id: string, preferredNextId?: string | null): { closed:
   if (!wasActive) return { closed: true, nextActiveId: null };
   // The CLIENT's focus history wins when it names a tab that still exists:
   // only the browser knows which tab you were actually on before this one.
-  // The neighbour walk below is the fallback for a caller that didn't say.
+  // It is deliberately group-scoped; the neighbour walk below is the fallback
+  // for a caller that didn't say or named a tab in another group.
   if (preferredNextId) {
-    const [pref] = db.select().from(tabs).where(eq(tabs.id, preferredNextId)).limit(1).all();
+    const [pref] = db.select().from(tabs).where(and(
+      eq(tabs.id, preferredNextId), eq(tabs.vpsId, r.vpsId), eq(tabs.path, r.path),
+    )).limit(1).all();
     if (pref) {
       setActive(pref.id);
       return { closed: true, nextActiveId: pref.id };
     }
   }
   const neighbour = siblings[idx - 1] ?? siblings[idx + 1] ?? null;
-  const fallback = neighbour ?? db.select().from(tabs).orderBy(tabs.updatedAt).all().pop() ?? null;
-  setActive(fallback?.id ?? null);
-  return { closed: true, nextActiveId: fallback?.id ?? null };
+  setActive(neighbour?.id ?? null);
+  return { closed: true, nextActiveId: neighbour?.id ?? null };
 }
 
 /** Close every tab of a group / a VPS / everything but one. Used by the UI menus. */
@@ -280,14 +284,15 @@ export function closeTabsWhere(filter: { vpsId?: string; path?: string; exceptId
     for (const r of rows) tx.delete(tabs).where(eq(tabs.id, r.id)).run();
   });
   if (hadActive) {
-    const rest = db.select().from(tabs).orderBy(tabs.updatedAt).all().pop() ?? null;
-    setActive(rest?.id ?? null);
+    // A group/VPS close removes the active group's final visible tab by
+    // construction. Do not jump into another group behind the user's back.
+    setActive(null);
   }
   return rows.length;
 }
 
 /**
- * Drop tabs whose thing no longer exists, and make sure exactly one is active.
+ * Drop tabs whose thing no longer exists, and make sure at most one is active.
  *
  * Runs at boot and after any delete. Install tabs ALWAYS go: installs are
  * in-memory and do not survive a hub restart, so a persisted tab pointing at
@@ -316,11 +321,11 @@ export function reconcileTabs(liveInstallIds?: Set<string>): number {
       for (const r of dead) tx.delete(tabs).where(eq(tabs.id, r.id)).run();
     });
   }
-  // Exactly one active: repair both directions (none left after a delete,
-  // or several after a crash mid-transaction).
+  // Zero active is an intentional persisted state after closing the final tab
+  // of a group. Repair only the impossible multi-active state.
   const left = db.select().from(tabs).all();
   const actives = left.filter((r) => r.active === 1);
-  if (left.length && actives.length !== 1) setActive((actives[0] ?? left[left.length - 1]).id);
+  if (actives.length > 1) setActive(actives[0].id);
   return dead.length;
 }
 
