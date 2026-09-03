@@ -792,20 +792,26 @@ class AgentSession:
             "configured_skills": self.session_config.get("skills"),
         }
 
-    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
+    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> bool:
         fut = self._pending_perms.pop(perm_id, None)
         if fut is not None and not fut.done():
             fut.set_result(bool(allow))
+            return True
+        return False
 
-    def respond_question(self, q_id: str, answers: dict | None) -> None:
+    def respond_question(self, q_id: str, answers: dict | None) -> bool:
         fut = self._pending_perms.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result(answers)
+            return True
+        return False
 
-    def respond_exit_plan(self, q_id: str, decision: str, feedback: str = "") -> None:
+    def respond_exit_plan(self, q_id: str, decision: str, feedback: str = "") -> bool:
         fut = self._pending_perms.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"decision": decision, "feedback": feedback})
+            return True
+        return False
 
     async def context_usage(self) -> dict[str, Any]:
         """How full the context window is, right now.
@@ -1272,11 +1278,26 @@ class AgentSession:
         loop = asyncio.get_event_loop()
         fut = loop.create_future()
         self._pending_perms[perm_id] = fut
-        self._emit("permission_request", id=perm_id, tool=tool_name, input=tool_input)
+        timeout_seconds = 600
+        self._emit(
+            "permission_request", id=perm_id, tool=tool_name, input=tool_input,
+            expires_at=int(time.time()) + timeout_seconds + 1,
+        )
         try:
-            allowed = await asyncio.wait_for(fut, timeout=600)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+            allowed = await asyncio.wait_for(fut, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
             self._pending_perms.pop(perm_id, None)
+            self._emit(
+                "interaction_resolved", id=perm_id, kind="permission",
+                outcome="expired",
+            )
+            return None
+        except asyncio.CancelledError:
+            self._pending_perms.pop(perm_id, None)
+            self._emit(
+                "interaction_resolved", id=perm_id, kind="permission",
+                outcome="cancelled",
+            )
             return None
         return bool(allowed)
 
@@ -1289,14 +1310,26 @@ class AgentSession:
             loop = asyncio.get_event_loop()
             fut = loop.create_future()
             self._pending_perms[qid] = fut
-            self._emit("user_question", id=qid, questions=questions)
+            timeout_seconds = 1800
+            self._emit(
+                "user_question", id=qid, questions=questions,
+                expires_at=int(time.time()) + timeout_seconds + 1,
+            )
             try:
-                answers = await asyncio.wait_for(fut, timeout=1800)
+                answers = await asyncio.wait_for(fut, timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 self._pending_perms.pop(qid, None)
+                self._emit(
+                    "interaction_resolved", id=qid, kind="question",
+                    outcome="expired",
+                )
                 return PermissionResultDeny(message="timeout (30min without response from the dashboard)")
             except asyncio.CancelledError:
                 self._pending_perms.pop(qid, None)
+                self._emit(
+                    "interaction_resolved", id=qid, kind="question",
+                    outcome="cancelled",
+                )
                 return PermissionResultDeny(message="session paused")
             if not isinstance(answers, dict):
                 return PermissionResultDeny(message="invalid response from the dashboard")

@@ -17,6 +17,7 @@ import BgTasksBar from './BgTasksBar';
 import UsageMeter from './UsageMeter';
 import QuestionCard from './QuestionCard';
 import ExitPlanCard from './ExitPlanCard';
+import ApprovalDeadline from './ApprovalDeadline';
 import type {
   PermissionRequest, PendingQuestion, PendingExitPlan, ToolCallEntry,
 } from './sessionTypes';
@@ -1567,6 +1568,7 @@ function InlinePermissionCard({ perm, onRespond }: {
         <span className="ip-tool">{perm.tool}</span>
         {summary && <span className="ip-summary">{summary}</span>}
       </header>
+      <ApprovalDeadline expiresAt={perm.expiresAt} />
       <pre className="ip-input">{JSON.stringify(perm.input, null, 2).slice(0, 1200)}</pre>
       <footer className="ip-actions">
         <button type="button" className="allow" onClick={() => onRespond(true, false)}>allow once</button>

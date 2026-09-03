@@ -1050,11 +1050,14 @@ export class SessionStream {
         // one would silently approve every later request of that class.
         // Codex receives the exact native Turn/Session grant below instead.
         const autoAllow = this.kind === 'claude' && this.alwaysAllow.has(ev.tool);
+        const expiresAt = ev.expires_at
+          ?? Math.floor(Date.now() / 1000) + (this.kind === 'claude' ? 601 : 1801);
+        this._scheduleInteractionExpiry('permission', ev.id, expiresAt);
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) {
           if (autoAllow) {
             this.respondPermission(ev.id, true).catch(() => {
-              this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
+              this._surfacePermissionRequest(ev.id, ev.tool, ev.input, expiresAt);
             });
           }
           break;
@@ -1066,6 +1069,7 @@ export class SessionStream {
             toolName: ev.tool,
             toolInput: JSON.stringify(ev.input ?? {}),
             status: 'pending',
+            expiresAt,
           }).onConflictDoNothing().run();
         } catch (e) {
           // A REAL insert failure (not a dup — onConflictDoNothing absorbs
@@ -1084,11 +1088,11 @@ export class SessionStream {
           // Surface it only on failure; successful remembered grants stay
           // invisible, as they did before persistence became provider-first.
           this.respondPermission(ev.id, true).catch(() => {
-            this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
+            this._surfacePermissionRequest(ev.id, ev.tool, ev.input, expiresAt);
           });
           break;
         }
-        this._surfacePermissionRequest(ev.id, ev.tool, ev.input);
+        this._surfacePermissionRequest(ev.id, ev.tool, ev.input, expiresAt);
         break;
       case 'user_question': {
         // Identity gate on the event's OWN row: it is inserted AFTER the
@@ -1096,6 +1100,8 @@ export class SessionStream {
         // the pending write completed too — no transaction needed.
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
+        const expiresAt = ev.expires_at ?? Math.floor(Date.now() / 1000) + 1801;
+        this._scheduleInteractionExpiry('question', ev.id, expiresAt);
         // Codex 16.2: "pending exists" must NOT short-circuit the message
         // row — the pending may have survived a crash whose row insert
         // failed. Skip only the effects that provably happened (pending +
@@ -1106,6 +1112,7 @@ export class SessionStream {
             db.insert(claudePendingQuestions).values({
               id: ev.id, sessionId: this.id, kind: 'question',
               payload: JSON.stringify(ev.questions ?? []), status: 'pending',
+              expiresAt,
             }).onConflictDoNothing().run();
           } catch (e) {
             // Real failure → holdback + stop; replay redoes pending AND row.
@@ -1119,7 +1126,10 @@ export class SessionStream {
         }
         this._persist('user_question', { type: 'user_question', id: ev.id, questions: ev.questions });
         if (!pendingKnown) {
-          this._broadcast({ type: 'user_question', id: ev.id, questions: ev.questions });
+          this._broadcast({
+            type: 'user_question', id: ev.id, questions: ev.questions,
+            expiresAt,
+          });
           this._maybePush({
             title: `❓ ${this.vpsName} · ${this._label()} : question`,
             body: `${ev.questions[0]?.question ?? 'user question'}`,
@@ -1140,6 +1150,7 @@ export class SessionStream {
             db.insert(claudePendingQuestions).values({
               id: ev.id, sessionId: this.id, kind: 'exit_plan',
               payload: JSON.stringify({ plan: ev.plan ?? '' }), status: 'pending',
+              expiresAt: ev.expires_at ?? null,
             }).onConflictDoNothing().run();
           } catch (e) {
             const seq = this.currentEventSeq;
@@ -1152,13 +1163,47 @@ export class SessionStream {
         }
         this._persist('exit_plan_request', { type: 'exit_plan_request', id: ev.id, plan: ev.plan });
         if (!pendingKnown) {
-          this._broadcast({ type: 'exit_plan_request', id: ev.id, plan: ev.plan });
+          this._broadcast({
+            type: 'exit_plan_request', id: ev.id, plan: ev.plan,
+            expiresAt: ev.expires_at,
+          });
           this._maybePush({
             title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
             body: 'Claude finished planning — tap to approve',
             tag: `plan-${this.id}`,
           });
         }
+        break;
+      }
+      case 'interaction_resolved': {
+        // Provider-side expiry/cancellation is authoritative. This event is
+        // durable in the agent log, so replay after a hub outage removes the
+        // stale card just like the live path.
+        const resolvedAt = Math.floor(Date.now() / 1000);
+        try {
+          if (ev.kind === 'permission') {
+            db.update(claudePendingPermissions)
+              .set({ status: ev.outcome, respondedAt: resolvedAt })
+              .where(and(
+                eq(claudePendingPermissions.id, ev.id),
+                eq(claudePendingPermissions.sessionId, this.id),
+                eq(claudePendingPermissions.status, 'pending'),
+              )).run();
+          } else {
+            db.update(claudePendingQuestions)
+              .set({ status: ev.outcome, respondedAt: resolvedAt })
+              .where(and(
+                eq(claudePendingQuestions.id, ev.id),
+                eq(claudePendingQuestions.sessionId, this.id),
+                eq(claudePendingQuestions.status, 'pending'),
+              )).run();
+          }
+        } catch {}
+        this._broadcast({
+          type: 'interaction_resolved', kind: ev.kind, id: ev.id,
+          outcome: ev.outcome,
+        });
+        markInteractionResolvedInTelegram(ev.kind, ev.id);
         break;
       }
       case 'bg_task': {
@@ -1767,13 +1812,37 @@ export class SessionStream {
         eq(claudePendingPermissions.sessionId, this.id),
       )).all();
     if (!row) throw new Error('permission request not found for this session');
+    if (row.status !== 'pending') {
+      throw new Error('This approval has already expired or been resolved.');
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (row.expiresAt != null && row.expiresAt <= nowSeconds) {
+      try {
+        db.update(claudePendingPermissions)
+          .set({ status: 'expired', respondedAt: nowSeconds })
+          .where(and(
+            eq(claudePendingPermissions.id, permId),
+            eq(claudePendingPermissions.sessionId, this.id),
+            eq(claudePendingPermissions.status, 'pending'),
+          )).run();
+      } catch {}
+      this._broadcast({
+        type: 'interaction_resolved', kind: 'permission', id: permId,
+        outcome: 'expired',
+      });
+      markInteractionResolvedInTelegram('permission', permId);
+      throw new Error('This approval has already expired and was automatically denied.');
+    }
 
     // The provider is authoritative. Keep the card pending until its RPC has
     // accepted the answer; otherwise an offline/timeout path leaves the SDK
     // blocked while every browser believes the interaction was resolved.
-    await client.call('respond_permission', {
+    const response = await client.call('respond_permission', {
       session_id: this.id, perm_id: permId, allow, always,
     });
+    if ((response as { resolved?: boolean } | undefined)?.resolved === false) {
+      throw new Error('This approval has already expired or been cancelled.');
+    }
     try {
       if (this.kind === 'claude' && always && allow) {
         this.alwaysAllow.add(row.toolName);
@@ -1786,7 +1855,10 @@ export class SessionStream {
           eq(claudePendingPermissions.sessionId, this.id),
         )).run();
     } catch {}
-    this._broadcast({ type: 'interaction_resolved', kind: 'permission', id: permId });
+    this._broadcast({
+      type: 'interaction_resolved', kind: 'permission', id: permId,
+      outcome: allow ? 'answered' : 'denied',
+    });
     markInteractionResolvedInTelegram('permission', permId);
   }
 
@@ -1800,7 +1872,10 @@ export class SessionStream {
       }).where(eq(claudePendingQuestions.id, qid)).run();
     } catch {}
     await client.call('respond_question', { session_id: this.id, q_id: qid, answers });
-    this._broadcast({ type: 'interaction_resolved', kind: 'question', id: qid });
+    this._broadcast({
+      type: 'interaction_resolved', kind: 'question', id: qid,
+      outcome: answers ? 'answered' : 'cancelled',
+    });
     markInteractionResolvedInTelegram('question', qid);
   }
 
@@ -1814,7 +1889,7 @@ export class SessionStream {
       }).where(eq(claudePendingQuestions.id, qid)).run();
     } catch {}
     await client.call('respond_exit_plan', { session_id: this.id, q_id: qid, decision, feedback });
-    this._broadcast({ type: 'interaction_resolved', kind: 'exit_plan', id: qid });
+    this._broadcast({ type: 'interaction_resolved', kind: 'exit_plan', id: qid, outcome: 'answered' });
   }
 
   // ── Privates ─────────────────────────────────────────────────────────────
@@ -2374,8 +2449,8 @@ export class SessionStream {
     } catch {}
   }
 
-  private _surfacePermissionRequest(id: string, tool: string, input: unknown): void {
-    this._broadcast({ type: 'permission_request', id, tool, input });
+  private _surfacePermissionRequest(id: string, tool: string, input: unknown, expiresAt?: number): void {
+    this._broadcast({ type: 'permission_request', id, tool, input, expiresAt });
     this._log('info', 'permission', { id, tool });
     this._maybePush({
       title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
@@ -2383,6 +2458,40 @@ export class SessionStream {
       tag: `perm-${this.id}`,
     });
     sendPermissionToTelegram(this.id, id, tool, input).catch(() => {});
+  }
+
+  private _scheduleInteractionExpiry(
+    kind: 'permission' | 'question' | 'exit_plan',
+    id: string,
+    expiresAt: number,
+  ): void {
+    const delay = Math.max(0, expiresAt * 1000 - Date.now());
+    const timer = setTimeout(() => {
+      const resolvedAt = Math.floor(Date.now() / 1000);
+      try {
+        const result = kind === 'permission'
+          ? db.update(claudePendingPermissions)
+              .set({ status: 'expired', respondedAt: resolvedAt })
+              .where(and(
+                eq(claudePendingPermissions.id, id),
+                eq(claudePendingPermissions.sessionId, this.id),
+                eq(claudePendingPermissions.status, 'pending'),
+              )).run()
+          : db.update(claudePendingQuestions)
+              .set({ status: 'expired', respondedAt: resolvedAt })
+              .where(and(
+                eq(claudePendingQuestions.id, id),
+                eq(claudePendingQuestions.sessionId, this.id),
+                eq(claudePendingQuestions.status, 'pending'),
+              )).run();
+        if (!result.changes) return;
+      } catch {
+        return;
+      }
+      this._broadcast({ type: 'interaction_resolved', kind, id, outcome: 'expired' });
+      markInteractionResolvedInTelegram(kind, id);
+    }, delay);
+    timer.unref?.();
   }
 
   /** Human-friendly session label for notifications: explicit name, else

@@ -160,9 +160,12 @@ export type AgentEvent = (
   | { event: 'plan_update'; session_id: string; id: string; explanation?: string | null; steps: Array<{ step: string; status: string }> }
   | { event: 'tool_activity'; session_id: string; kind: string; id: string; status: string; detail?: any }
   | { event: 'codex_signal'; session_id: string; kind: string; id: string; status: string; detail?: any }
-  | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any }
-  | { event: 'user_question'; session_id: string; id: string; questions: any[] }
-  | { event: 'exit_plan_request'; session_id: string; id: string; plan: string }
+  | { event: 'permission_request'; session_id: string; id: string; tool: string; input: any; expires_at?: number }
+  | { event: 'user_question'; session_id: string; id: string; questions: any[]; expires_at?: number }
+  | { event: 'exit_plan_request'; session_id: string; id: string; plan: string; expires_at?: number }
+  // Provider-side timeout/cancellation. Durable in the agent event log so a
+  // hub transport outage cannot resurrect an already-closed approval card.
+  | { event: 'interaction_resolved'; session_id: string; id: string; kind: 'permission' | 'question' | 'exit_plan'; outcome: 'expired' | 'cancelled' }
   // phase 'before'/'after' (Claude, content-based) OR 'diff' (Codex: `diff`
   // holds a unified diff, content is null). The GET /edits route strips both
   // `content` and `diff` from the poll payload (egress, §14.41).

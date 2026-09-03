@@ -848,16 +848,19 @@ export type PendingPermissionPayload = {
   tool: string;
   input: unknown;
   createdAt: number;
+  expiresAt?: number;
 };
 export type PendingQuestionPayload = {
   id: string;
   questions: unknown[];
   createdAt: number;
+  expiresAt?: number;
 };
 export type PendingExitPlanPayload = {
   id: string;
   plan: string;
   createdAt: number;
+  expiresAt?: number;
 };
 
 // Compact, provider-neutral projection of ONE background work item. The

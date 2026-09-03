@@ -35,6 +35,7 @@ let schema: any;
 let SessionStream: any;
 let startNewSession: any;
 let setSetting: any;
+let expireStalePendingInteractions: any;
 
 function insertSession(id: string, kind: 'claude' | 'codex') {
   db.insert(schema.claudeSessions).values({
@@ -63,6 +64,7 @@ beforeAll(async () => {
     id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root', codexAvailable: 1,
   }).onConflictDoNothing().run();
   ({ SessionStream, startNewSession } = await import('@/lib/server/agent/sessionOps'));
+  ({ expireStalePendingInteractions } = await import('@/lib/server/agent/pendingInteractions'));
   ({ setSetting } = await import('@/lib/server/claude/settings'));
 });
 
@@ -107,6 +109,60 @@ describe('provider-aware permission scope', () => {
 
     expect(db.select().from(schema.claudePendingPermissions).all()[0].status).toBe('pending');
     expect(db.select().from(schema.claudeSessions).all()[0].alwaysAllowTools).toBeNull();
+  });
+
+  it('does not report a late approval as accepted after provider expiry', async () => {
+    const id = '7'.repeat(32);
+    insertSession(id, 'codex');
+    db.insert(schema.claudePendingPermissions).values({
+      id: 'perm-too-late', sessionId: id, toolName: 'Codex command',
+      toolInput: '{}', status: 'pending',
+    }).run();
+    agentMocks.call.mockResolvedValueOnce({ ok: true, resolved: false });
+
+    await expect(stream(id, 'codex').respondPermission('perm-too-late', true))
+      .rejects.toThrow('already expired or been cancelled');
+
+    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+      .toBe('pending');
+  });
+
+  it('stores the provider deadline and closes an expired approval durably', () => {
+    const id = '5'.repeat(32);
+    insertSession(id, 'codex');
+    const s = stream(id, 'codex');
+
+    const expiresAt = Math.floor(Date.now() / 1000) + 1800;
+    s._onAgentEvent({
+      event: 'permission_request', session_id: id, id: 'perm-expiring',
+      tool: 'Codex command', input: { command: 'npm test' },
+      expires_at: expiresAt, seq: 3,
+    });
+    expect(db.select().from(schema.claudePendingPermissions).all()[0])
+      .toEqual(expect.objectContaining({
+        id: 'perm-expiring', status: 'pending', expiresAt,
+      }));
+
+    s._onAgentEvent({
+      event: 'interaction_resolved', session_id: id, id: 'perm-expiring',
+      kind: 'permission', outcome: 'expired', seq: 4,
+    });
+    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+      .toBe('expired');
+  });
+
+  it('sweeps a provider deadline missed while the hub was offline', () => {
+    const id = '6'.repeat(32);
+    insertSession(id, 'claude');
+    db.insert(schema.claudePendingPermissions).values({
+      id: 'perm-missed', sessionId: id, toolName: 'Bash', toolInput: '{}',
+      status: 'pending', expiresAt: Math.floor(Date.now() / 1000) - 1,
+    }).run();
+
+    expireStalePendingInteractions();
+
+    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+      .toBe('expired');
   });
 
   it('persists Claude always-allow only after the provider accepts it', async () => {

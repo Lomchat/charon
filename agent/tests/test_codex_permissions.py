@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 import unittest
 import types
 from unittest import mock
@@ -222,6 +223,29 @@ class TestCodexPermissions(unittest.TestCase):
             await asyncio.sleep(0)
             s._cancel_pending_requests()
             self.assertEqual(await task, {"decision": "decline"})
+
+        asyncio.run(main())
+
+    def test_timeout_emits_durable_expiry_after_deadlined_request(self):
+        async def main():
+            s, emitted = session()
+            with mock.patch(
+                "charon_agent.codex_session.asyncio.wait_for",
+                side_effect=asyncio.TimeoutError,
+            ):
+                result = await s._await_sdk_request(
+                    "item/commandExecution/requestApproval",
+                    {"itemId": "cmd-timeout", "command": "npm test"},
+                )
+            self.assertEqual(result, {"decision": "cancel"})
+            self.assertEqual(emitted[0]["event"], "permission_request")
+            self.assertGreater(emitted[0]["expires_at"], int(time.time()))
+            self.assertEqual(emitted[1], {
+                "event": "interaction_resolved", "session_id": "codex-perms",
+                "id": "cmd-timeout",
+                "kind": "permission", "outcome": "expired",
+            })
+            self.assertFalse(s.respond_permission("cmd-timeout", True))
 
         asyncio.run(main())
 

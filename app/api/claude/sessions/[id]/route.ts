@@ -14,6 +14,7 @@ import { orderChronologically } from '@/lib/server/claude/messageOrder';
 import { loadMessageWindow, publicMessageColumns } from '@/lib/server/claude/messageWindow';
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
 import { runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
+import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
 
 /**
  * The Claude SDK stores each session in
@@ -211,6 +212,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     ? runningBgTaskDetailsFromDb(id)
     : undefined;
 
+  // Provider deadlines continue while the browser/hub is disconnected.
+  expireStalePendingInteractions();
   // Pendings (permission/question/exit_plan) — returned so the client can
   // display them immediately on refetch without having to wait for the SSE
   // to replay them (which we will specifically skip to avoid the scroll).
@@ -245,17 +248,26 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     pendingPermissions: pendingPerms.map((p) => {
       let input: any = {};
       try { input = JSON.parse(p.toolInput); } catch {}
-      return { id: p.id, tool: p.toolName, input, createdAt: p.createdAt };
+      return {
+        id: p.id, tool: p.toolName, input,
+        createdAt: p.createdAt, expiresAt: p.expiresAt ?? undefined,
+      };
     }),
     pendingQuestions: pendingQs.filter((q) => q.kind === 'question').map((q) => {
       let payload: any = [];
       try { payload = JSON.parse(q.payload); } catch {}
-      return { id: q.id, questions: payload, createdAt: q.createdAt };
+      return {
+        id: q.id, questions: payload,
+        createdAt: q.createdAt, expiresAt: q.expiresAt ?? undefined,
+      };
     }),
     pendingExitPlans: pendingQs.filter((q) => q.kind === 'exit_plan').map((q) => {
       let payload: any = {};
       try { payload = JSON.parse(q.payload); } catch {}
-      return { id: q.id, plan: payload?.plan ?? '', createdAt: q.createdAt };
+      return {
+        id: q.id, plan: payload?.plan ?? '',
+        createdAt: q.createdAt, expiresAt: q.expiresAt ?? undefined,
+      };
     }),
   });
   const totalMs = performance.now() - perfStarted;

@@ -7,6 +7,7 @@ import { seedInitialData } from '@/lib/server/seed';
 import { registerConnection } from '@/lib/server/agent/eventConnections';
 import { peekStream } from '@/lib/server/agent/sessionOps';
 import type { GlobalSessionEvent } from '@/lib/server/agent/sessionOps';
+import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import {
   subscribeInstallBus, listInstalls,
@@ -160,7 +161,10 @@ export async function GET(req: Request) {
           const effective = live ? live.status : row.status;
           sendNow({ type: 'status', sessionId: row.id, status: effective as any });
         }
-        // Pendings: we replay them once to repopulate the client queues
+        // Pendings: provider deadlines continue while the browser/hub is
+        // disconnected. Repair expired rows before rebuilding the queues.
+        expireStalePendingInteractions();
+        // Replay live ones once to repopulate the client queues
         // (the cross-session popup + the focused session need them).
         const perms = db.select().from(claudePendingPermissions).where(
           eq(claudePendingPermissions.status, 'pending'),
@@ -168,7 +172,10 @@ export async function GET(req: Request) {
         for (const p of perms) {
           let input: any = {};
           try { input = JSON.parse(p.toolInput); } catch {}
-          sendNow({ type: 'permission_request', sessionId: p.sessionId, id: p.id, tool: p.toolName, input });
+          sendNow({
+            type: 'permission_request', sessionId: p.sessionId, id: p.id,
+            tool: p.toolName, input, expiresAt: p.expiresAt ?? undefined,
+          });
         }
         const qs = db.select().from(claudePendingQuestions).where(
           eq(claudePendingQuestions.status, 'pending'),
@@ -177,9 +184,15 @@ export async function GET(req: Request) {
           let payload: any = {};
           try { payload = JSON.parse(q.payload); } catch {}
           if (q.kind === 'question') {
-            sendNow({ type: 'user_question', sessionId: q.sessionId, id: q.id, questions: payload });
+            sendNow({
+              type: 'user_question', sessionId: q.sessionId, id: q.id,
+              questions: payload, expiresAt: q.expiresAt ?? undefined,
+            });
           } else if (q.kind === 'exit_plan') {
-            sendNow({ type: 'exit_plan_request', sessionId: q.sessionId, id: q.id, plan: payload?.plan ?? '' });
+            sendNow({
+              type: 'exit_plan_request', sessionId: q.sessionId, id: q.id,
+              plan: payload?.plan ?? '', expiresAt: q.expiresAt ?? undefined,
+            });
           }
         }
       } catch {}

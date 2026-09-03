@@ -3108,6 +3108,15 @@
   font-family: var(--mono); font-size: 14px;
   color: var(--gold-bright); margin-bottom: 6px;
 }
+.approval-deadline {
+  margin: 0 0 9px;
+  color: var(--parchment-soft);
+  font-family: var(--body); font-size: 12px; line-height: 1.35;
+}
+.approval-deadline strong {
+  color: var(--crimson); font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
 .perm-card .input-preview {
   font-family: var(--mono); font-size: 11px;
   background: rgba(0,0,0,0.4); border: 1px solid var(--gold-deep);

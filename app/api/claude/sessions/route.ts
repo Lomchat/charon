@@ -14,6 +14,7 @@ import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 import { isSessionMode } from '@/lib/sessionCapabilities';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
+import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -35,6 +36,8 @@ export async function GET(req: Request) {
       .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
       .all();
 
+    // Provider deadlines keep running while no browser is connected.
+    expireStalePendingInteractions();
     // Annotate with live status + subs count + pendingPermissions
     const streams = new Map(listStreams().map((s) => [s.id, s] as const));
     const pendingRows = db.select({

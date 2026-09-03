@@ -1976,12 +1976,12 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "perm_id required")
             always = bool(params.get("always"))
             try:
-                s.respond_permission(perm_id, bool(params.get("allow")), always)
+                resolved = s.respond_permission(perm_id, bool(params.get("allow")), always)
             except TypeError:
                 # Claude sessions on older SDK-compatible code keep the
                 # two-argument method; Charon persists its alwaysAllow rule.
-                s.respond_permission(perm_id, bool(params.get("allow")))
-            return {"ok": True}
+                resolved = s.respond_permission(perm_id, bool(params.get("allow")))
+            return {"ok": True, "resolved": resolved is not False}
 
         if method == "respond_question":
             sid = self._require_sid(params)
@@ -1990,8 +1990,8 @@ class Server:
             if not isinstance(q_id, str):
                 raise RpcError(ERR_INVALID_PARAMS, "q_id required")
             answers = params.get("answers")
-            s.respond_question(q_id, answers if isinstance(answers, dict) else None)
-            return {"ok": True}
+            resolved = s.respond_question(q_id, answers if isinstance(answers, dict) else None)
+            return {"ok": True, "resolved": resolved is not False}
 
         if method == "respond_exit_plan":
             sid = self._require_sid(params)
@@ -2001,8 +2001,8 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "q_id required")
             decision = params.get("decision") or "reject"
             feedback = params.get("feedback") or ""
-            s.respond_exit_plan(q_id, decision, feedback)
-            return {"ok": True}
+            resolved = s.respond_exit_plan(q_id, decision, feedback)
+            return {"ok": True, "resolved": resolved is not False}
 
         if method == "resume_session":
             # For a session already in memory (typically after an agent

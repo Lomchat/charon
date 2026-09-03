@@ -1057,6 +1057,7 @@ export function useClaudeSessionStream(
           setPermQueue((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
             id: ev.id, sessionId, tool: ev.tool, input: ev.input,
             createdAt: Math.floor(Date.now() / 1000),
+            expiresAt: ev.expiresAt,
           }]);
           break;
         case 'user_question':
@@ -1064,6 +1065,7 @@ export function useClaudeSessionStream(
           setQuestionQueue((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
             id: ev.id, sessionId, questions: ev.questions,
             createdAt: Math.floor(Date.now() / 1000),
+            expiresAt: ev.expiresAt,
           }]);
           break;
         case 'exit_plan_request':
@@ -1071,12 +1073,20 @@ export function useClaudeSessionStream(
           setExitPlanQueue((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
             id: ev.id, sessionId, plan: ev.plan ?? '',
             createdAt: Math.floor(Date.now() / 1000),
+            expiresAt: ev.expiresAt,
           }]);
           break;
         case 'interaction_resolved':
           if (ev.kind === 'permission') setPermQueue((q) => q.filter((p) => p.id !== ev.id));
           else if (ev.kind === 'question') setQuestionQueue((q) => q.filter((p) => p.id !== ev.id));
           else if (ev.kind === 'exit_plan') setExitPlanQueue((q) => q.filter((p) => p.id !== ev.id));
+          if (ev.outcome === 'expired') {
+            setError({
+              msg: ev.kind === 'permission'
+                ? 'Approval timed out and was automatically denied.'
+                : 'The pending question timed out without an answer.',
+            });
+          }
           break;
         case 'prefill_input':
           setPrefillInput(ev.content || 'continue');

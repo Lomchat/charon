@@ -1727,23 +1727,29 @@ class CodexSession:
                 )
         return {"ok": True, "terminated": response.terminated}
 
-    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> None:
+    def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> bool:
         fut = self._pending_perms.pop(perm_id, None)
         self._pending_request_meta.pop(perm_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"allow": bool(allow), "always": bool(always)})
+            return True
+        return False
 
-    def respond_question(self, q_id: str, answers: dict | None) -> None:
+    def respond_question(self, q_id: str, answers: dict | None) -> bool:
         fut = self._pending_perms.pop(q_id, None)
         self._pending_request_meta.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result(answers)
+            return True
+        return False
 
-    def respond_exit_plan(self, q_id: str, decision: str, feedback: str = "") -> None:
+    def respond_exit_plan(self, q_id: str, decision: str, feedback: str = "") -> bool:
         fut = self._pending_perms.pop(q_id, None)
         self._pending_request_meta.pop(q_id, None)
         if fut is not None and not fut.done():
             fut.set_result({"decision": decision, "feedback": feedback})
+            return True
+        return False
 
     def _cancel_pending_requests(self) -> None:
         """Unblock the SDK reader before interrupt/close.
@@ -1754,7 +1760,17 @@ class CodexSession:
         card timeout.
         """
         pending = getattr(self, "_pending_perms", {})
-        for fut in list(pending.values()):
+        meta = getattr(self, "_pending_request_meta", {})
+        for request_id, fut in list(pending.items()):
+            method = (meta.get(request_id) or {}).get("method")
+            kind = "question" if method == "item/tool/requestUserInput" or (
+                method == "mcpServer/elicitation/request"
+                and (meta.get(request_id) or {}).get("params", {}).get("mode") in ("form", "openai/form")
+            ) else "permission"
+            self._emit(
+                "interaction_resolved", id=request_id, kind=kind,
+                outcome="cancelled",
+            )
             if not fut.done():
                 fut.set_result(None)
         pending.clear()
@@ -1797,8 +1813,12 @@ class CodexSession:
                         "multiSelect": False,
                         "options": [{"label": "Accept"}, {"label": "Decline"}],
                     }]
-                self._emit("user_question", id=request_id, questions=questions)
-                answers = await asyncio.wait_for(fut, timeout=1800.0)
+                timeout = 1800.0
+                self._emit(
+                    "user_question", id=request_id, questions=questions,
+                    expires_at=int(time.time()) + int(timeout) + 1,
+                )
+                answers = await asyncio.wait_for(fut, timeout=timeout)
                 if not isinstance(answers, dict):
                     return {"action": "decline", "content": None}
                 if key_by_question:
@@ -1833,9 +1853,12 @@ class CodexSession:
                         "multiSelect": bool(q.get("multiSelect")),
                         "options": options,
                     })
-                self._emit("user_question", id=request_id, questions=questions)
                 timeout_ms = params.get("autoResolutionMs")
                 timeout = max(1.0, float(timeout_ms) / 1000.0) if isinstance(timeout_ms, int) else 1800.0
+                self._emit(
+                    "user_question", id=request_id, questions=questions,
+                    expires_at=int(time.time() + timeout) + 1,
+                )
                 answers = await asyncio.wait_for(fut, timeout=timeout)
                 if not isinstance(answers, dict):
                     return {"answers": {}}
@@ -1860,8 +1883,12 @@ class CodexSession:
             # Thread/turn ids are routing metadata, not useful card content.
             preview.pop("threadId", None)
             preview.pop("turnId", None)
-            self._emit("permission_request", id=request_id, tool=tool, input=preview)
-            answer = await asyncio.wait_for(fut, timeout=1800.0)
+            timeout = 1800.0
+            self._emit(
+                "permission_request", id=request_id, tool=tool, input=preview,
+                expires_at=int(time.time()) + int(timeout) + 1,
+            )
+            answer = await asyncio.wait_for(fut, timeout=timeout)
             allow = bool(answer and answer.get("allow")) if isinstance(answer, dict) else False
             always = bool(answer and answer.get("always")) if isinstance(answer, dict) else False
             if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
@@ -1874,7 +1901,31 @@ class CodexSession:
             if method == "mcpServer/elicitation/request":
                 return {"action": "accept" if allow else "decline", "content": {} if allow else None}
             return {}
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
+            kind = "question" if method == "item/tool/requestUserInput" or (
+                method == "mcpServer/elicitation/request"
+                and params.get("mode") in ("form", "openai/form")
+            ) else "permission"
+            self._emit(
+                "interaction_resolved", id=request_id, kind=kind,
+                outcome="expired",
+            )
+            if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+                return {"decision": "cancel"}
+            if method == "item/permissions/requestApproval":
+                return {"permissions": {}, "scope": "turn"}
+            if method == "mcpServer/elicitation/request":
+                return {"action": "cancel", "content": None}
+            return {"answers": {}} if method == "item/tool/requestUserInput" else {}
+        except asyncio.CancelledError:
+            self._emit(
+                "interaction_resolved", id=request_id,
+                kind="question" if method == "item/tool/requestUserInput" or (
+                    method == "mcpServer/elicitation/request"
+                    and params.get("mode") in ("form", "openai/form")
+                ) else "permission",
+                outcome="cancelled",
+            )
             if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
                 return {"decision": "cancel"}
             if method == "item/permissions/requestApproval":

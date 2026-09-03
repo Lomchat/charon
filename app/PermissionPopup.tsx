@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 // to preserve historical imports.
 export type { PermissionRequest } from './sessionTypes';
 import type { PermissionRequest } from './sessionTypes';
+import ApprovalDeadline from './ApprovalDeadline';
 
 type Props = {
   queue: PermissionRequest[];
@@ -31,6 +32,7 @@ export default function PermissionPopup({ queue, currentSessionId, onRespond, on
           )}
         </header>
         <div className="tool-name">{top.tool}</div>
+        <ApprovalDeadline expiresAt={top.expiresAt} />
         <pre className="input-preview">{JSON.stringify(top.input, null, 2).slice(0, 600)}</pre>
         <div className="actions">
           <button className="allow" onClick={() => onRespond(top.sessionId, top.id, true, false)}>allow once</button>

@@ -357,6 +357,9 @@ export const claudePendingPermissions = sqliteTable('claude_pending_permissions'
   toolInput: text('tool_input').notNull(),
   status: text('status').notNull().default('pending'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  // Provider-side deadline for this gate. Nullable for requests created by
+  // agents predating explicit approval expiry reporting.
+  expiresAt: integer('expires_at'),
   respondedAt: integer('responded_at')
 }, (t) => [
   // GET session detail + SSE init snapshot filter by (session_id, status='pending').
@@ -374,6 +377,7 @@ export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
   status: text('status').notNull().default('pending'),
   answers: text('answers'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  expiresAt: integer('expires_at'),
   respondedAt: integer('responded_at'),
 }, (t) => [
   // GET session detail + SSE init snapshot filter by (session_id, status='pending').

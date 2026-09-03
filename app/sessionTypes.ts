@@ -65,6 +65,9 @@ export type PermissionRequest = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   input: any;
   createdAt: number;
+  // Unix seconds. The provider keeps running without a browser, but closes
+  // the gate at this deadline if nobody answers.
+  expiresAt?: number;
 };
 
 export type QuestionOption = { label: string; description?: string };
@@ -79,6 +82,7 @@ export type PendingQuestion = {
   id: string;
   sessionId: string;
   createdAt: number;
+  expiresAt?: number;
   questions: QuestionItem[];
 };
 
@@ -86,5 +90,6 @@ export type PendingExitPlan = {
   id: string;
   sessionId: string;
   createdAt: number;
+  expiresAt?: number;
   plan: string;
 };

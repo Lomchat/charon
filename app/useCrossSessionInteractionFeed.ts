@@ -43,16 +43,19 @@ export function useCrossSessionInteractionFeed(): CrossSessionInteractions {
         setPerms((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
           id: ev.id, sessionId: sid, tool: ev.tool, input: ev.input,
           createdAt: now(),
+          expiresAt: ev.expiresAt,
         }]);
       } else if (ev.type === 'user_question') {
         setQuestions((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
           id: ev.id, sessionId: sid, questions: ev.questions,
           createdAt: now(),
+          expiresAt: ev.expiresAt,
         }]);
       } else if (ev.type === 'exit_plan_request') {
         setExitPlans((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
           id: ev.id, sessionId: sid, plan: ev.plan ?? '',
           createdAt: now(),
+          expiresAt: ev.expiresAt,
         }]);
       } else if (ev.type === 'interaction_resolved') {
         if (ev.kind === 'permission') setPerms((q) => q.filter((p) => p.id !== ev.id));

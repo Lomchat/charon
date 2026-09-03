@@ -1,9 +1,12 @@
 """Provider-neutral advanced config maps to native Claude SDK options."""
+import asyncio
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -40,6 +43,34 @@ class ClaudeAdvancedConfigTest(unittest.TestCase):
         saved = session.to_persist()["provider_config"]
         self.assertEqual(saved["skills"], "all")
         self.assertEqual(saved["baseInstructions"], "Keep this")
+
+
+class ClaudePermissionExpiryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_emits_expiry_after_deadlined_request(self):
+        emitted = []
+        session = AgentSession(
+            "s1", cwd="/tmp", name="demo", permission_mode="normal",
+            claude_session_id=None, emit=emitted.append,
+            on_state_change=lambda: None,
+        )
+        with mock.patch(
+            "charon_agent.session.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        ):
+            result = await session._ask_dashboard_permission(
+                tool_name="Bash", tool_input={"command": "npm test"},
+                perm_id="perm-timeout",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(emitted[0]["event"], "permission_request")
+        self.assertGreater(emitted[0]["expires_at"], int(time.time()))
+        self.assertEqual(emitted[1], {
+            "event": "interaction_resolved", "session_id": "s1",
+            "id": "perm-timeout",
+            "kind": "permission", "outcome": "expired",
+        })
+        self.assertFalse(session.respond_permission("perm-timeout", True))
 
 
 class ClaudeResourcesTest(unittest.IsolatedAsyncioTestCase):
