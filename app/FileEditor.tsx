@@ -6,7 +6,7 @@ import type { FsReadResponse } from '@/lib/types/api';
 import { fileKind, isMediaName } from './fileIcons';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
-import { refreshGit, repoForPath, useGitStatus } from './gitStore';
+import { gitDiffTargetForPath, refreshGit, repoForPath, useGitStatus } from './gitStore';
 import { subscribeReveal } from './revealLine';
 import { lspLabel, useLsp } from './useLsp';
 import {
@@ -14,7 +14,8 @@ import {
 } from './lspClient';
 import LspPicker from './LspPicker';
 import HistoryModal from './HistoryModal';
-import { IconClockHistory, IconDownload } from './icons';
+import DiffViewerModal from './DiffViewerModal';
+import { IconClockHistory, IconDiff, IconDownload } from './icons';
 import PromptModal from './PromptModal';
 import { subscribeFsChanged } from './fsChangeBus';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
@@ -281,10 +282,16 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   // `git log` has to run there.
   const { workspace } = useGitStatus(vpsId, root);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
   const history = useMemo(
     () => repoForPath(workspace, `${root.replace(/\/+$/, '')}/${path}`),
     [workspace, root, path],
   );
+  const diffTarget = useMemo(
+    () => gitDiffTargetForPath(workspace, `${root.replace(/\/+$/, '')}/${path}`),
+    [workspace, root, path],
+  );
+  useEffect(() => { if (!diffTarget) setDiffOpen(false); }, [diffTarget]);
 
   const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null && !media;
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;
@@ -388,6 +395,12 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         <span className="fe-path" title={`${root}/${path}`}>{path}</span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
+        {diffTarget && (
+          <button className="fe-diff" onClick={() => setDiffOpen(true)}
+                  title={`Open Git diff for ${diffTarget.file.path}`}>
+            <IconDiff /> Diff
+          </button>
+        )}
         {/* Only when a checkout actually owns this file — a button that can
             only answer "not tracked" is worse than no button. */}
         {history && (
@@ -507,6 +520,18 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
           path={history.rel}
           label={history.rel}
           onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
+      {diffOpen && diffTarget && (
+        <DiffViewerModal
+          vpsId={vpsId}
+          cwd={root}
+          repo={diffTarget.repo.root}
+          root={diffTarget.repo.root}
+          files={diffTarget.repo.files}
+          initialPath={diffTarget.file.path}
+          onClose={() => setDiffOpen(false)}
         />
       )}
 

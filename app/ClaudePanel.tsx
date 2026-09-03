@@ -29,7 +29,6 @@ import UsageMeter from './UsageMeter';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
-import { requestChatFocus } from './focusChat';
 import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
@@ -555,10 +554,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   function applyCreatedSession(c: { id: string; vpsId: string; cwd: string }) {
     setSidebarSelectionTarget(c.id);
     openEntityTab('session', c.id, c.vpsId, c.cwd, true);
-    // …and put the caret in its message box: creating a session is an intent to
-    // talk, and the wizard already had the keyboard. Parked, because the input
-    // bar mounts a beat later with the pane (app/focusChat.ts).
-    requestChatFocus(c.id);
     refreshSessions();
     closeDrawers();
   }

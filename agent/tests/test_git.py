@@ -438,9 +438,9 @@ class GitWorkspaceTest(unittest.TestCase):
         self.assertEqual(by_name["alpha"]["rel"], "alpha")
         self.assertEqual(by_name["beta"]["rel"], os.path.join("nest", "beta"))
 
-    def test_a_cwd_inside_a_repo_is_still_single_and_scoped_to_the_toplevel(self):
+    def test_a_cwd_inside_a_repo_without_child_repos_is_still_single(self):
         # The pre-existing contract: a session started in a subdirectory sees
-        # the whole changeset, and no scan happens at all.
+        # the whole changeset when that folder has no project roots of its own.
         sub = os.path.join(self.roots[0], "deeper")
         os.makedirs(sub, exist_ok=True)
         w = G.git_workspace(sub)
@@ -448,6 +448,26 @@ class GitWorkspaceTest(unittest.TestCase):
         self.assertEqual(len(w["repos"]), 1)
         self.assertEqual(w["repos"][0]["root"], self.roots[0])
         self.assertEqual(w["repos"][0]["rel"], os.path.relpath(self.roots[0], sub))
+
+    def test_child_repos_win_over_an_enclosing_parent_repo(self):
+        # Real fleet shape: /var/www/html is a checkout, while a deeper
+        # `sources/` folder is itself a workspace containing independent
+        # checkouts. Walking UP first must not hide everything below sources.
+        workspace = os.path.join(self.roots[0], "sources")
+        children = []
+        for rel in ("project-one", "nested/project-two"):
+            child = os.path.join(workspace, rel)
+            os.makedirs(child, exist_ok=True)
+            sh(child, "init", "-q", "-b", "main")
+            children.append(child)
+
+        G._scan_cache.clear()
+        w = G.git_workspace(workspace)
+
+        self.assertTrue(w["ok"])
+        self.assertEqual(w["mode"], "multi")
+        self.assertEqual(sorted(r["root"] for r in w["repos"]), sorted(children))
+        self.assertNotIn(self.roots[0], [r["root"] for r in w["repos"]])
 
     def test_a_plain_folder_with_nothing_in_it_is_none_not_an_error(self):
         empty = tempfile.mkdtemp(prefix="charon-ws-empty-")

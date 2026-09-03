@@ -326,6 +326,18 @@ export function repoForPath(
   return { repo: owner.root, rel: abs === owner.root ? '' : abs.slice(owner.root.length + 1) };
 }
 
+/** A changed file's owning repo + status row, for entry points outside GitTab. */
+export function gitDiffTargetForPath(
+  w: GitWorkspaceResponse | null | undefined,
+  abs: string,
+): { repo: GitStatusResponse; file: GitStatusResponse['files'][number] } | null {
+  const owner = repoForPath(w, abs);
+  if (!owner) return null;
+  const repo = workspaceRepos(w).find((candidate) => candidate.ok && candidate.root === owner.repo);
+  const file = repo?.files.find((candidate) => candidate.path === owner.rel);
+  return repo && file ? { repo, file } : null;
+}
+
 /** Commits waiting to be pushed / pulled, summed across the workspace. */
 export function workspaceAheadBehind(w: GitWorkspaceResponse | null | undefined): { ahead: number; behind: number } {
   let ahead = 0;

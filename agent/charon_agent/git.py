@@ -525,12 +525,15 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
     """Every repo this session can see, as ONE answer.
 
     `mode`:
-      * `single` — `cwd` is inside a checkout. Exactly today's behaviour, one
-        entry, scoped to the toplevel (a session started in `src/` still sees
-        the whole changeset).
+      * `single` — `cwd` is a checkout root, or is inside one and contains no
+        nested checkouts. One entry, scoped to the enclosing toplevel (a
+        session started in `src/` still sees the whole changeset).
       * `multi`  — `cwd` is NOT a checkout but contains some. One entry per
-        discovered repo. Reported even when there is exactly one, because the
-        panel then has to say WHICH folder it is talking about.
+        discovered repo. This also wins when `cwd` sits inside an enclosing
+        checkout: a folder of standalone projects must not disappear merely
+        because one of its ancestors has a `.git`. Reported even when there is
+        exactly one, because the panel then has to say WHICH folder it is
+        talking about.
       * `none`   — a plain folder with nothing underneath it.
 
     One RPC rather than "discover, then N status calls": the hub polls this
@@ -544,7 +547,9 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
                 "reason": "no_cwd", "error": "directory not found"}
 
     root, bail = _root(path)
-    if root:
+    # The checkout root itself owns everything below it, including submodules;
+    # keep the ordinary single-repo contract and avoid a pointless scan.
+    if root and os.path.normpath(root) == os.path.normpath(path):
         st = git_status(root, include_recent=include_recent)
         st["root"] = st.get("root") or root
         return {"ok": True, "mode": "single", "repos": [_tag(st, path)]}
@@ -565,6 +570,14 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
                 _scan_cache.pop(k, None)
     else:
         roots, truncated = hit[1], hit[2]
+
+    if not roots and root:
+        # `path` is merely a subdirectory of the enclosing checkout and has no
+        # project roots of its own. Preserve the established behaviour: show
+        # the complete enclosing changeset rather than an empty workspace.
+        st = git_status(root, include_recent=include_recent)
+        st["root"] = st.get("root") or root
+        return {"ok": True, "mode": "single", "repos": [_tag(st, path)]}
 
     if not roots:
         return {"ok": True, "mode": "none", "repos": []}

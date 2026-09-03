@@ -34,7 +34,6 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
-import { consumeChatFocus } from './focusChat';
 import { isPathDrag, readPathDrag } from './pathDrag';
 import { IconInsert } from './fileIcons';
 import {
@@ -1159,14 +1158,12 @@ const ChatInputBar = memo(function ChatInputBar({
     }
   }, [prefillInput, clearPrefillInput, setInput]);
 
-  // A session the user just created opens ready to type into — starting one is
-  // an intent to talk, and the wizard already took the keyboard. The request is
-  // parked by ClaudePanel (app/focusChat.ts) because this bar does not exist
-  // yet at creation time. Consume it FIRST, then decide: on a coarse pointer we
-  // decline, since a soft keyboard would cover the transcript before there is
-  // anything in it (same rule as the wizard's path box and the search tab).
+  // Entering any Claude or Codex session puts the desktop caret straight in
+  // the composer. ClaudeSessionView is keyed by sessionId in ClaudePanel, so a
+  // session switch remounts this bar; if a pending gate or sleeping state hid
+  // it, its later mount focuses it then. Keep coarse pointers exempt: forcing
+  // open a phone keyboard would cover the transcript and sidebar transition.
   useEffect(() => {
-    if (!consumeChatFocus(sessionId)) return;
     if (typeof window === 'undefined') return;
     if (window.matchMedia?.('(pointer: coarse)').matches) return;
     const id = requestAnimationFrame(() => taRef.current?.focus());

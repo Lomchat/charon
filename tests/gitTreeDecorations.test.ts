@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildGitDecorations, repoForPath } from '../app/gitStore';
+import { buildGitDecorations, gitDiffTargetForPath, repoForPath } from '../app/gitStore';
 import type { GitFileEntry, GitStatusResponse, GitWorkspaceResponse } from '../lib/types/api';
 
 // Git speaks in paths relative to the REPO ROOT; the explorer tree is rooted at
@@ -152,5 +152,21 @@ describe('repoForPath', () => {
     expect(repoForPath(null, '/srv/x.ts')).toBeNull();
     expect(repoForPath({ ok: false, mode: 'none', repos: [] }, '/srv/x.ts')).toBeNull();
     expect(repoForPath(st('/srv/app', []), '/srv/app')).toEqual({ repo: '/srv/app', rel: '' });
+  });
+});
+
+describe('gitDiffTargetForPath', () => {
+  it('returns the exact changed row and its owning checkout', () => {
+    const workspace = ws(
+      repo('/srv/a', [f('src/a.ts', 'M')]),
+      repo('/srv/b', [f('src/b.ts', '?')]),
+    );
+    const target = gitDiffTargetForPath(workspace, '/srv/b/src/b.ts');
+    expect(target?.repo.root).toBe('/srv/b');
+    expect(target?.file.path).toBe('src/b.ts');
+  });
+
+  it('returns nothing for a clean file in a valid repository', () => {
+    expect(gitDiffTargetForPath(st('/srv/app', [f('dirty.ts', 'M')]), '/srv/app/clean.ts')).toBeNull();
   });
 });
