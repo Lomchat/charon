@@ -263,11 +263,12 @@ export default function Sidebar({
     const aside = asideRef.current;
     if (!aside) return;
     const raf = requestAnimationFrame(() => {
+      const viewport = aside.querySelector<HTMLElement>('.cs-scroll');
       const row = aside.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeTabId)}"]`);
-      if (!row) return;
-      const aRect = aside.getBoundingClientRect();
+      if (!viewport || !row) return;
+      const vRect = viewport.getBoundingClientRect();
       const rRect = row.getBoundingClientRect();
-      const isFullyVisible = rRect.top >= aRect.top && rRect.bottom <= aRect.bottom;
+      const isFullyVisible = rRect.top >= vRect.top && rRect.bottom <= vRect.bottom;
       if (isFullyVisible) return;
       row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
@@ -436,87 +437,89 @@ export default function Sidebar({
         </div>
       </div>
 
-      {sortedFolders.map((folder) => {
-        let folderVps: Vps[];
-        if (folder.id === '__orphans__') {
-          const known = new Set(vpsFolders.map((f) => f.id));
-          folderVps = vpsList.filter((v) => !known.has(v.folderId));
-        } else {
-          folderVps = vpsByFolder.get(folder.id) ?? [];
-        }
+      <div className="cs-scroll">
+        {sortedFolders.map((folder) => {
+          let folderVps: Vps[];
+          if (folder.id === '__orphans__') {
+            const known = new Set(vpsFolders.map((f) => f.id));
+            folderVps = vpsList.filter((v) => !known.has(v.folderId));
+          } else {
+            folderVps = vpsByFolder.get(folder.id) ?? [];
+          }
 
-        // Resolve, per VPS, its visible content + whether to show it at all.
-        const visibleVps = folderVps
-          .map((v) => {
-            const install = installs.find((i) => i.vpsId === v.id) ?? null;
-            return {
-              vps: v,
-              vpsSessions: sessionsFor(v.id),
-              vpsShells: shellsFor(v.id),
-              install,
-            };
-          })
-          // A VPS shows ONLY when it has a visible session/shell (the paused
-          // switch decides via sessionsFor/shellsFor), with one exception: a
-          // running install — otherwise a just-launched install would vanish
-          // from the sidebar. Folders with no visible VPS are hidden below.
-          .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0 || x.install?.status === 'running');
+          // Resolve, per VPS, its visible content + whether to show it at all.
+          const visibleVps = folderVps
+            .map((v) => {
+              const install = installs.find((i) => i.vpsId === v.id) ?? null;
+              return {
+                vps: v,
+                vpsSessions: sessionsFor(v.id),
+                vpsShells: shellsFor(v.id),
+                install,
+              };
+            })
+            // A VPS shows ONLY when it has a visible session/shell (the paused
+            // switch decides via sessionsFor/shellsFor), with one exception: a
+            // running install — otherwise a just-launched install would vanish
+            // from the sidebar. Folders with no visible VPS are hidden below.
+            .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0 || x.install?.status === 'running');
 
-        if (visibleVps.length === 0) return null;
+          if (visibleVps.length === 0) return null;
 
-        const folderActiveCount = visibleVps.reduce(
-          (acc, x) => acc + x.vpsSessions.filter((s) => ACTIVE_STATUSES.has(s.liveStatus ?? s.status)).length,
-          0,
-        );
-        const folderCollapsed = folder.collapsed === 1;
+          const folderActiveCount = visibleVps.reduce(
+            (acc, x) => acc + x.vpsSessions.filter((s) => ACTIVE_STATUSES.has(s.liveStatus ?? s.status)).length,
+            0,
+          );
+          const folderCollapsed = folder.collapsed === 1;
 
-        return (
-          <section key={folder.id} className={`cs-folder${folderCollapsed ? ' collapsed' : ''}`}>
-            <div
-              className="cs-folder-head"
-              onClick={() => { if (folder.id !== '__orphans__') onToggleFolderCollapsed?.(folder.id, !folderCollapsed); }}
-              role="button"
-              title={folderCollapsed ? 'click to expand the folder' : 'click to collapse the folder'}
-            >
-              <span className="cs-caret">{folderCollapsed ? '▸' : '▾'}</span>
-              <span className="cs-folder-glyph">▤</span>
-              <span className="cs-folder-name">{folder.name}</span>
-              <span className="cs-count" title={`${visibleVps.length} VPS shown`}>{visibleVps.length}</span>
-              {folderActiveCount > 0 && (
-                <span className="cs-folder-active" title={`${folderActiveCount} active session(s)`}>{folderActiveCount}</span>
-              )}
-            </div>
-            {!folderCollapsed && (
-              <div className="cs-folder-body">
-                {visibleVps.map((x) => renderVpsBox(x.vps, {
-                  sessionHandles,
-                  vpsSessions: x.vpsSessions,
-                  vpsShells: x.vpsShells,
-                  vpsInstall: x.install,
-                  showDetails,
-                  agentOutOfDate: agentOutOfDateOf(x.vps),
-                  builtAgentVersion,
-                  sdkOutdated: sdkOutdatedOf(x.vps),
-                  sdkLatestVersion,
-                  codexOutdated: codexOutdatedOf(x.vps),
-                  codexLatestVersion,
-                  codexCliLatestVersion,
-                  selectedId, selectedShellId, selectedInstallId,
-                  activeWorkspace,
-                  deletingSessionIds,
-                  onSelect, onSelectShell, onSelectInstall, onReorderSessions,
-                  selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
-                  onNew, onNewShell, onScan,
-                  onContext: openSessionContext, onContextShell, onContextInstall,
-                  editingId, onRenameSubmit, onRenameCancel,
-                  onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
-                  updatingAgentVpsIds, refreshingAgentVpsIds,
-                }))}
+          return (
+            <section key={folder.id} className={`cs-folder${folderCollapsed ? ' collapsed' : ''}`}>
+              <div
+                className="cs-folder-head"
+                onClick={() => { if (folder.id !== '__orphans__') onToggleFolderCollapsed?.(folder.id, !folderCollapsed); }}
+                role="button"
+                title={folderCollapsed ? 'click to expand the folder' : 'click to collapse the folder'}
+              >
+                <span className="cs-caret">{folderCollapsed ? '▸' : '▾'}</span>
+                <span className="cs-folder-glyph">▤</span>
+                <span className="cs-folder-name">{folder.name}</span>
+                <span className="cs-count" title={`${visibleVps.length} VPS shown`}>{visibleVps.length}</span>
+                {folderActiveCount > 0 && (
+                  <span className="cs-folder-active" title={`${folderActiveCount} active session(s)`}>{folderActiveCount}</span>
+                )}
               </div>
-            )}
-          </section>
-        );
-      })}
+              {!folderCollapsed && (
+                <div className="cs-folder-body">
+                  {visibleVps.map((x) => renderVpsBox(x.vps, {
+                    sessionHandles,
+                    vpsSessions: x.vpsSessions,
+                    vpsShells: x.vpsShells,
+                    vpsInstall: x.install,
+                    showDetails,
+                    agentOutOfDate: agentOutOfDateOf(x.vps),
+                    builtAgentVersion,
+                    sdkOutdated: sdkOutdatedOf(x.vps),
+                    sdkLatestVersion,
+                    codexOutdated: codexOutdatedOf(x.vps),
+                    codexLatestVersion,
+                    codexCliLatestVersion,
+                    selectedId, selectedShellId, selectedInstallId,
+                    activeWorkspace,
+                    deletingSessionIds,
+                    onSelect, onSelectShell, onSelectInstall, onReorderSessions,
+                    selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
+                    onNew, onNewShell, onScan,
+                    onContext: openSessionContext, onContextShell, onContextInstall,
+                    editingId, onRenameSubmit, onRenameCancel,
+                    onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
+                    updatingAgentVpsIds, refreshingAgentVpsIds,
+                  }))}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
     </aside>
   );
 }

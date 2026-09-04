@@ -51,7 +51,10 @@
     "side main";
 }
 .claude-head    { grid-area: head; }
-.claude-sidebar { grid-area: side; overflow-y: auto; min-height: 0; }
+.claude-sidebar {
+  grid-area: side; display: flex; flex-direction: column;
+  overflow: hidden; min-height: 0;
+}
 .claude-tabbar  { grid-area: tabs; min-width: 0; }
 /* min-height: 0 on the flex parent: without it, children with flex: 1 + overflow: auto
    refuse to shrink below their content and the scroll doesn't work. */
@@ -176,19 +179,14 @@
 .claude-sidebar {
   border-right: 1px solid var(--gold-deep);
   background: rgba(28,31,41,0.5);
-  padding: 8px 0 30px;
+  padding: 0;
 }
 .sidebar-toolbar {
   display: flex; align-items: center;
   padding: 8px 14px 12px;
   border-bottom: 1px solid var(--gold-deep);
   margin-bottom: 10px;
-  /* Sticky: stays visible while scrolling the VPS list. The parent
-     `.claude-sidebar` is the scrollable container (overflow-y: auto), so
-     `top: 0` glues the toolbar to the top of the sidebar viewport. The
-     background is opacified so the rows don't show through on scroll;
-     the color composes the sidebar tint (rgba(28,31,41,.5)) over the
-     `--stone` background to stay visually consistent. */
+  /* Legacy toolbar; the current sidebar uses `.cs-top` + `.cs-scroll`. */
   position: sticky;
   top: 0;
   z-index: 5;
@@ -430,15 +428,20 @@
    session/shell OR need attention, grouped by folder, each VPS in its own
    bordered panel. */
 
-/* sticky toolbar: title + global add buttons + "show paused" switch */
+/* Fixed toolbar: only the sibling list below it scrolls. */
 .cs-top {
-  position: sticky; top: 0; z-index: 5;
+  position: relative; z-index: 5; flex: 0 0 auto;
   display: flex; flex-direction: column; gap: 10px;
   padding: 12px 12px 12px;
   border-bottom: 1px solid var(--gold-deep);
   background:
     linear-gradient(rgba(28,31,41,0.6), rgba(28,31,41,0.6)), var(--stone);
   backdrop-filter: blur(6px);
+}
+.cs-scroll {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding-bottom: 30px;
 }
 .cs-top-row { display: flex; align-items: center; gap: 7px; }
 .cs-title { font-family: var(--display); font-size: 10px; letter-spacing: 0.3em; color: var(--gold-bright); }
