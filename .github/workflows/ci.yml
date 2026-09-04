@@ -219,9 +219,10 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     # BLOCKING (P2.16): a high/critical advisory on a production dependency
-    # fails the run. For a genuinely unfixable transient advisory, add a
-    # documented temporary allowlist via `npm audit --omit=dev --json` review
-    # — don't flip this back to continue-on-error silently.
+    # fails the run. Registry/network failures get bounded retries, but still
+    # fail after the third attempt. For a genuinely unfixable advisory, add a
+    # documented temporary allowlist after reviewing the JSON — don't flip
+    # this back to continue-on-error silently.
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -231,4 +232,52 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: npm audit (production)
-        run: npm audit --omit=dev --audit-level=high
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/npm-audit.json"
+          errors="$RUNNER_TEMP/npm-audit.stderr"
+
+          for attempt in 1 2 3; do
+            : > "$report"
+            : > "$errors"
+
+            set +e
+            npm_config_fetch_retries=1 \
+              npm_config_fetch_timeout=60000 \
+              npm_config_fetch_retry_maxtimeout=15000 \
+              timeout 120s npm audit --omit=dev --audit-level=high --json \
+              > "$report" 2> "$errors"
+            status=$?
+            set -e
+
+            cat "$errors"
+            cat "$report"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+
+            # npm uses exit 1 both for real advisories and for registry errors.
+            # A populated high/critical count is authoritative and must never
+            # be hidden by the transient-failure retry path.
+            if node -e '
+              const fs = require("node:fs");
+              try {
+                const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+                const counts = report.metadata?.vulnerabilities;
+                process.exit(counts && (counts.high > 0 || counts.critical > 0) ? 0 : 1);
+              } catch {
+                process.exit(1);
+              }
+            ' "$report"; then
+              echo "::error::npm audit found a high or critical production vulnerability"
+              exit "$status"
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::npm audit infrastructure failure (status $status), retrying ($attempt/3)"
+              sleep $((attempt * 15))
+            fi
+          done
+
+          echo "::error::npm audit could not obtain a valid report after 3 attempts"
+          exit 1
