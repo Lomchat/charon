@@ -105,6 +105,8 @@ export type TestVpsResponse = { ok: boolean; error?: string };
 // (NewSessionWizard path autocomplete + existence check on submit).
 // ok:false = ssh-level failure, SOFT (the client just hides suggestions);
 // exists:false = the dir isn't there (cd failed).
+export type SessionPathResponse = { ok: true; exists: boolean; resolved?: string } | { ok: false; error: string };
+
 export type VpsFsListResponse = {
   ok: boolean;
   error?: string;
@@ -134,6 +136,8 @@ export type TabDTO = {
    *  row of a VPS shares `vpsPos`, every row of a group shares `groupPos`. */
   vpsPos: number;
   groupPos: number;
+  /** Browser-local render projection. Server responses may carry the legacy
+   *  shared bit, which tabStore deliberately ignores. */
   active: boolean;
 };
 

@@ -85,6 +85,15 @@ describe('client close focus', () => {
     const other = tab('other', OTHER, Q, 0);
     expect(TabStore.chooseNextFocusAfterClosing([c, other], ['c', 'other'], c)).toBeNull();
   });
+
+  it('keeps local focus when a shared snapshot names another active tab', () => {
+    const a = tab('a', VPS, P, 0);
+    const b = { ...tab('b', VPS, P, 1), active: true };
+    const incoming = [{ ...a, active: false }, b];
+    const projected = TabStore.projectLocalTabFocus(incoming, a.id);
+    expect(projected.find((t) => t.active)?.id).toBe(a.id);
+    expect(projected.find((t) => t.id === b.id)?.active).toBe(false);
+  });
 });
 
 describe('opening', () => {

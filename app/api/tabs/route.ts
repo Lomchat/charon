@@ -8,9 +8,10 @@ import type { OpenTabBody, TabsResponse } from '@/lib/types/api';
 // POST /api/tabs            → open (or promote) a tab, and focus it
 // DELETE /api/tabs?vpsId=&path=&exceptId=  → bulk close (group / VPS / others)
 //
-// The layout is one shared object, not per-browser: the same tabs, in the same
-// order, with the same one active, on every device. Every mutation broadcasts
-// `tabs_changed` so the other connections refetch instead of drifting. §14.78.
+// The layout is shared, but current clients project their own browser-local
+// focus and ignore the legacy server `active` bit. Layout mutations broadcast
+// `tabs_changed`; a mere client-side focus change never reaches this route.
+// §14.78.
 
 export async function GET() {
   const s = await requireApiSession();

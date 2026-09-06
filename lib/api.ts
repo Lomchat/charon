@@ -6,7 +6,7 @@
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
-  RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse,
+  RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse, SessionPathResponse,
   GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
   GitBranchesResponse, GitCheckoutBody, GitCheckoutResponse,
   GitLogResponse, GitShowResponse, FileActivityResponse,
@@ -140,6 +140,8 @@ export const api = {
     send<VpsUsageResponse>('GET', `/api/vps/${id}/usage`),
   // Subdirectories of `path` on the VPS — wizard path autocomplete (debounced
   // + cached client-side) and existence check on submit.
+  checkSessionPath: (id: string, path: string) =>
+    send<SessionPathResponse>('GET', `/api/vps/${id}/fs?check=1&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 15_000 }),
   listVpsDirs: (id: string, path: string) =>
     send<VpsFsListResponse>('GET', `/api/vps/${id}/fs?path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 15_000 }),
   // ── Source control (agent >= 0.24.0, §14.76) ──────────────────────────────

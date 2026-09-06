@@ -2,15 +2,14 @@
 /**
  * Client mirror of the workspace layout (§14.78).
  *
- * The tab set lives in the DB and is SHARED — the same tabs, order and focus on
- * every device. So this store is not the source of truth, it is a cache with
- * two jobs: apply a mutation optimistically so clicking a tab feels instant,
- * and re-sync from `tabs_changed` so another device (or another browser tab)
- * never drifts.
+ * The tab set and order live in the DB and are SHARED. Focus is deliberately
+ * LOCAL: each browser keeps its own active tab, so a phone can watch one
+ * session while a desktop works in another. Incoming `tabs_changed` snapshots
+ * therefore update the layout without ever adopting their `active` flag.
  *
- * Every mutation returns the server's list and overwrites the local one. The
- * server validates the eviction/focus rules; the client mirrors the close
- * choice only for the optimistic frame so a neighbour opens immediately.
+ * Every mutation returns the server's list and overwrites the shared fields.
+ * The server validates eviction/order; the client preserves its local focus
+ * and mirrors the close choice so a neighbour opens immediately.
  *
  * Dirty state is the exception: it is deliberately LOCAL. An unsaved buffer
  * lives in one browser and cannot be handed to another, so publishing it would
@@ -23,6 +22,9 @@ import type { ReorderTabsBody, TabDTO, TabKind } from '@/lib/types/api';
 type State = {
   tabs: TabDTO[];
   loaded: boolean;
+  /** Browser-local source of truth. `TabDTO.active` is only its render-time
+   *  projection; the server's legacy active bit is never adopted after seed. */
+  activeId: string | null;
   /** Tab ids with unsaved edits. Part of the snapshot ON PURPOSE: it is not
    *  in `tabs`, so if it lived outside, marking a buffer dirty would mutate a
    *  Set nobody re-reads and the badge would never appear. */
@@ -36,8 +38,20 @@ const g = globalThis as unknown as {
 };
 // The snapshot is REPLACED, never mutated: useSyncExternalStore compares by
 // identity, so an in-place edit is a change nothing re-renders for.
-let state: State = (g.__charonTabState ??= { tabs: [], loaded: false, dirty: new Set() });
+let state: State = (g.__charonTabState ??= {
+  tabs: [], loaded: false, activeId: null, dirty: new Set(),
+});
+// A live tab can cross a deployment/HMR boundary with the previous snapshot
+// shape still on globalThis. Derive its focus once instead of blanking the pane.
+if (!(Object.prototype.hasOwnProperty.call(state, 'activeId'))) {
+  state = {
+    ...state,
+    activeId: state.tabs.find((t) => t.active)?.id ?? null,
+  };
+  g.__charonTabState = state;
+}
 const subs = (g.__charonTabSubs ??= new Set<() => void>());
+export const ACTIVE_TAB_STORAGE_KEY = 'hub.tabs.active.v1';
 /**
  * Focus history, most-recent-first. NOT in the snapshot — nothing renders it.
  *
@@ -89,14 +103,41 @@ function commit(next: State) {
   for (const cb of subs) cb();
 }
 
-function setTabs(tabs: TabDTO[]) {
+/** Apply this browser's focus to a shared tab snapshot. Exported to pin the
+ *  no-cross-device-focus invariant without reaching into the singleton. */
+export function projectLocalTabFocus(tabs: TabDTO[], activeId: string | null): TabDTO[] {
+  return tabs.map((t) => ({ ...t, active: t.id === activeId }));
+}
+
+function persistActiveId(activeId: string | null) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, JSON.stringify(activeId)); } catch {}
+}
+
+function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
+  const ids = new Set(tabs.map((t) => t.id));
+  let activeId = requestedActiveId === undefined ? state.activeId : requestedActiveId;
+  // A shared layout change may close/evict the tab this browser was viewing.
+  // Fall back locally within the old group; never adopt the sender's active.
+  if (activeId && !ids.has(activeId)) {
+    const closing = state.tabs.find((t) => t.id === activeId);
+    const context = closing
+      ? [closing, ...tabs.filter((t) => t.id !== closing.id)]
+      : tabs;
+    activeId = closing ? chooseNextFocusAfterClosing(context, mru, closing) : null;
+    if (activeId && !ids.has(activeId)) activeId = null;
+  }
+  const focusedTabs = projectLocalTabFocus(tabs, activeId);
   // Drop dirty marks for tabs that no longer exist, or the badge outlives its
   // editor and the close guard fires on a tab that is already gone.
-  const live = new Set(tabs.map((t) => t.id));
+  const live = ids;
   const dirty = new Set([...state.dirty].filter((id) => live.has(id)));
   for (let i = mru.length - 1; i >= 0; i--) if (!live.has(mru[i])) mru.splice(i, 1);
-  touchMru(tabs.find((t) => t.active)?.id);
-  const sameTabs = state.loaded && tabs.length === state.tabs.length && tabs.every((tab, i) => {
+  if (activeId !== state.activeId) {
+    touchMru(activeId);
+    persistActiveId(activeId);
+  }
+  const sameTabs = state.loaded && focusedTabs.length === state.tabs.length && focusedTabs.every((tab, i) => {
     const prev = state.tabs[i];
     return prev != null
       && tab.id === prev.id && tab.vpsId === prev.vpsId && tab.path === prev.path
@@ -105,17 +146,46 @@ function setTabs(tabs: TabDTO[]) {
       && tab.vpsPos === prev.vpsPos && tab.groupPos === prev.groupPos;
   });
   const sameDirty = dirty.size === state.dirty.size && [...dirty].every((id) => state.dirty.has(id));
-  if (sameTabs && sameDirty) return;
-  commit({ tabs, loaded: true, dirty });
+  if (sameTabs && sameDirty && activeId === state.activeId) return;
+  commit({ tabs: focusedTabs, loaded: true, activeId, dirty });
 }
 
 /** Seed the client store from the SSR payload before the first subscription.
  * A remounted/HMR store that is already live wins over the older SSR snapshot. */
 export function hydrateTabs(tabs: TabDTO[]): void {
   if (state.loaded) return;
-  state = { tabs, loaded: true, dirty: state.dirty };
+  // Use the SSR choice for the hydration frame only. Browser-local persisted
+  // focus is restored in an effect so server/client markup stays identical.
+  const activeId = tabs.find((t) => t.active)?.id ?? tabs[0]?.id ?? null;
+  state = {
+    tabs: projectLocalTabFocus(tabs, activeId), loaded: true,
+    activeId, dirty: state.dirty,
+  };
   g.__charonTabState = state;
-  touchMru(tabs.find((t) => t.active)?.id);
+  touchMru(activeId);
+}
+
+/** Restore focus after hydration. No `storage` listener on purpose: even two
+ *  live windows sharing one browser profile must not steer each other. */
+export function restoreLocalTabFocus(): void {
+  if (typeof window === 'undefined') return;
+  let found = false;
+  let stored: string | null = null;
+  try {
+    const raw = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed === null || typeof parsed === 'string') {
+        found = true;
+        stored = parsed;
+      }
+    }
+  } catch { /* corrupt/unavailable storage: keep the hydration fallback */ }
+  const activeId = found
+    ? (stored && state.tabs.some((t) => t.id === stored) ? stored : null)
+    : state.activeId;
+  setTabs(state.tabs, activeId);
+  if (!found) persistActiveId(activeId);
 }
 
 let inflight: Promise<void> | null = null;
@@ -144,7 +214,7 @@ export function useTabs(): State {
   return useSyncExternalStore(sub, snap, () => state);
 }
 
-export const activeTab = (): TabDTO | null => state.tabs.find((t) => t.active) ?? null;
+export const activeTab = (): TabDTO | null => state.tabs.find((t) => t.id === state.activeId) ?? null;
 
 // ── Mutations ───────────────────────────────────────────────────────────────
 
@@ -157,8 +227,11 @@ export async function openTab(input: {
     t.vpsId === input.vpsId && t.path === input.path && t.kind === input.kind && t.ref === input.ref);
   if (existing) {
     setTabs(state.tabs.map((t) => ({
-      ...t, active: t.id === existing.id, pinned: t.pinned || (t.id === existing.id && !!input.pin),
-    })));
+      ...t, pinned: t.pinned || (t.id === existing.id && !!input.pin),
+    })), existing.id);
+    // Re-focusing an already-open tab is entirely local. Only promotion from
+    // preview to pinned changes the shared layout and needs an API mutation.
+    if (!input.pin || existing.pinned) return existing;
   } else {
     // Mirror the server's eviction rule locally so the strip doesn't flash a
     // second preview for the duration of the request. The id is provisional;
@@ -175,11 +248,13 @@ export async function openTab(input: {
     };
     const kept = state.tabs.filter((t) => !(
       !input.pin && t.vpsId === input.vpsId && t.path === input.path && !t.pinned));
-    setTabs([...kept.map((t) => ({ ...t, active: false })), provisional]);
+    setTabs([...kept, provisional], provisional.id);
   }
   try {
     const r = await runMutation(() => api.openTab(input));
-    setTabs(r.tabs);
+    // Replace the provisional id with the durable one without letting the
+    // server response's shared/legacy active bit choose for this browser.
+    setTabs(r.tabs, r.tab.id);
     return r.tab;
   } catch {
     void refreshTabs();
@@ -188,24 +263,24 @@ export async function openTab(input: {
 }
 
 export async function activateTab(id: string): Promise<void> {
-  setTabs(state.tabs.map((t) => ({ ...t, active: t.id === id })));
-  try { setTabs((await runMutation(() => api.updateTab(id, { activate: true }))).tabs); } catch { void refreshTabs(); }
+  if (!state.tabs.some((t) => t.id === id)) return;
+  setTabs(state.tabs, id);
 }
 
 export async function pinTab(id: string): Promise<void> {
-  setTabs(state.tabs.map((t) => (t.id === id ? { ...t, pinned: true } : t)));
-  try { setTabs((await runMutation(() => api.updateTab(id, { pin: true, activate: true }))).tabs); } catch { void refreshTabs(); }
+  setTabs(state.tabs.map((t) => (t.id === id ? { ...t, pinned: true } : t)), id);
+  try {
+    setTabs((await runMutation(() => api.updateTab(id, { pin: true, activate: false }))).tabs, id);
+  } catch { void refreshTabs(); }
 }
 
 export async function closeTab(id: string): Promise<void> {
   const closing = state.tabs.find((t) => t.id === id);
-  const wasActive = closing?.active ?? false;
+  const wasActive = closing?.id === state.activeId;
   // Decide the next focus BEFORE the row disappears: immediate history when
   // it stays in-group, otherwise the row's left/right geometry.
   const next = wasActive && closing ? nextFocusAfterClosing(closing) : null;
-  setTabs(state.tabs
-    .filter((t) => t.id !== id)
-    .map((t) => (next ? { ...t, active: t.id === next } : t)));
+  setTabs(state.tabs.filter((t) => t.id !== id), wasActive ? next : state.activeId);
   try {
     setTabs((await runMutation(() => api.closeTab(id, next ?? undefined))).tabs);
   } catch { void refreshTabs(); }

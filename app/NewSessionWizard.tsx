@@ -10,7 +10,7 @@ import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { IconTerminal } from './icons';
 import type {
-  AgentKind, CodexSessionConfig, ProviderSessionConfig,
+  AgentKind, CodexSessionConfig, ProviderSessionConfig, SessionPathResponse,
 } from '@/lib/types/api';
 import {
   CODEX_SANDBOX_MODES, sessionCapabilities,
@@ -94,6 +94,7 @@ export default function NewSessionWizard({
   const [sugNote, setSugNote] = useState<string | null>(null); // "no match" / failure hint
   const [checking, setChecking] = useState(false);      // existence check on "Use ›"
   const [allowForce, setAllowForce] = useState(false);  // "use anyway" after a failed check
+  const [pathPreview, setPathPreview] = useState<{ key: string; result: SessionPathResponse } | null>(null);
   const customRef = useRef<HTMLInputElement | null>(null);
   const sugListRef = useRef<HTMLDivElement | null>(null);
   const dirCacheRef = useRef(new Map<string, string[]>());  // `${vpsId}:${dir}` → subdirs
@@ -361,6 +362,21 @@ export default function NewSessionWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [custom, step, vpsId, pickList]);
 
+  // Read-only preview; cancel stale results when the path or VPS changes.
+  const previewPath = step === 'path' ? custom.trim() : (path?.trim() ?? '');
+  const previewKey = `${vpsId}:${previewPath}`;
+  const currentPreview = pathPreview?.key === previewKey ? pathPreview.result : null;
+  useEffect(() => {
+    if (kind !== 'agent' || !vpsId || !previewPath || step === 'vps') return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api.checkSessionPath(vpsId, previewPath)
+        .then((result) => { if (!cancelled) setPathPreview({ key: previewKey, result }); })
+        .catch(() => { if (!cancelled) setPathPreview({ key: previewKey, result: { ok: false, error: 'The directory could not be verified on the VPS.' } }); });
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [kind, vpsId, previewPath, previewKey, step]);
+
   // Warm-up: entering step 2 pre-lists '/' in the background. This opens the
   // per-VPS persistent SSH master server-side (the expensive part) so the
   // first real keystroke listing returns fast, and pre-caches the root dir.
@@ -472,16 +488,22 @@ export default function NewSessionWizard({
     }
   }
 
-  // "Use ›" — checks the dir actually EXISTS on the VPS first (same fs
-  // listing = "can we cd there"), and canonicalizes (~ / .. / trailing
-  // slash) via the returned `pwd`. Soft: an ssh-level failure falls through
-  // and accepts the path as typed; `force` = the "use anyway" escape hatch.
+  // Agent paths must exist or have exactly one missing leaf. The legacy
+  // shell picker retains its existence check and "use anyway" escape hatch.
   async function submitCustom(force = false) {
     const p = custom.trim();
     if (!p) { setPathError('enter a path'); return; }
-    if (!vps || force || checking) { if (!checking) choosePath(p); return; }
+    if (!vps || (force && kind === 'shell') || checking) { if (!checking) choosePath(p); return; }
     setChecking(true);
     try {
+      if (kind === 'agent') {
+        const result = await api.checkSessionPath(vps.id, p);
+        setPathPreview({ key: `${vps.id}:${p}`, result });
+        setAllowForce(false);
+        if (!result.ok) { setPathError(result.error); return; }
+        choosePath(result.resolved ?? p);
+        return;
+      }
       const r = await api.listVpsDirs(vps.id, p);
       if (r.ok && r.exists === false) {
         setPathError(`this directory does not exist on ${vps.name}`);
@@ -490,6 +512,7 @@ export default function NewSessionWizard({
       }
       if (r.ok && r.exists && r.resolved) { choosePath(r.resolved); return; }
     } catch {
+      if (kind === 'agent') { setPathError('The directory could not be verified on the VPS.'); return; }
       // ssh hiccup — don't block the flow
     } finally {
       setChecking(false);
@@ -552,7 +575,7 @@ export default function NewSessionWizard({
           effort: effort || null,
           sessionConfig,
         });
-        onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: path!.trim() });
+        onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: r.cwd });
       } else {
         const shell = await api.startShell(vps.id, {
           cwd: path ? path.trim() : null,   // null = user home
@@ -762,6 +785,7 @@ export default function NewSessionWizard({
                 ref={customRef}
                 placeholder="/custom/path…  (type / to browse the server)"
                 value={custom}
+                disabled={checking}
                 onChange={(e) => { setCustom(e.target.value); setPathError(null); setAllowForce(false); setSugOpen(true); }}
                 onFocus={() => setSugOpen(true)}
                 onBlur={() => setTimeout(() => setSugOpen(false), 120)}
@@ -772,6 +796,13 @@ export default function NewSessionWizard({
                 {checking ? '…' : 'Use ›'}
               </button>
             </div>
+            {kind === 'agent' && currentPreview && (
+              <div className={currentPreview.ok ? 'wiz-hint' : 'wiz-error'} role="status">
+                {currentPreview.ok
+                  ? (!currentPreview.exists && 'This directory will be created when the session starts.')
+                  : currentPreview.error}
+              </div>
+            )}
             {sugOpen && (sug.length > 0 || sugLoading || sugNote) && (
               <div className="wiz-sug" ref={sugListRef}>
                 {sug.map((s2, i) => (
@@ -808,6 +839,13 @@ export default function NewSessionWizard({
         {/* ── Step 3: Name + launch ── */}
         {step === 'name' && vps && (
           <div className="wiz-body">
+            {kind === 'agent' && currentPreview && (
+              <div className={currentPreview.ok ? 'wiz-hint' : 'wiz-error'} role="status">
+                {currentPreview.ok
+                  ? (!currentPreview.exists && 'This directory will be created when the session starts.')
+                  : currentPreview.error}
+              </div>
+            )}
             <div className="wiz-label">Name <span className="wiz-opt">(optional)</span></div>
             <input
               className="wiz-name-input"

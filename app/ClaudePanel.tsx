@@ -10,7 +10,8 @@ import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } f
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
 import type { EditSnapshot } from './sessionTypes';
 import {
-  useTabs, hydrateTabs, refreshTabs, openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
+  useTabs, hydrateTabs, restoreLocalTabFocus, refreshTabs,
+  openTab as openWorkspaceTab, activateTab as activateWorkspaceTab,
   pinTab as pinWorkspaceTab, closeTab as closeWorkspaceTab,
   closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs,
 } from './tabStore';
@@ -117,6 +118,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // store, then mounting again after GET /api/tabs.
   hydrateTabs(initialTabs);
   const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded } = useTabs();
+  // Focus is a browser preference, not part of the shared workspace layout.
+  // Restore after hydration so desktop/mobile never steer each other and the
+  // first server/client render still agrees.
+  useEffect(() => { restoreLocalTabFocus(); }, []);
   // Mutable copies — DataModal can add/delete VPSes, folders and paths without a reload.
   const [vpsList, setVpsList] = useState<Vps[]>(initialVpsList);
   const [vpsFolders, setVpsFolders] = useState<VpsFolder[]>(initialFolders);
@@ -926,7 +931,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, []);
 
   // Consume external deep links without feeding Charon's own URL writes back
-  // into the shared active-tab state. The guard also keeps a new arrival in
+  // into local active-tab state. The guard also keeps a new arrival in
   // charge until its optimistic/server tab mutation has actually settled.
   useEffect(() => {
     // A shell link wins if a caller supplied both parameters. Internal URL
@@ -1075,7 +1080,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     closeTabsOrAsk(t.label, [t], () => closeWorkspaceTab(t.id));
   }
   // Both group closes drop the browse override when it pointed at what was
-  // just closed — the server picks the next active tab, and an override left
+  // just closed — the local store picks the next active tab, and an override left
   // behind would hold the strip on a machine or folder with nothing in it.
   // `wasBrowsing` is read when the ✕ is pressed, which is the truth: the
   // dialog is modal, so nothing can move the selection while it is open.

@@ -3,6 +3,7 @@ import { desc, eq, and, sql } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
+import { checkSessionPath } from '@/lib/server/claude/sessionPath';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { getSdkLatestVersion, getCodexLatestVersion, getCodexCliLatestVersion } from '@/lib/server/claude/sdkSync';
@@ -190,10 +191,11 @@ export async function POST(req: Request) {
   if (s instanceof Response) return s;
   const body = await req.json();
   const vpsId = String(body.vpsId ?? '').trim();
-  const cwd = String(body.cwd ?? '').trim();
+  let cwd = String(body.cwd ?? '').trim();
   if (!vpsId || !cwd) {
     return NextResponse.json({ error: 'vpsId, cwd required' }, { status: 400 });
   }
+  if (cwd.length > 4096 || cwd.includes('\0')) return NextResponse.json({ error: 'invalid path' }, { status: 400 });
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
 
@@ -232,6 +234,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
   try {
+    const directory = await checkSessionPath(v, cwd, true);
+    if (!directory.ok) return NextResponse.json({ error: directory.error }, { status: 400 });
+    cwd = directory.resolved ?? cwd;
     const stream = await startNewSession({
       vpsId, cwd,
       name: body.name ? String(body.name) : null,

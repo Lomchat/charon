@@ -26,9 +26,9 @@ import type { TabDTO, TabKind } from '@/lib/types/api';
  *    and making the user say so twice is the kind of friction nobody notices
  *    until it loses their place.
  *
- * `active` is at most one row across the whole table (one workspace, one
- * focus). Zero is intentional after closing the final tab of the active
- * group. Writes go through `setActive` so it can never be two.
+ * `active` is a legacy compatibility bit for clients released before focus
+ * became browser-local. It remains at most one row and writes still go through
+ * `setActive`, but current clients never adopt it from a server snapshot.
  */
 
 const KINDS: TabKind[] = ['session', 'shell', 'install', 'file'];

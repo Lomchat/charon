@@ -6,6 +6,7 @@ import { sshExec, shQuote, openSshSession, type SshSession } from '@/lib/server/
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { VpsFsListResponse } from '@/lib/types/api';
 import type { Vps } from '@/lib/db/schema';
+import { checkSessionPath } from '@/lib/server/claude/sessionPath';
 
 // GET /api/vps/[id]/fs?path=<dir> — list the DIRECTORIES directly under
 // `path` on the VPS. Backend of the NewSessionWizard path autocomplete: the
@@ -54,6 +55,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   if (path.length > 4096) return NextResponse.json({ ok: false, error: 'path too long' }, { status: 400 });
   const [v] = db.select().from(vps).where(eq(vps.id, id)).all();
   if (!v) return NextResponse.json({ ok: false, error: 'vps not found' }, { status: 404 });
+  if (url.searchParams.get('check') === '1') {
+    if (!path.trim() || path.includes('\0')) return NextResponse.json({ ok: false, error: 'invalid path' }, { status: 400 });
+    return NextResponse.json(await checkSessionPath(v, path));
+  }
 
   // FAST PATH: the `list_dir` RPC over the VPS's persistent agent pipe
   // (agent >= 0.17.0, fsnav.py — ~1ms scandir, same response shape). The

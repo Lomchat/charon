@@ -484,9 +484,8 @@ export const shells = sqliteTable('shells', {
  * is no FK — the referent lives in three different tables, and `reconcileTabs`
  * is what drops rows whose thing is gone.
  *
- * A single row holds `active = 1`. Enforced in one transaction hub-side rather
- * than by a partial unique index, which SQLite would let us create but which
- * would turn every switch into a constraint dance.
+ * `active` is retained for compatibility with older clients. Current clients
+ * keep focus browser-local; legacy writes still constrain it to one row.
  */
 export const tabs = sqliteTable('tabs', {
   id: text('id').primaryKey(),
