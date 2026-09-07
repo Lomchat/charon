@@ -28,6 +28,11 @@ const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMark
 const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']> = {
   a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   pre: CodeBlock,
+  table: ({ node: _node, ...props }) => (
+    <div className="md-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <table {...props} />
+    </div>
+  ),
 };
 
 type Props = {

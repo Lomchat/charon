@@ -510,11 +510,9 @@ def _discover_repos(base: str, max_depth: int) -> tuple[list[str], bool]:
                 truncated = True
                 break
             continue                    # never descend into a checkout
-        # A `.git` at the BASE is not a stop sign: `_root()` is the authority
-        # there and it already said no, so this marker is one git itself
-        # rejected (an empty or half-created .git, a stale worktree pointer, a
-        # repo whose ownership git refuses). Treating it as a checkout hid
-        # every project underneath — measured on a real /srv.
+        # Always scan below BASE, even when BASE is a valid checkout. The
+        # caller includes that root separately; its .git must not hide child
+        # repos. A broken marker at BASE must not hide them either (§14.83).
         stack.extend((c, depth + 1) for c in children)
     roots.sort()
     return roots, truncated
@@ -525,13 +523,13 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
     """Every repo this session can see, as ONE answer.
 
     `mode`:
-      * `single` — `cwd` is a checkout root, or is inside one and contains no
-        nested checkouts. One entry, scoped to the enclosing toplevel (a
+      * `single` — `cwd` is in a checkout and contains no child checkouts.
+        One entry, scoped to the enclosing toplevel (a
         session started in `src/` still sees the whole changeset).
-      * `multi`  — `cwd` is NOT a checkout but contains some. One entry per
-        discovered repo. This also wins when `cwd` sits inside an enclosing
-        checkout: a folder of standalone projects must not disappear merely
-        because one of its ancestors has a `.git`. Reported even when there is
+      * `multi`  — `cwd` contains child checkouts. Include `cwd` itself first
+        when it is a checkout root, so its own changes remain accessible.
+        An enclosing checkout ABOVE `cwd` is omitted when children exist.
+        Reported even when there is
         exactly one, because the panel then has to say WHICH folder it is
         talking about.
       * `none`   — a plain folder with nothing underneath it.
@@ -547,12 +545,6 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
                 "reason": "no_cwd", "error": "directory not found"}
 
     root, bail = _root(path)
-    # The checkout root itself owns everything below it, including submodules;
-    # keep the ordinary single-repo contract and avoid a pointless scan.
-    if root and os.path.normpath(root) == os.path.normpath(path):
-        st = git_status(root, include_recent=include_recent)
-        st["root"] = st.get("root") or root
-        return {"ok": True, "mode": "single", "repos": [_tag(st, path)]}
     # A real failure (git missing, dubious ownership on the cwd itself) is not
     # "no repo here" — scanning would just repeat it once per subdirectory.
     if bail is not None and bail.get("ok") is False:
@@ -581,6 +573,12 @@ def git_workspace(cwd: str, scan_depth: int = SCAN_MAX_DEPTH,
 
     if not roots:
         return {"ok": True, "mode": "none", "repos": []}
+
+    if root and os.path.normpath(root) == os.path.normpath(path):
+        # Keep the root's own changes alongside its children, within the same
+        # total repo cap. Never mutate the cached child list.
+        truncated = truncated or len(roots) >= MAX_REPOS
+        roots = [root, *roots[:MAX_REPOS - 1]]
 
     repos = []
     for r in roots:

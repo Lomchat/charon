@@ -1,4 +1,5 @@
 import 'server-only';
+import { observeModels } from './modelNotices';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { AgentCodexModelsResult } from '@/lib/server/agent/types';
 import { CODEX_CANONICAL_EFFORTS, type CodexModelsResponse, type CodexModelPick } from '@/lib/types/api';
@@ -24,7 +25,11 @@ const TTL_MS = 5 * 60_000;
 const CODEX_EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 type CacheEntry = { at: number; data: CodexModelsResponse };
-const g = globalThis as unknown as { _codexModelsCache?: Map<string, CacheEntry> };
+const g = globalThis as unknown as {
+  _codexModelsCache?: Map<string, CacheEntry>;
+  _codexModelsInflight?: Map<string, Promise<CodexModelsResponse>>;
+};
+const inflight = g._codexModelsInflight ??= new Map();
 if (!g._codexModelsCache) g._codexModelsCache = new Map();
 const cache: Map<string, CacheEntry> = g._codexModelsCache;
 
@@ -46,6 +51,14 @@ export async function getCodexModelsForVps(vpsId: string): Promise<CodexModelsRe
   const cached = cache.get(vpsId);
   if (cached && Date.now() - cached.at < TTL_MS) return cached.data;
 
+  const pending = inflight.get(vpsId);
+  if (pending) return pending;
+  const request = fetchCodexModels(vpsId).finally(() => { inflight.delete(vpsId); });
+  inflight.set(vpsId, request);
+  return request;
+}
+
+async function fetchCodexModels(vpsId: string): Promise<CodexModelsResponse> {
   const fallback = (error: string): CodexModelsResponse => ({
     ok: false, models: [], efforts: [...CODEX_CANONICAL_EFFORTS], error,
   });
@@ -79,6 +92,7 @@ export async function getCodexModelsForVps(vpsId: string): Promise<CodexModelsRe
     }));
 
   const data: CodexModelsResponse = { ok: true, models, efforts: unionEfforts(models) };
+  observeModels('codex', models);
   cache.set(vpsId, { at: Date.now(), data });
   return data;
 }

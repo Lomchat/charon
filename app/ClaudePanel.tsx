@@ -25,8 +25,10 @@ import { setFocus, subscribeAll } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
 import PromptModal from './PromptModal';
 import LocalAgentButton from './LocalAgentButton';
+import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
+import { newestAccountUsage } from './accountUsageState';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
@@ -300,8 +302,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       .then((r) => setUsageByVps((prev) => {
         const cur = prev[vpsId] ?? {};
         const next = { ...cur };
-        if (r.usage) next.claude = r.usage as AccountUsage;
-        if (r.codexUsage) next.codex = r.codexUsage as AccountUsage;
+        if (r.usage) next.claude = newestAccountUsage(cur.claude, r.usage);
+        if (r.codexUsage) next.codex = newestAccountUsage(cur.codex, r.codexUsage);
         return { ...prev, [vpsId]: next };
       }))
       .catch(() => {});
@@ -482,7 +484,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       const provider = (ev as AccountUsage).provider === 'codex' ? 'codex' : 'claude';
       setUsageByVps((prev) => ({
         ...prev,
-        [vpsId]: { ...(prev[vpsId] ?? {}), [provider]: ev as AccountUsage },
+        [vpsId]: { ...(prev[vpsId] ?? {}), [provider]: newestAccountUsage(prev[vpsId]?.[provider], ev as AccountUsage) },
       }));
     });
     return () => unsub();
@@ -699,6 +701,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
@@ -1750,8 +1753,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             <IconServers />
           </button>
           <LocalAgentButton />
-          <button className="head-btn" onClick={() => setSettingsOpen(true)} title="settings" aria-label="settings" data-label="settings">
+          <button className="head-btn model-notice-anchor" onClick={() => setSettingsOpen(true)} title={hasNewModels ? "settings — nouveaux modèles disponibles" : "settings"} aria-label={hasNewModels ? "settings — nouveaux modèles disponibles" : "settings"} data-label="settings">
             <IconGear />
+            {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
           </button>
         </div>
         {/* Mobile-only right-drawer toggles (CSS-gated). They live OUTSIDE
@@ -1769,15 +1773,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           </button>
         )}
         <button
-          className="head-btn m-only usage-toggle"
+          className="head-btn m-only usage-toggle model-notice-anchor"
           onClick={() => { setUsageOpen(true); setNavOpen(false); setToolsOpen(false); }}
-          title="usage & settings" aria-label="open usage and settings"
+          title="usage & settings" aria-label={hasNewModels ? "open usage and settings — nouveaux modèles disponibles" : "open usage and settings"}
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
             <path d="M12 12l4-3" />
             <path d="M5 18a8 8 0 1 1 14 0" />
           </svg>
+          {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
         </button>
         </div>
       </header>
@@ -2113,7 +2118,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         />
       )}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} vpsList={vpsList} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} vpsList={vpsList} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
       {dataOpen && (
         <DataModal
           onClose={() => setDataOpen(false)}

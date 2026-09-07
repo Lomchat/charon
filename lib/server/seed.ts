@@ -1,4 +1,5 @@
 import 'server-only';
+import { armModelWatch } from './claude/modelWatch';
 import { migrationV2IfNeeded } from './migrationV2';
 import { migrateSessionIdsToHashed, cleanupExpiredSessions } from './auth';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
@@ -63,6 +64,7 @@ const STEPS: Step[] = [
   // For each VPS: connect the AgentClient (background, non-blocking) + arm
   // the onStatus('connected')→reconcile self-healing hook. THE load-bearing
   // step (§14.45).
+  { name: 'modelWatch', run: () => armModelWatch() },
   { name: 'autoConnect', run: () => autoConnectAgentsIfNeeded() },
   // Durable rate-limit recovery jobs. Requeues a job claimed immediately
   // before a crash, then arms one unref'd timer for the earliest UTC instant.

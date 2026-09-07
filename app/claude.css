@@ -2056,8 +2056,13 @@
   padding: 4px 12px; margin: 6px 0;
   color: var(--parchment-soft); font-style: italic;
 }
+.bubble .content.md .md-table-scroll {
+  max-width: 100%; margin: 8px 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
 .bubble .content.md table {
-  border-collapse: collapse; margin: 8px 0; font-size: 13px;
+  border-collapse: collapse; margin: 0; font-size: 13px;
 }
 .bubble .content.md th,
 .bubble .content.md td {
@@ -5775,4 +5780,22 @@
    one you can. */
 .bar-handle.unconfirmed, .cs-card-handle.unconfirmed, .cim-handle.unconfirmed {
   opacity: 0.45; font-style: italic;
+}
+
+/* Hub-wide model discoveries: header → provider section → model select. */
+.model-notice-anchor { position: relative; }
+.model-notice-dot {
+  position: absolute; top: 3px; right: 3px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--gold-bright);
+  box-shadow: 0 0 0 2px var(--bg-deep, #13171d);
+  pointer-events: none;
+}
+.model-notice-badge {
+  margin-left: auto; padding: 1px 5px; border-radius: 8px;
+  background: rgba(138, 180, 228, 0.16); color: var(--gold-bright);
+  font-size: 10px; line-height: 1.5;
+}
+.model-release-notice {
+  display: block; margin-top: 5px; color: var(--gold-bright);
+  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
 }

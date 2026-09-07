@@ -449,6 +449,38 @@ class GitWorkspaceTest(unittest.TestCase):
         self.assertEqual(w["repos"][0]["root"], self.roots[0])
         self.assertEqual(w["repos"][0]["rel"], os.path.relpath(self.roots[0], sub))
 
+    def test_checkout_root_keeps_own_changes_and_independent_children(self):
+        sh(self.dir, "init", "-q", "-b", "main")
+        # Child repositories may be ignored by the parent, as in iron_golem.
+        write(self.dir, ".gitignore", "alpha/\nnest/\n")
+        write(self.dir, "root.txt", "root change\n")
+        for cwd in (self.dir, self.dir + "/"):
+            w = G.git_workspace(cwd)
+            self.assertEqual(w["mode"], "multi")
+            self.assertEqual([r["root"] for r in w["repos"]],
+                             [self.dir, *sorted(self.roots)])
+            self.assertEqual(w["repos"][0]["rel"], "")
+            self.assertIn("root.txt", [f["path"] for f in w["repos"][0]["files"]])
+            self.assertTrue(all(r["ok"] for r in w["repos"]))
+        # Cache contains children only, never a duplicate of the root.
+        self.assertEqual(G._scan_cache[self.dir][1], sorted(self.roots))
+
+    def test_checkout_without_children_stays_single(self):
+        w = G.git_workspace(self.roots[0])
+        self.assertEqual(w["mode"], "single")
+        self.assertEqual([r["root"] for r in w["repos"]], [self.roots[0]])
+
+    def test_checkout_root_counts_toward_repo_cap(self):
+        sh(self.dir, "init", "-q", "-b", "main")
+        for i in range(G.MAX_REPOS):
+            p = os.path.join(self.dir, f"r{i:03d}")
+            os.makedirs(p)
+            sh(p, "init", "-q", "-b", "main")
+        w = G.git_workspace(self.dir)
+        self.assertEqual(len(w["repos"]), G.MAX_REPOS)
+        self.assertEqual(w["repos"][0]["root"], self.dir)
+        self.assertTrue(w["truncated"])
+
     def test_child_repos_win_over_an_enclosing_parent_repo(self):
         # Real fleet shape: /var/www/html is a checkout, while a deeper
         # `sources/` folder is itself a workspace containing independent

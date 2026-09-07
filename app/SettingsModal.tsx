@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps } from '@/lib/db/schema';
 import ModelPicker from './ModelPicker';
+import ModelReleaseNotice from './ModelReleaseNotice';
+import type { AgentKind, ModelNoticesResponse } from '@/lib/types/api';
 import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
@@ -26,6 +28,8 @@ type Props = {
   /** Passed by ClaudePanel — used to source the per-VPS Codex catalog for the
    *  codex-defaults pickers (first codex-capable VPS wins). */
   vpsList?: Vps[];
+  modelNotices: ModelNoticesResponse;
+  onModelsSeen: (provider: AgentKind, ids: string[]) => Promise<void>;
 };
 
 type Cat = 'general' | 'claude' | 'codex' | 'notifications' | 'updates';
@@ -53,13 +57,14 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
-export default function SettingsModal({ onClose, vpsList }: Props) {
+export default function SettingsModal({ onClose, vpsList, modelNotices, onModelsSeen }: Props) {
   const [s, setS] = useState<Record<string, string> | null>(null);
   const [cat, setCat] = useState<Cat>('general');
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [syncMsg, setSyncMsg] = useState<{ ok: boolean; msg: string } | null>(null);
 
   // The Codex catalog is per-VPS (account-driven). Use the first connected
@@ -121,6 +126,7 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
       const r = await api.refreshClaudeModels();
       if (r.ok) {
         invalidateModels();
+        setCatalogRefresh((n) => n + 1);
         setSyncMsg({ ok: true, msg: `synced ✓ — ${r.count ?? 0} models` });
       } else {
         setSyncMsg({ ok: false, msg: r.error || 'sync failed' });
@@ -170,6 +176,9 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                   >
                     {navIcon(c.id)}
                     <span>{c.label}</span>
+                    {(c.id === 'claude' || c.id === 'codex') && modelNotices[c.id].length > 0 && (
+                      <span className="model-notice-badge" aria-label="nouveaux modèles disponibles">nouveau</span>
+                    )}
                   </button>
                 ))}
               </nav>
@@ -194,13 +203,16 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                     <p className="set-hint">defaults for new Claude sessions — blank = SDK default.</p>
                     <label>default model
                       <ModelPicker
+                        catalogVersion={`${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(",")}`}
                         value={s['claude.default_model'] ?? ''}
                         onChange={(v) => set('claude.default_model', v)}
                         inheritPlaceholder="SDK default"
                       />
+                      <ModelReleaseNotice key="claude" provider="claude" unread={modelNotices.claude} onSeen={onModelsSeen} />
                     </label>
                     <label>default fallback model (when the primary is rate-limited)
                       <ModelPicker
+                        catalogVersion={`${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(",")}`}
                         value={s['claude.default_fallback_model'] ?? ''}
                         onChange={(v) => set('claude.default_fallback_model', v)}
                         inheritPlaceholder="none"
@@ -279,11 +291,13 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                       <>
                         <label>default model
                           <CodexModelPicker
+                            catalogVersion={modelNotices.codex.map((m) => m.id).join(",")}
                             vpsId={codexVps.id}
                             value={s['codex.default_model'] ?? ''}
                             onChange={(v) => set('codex.default_model', v)}
                             inheritPlaceholder="Codex default"
                           />
+                          <ModelReleaseNotice key="codex" provider="codex" unread={modelNotices.codex} onSeen={onModelsSeen} />
                         </label>
                         <label>default effort
                           <CodexEffortPicker
@@ -299,6 +313,7 @@ export default function SettingsModal({ onClose, vpsList }: Props) {
                       <>
                         <label>default model
                           <input value={s['codex.default_model'] ?? ''} onChange={(e) => set('codex.default_model', e.target.value)} placeholder="gpt-5.6-sol" autoComplete="off" spellCheck={false} />
+                          <ModelReleaseNotice key="codex" provider="codex" unread={modelNotices.codex} onSeen={onModelsSeen} />
                         </label>
                         <label>default effort
                           <input value={s['codex.default_effort'] ?? ''} onChange={(e) => set('codex.default_effort', e.target.value)} placeholder="medium" autoComplete="off" spellCheck={false} />

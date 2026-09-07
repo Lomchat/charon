@@ -544,6 +544,11 @@ export const api = {
   searchClaude: (q: string) =>
     send<SearchClaudeResponse>('GET', `/api/claude/search?q=${encodeURIComponent(q)}`),
 
+  getModelNotices: () =>
+    send<import('@/lib/types/api').ModelNoticesResponse>('GET', '/api/models/notices'),
+  markModelsSeen: (body: import('@/lib/types/api').MarkModelsSeenBody) =>
+    send<import('@/lib/types/api').ModelNoticesResponse>('POST', '/api/models/notices', body),
+
   // ── Settings & push ───────────────────────────────────────────────────────
   getClaudeSettings: () =>
     send<ClaudeSettingsMap>('GET', '/api/claude/settings'),

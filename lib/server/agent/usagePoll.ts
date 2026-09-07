@@ -493,6 +493,11 @@ function pushedCodexWindow(value: unknown): CodexRateWindow | null {
 export function ingestCodexUsagePush(vpsId: string, detail: unknown): AccountUsage | null {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
   const d = detail as Record<string, unknown>;
+  // Every model bucket is pushed on the same FIFO. Only the account bucket
+  // belongs in the headline gauges; Spark's unused quota is often 0/0.
+  // Older app-servers omit the id on their single account bucket.
+  const limitId = pushField(d, 'limit_id', 'limitId');
+  if (limitId != null && limitId !== 'codex') return null;
   const windows = [pushedCodexWindow(d.primary), pushedCodexWindow(d.secondary)]
     .filter((w): w is CodexRateWindow => w !== null);
   if (windows.length === 0) return null;
@@ -574,6 +579,7 @@ export function pollCodexUsageForVps(vpsId: string, opts?: { force?: boolean }):
     } catch { loggedIn = null; }
     if (!force && loggedIn === 0) return st.last;
 
+    const snapshotBeforePoll = st.last;
     st.lastPollAt = Date.now();
     let raw: AgentCodexUsageResult;
     try {
@@ -581,12 +587,23 @@ export function pollCodexUsageForVps(vpsId: string, opts?: { force?: boolean }):
     } catch {
       return st.last; // RPC timeout / disconnect / method-not-found → keep last
     }
-    const usage = normalizeCodex(raw);
+    // A live push received during the RPC is newer than its captured reading.
+    if (st.last !== snapshotBeforePoll) return st.last;
+    let usage = normalizeCodex(raw);
     // Login-state side effect: ok ⇒ logged in; a clear auth failure ⇒ not.
     if (raw?.ok) {
       setCodexLoggedIn(vpsId, 1, loggedIn);
     } else if (looksLikeCodexAuthFailure((raw as { error?: string })?.error)) {
       setCodexLoggedIn(vpsId, 0, loggedIn);
+    }
+    if (usage.ok && !usage.fiveHour && !usage.sevenDay) {
+      usage = { ok: false, provider: 'codex', fetchedAt: usage.fetchedAt, error: 'usage_unavailable' };
+    }
+    if (!usage.ok && st.last?.ok) {
+      usage = {
+        ...st.last,
+        degraded: { reason: usage.error ?? 'unknown', retryAt: Date.now() + POLL_INTERVAL_MS },
+      };
     }
     st.last = usage;
     try { emitGlobalAccountUsage(vpsId, usage); } catch {}

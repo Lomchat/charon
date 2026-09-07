@@ -1,3 +1,4 @@
+import { getModelNotices, subscribeModelNotices } from '@/lib/server/claude/modelNotices';
 import { and, eq } from 'drizzle-orm';
 import {
   db, claudeSessions, claudePendingPermissions, claudePendingQuestions,
@@ -52,6 +53,7 @@ export async function GET(req: Request) {
   const encoder = new TextEncoder();
   let hbTimer: NodeJS.Timeout | null = null;
   let unregister: (() => void) | null = null;
+  let unsubModels: (() => void) | null = null;
   let unsubInstall: (() => void) | null = null;
 
   const sseStream = new ReadableStream<Uint8Array>({
@@ -109,6 +111,7 @@ export async function GET(req: Request) {
         if (hbTimer) clearInterval(hbTimer);
         if (unregister) { unregister(); unregister = null; }
         if (unsubInstall) { unsubInstall(); unsubInstall = null; }
+        if (unsubModels) { unsubModels(); unsubModels = null; }
         try { controller.close(); } catch {}
       };
 
@@ -120,6 +123,11 @@ export async function GET(req: Request) {
         connId, send: sendLive, initialFocus, initialFocusSeq,
       });
       unsubInstall = subscribeInstallBus(sendInstallLive);
+      const sendModels = (notices: ReturnType<typeof getModelNotices>) => {
+        sendRaw(`data: ${JSON.stringify({ type: 'model_notices', notices })}\n\n`);
+      };
+      unsubModels = subscribeModelNotices(sendModels);
+      sendModels(getModelNotices());
 
       // Initial snapshot: status of all sessions + pendings. This lets the
       // client populate its sidebar immediately without depending on
@@ -240,6 +248,7 @@ export async function GET(req: Request) {
       if (hbTimer) clearInterval(hbTimer);
       if (unregister) { unregister(); unregister = null; }
       if (unsubInstall) { unsubInstall(); unsubInstall = null; }
+      if (unsubModels) { unsubModels(); unsubModels = null; }
     },
   }, new ByteLengthQueuingStrategy({ highWaterMark: 512 * 1024 }));
 

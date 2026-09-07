@@ -14,6 +14,7 @@ type Props = {
   noInherit?: boolean;
   className?: string;
   id?: string;
+  catalogVersion?: string;
 };
 
 /**
@@ -24,7 +25,7 @@ type Props = {
  * is still reachable. cf. CLAUDE.md §14.59 / §14.58.
  */
 export default function CodexModelPicker({
-  vpsId, value, onChange, inheritPlaceholder, noInherit, className, id,
+  vpsId, value, onChange, inheritPlaceholder, noInherit, className, id, catalogVersion,
 }: Props) {
   const [models, setModels] = useState<CodexModelPick[]>(
     () => peekCodexModels(vpsId)?.models ?? [],
@@ -49,7 +50,7 @@ export default function CodexModelPicker({
         setLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [vpsId]);
+  }, [vpsId, catalogVersion]);
 
   // Faithfully surface a current value the catalog doesn't (yet) list.
   const knownIds = new Set(models.map((m) => m.id));

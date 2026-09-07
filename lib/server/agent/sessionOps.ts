@@ -1,3 +1,4 @@
+import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import 'server-only';
 import crypto from 'node:crypto';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
@@ -1389,6 +1390,7 @@ export class SessionStream {
         break;
       }
       case 'session_info':
+        if (this.kind === 'claude' && ev.models) observeClaudeCliModels(ev.models);
         // The CLI's init frame. Kept in memory only: it describes the CURRENT
         // CLI process, so persisting it would let a stale snapshot outlive the
         // process it described. `capabilities` is the sanctioned way to ask

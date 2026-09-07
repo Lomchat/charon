@@ -130,6 +130,9 @@ const DEFAULTS = {
   // JSON array of the live model list, + the unix-ms timestamp of the last
   // successful sync (drives the 24h TTL).
   'claude.models_cache': '',
+  // Internal catalog discoveries + globally acknowledged release notices.
+  'claude.cli_models_cache': '',
+  'models.notices': '',
   'claude.models_cache_at': '',
   // Auto-update the `claude-agent-sdk` python package on fleet VPSes when a
   // newer PyPI version is known AND the VPS is idle (no active session, no

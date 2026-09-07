@@ -1235,3 +1235,12 @@ export type UploadSessionAttachmentResponse = { attachment: SessionAttachment };
 
 export type OkResponse = { ok: true };
 export type OkOrErrorResponse = { ok: boolean; error?: string };
+
+/** Hub-wide unread model releases; revision orders HTTP and SSE snapshots. */
+export type ModelNotice = { id: string; label: string };
+export type ModelNoticesResponse = {
+  revision: number;
+  claude: ModelNotice[];
+  codex: ModelNotice[];
+};
+export type MarkModelsSeenBody = { provider: AgentKind; ids: string[] };

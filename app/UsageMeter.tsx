@@ -106,13 +106,13 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
     );
   }
   // Prefer the endpoint's rich limits[]; fall back to the plain 5h/7d windows.
-  const limits: AccountUsageLimit[] = usage.limits && usage.limits.length
+  const limits: Array<Omit<AccountUsageLimit, 'percent'> & { percent: number | null }> = usage.limits && usage.limits.length
     ? usage.limits
     : [
-        ...(usage.fiveHour ? [{ kind: 'session', percent: usage.fiveHour.utilization ?? 0, severity: 'normal', resetsAt: usage.fiveHour.resetsAt } as AccountUsageLimit] : []),
-        ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization ?? 0, severity: 'normal', resetsAt: usage.sevenDay.resetsAt } as AccountUsageLimit] : []),
+        ...(usage.fiveHour ? [{ kind: 'session', percent: usage.fiveHour.utilization, severity: 'normal', resetsAt: usage.fiveHour.resetsAt }] : []),
+        ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization, severity: 'normal', resetsAt: usage.sevenDay.resetsAt }] : []),
       ];
-  const kindLabel = (l: AccountUsageLimit): string =>
+  const kindLabel = (l: Omit<AccountUsageLimit, 'percent'>): string =>
     l.kind === 'session' || l.group === 'session' ? '5-hour session'
     : l.kind === 'weekly_all' ? 'Weekly (all)'
     : l.kind === 'weekly_scoped' ? 'Weekly'
@@ -132,7 +132,7 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
              severity={l.severity} reset={l.resetsAt} />
       ))}
       {usage.extraUsage?.isEnabled ? (
-        <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? 0} severity="normal" />
+        <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
       ) : null}
       <div className={`um-foot${usage.degraded ? ' um-foot-stale' : ''}`}>
         {fmtAgo(usage.fetchedAt)}

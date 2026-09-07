@@ -1,4 +1,5 @@
 import 'server-only';
+import { observeModels } from './modelNotices';
 import { getSetting, setSetting } from './settings';
 import { KNOWN_MODELS, type KnownModel } from './knownModels';
 import { CANONICAL_EFFORTS } from '@/lib/types/api';
@@ -182,23 +183,23 @@ export function isKnownEffort(v: string): boolean {
   return getCatalogEffortUnion(getMergedModels()).includes(v);
 }
 
-/** The list served by GET /api/claude/models: seed ∪ cached-live. */
-export function getMergedModels(): KnownModel[] {
-  let dynamic: KnownModel[] = [];
-  const raw = getSetting('claude.models_cache');
+function cachedModels(key: 'claude.models_cache' | 'claude.cli_models_cache'): KnownModel[] {
+  const raw = getSetting(key);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        dynamic = parsed.filter(
-          (m): m is KnownModel => m && typeof m.id === 'string' && typeof m.label === 'string',
-        );
-      }
-    } catch {
-      // Corrupt cache → ignore, serve seed only. Next refresh overwrites it.
-    }
+      if (Array.isArray(parsed)) return parsed.filter(
+        (m): m is KnownModel => m && typeof m.id === 'string' && typeof m.label === 'string',
+      );
+    } catch { /* Corrupt cache: retain the seed and other working sources. */ }
   }
-  return mergeModels(KNOWN_MODELS, dynamic);
+  return [];
+}
+
+/** Seed ∪ CLI discoveries ∪ API catalog (API effort data wins). */
+export function getMergedModels(): KnownModel[] {
+  const dynamic = [...cachedModels('claude.cli_models_cache'), ...cachedModels('claude.models_cache')];
+  return mergeModels(KNOWN_MODELS, [...new Map(dynamic.map((m) => [m.id, m])).values()]);
 }
 
 export type RefreshResult = { ok: boolean; count?: number; syncedAt?: number; error?: string };
@@ -208,10 +209,12 @@ export async function refreshModels(): Promise<RefreshResult> {
   const apiKey = getSetting('claude.api_key');
   if (!apiKey) return { ok: false, error: 'no api key configured' };
   try {
+    observeModels('claude', getMergedModels());
     const models = await fetchLiveModels(apiKey);
     const now = Date.now();
     setSetting('claude.models_cache', JSON.stringify(models));
     setSetting('claude.models_cache_at', String(now));
+    observeModels('claude', getMergedModels());
     return { ok: true, count: models.length, syncedAt: now };
   } catch (e: any) {
     return { ok: false, error: String(e?.message ?? e) };
@@ -232,4 +235,24 @@ export function refreshModelsIfStale(): void {
   inflight = refreshModels()
     .catch(() => {})
     .finally(() => { inflight = null; });
+}
+
+/** Remember concrete CLI discoveries so a release announced without an API
+ * key also appears in the global Settings picker. Capabilities remain live. */
+export function observeClaudeCliModels(models: Array<{ id: string; resolved?: string; label?: string }>): void {
+  observeModels('claude', getMergedModels());
+  const existing = getMergedModels();
+  const ids = new Set(existing.map((m) => m.id));
+  const added: KnownModel[] = [];
+  for (const model of models) {
+    const id = model.resolved || model.id;
+    if (!id.startsWith('claude-') || ids.has(id)) continue;
+    ids.add(id);
+    added.push({ id, label: model.resolved ? id : (model.label || id), group: 'current' });
+  }
+  if (!added.length) return;
+  setSetting('claude.cli_models_cache', JSON.stringify([
+    ...cachedModels('claude.cli_models_cache'), ...added,
+  ]));
+  observeModels('claude', getMergedModels());
 }

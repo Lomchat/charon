@@ -56,7 +56,8 @@ export type SessionBusClientEvent = WorkerEvent & { sessionId: string };
 // the dispatcher (we only use it to bump `lastActivityTs`).
 type HeartbeatEvent = { type: 'heartbeat'; ts: number };
 
-export type GlobalEvent = SessionBusClientEvent | InstallBusClientEvent;
+export type GlobalEvent = SessionBusClientEvent | InstallBusClientEvent
+  | { type: 'model_notices'; notices: import('@/lib/types/api').ModelNoticesResponse };
 
 function hasSessionId(ev: GlobalEvent): ev is SessionBusClientEvent {
   return 'sessionId' in ev && typeof (ev as any).sessionId === 'string';

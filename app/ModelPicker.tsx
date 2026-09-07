@@ -36,6 +36,7 @@ type Props = {
   className?: string;
   /** id attribute. */
   id?: string;
+  catalogVersion?: string;
 };
 
 /**
@@ -63,7 +64,7 @@ type Props = {
  * escape hatch (e.g. a model released in the last 24h with no API key set).
  */
 export default function ModelPicker({
-  value, onChange, inheritPlaceholder, noInherit, className, id,
+  value, onChange, inheritPlaceholder, noInherit, className, id, catalogVersion,
 }: Props) {
   const [models, setModels] = useState<KnownClaudeModel[]>(
     () => peekModels() ?? FALLBACK_MODELS,
@@ -86,7 +87,7 @@ export default function ModelPicker({
         if (!cancelled) setLoaded(true);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [catalogVersion]);
 
   // If the current value isn't in the loaded list (e.g. a session was
   // created with a model that's since been removed from the curated list,
