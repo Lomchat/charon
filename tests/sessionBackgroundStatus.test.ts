@@ -11,6 +11,8 @@ process.env.DATABASE_URL = path.join(
 const telegramMocks = vi.hoisted(() => ({
   sendPlainToTelegram: vi.fn(async (_text: string, _linkPath?: string) => {}),
 }));
+const pushMocks = vi.hoisted(() => ({ sendPushToAll: vi.fn(async (_payload: any) => {}) }));
+vi.mock('@/lib/server/claude/webPush', () => pushMocks);
 const bgMocks = vi.hoisted(() => ({ read: vi.fn(async (..._args: any[]): Promise<any[]> => []) }));
 vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: bgMocks.read }));
 
@@ -40,12 +42,14 @@ let schema: any;
 let SessionStream: any;
 let recordedSessionUsage: any;
 let runningBgTaskDetailsFromDb: any;
+let setSetting: any;
 
 function createStream(status: string = 'active', kind: 'claude' | 'codex' = 'claude') {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build',
     status, permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
     claudeSessionId: null, kind,
+    lastStopNotifiedSeq: sessionRow()?.lastStopNotifiedSeq,
   }) as any;
 }
 
@@ -56,7 +60,7 @@ function sessionRow(): any {
 /** The agent's own event shape for a background task lifecycle frame. */
 function bgTask(seq: number, kind: string, taskId: string, status?: string) {
   return {
-    event: 'bg_task', session_id: SID, seq, kind, task_id: taskId,
+    event: 'bg_task', session_id: SID, seq, kind, task_id: taskId, ts: Date.now() / 1000,
     ...(status ? { status } : {}),
   };
 }
@@ -78,11 +82,14 @@ beforeAll(async () => {
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
   ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
   ({ runningBgTaskDetailsFromDb } = await import('@/lib/server/claude/bgTaskState'));
+  ({ setSetting } = await import('@/lib/server/claude/settings'));
 });
 
 beforeEach(() => {
   vi.useFakeTimers();
   telegramMocks.sendPlainToTelegram.mockClear();
+  pushMocks.sendPushToAll.mockClear();
+  setSetting('notif.global_enabled', 'false');
   bgMocks.read.mockReset().mockResolvedValue([]);
   db.delete(schema.claudeSessionMessages).run();
   db.delete(schema.claudeSessions).run();
@@ -92,6 +99,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.clearAllTimers();
   vi.useRealTimers();
 });
 
@@ -133,6 +141,47 @@ describe('provider-neutral durable turn usage', () => {
 });
 
 describe('a turn that ends with background tasks still running (§14.91)', () => {
+  it.each(['claude', 'codex'] as const)('counts only live tasks and deduplicates %s notices across replay/restart', (kind) => {
+    setSetting('notif.global_enabled', 'true');
+    const stream = createStream('thinking', kind);
+    stream._onAgentEvent(bgTask(1, 'started', 'expired'));
+    vi.advanceTimersByTime(25 * 60 * 60 * 1000);
+    stream._onAgentEvent(bgTask(2, 'started', 'finished'));
+    stream._onAgentEvent(bgTask(3, 'finished', 'finished'));
+    stream._onAgentEvent(bgTask(4, 'started', 'live'));
+    const stop = { event: 'stop', session_id: SID, subtype: 'end_turn', seq: 5 };
+    stream._onAgentEvent(stop);
+    stream._onAgentEvent(stop);
+    const revived = createStream('background', kind);
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent(stop);
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    revived._onAgentEvent(stop);
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(1);
+    const body = `${kind === 'codex' ? 'Codex' : 'Claude'} finished its response — 1 background task still running`;
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
+      `✓ test-vps · build\n${body}`, `/?session=${SID}`,
+    );
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledWith({
+      title: '✓ test-vps · build', body, tag: `stop-${SID}`,
+      sessionId: SID, url: `/?session=${SID}`,
+    });
+    expect(sessionRow().unreadStop).toBe(0);
+  });
+
+  it('does not notify a background stop first seen during replay', () => {
+    setSetting('notif.global_enabled', 'true');
+    const stream = createStream();
+    stream._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    stream._onAgentEvent(bgTask(1, 'started', 'child'));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2 });
+    stream._onAgentEvent({ event: 'replay_end', session_id: SID });
+    vi.advanceTimersByTime(60_000);
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+  });
+
   it('persists Stop-hook reconciliation for the bar, reload and quiet gate', () => {
     const stream = createStream();
     stream._onAgentEvent(bgTask(1, 'started', 'child'));
@@ -198,8 +247,12 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
 
     expect(stream.status).toBe('background');
     expect(sessionRow().status).toBe('background');
-    // The finish is not announced and the card must not glow green.
-    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    // Announce the response while preserving the background status/marker.
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
+      '✓ test-vps · build\nClaude finished its response — 1 background task still running',
+      `/?session=${SID}`,
+    );
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
     expect(sessionRow().unreadStop).toBe(0);
 
     // The daemon goes idle the moment the turn ends and knows nothing about
@@ -209,29 +262,38 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(sessionRow().status).toBe('background');
   });
 
-  it('announces the finish only once the last task ends', () => {
+  it('announces the response, then completion once the last task ends', () => {
+    setSetting('notif.global_enabled', 'true');
     const stream = createStream();
     stream._onAgentEvent(bgTask(1, 'started', 'task-a'));
     stream._onAgentEvent(bgTask(2, 'started', 'task-b'));
     stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 3 });
     stream._onAgentEvent({ event: 'status', session_id: SID, status: 'active', seq: 4 });
 
-    // One of two: still background, still silent.
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+      .toContain('2 background tasks still running');
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(1);
+    expect(pushMocks.sendPushToAll.mock.calls[0][0].body)
+      .toBe('Claude finished its response — 2 background tasks still running');
+    // One of two: still background, no additional notice.
     stream._onAgentEvent(bgTask(5, 'finished', 'task-a'));
     expect(stream.status).toBe('background');
     vi.advanceTimersByTime(60_000);
-    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
 
     stream._onAgentEvent(bgTask(6, 'finished', 'task-b'));
     expect(stream.status).toBe('active');
     expect(sessionRow().status).toBe('active');
     // …but the notification waits out the grace, in case the model takes the
     // session back for a follow-up turn.
-    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(10_000);
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
-    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+    vi.advanceTimersByTime(10_000);
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(2);
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[1][0])
       .toContain('background tasks finished');
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(2);
+    expect(pushMocks.sendPushToAll.mock.calls[1][0].body).toBe('background tasks finished');
     expect(sessionRow().unreadStop).toBe(1);
   });
 
@@ -244,7 +306,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     stream._onAgentEvent({ event: 'status', session_id: SID, status: 'thinking', seq: 4 });
     vi.advanceTimersByTime(60_000);
 
-    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
     expect(stream.status).toBe('thinking');
 
     // That turn's own stop is a normal finish and notifies normally.
@@ -253,8 +315,8 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     // Nothing is running now, so the daemon's idle frame is adopted as usual.
     stream._onAgentEvent({ event: 'status', session_id: SID, status: 'active', seq: 7 });
     expect(stream.status).toBe('active');
-    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
-    expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(2);
+    expect(telegramMocks.sendPlainToTelegram.mock.calls[1][0])
       .toContain('Claude finished its response');
   });
 

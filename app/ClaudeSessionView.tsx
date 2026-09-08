@@ -1128,6 +1128,7 @@ const ChatInputBar = memo(function ChatInputBar({
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
   const [input, setInput] = useInputDraft(sessionId);
+  const [touchInput, setTouchInput] = useState(false);
 
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1159,15 +1160,20 @@ const ChatInputBar = memo(function ChatInputBar({
     }
   }, [prefillInput, clearPrefillInput, setInput]);
 
-  // Entering any Claude or Codex session puts the caret straight in the
-  // composer. ClaudeSessionView is keyed by sessionId in ClaudePanel, so a
-  // session switch remounts this bar; if a pending gate or sleeping state hid
-  // it, its later mount focuses it then. `autoFocus` on the textarea handles
-  // the commit itself; this next-frame call is a fallback for pane transitions.
+  // Focus on desktop session entry/remount, after pane transitions. Touch
+  // devices keep the keyboard closed until the user taps the composer.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const id = requestAnimationFrame(() => taRef.current?.focus());
-    return () => cancelAnimationFrame(id);
+    const media = window.matchMedia?.('(pointer: coarse)');
+    const syncTouchInput = () => setTouchInput(media?.matches ?? false);
+    syncTouchInput();
+    media?.addEventListener('change', syncTouchInput);
+    const id = requestAnimationFrame(() => {
+      if (!media?.matches) taRef.current?.focus();
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      media?.removeEventListener('change', syncTouchInput);
+    };
   }, [sessionId]);
 
   const rememberCaret = useCallback(() => {
@@ -1442,7 +1448,7 @@ const ChatInputBar = memo(function ChatInputBar({
       )}
       <textarea
         ref={taRef}
-        autoFocus
+        enterKeyHint="enter"
         value={input}
         onChange={(e) => {
           setInput(e.target.value);
@@ -1454,8 +1460,13 @@ const ChatInputBar = memo(function ChatInputBar({
         onClick={rememberCaret}
         onKeyUp={rememberCaret}
         onBlur={rememberCaret}
-        placeholder={`message to ${isCodex ? 'Codex' : 'Claude'} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`}
+        placeholder={touchInput
+          ? `message to ${isCodex ? 'Codex' : 'Claude'} — use 📎 to attach (Enter for newline, tap send to send)`
+          : `message to ${isCodex ? 'Codex' : 'Claude'} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          // Mobile Enter always inserts a newline, even with the @ menu open.
+          if (e.key === 'Enter' && window.matchMedia?.('(pointer: coarse)').matches) return;
           // While the @ menu is open it owns the navigation keys — otherwise
           // Enter would send a half-typed handle instead of completing it.
           if (mention && mentionMatches.length > 0) {

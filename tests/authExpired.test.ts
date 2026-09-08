@@ -23,6 +23,26 @@ describe('isClaudeAuthExpired', () => {
     expect(isClaudeAuthExpired('OAuth access token has expired. Re-authenticate to continue.')).toBe(true);
   });
 
+  it('matches the OAuth session refresh failure without a 401 marker', () => {
+    const message = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    expect(isClaudeAuthExpired(message)).toBe(true);
+    expect(isClaudeAuthExpired(`\n ${message}.\n`)).toBe(true);
+    expect(isClaudeAuthExpired(message.toUpperCase())).toBe(true);
+  });
+
+  it('ignores discussion and quotations of the OAuth session refresh failure', () => {
+    const message = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+    for (const text of [
+      `> ${message}`,
+      `\`\`\`\n${message}\n\`\`\``,
+      `\`${message}\``,
+      `The CLI reported: ${message}`,
+      `${message} — this is the error we now handle.`,
+      `${message}\nI added a login button for this case.`,
+      'Failed to authenticate: OAuth session refreshed successfully',
+    ]) expect(isClaudeAuthExpired(text)).toBe(false);
+  });
+
   it('tolerates surrounding whitespace', () => {
     expect(isClaudeAuthExpired('\n  Failed to authenticate. API Error: 401 …\n')).toBe(true);
   });

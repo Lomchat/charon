@@ -1642,14 +1642,16 @@ export class SessionStream {
           const isNewFinish = stopSeq == null
             ? !this.isReplaying
             : (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq);
-          // A stop with background work still running is NOT a finish: no
-          // push, no Telegram, no green unread marker. The notification is
-          // not lost, only DEFERRED — _scheduleBgFinishNotice sends it when
-          // the last task ends, or the next real stop does (§14.91). The seq
-          // marker below still advances: this stop has been dealt with.
-          if (!this.isReplaying && isNewFinish && !bgPending) {
+          // Announce the response even while tasks remain, with their count.
+          // The green unread marker and final background-work notice still
+          // wait for the last task (§14.91).
+          if (!this.isReplaying && isNewFinish) {
             const terminalError = this.terminalErrorLatched;
             const providerLabel = this.kind === 'codex' ? 'Codex' : 'Claude';
+            const bgCount = bgPending ? this.bgRunning!.size : 0;
+            const finishedBody = `${providerLabel} finished its response${bgCount > 0
+              ? ` — ${bgCount} background task${bgCount === 1 ? '' : 's'} still running`
+              : ''}`;
             const terminalErrorLabel = this.terminalErrorKind === 'authentication'
               ? 'an authentication error'
               : this.terminalErrorKind === 'rate_limit'
@@ -1661,7 +1663,7 @@ export class SessionStream {
               tag: `stop-${this.id}`,
             } : {
               title: `✓ ${this.vpsName} · ${this._label()}`,
-              body: `${providerLabel} finished its response`,
+              body: finishedBody,
               tag: `stop-${this.id}`,
             });
             // Mirror the "finished" notification to Telegram (plain text, no
@@ -1674,7 +1676,7 @@ export class SessionStream {
             sendPlainToTelegram(
               terminalError
                 ? `⚠ ${this.vpsName} · ${this._label()}\n${providerLabel} ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
-                : `✓ ${this.vpsName} · ${this._label()}\n${providerLabel} finished its response`,
+                : `✓ ${this.vpsName} · ${this._label()}\n${finishedBody}`,
               `/?session=${this.id}`,
             ).catch(() => {});
           }
@@ -2290,10 +2292,10 @@ export class SessionStream {
 
   //
   // A turn that ends while `Bash run_in_background` / a Task subagent is still
-  // running is NOT finished: the session goes `background` instead of green,
-  // and the "finished" notification waits for the real end. The registry is
-  // derived from the persisted bg_task rows (bgTaskState.ts) so it survives a
-  // hub restart, then maintained from the live events.
+  // running goes `background` instead of green. Its response notification
+  // includes the running count; a second notice follows the last task. The
+  // registry is rebuilt from persisted bg_task rows (bgTaskState.ts) after a
+  // hub restart, then maintained from live events.
 
   /** True while background work launched by this session is still running. */
   hasRunningBgTasks(): boolean {

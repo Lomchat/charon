@@ -144,17 +144,27 @@ describe('terminal Claude assistant errors', () => {
     expect(sessionStatus()).toBe('active');
   });
 
-  it('latches an authentication failure and does not send the success wording', () => {
+  it.each([
+    'Failed to authenticate. API Error: 401 Unauthorized',
+    'Failed to authenticate: OAuth session expired and could not be refreshed',
+  ])('latches an authentication failure and flags Claude signed out: %s', (message) => {
     const stream = createStream();
     stream._onAgentEvent({
+      event: 'effective_model', session_id: SID, model: '<synthetic>', seq: 9,
+    });
+    stream._onAgentEvent({
       event: 'assistant_text', session_id: SID,
-      delta: 'Failed to authenticate. API Error: 401 Unauthorized', seq: 10,
+      delta: message, seq: 10,
     });
     stream._onAgentEvent({
       event: 'stop', session_id: SID, subtype: 'error', seq: 11,
     });
 
     expect(sessionStatus()).toBe('failed');
+    expect(db.select().from(schema.vps).all()[0]).toMatchObject({
+      claudeLoggedIn: 0, codexLoggedIn: 1,
+    });
+    expect(persistedErrors()).toEqual([]);
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
       .toContain('Claude ended with an authentication error');
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])

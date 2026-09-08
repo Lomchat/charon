@@ -5,6 +5,7 @@
 //
 //   Failed to authenticate. API Error: 401 OAuth access token has expired.
 //   Re-authenticate to continue.
+//   Failed to authenticate: OAuth session expired and could not be refreshed
 //
 // So the only place this is observable is the assistant text. Shared consumers
 // need a PLAIN module (no 'server-only'): sessionOps flips
@@ -18,14 +19,17 @@
 // (this very repo's sessions discuss `claude auth login` constantly). The
 // guards below keep it tight:
 //   - the real message is a SHORT standalone line → cap the length;
-//   - it must look like a report ABOUT the API call, not prose: we require an
-//     explicit 401/`API Error` marker together with an auth/OAuth mention;
+//   - it must look like a report ABOUT the API call, not prose: we require
+//     an API/auth marker or the exact OAuth session-refresh failure;
 //   - markdown prose about it is almost always longer, or quoted/fenced.
 
 /** The genuine message is ~100 chars; allow slack, refuse essays. */
 const MAX_LEN = 400;
 
 const PATTERNS: RegExp[] = [
+  // New CLI refresh failure has no 401 marker. Match the whole report so
+  // commentary that quotes it inline cannot mark a healthy VPS signed out.
+  /^failed to authenticate:\s*oauth session expired and could not be refreshed\.?$/i,
   // The canonical CLI line, anchored: "Failed to authenticate. API Error: 401 …"
   /^\s*failed to authenticate\b[\s\S]{0,120}?\b401\b/i,
   // Same failure surfaced API-first: "API Error: 401 … oauth/authenticate …"
