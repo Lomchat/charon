@@ -74,8 +74,9 @@ function reduceBgTasksFromDb(sessionId: string): {
       const ev = JSON.parse(r.content);
       if (ev?.type !== 'bg_task' || !ev.taskId) continue;
       applyBgTaskEvent(details, ev, r.createdAt);
-      if (isBgTaskDone(ev)) running.delete(ev.taskId);
-      else if (!running.has(ev.taskId)) running.set(ev.taskId, r.createdAt);
+      const task = details.get(ev.taskId)!;
+      if (task.status !== 'running') running.delete(ev.taskId);
+      else running.set(ev.taskId, task.startedAt);
     } catch { /* a corrupt row must not blind the whole registry */ }
   }
   return { running, details };

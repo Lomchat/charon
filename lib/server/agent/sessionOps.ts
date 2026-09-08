@@ -36,7 +36,8 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
-import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
+import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb, runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
+import { readCodexBgState } from '@/lib/server/claude/codexBgState';
 import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
 import {
@@ -547,6 +548,9 @@ export class SessionStream {
   // because a finishing task usually re-invokes the model (§14.54) — firing
   // "done" a beat before a new turn starts would be a lie.
   private bgFinishTimer: ReturnType<typeof setTimeout> | null = null;
+  private codexBgChecks = new Map<string, { revision: number; since: number }>();
+  private codexBgTimer: ReturnType<typeof setTimeout> | null = null;
+  private codexBgChecking = false;
 
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
@@ -603,6 +607,14 @@ export class SessionStream {
     client.subscribe(this.id, this.agentListener,
       this.lastSeenSeq != null ? { afterSeq: this.lastSeenSeq } : undefined,
     );
+    if (this.kind === 'codex') {
+      for (const task of runningBgTaskDetailsFromDb(this.id)) {
+        if (task.taskType === 'codex_subagent' || task.taskType === 'codex_collab') {
+          this.codexBgChecks.set(task.taskId, { revision: 0, since: task.startedAt });
+        }
+      }
+      this._scheduleCodexBgCheck();
+    }
   }
 
   /** Advance the durable-replay cursor. Called from _onAgentEvent
@@ -654,6 +666,7 @@ export class SessionStream {
 
   /** Detach the listener (used on permanent kill). */
   detach(): void {
+    this._clearCodexBgChecks();
     if (!this.attached) return;
     this.attached = false;
     try {
@@ -785,6 +798,7 @@ export class SessionStream {
         this.replayKnownAssistantContents.clear();
         this.replayKnownThinkingContents.clear();
         this.replayKnownPendingIds.clear();
+        this._scheduleCodexBgCheck();
         return;
       case 'replay_gap': {
         // Synthesized by AgentClient from the subscribe RPC result (agent
@@ -1237,6 +1251,15 @@ export class SessionStream {
         // NEXT stop means "finished" or "still has background work" (§14.91),
         // and whether an already-stopped session is done now.
         this._trackBgTask(payload.taskId, payload);
+        if (this.kind === 'codex'
+          && (ev.task_type === 'codex_subagent' || ev.task_type === 'codex_collab')) {
+          const previous = this.codexBgChecks.get(ev.task_id);
+          this.codexBgChecks.set(ev.task_id, {
+            revision: (previous?.revision ?? 0) + 1,
+            since: ev.kind === 'started' ? (ev.ts ?? Date.now() / 1000) : (previous?.since ?? 0),
+          });
+          this._scheduleCodexBgCheck();
+        }
         break;
       }
       case 'bg_task_progress': {
@@ -1452,6 +1475,7 @@ export class SessionStream {
         break;
       }
       case 'turn_end': {
+        if (this._replayAlreadyPersisted(ev)) break;
         // The Stop hook's verdict on what is STILL RUNNING (agent >= 0.37.0).
         // §14.91's registry is a RECONSTRUCTION — burial rows, three triggers,
         // a 24h age cap, two terminal-word lists — of a fact the process that
@@ -1465,7 +1489,17 @@ export class SessionStream {
           const running = this.bgRunning!;
           let changed = false;
           for (const taskId of [...running.keys()]) {
-            if (!alive.has(taskId)) { running.delete(taskId); changed = true; }
+            if (!alive.has(taskId)) {
+              const payload = { type: 'bg_task' as const, kind: 'finished' as const,
+                taskId, status: 'completed', terminal: true };
+              // Persist the receipt and send it to the bar too. An in-memory
+              // deletion resurrected this task at the next GET/hub restart.
+              if (this._persist('event', payload) != null) {
+                this._broadcast(payload);
+                running.delete(taskId);
+                changed = true;
+              }
+            }
           }
           // Order between the hook and the ResultMessage is not guaranteed. If
           // `stop` already ran and parked us in `background`, correct it now;
@@ -2188,6 +2222,72 @@ export class SessionStream {
   }
 
   // ── Background work (§14.91) ─────────────────────────────────────────────
+  private _clearCodexBgChecks(): void {
+    if (this.codexBgTimer) clearTimeout(this.codexBgTimer);
+    this.codexBgTimer = null;
+    this.codexBgChecks.clear();
+  }
+
+  private _scheduleCodexBgCheck(): void {
+    if (!this.attached || this.isReplaying || this.codexBgChecking
+      || this.codexBgTimer || !this.codexBgChecks.size) return;
+    this.codexBgTimer = setTimeout(() => {
+      this.codexBgTimer = null;
+      void this._reconcileCodexBgTasks();
+    }, 5_000);
+    this.codexBgTimer.unref?.();
+  }
+
+  private async _reconcileCodexBgTasks(): Promise<void> {
+    if (this.codexBgChecking || this.isReplaying || !this.attached
+      || !this.claudeSessionId || !this.codexBgChecks.size) return;
+    this.codexBgChecking = true;
+    const captured = new Map([...this.codexBgChecks].slice(0, 64));
+    try {
+      const vps = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).get();
+      const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions)
+        .where(eq(claudeSessions.id, this.id)).get();
+      if (!vps || !row) return;
+      let codexHome: string | undefined;
+      try { codexHome = JSON.parse(row.config ?? '{}').env?.CODEX_HOME; } catch {}
+      const observations = await readCodexBgState(vps, this.claudeSessionId,
+        [...captured.keys()], typeof codexHome === 'string' ? codexHome : undefined);
+      if (!this.attached || this.isReplaying) return;
+      for (const observation of observations) {
+        const expected = captured.get(observation.taskId);
+        // An activity/restart during the SSH read invalidates its observation.
+        if (!expected || this.codexBgChecks.get(observation.taskId) !== expected) continue;
+        const terminal = observation.status !== 'running';
+        if (terminal && observation.at < expected.since) continue;
+        this.hasRunningBgTasks();
+        const running = this.bgRunning!.has(observation.taskId);
+        if (running !== !terminal) {
+          const payload = { type: 'bg_task' as const,
+            kind: terminal ? 'finished' as const : 'updated' as const,
+            taskId: observation.taskId, taskType: 'codex_subagent',
+            status: observation.status, terminal };
+          // Synthetic observations have no provider replay cursor. Only a
+          // successful durable write may change liveness or clear a check.
+          if (this._persist('event', payload, { seq: null }) == null) continue;
+          this._broadcast(payload);
+          this._trackBgTask(observation.taskId, payload);
+        }
+        if (terminal) this.codexBgChecks.delete(observation.taskId);
+      }
+      // Round-robin bounded batches; unknown evidence never closes a task.
+      for (const [id, expected] of captured) {
+        if (this.codexBgChecks.get(id) !== expected) continue;
+        this.codexBgChecks.delete(id);
+        this.codexBgChecks.set(id, expected);
+      }
+    } catch (error) {
+      console.warn(`[codex-background ${this.id}] ${String(error).slice(0, 200)}`);
+    } finally {
+      this.codexBgChecking = false;
+      this._scheduleCodexBgCheck();
+    }
+  }
+
   //
   // A turn that ends while `Bash run_in_background` / a Task subagent is still
   // running is NOT finished: the session goes `background` instead of green,
@@ -2205,13 +2305,18 @@ export class SessionStream {
    *  here: the lazy DB load already contains them, and re-applying a
    *  started/finished PAIR in order would transiently resurrect a task that
    *  finished long ago. */
-  private _trackBgTask(taskId: string | undefined, ev: { kind?: unknown; status?: unknown }): void {
+  private _trackBgTask(taskId: string | undefined, ev: { kind?: unknown; status?: unknown; terminal?: unknown }): void {
     if (!taskId) return;
     this.hasRunningBgTasks();                       // ensure loaded
     const running = this.bgRunning!;
     const before = running.size > 0;
     if (isBgTaskDone(ev)) running.delete(taskId);
-    else if (!running.has(taskId)) running.set(taskId, Math.floor(Date.now() / 1000));
+    else if (!running.has(taskId)
+      && (ev.kind === 'started'
+        ? runningBgTasksFromDb(this.id).has(taskId)
+        : ev.status != null || ev.terminal === false)) {
+      running.set(taskId, Math.floor(Date.now() / 1000));
+    }
     if (running.size > 0) {
       // More work started — whatever "it's done" we had queued is void.
       this._cancelBgFinish();
@@ -2256,6 +2361,7 @@ export class SessionStream {
    * until the 24h age cap while blocking the auto-update quiet gate.
    */
   private _expireBgTasks(stampSeq: number | null = null): void {
+    this._clearCodexBgChecks();
     this._cancelBgFinish();
     if (!this.hasRunningBgTasks()) return;
     const running = this.bgRunning!;

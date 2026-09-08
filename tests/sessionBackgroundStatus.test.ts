@@ -11,6 +11,8 @@ process.env.DATABASE_URL = path.join(
 const telegramMocks = vi.hoisted(() => ({
   sendPlainToTelegram: vi.fn(async (_text: string, _linkPath?: string) => {}),
 }));
+const bgMocks = vi.hoisted(() => ({ read: vi.fn(async (..._args: any[]): Promise<any[]> => []) }));
+vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: bgMocks.read }));
 
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/claude/telegram', () => ({
@@ -81,6 +83,7 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.useFakeTimers();
   telegramMocks.sendPlainToTelegram.mockClear();
+  bgMocks.read.mockReset().mockResolvedValue([]);
   db.delete(schema.claudeSessionMessages).run();
   db.delete(schema.claudeSessions).run();
   db.insert(schema.claudeSessions).values({
@@ -130,6 +133,53 @@ describe('provider-neutral durable turn usage', () => {
 });
 
 describe('a turn that ends with background tasks still running (§14.91)', () => {
+  it('persists Stop-hook reconciliation for the bar, reload and quiet gate', () => {
+    const stream = createStream();
+    stream._onAgentEvent(bgTask(1, 'started', 'child'));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2, subtype: 'end_turn' });
+    stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 3, background_tasks: [] });
+    expect(stream.status).toBe('active');
+    expect(runningBgTaskDetailsFromDb(SID)).toEqual([]);
+    expect(createStream().hasRunningBgTasks()).toBe(false);
+    const before = db.select().from(schema.claudeSessionMessages).all().length;
+    stream._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 3, background_tasks: [] });
+    stream._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
+  });
+
+  it('repairs a Codex child from native completion and ignores late metadata', async () => {
+    const stream = createStream('active', 'codex');
+    stream.claudeSessionId = 'parent';
+    stream._onAgentEvent({ ...bgTask(1, 'started', 'child'), task_type: 'codex_subagent', ts: 100 });
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2, subtype: 'end_turn' });
+    stream.attach();
+    bgMocks.read.mockResolvedValue([{ taskId: 'child', status: 'completed', at: Date.now() / 1000 + 1 }]);
+    await stream._reconcileCodexBgTasks();
+    expect(stream.status).toBe('active');
+    expect(runningBgTaskDetailsFromDb(SID)).toEqual([]);
+    stream._onAgentEvent({ ...bgTask(3, 'updated', 'child'), task_type: 'codex_subagent' });
+    expect(stream.hasRunningBgTasks()).toBe(false);
+    expect(createStream('active', 'codex').hasRunningBgTasks()).toBe(false);
+    stream.detach();
+  });
+
+  it('keeps native running/unknown tasks and ignores an observation superseded by activity', async () => {
+    const stream = createStream('active', 'codex');
+    stream.claudeSessionId = 'parent';
+    stream._onAgentEvent({ ...bgTask(1, 'started', 'child'), task_type: 'codex_subagent' });
+    stream.attach();
+    await stream._reconcileCodexBgTasks();
+    expect(stream.hasRunningBgTasks()).toBe(true);
+    let resolve!: (rows: any[]) => void;
+    bgMocks.read.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const read = stream._reconcileCodexBgTasks();
+    stream._onAgentEvent({ ...bgTask(2, 'updated', 'child'), task_type: 'codex_subagent' });
+    resolve([{ taskId: 'child', status: 'completed', at: Date.now() / 1000 + 1 }]);
+    await read;
+    expect(stream.hasRunningBgTasks()).toBe(true);
+    stream.detach();
+  });
   it('adopts a background task discovered just after the provider stop', () => {
     const stream = createStream();
     stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 1 });

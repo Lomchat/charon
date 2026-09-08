@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-import { eventIsTerminal, isTerminalBgStatus } from '@/app/bgTasks';
+import { applyBgTaskEvent, eventIsTerminal, isTerminalBgStatus, type BgTask } from '@/app/bgTasks';
 import { isBgTaskDone } from '@/lib/server/claude/bgTaskState';
 
 // §14.91: the hub kept TWO hand-written terminal-word lists (client + server)
@@ -16,6 +16,28 @@ import { isBgTaskDone } from '@/lib/server/claude/bgTaskState';
 // exactly the case that wedged the bar (session stuck violet forever, and with
 // it the auto-update quiet gate).
 describe('bg task terminal-ness prefers the SDK verdict', () => {
+  it.each([
+    ['pending', true, 'completed'], ['failed', false, 'running'],
+  ] as const)('renders %s with terminal=%s consistently with the hub', (status, terminal, expected) => {
+    const tasks = new Map<string, BgTask>();
+    applyBgTaskEvent(tasks, { kind: 'updated', taskId: 'child', status, terminal }, 10);
+    expect(tasks.get('child')?.status).toBe(expected);
+  });
+
+  it('a finished item cannot still display running', () => {
+    const tasks = new Map<string, BgTask>();
+    applyBgTaskEvent(tasks, { kind: 'finished', taskId: 'child', status: 'running', terminal: true }, 10);
+    expect(tasks.get('child')?.status).toBe('completed');
+  });
+
+  it('metadata cannot resurrect a completed child; a confirmed new turn can', () => {
+    const tasks = new Map<string, BgTask>();
+    applyBgTaskEvent(tasks, { kind: 'finished', taskId: 'child' }, 10);
+    applyBgTaskEvent(tasks, { kind: 'updated', taskId: 'child', description: '/root/worker' }, 11);
+    expect(tasks.get('child')?.status).toBe('completed');
+    applyBgTaskEvent(tasks, { kind: 'updated', taskId: 'child', status: 'running', terminal: false }, 12);
+    expect(tasks.get('child')).toMatchObject({ status: 'running', startedAt: 12, endedAt: null });
+  });
   it('trusts terminal:true even for a word the local list calls running', () => {
     expect(isTerminalBgStatus('pending')).toBe(false);
     expect(eventIsTerminal({ terminal: true }, 'running')).toBe(true);

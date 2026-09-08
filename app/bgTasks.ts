@@ -188,11 +188,22 @@ export function applyBgTaskEvent(
   }
   if (ev.kind === 'finished') {
     t.status = normStatus(ev.status, 'completed');
-    if (!eventIsTerminal(ev, t.status)) t.status = 'completed';
+    if (!TERMINAL.has(t.status)) t.status = 'completed';
     t.endedAt = at;
   } else if (ev.kind === 'updated') {
-    const next = normStatus(ev.status, t.status);
-    if (eventIsTerminal(ev, next) && !TERMINAL.has(t.status)) t.endedAt = at;
+    let next = normStatus(ev.status, t.status);
+    // Metadata-only Codex activity must not resurrect a finished child.
+    // The native terminal flag also controls the DISPLAY status, not merely
+    // endedAt; otherwise the hub and bar disagree on unknown SDK words.
+    if (typeof ev.terminal === 'boolean') {
+      if (ev.terminal && !TERMINAL.has(next)) next = 'completed';
+      if (!ev.terminal && TERMINAL.has(next)) next = 'running';
+    }
+    if (TERMINAL.has(next) && !TERMINAL.has(t.status)) t.endedAt = at;
+    if (next === 'running' && TERMINAL.has(t.status)) {
+      t.startedAt = at;
+      t.endedAt = null;
+    }
     t.status = next;
   } else if (ev.kind === 'started') {
     if (!TERMINAL.has(t.status)) t.status = 'running';
