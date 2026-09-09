@@ -1,35 +1,15 @@
-:root {
-  --stone: #181b24;
-  --stone-2: #232733;
-  --stone-3: #2a2f3c;
-  --parchment: #d2d9ec;
-  --parchment-soft: #6a7388;
-  --gold: #8ab4e4;
-  --gold-bright: #a8c4ef;
-  --gold-deep: #363c4d;
-  --teal: #86c5d8;
-  --teal-deep: #5a8a9a;
-  --crimson: #d8757f;
-  --crimson-deep: #944f57;
-  --lavender: #a8b8e0;
-  --shadow: #11131a;
-  --display: 'Inter', system-ui, -apple-system, sans-serif;
-  --body: 'Inter', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', monospace;
-}
-
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
   height: 100%;
-  background: var(--stone);
-  color: var(--parchment);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--body);
 }
 
 body {
   min-height: 100vh;
-  background: var(--stone-2);
+  background: var(--bg-elevated);
   overflow: hidden;
 }
 
@@ -39,23 +19,23 @@ a { color: inherit; }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--gold-deep); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--gold); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
 /* ── Auth pages ── */
 .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; position: relative; z-index: 2; }
 .auth-card {
   width: 100%; max-width: 420px;
-  background: linear-gradient(180deg, #232733, #181b24);
-  border: 1px solid var(--gold-deep);
-  box-shadow: 0 0 0 1px var(--gold-deep), 0 30px 80px rgba(0,0,0,0.7);
+  background: linear-gradient(180deg, var(--bg-elevated), var(--bg));
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px var(--border), 0 30px 80px color-mix(in srgb, var(--shadow-color) 70%, transparent);
   padding: 50px 50px 40px;
   position: relative;
 }
 .auth-card::before, .auth-card::after {
   content: ''; position: absolute;
   width: 36px; height: 36px;
-  border: 2px solid var(--gold);
+  border: 2px solid var(--accent);
 }
 .auth-card::before { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
 .auth-card::after { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
@@ -63,8 +43,8 @@ a { color: inherit; }
   font-family: var(--display);
   font-weight: 700; font-size: 32px;
   letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--gold-bright);
-  text-shadow: 0 0 18px rgba(138, 180, 228, 0.35);
+  color: var(--accent-strong);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 35%, transparent);
   margin-bottom: 24px;
 }
 .auth-card label { display: block; margin-bottom: 16px; }
@@ -72,28 +52,28 @@ a { color: inherit; }
   display: block;
   font-family: var(--display); font-weight: 600;
   font-size: 10px; letter-spacing: 0.25em; text-transform: uppercase;
-  color: var(--parchment-soft); margin-bottom: 6px;
+  color: var(--text-muted); margin-bottom: 6px;
 }
 .auth-card input {
   width: 100%;
-  background: var(--shadow);
-  border: 1px solid var(--gold-deep);
-  color: var(--parchment);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 12px 14px;
   font-family: var(--mono); font-size: 14px; letter-spacing: 0.05em;
   outline: none;
 }
-.auth-card input:focus { border-color: var(--gold); }
+.auth-card input:focus { border-color: var(--accent); }
 .auth-card .err {
-  color: var(--crimson);
+  color: var(--danger);
   font-family: var(--body); font-style: italic; font-size: 13px;
   margin: 12px 0;
 }
 .auth-card button {
   width: 100%;
-  background: linear-gradient(180deg, var(--stone-2), var(--stone));
-  border: 1px solid var(--gold);
-  color: var(--gold-bright);
+  background: linear-gradient(180deg, var(--bg-elevated), var(--bg));
+  border: 1px solid var(--accent);
+  color: var(--accent-strong);
   padding: 12px 18px;
   font-family: var(--display); font-weight: 600;
   font-size: 12px; letter-spacing: 0.3em; text-transform: uppercase;
@@ -101,5 +81,5 @@ a { color: inherit; }
   margin-top: 8px;
   transition: box-shadow .25s ease;
 }
-.auth-card button:hover:not(:disabled) { box-shadow: 0 0 18px rgba(138, 180, 228, 0.3); }
+.auth-card button:hover:not(:disabled) { box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent); }
 .auth-card button:disabled { opacity: 0.5; cursor: not-allowed; }

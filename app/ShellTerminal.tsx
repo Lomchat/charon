@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTerminalUrlOverlay } from './useTerminalUrlOverlay';
 import TerminalUrlOverlay from './TerminalUrlOverlay';
 import { reloadOnceForChunkError } from './chunkReload';
+import { useTheme } from './themeClient';
 
 type Props = {
   shellId: string;
@@ -42,6 +43,13 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<any>(null);
   const fitRef = useRef<any>(null);
+  // xterm takes a colour OBJECT, not a class, so the theme cannot reach it
+  // through CSS. Read through a ref: the setup effect is keyed on `shellId`
+  // and must NOT re-run here — recreating the Terminal would throw away the
+  // local scrollback, which is the only copy there is (§14.37).
+  const theme = useTheme();
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -84,16 +92,7 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
         fontFamily: '"JetBrains Mono", "SF Mono", Menlo, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.2,
-        theme: {
-          background: '#0e0e0e',
-          foreground: '#dcdcdc',
-          cursor: '#dcdcdc',
-          black: '#000', red: '#d97a6b', green: '#6cbf6c', yellow: '#d8a85a',
-          blue: '#6a9bd8', magenta: '#c8a2c8', cyan: '#7ac4c4', white: '#dcdcdc',
-          brightBlack: '#555', brightRed: '#e69088', brightGreen: '#8acf8a',
-          brightYellow: '#e8bf7a', brightBlue: '#8ab0d8', brightMagenta: '#d8b8d8',
-          brightCyan: '#9cd0d0', brightWhite: '#fff',
-        },
+        theme: themeRef.current.xterm,
         cursorBlink: true,
         scrollback: 10_000,  // generous local scrollback: with agent-hosted
         convertEol: false,   // PTYs we get the full raw stream → real history.
@@ -352,6 +351,12 @@ export default function ShellTerminal({ shellId, vpsName, cwd, onKilled, active 
     const id = requestAnimationFrame(() => { refitRef.current?.(); });
     return () => cancelAnimationFrame(id);
   }, [active]);
+
+  // Repaint the live terminal on a theme change — xterm re-renders the whole
+  // buffer from the new palette, so the scrollback follows the theme too.
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = theme.xterm;
+  }, [theme]);
 
   const killShell = async () => {
     closedByUserRef.current = true;

@@ -25,9 +25,11 @@ export default function AppError({
         minHeight: '100vh',
         display: 'grid',
         placeItems: 'center',
-        background: '#181b24',
-        color: '#dcdcdc',
-        fontFamily: 'Inter, system-ui, sans-serif',
+        // This boundary renders INSIDE the root layout, so the theme tokens
+        // are available (global-error.tsx replaces <html> and cannot use them).
+        background: 'var(--bg)',
+        color: 'var(--text)',
+        fontFamily: 'var(--body)',
       }}
     >
       <div style={{ textAlign: 'center', padding: 24, maxWidth: 420 }}>
@@ -42,8 +44,8 @@ export default function AppError({
         <button
           onClick={() => (chunk ? window.location.reload() : reset())}
           style={{
-            background: '#3b82f6',
-            color: '#fff',
+            background: 'var(--accent)',
+            color: 'var(--bg)',
             border: 'none',
             borderRadius: 8,
             padding: '9px 18px',

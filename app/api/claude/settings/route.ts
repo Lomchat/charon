@@ -4,6 +4,7 @@ import { emitGlobalSettingsChanged } from '@/lib/server/agent/sessionOps';
 import { requireApiSession } from '@/lib/server/session';
 import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
 import { isSessionMode } from '@/lib/sessionCapabilities';
+import { isThemeId } from '@/app/themes';
 
 const ALLOWED_KEYS = [
   'ssh.private_key_path',
@@ -12,6 +13,8 @@ const ALLOWED_KEYS = [
   'telegram.bot_token',
   'telegram.chat_id',
   'app.public_url',
+  // Hub-wide look — an id from app/themes.ts, validated below (§11).
+  'app.theme',
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',
@@ -111,6 +114,12 @@ export async function POST(req: Request) {
     }
     if (k === 'codex.default_approvals_reviewer'
         && val !== 'user' && val !== 'auto_review') {
+      rejected.push(k);
+      continue;
+    }
+    // An unknown theme id would render every page against tokens nothing
+    // defines — refuse it here rather than degrade at paint time.
+    if (k === 'app.theme' && !isThemeId(val)) {
       rejected.push(k);
       continue;
     }

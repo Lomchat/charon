@@ -1,6 +1,6 @@
 'use client';
 import PickerControl from './PickerControl';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { NOTIFICATION_EVENTS, normalizeChannelNotifications, type NotificationSession } from '@/lib/notificationPreferences';
 import { NotificationTable } from './NotificationSettings';
@@ -17,6 +17,8 @@ import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { invalidateModels } from './modelsCache';
 import { CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES } from '@/lib/sessionCapabilities';
+import { THEMES, DEFAULT_THEME_ID } from './themes';
+import { applyTheme, currentThemeId } from './themeClient';
 
 const MODE_LABEL: Record<string, string> = {
   normal: 'normal — ask before tools',
@@ -64,6 +66,11 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 export default function SettingsModal({ onClose, vpsList, modelNotices, onModelsSeen }: Props) {
+  // The theme picker previews LIVE (a swatch cannot tell you whether a theme is
+  // comfortable), so the modal owns an undo: everything that closes without
+  // saving restores the theme in effect when it opened.
+  const openedWith = useRef(currentThemeId());
+  const close = useCallback(() => { applyTheme(openedWith.current); onClose(); }, [onClose]);
   const [sessionSettings, setSessionSettings] = useState<NotificationSession | null>(null);
   const browserNotifications = useBrowserNotifications();
   const [browserBusy, setBrowserBusy] = useState(false);
@@ -96,10 +103,10 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
   }, [vpsList]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !sessionSettings) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !sessionSettings) close(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, sessionSettings]);
+  }, [close, sessionSettings]);
 
   useEffect(() => {
     api.getClaudeSettings().then((r) => setS(r)).catch(() => setS({}));
@@ -125,6 +132,10 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
         return;
       }
       setS(resp);
+      // The server's value, not the preview: it also covers a theme the route
+      // refused, which must not stay on screen.
+      openedWith.current = resp['app.theme'] ?? DEFAULT_THEME_ID;
+      applyTheme(openedWith.current);
       onClose();
     } catch (e: any) {
       alert('save: ' + (e?.message ?? e));
@@ -177,9 +188,9 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
 
   return (
     <>
-    <div style={sessionSettings ? { display: 'none' } : undefined} className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div style={sessionSettings ? { display: 'none' } : undefined} className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className="claude-modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
-        <button className="modal-close" onClick={onClose} aria-label="Close settings" title="Close settings">✕</button>
+        <button className="modal-close" onClick={close} aria-label="Close settings" title="Close settings">✕</button>
         <h2>settings</h2>
         {s == null && <div className="empty">loading…</div>}
         {s && (
@@ -205,6 +216,20 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
               <div className="settings-pane">
                 {cat === 'general' && (
                   <>
+                    <label>theme
+                      <PickerControl
+                        value={s['app.theme'] ?? DEFAULT_THEME_ID}
+                        onValueChange={(nextValue) => { set('app.theme', nextValue); applyTheme(nextValue); }}
+                      >
+                        {THEMES.map((theme) => (
+                          <option key={theme.id} value={theme.id}>{theme.label} — {theme.hint}</option>
+                        ))}
+                      </PickerControl>
+                    </label>
+                    <p className="set-meta">
+                      Applies to the whole hub, on every device. Previewed as you
+                      pick; cancel puts the previous one back.
+                    </p>
                     <label>SSH key (path on the hub server)
                       <input value={s['ssh.private_key_path'] ?? ''} onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
                     </label>
@@ -432,7 +457,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
 
             <div className="settings-foot modal-actions">
               <button className="primary" onClick={save} disabled={busy}>save</button>
-              <button onClick={onClose}>cancel</button>
+              <button onClick={close}>cancel</button>
             </div>
           </>
         )}

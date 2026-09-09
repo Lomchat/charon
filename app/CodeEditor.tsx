@@ -10,6 +10,7 @@ import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 import { LanguageDescription } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { oneDark } from '@codemirror/theme-one-dark';
+import { useTheme } from './themeClient';
 import {
   SearchQuery, findNext, findPrevious, getSearchQuery, replaceAll, replaceNext,
   search, setSearchQuery,
@@ -110,6 +111,36 @@ function queryOf(f: Find): SearchQuery {
   });
 }
 
+/** Everything about the editor a THEME decides. `oneDark` carries a whole
+ *  highlight style, so a light theme simply drops it and inherits CodeMirror's
+ *  own light one — there is no light build of one-dark to swap in. The rules
+ *  below are plain CSS strings, so they follow the tokens for free. */
+function editorLook(dark: boolean) {
+  return [
+    dark ? oneDark : [],
+    EditorView.theme({
+      // Let the app's panel colour through instead of the theme's own grey.
+      '&': { backgroundColor: 'transparent', height: '100%' },
+      '.cm-scroller': { fontFamily: 'var(--mono)', fontSize: '12px', lineHeight: '1.55' },
+      '.cm-gutters': {
+        backgroundColor: 'transparent',
+        borderRight: '1px solid color-mix(in srgb, var(--warning) 15%, transparent)',
+        color: 'color-mix(in srgb, var(--text-strong) 35%, transparent)',
+      },
+      '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--accent) 6%, transparent)' },
+      '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--accent-strong)' },
+      '.cm-charon-match': {
+        backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)',
+        outline: '1px solid color-mix(in srgb, var(--accent) 35%, transparent)',
+      },
+      '.cm-charon-match-on': {
+        backgroundColor: 'color-mix(in srgb, var(--warning) 42%, transparent)',
+        outline: '1px solid var(--accent-strong)',
+      },
+    }, { dark }),
+  ];
+}
+
 /**
  * The CodeMirror instance. Mounted only through `next/dynamic(ssr:false)` from
  * FileEditor — it is ~200KB and must stay out of the main chunk, and it touches
@@ -133,6 +164,14 @@ export default function CodeEditor({
   const view = useRef<EditorView | null>(null);
   const language = useRef(new Compartment());
   const editable = useRef(new Compartment());
+  // CodeMirror's highlight style is an EXTENSION, not CSS, so the theme has to
+  // reach it through a compartment. Reconfiguring keeps the document, the
+  // undo history and the live buffer (§14.79) — rebuilding the editor on a
+  // theme change would drop unsaved edits.
+  const look = useRef(new Compartment());
+  const theme = useTheme();
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const searchInput = useRef<HTMLInputElement | null>(null);
   const [find, setFind] = useState<Find>(FIND_CLOSED);
   const [count, setCount] = useState({ total: 0, index: 0, capped: false });
@@ -218,7 +257,6 @@ export default function CodeEditor({
         doc,
         extensions: [
           basicSetup,
-          oneDark,
           // `basicSetup` binds the search KEYMAP but never installs the search
           // STATE — the built-in panel adds it on the fly. Ours is driven from
           // React, so the field has to be there from the start or the very
@@ -256,20 +294,7 @@ export default function CodeEditor({
             // move, so it is recomputed from the editor rather than tracked.
             if ((u.docChanged || u.selectionSet) && findRef.current.open) recountRef.current();
           }),
-          EditorView.theme({
-            // Let the app's panel colour through instead of one-dark's grey.
-            '&': { backgroundColor: 'transparent', height: '100%' },
-            '.cm-scroller': { fontFamily: 'var(--mono)', fontSize: '12px', lineHeight: '1.55' },
-            '.cm-gutters': {
-              backgroundColor: 'transparent',
-              borderRight: '1px solid rgba(216,168,90,0.15)',
-              color: 'rgba(230,225,210,0.35)',
-            },
-            '.cm-activeLine': { backgroundColor: 'rgba(138,180,228,0.06)' },
-            '.cm-activeLineGutter': { backgroundColor: 'transparent', color: 'var(--gold-bright)' },
-            '.cm-charon-match': { backgroundColor: 'rgba(138,180,228,0.22)', outline: '1px solid rgba(138,180,228,0.35)' },
-            '.cm-charon-match-on': { backgroundColor: 'rgba(216,168,90,0.42)', outline: '1px solid var(--gold-bright)' },
-          }, { dark: true }),
+          look.current.of(editorLook(themeRef.current.dark)),
         ],
       }),
     });
@@ -297,6 +322,10 @@ export default function CodeEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorView.editable.of(!readOnly)) });
   }, [readOnly]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: look.current.reconfigure(editorLook(theme.dark)) });
+  }, [theme]);
 
   // The language server's problems. CodeMirror owns the view, so this is the
   // one place they cross over — and it is keyed on the array identity, so a

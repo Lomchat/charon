@@ -13,14 +13,14 @@
   font-family: monospace;
   cursor: help;
 }
-.pg-agent.agent-ok      { color: #6cbf6c; }     /* green */
-.pg-agent.agent-missing { color: #999; }
-.pg-agent.agent-error   { color: #d97a6b; }     /* soft red */
-.pg-agent.agent-unknown { color: #777; opacity: 0.5; }
+.pg-agent.agent-ok      { color: var(--success); }     /* green */
+.pg-agent.agent-missing { color: var(--term-dim); }
+.pg-agent.agent-error   { color: var(--danger-strong); }     /* soft red */
+.pg-agent.agent-unknown { color: var(--term-dim); opacity: 0.5; }
 
 .pg-action {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.12);
+  background: color-mix(in srgb, var(--tint) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tint) 12%, transparent);
   color: inherit;
   font-size: 0.78em;
   padding: 2px 8px;
@@ -30,7 +30,7 @@
   font-family: inherit;
 }
 .pg-action:hover {
-  background: rgba(255,255,255,0.08);
+  background: color-mix(in srgb, var(--tint) 8%, transparent);
 }
 
 /* ── Sidebar v2: VPS card with clean hierarchy ──────────────────────────── */
@@ -38,14 +38,14 @@
 
 .claude-sidebar .vps-card {
   margin: 0 8px 14px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid color-mix(in srgb, var(--tint) 6%, transparent);
   border-radius: 4px;
-  background: rgba(0,0,0,0.15);
+  background: color-mix(in srgb, var(--shade) 15%, transparent);
   overflow: hidden;
 }
 /* When the agent isn't ok, visually flag the card */
-.claude-sidebar .vps-card.agent-missing { border-color: rgba(200,162,98,0.35); }
-.claude-sidebar .vps-card.agent-error   { border-color: rgba(217,122,107,0.4); }
+.claude-sidebar .vps-card.agent-missing { border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+.claude-sidebar .vps-card.agent-error   { border-color: color-mix(in srgb, var(--danger-strong) 40%, transparent); }
 
 /* Override: the head becomes more compact, no dashed border-bottom */
 .claude-sidebar .vps-card .vps-head {
@@ -68,12 +68,12 @@
   cursor: help;
   flex-shrink: 0;
 }
-.vps-agent-dot.agent-ok      { color: #6cbf6c; }
-.vps-agent-dot.agent-missing { color: #d8a85a; }
-.vps-agent-dot.agent-error   { color: #d97a6b; }
-.vps-agent-dot.agent-unknown { color: #777; }
+.vps-agent-dot.agent-ok      { color: var(--success); }
+.vps-agent-dot.agent-missing { color: var(--warning); }
+.vps-agent-dot.agent-error   { color: var(--danger-strong); }
+.vps-agent-dot.agent-unknown { color: var(--term-dim); }
 /* Out of date: override the "ok" color to signal an update is needed */
-.vps-agent-dot.outdated      { color: #d8a85a; animation: vps-agent-pulse 2s ease-in-out infinite; }
+.vps-agent-dot.outdated      { color: var(--warning); animation: vps-agent-pulse 2s ease-in-out infinite; }
 @keyframes vps-agent-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
@@ -85,19 +85,19 @@
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 10px;
   line-height: 1.4;
-  color: rgba(220,220,220,0.45);
+  color: color-mix(in srgb, var(--term-fg) 45%, transparent);
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   text-transform: none;
   letter-spacing: 0;
 }
-.vps-host { color: rgba(220,220,220,0.55); }
+.vps-host { color: color-mix(in srgb, var(--term-fg) 55%, transparent); }
 .vps-sep  { opacity: 0.4; }
-.vps-agent-text.agent-ok      { color: #7ac478; }
-.vps-agent-text.agent-missing { color: #d8a85a; font-weight: 500; }
-.vps-agent-text.agent-error   { color: #d97a6b; font-weight: 500; }
-.vps-agent-text.agent-unknown { color: rgba(220,220,220,0.5); }
+.vps-agent-text.agent-ok      { color: var(--success); }
+.vps-agent-text.agent-missing { color: var(--warning); font-weight: 500; }
+.vps-agent-text.agent-error   { color: var(--danger-strong); font-weight: 500; }
+.vps-agent-text.agent-unknown { color: color-mix(in srgb, var(--term-fg) 50%, transparent); }
 
 /* Actions line: install / login / scan — readable text buttons */
 .claude-sidebar .vps-actions {
@@ -105,12 +105,12 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  border-bottom: 1px dashed rgba(255,255,255,0.07);
+  border-bottom: 1px dashed color-mix(in srgb, var(--tint) 7%, transparent);
 }
 .vps-act-btn {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.14);
-  color: rgba(220,220,220,0.75);
+  background: color-mix(in srgb, var(--tint) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tint) 14%, transparent);
+  color: color-mix(in srgb, var(--term-fg) 75%, transparent);
   font-family: var(--display, inherit);
   font-size: 9.5px;
   font-weight: 600;
@@ -124,29 +124,29 @@
   height: auto; width: auto; /* override 22x20 from the old .vps-action */
 }
 .vps-act-btn:hover {
-  background: rgba(255,255,255,0.08);
-  color: #fff;
-  border-color: rgba(255,255,255,0.3);
+  background: color-mix(in srgb, var(--tint) 8%, transparent);
+  color: var(--text-strong);
+  border-color: color-mix(in srgb, var(--tint) 30%, transparent);
 }
 .vps-act-btn.primary {
-  background: rgba(216, 168, 90, 0.18);
-  border-color: rgba(216, 168, 90, 0.55);
-  color: #f0d39e;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  color: var(--warning-soft);
 }
 .vps-act-btn.primary:hover {
-  background: rgba(216, 168, 90, 0.28);
-  border-color: rgba(216, 168, 90, 0.8);
+  background: color-mix(in srgb, var(--warning) 28%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 80%, transparent);
 }
 /* update agent: subtle amber, distinct from the gold "install primary" */
 .vps-act-btn.agent-update {
-  background: rgba(216, 168, 90, 0.10);
-  border-color: rgba(216, 168, 90, 0.45);
-  color: #e0c084;
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  color: var(--warning);
 }
 .vps-act-btn.agent-update:hover:not(:disabled) {
-  background: rgba(216, 168, 90, 0.20);
-  border-color: rgba(216, 168, 90, 0.7);
-  color: #f0d39e;
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 70%, transparent);
+  color: var(--warning-soft);
 }
 .vps-act-btn.agent-update:disabled {
   opacity: 0.6;
@@ -203,7 +203,7 @@
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(255,255,255,0.08);
+  background: color-mix(in srgb, var(--tint) 8%, transparent);
 }
 .claude-sidebar .vps-card .session-row {
   margin-left: 28px;
@@ -220,7 +220,7 @@
 .login-console-modal {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: color-mix(in srgb, var(--shade) 60%, transparent);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -228,9 +228,9 @@
   padding: 20px;
 }
 .login-console-card {
-  background: #1a1a1a;
-  color: #ddd;
-  border: 1px solid rgba(255,255,255,0.15);
+  background: var(--bg-inset);
+  color: var(--term-fg);
+  border: 1px solid color-mix(in srgb, var(--tint) 15%, transparent);
   border-radius: 6px;
   width: min(900px, 100%);
   max-height: 80vh;
@@ -240,7 +240,7 @@
 }
 .login-console-card header {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(255,255,255,0.1);
+  border-bottom: 1px solid color-mix(in srgb, var(--tint) 10%, transparent);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -250,21 +250,21 @@
 }
 .login-console-card header .hint {
   font-size: 0.85em;
-  color: #888;
+  color: var(--term-dim);
   flex: 1;
 }
 .login-console-card header .dismiss {
   background: transparent;
   border: 0;
-  color: #888;
+  color: var(--term-dim);
   font-size: 1.1em;
   cursor: pointer;
 }
 .login-error {
-  background: #2a1414;
-  color: #f88;
+  background: var(--danger-bg);
+  color: var(--danger-soft);
   padding: 8px 14px;
-  border-bottom: 1px solid #4a1f1f;
+  border-bottom: 1px solid var(--danger-bg-strong);
   font-size: 0.9em;
 }
 /* Wrapper that hosts the xterm AND the floating URL overlay. Relative
@@ -280,7 +280,7 @@
 .login-xterm {
   flex: 1;
   padding: 8px 10px;
-  background: #0e0e0e;
+  background: var(--term-bg);
   min-height: 360px;
   overflow: hidden;
 }
@@ -304,12 +304,12 @@
   z-index: 10;
   min-width: 280px;
   max-width: min(520px, calc(100% - 28px));
-  background: rgba(20, 22, 25, 0.96);
-  border: 1px solid var(--gold);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  background: color-mix(in srgb, var(--bg-inset) 96%, transparent);
+  border: 1px solid var(--accent);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--shadow-color) 50%, transparent);
   padding: 10px 12px;
   font-family: var(--body);
-  color: var(--parchment);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -326,10 +326,10 @@
   font-family: var(--display);
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--gold-bright);
+  color: var(--accent-strong);
 }
 .term-url-hint {
-  color: var(--parchment-soft);
+  color: var(--text-muted);
   opacity: 0.7;
   font-style: italic;
   font-size: 10.5px;
@@ -337,23 +337,23 @@
 .term-url-dismiss {
   margin-left: auto;
   background: transparent;
-  border: 1px solid var(--gold-deep);
-  color: var(--parchment-soft);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   width: 22px; height: 22px;
   font-size: 11px;
   cursor: pointer;
 }
 .term-url-dismiss:hover {
-  color: var(--gold-bright);
-  border-color: var(--gold);
+  color: var(--accent-strong);
+  border-color: var(--accent);
 }
 .term-url-display {
   font-family: var(--mono);
   font-size: 11px;
-  background: rgba(0, 0, 0, 0.35);
+  background: color-mix(in srgb, var(--shade) 35%, transparent);
   padding: 6px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--parchment-soft);
+  border: 1px solid color-mix(in srgb, var(--tint) 8%, transparent);
+  color: var(--text-muted);
   overflow-wrap: anywhere;
   word-break: break-all;
   user-select: all;  /* eases manual copy if auto fails */
@@ -367,21 +367,21 @@
 .term-url-btn {
   flex: 1;
   background: transparent;
-  border: 1px solid var(--gold-deep);
-  color: var(--parchment);
+  border: 1px solid var(--border);
+  color: var(--text);
   padding: 5px 10px;
   font-family: var(--body);
   font-size: 12px;
   cursor: pointer;
 }
 .term-url-btn:hover {
-  background: rgba(212, 168, 90, 0.10);
-  color: var(--gold-bright);
-  border-color: var(--gold);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  color: var(--accent-strong);
+  border-color: var(--accent);
 }
 .term-url-btn.primary {
-  color: var(--gold-bright);
-  border-color: var(--gold);
+  color: var(--accent-strong);
+  border-color: var(--accent);
 }
 
 /* ── DataModal v2: single-view VPS + paths ──────────────────────────────── */
@@ -391,13 +391,13 @@
   justify-content: space-between;
   margin-bottom: 14px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--gold-deep);
+  border-bottom: 1px solid var(--border);
 }
 .data-modal-v2 .data-head h2 { margin: 0; }
 .data-modal-v2 .data-add-vps-btn {
   background: transparent;
-  border: 1px solid var(--gold-deep);
-  color: var(--gold);
+  border: 1px solid var(--border);
+  color: var(--accent);
   font-family: var(--display);
   font-size: 10px;
   letter-spacing: 0.16em;
@@ -406,8 +406,8 @@
   cursor: pointer;
 }
 .data-modal-v2 .data-add-vps-btn:hover {
-  color: var(--gold-bright);
-  border-color: var(--gold);
+  color: var(--accent-strong);
+  border-color: var(--accent);
 }
 .data-modal-v2 .data-add.data-add-vps {
   margin-bottom: 16px;
@@ -423,30 +423,30 @@
 }
 .data-empty {
   text-align: center;
-  color: var(--parchment-soft, #888);
+  color: var(--text-muted);
   font-style: italic;
   padding: 40px 12px;
 }
 
 /* Card per VPS — border colored according to agent state */
 .data-vps-card {
-  border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
-  background: var(--shadow, rgba(0,0,0,0.2));
+  border: 1px solid var(--border);
+  background: var(--bg-inset);
 }
-.data-vps-card.agent-missing { border-color: rgba(216,168,90,0.5); }
-.data-vps-card.agent-error   { border-color: rgba(217,122,107,0.5); }
+.data-vps-card.agent-missing { border-color: color-mix(in srgb, var(--warning) 50%, transparent); }
+.data-vps-card.agent-error   { border-color: color-mix(in srgb, var(--danger-strong) 50%, transparent); }
 
 .data-vps-head {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  background: linear-gradient(180deg, rgba(138,180,228,0.05), transparent);
-  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent);
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .dv-glyph {
-  color: var(--gold-bright, #e0c898);
+  color: var(--accent-strong);
   font-family: var(--mono, monospace);
 }
 .dv-name {
@@ -454,13 +454,13 @@
   font-size: 13px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--gold-bright, #e0c898);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 .dv-host {
   font-family: var(--mono, monospace);
   font-size: 11px;
-  color: var(--parchment-soft, rgba(220,220,220,0.55));
+  color: var(--text-muted);
   flex: 1;
   min-width: 0;
 }
@@ -474,10 +474,10 @@
   border-radius: 3px;
   border: 1px solid transparent;
 }
-.dv-agent.agent-ok      { color: #6cbf6c; border-color: rgba(108,191,108,0.3); background: rgba(108,191,108,0.08); }
-.dv-agent.agent-missing { color: #d8a85a; border-color: rgba(216,168,90,0.35); background: rgba(216,168,90,0.08); }
-.dv-agent.agent-error   { color: #d97a6b; border-color: rgba(217,122,107,0.35); background: rgba(217,122,107,0.08); }
-.dv-agent.agent-unknown { color: #888; }
+.dv-agent.agent-ok      { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); background: color-mix(in srgb, var(--success) 8%, transparent); }
+.dv-agent.agent-missing { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 35%, transparent); background: color-mix(in srgb, var(--warning) 8%, transparent); }
+.dv-agent.agent-error   { color: var(--danger-strong); border-color: color-mix(in srgb, var(--danger-strong) 35%, transparent); background: color-mix(in srgb, var(--danger-strong) 8%, transparent); }
+.dv-agent.agent-unknown { color: var(--term-dim); }
 .dv-agent-text { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; }
 
 .dv-actions {
@@ -485,9 +485,9 @@
   gap: 5px;
 }
 .dv-btn {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.14);
-  color: rgba(220,220,220,0.8);
+  background: color-mix(in srgb, var(--tint) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tint) 14%, transparent);
+  color: color-mix(in srgb, var(--term-fg) 80%, transparent);
   font-family: var(--display, inherit);
   font-size: 9.5px;
   font-weight: 600;
@@ -499,27 +499,27 @@
   line-height: 1.2;
 }
 .dv-btn:hover {
-  background: rgba(255,255,255,0.1);
-  color: #fff;
+  background: color-mix(in srgb, var(--tint) 10%, transparent);
+  color: var(--text-strong);
 }
 .dv-btn.primary {
-  background: rgba(216,168,90,0.18);
-  border-color: rgba(216,168,90,0.55);
-  color: #f0d39e;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  color: var(--warning-soft);
 }
 .dv-btn.primary:hover {
-  background: rgba(216,168,90,0.28);
+  background: color-mix(in srgb, var(--warning) 28%, transparent);
 }
 .dv-btn.danger {
   background: transparent;
-  border-color: rgba(255,255,255,0.12);
-  color: rgba(220,220,220,0.5);
+  border-color: color-mix(in srgb, var(--tint) 12%, transparent);
+  color: color-mix(in srgb, var(--term-fg) 50%, transparent);
   padding: 4px 8px;
 }
 .dv-btn.danger:hover {
-  color: #d97a6b;
-  border-color: rgba(217,122,107,0.5);
-  background: rgba(217,122,107,0.08);
+  color: var(--danger-strong);
+  border-color: color-mix(in srgb, var(--danger-strong) 50%, transparent);
+  background: color-mix(in srgb, var(--danger-strong) 8%, transparent);
 }
 
 /* List of paths for a VPS */
@@ -528,7 +528,7 @@
 }
 .dv-empty {
   font-style: italic;
-  color: var(--parchment-soft, rgba(220,220,220,0.4));
+  color: var(--text-muted);
   font-size: 11px;
   padding: 8px 0;
 }
@@ -538,11 +538,11 @@
   align-items: center;
   gap: 10px;
   padding: 5px 0;
-  border-bottom: 1px dashed rgba(255,255,255,0.05);
+  border-bottom: 1px dashed color-mix(in srgb, var(--tint) 5%, transparent);
 }
 .dv-path-row:last-of-type { border-bottom: 0; }
 .dv-path-glyph {
-  color: var(--gold, #c8a262);
+  color: var(--accent);
   font-family: var(--mono, monospace);
   text-align: center;
   font-size: 11px;
@@ -550,7 +550,7 @@
 .dv-path-label {
   background: transparent;
   border: 1px solid transparent;
-  color: var(--parchment, #ddd);
+  color: var(--text);
   font-family: var(--body, inherit);
   font-size: 12px;
   padding: 3px 6px;
@@ -558,13 +558,13 @@
   outline: none;
   min-width: 0;
 }
-.dv-path-label:hover { border-color: rgba(255,255,255,0.1); }
-.dv-path-label:focus { border-color: var(--gold, rgba(200,162,98,0.5)); background: rgba(0,0,0,0.2); }
-.dv-path-label::placeholder { color: rgba(220,220,220,0.35); font-style: italic; }
+.dv-path-label:hover { border-color: color-mix(in srgb, var(--tint) 10%, transparent); }
+.dv-path-label:focus { border-color: var(--accent); background: color-mix(in srgb, var(--shade) 20%, transparent); }
+.dv-path-label::placeholder { color: color-mix(in srgb, var(--term-fg) 35%, transparent); font-style: italic; }
 .dv-path-path {
   font-family: var(--mono, monospace);
   font-size: 11px;
-  color: var(--parchment-soft, rgba(220,220,220,0.5));
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -572,12 +572,12 @@
 .dv-path-del {
   background: transparent;
   border: 0;
-  color: rgba(220,220,220,0.3);
+  color: color-mix(in srgb, var(--term-fg) 30%, transparent);
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
 }
-.dv-path-del:hover { color: #d97a6b; }
+.dv-path-del:hover { color: var(--danger-strong); }
 
 /* Inline path-add form at the bottom of each VPS */
 .dv-add-path {
@@ -587,19 +587,19 @@
   gap: 10px;
   padding: 8px 0 4px;
   margin-top: 4px;
-  border-top: 1px solid rgba(255,255,255,0.07);
+  border-top: 1px solid color-mix(in srgb, var(--tint) 7%, transparent);
 }
 .dv-add-glyph {
-  color: rgba(216,168,90,0.6);
+  color: color-mix(in srgb, var(--warning) 60%, transparent);
   font-family: var(--mono, monospace);
   text-align: center;
   font-size: 14px;
   font-weight: 700;
 }
 .dv-add-path input {
-  background: rgba(0,0,0,0.2);
-  border: 1px solid rgba(255,255,255,0.1);
-  color: var(--parchment, #ddd);
+  background: color-mix(in srgb, var(--shade) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tint) 10%, transparent);
+  color: var(--text);
   font-family: var(--mono, monospace);
   font-size: 11px;
   padding: 4px 8px;
@@ -607,12 +607,12 @@
   outline: none;
   min-width: 0;
 }
-.dv-add-path input:focus { border-color: var(--gold, rgba(200,162,98,0.5)); }
+.dv-add-path input:focus { border-color: var(--accent); }
 .dv-add-path input.dv-add-path-input { font-size: 11px; }
 .dv-add-btn {
-  background: rgba(216,168,90,0.15);
-  border: 1px solid rgba(216,168,90,0.4);
-  color: #f0d39e;
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  color: var(--warning-soft);
   font-family: var(--display, inherit);
   font-size: 10px;
   letter-spacing: 0.08em;
@@ -623,7 +623,7 @@
   font-weight: 600;
 }
 .dv-add-btn:hover:not(:disabled) {
-  background: rgba(216,168,90,0.25);
+  background: color-mix(in srgb, var(--warning) 25%, transparent);
 }
 .dv-add-btn:disabled {
   opacity: 0.3;
@@ -672,7 +672,7 @@
  * one before — pointless visual noise. The combined class keeps
  * the modification targeted. */
 .session-row.is-sleeping.has-color {
-  --row-color: rgba(140, 140, 140, 0.55);
+  --row-color: color-mix(in srgb, var(--term-dim) 55%, transparent);
 }
 /* The row-head must stay above the colored veil */
 .session-row .row-head,
@@ -687,7 +687,7 @@
   display: flex;
   gap: 6px;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.2));
+  border-bottom: 1px solid var(--border);
   align-items: center;       /* prevents flex from stretching the dots */
 }
 /* The .ctx-color-dot elements are <button>s in .session-ctx-menu — claude.css
@@ -701,7 +701,7 @@
   flex: 0 0 20px;             /* no flexbox stretch */
   aspect-ratio: 1 / 1;
   border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid color-mix(in srgb, var(--tint) 20%, transparent);
   cursor: pointer;
   padding: 0;
   margin: 0;
@@ -715,20 +715,20 @@
 }
 .session-ctx-menu .ctx-color-dot:hover {
   transform: scale(1.18);
-  border-color: rgba(255,255,255,0.6);
+  border-color: color-mix(in srgb, var(--tint) 60%, transparent);
   background-color: var(--row-color, transparent); /* hover doesn't break the color */
 }
 .session-ctx-menu .ctx-color-dot.on {
-  border-color: #fff;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 0 5px rgba(255,255,255,0.45);
+  border-color: var(--text-strong);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--shadow-color) 40%, transparent), 0 0 5px color-mix(in srgb, var(--tint) 45%, transparent);
 }
 .session-ctx-menu .ctx-color-dot.none {
-  border: 1px dashed rgba(255,255,255,0.3);
+  border: 1px dashed color-mix(in srgb, var(--tint) 30%, transparent);
   background: transparent !important;
 }
 .session-ctx-menu .ctx-color-dot .x {
   font-size: 11px;
-  color: rgba(255,255,255,0.5);
+  color: color-mix(in srgb, var(--tint) 50%, transparent);
   line-height: 1;
 }
 .session-ctx-menu .ctx-hint {
@@ -739,7 +739,7 @@
 .session-ctx-menu .ctx-subtitle {
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 10px;
-  color: rgba(220,220,220,0.45);
+  color: color-mix(in srgb, var(--term-fg) 45%, transparent);
   margin-top: 4px;
   text-transform: none;
   letter-spacing: 0;
@@ -754,7 +754,7 @@
   display: flex;
   flex-direction: column;
   padding: 0;
-  background: #0a0a0a;
+  background: var(--term-bg);
 }
 /* One slot per kept-mounted shell inside the persistent shell layer. Only
    the selected slot is visible (display toggled inline in ClaudePanel —
@@ -778,8 +778,8 @@
   align-items: center;
   gap: 12px;
   padding: 8px 16px;
-  background: linear-gradient(180deg, #1c1f29, #181b24);
-  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.3));
+  background: linear-gradient(180deg, var(--bg-raised), var(--bg));
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .shell-term-head .title {
@@ -787,22 +787,22 @@
   font-size: 12px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--gold-bright, #e0c898);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 .shell-term-head .cwd {
   font-family: var(--mono, monospace);
   font-size: 11.5px;
-  color: var(--parchment-soft, rgba(220,220,220,0.6));
+  color: var(--text-muted);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .shell-term-head .exit-badge {
-  background: rgba(150,150,150,0.15);
-  border: 1px solid rgba(150,150,150,0.3);
-  color: #aaa;
+  background: color-mix(in srgb, var(--term-dim) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent);
+  color: var(--term-dim);
   padding: 2px 8px;
   border-radius: 3px;
   font-size: 10px;
@@ -810,9 +810,9 @@
   letter-spacing: 0.06em;
 }
 .shell-term-head .kill-btn {
-  background: rgba(217,122,107,0.12);
-  border: 1px solid rgba(217,122,107,0.4);
-  color: #d97a6b;
+  background: color-mix(in srgb, var(--danger-strong) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger-strong) 40%, transparent);
+  color: var(--danger-strong);
   padding: 4px 12px;
   border-radius: 3px;
   font-family: var(--display, inherit);
@@ -823,14 +823,14 @@
   cursor: pointer;
 }
 .shell-term-head .kill-btn:hover {
-  background: rgba(217,122,107,0.22);
-  color: #fff;
+  background: color-mix(in srgb, var(--danger-strong) 22%, transparent);
+  color: var(--text-strong);
 }
 .shell-error {
-  background: rgba(217,122,107,0.12);
-  color: #d97a6b;
+  background: color-mix(in srgb, var(--danger-strong) 12%, transparent);
+  color: var(--danger-strong);
   padding: 8px 14px;
-  border-bottom: 1px solid rgba(217,122,107,0.3);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger-strong) 30%, transparent);
   font-size: 12px;
 }
 /* Wrapper that hosts the xterm AND the floating URL overlay. Relative
@@ -845,7 +845,7 @@
 .shell-xterm {
   flex: 1;
   padding: 8px 12px;
-  background: #0e0e0e;
+  background: var(--term-bg);
   overflow: hidden;
   min-height: 0;
 }
@@ -865,8 +865,8 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: rgba(14, 14, 14, 0.82);
-  color: var(--parchment, #ddd);
+  background: color-mix(in srgb, var(--term-bg) 82%, transparent);
+  color: var(--text);
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 12px;
   letter-spacing: 0.02em;
@@ -875,8 +875,8 @@
 .shell-restoring .spin {
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(122, 196, 196, 0.3);
-  border-top-color: #7ac4c4;
+  border: 2px solid color-mix(in srgb, var(--info) 30%, transparent);
+  border-top-color: var(--info);
   border-radius: 50%;
   animation: charon-shell-spin 0.7s linear infinite;
 }
@@ -886,8 +886,8 @@
 
 /* Shell row in the sidebar (cyan color to distinguish from claude sessions) */
 .dot.dot-cyan {
-  background: #7ac4c4;
-  box-shadow: 0 0 6px rgba(122,196,196,0.5);
+  background: var(--info);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--info) 50%, transparent);
 }
 .session-row.shell-row {
   /* Inherits session-row styles, just a small accent */
@@ -895,15 +895,15 @@
 .session-row.shell-row .label {
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 11.5px;
-  color: var(--parchment, #ddd);
+  color: var(--text);
 }
 .session-row.shell-row.exited .label,
 .session-row.shell-row.exited .meta-cwd {
   opacity: 0.5;
 }
 .shell-exit-tag {
-  background: rgba(150,150,150,0.15);
-  color: #888;
+  background: color-mix(in srgb, var(--term-dim) 15%, transparent);
+  color: var(--term-dim);
   font-size: 9px;
   padding: 1px 5px;
   border-radius: 2px;
@@ -914,18 +914,18 @@
 
 /* ⌨ button in proj-head (more discreet than the +) */
 .proj-action.proj-shell {
-  color: var(--gold-deep, rgba(200,162,98,0.5));
+  color: var(--border);
   font-size: 11px;
 }
 .proj-action.proj-shell:hover {
-  color: #7ac4c4;
-  border-color: #7ac4c4;
+  color: var(--info);
+  border-color: var(--info);
 }
 
 .closed-badge {
-  background: rgba(108,191,108,0.2);
-  border: 1px solid rgba(108,191,108,0.4);
-  color: #8acf8a;
+  background: color-mix(in srgb, var(--success) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
+  color: var(--success-soft);
   padding: 1px 8px;
   border-radius: 3px;
   font-size: 0.75em;
@@ -939,50 +939,50 @@
    VPS count and active sessions count (when collapsed). */
 .folder-section {
   margin-bottom: 14px;
-  border: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
-  background: linear-gradient(180deg, rgba(138,180,228,0.04), transparent);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, transparent), transparent);
 }
 .folder-section.folder-collapsed {
-  background: rgba(138,180,228,0.02);
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
 }
 .folder-head {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 14px;
   font-family: var(--display); font-size: 10px;
   letter-spacing: 0.22em; text-transform: uppercase;
-  color: var(--gold-bright);
-  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.25));
+  color: var(--accent-strong);
+  border-bottom: 1px solid var(--border);
   cursor: pointer;
   user-select: none;
-  background: rgba(138,180,228,0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.folder-head:hover { background: rgba(138,180,228,0.12); }
+.folder-head:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .folder-section.folder-collapsed .folder-head {
   border-bottom: 0;
 }
 .folder-caret {
-  color: var(--parchment-soft); font-family: var(--mono);
+  color: var(--text-muted); font-family: var(--mono);
   width: 12px; flex-shrink: 0; font-size: 10px;
 }
-.folder-glyph { color: var(--gold); }
-.folder-name { flex: 1; color: var(--gold-bright); letter-spacing: 0.18em; }
+.folder-glyph { color: var(--accent); }
+.folder-name { flex: 1; color: var(--accent-strong); letter-spacing: 0.18em; }
 .folder-count {
   font-family: var(--mono); font-size: 10px;
-  color: var(--parchment-soft); letter-spacing: 0;
-  background: rgba(0,0,0,0.2); padding: 1px 6px;
-  border: 1px solid var(--gold-deep);
+  color: var(--text-muted); letter-spacing: 0;
+  background: color-mix(in srgb, var(--shade) 20%, transparent); padding: 1px 6px;
+  border: 1px solid var(--border);
 }
 .folder-active-count {
   font-family: var(--mono); font-size: 11px;
-  background: rgba(160,200,123,0.15);
-  border: 1px solid #a0c87b;
-  color: #a0c87b;
+  background: color-mix(in srgb, var(--diff-add) 15%, transparent);
+  border: 1px solid var(--diff-add);
+  color: var(--diff-add);
   padding: 1px 7px;
   letter-spacing: 0;
 }
 .folder-empty {
   padding: 14px;
-  font-style: italic; color: var(--parchment-soft);
+  font-style: italic; color: var(--text-muted);
   font-size: 11px; text-align: center;
 }
 
@@ -995,28 +995,28 @@
   display: flex; align-items: center; gap: 8px;
   margin: 0 0 10px;
   padding: 8px 12px;
-  background: var(--shadow); border: 1px solid var(--gold-deep);
+  background: var(--bg-inset); border: 1px solid var(--border);
   border-radius: 10px;
 }
-.data-search:focus-within { border-color: var(--gold); }
-.data-search-glyph { color: var(--gold); font-family: var(--mono); font-size: 15px; line-height: 1; }
+.data-search:focus-within { border-color: var(--accent); }
+.data-search-glyph { color: var(--accent); font-family: var(--mono); font-size: 15px; line-height: 1; }
 .data-search-input {
   flex: 1; min-width: 0;
   background: transparent; border: none; outline: none;
-  color: var(--parchment); font-family: var(--mono); font-size: 13px;
+  color: var(--text); font-family: var(--mono); font-size: 13px;
 }
-.data-search-input::placeholder { color: var(--parchment-soft); opacity: 0.55; }
+.data-search-input::placeholder { color: var(--text-muted); opacity: 0.55; }
 .data-search-count {
-  font-family: var(--mono); font-size: 10px; color: var(--parchment-soft);
-  background: rgba(0,0,0,0.3); border: 1px solid var(--gold-deep);
+  font-family: var(--mono); font-size: 10px; color: var(--text-muted);
+  background: color-mix(in srgb, var(--shade) 30%, transparent); border: 1px solid var(--border);
   padding: 2px 8px; flex-shrink: 0;
 }
 .data-search-clear {
   flex-shrink: 0; cursor: pointer; padding: 2px 7px; border-radius: 6px;
   background: transparent; border: 1px solid transparent;
-  color: var(--parchment-soft); font-size: 12px; line-height: 1;
+  color: var(--text-muted); font-size: 12px; line-height: 1;
 }
-.data-search-clear:hover { border-color: var(--gold); color: var(--gold-bright); }
+.data-search-clear:hover { border-color: var(--accent); color: var(--accent-strong); }
 .data-folder-drag-handle.is-off,
 .data-vps-drag-handle.is-off { opacity: 0.25; cursor: default; }
 
@@ -1024,7 +1024,7 @@
 .data-modal-v2 .data-help {
   margin: -4px 0 14px;
   font-family: var(--mono); font-size: 11px;
-  color: var(--parchment-soft); font-style: italic;
+  color: var(--text-muted); font-style: italic;
 }
 .data-modal-v2 .data-head-actions {
   display: flex; gap: 8px;
@@ -1040,51 +1040,51 @@
   padding-right: 4px;
 }
 .data-folder-card {
-  border: 1px solid var(--gold-deep, rgba(200,162,98,0.4));
-  background: linear-gradient(180deg, rgba(138,180,228,0.06), rgba(138,180,228,0.02));
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, transparent), color-mix(in srgb, var(--accent) 2%, transparent));
   transition: opacity .15s ease, box-shadow .15s ease;
 }
 .data-folder-card.is-dragging {
-  box-shadow: 0 0 18px rgba(138,180,228,0.3);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent);
   z-index: 50;
 }
 .data-folder-head {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;
-  background: rgba(138,180,228,0.08);
-  border-bottom: 1px solid var(--gold-deep, rgba(200,162,98,0.3));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-bottom: 1px solid var(--border);
 }
 .data-folder-drag-handle {
   cursor: grab; user-select: none;
-  color: var(--parchment-soft);
+  color: var(--text-muted);
   font-size: 14px; letter-spacing: -2px;
   padding: 2px 4px;
   font-family: var(--mono);
 }
 .data-folder-drag-handle:active { cursor: grabbing; }
 .data-folder-glyph {
-  color: var(--gold); font-family: var(--display); font-size: 14px;
+  color: var(--accent); font-family: var(--display); font-size: 14px;
 }
 .data-folder-name-input {
   flex: 1;
   background: transparent;
   border: 1px solid transparent;
-  color: var(--gold-bright);
+  color: var(--accent-strong);
   font-family: var(--display);
   font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
   padding: 4px 8px;
   outline: none;
 }
-.data-folder-name-input:hover { border-color: rgba(200,162,98,0.25); }
+.data-folder-name-input:hover { border-color: color-mix(in srgb, var(--warning) 25%, transparent); }
 .data-folder-name-input:focus {
-  border-color: var(--gold);
-  background: rgba(0,0,0,0.25);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--shade) 25%, transparent);
 }
 .data-folder-count {
   font-family: var(--mono); font-size: 10px;
-  color: var(--parchment-soft);
-  background: rgba(0,0,0,0.25); padding: 2px 8px;
-  border: 1px solid var(--gold-deep);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--shade) 25%, transparent); padding: 2px 8px;
+  border: 1px solid var(--border);
   letter-spacing: 0.04em;
 }
 .data-folder-body {
@@ -1095,16 +1095,16 @@
 }
 .data-folder-empty {
   padding: 18px;
-  font-style: italic; color: var(--parchment-soft);
+  font-style: italic; color: var(--text-muted);
   font-size: 11px; text-align: center;
-  border: 1px dashed var(--gold-deep);
-  background: rgba(0,0,0,0.1);
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, var(--shade) 10%, transparent);
 }
 
 /* Drag handle on VPS cards */
 .data-vps-drag-handle {
   cursor: grab; user-select: none;
-  color: var(--parchment-soft);
+  color: var(--text-muted);
   font-size: 13px; letter-spacing: -2px;
   padding: 2px 4px;
   font-family: var(--mono);
@@ -1112,33 +1112,33 @@
 }
 .data-vps-drag-handle:active { cursor: grabbing; }
 .data-vps-card.is-dragging {
-  box-shadow: 0 0 18px rgba(138,180,228,0.3);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent);
   z-index: 100;
 }
 
 /* Overlay rendered during drag */
 .dv-card-drag-overlay,
 .dv-folder-drag-overlay {
-  background: var(--stone-2, #1a1d28);
-  border: 1px solid var(--gold);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
   padding: 10px 14px;
   display: flex; align-items: center; gap: 10px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 18px rgba(138,180,228,0.3);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-color) 50%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 30%, transparent);
   font-family: var(--mono); font-size: 12px;
-  color: var(--parchment);
+  color: var(--text);
   cursor: grabbing;
 }
 .dv-folder-drag-overlay {
   font-family: var(--display);
   letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--gold-bright);
+  color: var(--accent-strong);
 }
 
 /* Static folder ("default" folder locked at the end) */
-.data-folder-static .data-folder-head { background: rgba(216, 117, 127, 0.06); }
+.data-folder-static .data-folder-head { background: color-mix(in srgb, var(--danger) 6%, transparent); }
 .data-folder-static .data-folder-name-static {
   flex: 1;
-  color: var(--gold-bright);
+  color: var(--accent-strong);
   font-family: var(--display);
   font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
   padding: 4px 8px;
@@ -1146,23 +1146,23 @@
 .data-folder-lock {
   font-size: 12px;
   width: 16px; text-align: center;
-  color: var(--parchment-soft);
+  color: var(--text-muted);
   opacity: 0.7;
 }
 
 /* Folder-change select inside the VPS card */
 .dv-folder-select {
-  background: rgba(0,0,0,0.25);
-  border: 1px solid var(--gold-deep, rgba(200,162,98,0.35));
-  color: var(--parchment);
+  background: color-mix(in srgb, var(--shade) 25%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text);
   font-family: var(--mono); font-size: 11px;
   padding: 4px 6px;
   cursor: pointer;
   max-width: 130px;
   outline: none;
 }
-.dv-folder-select:hover { border-color: var(--gold); }
-.dv-folder-select:focus { border-color: var(--gold); background: rgba(0,0,0,0.4); }
+.dv-folder-select:hover { border-color: var(--accent); }
+.dv-folder-select:focus { border-color: var(--accent); background: color-mix(in srgb, var(--shade) 40%, transparent); }
 
 /* ── DataModal: rounded "sidebar" restyle (bigger modal + rounded panels) ────
    Brings the VPS modal in line with the V1 sidebar: rounded folder/VPS
@@ -1171,32 +1171,32 @@
 .data-modal-v2 .data-head { padding-bottom: 14px; margin-bottom: 16px; }
 .data-modal-v2 .data-add-vps-btn {
   border-radius: 8px; padding: 7px 14px;
-  background: rgba(0,0,0,0.25);
+  background: color-mix(in srgb, var(--shade) 25%, transparent);
 }
-.data-modal-v2 .data-add-vps-btn:hover { background: rgba(138,180,228,0.14); }
+.data-modal-v2 .data-add-vps-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
 .data-folder-list { gap: 16px; }
 .data-folder-card {
   border-radius: 12px; overflow: hidden;
-  border-color: var(--gold-deep);
-  background: rgba(28,31,41,0.45);
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--bg-raised) 45%, transparent);
 }
 .data-folder-head {
-  background: rgba(138,180,228,0.07);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
   padding: 11px 14px;
 }
-.data-folder-static .data-folder-head { background: rgba(216,117,127,0.06); }
+.data-folder-static .data-folder-head { background: color-mix(in srgb, var(--danger) 6%, transparent); }
 .data-folder-count { border-radius: 9px; }
 .data-folder-empty { border-radius: 8px; }
 
 .data-vps-list { gap: 14px; }
 .data-vps-card {
   border-radius: 10px; overflow: hidden;
-  background: rgba(28,31,41,0.55);
+  background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
 }
-.data-vps-card.agent-error { border-color: var(--crimson-deep); }
+.data-vps-card.agent-error { border-color: var(--danger-deep); }
 .data-vps-head {
-  background: rgba(0,0,0,0.18);
+  background: color-mix(in srgb, var(--shade) 18%, transparent);
   padding: 10px 12px;
 }
 .dv-agent { border-radius: 8px; }
@@ -1219,20 +1219,20 @@
 /* Folder collapse in the DataModal (caret toggle; collapsed = head only) */
 .data-folder-caret {
   background: transparent; border: none; cursor: pointer;
-  color: var(--parchment-soft); font-size: 10px; line-height: 1;
+  color: var(--text-muted); font-size: 10px; line-height: 1;
   width: 14px; flex-shrink: 0; padding: 0;
 }
-.data-folder-caret:hover { color: var(--gold-bright); }
+.data-folder-caret:hover { color: var(--accent-strong); }
 /* when collapsed there's no body → round all four corners of the head */
 .data-folder-card.is-collapsed .data-folder-head { border-bottom: none; }
 
 /* VPS card collapse in the DataModal (caret toggle; collapsed = header only) */
 .data-vps-caret {
   background: transparent; border: none; cursor: pointer;
-  color: var(--parchment-soft); font-size: 10px; line-height: 1;
+  color: var(--text-muted); font-size: 10px; line-height: 1;
   width: 14px; flex-shrink: 0; padding: 0;
 }
-.data-vps-caret:hover { color: var(--gold-bright); }
+.data-vps-caret:hover { color: var(--accent-strong); }
 .data-vps-card.is-collapsed .data-vps-head { border-bottom: none; }
 
 /* Health chips row (app/vpsHealth.tsx) — full-width second line of the VPS

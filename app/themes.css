@@ -1,0 +1,270 @@
+/* ── Theme tokens ───────────────────────────────────────────────────────────
+   The ONLY place a literal colour is allowed. Every other stylesheet
+   (globals.css, agent-ui.css, the ~6000 lines of claude.css) consumes the
+   semantic names below and never a hex or an rgba(). §11
+
+   Two tiers on purpose:
+     · this file = the palette, redefined per theme;
+     · the semantic NAMES = what the rest of the app writes. A rule says
+       `var(--danger)`, never `var(--crimson)` — a colour name is unreadable
+       the moment a second theme exists (`--stone: #fff`).
+
+   Alpha variants are DERIVED, never re-hardcoded:
+     color-mix(in srgb, var(--accent) 14%, transparent)
+   is exactly `--accent` at alpha .14, and it follows the theme. Writing
+   `rgba(138,180,228,.14)` is what made the old token layer a lie — changing
+   --gold moved barely a third of the UI.
+
+   Adding a theme: copy the [data-theme='daylight'] block, change the values,
+   add one entry to app/themes.ts. Nothing else. Every token listed in the
+   :root block MUST be present in every theme block (tests/themes.test.ts). */
+
+:root,
+[data-theme='nordic'] {
+  /* Surfaces — ordered from the deepest well to the highest surface. */
+  --bg-inset:        #11131a;  /* input wells, code blocks, sunken rows      */
+  --bg:              #181b24;  /* the app background                         */
+  --bg-raised:       #1c1f29;  /* cards, bars, panels                        */
+  --bg-elevated:     #232733;  /* modals, menus, popovers                    */
+  --bg-high:         #2a2f3c;  /* hover fills, the highest chrome            */
+
+  /* Text */
+  --text:            #d2d9ec;
+  --text-strong:     #e5eaf2;  /* hover emphasis, current row                */
+  --text-muted:      #6a7388;  /* labels, metadata                           */
+  --text-faint:      #5b6373;  /* disabled                                   */
+
+  /* Lines */
+  --border:          #363c4d;
+  --border-strong:   #4a5161;
+
+  /* Accent — the primary colour of the UI */
+  --accent:          #8ab4e4;
+  --accent-strong:   #a8c4ef;  /* hover / selection                          */
+  --accent-dim:      #537ca8;
+
+  /* Roles */
+  --info:            #86c5d8;  /* user bubble, informational pills           */
+  --info-deep:       #5a8a9a;
+  --danger:          #d8757f;  /* destructive actions, kill                  */
+  --danger-strong:   #e0736b;  /* errors                                     */
+  --danger-soft:     #f0c7c7;  /* error text on a red ground                 */
+  --danger-deep:     #944f57;
+  --danger-bg:       #2a1414;  /* error box ground                           */
+  --danger-bg-strong: #4a1f1f;
+  --success:         #7fbf7f;  /* ok status                                  */
+  --success-soft:    #bcdf98;
+  --success-deep:    #6b8855;
+  --warning:         #e6c07a;  /* amber — stale, pending, modified           */
+  --warning-strong:  #ffd700;
+  --warning-soft:    #f0d39e;
+  --attention:       #f0a060;  /* orange — needs a human                     */
+  --attention-strong: #ff785a;
+  --lavender:        #a8b8e0;  /* thinking, plan, tool glyph                 */
+  --violet:          #ac8fe0;  /* idle-but-not-done, background tasks §14.91 */
+  --violet-soft:     #afafff;
+  --violet-deep:     #9b8ec4;
+
+  /* Code — syntax roles that must survive a light theme (a #a0c87b string
+     is unreadable on white, so it is a token, not a shade of --success). */
+  --syn-comment:     #5a627a;
+  --syn-string:      #a0c87b;
+  --diff-add:        #a0c87b;
+
+  /* Depth. Three distinct jobs, three tokens: --shade darkens a surface
+     (`background`), --shadow-color casts a shadow, --scrim covers the page
+     behind a modal. They are all black here; a light theme must keep the
+     scrim dark while softening the other two, hence the split. */
+  --shade:           #000000;
+  --shadow-color:    #000000;
+  --scrim:           #000000;
+  --tint:            #ffffff;  /* the reverse: lighten a surface             */
+
+  /* Fixed plates — a provider logo and an embedded document bring their own
+     background and need a light ground in EVERY theme. */
+  --logo-plate:      #f4f1ea;
+  --media-bg:        #ffffff;
+
+  /* Terminal. Shared by the LoginConsole (CSS) and xterm.js, whose full ANSI
+     palette lives beside it in app/themes.ts. */
+  --term-bg:         #0e0e0e;
+  --term-fg:         #dcdcdc;
+  --term-dim:        #888888;
+
+  /* Chat bubbles — the two tokens that are NOT colours. A theme may want the
+     transcript to read as plain text, so the frame and the fill of every
+     message rectangle are theme-controlled: `--bubble-edge` is the border
+     width, `--bubble-tint` scales every fill percentage (0 = fully
+     transparent, 1 = as designed). This is how a theme changes structure
+     WITHOUT a `[data-theme] .bubble {…}` override — once one theme is allowed
+     arbitrary CSS, the token layer stops being the contract. */
+  --bubble-edge:     1px;
+  --bubble-tint:     1;
+
+  /* Type */
+  --display: 'Inter', system-ui, -apple-system, sans-serif;
+  --body:    'Inter', system-ui, -apple-system, sans-serif;
+  --mono:    'JetBrains Mono', monospace;
+}
+
+[data-theme='daylight'] {
+  --bg-inset:        #ffffff;
+  --bg:              #eef1f6;
+  --bg-raised:       #f8fafc;
+  --bg-elevated:     #ffffff;
+  --bg-high:         #e2e8f1;
+
+  --text:            #1e2632;
+  --text-strong:     #0b1220;
+  --text-muted:      #5b6675;
+  --text-faint:      #8b95a5;
+
+  --border:          #cfd7e3;
+  --border-strong:   #aab5c5;
+
+  --accent:          #2c6db5;
+  --accent-strong:   #1a5296;
+  --accent-dim:      #7ea4d1;
+
+  --info:            #217f93;
+  --info-deep:       #17606f;
+  --danger:          #c2404b;
+  --danger-strong:   #b32d22;
+  --danger-soft:     #9c4a4a;
+  --danger-deep:     #7c2b30;
+  --danger-bg:       #fbe9e9;
+  --danger-bg-strong: #f4cfcf;
+  --success:         #2f7d33;
+  --success-soft:    #4f9a53;
+  --success-deep:    #1c5e21;
+  --warning:         #96690f;
+  --warning-strong:  #b8860b;
+  --warning-soft:    #7d5a10;
+  --attention:       #bf5d13;
+  --attention-strong: #cc4420;
+  --lavender:        #55609f;
+  --violet:          #6a3fa0;
+  --violet-soft:     #6f5fc8;
+  --violet-deep:     #4a3a7a;
+
+  --syn-comment:     #6a737d;
+  --syn-string:      #3d7a1f;
+  --diff-add:        #3d7a1f;
+
+  /* --shade and --shadow-color lift off black: at the alphas the UI uses
+     (.2–.5) black turns every inset row into a hole on a light ground. The
+     scrim stays dark — it is the one that has to hide the page. */
+  --shade:           #64748b;
+  --shadow-color:    #475569;
+  --scrim:           #0b1220;
+  --tint:            #1e293b;
+
+  --logo-plate:      #f4f1ea;
+  --media-bg:        #ffffff;
+
+  --term-bg:         #fbfaf7;
+  --term-fg:         #2f3337;
+  --term-dim:        #7a8088;
+
+  --bubble-edge:     1px;
+  --bubble-tint:     1;
+
+  --display: 'Inter', system-ui, -apple-system, sans-serif;
+  --body:    'Inter', system-ui, -apple-system, sans-serif;
+  --mono:    'JetBrains Mono', monospace;
+}
+
+/* Ember — near-black warm ground, everything in the coral/amber register
+   (hue ≈ 19°, sampled off the reference shot). The role axes still have to be
+   TELLABLE APART, which a literally monochrome theme loses: they are kept as a
+   ramp inside the warm range — red → coral accent → vivid orange attention →
+   muted amber warning — rather than four shades of one orange.
+   This is also the theme with no message frames (--bubble-*). */
+[data-theme='ember'] {
+  --bg-inset:        #0c0908;
+  --bg:              #131010;
+  --bg-raised:       #191413;
+  --bg-elevated:     #201917;
+  --bg-high:         #2b211d;
+
+  --text:            #e6d2c8;
+  --text-strong:     #fdf1ea;
+  --text-muted:      #9c7767;
+  --text-faint:      #6e5348;
+
+  --border:          #40291f;
+  --border-strong:   #5e4032;
+
+  --accent:          #e8663d;
+  --accent-strong:   #ff9464;
+  --accent-dim:      #8c4526;
+
+  /* The "your side" axis (user bubbles, multi pills) — a dusty rose, told
+     apart from the accent by saturation rather than by hue. */
+  --info:            #d38a72;
+  --info-deep:       #8c5445;
+  --danger:          #e05b57;
+  --danger-strong:   #f2705f;
+  --danger-soft:     #f3c3b6;
+  --danger-deep:     #8e3630;
+  --danger-bg:       #2a1210;
+  --danger-bg-strong: #4a1d18;
+  --success:         #a3bb63;
+  --success-soft:    #c6d98d;
+  --success-deep:    #6b7d3c;
+  --warning:         #d9a441;
+  --warning-strong:  #ffc857;
+  --warning-soft:    #f4d69a;
+  --attention:       #ff9422;
+  --attention-strong: #ff6a35;
+  --lavender:        #cd9a78;
+  --violet:          #c58ab0;
+  --violet-soft:     #dba8c6;
+  --violet-deep:     #9a6a86;
+
+  --syn-comment:     #7d5c50;
+  --syn-string:      #a3bb63;
+  --diff-add:        #a3bb63;
+
+  --shade:           #000000;
+  --shadow-color:    #000000;
+  --scrim:           #0a0605;
+  --tint:            #ffdcc9;
+
+  --logo-plate:      #f4f1ea;
+  --media-bg:        #ffffff;
+
+  --term-bg:         #100c0b;
+  --term-fg:         #e0cdc2;
+  --term-dim:        #8a6a5e;
+
+  /* No frame, no fill: the transcript reads as text. */
+  --bubble-edge:     0px;
+  --bubble-tint:     0;
+
+  --display: 'Inter', system-ui, -apple-system, sans-serif;
+  --body:    'Inter', system-ui, -apple-system, sans-serif;
+  --mono:    'JetBrains Mono', monospace;
+}
+
+/* ── Legacy aliases ─────────────────────────────────────────────────────────
+   The colour-named tokens the app used before the semantic tier. Kept (and
+   resolved lazily, so they follow the active theme) so that code written
+   against the old names — including a concurrent working copy — keeps
+   rendering. Do NOT use them in new rules. */
+:root {
+  --stone:          var(--bg);
+  --stone-2:        var(--bg-elevated);
+  --stone-3:        var(--bg-high);
+  --parchment:      var(--text);
+  --parchment-soft: var(--text-muted);
+  --gold:           var(--accent);
+  --gold-bright:    var(--accent-strong);
+  --gold-deep:      var(--border);
+  --teal:           var(--info);
+  --teal-deep:      var(--info-deep);
+  --crimson:        var(--danger);
+  --crimson-deep:   var(--danger-deep);
+  --violet-bright:  var(--violet);
+  --shadow:         var(--bg-inset);
+}

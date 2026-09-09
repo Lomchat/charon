@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
 import { encrypt, tryDecrypt } from '@/lib/server/crypto';
 import { getEnvAesKey } from '@/lib/server/masterKey';
+import { DEFAULT_THEME_ID } from '@/app/themes';
 
 // ── At-rest encryption of secret settings (P0.7) ────────────────────────────
 // Secret values are stored as `enc:v1:<aes-256-gcm blob>` (key = scrypt of
@@ -89,6 +90,10 @@ const DEFAULTS = {
   // HOST:PORT locally and has no idea of its public origin). Empty = no link
   // appended. Trailing slash is tolerated (stripped when building links).
   'app.public_url': '',
+  // Active look, an id from app/themes.ts. Hub-wide and validated on write, so
+  // an id dropped from the code degrades to the default rather than rendering
+  // a page against tokens nothing defines.
+  'app.theme': DEFAULT_THEME_ID,
   // Global defaults for Claude model / fallback / effort. Empty string =
   // not set → the agent passes nothing → SDK default applies.
   // New sessions inherit these unless overridden in NewSessionDialog.
