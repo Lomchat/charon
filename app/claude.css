@@ -92,40 +92,11 @@
   color: var(--text-muted);
   border-color: var(--border-strong);
 }
-/* "update local agent" button: visible ONLY when the local agent
-   is out-of-date. Wider than the others (text + glyph), amber
-   pulse to catch the eye without shouting. */
-.claude-head .head-btn.local-agent-update {
-  width: auto;
-  padding: 0 10px;
-  font-family: var(--display, inherit);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--warning-soft);
-  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
-  background: color-mix(in srgb, var(--warning) 10%, transparent);
-  animation: local-agent-pulse 2.2s ease-in-out infinite;
-}
-.claude-head .head-btn.local-agent-update:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--warning) 22%, transparent);
-  border-color: color-mix(in srgb, var(--warning) 85%, transparent);
-  color: var(--warning-soft);
-}
-@keyframes local-agent-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 35%, transparent); }
-  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 0%, transparent); }
-}
-.claude-head .multi-pill {
-  display: inline-flex; align-items: center;
-  padding: 3px 8px;
-  border: 1px solid var(--info-deep);
-  color: var(--info);
-  font-family: var(--mono); font-size: 11px;
-}
-
-/* `.status-pill` and its `.status-<colour>` modifiers are gone with the app
+/* `.local-agent-update` (the amber "update local agent" button) and
+   `.multi-pill` (the "×N connected clients" counter) are gone with their
+   header widgets: the agent's freshness belongs to the sidebar/VPS chips,
+   and the client count to the sidebar card (`cs-multi`).
+   `.status-pill` and its `.status-<colour>` modifiers are gone with the app
    header's context/state zone: the session bar and the sidebar cards own
    liveness now. `cpulse` stays — install steps and banners animate with it. */
 @keyframes cpulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
@@ -819,8 +790,12 @@
    "tab strip" header rather than a body tab. */
 .tab-row-entities {
   background: color-mix(in srgb, var(--shade) 10%, transparent);
-  padding-bottom: 0;
-  min-height: 32px;
+  /* Same top inset as row 2, so the three rows are separated by one gap and
+     not by two different ones. */
+  padding: 2px 12px 0;
+  /* Items stretch, so the min-height has to shed the same 4px the padding did
+     or the tabs simply grow into the gap that was removed. */
+  min-height: 28px;
 }
 .tab-row-empty {
   display: inline-flex; align-items: center;
@@ -4159,8 +4134,8 @@
   }
   /* Icon-only header buttons become labeled menu rows inside the drawer: the
      text comes from data-label (set in ClaudePanel) rendered via ::after, so
-     desktop stays icon-only with zero markup duplication. Buttons that already
-     carry text (LocalAgentButton) have no data-label → empty ::after, no-op. */
+     desktop stays icon-only with zero markup duplication. A button that
+     already carries text has no data-label → empty ::after, no-op. */
   .claude-head .head-right .head-btn::after {
     content: attr(data-label);
     font-size: 13px;

@@ -26,7 +26,6 @@ import { setFocus, subscribeAll, subscribeReconnect } from './globalEventStream'
 import { applyTheme } from './themeClient';
 import SessionContextMenu from './SessionContextMenu';
 import PromptModal from './PromptModal';
-import LocalAgentButton from './LocalAgentButton';
 import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
@@ -1586,11 +1585,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               cwd and the live state (ThinkingBar/status), and the sidebar card
               carries it too — a third, 4s-stale copy in the app header was
               pure duplication. */}
-          {!!selected?.subscribers && selected.subscribers > 1 && (
-            <span className="multi-pill" title={`${selected.subscribers} clients connected to this session`}>
-              ×{selected.subscribers}
-            </span>
-          )}
+          {/* No "×N connected clients" pill either: the sidebar card already
+              carries that count (`cs-multi`) for the sessions that have it. */}
           <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search" data-label="search">
             <IconSearch />
           </button>
@@ -1638,7 +1634,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data" data-label="vps, projects & paths">
             <IconServers />
           </button>
-          <LocalAgentButton />
           <button className="head-btn model-notice-anchor" onClick={() => setSettingsOpen(true)} title={hasNewModels ? "settings — new models available" : "settings"} aria-label={hasNewModels ? "settings — new models available" : "settings"} data-label="settings">
             <IconGear />
             {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
