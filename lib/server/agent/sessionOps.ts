@@ -36,7 +36,7 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
-import { isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb, runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
+import { bgTaskIdsBeforeEventFromDb, isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb, runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
 import { readCodexBgState } from '@/lib/server/claude/codexBgState';
 import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
@@ -892,16 +892,13 @@ export class SessionStream {
         // never auto-updated.
         // NOT live-only: the restart that matters is usually the one that also
         // dropped the SSH connection, so this `ready` arrives inside the
-        // reconnect replay. Tasks started AFTER it are persisted and tracked
-        // further down that same replay, so they survive the burial — but a
-        // SECOND replay of the same range would find them already persisted
-        // (hence untracked) and bury them wrongly. The gate is the ordinary
-        // identity one (§14.31): the killed rows are stamped with the READY's
-        // seq, so "a row with my seq exists" means this ready was already
-        // dealt with. Seq-less agents (<0.4.0) can't be gated → live only.
+        // reconnect replay. Hydration already includes newer DB tasks: the
+        // temporal guard preserves them even when this ready originally had
+        // nothing to bury (hence no identity receipt). Existing receipts are
+        // still deduped by the READY's seq. Seq-less agents → live only.
         const readySeq = typeof ev.seq === 'number' ? ev.seq : null;
         if (readySeq == null ? !this.isReplaying : !this._replayAlreadyPersisted(ev)) {
-          this._expireBgTasks(readySeq);
+          this._expireBgTasks(readySeq, this._bgTasksBeforeCurrentEvent());
         }
         this._broadcast({ type: 'ready' });
         break;
@@ -1487,14 +1484,15 @@ export class SessionStream {
           this.hasRunningBgTasks();                    // ensure loaded
           const alive = new Set(ev.background_tasks);
           const running = this.bgRunning!;
+          const eligible = running.size ? this._bgTasksBeforeCurrentEvent() : null;
           let changed = false;
           for (const taskId of [...running.keys()]) {
-            if (!alive.has(taskId)) {
+            if (!alive.has(taskId) && (eligible == null || eligible.has(taskId))) {
               const payload = { type: 'bg_task' as const, kind: 'finished' as const,
                 taskId, status: 'completed', terminal: true };
               // Persist the receipt and send it to the bar too. An in-memory
               // deletion resurrected this task at the next GET/hub restart.
-              if (this._persist('event', payload) != null) {
+              if (this._persist('event', payload) !== false) {
                 this._broadcast(payload);
                 running.delete(taskId);
                 changed = true;
@@ -2303,6 +2301,17 @@ export class SessionStream {
     return pruneStaleBgTasks(this.bgRunning, Math.floor(Date.now() / 1000));
   }
 
+  /** null means an undated LIVE snapshot; undated replay authorizes nothing.
+   * Identity dedup alone misses old hooks that originally closed zero tasks. */
+  private _bgTasksBeforeCurrentEvent(): Set<string> | null {
+    if (this.currentEventSeq == null && this.currentEventTs == null) {
+      return this.isReplaying ? new Set() : null;
+    }
+    return bgTaskIdsBeforeEventFromDb(this.id, {
+      seq: this.currentEventSeq, tsMs: this.currentEventTs,
+    });
+  }
+
   /** Apply one live bg_task event to the registry. Replayed events are NOT fed
    *  here: the lazy DB load already contains them, and re-applying a
    *  started/finished PAIR in order would transiently resurrect a task that
@@ -2362,12 +2371,13 @@ export class SessionStream {
    * agent update believing it still has work running, and would sit `background`
    * until the 24h age cap while blocking the auto-update quiet gate.
    */
-  private _expireBgTasks(stampSeq: number | null = null): void {
+  private _expireBgTasks(stampSeq: number | null = null, eligible: Set<string> | null = null): void {
     this._clearCodexBgChecks();
     this._cancelBgFinish();
     if (!this.hasRunningBgTasks()) return;
     const running = this.bgRunning!;
     for (const taskId of running.keys()) {
+      if (eligible != null && !eligible.has(taskId)) continue;
       // 'killed', not 'stale': `app/bgTasks.ts § normStatus` only understands
       // terminal words, and an unknown one lands on 'completed' — claiming a
       // task succeeded when its process was cut is the one wrong answer.
@@ -2375,10 +2385,10 @@ export class SessionStream {
       // `stampSeq` (the `ready` path) makes these rows the identity receipt of
       // the event that ordered the burial, so replaying it is a no-op. The
       // status paths pass null: they are already replay-guarded upstream.
-      this._persist('event', payload, { seq: stampSeq });
+      if (this._persist('event', payload, { seq: stampSeq }) === false) continue;
       this._broadcast(payload);
+      running.delete(taskId);
     }
-    running.clear();
   }
 
   private _cancelBgFinish(): void {

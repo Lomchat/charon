@@ -47,11 +47,12 @@ export function isBgTaskDone(
  *  Full-history scan: cheap enough at the call rate (stream hydration once per
  *  session, and one auto-update tick every 30 min), and the alternative is a
  *  column that can silently disagree with the rows it is derived from. */
-type BgTaskRow = { content: string; createdAt: number };
+type BgTaskRow = { content: string; createdAt: number; seq: number | null; tsMs: number | null };
 
 function bgTaskRowsFromDb(sessionId: string): BgTaskRow[] {
   try {
-    return db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt })
+    return db.select({ content: claudeSessionMessages.content, createdAt: claudeSessionMessages.createdAt,
+      seq: claudeSessionMessages.seq, tsMs: claudeSessionMessages.tsMs })
       .from(claudeSessionMessages)
       .where(and(
         eq(claudeSessionMessages.sessionId, sessionId),
@@ -61,6 +62,36 @@ function bgTaskRowsFromDb(sessionId: string): BgTaskRow[] {
       .orderBy(asc(claudeSessionMessages.id))
       .all();
   } catch { return []; }
+}
+
+/** Tasks whose latest recorded activity predates a native snapshot. A replay
+ * sees the CURRENT DB registry, which may contain tasks created after that
+ * snapshot. Absence from an older snapshot cannot close those tasks (§14.91).
+ * Prefer event time across sequence resets, then seq for same-ms/legacy rows.
+ * Missing ordering evidence is deliberately not permission to close work. */
+export function bgTaskIdsBeforeEventFromDb(
+  sessionId: string,
+  boundary: { seq: number | null; tsMs: number | null },
+): Set<string> {
+  const eligible = new Set<string>();
+  for (const row of bgTaskRowsFromDb(sessionId)) {
+    try {
+      const ev = JSON.parse(row.content);
+      if (ev?.type !== 'bg_task' || typeof ev.taskId !== 'string') continue;
+      let before = false;
+      if (boundary.tsMs != null && row.tsMs != null && row.tsMs !== boundary.tsMs) {
+        before = row.tsMs < boundary.tsMs;
+      } else if (boundary.seq != null && row.seq != null) {
+        before = row.seq < boundary.seq;
+      } else if (boundary.tsMs != null) {
+        // createdAt has only second precision: an equal second is ambiguous.
+        before = row.createdAt < Math.floor(boundary.tsMs / 1000);
+      }
+      if (before) eligible.add(ev.taskId);
+      else eligible.delete(ev.taskId);
+    } catch { /* malformed lifecycle rows cannot authorize a closure */ }
+  }
+  return eligible;
 }
 
 function reduceBgTasksFromDb(sessionId: string): {

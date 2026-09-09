@@ -197,6 +197,76 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
   });
 
+  it.each(['turn_end', 'ready'])('replaying %s without a prior receipt preserves newer persisted tasks', (event) => {
+    const stream = createStream();
+    const old = { event, session_id: SID, seq: 2, background_tasks: [] };
+    stream._onAgentEvent(old); // Nothing to bury, hence no identity receipt.
+    stream._onAgentEvent(bgTask(3, 'started', 'new-child'));
+    const before = db.select().from(schema.claudeSessionMessages).all().length;
+    const revived = createStream('background');
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent(old);
+    revived._onAgentEvent(bgTask(3, 'started', 'new-child'));
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(runningBgTaskDetailsFromDb(SID).map((t: any) => t.taskId)).toEqual(['new-child']);
+    expect(revived.hasRunningBgTasks()).toBe(true);
+    expect(revived.status).toBe('background');
+    expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
+  });
+
+  it('a replayed Stop hook still closes older absent tasks while preserving later ones', () => {
+    const stream = createStream();
+    stream._onAgentEvent(bgTask(1, 'started', 'old-child'));
+    stream._onAgentEvent(bgTask(3, 'started', 'new-child'));
+    const revived = createStream('background');
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 2, background_tasks: [] });
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(runningBgTaskDetailsFromDb(SID).map((t: any) => t.taskId)).toEqual(['new-child']);
+    expect([...revived.bgRunning.keys()]).toEqual(['new-child']);
+  });
+
+  it('uses event time across sequence resets and protects a reused task from old hooks', () => {
+    const stream = createStream();
+    const now = Date.now() / 1000;
+    stream._onAgentEvent({ ...bgTask(100, 'started', 'reused'), ts: now - 20 });
+    stream._onAgentEvent({ ...bgTask(101, 'finished', 'reused'), ts: now - 10 });
+    stream._onAgentEvent({ ...bgTask(1, 'updated', 'reused', 'running'), terminal: false, ts: now });
+    const revived = createStream('background');
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 102, ts: now - 5, background_tasks: [] });
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(revived.hasRunningBgTasks()).toBe(true);
+    // A newer hook in the new sequence epoch can close it normally.
+    revived._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 2, ts: now + 1, background_tasks: [] });
+    expect(createStream().hasRunningBgTasks()).toBe(false);
+  });
+
+  it('does not let an undated legacy replay close hydrated tasks', () => {
+    const stream = createStream();
+    stream._onAgentEvent(bgTask(1, 'started', 'child'));
+    const revived = createStream('background');
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent({ event: 'turn_end', session_id: SID, background_tasks: [] });
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(revived.hasRunningBgTasks()).toBe(true);
+    revived._onAgentEvent({ event: 'turn_end', session_id: SID, background_tasks: [] });
+    expect(revived.hasRunningBgTasks()).toBe(false);
+  });
+
+  it.each(['turn_end', 'ready'])('keeps a task visible when the %s receipt cannot be persisted', (event) => {
+    const stream = createStream();
+    stream._onAgentEvent(bgTask(1, 'started', 'child'));
+    const persist = vi.spyOn(stream, '_persist').mockReturnValue(false);
+    const broadcast = vi.spyOn(stream, '_broadcast');
+    stream._onAgentEvent({ event, session_id: SID, seq: 2, background_tasks: [] });
+    expect(stream.hasRunningBgTasks()).toBe(true);
+    expect(broadcast.mock.calls.some(([ev]: any[]) => ev.type === 'bg_task' && ev.kind === 'finished')).toBe(false);
+    persist.mockRestore();
+    stream._onAgentEvent({ event, session_id: SID, seq: 2, background_tasks: [] });
+    expect(createStream().hasRunningBgTasks()).toBe(false);
+  });
+
   it('repairs a Codex child from native completion and ignores late metadata', async () => {
     const stream = createStream('active', 'codex');
     stream.claudeSessionId = 'parent';
