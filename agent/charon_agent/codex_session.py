@@ -47,6 +47,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from . import codex_compat
+from .codex_compat import ResumedThread
 from .peer_mcp import PEER_MODEL_INSTRUCTIONS
 
 try:
@@ -85,6 +87,13 @@ except Exception as e:  # pragma: no cover - depends on the remote venv
     CODEX_AVAILABLE = False
     CODEX_IMPORT_ERROR = f"{type(e).__name__}: {e}"
     CODEX_SDK_VERSION = None
+
+if CODEX_AVAILABLE:
+    # The CLI runs ahead of the SDK by design (_external_codex_bin), so its
+    # thread history can carry items these generated models cannot type. Left
+    # strict, one such item anywhere in a transcript makes `thread/resume`
+    # raise forever — see codex_compat's docstring.
+    codex_compat.install()
 
 
 EmitCallback = Callable[[dict[str, Any]], None]
@@ -153,6 +162,52 @@ CODEX_OPT_OUT_NOTIFICATIONS = (
     "thread/realtime/sdp",
     "thread/realtime/transcript/delta",
 )
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, "").strip() or default))
+    except Exception:
+        return default
+
+
+# ── App-server startup: bounded concurrency + retry ──────────────────────────
+# An agent restart (or a fleet update) wakes EVERY Codex session at once, and
+# each one boots its own ``codex app-server`` child. They all initialize the
+# same sqlite state runtime under the shared ``$CODEX_HOME``, which fails under
+# contention ("failed to initialize sqlite state runtime under /root/.codex").
+# That failure is fatal per-session: the session lands in ``error`` and waits
+# for a human. It is also purely transient — so bound the herd AND retry.
+# Startup is seconds; a small window costs latency on a mass resume, never a
+# session.
+CODEX_START_CONCURRENCY = _env_int("CHARON_CODEX_START_CONCURRENCY", 2)
+CODEX_START_ATTEMPTS = _env_int("CHARON_CODEX_START_ATTEMPTS", 3)
+_start_gate: asyncio.Semaphore | None = None
+
+
+def _codex_start_gate() -> asyncio.Semaphore:
+    """Lazily built on the running loop — the agent owns exactly one."""
+    global _start_gate
+    if _start_gate is None:
+        _start_gate = asyncio.Semaphore(CODEX_START_CONCURRENCY)
+    return _start_gate
+
+
+async def _close_codex_client(client: Any) -> None:
+    """Best-effort close of a client we are abandoning.
+
+    Initialization can fail AFTER the app-server child was spawned. Dropping
+    the reference without closing leaves that child holding the thread's native
+    writer lock, so the next resume can never take it (§14.97).
+    """
+    if client is None:
+        return
+    try:
+        res = client.close()
+        if asyncio.iscoroutine(res):
+            await asyncio.wait_for(res, timeout=5.0)
+    except Exception:
+        pass
 
 
 def _coerce_effort(effort: str | None):
@@ -839,7 +894,7 @@ class CodexSession:
                 params["permissions"] = permission_profile
             else:
                 params["sandbox"] = _sandbox_mode_wire(self.permission_mode)
-            await self._client._client.thread_resume(self.claude_session_id, params)
+            await self._thread_resume(self._client, params)
         await self._save_state()
         return await self.security_status()
 
@@ -2053,10 +2108,25 @@ class CodexSession:
             return await client.thread_start(**common)
         from openai_codex.api import AsyncThread
         if resume:
-            result = await client._client.thread_resume(self.claude_session_id, params)
-        else:
-            result = await client._client.thread_start(params)
+            return AsyncThread(client, await self._thread_resume(client, params))
+        result = await client._client.thread_start(params)
         return AsyncThread(client, result.thread.id)
+
+    async def _thread_resume(self, client: Any, params: dict[str, Any]) -> str:
+        """Rejoin the thread and return its id — the only field we read.
+
+        Deliberately NOT ``client._client.thread_resume``: that validates the
+        whole returned history against models the separately-released CLI can
+        outrun, and a single item it cannot type made the thread permanently
+        unresumable (``codex_compat``). Everything else about this call — the
+        params, the JSON-RPC errors it raises — is unchanged.
+        """
+        result = await client._client.request(
+            "thread/resume",
+            {"threadId": self.claude_session_id, **params},
+            response_model=ResumedThread,
+        )
+        return result.thread.id
 
     async def _sdk_turn(self, thread: Any, content: Any) -> Any:
         from openai_codex.api import AsyncTurnHandle
@@ -2935,30 +3005,50 @@ class CodexSession:
         except Exception:
             pass
 
+    async def _start_client(self) -> Any:
+        """Spawn + initialize the app-server client, through the start gate.
+
+        Retries because the ONE failure a mass resume actually produces —
+        contention on the shared sqlite state runtime under ``$CODEX_HOME`` —
+        is transient, and leaving it fatal means a human has to click Resume on
+        every session after an agent restart. A genuinely broken box (Codex
+        absent, signed out, cwd gone) just fails the same way three times.
+        """
+        last: Exception | None = None
+        for attempt in range(1, CODEX_START_ATTEMPTS + 1):
+            client = None
+            try:
+                async with _codex_start_gate():
+                    client = AsyncCodex(self._session_sdk_config())
+                    # Install before start(): app-server may issue a server
+                    # request as soon as initialization completes.
+                    if hasattr(client, "_client"):
+                        client._client._sync._approval_handler = self._sdk_approval_handler
+                        await self._initialize_sdk(client)
+                    return client
+            except asyncio.CancelledError:
+                await _close_codex_client(client)
+                raise
+            except Exception as e:
+                last = e
+                await _close_codex_client(client)
+                if attempt == CODEX_START_ATTEMPTS:
+                    break
+                print(
+                    f"codex: app-server start attempt {attempt} failed "
+                    f"({type(e).__name__}: {e}) — retrying",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(1.0 * attempt)
+        raise last if last is not None else RuntimeError("Codex client start failed")
+
     async def _run(self) -> None:
-        client = None
         try:
             self._loop = asyncio.get_running_loop()
-            client = AsyncCodex(self._session_sdk_config())
-            # Install before start(): app-server may issue a server request as
-            # soon as initialization completes.
-            if hasattr(client, "_client"):
-                client._client._sync._approval_handler = self._sdk_approval_handler
-                await self._initialize_sdk(client)
+            # Never assigned on failure, so a superseding _run's client stays.
+            client = await self._start_client()
             self._client = client
         except Exception as e:
-            # Initialization can fail AFTER the app-server child was spawned.
-            # Returning without closing leaves it holding this thread's native
-            # writer lock, so the next resume can never take it (§14.97).
-            if client is not None:
-                try:
-                    res = client.close()
-                    if asyncio.iscoroutine(res):
-                        await asyncio.wait_for(res, timeout=5.0)
-                except Exception:
-                    pass
-                if self._client is client:
-                    self._client = None
             self.status = "error"
             self._error_msg = f"AsyncCodex init: {e}"
             self._emit("error", msg=self._error_msg, fatal=True)

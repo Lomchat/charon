@@ -707,5 +707,130 @@ class TestCodexResume(unittest.TestCase):
         asyncio.run(main())
 
 
+class TestAppServerStart(unittest.TestCase):
+    """An agent restart wakes every Codex session at once.
+
+    Each one spawns its own app-server, and they all initialize the same sqlite
+    state runtime under the shared $CODEX_HOME. Under contention that init
+    fails — "failed to initialize sqlite state runtime under /root/.codex" —
+    and it used to be fatal per session: five sessions in `error` after one
+    fleet update, each waiting for a human to click Resume. It is transient, so
+    it is retried, and the herd that causes it is bounded.
+    """
+
+    def test_a_transient_start_failure_is_retried(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            attempts = []
+            closed = []
+
+            class Client:
+                def __init__(self, cfg=None):
+                    attempts.append(1)
+                    if len(attempts) < 3:
+                        raise RuntimeError(
+                            "Codex process closed stdout. stderr_tail=Error: failed "
+                            "to initialize sqlite state runtime under /root/.codex"
+                        )
+
+                async def close(self):
+                    closed.append(1)
+
+            s._session_sdk_config = lambda: None
+            with mock.patch.object(cs, "AsyncCodex", Client), \
+                    mock.patch.object(cs.asyncio, "sleep", _noop_coro):
+                client = await s._start_client()
+            self.assertIsInstance(client, Client)
+            self.assertEqual(len(attempts), 3)
+
+        asyncio.run(main())
+
+    def test_a_real_failure_still_surfaces_after_the_last_attempt(self):
+        async def main():
+            s = _make_session(THREAD_ID)
+            closed = []
+
+            class Client:
+                def __init__(self, cfg=None):
+                    raise RuntimeError("codex: not logged in")
+
+                async def close(self):
+                    closed.append(1)
+
+            s._session_sdk_config = lambda: None
+            with mock.patch.object(cs, "AsyncCodex", Client), \
+                    mock.patch.object(cs.asyncio, "sleep", _noop_coro):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await s._start_client()
+            self.assertIn("not logged in", str(ctx.exception))
+
+        asyncio.run(main())
+
+    def test_a_half_built_client_is_closed_before_the_next_attempt(self):
+        """Else its app-server child keeps the thread's writer lock (§14.97)."""
+        async def main():
+            s = _make_session(THREAD_ID)
+            closed = []
+
+            class Client:
+                def __init__(self, cfg=None):
+                    self._client = types.SimpleNamespace(_sync=types.SimpleNamespace())
+
+                async def close(self):
+                    closed.append(self)
+
+            async def boom(_client):
+                raise RuntimeError("initialize timed out")
+
+            s._session_sdk_config = lambda: None
+            s._sdk_approval_handler = lambda *a, **kw: None
+            s._initialize_sdk = boom
+            with mock.patch.object(cs, "AsyncCodex", Client), \
+                    mock.patch.object(cs.asyncio, "sleep", _noop_coro):
+                with self.assertRaises(RuntimeError):
+                    await s._start_client()
+            self.assertEqual(len(closed), cs.CODEX_START_ATTEMPTS)
+
+        asyncio.run(main())
+
+    def test_starts_are_bounded_so_a_mass_resume_cannot_stampede(self):
+        async def main():
+            live = 0
+            peak = 0
+
+            class Client:
+                def __init__(self, cfg=None):
+                    nonlocal live, peak
+                    live += 1
+                    peak = max(peak, live)
+                    self._client = types.SimpleNamespace(_sync=types.SimpleNamespace())
+
+                async def close(self):
+                    pass
+
+            async def settle(_client):
+                nonlocal live
+                await asyncio.sleep(0)
+                live -= 1
+
+            sessions = []
+            for i in range(8):
+                s = _make_session(THREAD_ID)
+                s._session_sdk_config = lambda: None
+                s._sdk_approval_handler = lambda *a, **kw: None
+                s._initialize_sdk = settle
+                sessions.append(s)
+
+            with mock.patch.object(cs, "AsyncCodex", Client):
+                cs._start_gate = None   # rebuild on THIS loop
+                try:
+                    await asyncio.gather(*(x._start_client() for x in sessions))
+                finally:
+                    cs._start_gate = None
+            self.assertLessEqual(peak, cs.CODEX_START_CONCURRENCY)
+
+        asyncio.run(main())
+
+
 if __name__ == "__main__":
     unittest.main()
