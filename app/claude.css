@@ -4013,11 +4013,16 @@
     min-width: 0;
     justify-content: center;
   }
-  /* Textarea shrinks, but the wrapper drives the height (both layers are
+  /* Textarea shrinks — a phone screen is mostly keyboard — and the send
+     column stops growing with it, so 📎 and SEND keep their own size instead
+     of turning into a wall of buttons. Only the horizontal padding tightens:
+     the 40px tap target set above IS the phone one, so it stays.
+     ⚠ This comment was once left unterminated and swallowed the four rules
+     below for weeks — a mobile composer silently styled as a desktop one. */
   .claude-input-bar textarea { flex: 1 1 auto; min-height: 54px; }
   .claude-input-bar .ci-send-col { flex: 0 0 auto; }
   .claude-input-bar .send { padding: 0 18px; }
-  .claude-input-bar .ci-attach { padding: 0 18px; min-height: 38px; }
+  .claude-input-bar .ci-attach { padding: 0 18px; }
   /* On touch there IS no drag & drop — the paperclip is the only way in, so it
      must never be the cramped button. */
   .claude-input-bar .ci-attach svg { width: 18px; height: 18px; }

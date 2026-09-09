@@ -941,12 +941,16 @@ export default function ClaudeSessionView({
 
         {/* Background tasks (Bash run_in_background / bg subagents): slim
             status line above the input, click → details modal. Renders null
-            when the session has no live/recent background work. */}
-        {showTools && (
-          <BgTasksBar tasks={bgTasks} sessionId={sessionId}
-            provider={sessionKind === 'codex' ? 'codex' : 'claude'}
-            sessionStatus={status ?? 'sleeping'} />
-        )}
+            when the session has no live/recent background work.
+            ⚠ NOT gated on `showTools`: that preference filters transcript
+            ROWS (tool calls, reasoning, plans — cf. chatVisibility.ts), and
+            this bar is live STATE plus the only route to the per-task ⊘
+            (§14.91). Gating it meant a reader in conversation view — the
+            usual choice on a phone, where the preference is per-browser —
+            could neither see nor stop background work. */}
+        <BgTasksBar tasks={bgTasks} sessionId={sessionId}
+          provider={sessionKind === 'codex' ? 'codex' : 'claude'}
+          sessionStatus={status ?? 'sleeping'} />
 
         {/* Input area — replaced by resume CTA if disconnected, or
             QuestionCard/ExitPlanCard/PermissionCard if pending. */}
