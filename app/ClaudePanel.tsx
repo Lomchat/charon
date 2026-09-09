@@ -594,6 +594,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // When we select a Claude session, we deselect shell + install
   function selectClaude(id: string, pin = false) {
     const sess = sessions.find((x) => x.id === id);
+    if (sess && !selected && !selectedShellId && !selectedInstallId && !selectedFile) {
+      // A cold workspace must be able to open its first conversation without
+      // relying on the tab-store → pane effect becoming live first. Use the
+      // same native entry path as a session link; subsequent switches stay
+      // local. Keep this in the sidebar gesture, never the deep-link effect,
+      // or the arriving link could repeatedly reload itself (§14.48).
+      const url = new URL(window.location.href);
+      url.searchParams.set('session', id);
+      url.searchParams.delete('shell');
+      window.location.assign(url.href);
+      return;
+    }
     if (sess) openEntityTab('session', id, sess.vpsId, sess.cwd ?? '', pin);
     closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
