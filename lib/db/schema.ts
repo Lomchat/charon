@@ -104,6 +104,15 @@ export const vps = sqliteTable('vps', {
   // tokens), 0 = not, NULL = never checked. Mirrors claudeLoggedIn.
   codexLoggedIn: integer('codex_logged_in'),
   codexLoggedInCheckedAt: integer('codex_logged_in_checked_at'),
+  // Which Claude settings files sessions on THIS VPS load (§14.100), as the
+  // canonical comma list ('user,project') or 'none' for isolation mode.
+  // NULL = inherit the hub default (`claude.setting_sources`) — and NULL is
+  // what every pre-existing VPS carries, so the historical ['project'] keeps
+  // applying until someone chooses otherwise. This is the per-BOX layer the
+  // feature exists for: "prod and dev machines behave differently" is a
+  // property of the machine, not of the repo. Chosen when the agent is
+  // installed (InstallScopeModal), editable afterwards from DataModal.
+  claudeSettingSources: text('claude_setting_sources'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 });
 
@@ -237,8 +246,10 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   //
   // Deliberately NOT the SDK's `updated_permissions`: its only persistent
   // destination is `localSettings`, i.e. `.claude/settings.local.json` inside
-  // the user's repo — which Charon does not even load (setting_sources is
-  // ['project']), so the rule would be written and never read again. Never
+  // the user's repo — a file Charon loads only when a session's scope opts
+  // into 'local' (§14.100, off by default), so the rule would usually be
+  // written and never read again. Answering in Charon's own durable set keeps
+  // the grant readable whatever the scope, and out of the user's repo. Never
   // hydrate this for Codex: its broad card labels would grant unrelated
   // commands; Codex owns exact session-scoped grants natively (§14.8/96).
   alwaysAllowTools: text('always_allow_tools'),

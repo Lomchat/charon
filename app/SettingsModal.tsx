@@ -17,6 +17,10 @@ import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import { invalidateModels } from './modelsCache';
 import { CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES } from '@/lib/sessionCapabilities';
+import SettingSourcesPicker from './SettingSourcesPicker';
+import {
+  DEFAULT_SETTING_SOURCES, formatSettingSources, safeParseSettingSources,
+} from '@/lib/settingSources';
 import { THEMES, DEFAULT_THEME_ID } from './themes';
 import { applyTheme, currentThemeId } from './themeClient';
 
@@ -329,6 +333,18 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         ))}
                       </PickerControl>
                     </label>
+
+                    {/* §14.100 — the bottom of the chain, so no "inherit"
+                        option here: this IS what a VPS and a session inherit.
+                        A VPS overrides it from its card in the data modal. */}
+                    <div className="settings-sub">settings files sessions load</div>
+                    <SettingSourcesPicker
+                      value={safeParseSettingSources(s['claude.setting_sources']) ?? [...DEFAULT_SETTING_SOURCES]}
+                      // `next` is never null without an `inherited` prop; the
+                      // fallback keeps the fleet default from ever becoming ''.
+                      onChange={(next) => set('claude.setting_sources',
+                        formatSettingSources(next ?? DEFAULT_SETTING_SOURCES))}
+                    />
 
                     <div className="settings-sub">model catalog</div>
                     <label>Anthropic API key (catalog sync only — never inference)

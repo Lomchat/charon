@@ -4,6 +4,7 @@ import { emitGlobalSettingsChanged } from '@/lib/server/agent/sessionOps';
 import { requireApiSession } from '@/lib/server/session';
 import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
 import { isSessionMode } from '@/lib/sessionCapabilities';
+import { formatSettingSources, parseSettingSources } from '@/lib/settingSources';
 import { isThemeId } from '@/app/themes';
 
 const ALLOWED_KEYS = [
@@ -22,6 +23,10 @@ const ALLOWED_KEYS = [
   'claude.default_fallback_model',
   'claude.default_effort',
   'claude.default_permission_mode',
+  // Fleet default for the Claude settings scope (§14.100). A VPS and a session
+  // may each override it; validated below through the shared parser so 'none'
+  // and an unknown token can't be confused.
+  'claude.setting_sources',
   // Codex (OpenAI) global defaults + auto-update toggle. codex.latest_version(_at)
   // are written by the freshness sync, never accepted from a settings POST.
   'codex.default_model',
@@ -120,6 +125,19 @@ export async function POST(req: Request) {
     if (k === 'codex.default_approvals_reviewer'
         && val !== 'user' && val !== 'auto_review') {
       rejected.push(k);
+      continue;
+    }
+    // The fleet default must always name a scope: '' here would mean "inherit"
+    // with nothing left to inherit from. Refuse it rather than resolve to a
+    // value the operator did not pick.
+    if (k === 'claude.setting_sources') {
+      let parsed: ReturnType<typeof parseSettingSources> | undefined;
+      try { parsed = parseSettingSources(val); } catch { parsed = undefined; }
+      if (parsed === undefined || parsed === null) {
+        rejected.push(k);
+        continue;
+      }
+      setSetting(k as any, formatSettingSources(parsed));
       continue;
     }
     // An unknown theme id would render every page against tokens nothing

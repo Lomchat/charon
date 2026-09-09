@@ -47,6 +47,10 @@ type Props = {
   // codexLoggedIn are merged keys).
   onCodexLogin?: (vps: Vps) => void;
   onClaudeLogin?: (vps: Vps) => void;
+  // "settings scope" on a VPS card (§14.100). Delegated UP for the same reason
+  // as the logins: ClaudePanel renders that dialog after this modal, so it
+  // overlays instead of stacking a second surface inside it.
+  onEditSettingScope?: (vps: Vps) => void;
   refreshingAgentVpsIds?: Set<string>;
   updatingAgentVpsIds?: Set<string>;
   // Live copy of ClaudePanel's vpsList: the modal owns its rows for CRUD, but
@@ -93,7 +97,7 @@ function decodeId(dragId: string): { kind: 'vps' | 'folder' | 'folder-drop'; id:
 
 export default function DataModal({
   onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
-  onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin,
+  onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin, onEditSettingScope,
   refreshingAgentVpsIds, updatingAgentVpsIds,
   liveVps, builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion,
 }: Props) {
@@ -649,6 +653,7 @@ export default function DataModal({
                   onFixVps={handleFix}
                   healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                   onLogin={(v) => onClaudeLogin?.(v)}
+                  onSettingScope={(v) => onEditSettingScope?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                   onAddPath={(vpsId) => addPath(vpsId)}
@@ -676,6 +681,7 @@ export default function DataModal({
                 onFixVps={handleFix}
                 healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
                 onLogin={(v) => onClaudeLogin?.(v)}
+                onSettingScope={(v) => onEditSettingScope?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                 onAddPath={(vpsId) => addPath(vpsId)}
@@ -712,7 +718,7 @@ export default function DataModal({
 function SortableFolder({
   folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onRename, onDelete,
-  onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -730,6 +736,7 @@ function SortableFolder({
   onFixVps: (v: Vps, action: VpsFixAction) => void;
   healthOpts: HealthOpts;
   onLogin: (v: Vps) => void;
+  onSettingScope: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
   onAddPath: (vpsId: string) => void;
@@ -799,6 +806,7 @@ function SortableFolder({
                 onFix={(action) => onFixVps(v, action)}
                 healthOpts={healthOpts}
                 onLogin={() => onLogin(v)}
+                onSettingScope={() => onSettingScope(v)}
                 onDelete={() => onDeleteVps(v.id, v.name)}
                 onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
                 onAddPath={() => onAddPath(v.id)}
@@ -859,7 +867,7 @@ function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (
 // ─────────────────────────────────────────────────────────────
 function StaticFolder({
   folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
-  onFixVps, healthOpts, onLogin, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -874,6 +882,7 @@ function StaticFolder({
   onFixVps: (v: Vps, action: VpsFixAction) => void;
   healthOpts: HealthOpts;
   onLogin: (v: Vps) => void;
+  onSettingScope: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
   onAddPath: (vpsId: string) => void;
@@ -919,6 +928,7 @@ function StaticFolder({
               onFix={(action) => onFixVps(v, action)}
               healthOpts={healthOpts}
               onLogin={() => onLogin(v)}
+              onSettingScope={() => onSettingScope(v)}
               onDelete={() => onDeleteVps(v.id, v.name)}
               onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
               onAddPath={() => onAddPath(v.id)}
@@ -941,7 +951,7 @@ function StaticFolder({
 // ─────────────────────────────────────────────────────────────
 function SortableVpsCard({
   v, dragDisabled, allFolders, paths, pathInput,
-  onFix, healthOpts, onLogin, onDelete, onChangeFolder,
+  onFix, healthOpts, onLogin, onSettingScope, onDelete, onChangeFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   v: Vps;
@@ -952,6 +962,7 @@ function SortableVpsCard({
   onFix: (action: VpsFixAction) => void;
   healthOpts: HealthOpts;
   onLogin: () => void;
+  onSettingScope: () => void;
   onDelete: () => void;
   onChangeFolder: (newFolderId: string) => void;
   onAddPath: () => void;
@@ -1012,6 +1023,15 @@ function SortableVpsCard({
         </PickerControl>
         <div className="dv-actions">
           <button className="dv-btn" onClick={onLogin} title="sign in to Claude (hosted OAuth code)">login</button>
+          {/* The scope chosen when the agent was installed (§14.100). A fresh
+              box has no ~/.claude/settings.json yet, so that choice was a
+              policy taken blind — it has to stay changeable here. */}
+          <button
+            className="dv-btn"
+            onClick={onSettingScope}
+            title={`Claude settings files loaded on this VPS — ${
+              v.claudeSettingSources || 'inheriting the hub default'}`}
+          >settings scope</button>
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>
         </div>
         {/* Health chips: one per layer, hover for the why; each broken chip is

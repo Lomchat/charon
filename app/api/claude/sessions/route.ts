@@ -14,6 +14,7 @@ import type { SessionMode } from '@/lib/server/agent/types';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 import { isSessionMode } from '@/lib/sessionCapabilities';
+import { parseSettingSources } from '@/lib/settingSources';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
 
@@ -162,7 +163,12 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
     } else if (r.skills != null) {
       throw new Error('skills must be "all", an array of names, or null');
     }
-    return { ...shared, skills };
+    // Tri-state (§14.100): absent = "inherit the VPS / hub choice" and is
+    // filled in by startNewSession; [] = the caller explicitly asked for
+    // isolation. parseSettingSources throws on an unknown token, which the
+    // POST handler already turns into a 400.
+    const settingSources = parseSettingSources(r.settingSources);
+    return { ...shared, skills, ...(settingSources === null ? {} : { settingSources }) };
   }
   const configOverrides = Array.isArray(r.configOverrides)
     ? r.configOverrides.filter((v): v is string => typeof v === 'string')

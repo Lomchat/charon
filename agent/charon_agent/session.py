@@ -416,6 +416,17 @@ class AgentSession:
     # applied via options.settings rather than the SDK effort kwarg (§14.56).
     VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultracode")
 
+    # Which on-disk settings files the CLI reads (§14.100). The SDK's own
+    # default is "all of them"; Charon narrowed it to project-only from the
+    # first commit, which is what loads CLAUDE.md but also silently ignored the
+    # BOX's own ~/.claude/settings.json — permission deny lists, hooks and
+    # user-level skills included. The value is now a per-session choice
+    # resolved hub-side; this constant is only the fallback for a session that
+    # predates the feature (session_config without the key), so upgrading an
+    # agent changes nothing on its own.
+    VALID_SETTING_SOURCES = ("user", "project", "local")
+    DEFAULT_SETTING_SOURCES = ("project",)
+
     @staticmethod
     def _normalize_session_config(value: dict[str, Any] | None) -> dict[str, Any]:
         raw_cfg = value if isinstance(value, dict) else {}
@@ -426,6 +437,17 @@ class AgentSession:
         elif isinstance(raw_skills, list):
             skills = [str(v).strip()[:256] for v in raw_skills[:128]
                       if isinstance(v, str) and v.strip()]
+        # Tri-state, and the distinction is load-bearing: absent/None means
+        # "this session never chose" (→ DEFAULT_SETTING_SOURCES), while an
+        # empty LIST is the SDK's isolation mode — no settings file at all, no
+        # CLAUDE.md. Collapsing the two would make isolation unreachable and
+        # silently re-enable the repo's settings.
+        raw_sources = raw_cfg.get("settingSources")
+        setting_sources: list[str] | None = None
+        if isinstance(raw_sources, list):
+            picked = {v for v in raw_sources
+                      if isinstance(v, str) and v in AgentSession.VALID_SETTING_SOURCES}
+            setting_sources = [v for v in AgentSession.VALID_SETTING_SOURCES if v in picked]
         return {
             "baseInstructions": raw_cfg.get("baseInstructions")
             if isinstance(raw_cfg.get("baseInstructions"), str) else None,
@@ -434,6 +456,7 @@ class AgentSession:
             "outputSchema": raw_cfg.get("outputSchema")
             if isinstance(raw_cfg.get("outputSchema"), dict) else None,
             "skills": skills,
+            "settingSources": setting_sources,
             "env": {str(k): str(v)[:8192] for k, v in (raw_cfg.get("env") or {}).items()
                     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", str(k))}
             if isinstance(raw_cfg.get("env"), dict) else {},
@@ -711,6 +734,15 @@ class AgentSession:
         self.session_config = self._normalize_session_config(value)
         await self._save_state()
 
+    def _effective_setting_sources(self) -> list[str]:
+        """The settings files this session's CLI actually reads (§14.100)."""
+        configured = self.session_config.get("settingSources")
+        # `is None` on purpose: [] is a legitimate answer (isolation mode) and
+        # a falsy test would turn it back into the default.
+        if configured is None:
+            return list(self.DEFAULT_SETTING_SOURCES)
+        return list(configured)
+
     @staticmethod
     def _skill_frontmatter(path: Path) -> tuple[str, str | None]:
         name = path.parent.name
@@ -741,19 +773,34 @@ class AgentSession:
             (Path(self.cwd) / ".claude" / "skills", "project"),
         ]
         selected = self.session_config.get("skills")
+        # A skill only exists for the CLI if the scope it lives in is loaded
+        # (§14.100). Listing a user skill as "enabled" while `user` is off is
+        # the exact lie this inventory used to tell: the panel offered it, the
+        # session had never heard of it, and nothing said why.
+        sources = self._effective_setting_sources()
         for root, source in roots:
             try:
                 candidates = sorted(root.glob("*/SKILL.md"))[:256]
             except OSError:
                 candidates = []
+            available = source in sources
             for path in candidates:
                 name, description = self._skill_frontmatter(path)
-                enabled = (selected == "all" or selected is None
-                           or isinstance(selected, list) and name in selected)
-                found[name] = {
+                enabled = available and (
+                    selected == "all" or selected is None
+                    or isinstance(selected, list) and name in selected)
+                entry = {
                     "name": name, "path": str(path), "description": description,
-                    "enabled": enabled, "source": source,
+                    "enabled": enabled, "source": source, "available": available,
                 }
+                if not available:
+                    entry["unavailable_reason"] = (
+                        f"'{source}' settings are not loaded for this session")
+                # A project skill outranks a same-named user one, but only when
+                # it is itself reachable — otherwise the reachable one wins.
+                previous = found.get(name)
+                if previous is None or available or not previous.get("available"):
+                    found[name] = entry
         return sorted(found.values(), key=lambda item: str(item["name"]).lower())[:256]
 
     async def resources(self, force_reload: bool = False) -> dict[str, Any]:
@@ -790,6 +837,9 @@ class AgentSession:
             "commands": commands, "plugins": plugins,
             "running": self._client is not None,
             "configured_skills": self.session_config.get("skills"),
+            # What the panel needs to explain a greyed-out skill without the
+            # user having to guess which settings files this session reads.
+            "setting_sources": self._effective_setting_sources(),
         }
 
     def respond_permission(self, perm_id: str, allow: bool, always: bool = False) -> bool:
@@ -1977,6 +2027,11 @@ class AgentSession:
             out["output_format"] = {"type": "json_schema", "schema": schema}
         skills = self.session_config.get("skills")
         if skills == "all" or isinstance(skills, list):
+            # ⚠ The SDK defaults setting_sources to ["user","project"] when
+            # `skills` is set AND setting_sources is None, so that it can
+            # discover them. We always pass an explicit list (§14.100), so OUR
+            # value wins and a skill living in a scope we don't load stays
+            # invisible — which is why _discovered_skills reports availability.
             out["skills"] = skills
         env = self.session_config.get("env")
         if isinstance(env, dict) and env:
@@ -1996,7 +2051,14 @@ class AgentSession:
         try:
             options_kwargs: dict[str, Any] = dict(
                 cwd=self.cwd,
-                setting_sources=["project"],
+                # Which settings files the CLI loads (§14.100). THE single
+                # place that decides it — `_advanced_option_kwargs` below
+                # deliberately does not touch this key, so there is one answer
+                # and `resources()` can report it truthfully. Note the SDK's
+                # own default is None = every source; ["project"] is Charon's
+                # historical narrowing, kept as the fallback for a session that
+                # never expressed a choice.
+                setting_sources=self._effective_setting_sources(),
                 permission_mode=sdk_mode,
                 hooks={
                     "PreToolUse": [HookMatcher(hooks=[self._pre_tool_use])],

@@ -5981,3 +5981,31 @@ button.picker-trigger:disabled { opacity: .5; cursor: default; }
 .claude-modal label .picker-trigger { display: inline-flex; margin-top: 6px; }
 .data-add .picker-trigger { flex: 1; min-width: 80px; }
 button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
+
+/* ── Claude settings scope (§14.100) ─────────────────────────────────────────
+   One control shared by hub Settings, the per-VPS dialog and the wizard's
+   advanced block, so the three read as the same question. Every colour is a
+   semantic token (§14.99). */
+.ss-picker { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.ss-inherit { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font: 12px/1.4 var(--body); text-transform: none; letter-spacing: 0; }
+.ss-inherit b { color: var(--text); font-weight: 600; }
+.ss-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ss-list > li { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elevated); }
+.ss-list > li.is-on { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.ss-list > li > label { display: flex; align-items: center; gap: 8px; color: var(--text); font: 12px/1.4 var(--body); text-transform: none; letter-spacing: 0; cursor: pointer; }
+.ss-list > li > label:has(input:disabled) { cursor: default; opacity: .55; }
+.ss-name { font-weight: 600; }
+.ss-file { min-width: 0; overflow: hidden; color: var(--text-muted); font: 11px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.ss-hint { display: block; margin: 4px 0 0 22px; color: var(--text-muted); font: 11px/1.45 var(--body); }
+.ss-warn { margin: 0; color: var(--warning); font: 11px/1.45 var(--body); }
+.ss-note { margin: 0; color: var(--text-muted); font: 11px/1.45 var(--body); }
+
+.claude-modal.scope-modal { max-width: 520px; }
+.scope-title { margin: 0 0 6px; font: 15px/1.3 var(--body); }
+.scope-lead { margin: 0 0 12px; color: var(--text-muted); font: 12px/1.5 var(--body); }
+.scope-stored { margin: 10px 0 0; color: var(--text-muted); font: 11px/1.4 var(--body); text-align: right; }
+.confirm-btn.primary { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); }
+
+/* An inventory entry the running session cannot reach (its scope is off). */
+.si-resources > li.is-unreachable { opacity: .6; }
+.si-resources .si-unreachable { display: block; color: var(--warning); font: 10px/1.4 var(--body); }

@@ -20,6 +20,10 @@ import {
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
+import SettingSourcesPicker from './SettingSourcesPicker';
+import {
+  resolveSettingSources, safeParseSettingSources, type ClaudeSettingSource,
+} from '@/lib/settingSources';
 
 // 3-step "new session" wizard (prod). `kind` (agent vs shell) is fixed by the
 // button that opened it. For agents, the BACKEND (Claude vs Codex) is either
@@ -160,8 +164,12 @@ export default function NewSessionWizard({
   const [sessionEnv, setSessionEnv] = useState('');
   const [codexBin, setCodexBin] = useState('');
   const [claudeSkills, setClaudeSkills] = useState('');
+  // §14.100 — null while the user hasn't touched it: the session then inherits
+  // the VPS's scope (or the hub default). Claude only; Codex has no equivalent.
+  const [settingSources, setSettingSources] = useState<ClaudeSettingSource[] | null>(null);
   const [globalDefaults, setGlobalDefaults] = useState<{
     model: string; fallbackModel: string; effort: string; codexMode: string;
+    settingSources: ClaudeSettingSource[];
   } | null>(null);
 
   // Enter validates the CURRENT step, wherever focus is. Each step's own
@@ -203,6 +211,8 @@ export default function NewSessionWizard({
         fallbackModel: s['claude.default_fallback_model'] ?? '',
         effort: s['claude.default_effort'] ?? '',
         codexMode: s['codex.default_permission_mode'] ?? 'workspace-write',
+        settingSources: resolveSettingSources(
+          safeParseSettingSources(s['claude.setting_sources'])),
       }))
       .catch(() => {});
   }, [kind]);
@@ -214,6 +224,14 @@ export default function NewSessionWizard({
   }, [selKind]);
 
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
+  // What this session gets if the user leaves the picker alone (§14.100): the
+  // VPS's own scope, else the fleet default, else the built-in one. Resolved
+  // here purely to LABEL the inherit option — the server resolves it again for
+  // real and persists the answer.
+  const inheritedSettingSources = resolveSettingSources(
+    safeParseSettingSources(vps?.claudeSettingSources),
+    globalDefaults?.settingSources,
+  );
   const agentLabel = selKind === 'codex' ? 'Codex agent' : 'Claude agent';
   const kindLabel = kind === 'agent' ? agentLabel : 'SSH shell';
   const KindIcon = kind === 'agent'
@@ -586,7 +604,13 @@ export default function NewSessionWizard({
           } satisfies CodexSessionConfig;
         } else {
           const skills = claudeSkills.split('\n').map((v) => v.trim()).filter(Boolean);
-          sessionConfig = { ...shared, skills: skills.length ? skills : null };
+          sessionConfig = {
+            ...shared,
+            skills: skills.length ? skills : null,
+            // Omitted (not null) when inheriting: the server fills it from the
+            // VPS → hub chain and persists the result (§14.100).
+            ...(settingSources ? { settingSources } : {}),
+          };
         }
         const r = await sessionApi.create({
           vpsId: vps.id, cwd: path!.trim(),
@@ -998,6 +1022,15 @@ export default function NewSessionWizard({
                         <label className="wiz-adv-field">skills <span className="wiz-opt">(one name per line; blank = CLI defaults)</span>
                           <textarea className="mono" value={claudeSkills} onChange={(e) => setClaudeSkills(e.target.value)} placeholder={'code-review\nfrontend-design'} />
                         </label>
+                        {/* §14.100 — the last layer of the chain. Inherits the
+                            VPS's scope, itself inheriting the hub default. */}
+                        <div className="wiz-adv-field">settings files <span className="wiz-opt">(what this session reads)</span>
+                          <SettingSourcesPicker
+                            value={settingSources}
+                            onChange={setSettingSources}
+                            inherited={inheritedSettingSources}
+                          />
+                        </div>
                         <label className="wiz-adv-field">environment <span className="wiz-opt">(KEY=value per line)</span>
                           <textarea className="mono" value={sessionEnv} onChange={(e) => setSessionEnv(e.target.value)} />
                         </label>

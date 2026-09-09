@@ -45,6 +45,63 @@ class ClaudeAdvancedConfigTest(unittest.TestCase):
         self.assertEqual(saved["baseInstructions"], "Keep this")
 
 
+class ClaudeSettingSourcesTest(unittest.TestCase):
+    """§14.100 — which settings files a session loads."""
+
+    def make_session(self, config, cwd="/tmp"):
+        return AgentSession(
+            "s1", cwd=cwd, name="demo", permission_mode="normal",
+            claude_session_id=None, emit=lambda _event: None,
+            on_state_change=lambda: None, session_config=config,
+        )
+
+    def test_a_session_that_never_chose_keeps_the_historical_project_scope(self):
+        for config in (None, {}, {"settingSources": None}, {"settingSources": "user"}):
+            with self.subTest(config=config):
+                self.assertEqual(
+                    self.make_session(config)._effective_setting_sources(), ["project"])
+
+    def test_an_explicit_choice_is_normalised_to_the_canonical_order(self):
+        session = self.make_session({"settingSources": ["local", "user", "user", "nope"]})
+        self.assertEqual(session._effective_setting_sources(), ["user", "local"])
+
+    def test_empty_list_is_isolation_not_the_default(self):
+        # The whole point of the tri-state: [] must reach the SDK as [] (no
+        # settings file, no CLAUDE.md), never collapse back to ["project"].
+        session = self.make_session({"settingSources": []})
+        self.assertEqual(session._effective_setting_sources(), [])
+        self.assertEqual(session.to_persist()["provider_config"]["settingSources"], [])
+
+    def test_the_scope_is_never_set_twice(self):
+        # _run passes setting_sources itself; _advanced_option_kwargs must not
+        # also emit it, or the two answers can drift.
+        session = self.make_session({"settingSources": ["user"], "skills": "all"})
+        self.assertNotIn("setting_sources", session._advanced_option_kwargs())
+
+    def test_skills_in_a_scope_that_is_not_loaded_are_reported_unavailable(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as cwd:
+            user_skill = Path(home) / ".claude" / "skills" / "audit" / "SKILL.md"
+            user_skill.parent.mkdir(parents=True)
+            user_skill.write_text("---\nname: audit\ndescription: user one\n---\n")
+            project_skill = Path(cwd) / ".claude" / "skills" / "review" / "SKILL.md"
+            project_skill.parent.mkdir(parents=True)
+            project_skill.write_text("---\nname: review\ndescription: project one\n---\n")
+
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                project_only = self.make_session({"settingSources": ["project"]}, cwd=cwd)
+                by_name = {s["name"]: s for s in project_only._discovered_skills()}
+                self.assertFalse(by_name["audit"]["available"])
+                self.assertFalse(by_name["audit"]["enabled"])
+                self.assertIn("not loaded", by_name["audit"]["unavailable_reason"])
+                self.assertTrue(by_name["review"]["available"])
+                self.assertTrue(by_name["review"]["enabled"])
+
+                both = self.make_session({"settingSources": ["user", "project"]}, cwd=cwd)
+                by_name = {s["name"]: s for s in both._discovered_skills()}
+                self.assertTrue(by_name["audit"]["available"])
+                self.assertTrue(by_name["audit"]["enabled"])
+
+
 class ClaudePermissionExpiryTest(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_emits_expiry_after_deadlined_request(self):
         emitted = []

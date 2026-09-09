@@ -288,6 +288,13 @@
       "when": 1788954777613,
       "tag": "0040_mighty_trauma",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1788985524497,
+      "tag": "0041_amazing_starfox",
+      "breakpoints": true
     }
   ]
 }

@@ -14,6 +14,7 @@ import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSes
 import type {
   CodexEffort, CodexSandboxMode, SessionProvider,
 } from '@/lib/sessionCapabilities';
+import type { ClaudeSettingSource } from '@/lib/settingSources';
 
 // Re-export so consumers don't have to know the source
 export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
@@ -73,7 +74,13 @@ export type CreateVpsBody = {
   // to the first folder (by position) — typically the 'default' folder.
   folderId?: string | null;
 };
-export type UpdateVpsBody = Partial<CreateVpsBody>;
+export type UpdateVpsBody = Partial<CreateVpsBody> & {
+  // Per-VPS Claude settings scope (§14.100): the canonical comma list
+  // ('user,project'), 'none' for isolation, or null to go back to inheriting
+  // the hub default. Not in CreateVpsBody — the choice is made when the agent
+  // is installed, not when the row is created.
+  claudeSettingSources?: string | null;
+};
 
 // ── VPS folders ──────────────────────────────────────────────────────────────
 
@@ -999,6 +1006,14 @@ export type SharedSessionConfig = {
 export type ClaudeSessionConfig = SharedSessionConfig & {
   /** null = CLI defaults; "all" = every discovered skill; [] = none. */
   skills?: 'all' | string[] | null;
+  /**
+   * Which on-disk settings files this session loads (§14.100). Resolved at
+   * CREATE time from the session → VPS → hub chain and persisted, so a later
+   * change to the fleet default never rewrites a running session's rules.
+   * null/absent = the session predates the feature (the agent then applies its
+   * own ['project'] default); [] = isolation, no settings file and no CLAUDE.md.
+   */
+  settingSources?: ClaudeSettingSource[] | null;
 };
 
 export type CodexSessionConfig = SharedSessionConfig & {

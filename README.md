@@ -102,10 +102,14 @@ app-server). Both speak the same UI:
   Codex skills and connected apps. Sections load independently and
   unavailable capabilities explain why instead of disappearing.
 - **Detailed per-session configuration.** Common model, effort, instructions
-  and JSON output schema controls; Claude fallback model, skills and
-  environment; Codex sandbox, personality, reasoning-summary level, service
-  tier, provider, environment, ephemeral threads, execution/approval mode and bounded
-  `config.toml`-style overrides (including MCP configuration).
+  and JSON output schema controls; Claude fallback model, skills, settings
+  scope and environment; Codex sandbox, personality, reasoning-summary level,
+  service tier, provider, environment, ephemeral threads, execution/approval
+  mode and bounded `config.toml`-style overrides (including MCP configuration).
+- **You choose which Claude settings files a session reads** — see
+  [*Which settings files Claude sessions load*](#which-settings-files-claude-sessions-load).
+  Your own `~/.claude/settings.json` rules can apply to every session on a
+  machine, instead of the repository being the only voice that carries.
 - **Search and identity.** Full-text search covers stored session history;
   imported terminal sessions retain their native transcript identity; the
   effective model is stamped on each answer even if a provider reroutes it.
@@ -505,8 +509,11 @@ Both cases print an explicit warning in `docker compose logs` at startup.
 
 1. Sidebar toolbar → **＋ Agent** (or the VPS settings modal) → add name, IP, SSH
    user, port, default path.
-2. The VPS appears with a red dot (agent not installed). Click **install** — the
-   panel streams every phase: detect OS → install Python → `claude-agent-sdk`
+2. The VPS appears with a red dot (agent not installed). Click **install**. You
+   are first asked which Claude settings files sessions on this machine should
+   read — keep the default if you have no opinion yet, it stays changeable
+   ([details](#which-settings-files-claude-sessions-load)). The panel then
+   streams every phase: detect OS → install Python → `claude-agent-sdk`
    (+ `openai-codex`) → `claude` CLI → deploy agent → register service → ping
    (~30–90 s on a fresh box). Per-VPS **health chips** then show which of ssh /
    agent / Claude / Codex are ready, each with the fix if it isn't.
@@ -584,6 +591,46 @@ those reach which channel, rather than turning "notifications" on or off.
 - Set **public URL** in Settings and every notification carries a deep link
   straight back to the session or shell.
 
+### Which settings files Claude sessions load
+
+Claude Code can read three settings files, and they are not equally trusted:
+
+| Scope | File | Who controls it |
+| --- | --- | --- |
+| `user` | `~/.claude/settings.json` | you, on that machine |
+| `project` | `<cwd>/.claude/settings.json` | the repository — so, whoever wrote it |
+| `local` | `<cwd>/.claude/settings.local.json` | you, for that repo on that machine |
+
+They hold permission rules (`allow` / `deny`), hooks, environment variables and
+your own skills, subagents and slash commands.
+
+Charon used to hard-code `project` alone. That is what loads a repository's
+`CLAUDE.md`, but it also meant the rules **you** wrote on a box never applied,
+while the repository was the one source that could speak — the least trusted of
+the three, and the only one being heard.
+
+It is now a choice, made where it belongs and inherited downwards:
+
+- **Settings → Claude** sets the fleet default. Shipped as `project`, so
+  upgrading changes nothing until you say otherwise.
+- **Per VPS**, asked when you install an agent and changeable later from the
+  VPS card (*settings scope*). This is the layer that makes "production and
+  development machines behave differently" expressible, since in Charon a
+  machine *is* the VPS.
+- **Per session**, in the wizard's *advanced* block, for a one-off.
+
+Each level can defer to the one above it. Ticking nothing at all is a real
+answer too — no settings file, and no `CLAUDE.md` either.
+
+Two things worth knowing before you tick a box. Enabling `user` means an
+`apiKeyHelper` or an `ANTHROPIC_API_KEY` sitting in that file will move your
+sessions off the subscription and onto API billing. And `local` lives inside
+the working tree the agent edits, so a session can write its own rules for its
+next start — which is why it is off by default.
+
+The scope is read when a session starts: a change applies to new sessions, and
+to existing ones after a pause and resume.
+
 ### Optional: an Anthropic API key
 
 Everything above runs on the per-VPS `claude login` / `codex login` sessions.
@@ -605,6 +652,7 @@ explicit message.
 | `VAPID_SUBJECT`   |    no    | Web Push identity (`mailto:…`/`https:…`). Override-able in Settings. Default `mailto:admin@example.com`. |
 | `CHARON_INSTANCE` |    no    | Only if **two** Charon hubs share one VPS: names this hub's agent instance (`~/.charon-<id>`). Unset = the default instance. |
 | `CHARON_AUTH_REQUIRED` | no | Default (unset) asks for `MASTER_PASSWORD`. `false`/`0`/`no`/`off` serves the dashboard with **no login screen and no session checks** — see *Running without a password* below. Anything unrecognised keeps the password on. |
+| `CHARON_CLAUDE_SETTING_SOURCES` | no | Initial value for the fleet-wide Claude settings scope (`user`, `project`, `local`, comma-separated, or `none`) — see *[Which settings files Claude sessions load](#which-settings-files-claude-sessions-load)*. **Applied only on a fresh database**, so a scripted install lands on your policy; once the setting exists, Settings owns it and this variable is ignored. Default `project`. |
 
 ## Architecture notes
 

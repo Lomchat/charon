@@ -19,7 +19,8 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
-import type { CodexSessionConfig, ProviderSessionConfig } from '@/lib/types/api';
+import type { ClaudeSessionConfig, CodexSessionConfig, ProviderSessionConfig } from '@/lib/types/api';
+import { resolveSettingSources, safeParseSettingSources } from '@/lib/settingSources';
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
 import { setVpsStatusEmitter } from './AgentClient';
@@ -122,6 +123,27 @@ function resolveCodexConfig(value: CodexSessionConfig | null | undefined): Codex
       ? 'auto_review'
       : 'user';
   return { ...(value ?? {}), approvalsReviewer: reviewer };
+}
+
+/**
+ * Fill in the Claude construction options a session inherits rather than
+ * chooses (§14.100). Today that is only the settings scope, resolved OUTSIDE-IN
+ * — session → VPS → hub → built-in ['project'] — and PERSISTED, for the same
+ * reason model/effort are: a fleet default that changed retroactively would
+ * rewrite the permission rules of sessions already running under the old one.
+ */
+function resolveClaudeConfig(
+  value: ClaudeSessionConfig | null | undefined,
+  vpsRow: { claudeSettingSources?: string | null } | null,
+): ClaudeSessionConfig {
+  return {
+    ...(value ?? {}),
+    settingSources: resolveSettingSources(
+      value?.settingSources,
+      safeParseSettingSources(vpsRow?.claudeSettingSources),
+      safeParseSettingSources(getSetting('claude.setting_sources')),
+    ),
+  };
 }
 
 export function isValidEffort(v: string | null | undefined): v is EffortLevel {
@@ -2777,7 +2799,10 @@ export async function importExistingSession(opts: {
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
   });
-  const providerConfig = kind === 'codex' ? resolveCodexConfig(null) : null;
+  // An IMPORTED session is a session like any other: it must inherit this
+  // VPS's settings scope too, or the same transcript would run under different
+  // rules depending on how it entered Charon.
+  const providerConfig = kind === 'codex' ? resolveCodexConfig(null) : resolveClaudeConfig(null, vps);
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
@@ -2841,7 +2866,7 @@ export async function startNewSession(opts: {
   const requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
   const providerConfig: ProviderSessionConfig | null = kind === 'codex'
     ? resolveCodexConfig(requestedConfig as CodexSessionConfig | null)
-    : requestedConfig;
+    : resolveClaudeConfig(requestedConfig as ClaudeSessionConfig | null, vps);
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({

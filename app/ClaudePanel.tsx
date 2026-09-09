@@ -46,6 +46,10 @@ import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
 import { DeepLinkGuard } from './deepLinkGuard';
 import { mergeVpsRuntimeSnapshots } from './vpsRuntimeState';
+import {
+  DEFAULT_SETTING_SOURCES, formatSettingSources, resolveSettingSources,
+  safeParseSettingSources, type ClaudeSettingSource,
+} from '@/lib/settingSources';
 
 // Heavy or rarely-opened surfaces stay out of the dashboard's bootstrap
 // chunk. ChunkReloadGuard handles a lazy chunk invalidated by a deployment.
@@ -59,6 +63,7 @@ const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
 const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
 const ClaudeLoginModal = dynamic(() => import('./ClaudeLoginModal'), { ssr: false });
 const CodexLoginModal = dynamic(() => import('./CodexLoginModal'), { ssr: false });
+const SettingScopeModal = dynamic(() => import('./SettingScopeModal'), { ssr: false });
 
 type Props = {
   vpsList: Vps[];
@@ -200,6 +205,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   >(null);
   // Interactive claude login console
   const [loginVps, setLoginVps] = useState<Vps | null>(null);
+
+  // "Which Claude settings files does this VPS load?" (§14.100). Opened by an
+  // agent install, and by the VPS card in DataModal for a later change.
+  const [scopeModal, setScopeModal] = useState<
+    { vps: Vps; hubDefault: ClaudeSettingSource[]; mode: 'install' | 'edit' } | null
+  >(null);
 
   // Codex device-code login modal (§14.61) — the Codex sibling of loginVps.
   // On confirmed success the server has already persisted codexLoggedIn=1 +
@@ -618,7 +629,26 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    *   3. Out-of-date agent update — already handled by `runUpdateAgent`, not
    *      via the install session (cf. design choice: update remains a direct call).
    */
+  // Installing an agent is the moment this MACHINE's Claude settings policy
+  // gets decided (§14.100), so the choice is asked for here rather than buried
+  // in a settings page nobody opens. The dialog is pre-filled with what the
+  // VPS already carries (fresh row → "inherit the hub default"), and the same
+  // dialog is reachable later from DataModal: on a brand-new box the files it
+  // names do not exist yet, so this is a policy, never a selection.
+  async function openSettingScope(vps: Vps, mode: 'install' | 'edit' = 'edit') {
+    let hubDefault = [...DEFAULT_SETTING_SOURCES];
+    try {
+      const s = await api.getClaudeSettings();
+      hubDefault = resolveSettingSources(safeParseSettingSources(s['claude.setting_sources']));
+    } catch { /* the built-in default is a fine answer */ }
+    setScopeModal({ vps, hubDefault, mode });
+  }
+
   async function openInstallSession(vps: Vps) {
+    await openSettingScope(vps, 'install');
+  }
+
+  async function startInstallSession(vps: Vps) {
     try {
       const info = await api.startInstall(vps.id);
       // Optimistic update — the install_started event will also arrive via SSE.
@@ -2020,6 +2050,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onUpdateAgent={(v) => { runUpdateAgent(v); }}
           onCodexLogin={(v) => setCodexLoginVps(v)}
           onClaudeLogin={(v) => setLoginVps(v)}
+          onEditSettingScope={(v) => void openSettingScope(v)}
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
           liveVps={vpsList}
@@ -2039,6 +2070,31 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       )}
       {loginVps && (
         <ClaudeLoginModal vps={loginVps} onClose={closeLoginConsole} />
+      )}
+
+      {scopeModal && (
+        <SettingScopeModal
+          vpsName={scopeModal.vps.name}
+          initial={scopeModal.vps.claudeSettingSources ?? null}
+          hubDefault={scopeModal.hubDefault}
+          confirmLabel={scopeModal.mode === 'install' ? 'save & install agent' : 'save'}
+          busyLabel={scopeModal.mode === 'install' ? 'starting…' : 'saving…'}
+          onClose={() => setScopeModal(null)}
+          onConfirm={async (value) => {
+            const { vps, mode } = scopeModal;
+            const stored = value == null ? null : formatSettingSources(value);
+            // Only write when it actually changed: an install must not fail
+            // because a no-op PATCH did.
+            if (stored !== (vps.claudeSettingSources ?? null)) {
+              const updated = await api.updateVps(vps.id, { claudeSettingSources: stored });
+              setVpsList((prev) => prev.map((v) => (v.id === vps.id
+                ? ({ ...v, claudeSettingSources: updated?.claudeSettingSources ?? stored } as Vps)
+                : v)));
+            }
+            setScopeModal(null);
+            if (mode === 'install') await startInstallSession(vps);
+          }}
+        />
       )}
 
       {ctxMenu && ctxMenu.kind === 'session' && (() => {

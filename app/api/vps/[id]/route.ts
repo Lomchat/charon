@@ -5,8 +5,9 @@ import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { validateHost, validateSshUser, validatePort, validateRemotePath } from '@/lib/server/vpsValidate';
+import { formatSettingSources, parseSettingSources } from '@/lib/settingSources';
 
-const ALLOWED = ['name', 'ip', 'sshUser', 'sshPort', 'defaultPath'] as const;
+const ALLOWED = ['name', 'ip', 'sshUser', 'sshPort', 'defaultPath', 'claudeSettingSources'] as const;
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
@@ -34,6 +35,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       const u = validateSshUser(body[k]);
       if (!u) return NextResponse.json({ error: 'invalid ssh user' }, { status: 400 });
       update[k] = u;
+    } else if (k === 'claudeSettingSources') {
+      // Per-BOX Claude settings scope (§14.100). NULL/'' = inherit the hub
+      // default — a real value here, not an absence, so it must survive the
+      // round trip untouched: formatting through the shared helper is what
+      // keeps 'none' (isolation) apart from '' (inherit).
+      let parsed;
+      try { parsed = parseSettingSources(body[k]); } catch (e: any) {
+        return NextResponse.json({ error: String(e?.message ?? 'invalid settings sources') }, { status: 400 });
+      }
+      update[k] = parsed == null ? null : formatSettingSources(parsed);
     } else {
       const v = String(body[k] ?? '').trim();
       if (!v || v.length > 120) return NextResponse.json({ error: 'invalid name' }, { status: 400 });

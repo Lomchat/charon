@@ -188,6 +188,12 @@ async function forkToClaude(
     model: source.model,
     fallbackModel: source.fallbackModel,
     effort: source.effort,
+    // The common construction config travels with the branch, exactly as it
+    // does for a Codex fork. Since agent 0.66 this column is provider-neutral
+    // (instructions, schema, env, skills — and the settings scope, §14.100):
+    // a branch that silently ran under different rules than its source would
+    // make every comparison between the two meaningless.
+    codexConfig: source.codexConfig,
     position: nextSessionPosition(source.vpsId),
   }).run();
 

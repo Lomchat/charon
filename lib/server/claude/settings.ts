@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
 import { encrypt, tryDecrypt } from '@/lib/server/crypto';
 import { getEnvAesKey } from '@/lib/server/masterKey';
+import { parseSettingSources } from '@/lib/settingSources';
 import { DEFAULT_THEME_ID } from '@/app/themes';
 
 // ── At-rest encryption of secret settings (P0.7) ────────────────────────────
@@ -112,6 +113,14 @@ const DEFAULTS = {
   // Safe source default. An installation may explicitly choose Claude's
   // total-bypass `auto` mode in Settings; new sessions copy the resolved mode.
   'claude.default_permission_mode': 'normal',
+  // Which on-disk settings files a Claude session loads (§14.100): the
+  // canonical comma list over user|project|local, or 'none' for isolation.
+  // 'project' is the historical hard-coded behaviour (repo settings +
+  // CLAUDE.md, the box's own ~/.claude/settings.json ignored) and stays the
+  // default so an upgrade changes nothing. This is the FLEET default; a VPS
+  // overrides it (vps.claudeSettingSources) and a session overrides that.
+  // Seeded ONCE from CHARON_CLAUDE_SETTING_SOURCES — see seedSettingsFromEnv.
+  'claude.setting_sources': 'project',
   // Global defaults for Codex model / effort (multi-agent support). Empty
   // string = not set → the agent passes nothing → Codex default applies. New
   // Codex-kind sessions inherit these unless overridden at create time. Codex
@@ -246,6 +255,46 @@ export function encryptSecretsAtRest(): void {
       .where(eq(claudeSettings.key, k)).run();
     cache.set(k, row.value);
     console.log(`[settings] encrypted ${k} at rest`);
+  }
+}
+
+// ── .env → DB, ONCE (§14.100) ───────────────────────────────────────────────
+// Settings live in SQLite because the UI writes them; a few of them are also
+// worth pinning from `.env` so a SCRIPTED install lands on the right value
+// without anyone opening Settings. The two must not fight, and the rule that
+// keeps them from fighting is: **the env var AMORCES, it never commands.** It
+// is applied only when the key has NO row at all (fresh DB / first boot after
+// the feature ships); the moment a human saves the setting, the row exists and
+// every later boot ignores the env var. Overwriting on each boot would silently
+// revert the operator's click and make the UI look broken.
+const ENV_SEEDED_SETTINGS: ReadonlyArray<{
+  key: SettingKey; env: string; validate?: (v: string) => boolean;
+}> = [
+  {
+    key: 'claude.setting_sources',
+    env: 'CHARON_CLAUDE_SETTING_SOURCES',
+    validate: (v) => {
+      try { parseSettingSources(v); return true; } catch { return false; }
+    },
+  },
+];
+
+export function seedSettingsFromEnv(): void {
+  for (const { key, env, validate } of ENV_SEEDED_SETTINGS) {
+    const raw = process.env[env];
+    if (raw == null || !raw.trim()) continue;
+    const value = raw.trim();
+    if (validate && !validate(value)) {
+      console.error(`[settings] ignoring ${env}: '${value.slice(0, 64)}' is not a valid value`);
+      continue;
+    }
+    // Presence of the ROW is the "already decided" marker — not getSetting(),
+    // which happily returns the built-in default and would make this fire
+    // forever.
+    const [row] = db.select().from(claudeSettings).where(eq(claudeSettings.key, key)).all();
+    if (row) continue;
+    setSetting(key, value);
+    console.log(`[settings] seeded ${key}='${value}' from ${env} (first boot only)`);
   }
 }
 

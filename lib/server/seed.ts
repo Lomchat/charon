@@ -5,7 +5,7 @@ import { migrateSessionIdsToHashed, cleanupExpiredSessions } from './auth';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
 import { startTelegramBot } from './claude/telegram';
 import { armSdkAutoUpdate } from './claude/sdkWatch';
-import { encryptSecretsAtRest } from './claude/settings';
+import { encryptSecretsAtRest, seedSettingsFromEnv } from './claude/settings';
 import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/claude/tabs';
 import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
@@ -47,6 +47,10 @@ const STEPS: Step[] = [
   { name: 'sessionIdHash', run: () => migrateSessionIdsToHashed() },
   // Idempotent (prefix-gated): encrypt secret settings at rest (enc:v1:).
   { name: 'secretsAtRest', run: () => encryptSecretsAtRest() },
+  // .env values that AMORCE a setting on a fresh DB and never touch it again
+  // (§14.100). Must run before autoConnect: a session started by the boot
+  // reconcile resolves claude.setting_sources.
+  { name: 'settingsFromEnv', run: () => seedSettingsFromEnv() },
   // Provider-neutral peer addresses. Must run before autoConnect so every
   // start/resume hands the daemon a durable handle, never a derived guess.
   { name: 'sessionHandles', run: () => ensureSessionHandles() },

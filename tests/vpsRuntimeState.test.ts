@@ -46,6 +46,7 @@ function vps(overrides: Partial<Vps> = {}): Vps {
     claudeLoggedInCheckedAt: 1,
     codexLoggedIn: 1,
     codexLoggedInCheckedAt: 1,
+    claudeSettingSources: null,
     createdAt: 1,
     ...overrides,
   };

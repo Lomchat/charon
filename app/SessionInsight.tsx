@@ -35,13 +35,23 @@ type SubAgents = { ok?: boolean; error?: string; reason?: string; agents?: Array
 type SecurityProfile = { id?: string; description?: string | null; allowed?: boolean };
 type GuardianDenial = { review_id?: string; action?: unknown; rationale?: string | null; risk_level?: string | null };
 type Security = { ok?: boolean; error?: string; reason?: string; reviewer?: 'user' | 'auto_review'; permission_profile?: string | null; profiles?: SecurityProfile[]; denials?: GuardianDenial[]; profile_reason?: string; runtime_reason?: string; runtime_error?: string };
-type Skill = { name?: string; path?: string; description?: string; enabled?: boolean; short_description?: string | null };
+// `available: false` = the scope this skill lives in is not loaded by the
+// session (§14.100). The inventory used to show user skills as enabled while
+// the CLI had never heard of them; the panel now says so instead of offering
+// a button that silently does nothing.
+type Skill = {
+  name?: string; path?: string; description?: string; enabled?: boolean;
+  short_description?: string | null; source?: string;
+  available?: boolean; unavailable_reason?: string;
+};
 type CodexApp = { id?: string; name?: string; description?: string | null; is_accessible?: boolean; is_enabled?: boolean; install_url?: string | null };
 type Command = { name?: string; description?: string | null; argument_hint?: string | null };
 type Resources = {
   ok?: boolean; error?: string; reason?: string; provider?: string;
   skills?: Skill[]; apps?: CodexApp[]; commands?: Command[]; plugins?: unknown[];
   skill_errors?: unknown[];
+  /** Claude only: the settings files this session actually reads (§14.100). */
+  setting_sources?: string[];
 };
 
 type LoadedState = {
@@ -393,14 +403,27 @@ export default function SessionInsight({
           <textarea className="si-resource-prompt" rows={2} value={resourcePrompt}
             onChange={(e) => setResourcePrompt(e.target.value)}
             placeholder={`Optional instruction for the selected ${capabilities.apps !== 'none' ? 'skill or app' : 'skill or command'}`} />
+          {!!resources.setting_sources?.length && (
+            <p className="si-none">reads {resources.setting_sources.join(' + ')} settings</p>
+          )}
+          {resources.setting_sources?.length === 0 && (
+            <p className="si-none">reads no settings file (isolated)</p>
+          )}
           {!!resources.skills?.length && <ul className="si-resources">
-            {resources.skills.map((skill) => <li key={skill.path || skill.name}>
-              <span><b>${skill.name}</b><small>{skill.description || skill.short_description}</small></span>
-              <button type="button" disabled={!!resourceBusy || skill.enabled === false}
+            {resources.skills.map((skill) => <li key={skill.path || skill.name}
+              className={skill.available === false ? 'is-unreachable' : undefined}>
+              <span><b>${skill.name}</b><small>{skill.description || skill.short_description}</small>
+                {skill.available === false && (
+                  <small className="si-unreachable">{skill.unavailable_reason}</small>
+                )}
+              </span>
+              <button type="button"
+                disabled={!!resourceBusy || skill.enabled === false || skill.available === false}
                 onClick={() => void invokeResource('skill', skill)}>
                 {resourceBusy === `skill:${skill.name}` ? '…' : 'use'}
               </button>
-              {skill.path && <button type="button" disabled={!!resourceBusy} onClick={async () => {
+              {skill.path && skill.available !== false
+                && <button type="button" disabled={!!resourceBusy} onClick={async () => {
                 setResourceBusy(`toggle:${skill.name}`);
                 try {
                   await fetch(`/api/claude/sessions/${sessionId}/resources`, {

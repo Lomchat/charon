@@ -1,0 +1,1 @@
+ALTER TABLE `vps` ADD `claude_setting_sources` text;
