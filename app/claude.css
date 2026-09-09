@@ -396,6 +396,7 @@
 .cs-scroll {
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto; overscroll-behavior: contain;
+  overflow-anchor: none; /* Folding groups must not reposition the viewport. */
   padding-bottom: 30px;
 }
 .cs-top-row { display: flex; align-items: center; gap: 7px; }
@@ -487,6 +488,16 @@
   background: color-mix(in srgb, var(--shade) 18%, transparent); border-bottom: 1px solid var(--border);
 }
 .cs-vps-dot { font-size: 9px; flex-shrink: 0; line-height: 1; }
+.cs-vps-toggle {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  border: 0; padding: 0; background: transparent; color: inherit;
+  text-align: left; cursor: pointer; font: inherit;
+}
+.cs-vps-toggle:hover .cs-vps-name { color: var(--text-strong); }
+.cs-vps-toggle:focus-visible, .cs-path-head:focus-visible {
+  outline: 1px solid var(--accent-strong); outline-offset: 3px; border-radius: 3px;
+}
+.cs-vps.collapsed .cs-vps-head { border-bottom: 0; }
 .cs-vps-dot.agent-ok { color: var(--diff-add); }
 .cs-vps-dot.agent-error { color: var(--danger); }
 .cs-vps-dot.agent-missing { color: var(--text-muted); opacity: 0.6; }
@@ -648,9 +659,11 @@
 .cs-path-group + .cs-path-group { margin-top: 15px; }
 .cs-path-head {
   display: flex; align-items: center; gap: 7px;
-  min-width: 0; margin: 0 10px 3px; padding: 0 2px;
+  width: calc(100% - 20px); min-width: 0; margin: 0 10px 3px; padding: 4px 2px;
+  border: 0; background: transparent; text-align: left; cursor: pointer;
   color: var(--text-muted); font-family: var(--mono); font-size: 9px;
 }
+.cs-path-head:hover { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cs-path-mark { width: 8px; height: 2px; flex: none; border-radius: 2px; background: var(--border); }
 .cs-path-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cs-path-count { flex: none; opacity: .62; }

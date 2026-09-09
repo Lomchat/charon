@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
@@ -26,6 +26,31 @@ export type { InstallInfo };
 const PAUSED_KEY = 'hub.claude.showPaused.v1';
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed', 'background']);
+
+function pathCollapseKey(vpsId: string, cwd: string | null | undefined): string {
+  return JSON.stringify([vpsId, sidebarPathKey(cwd)]);
+}
+
+function useCollapsedGroups(storageKey: string) {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
+      if (Array.isArray(saved)) setCollapsed(new Set(saved.filter((id): id is string => typeof id === 'string')));
+    } catch {}
+  }, [storageKey]);
+  const update = useCallback((id: string, value?: boolean) => {
+    setCollapsed((current) => {
+      const collapse = value ?? !current.has(id);
+      if (current.has(id) === collapse) return current;
+      const next = new Set(current);
+      if (collapse) next.add(id); else next.delete(id);
+      try { localStorage.setItem(storageKey, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  }, [storageKey]);
+  return [collapsed, update] as const;
+}
 
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
@@ -169,6 +194,9 @@ export default function Sidebar({
   showTools, onToggleShowTools,
 }: Props) {
 
+  const [collapsedVps, setVpsCollapsed] = useCollapsedGroups('hub.claude.collapsedVps.v2');
+  const [collapsedPaths, setPathCollapsed] = useCollapsedGroups('hub.claude.collapsedPaths.v1');
+
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
   const [showPaused, setShowPaused] = useState(true);
   // Show / hide per-card details (first-message preview, cwd, age). Default OFF
@@ -234,6 +262,7 @@ export default function Sidebar({
   // explorer"). On any change to the selection, expand the parent folder if
   // needed, then scroll the row into view.
   const asideRef = useRef<HTMLElement | null>(null);
+  const pendingRevealId = useRef<string | null>(null);
   const activeTabId = selectedId ?? selectedShellId ?? selectedInstallId ?? null;
   const parentVpsId = useMemo(() => {
     if (!activeTabId) return null;
@@ -249,31 +278,48 @@ export default function Sidebar({
     return vpsList.find((v) => v.id === parentVpsId)?.folderId ?? null;
   }, [parentVpsId, vpsList]);
 
+  const selectedPathEntity = sessions.find((s) => s.id === activeTabId)
+    ?? shells.find((sh) => sh.id === activeTabId);
+  const parentPathKey = selectedPathEntity
+    ? pathCollapseKey(selectedPathEntity.vpsId, selectedPathEntity.cwd) : null;
+
   useEffect(() => {
+    pendingRevealId.current = activeTabId;
     if (!parentVpsId) return;
+    setVpsCollapsed(parentVpsId, false);
+    if (parentPathKey) setPathCollapsed(parentPathKey, false);
     if (parentFolderId) {
       const f = vpsFolders.find((ff) => ff.id === parentFolderId);
       if (f && f.collapsed === 1) onToggleFolderCollapsed?.(parentFolderId, false);
     }
+    // Deliberately depend on navigation, not collapse state: the user may
+    // hide the currently open session until they navigate to another row.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabId, parentVpsId, parentFolderId]);
+  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, setVpsCollapsed, setPathCollapsed]);
 
   useEffect(() => {
-    if (!activeTabId) return;
+    // Ancestor expansion can arrive in a later render (folder state is remote).
+    // Retry only a pending navigation, never recenter on manual collapse or SSE.
+    if (!activeTabId || pendingRevealId.current !== activeTabId) return;
     const aside = asideRef.current;
     if (!aside) return;
     const raf = requestAnimationFrame(() => {
+      if (pendingRevealId.current !== activeTabId) return;
       const viewport = aside.querySelector<HTMLElement>('.cs-scroll');
       const row = aside.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeTabId)}"]`);
       if (!viewport || !row) return;
+      pendingRevealId.current = null;
       const vRect = viewport.getBoundingClientRect();
       const rRect = row.getBoundingClientRect();
       const isFullyVisible = rRect.top >= vRect.top && rRect.bottom <= vRect.bottom;
       if (isFullyVisible) return;
-      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      viewport.scrollTo({
+        top: viewport.scrollTop + rRect.top - vRect.top - (vRect.height - rRect.height) / 2,
+        behavior: 'smooth',
+      });
     });
     return () => cancelAnimationFrame(raf);
-  }, [activeTabId, vpsFolders]);
+  }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, vpsFolders, collapsedVps, collapsedPaths]);
 
   // Group VPSes by folderId, respecting the intra-folder `position` order.
   const vpsByFolder = useMemo(() => {
@@ -322,7 +368,7 @@ export default function Sidebar({
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
-  // Exact visual order, excluding collapsed folders and rows hidden by the
+  // Exact visual order, excluding collapsed folders/VPSes/paths and the
   // paused filter. Shift must select what is actually between the endpoints,
   // not invisible cards.
   const visibleSessionIds = sortedFolders.flatMap((folder) => {
@@ -330,7 +376,9 @@ export default function Sidebar({
     const folderVps = folder.id === '__orphans__'
       ? vpsList.filter((v) => !vpsFolders.some((known) => known.id === v.folderId))
       : (vpsByFolder.get(folder.id) ?? []);
-    return folderVps.flatMap((vps) => sidebarPathOrderedIds(sessionsFor(vps.id)));
+    return folderVps.flatMap((vps) => collapsedVps.has(vps.id) ? [] : sidebarPathOrderedIds(
+      sessionsFor(vps.id).filter((session) => !collapsedPaths.has(pathCollapseKey(vps.id, session.cwd))),
+    ));
   });
 
   function selectSessionGesture(session: SessionListItem, modifiers: TreeSelectionModifiers): boolean {
@@ -492,6 +540,9 @@ export default function Sidebar({
                 <div className="cs-folder-body">
                   {visibleVps.map((x) => renderVpsBox(x.vps, {
                     sessionHandles,
+                    collapsed: collapsedVps.has(x.vps.id),
+                    onToggleCollapsed: () => setVpsCollapsed(x.vps.id),
+                    collapsedPaths, onTogglePath: setPathCollapsed,
                     vpsSessions: x.vpsSessions,
                     vpsShells: x.vpsShells,
                     vpsInstall: x.install,
@@ -526,6 +577,10 @@ export default function Sidebar({
 
 // ── VPS box (the V1 "boxed VPS" design) ───────────────────────────────────
 type VpsRenderOpts = {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  collapsedPaths: ReadonlySet<string>;
+  onTogglePath: (key: string) => void;
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   vpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
@@ -575,7 +630,7 @@ type VpsRenderOpts = {
 
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
-    sessionHandles,
+    sessionHandles, collapsed, onToggleCollapsed, collapsedPaths, onTogglePath,
     vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
     sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion, codexCliLatestVersion,
     selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
@@ -680,9 +735,12 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const hostLabel = `${v.sshUser}@${v.ip}${v.sshPort !== 22 ? `:${v.sshPort}` : ''}`;
 
   return (
-    <section key={v.id} className={`cs-vps agent-${agentStatus}${showDetails ? '' : ' compact'}`}>
+    <section key={v.id} className={`cs-vps agent-${agentStatus}${showDetails ? '' : ' compact'}${collapsed ? ' collapsed' : ''}`}>
       {showDetails ? (
       <div className="cs-vps-head">
+        <button type="button" className="cs-vps-toggle" onClick={onToggleCollapsed}
+          aria-expanded={!collapsed} aria-label={`${collapsed ? 'expand' : 'collapse'} server ${v.name}`}>
+        <span className="cs-caret" aria-hidden>{collapsed ? '▸' : '▾'}</span>
         {dotEl}
         <span className="cs-vps-id">
           <span className="cs-vps-name">{v.name}</span>
@@ -722,6 +780,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             </span>
           )}
         </span>
+        </button>
         {historyBtn}
         {addBtns}
       </div>
@@ -730,12 +789,14 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
          the 4 action buttons on a second right-aligned row. Host + versions
          move to the tooltip (the dot keeps the full agentTip too). */
       <div className="cs-vps-head compact">
-        <div className="cs-vps-row1">
+        <button type="button" className="cs-vps-row1 cs-vps-toggle" onClick={onToggleCollapsed}
+          aria-expanded={!collapsed} aria-label={`${collapsed ? 'expand' : 'collapse'} server ${v.name}`}>
+          <span className="cs-caret" aria-hidden>{collapsed ? '▸' : '▾'}</span>
           {dotEl}
           <span className="cs-vps-id" title={`${hostLabel} — ${agentTip}`}>
             <span className="cs-vps-name">{v.name}</span>
           </span>
-        </div>
+        </button>
         <div className="cs-vps-actions">
           {historyBtn}
           {addBtns}
@@ -743,7 +804,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
       </div>
       )}
 
-      <div className="cs-vps-body">
+      {!collapsed && <div className="cs-vps-body">
           {/* Agent status / action bar — only when there's something to do. */}
           {installRunning ? null : agentStatus === 'missing' || agentStatus === 'unknown' ? (
             <div className="cs-agent-bar warn">
@@ -838,6 +899,8 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
               a native drag cannot cross into another group's hook. */}
           <WorkspacePathGroups
             vpsId={v.id}
+            collapsedPaths={collapsedPaths}
+            onTogglePath={onTogglePath}
             sessions={vpsSessions}
             shells={vpsShells}
             selectedId={selectedId}
@@ -861,7 +924,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           {vpsSessions.length === 0 && vpsShells.length === 0 && !installRunning && (
             <div className="cs-empty">no session — use ＋ to start one</div>
           )}
-      </div>
+      </div>}
     </section>
   );
 }
@@ -931,7 +994,10 @@ function WorkspacePathGroups({
   showDetails, sessionHandles, onSelect, onSelectionGesture, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
   activeWorkspace, shells, selectedShellId, onSelectShell, onContextShell,
+  collapsedPaths, onTogglePath,
 }: {
+  collapsedPaths: ReadonlySet<string>;
+  onTogglePath: (key: string) => void;
   vpsId: string;
   sessions: SessionListItem[];
   shells: ShellListItem[];
@@ -974,6 +1040,8 @@ function WorkspacePathGroups({
           key={group.path}
           vpsId={vpsId}
           path={group.path}
+          collapsed={collapsedPaths.has(pathCollapseKey(vpsId, group.path))}
+          onToggleCollapsed={() => onTogglePath(pathCollapseKey(vpsId, group.path))}
           sessions={group.sessions}
           shells={group.shells}
           allSessions={sessions}
@@ -1000,7 +1068,7 @@ function WorkspacePathGroups({
 }
 
 function SessionPathGroup({
-  vpsId, path, sessions, shells, allSessions,
+  vpsId, path, sessions, shells, allSessions, collapsed, onToggleCollapsed,
   selectedId, selectedShellId, selectedSessionIds, deletingSessionIds,
   showDetails, sessionHandles, activeWorkspace,
   onSelect, onSelectShell, onSelectionGesture, onContext, onContextShell,
@@ -1008,6 +1076,8 @@ function SessionPathGroup({
 }: {
   vpsId: string;
   path: string;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
   sessions: SessionListItem[];
   shells: ShellListItem[];
   allSessions: SessionListItem[];
@@ -1037,12 +1107,15 @@ function SessionPathGroup({
 
   return (
     <section className={`cs-path-group${current ? ' current' : ''}`}>
-      <div className="cs-path-head" title={path === '~' ? 'default home directory' : path}>
+      <button type="button" className="cs-path-head" onClick={onToggleCollapsed}
+        aria-expanded={!collapsed} aria-label={`${collapsed ? 'expand' : 'collapse'} path ${path}`}
+        title={path === '~' ? 'default home directory' : path}>
+        <span className="cs-caret" aria-hidden>{collapsed ? '▸' : '▾'}</span>
         <span className="cs-path-mark" aria-hidden />
         <span className="cs-path-name">{path}</span>
         <span className="cs-path-count">{count}</span>
-      </div>
-      {sessions.map((s) => (
+      </button>
+      {!collapsed && sessions.map((s) => (
         <SessionRow
           key={s.id} s={s}
           deleting={deletingSessionIds.has(s.id)}
@@ -1059,7 +1132,7 @@ function SessionPathGroup({
           dnd={onReorder && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
         />
       ))}
-      {shells.map((sh) => (
+      {!collapsed && shells.map((sh) => (
         <ShellRow
           key={sh.id}
           sh={sh}
