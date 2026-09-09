@@ -66,7 +66,10 @@ app-server). Both speak the same UI:
   in Settings. Codex additionally supports a globally configured automatic
   reviewer, permission profiles and exact Guardian-denial retry. Claude keeps
   its per-tool “always allow” list. Web Push and Telegram can alert you when
-  either provider is waiting.
+  either provider is waiting. Each card shows **the provider's own deadline**
+  counting down, and that countdown survives a reload or a dropped connection:
+  closing the tab is not an answer, and a gate the provider has already timed
+  out is closed rather than resurrected by the next reconnect.
 - **The complete session lifecycle.** Create, import, resume, sleep, archive,
   unarchive, rename and delete sessions from the same UI. Every session also
   has a stable `@handle`: changing its display title never breaks its address.
@@ -106,6 +109,10 @@ app-server). Both speak the same UI:
 - **Search and identity.** Full-text search covers stored session history;
   imported terminal sessions retain their native transcript identity; the
   effective model is stamped on each answer even if a provider reroutes it.
+- **New models announce themselves.** When a provider's catalogue gains a model,
+  a small badge appears on the header and on that provider's Settings tab until
+  you've seen it — a release you'd otherwise learn about weeks later, from a
+  changelog you don't read.
 - **In-hub sign-in and account controls.** Claude uses a hosted OAuth-code flow;
   Codex supports ChatGPT device login, API-key login and logout. Live quota
   windows and durable per-turn token totals remain separate, so a lifetime
@@ -178,8 +185,12 @@ work is; ignored files are dimmed, never hidden. It also shows **which files an
 agent is reading or writing right now** — with several sessions on one machine,
 two of them in the same file used to be entirely silent; click the marker to
 jump to the session doing it. Right-click for **New file /
-New folder / Copy path / Rename / Delete**, in real dialogs (Enter validates,
-the server's objection appears under the input, your draft survives it).
+New folder / Copy path / Rename / Delete / Download**, in real dialogs (Enter
+validates, the server's objection appears under the input, your draft survives
+it). A file downloads straight through the SSH connection — streamed, resumable,
+never buffered whole in the hub — and a **folder downloads as a ZIP** built on
+the fly, so getting a build artefact or a log directory off a box doesn't need
+`scp` and a second set of credentials.
 
 <img src="./docs/img/explorer.png" alt="The file explorer's context menu — new file, new folder, copy path, rename, delete — over a git-decorated tree" width="70%"></img>
 
@@ -203,6 +214,13 @@ write and offers *reload* / *overwrite with my version* / *keep editing* — no
 silent clobbering in either direction. Writes are atomic (temp + rename) and
 preserve the file mode. Images, audio, video and PDFs preview inline; binaries
 and truncated reads are read-only on purpose.
+
+**CSV and TSV open as a spreadsheet** rather than as quoted text: a virtualized
+grid with frozen coordinates, quoted fields and embedded newlines parsed
+properly, the delimiter detected (`,` `;` tab `|`), and rectangular selection by
+drag, Shift or arrows that copies as TSV — so a block of cells pastes straight
+into Sheets or Excel. *Text* switches back to the editable editor and *Download*
+always gives you the raw file.
 
 **Source control**, scoped to the repository the session is working in:
 
@@ -275,6 +293,64 @@ sidebar and the tool panel become drawers, the tab bar folds away):
 <img src="./docs/img/mobile-chat.png" alt="Mobile: the session UI reflowed to a phone" width="23%"></img>
 <img src="./docs/img/mobile-usage.png" alt="Mobile: the account-usage gauges in the right drawer" width="23%"></img>
 
+## Themes
+
+**Settings → General → theme.** Three ship today:
+
+| Theme | |
+| --- | --- |
+| **Nordic Tokyo** | the default — deep blue-grey, low glare |
+| **Daylight** | light, for a bright room or a sunlit screen |
+| **Ember** | dark orange, and the transcript loses its message frames |
+
+The theme is **hub-wide**: pick it once and every device follows, live — the
+change reaches other open tabs and your phone over the same event stream, with
+no reload. Picking one **applies it immediately, before you save** — a swatch
+can't tell you whether a theme is comfortable to work in — and *cancel* puts the
+previous one back. The active theme is rendered server-side onto
+`<html data-theme>`, so a page load never flashes the wrong palette on its way
+to the right one.
+
+It reaches the parts that aren't CSS, too: the **xterm colour palette**, the
+**code editor's** highlight style (light themes drop the dark one instead of
+inverting it), and the **browser chrome colour** on a phone.
+
+### Adding one
+
+A theme is **one block of tokens and one registry entry** — you do not touch a
+stylesheet:
+
+```css
+/* app/themes.css */
+[data-theme='midnight'] {
+  --bg: #0b0d12;  --bg-raised: #12151d;  --text: #dfe4ee;
+  --accent: #7aa2f7;  --danger: #f7768e;  --success: #9ece6a;
+  /* … the same token names the other themes define */
+}
+```
+
+```ts
+// app/themes.ts
+{ id: 'midnight', label: 'Midnight', hint: '…', dark: true,
+  themeColor: '#0b0d12', xterm: { /* ANSI palette */ } }
+```
+
+That works because **every colour in the app resolves through a semantic
+token** — `--bg`, `--text-muted`, `--accent`, `--danger`, `--diff-add`… — and
+translucent variants are *derived* (`color-mix(in srgb, var(--accent) 14%,
+transparent)`) rather than written out again as an `rgba()` that would quietly
+pin the old palette.
+
+A theme can also change **structure**, still without per-theme CSS: a couple of
+tokens aren't colours. `--bubble-edge` and `--bubble-tint` are the border width
+and fill strength of the chat's message rectangles, which is how Ember renders
+a transcript as plain text.
+
+`tests/themes.test.ts` enforces the contract — every theme defines exactly the
+same token set, every `var()` resolves, and no stylesheet contains a literal
+colour. A half-finished theme fails CI instead of showing up as a few surfaces
+that stayed dark.
+
 ---
 
 ## Why
@@ -310,8 +386,10 @@ notify-on-event window over your whole fleet.
   or Codex session list and message another live `@handle` on the same VPS.
 - **Background work:** provider-native task/process tracking, sub-agent progress,
   completion notifications and targeted stop controls.
-- **Human-in-the-loop:** common permission/question/exit-plan cards, Web Push
-  and Telegram alerts with deep links, plus account quota gauges.
+- **Human-in-the-loop:** common permission/question/exit-plan cards with
+  reconnect-safe provider deadlines, per-event and per-channel Web Push /
+  Telegram routing with per-session exceptions and deep links, plus account
+  quota gauges.
 - **Attachments and session edits:** drag, paste or pick a file into the remote
   workspace; inspect per-session edit history and safely restore Claude
   before/after snapshots.
@@ -321,8 +399,12 @@ notify-on-event window over your whole fleet.
 - **Shared workspace tabs:** machine → folder → preview/pinned tabs, persisted
   across devices for sessions, terminals, files and install logs.
 - **Remote file explorer and editor:** lazy tree, git decorations, live agent
-  activity markers, create/rename/delete, atomic conflict-safe saves, inline
+  activity markers, create/rename/delete, streamed file and folder-as-ZIP
+  downloads, atomic conflict-safe saves, a CSV/TSV spreadsheet view, inline
   media/PDF previews and project-wide file/content search.
+- **Themes:** hub-wide and live-switching across devices, flash-free on load,
+  reaching the terminal and editor palettes too; a new one is one token block
+  plus one registry entry, with a test that refuses a half-defined theme.
 - **Remote code intelligence:** diagnostics, hover, completion,
   go-to-definition, references, symbols, rename and format through bounded LSP
   processes beside the project on the VPS.
@@ -478,14 +560,29 @@ A systemd unit example is in [docs/charon.service.example](./docs/charon.service
 
 ### Notifications
 
+**Settings → Notifications** is one table: nine events down the side, a
+**Browser** and a **Telegram** column across the top, each switch independent.
+A session finishing, a session erroring, a response that finished while
+background work continues, a permission, a question, a plan, an agent
+installation, a terminal going idle, and fleet updates — you choose which of
+those reach which channel, rather than turning "notifications" on or off.
+
 - **Web Push** works out of the box: VAPID keys are auto-generated on first run;
   click the bell in the header to subscribe the current browser. Set
   `VAPID_SUBJECT` (a `mailto:`/`https:` identity) or override it in Settings.
+  Browser preferences are **per browser** — your laptop can want everything and
+  your phone only the approvals — and they are mirrored to the push endpoint so
+  the filtering still applies when the tab is closed.
 - **Telegram** (optional): create a bot with @BotFather, then enter the **bot
-  token** and your **chat id** in **Settings → Notifications**.
-- Web Push is gated by the global notifications toggle in Settings; Telegram has
-  its own toggle and is independent of it. Set **public URL** in Settings and
-  every notification carries a deep link straight back to the session or shell.
+  token** and your **chat id** in the connection panel of the same page. Unlike
+  the browser column, Telegram settings are hub-wide.
+- **Per-session exceptions.** One noisy session shouldn't force you to mute a
+  whole channel: open a session's ⚙ (or the **Exceptions** list at the bottom of
+  the page) to override either channel for that session alone. Overridden rows
+  are listed with a count, inherited values show as dashes, and *Use defaults*
+  puts a session back.
+- Set **public URL** in Settings and every notification carries a deep link
+  straight back to the session or shell.
 
 ### Optional: an Anthropic API key
 
@@ -589,6 +686,7 @@ VPS during bootstrap. After any change to `agent/charon_agent/`, bump
 | Docker: the published port refuses connections but `docker compose ps` says *healthy* | The app bound the container's loopback. The healthcheck probes from inside, so it can't see it. Don't set `HOST` in the container env — compose pins `HOST=0.0.0.0`; exposure is the `ports:` binding. |
 | Docker: every VPS fails to connect, or `SQLITE_CANTOPEN` | A bind mount is owned by the wrong uid. The entrypoint repairs `./data` and `./docker/ssh` automatically; a **read-only** key mounted from elsewhere it can't — `sudo chown 1001:1001 <key> && chmod 600 <key>`. `docker compose logs` names the exact file. |
 | Session stuck on "thinking" | The SDK ignored an `interrupt`. Use **Force stop** (resumable). |
+| A Codex session fails with *"already has an active writer"* | Two agent daemons ended up running on that box. Agent 0.72.0 refuses to start a second one — **Update agent** from the sidebar. |
 | `ensurepip is not available` during install | The VPS lacks `python3-venv`. Bootstrap auto-installs it on apt/dnf — open an issue for other distros. |
 
 ## Non-goals
