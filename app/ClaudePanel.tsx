@@ -591,8 +591,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     if (sess) openEntityTab('session', id, sess.vpsId, sess.cwd ?? '', pin);
     closeDrawers();  // mobile: picking from the sidebar drawer closes it
   }
-  function selectInstall(id: string) {
-    const inst = installs.find((x) => x.id === id);
+  // `row` is the just-created install, passed by the caller that created it.
+  // Without it this looked the id up in `installs` — the state array the
+  // caller had only just asked React to update, so the lookup MISSED and the
+  // install opened nowhere: the log ran in the background while the user
+  // stayed on the session they came from. Same trap as a newly created
+  // session (§14.78): take the created ROW, never a bare id.
+  function selectInstall(id: string, row?: InstallInfo) {
+    const inst = row ?? installs.find((x) => x.id === id);
     // Installs have no folder — they get the VPS's pathless group, and they
     // are pinned because they are short-lived and you always want to watch
     // one to the end.
@@ -621,7 +627,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         const others = prev.filter((i) => i.id !== info.id);
         return [...others, info];
       });
-      selectInstall(info.id);
+      // Starting an install is a decision to WATCH it: land on its console.
+      selectInstall(info.id, info);
     } catch (e: any) {
       setError({ msg: 'start install: ' + (e?.message ?? e) });
     }

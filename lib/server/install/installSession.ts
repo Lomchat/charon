@@ -35,7 +35,13 @@ export type InstallInfo = {
 // bracket the replay of the ring buffer (sent at subscribe). Then live.
 export type InstallStreamMessage =
   | { kind: 'event'; ev: BootstrapEvent }
-  | { kind: 'status'; status: InstallStatus; endedAt: number | null }
+  // Live stdout of the phase currently running (apt/pip/curl). Never ringed,
+  // never replayed — the console tails it and drops it when the phase ends.
+  | { kind: 'log'; phase: BootstrapEvent['phase']; lines: string[] }
+  // `needsClaudeLogin` mirrors the VPS row after the (silent) login probe —
+  // this is what puts the "setup claude login" button in the console header
+  // now that the probe no longer emits a phase.
+  | { kind: 'status'; status: InstallStatus; endedAt: number | null; needsClaudeLogin?: boolean }
   | { kind: 'replay_begin'; count: number }
   | { kind: 'replay_end' };
 
@@ -46,6 +52,22 @@ type Sink = {
 };
 
 const RING_MAX = 200;
+// Lines sent in one live-output frame. The client keeps far fewer; this only
+// bounds a burst (a `pip install` resolving a big tree prints in gulps).
+const LOG_LINES_PER_FRAME = 40;
+
+/** Raw stdout → renderable lines. Exported for the test that pins the two
+ *  things that are easy to get wrong: `\r` is a LINE BREAK here (pip and curl
+ *  draw progress in place, and a console that renders lines would otherwise
+ *  show one endless line), and blank lines are dropped so a phase that emits
+ *  only newlines produces no frame at all. */
+export function splitLogLines(text: string): string[] {
+  return text
+    .split(/\r\n|\r|\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l !== '')
+    .slice(-LOG_LINES_PER_FRAME);
+}
 
 class InstallSession {
   readonly id: string;
@@ -95,8 +117,9 @@ class InstallSession {
       status: 'running',
     });
     try {
-      for await (const ev of bootstrapVps(vps)) {
+      for await (const ev of bootstrapVps(vps, { onLog: (phase, chunk) => this._addLog(phase, chunk) })) {
         if (this.aborted) break;
+        this._flushLog();
         this.currentPhase = ev.phase;
         this._addEvent(ev);
         if (ev.phase === 'done') {
@@ -160,6 +183,7 @@ class InstallSession {
    *  but nothing more is emitted. */
   stop(): void {
     this.aborted = true;
+    if (this.logTimer) { clearTimeout(this.logTimer); this.logTimer = null; }
     for (const s of this.subs.values()) {
       try { s.close(); } catch {}
     }
@@ -174,7 +198,8 @@ class InstallSession {
         sink.send({ kind: 'event', ev });
       }
       sink.send({ kind: 'replay_end' });
-      sink.send({ kind: 'status', status: this.status, endedAt: this.endedAt });
+      sink.send({ kind: 'status', status: this.status, endedAt: this.endedAt,
+                  needsClaudeLogin: this._needsClaudeLogin() });
     } catch {}
   }
 
@@ -182,7 +207,46 @@ class InstallSession {
     this.subs.delete(id);
   }
 
+  // ── Live phase output (grey tail in the console) ──────────────────────────
+  // apt / pip / curl print for minutes; the phase event only lands at the end.
+  // These lines are LIVE-ONLY on purpose: they never enter `ring`, so a chatty
+  // pip cannot evict the phase history a reconnect replays (RING_MAX), and a
+  // client that joins late simply starts tailing from wherever the run is.
+  // Chunks are coalesced on a short timer — one SSE frame per line would be
+  // hundreds of frames for a single `pip install`.
+  private logBuf = '';
+  private logPhase: BootstrapEvent['phase'] | null = null;
+  private logTimer: NodeJS.Timeout | null = null;
+
+  private _addLog(phase: BootstrapEvent['phase'], chunk: string): void {
+    if (this.aborted) return;
+    if (this.logPhase !== phase) { this._flushLog(); this.logPhase = phase; }
+    this.logBuf += chunk;
+    // Keep only the tail: a pip resolving a big dependency tree can print far
+    // more than a console needs, and the buffer is a rolling window anyway.
+    if (this.logBuf.length > 16_000) this.logBuf = this.logBuf.slice(-16_000);
+    if (this.logTimer) return;
+    this.logTimer = setTimeout(() => { this.logTimer = null; this._flushLog(); }, 200);
+  }
+
+  private _flushLog(): void {
+    if (this.logTimer) { clearTimeout(this.logTimer); this.logTimer = null; }
+    const phase = this.logPhase;
+    const text = this.logBuf;
+    this.logBuf = '';
+    if (!phase) return;
+    const lines = splitLogLines(text);
+    if (lines.length === 0) return;
+    for (const s of this.subs.values()) {
+      try { s.send({ kind: 'log', phase, lines }); } catch {}
+    }
+  }
+
   private _addEvent(ev: BootstrapEvent): void {
+    // A phase result closes its own live tail: whatever was still buffered
+    // belongs above the verdict, not after it.
+    this._flushLog();
+    this.logPhase = null;
     this.ring.push(ev);
     if (this.ring.length > RING_MAX) this.ring.splice(0, this.ring.length - RING_MAX);
     for (const s of this.subs.values()) {
@@ -191,8 +255,21 @@ class InstallSession {
   }
 
   private _broadcastStatus(): void {
+    const msg = { kind: 'status' as const, status: this.status, endedAt: this.endedAt,
+                  needsClaudeLogin: this._needsClaudeLogin() };
     for (const s of this.subs.values()) {
-      try { s.send({ kind: 'status', status: this.status, endedAt: this.endedAt }); } catch {}
+      try { s.send(msg); } catch {}
+    }
+  }
+
+  /** Does this VPS still need `claude login`? Read from the row the bootstrap's
+   *  silent probe just wrote (null = never checked ⇒ treat as needed). */
+  private _needsClaudeLogin(): boolean {
+    try {
+      const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
+      return !v || v.claudeLoggedIn !== 1;
+    } catch {
+      return false;
     }
   }
 

@@ -1228,6 +1228,19 @@
 .install-step.status-ok    .glyph { color: var(--diff-add); }
 .install-step.status-warn  .glyph { color: var(--accent-strong); }
 .install-step.status-error .glyph { color: var(--danger); }
+/* Live stdout of the phase in flight (pip / apt / curl). Deliberately quiet:
+   it is a sign of life under the step, not a second log to read. */
+.install-live {
+  display: flex; flex-direction: column;
+  margin: 2px 0 6px 26px; padding-left: 10px;
+  border-left: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; line-height: 1.45;
+  color: var(--text-faint);
+}
+.install-live-line {
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+}
+.install-live-line:last-child { color: var(--text-muted); }
 .install-footer-msg {
   margin-top: 18px;
   padding: 12px 16px;

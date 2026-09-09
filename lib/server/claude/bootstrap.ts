@@ -41,7 +41,8 @@ export type BootstrapPhase =
   | 'install_agent'      // drops the .pyz
   | 'install_service'    // systemd-user unit (or fallback)
   | 'ping_agent'         // tests that the daemon responds
-  | 'check_login'        // claude login (warn-only)
+  | 'check_login'        // claude/codex login probe — SILENT since 0.82.0:
+                         //   it persists the flags, it no longer yields events
   | 'done';
 
 export type BootstrapStatus = 'running' | 'ok' | 'error' | 'warn';
@@ -512,10 +513,12 @@ const INSTALL_SDK_CMD = [
   `  fi`,
   `fi`,
   // Upgrade pip inside the venv to avoid warnings/edge-cases.
-  `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1 | tail -10`,
-  // Install the SDK. No `| tail` this time — we want the exit code
-  // AND pipefail takes care of the rest anyway.
-  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 | tail -40`,
+  `${VENV_PY} -m pip install --quiet --upgrade pip wheel setuptools 2>&1`,
+  // Install the SDK. ⚠ NOT piped into `tail`: tail holds everything until
+  // EOF, which is exactly the minute of silence the install console is
+  // trying to fill (the hub tails the buffered result itself for the error
+  // detail). Same reason on the line above.
+  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1`,
   // Post-import check: the ONLY real proof that it works.
   `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
 ].join('\n');
@@ -524,10 +527,12 @@ const INSTALL_SDK_CMD = [
 // apt-get update + install python$VER-venv when the venv module is missing.
 const INSTALL_SDK_TIMEOUT_MS = 300_000;
 
-export async function ensureSdkLatest(vps: Vps, session?: SshSession): Promise<EnsureSdkResult> {
+export async function ensureSdkLatest(
+  vps: Vps, session?: SshSession, onData?: (chunk: string) => void,
+): Promise<EnsureSdkResult> {
   const own = session ?? openSshSession(vps);
   try {
-    const r = await sshExec(vps, INSTALL_SDK_CMD, { timeoutMs: INSTALL_SDK_TIMEOUT_MS, session: own });
+    const r = await sshExec(vps, INSTALL_SDK_CMD, { timeoutMs: INSTALL_SDK_TIMEOUT_MS, session: own, onData });
     const sshErr = detectSshFailure(r);
     if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
     const out = r.stdout + r.stderr;
@@ -667,7 +672,9 @@ const INSTALL_CODEX_CMD = [
   // openai-codex requires Python ≥3.10 (same floor as claude-agent-sdk, so
   // the existing python already qualifies). Pulls openai-codex-cli-bin (the
   // bundled codex CLI) transitively — no extra step.
-  `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 | tail -40`,
+  // No `| tail`: it would hold the whole install until EOF and the console
+  // could not tail it live (same reason as INSTALL_SDK_CMD).
+  `${VENV_PY} -m pip install --upgrade openai-codex 2>&1`,
   // The standalone CLI is an independent release line (e.g. CLI 0.147 while
   // the public Python SDK remains 0.144.4). Download the platform's native
   // npm artifact directly so a minimal worker needs no Node/npm installation.
@@ -698,10 +705,12 @@ export type EnsureCodexResult = {
   sshError?: string | null;
 };
 
-export async function ensureCodexLatest(vps: Vps, session?: SshSession): Promise<EnsureCodexResult> {
+export async function ensureCodexLatest(
+  vps: Vps, session?: SshSession, onData?: (chunk: string) => void,
+): Promise<EnsureCodexResult> {
   const own = session ?? openSshSession(vps);
   try {
-    const r = await sshExec(vps, INSTALL_CODEX_CMD, { timeoutMs: INSTALL_CODEX_TIMEOUT_MS, session: own });
+    const r = await sshExec(vps, INSTALL_CODEX_CMD, { timeoutMs: INSTALL_CODEX_TIMEOUT_MS, session: own, onData });
     const sshErr = detectSshFailure(r);
     if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
     const out = r.stdout + r.stderr;
@@ -899,7 +908,15 @@ export async function ensureAgentRunning(vps: Vps): Promise<EnsureRunningResult>
 }
 
 // ── Main flow ───────────────────────────────────────────────────────────────
-export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
+// Live output sink. The generator CANNOT yield while it awaits a phase's
+// sshExec, so the raw stdout of the slow steps (apt, pip, curl) is pushed
+// SIDEWAYS through this callback instead — installSession forwards it to the
+// console's SSE without touching the phase ring (§14.22). A phase without a
+// sink behaves exactly as before.
+export type BootstrapLogSink = (phase: BootstrapPhase, chunk: string) => void;
+export type BootstrapOpts = { onLog?: BootstrapLogSink };
+
+export async function* bootstrapVps(vps: Vps, opts: BootstrapOpts = {}): AsyncIterable<BootstrapEvent> {
   // Multiplex ALL phases over a single SSH master (cf. sshExec.ts §
   // SshSession). Why: every `sshExec` spawns a fresh `ssh` process, so
   // without multiplexing each phase pays a full TCP+SSH handshake. After
@@ -910,13 +927,18 @@ export async function* bootstrapVps(vps: Vps): AsyncIterable<BootstrapEvent> {
   // Closed in `finally` so the socket file doesn't leak.
   const session = openSshSession(vps);
   try {
-    yield* bootstrapVpsInner(vps, session);
+    yield* bootstrapVpsInner(vps, session, opts);
   } finally {
     await closeSshSession(session);
   }
 }
 
-async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<BootstrapEvent> {
+async function* bootstrapVpsInner(
+  vps: Vps, session: SshSession, opts: BootstrapOpts = {},
+): AsyncIterable<BootstrapEvent> {
+  /** stdout/stderr streamer for one phase (undefined when nobody listens). */
+  const tail = (phase: BootstrapPhase) =>
+    opts.onLog ? (chunk: string) => opts.onLog!(phase, chunk) : undefined;
   // Phase 1: direct verify (fast path)
   yield { phase: 'verify', status: 'running', detail: 'test: python + import claude_agent_sdk' };
   let v = await tryVerify(vps, session);
@@ -955,7 +977,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
         return;
       }
       yield { phase: 'install_python', status: 'running', detail: `${os.pkgMgr} install python3.10+ — may take 1 to 3 min` };
-      const piR = await sshExec(vps, cmd, { timeoutMs: 300_000, session });
+      const piR = await sshExec(vps, cmd, { timeoutMs: 300_000, session, onData: tail('install_python') });
       const piSsh = detectSshFailure(piR);
       if (piSsh) {
         yield { phase: 'install_python', status: 'error', detail: piSsh };
@@ -992,7 +1014,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       // check) lives in ensureSdkLatest / INSTALL_SDK_CMD above — SHARED
       // with the unified agent-update flow (updateVpsAgent + the SDK
       // auto-update tick). Success = its `[install_sdk] OK version=` marker.
-      const sdkRes = await ensureSdkLatest(vps, session);
+      const sdkRes = await ensureSdkLatest(vps, session, tail('install_sdk'));
       if (sdkRes.sshError) {
         yield { phase: 'install_sdk', status: 'error', detail: sdkRes.sshError };
         yield { phase: 'done', status: 'error', detail: `SSH dropped during install_sdk: ${sdkRes.sshError}` };
@@ -1033,7 +1055,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
   // degrades into a visible install_codex error two lines below.
   if (v.ok && !isVenvPython(v.py)) {
     yield { phase: 'install_sdk', status: 'running', detail: `SDK found outside the venv (${v.py}) — normalizing into ${VENV_DIR}` };
-    const normRes = await ensureSdkLatest(vps, session);
+    const normRes = await ensureSdkLatest(vps, session, tail('install_sdk'));
     if (normRes.ok) {
       yield { phase: 'install_sdk', status: 'ok', detail: `claude-agent-sdk ${normRes.sdkVersion ?? ''} in ${VENV_DIR}`.replace(/\s+/g, ' ') };
     } else {
@@ -1053,7 +1075,7 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
   // sidebar greys out the Codex button. (A genuine SSH outage is caught &
   // aborted by the next mandatory phase's own detectSshFailure.)
   yield { phase: 'install_codex', status: 'running', detail: `pip install openai-codex in ${VENV_DIR}` };
-  const codexRes = await ensureCodexLatest(vps, session);
+  const codexRes = await ensureCodexLatest(vps, session, tail('install_codex'));
   let codexError: string | null = null;
   if (codexRes.ok) {
     yield { phase: 'install_codex', status: 'ok', detail: codexRes.codexVersion ? `openai-codex ${codexRes.codexVersion} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
@@ -1108,8 +1130,9 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
     // 180s timeout for VPS with a slow connection.
     const installCcR = await sshExec(
       vps,
-      'curl -fsSL https://claude.ai/install.sh | bash 2>&1 | tail -40',
-      { timeoutMs: 180_000, session },
+      // Not piped into `tail`: the console tails it live instead (§14.22).
+      'curl -fsSL https://claude.ai/install.sh | bash 2>&1',
+      { timeoutMs: 180_000, session, onData: tail('install_claude_cli') },
     );
     const installCcSsh = detectSshFailure(installCcR);
     if (installCcSsh) {
@@ -1215,7 +1238,13 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
   // Phase 5: check claude login (warn-only).
   // Extended PATH to find `claude` even if install.sh put it in
   // ~/.local/bin or ~/.claude/bin (cf. install_claude_cli above).
-  yield { phase: 'check_login', status: 'running' };
+  // ── Login probe (SILENT) ───────────────────────────────────────────────
+  // No phase events: on a fresh box "not signed in" is the expected state,
+  // and a trailing ⚠ made every successful install read as half-broken. The
+  // probe itself stays — it feeds `claudeLoggedIn`/`codexLoggedIn`, which
+  // gate the ＋ buttons, the health chips and the sidebar's sign-in bars —
+  // and the console still offers "setup claude login", from the DB flag
+  // carried on the status message rather than from a log line.
   const lr = await sshExec(
     vps,
     'PATH="$HOME/.local/bin:$HOME/.claude/bin:/usr/local/bin:$PATH"; ' +
@@ -1253,11 +1282,6 @@ async function* bootstrapVpsInner(vps: Vps, session: SshSession): AsyncIterable<
       ...(codexLoggedIn !== null ? { codexLoggedIn: codexLoggedIn ? 1 : 0 } : {}),
     });
   } catch {}
-  if (isLoggedIn) {
-    yield { phase: 'check_login', status: 'ok' };
-  } else {
-    yield { phase: 'check_login', status: 'warn', detail: 'no claude login — do it via the "Setup login" button' };
-  }
 
   // `done` stays 'ok' even when codex failed: `installSession.ts` maps any
   // non-ok done to a RED "install failed", which would be a lie — the agent is

@@ -99,10 +99,18 @@ export function shQuote(s: string): string {
 // (ControlMaster=auto + ControlPath). The FIRST sshExec on a fresh session
 // opens the master as a side-effect; subsequent ones piggyback on the
 // existing TCP — no extra handshake, no risk of post-burst timeouts.
+// `opts.onData` streams the output AS IT ARRIVES (stdout and stderr merged, in
+// arrival order) on top of the buffered result — that is what lets the install
+// console show a live pip/apt tail instead of five silent minutes. Absent, this
+// costs nothing. ⚠ A remote command that pipes into `tail -N` cannot stream:
+// tail holds everything until EOF, so the callback fires once at the end.
 export function sshExec(
   vps: Vps,
   command: string,
-  opts: { timeoutMs?: number; stdin?: string; session?: SshSession } = {}
+  opts: {
+    timeoutMs?: number; stdin?: string; session?: SshSession;
+    onData?: (chunk: string) => void;
+  } = {}
 ): Promise<SshResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   return new Promise((resolve) => {
@@ -127,8 +135,12 @@ export function sshExec(
     const child = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (b) => { stdout += b.toString(); });
-    child.stderr.on('data', (b) => { stderr += b.toString(); });
+    const feed = (chunk: string) => {
+      // A throwing consumer must never take the exec down with it.
+      if (opts.onData) { try { opts.onData(chunk); } catch {} }
+    };
+    child.stdout.on('data', (b) => { const s = b.toString(); stdout += s; feed(s); });
+    child.stderr.on('data', (b) => { const s = b.toString(); stderr += s; feed(s); });
     let settled = false;
     const done = (r: SshResult) => { if (settled) return; settled = true; resolve(r); };
     const killer = setTimeout(() => {

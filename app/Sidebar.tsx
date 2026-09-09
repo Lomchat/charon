@@ -32,6 +32,25 @@ function pathCollapseKey(vpsId: string, cwd: string | null | undefined): string 
   return JSON.stringify([vpsId, sidebarPathKey(cwd)]);
 }
 
+// How long a FINISHED install keeps its VPS in the sidebar. `running` alone
+// was the rule, and it made a fresh machine — which by definition has no
+// session or shell yet — take its whole box away the instant the install
+// ended: the log row vanished at the exact moment the user was reading the
+// result and about to create the first session there, and it read as "Charon
+// folded the VPS by itself". The install session stays in memory anyway
+// (§14.22), so the row remains reopenable; this only decides how long the
+// machine keeps a place in the list without any content of its own.
+const INSTALL_LINGER_MS = 30 * 60_000;
+
+export function installKeepsVpsVisible(install: InstallInfo | null, selectedInstallId: string | null): boolean {
+  if (!install) return false;
+  if (install.status === 'running') return true;
+  // Open in the main pane ⇒ visible for as long as it is being read, whatever
+  // the age: a sidebar that doesn't list what fills the screen is a bug.
+  if (install.id === selectedInstallId) return true;
+  return install.endedAt != null && Date.now() - install.endedAt < INSTALL_LINGER_MS;
+}
+
 function useCollapsedGroups(storageKey: string) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
@@ -519,10 +538,12 @@ export default function Sidebar({
               };
             })
             // A VPS shows ONLY when it has a visible session/shell (the paused
-            // switch decides via sessionsFor/shellsFor), with one exception: a
-            // running install — otherwise a just-launched install would vanish
-            // from the sidebar. Folders with no visible VPS are hidden below.
-            .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0 || x.install?.status === 'running');
+            // switch decides via sessionsFor/shellsFor), with one exception:
+            // an install session — otherwise a machine with nothing on it yet
+            // (the normal case for a fresh install) has no row to hold the
+            // install log. Folders with no visible VPS are hidden below.
+            .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0
+              || installKeepsVpsVisible(x.install, selectedInstallId));
 
           if (visibleVps.length === 0) return null;
 

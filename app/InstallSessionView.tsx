@@ -45,6 +45,11 @@ const PHASE_LABEL: Record<BootstrapEvent['phase'], string> = {
   done:               'done',
 };
 
+// Lines of live output kept under the running phase. Enough to see progress
+// (pip prints one line per resolved wheel), few enough that the phase list
+// stays the thing you read.
+const LIVE_LINES = 6;
+
 const STATUS_GLYPH: Record<BootstrapEvent['status'], string> = {
   running: '▸',
   ok:      '✓',
@@ -67,7 +72,13 @@ export default function InstallSessionView({
   installId, vpsId, vpsName, onClosed, onSetupLogin, onInstallSuccess,
 }: Props) {
   const [events, setEvents] = useState<BootstrapEvent[]>([]);
+  // Live stdout of the phase in flight (apt / pip / curl). Live-only: it is
+  // never ringed server-side, so it starts wherever the run is when this view
+  // connects and disappears when the phase reaches its verdict — the point is
+  // "something is happening", not a second copy of the log.
+  const [live, setLive] = useState<{ phase: BootstrapEvent['phase']; lines: string[] } | null>(null);
   const [status, setStatus] = useState<InstallStatus>('running');
+  const [needsClaudeLogin, setNeedsClaudeLogin] = useState(false);
   const [busy, setBusy] = useState<null | 'retry' | 'close'>(null);
   const esRef = useRef<EventSource | null>(null);
   const logRef = useRef<HTMLUListElement>(null);
@@ -91,6 +102,15 @@ export default function InstallSessionView({
         replayingRef.current = true;
         // Reset local history — we'll rehydrate from the server ring buffer
         setEvents([]);
+        setLive(null);
+        return;
+      }
+      if (msg.kind === 'log') {
+        const incoming: string[] = Array.isArray(msg.lines) ? msg.lines : [];
+        setLive((prev) => ({
+          phase: msg.phase,
+          lines: (prev && prev.phase === msg.phase ? [...prev.lines, ...incoming] : incoming).slice(-LIVE_LINES),
+        }));
         return;
       }
       if (msg.kind === 'replay_end') {
@@ -99,6 +119,8 @@ export default function InstallSessionView({
       }
       if (msg.kind === 'event') {
         const ev: BootstrapEvent = msg.ev;
+        // A verdict retires its own tail: the detail line replaces it.
+        if (ev.status !== 'running') setLive((prev) => (prev?.phase === ev.phase ? null : prev));
         setEvents((prev) => {
           // Coalescing heuristic: if the last entry has the same phase
           // and was `running`, we replace it (intra-phase status update).
@@ -114,6 +136,9 @@ export default function InstallSessionView({
       if (msg.kind === 'status') {
         const next: InstallStatus = msg.status;
         setStatus(next);
+        // The login probe is silent (no phase row): whether this VPS still
+        // needs `claude login` rides on the status message instead.
+        if (typeof msg.needsClaudeLogin === 'boolean') setNeedsClaudeLogin(msg.needsClaudeLogin);
         if (lastStatusRef.current === 'running' && next === 'success') {
           onInstallSuccess?.();
         }
@@ -132,11 +157,11 @@ export default function InstallSessionView({
     };
   }, [installId, onInstallSuccess]);
 
-  // Auto-scroll to the bottom when new events arrive
+  // Auto-scroll to the bottom when new events — or new live output — arrive
   useEffect(() => {
     if (!logRef.current) return;
     logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [events]);
+  }, [events, live]);
 
   async function doRetry() {
     if (busy) return;
@@ -159,10 +184,11 @@ export default function InstallSessionView({
     onClosed();
   }
 
-  // Detects whether the check_login phase warned (= no claude login done) so
-  // we can offer the "Setup login" button when the install is a success.
-  const checkLoginEvent = events.find((ev) => ev.phase === 'check_login');
-  const needsLogin = status === 'success' && checkLoginEvent?.status === 'warn';
+  // Offer "setup claude login" on a successful install of a VPS that is not
+  // signed in — the flag comes from the status message (the probe itself no
+  // longer prints a phase: "not signed in" is the expected state on a fresh
+  // box and a trailing ⚠ made a clean install look broken).
+  const needsLogin = status === 'success' && needsClaudeLogin;
 
   return (
     <main className="claude-main install-main">
@@ -215,6 +241,15 @@ export default function InstallSessionView({
             {ev.detail && <span className="detail">{ev.detail}</span>}
           </li>
         ))}
+        {/* The tail of the phase in flight. Rendered as its own row under the
+            last step: a `pip install` is minutes of silence otherwise. */}
+        {live && live.lines.length > 0 && status === 'running' && (
+          <li className="install-live" aria-live="polite">
+            {live.lines.map((line, i) => (
+              <span key={i} className="install-live-line">{line}</span>
+            ))}
+          </li>
+        )}
         {status === 'success' && (
           <li className="install-footer-msg ok">
             ✓ the agent is installed and operational on <strong>{vpsName}</strong>.
