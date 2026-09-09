@@ -4,6 +4,7 @@ import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
 import { isSessionMode } from '@/lib/sessionCapabilities';
 
 const ALLOWED_KEYS = [
+  'ui.theme',
   'ssh.private_key_path',
   'notif.global_enabled',
   'shell.notify_idle',

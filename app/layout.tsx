@@ -1,8 +1,10 @@
 import './globals.css';
 import './agent-ui.css';
+import './theme-emc.css';
 import type { Metadata, Viewport } from 'next';
 import NotificationClickHandler from './NotificationClickHandler';
 import ChunkReloadGuard from './ChunkReloadGuard';
+import { getSetting } from '@/lib/server/claude/settings';
 
 export const metadata: Metadata = {
   title: 'Charon',
@@ -24,8 +26,17 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // Read here, during the server render, so the attribute ships inside the
+  // HTML and no one ever sees the other theme flash first. 'classic' means
+  // the stock appearance: no rule of theme-emc.css matches.
+  //
+  // try/catch is load-bearing: `next build` prerenders this layout and the
+  // SQLite file may not be readable at that point. A default beats a broken
+  // build.
+  let theme = 'classic';
+  try { theme = getSetting('ui.theme') || 'classic'; } catch { /* default */ }
   return (
-    <html lang="en">
+    <html lang="en" data-theme={theme}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />

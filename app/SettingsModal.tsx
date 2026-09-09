@@ -192,6 +192,12 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                     <label>public URL of this hub (deep links in Telegram / push)
                       <input value={s['app.public_url'] ?? ''} onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com" type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
                     </label>
+                    <label>appearance (reload the page after changing)
+                      <select value={s['ui.theme'] ?? 'classic'} onChange={(e) => set('ui.theme', e.target.value)}>
+                        <option value="classic">Charon — stock</option>
+                        <option value="emc">emc — warm, uncased transcript</option>
+                      </select>
+                    </label>
                     <label>VAPID subject (mailto for push)
                       <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:you@example.com" />
                     </label>

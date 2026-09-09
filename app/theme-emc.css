@@ -1,0 +1,108 @@
+/* =====================================================================
+ *  "emc" — an alternative palette, opt-in.
+ *
+ *  Everything here hangs off `html[data-theme="emc"]`, which layout.tsx
+ *  stamps from the `ui.theme` setting at RENDER time on the server, so
+ *  there is no flash of the other theme on load. With the setting left at
+ *  its default, not one rule below matches and the stock appearance is
+ *  untouched — this file cannot regress anyone who does not opt in.
+ *
+ *  THE TRAP, if you add a theme of your own: `.claude-root` redeclares all
+ *  seventeen colour variables for itself. Custom properties resolve from
+ *  the NEAREST ancestor, so a `:root` override loses inside the app no
+ *  matter how specific it is — only the login page would change colour.
+ *  Both selectors have to be listed.
+ * ===================================================================== */
+
+html[data-theme="emc"],
+html[data-theme="emc"] .claude-root {
+  /* Warm greys instead of the stock slate blue. */
+  --stone:   #191817;   /* deepest: header, sidebar */
+  --stone-2: #201f1d;   /* page */
+  --stone-3: #2b2a27;   /* raised surfaces */
+  --shadow:  #14130f;   /* input wells */
+
+  --parchment:      #f0eee6;
+  --parchment-soft: #8f8a7f;
+
+  /* Coral primary, where the stock theme is blue. */
+  --gold:        #d97757;
+  --gold-bright: #e8977a;
+  --gold-deep:   #3a3835;   /* hairlines + scrollbars */
+
+  /* Sage instead of teal. */
+  --teal:      #9db5a8;
+  --teal-deep: #62766c;
+
+  /* Deliberately redder than the primary: at a glance an error must not
+     read as an accent. */
+  --crimson:      #d4534b;
+  --crimson-deep: #8a3c36;
+
+  /* Warm tan for the lavender slot; the violet stays violet, it means
+     "background task running" and has to stay distinct. */
+  --lavender:      #cbb79c;
+  --violet-bright: #b491c9;
+
+  /* Fonts are untouched: the stock stack is already the right one. */
+}
+
+/* --- Transcript ---
+ *
+ * No frame around a reply: the text sits on the page, and only the user's
+ * message gets a block. Removing the frame means the text would otherwise
+ * span the whole pane, so the reading column comes back explicitly —
+ * 200-character lines are unreadable whatever the palette.
+ */
+
+html[data-theme="emc"] .bubble {
+  border: none;
+  background: transparent;
+  padding: 6px 2px;
+  /* .claude-chat is a flex column, so align-self centres the block. */
+  width: 100%;
+  max-width: 46rem;
+  align-self: center;
+}
+
+html[data-theme="emc"] .bubble.role-assistant {
+  border: none;
+  background: transparent;
+}
+
+html[data-theme="emc"] .bubble.role-user {
+  border: none;
+  background: var(--stone-3);
+  border-radius: 14px;
+  padding: 12px 16px;
+}
+
+html[data-theme="emc"] .bubble pre { border-radius: 10px; }
+
+/* --- Vertical rhythm ---
+ *
+ * Four independent knobs govern the spacing, and confusing them is how you
+ * end up turning the wrong one. Finest to widest:
+ *
+ *   .content         line-height  between two lines of one paragraph
+ *   .content.md p    margin       between two paragraphs
+ *   .bubble          padding      around one message
+ *   .claude-chat     gap          between two messages
+ *
+ * Without the frames the stock spacing reads loose, so all four tighten.
+ */
+
+html[data-theme="emc"] .bubble .content { line-height: 1.3; }
+
+html[data-theme="emc"] .bubble .content.md p { margin: 0 0 6px; }
+html[data-theme="emc"] .bubble .content.md ul,
+html[data-theme="emc"] .bubble .content.md ol { margin: 0 0 6px 18px; }
+html[data-theme="emc"] .bubble .content.md li { margin-bottom: 1px; }
+
+/* Headings opened 12px above; too much in a narrow column where colour and
+   font already set them apart. */
+html[data-theme="emc"] .bubble .content.md h1,
+html[data-theme="emc"] .bubble .content.md h2,
+html[data-theme="emc"] .bubble .content.md h3 { margin: 9px 0 4px; }
+
+html[data-theme="emc"] .claude-chat { gap: 6px; }
