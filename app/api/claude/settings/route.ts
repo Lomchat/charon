@@ -15,6 +15,9 @@ const ALLOWED_KEYS = [
   'app.public_url',
   // Hub-wide look — an id from app/themes.ts, validated below (§11).
   'app.theme',
+  // Hub-wide backend switches — 'false' hides that backend's launchers (§11).
+  'claude.enabled',
+  'codex.enabled',
   'claude.default_model',
   'claude.default_fallback_model',
   'claude.default_effort',
@@ -100,7 +103,9 @@ export async function POST(req: Request) {
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED_KEYS.includes(k)) continue;
     const val = String(v);
-    if ((k.startsWith('telegram.notify.') || k === 'telegram.enabled') && val !== 'true' && val !== 'false') {
+    if ((k.startsWith('telegram.notify.') || k === 'telegram.enabled'
+         || k === 'claude.enabled' || k === 'codex.enabled')
+        && val !== 'true' && val !== 'false') {
       rejected.push(k);
       continue;
     }

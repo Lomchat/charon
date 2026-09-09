@@ -12,6 +12,7 @@ import { backendAvailability, parseAgentLastError } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
 import { mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrderedIds } from './sidebarPathGroups';
+import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
@@ -123,6 +124,10 @@ type Props = {
   onSelectInstall: (id: string) => void;
   /** Reorder the sessions of ONE vps (drag & drop). §14.80 */
   onReorderSessions?: (vpsId: string, ids: string[]) => void;
+  /** Backends this hub offers (Settings → Claude/Codex). A disabled backend
+   *  loses its ＋ button on every VPS; with both off only the shell one is
+   *  left. Display only — running sessions of that kind are untouched. */
+  enabledBackends?: EnabledBackends;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
@@ -185,6 +190,7 @@ export default function Sidebar({
   selectedShellId, selectedInstallId,
   activeWorkspace = null,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
+  enabledBackends = ALL_BACKENDS_ENABLED,
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
@@ -457,7 +463,13 @@ export default function Sidebar({
           ><IconServers /></button>
         </div>
         <div className="cs-add full">
-          <button className="cs-add-btn agent" onClick={() => onNew({})} title="new Claude agent">
+          {/* Backend-free entry point: it stays even with both backends off,
+              because the wizard is then where the user learns why (and gets a
+              link to Settings) — a vanished button explains nothing. */}
+          <button className="cs-add-btn agent" onClick={() => onNew({})}
+            title={enabledKinds(enabledBackends).length === 1
+              ? `new ${enabledBackends.codex ? 'Codex' : 'Claude'} agent`
+              : 'new agent'}>
             <IconRobot /><span>Agent</span>
           </button>
           <button className="cs-add-btn shell" onClick={() => onNewShell({})} title="new SSH shell">
@@ -559,6 +571,7 @@ export default function Sidebar({
                     deletingSessionIds,
                     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
                     selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
+                    enabledBackends,
                     onNew, onNewShell, onScan,
                     onContext: openSessionContext, onContextShell, onContextInstall,
                     editingId, onRenameSubmit, onRenameCancel,
@@ -610,6 +623,7 @@ type VpsRenderOpts = {
   onReorderSessions?: (vpsId: string, ids: string[]) => void;
   selectedSessionIds: ReadonlySet<string>;
   onSessionSelectionGesture: (session: SessionListItem, modifiers: TreeSelectionModifiers) => boolean;
+  enabledBackends: EnabledBackends;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
   onScan: (vpsId: string) => void;
@@ -636,6 +650,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     selectedSessionIds, onSessionSelectionGesture,
+    enabledBackends,
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
@@ -708,21 +723,24 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const addBtns = (
     <div className="cs-add">
       {/* Two backends: Claude + Codex, each greyed by its own availability.
-          A greyed button explains why in the tooltip. cf. CLAUDE.md §14.59. */}
-      <button
-        className="cs-add-btn agent"
-        onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: 'claude' }); }}
-        disabled={!claudeAv.ok}
-        title={claudeAv.reason}
-        aria-label="new Claude agent"
-      ><AgentLogo kind="claude" size={14} /></button>
-      <button
-        className="cs-add-btn agent codex"
-        onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: 'codex' }); }}
-        disabled={!codexAv.ok}
-        title={codexAv.reason}
-        aria-label="new Codex agent"
-      ><AgentLogo kind="codex" size={14} /></button>
+          A greyed button explains why in the tooltip. cf. CLAUDE.md §14.59.
+          A backend switched OFF in Settings has no button at all — greying it
+          would say "this VPS can't", which is the opposite of the truth; with
+          both off only the shell button below remains. */}
+      {enabledKinds(enabledBackends).map((k) => {
+        const av = k === 'codex' ? codexAv : claudeAv;
+        const label = k === 'codex' ? 'Codex' : 'Claude';
+        return (
+          <button
+            key={k}
+            className={`cs-add-btn agent${k === 'codex' ? ' codex' : ''}`}
+            onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: k }); }}
+            disabled={!av.ok}
+            title={av.reason}
+            aria-label={`new ${label} agent`}
+          ><AgentLogo kind={k} size={14} /></button>
+        );
+      })}
       <button
         className="cs-add-btn shell"
         onClick={(e) => { e.stopPropagation(); onNewShell({ vpsId: v.id, cwd: null }); }}
@@ -865,7 +883,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             // (§14.61). Codex bar only when openai-codex is confirmed
             // installed AND login confirmed absent (0, not null).
             <>
-              {(v as any).claudeLoggedIn !== 1 && onLoginAgent && (
+              {enabledBackends.claude && (v as any).claudeLoggedIn !== 1 && onLoginAgent && (
                 <div className="cs-agent-bar warn">
                   <span className="cs-agent-meta">{agentVersion ? `v${agentVersion} · ` : ''}claude not signed in</span>
                   <button className="cs-agent-btn" onClick={() => onLoginAgent(v)}>
@@ -873,7 +891,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                   </button>
                 </div>
               )}
-              {(v as any).codexAvailable === 1 && (v as any).codexLoggedIn === 0 && onCodexLoginAgent && (
+              {enabledBackends.codex && (v as any).codexAvailable === 1 && (v as any).codexLoggedIn === 0 && onCodexLoginAgent && (
                 <div className="cs-agent-bar warn">
                   <span className="cs-agent-meta">codex not signed in</span>
                   <button className="cs-agent-btn" onClick={() => onCodexLoginAgent(v)}>

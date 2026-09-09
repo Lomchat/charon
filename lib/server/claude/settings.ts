@@ -94,6 +94,12 @@ const DEFAULTS = {
   // an id dropped from the code degrades to the default rather than rendering
   // a page against tokens nothing defines.
   'app.theme': DEFAULT_THEME_ID,
+  // Per-backend availability in the UI, hub-wide. 'false' HIDES every launcher
+  // for that backend (sidebar ＋, tab-bar ＋, the new-session wizard); existing
+  // sessions of that kind keep running and stay visible. Default ON — a fresh
+  // install must not look like it lost a backend. cf. app/enabledBackends.ts.
+  'claude.enabled': 'true',
+  'codex.enabled': 'true',
   // Global defaults for Claude model / fallback / effort. Empty string =
   // not set → the agent passes nothing → SDK default applies.
   // New sessions inherit these unless overridden in NewSessionDialog.

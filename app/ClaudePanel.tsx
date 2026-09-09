@@ -32,6 +32,8 @@ import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
 import { newestAccountUsage } from './accountUsageState';
 import { backendAvailability } from './vpsHealth';
+import { ALL_BACKENDS_ENABLED, enabledBackendsFromSettings } from './enabledBackends';
+import type { SettingsCategory } from './SettingsModal';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
 import { ensureFreshServiceWorker } from './pushClient';
@@ -693,6 +695,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Section the settings modal opens on (null = its own default). Set by the
+  // wizard's "enable one in Settings" link when both backends are off.
+  const [settingsCat, setSettingsCat] = useState<SettingsCategory | null>(null);
+  // Hub-wide backend switches (claude.enabled / codex.enabled). Refreshed with
+  // the rest of the shared settings below, so a change on one device hides the
+  // launchers on every other one through `settings_changed`. Optimistic
+  // default = both ON: a hub that hasn't answered yet must not look like it
+  // lost a backend. cf. app/enabledBackends.ts.
+  const [backends, setBackends] = useState(ALL_BACKENDS_ENABLED);
   const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
   const browserNotifications = useBrowserNotifications();
@@ -1309,6 +1320,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         if (!alive) return;
         setTgEnabled(s['telegram.enabled'] === 'true');
         setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
+        setBackends((prev) => {
+          const next = enabledBackendsFromSettings(s);
+          return prev.claude === next.claude && prev.codex === next.codex ? prev : next;
+        });
         // The theme is hub-wide: this is how the OTHER tabs and devices follow
         // a change. Held while the settings modal is open — it is previewing a
         // theme that is deliberately not saved yet, and this same refresh runs
@@ -1680,6 +1695,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             s.vpsId === vpsId && ids.includes(s.id) ? { ...s, position: ids.indexOf(s.id) } : s)));
           void api.reorderSessions(vpsId, ids).catch(() => refreshSessions());
         }}
+        enabledBackends={backends}
         onNew={(opts) => setWizard({ kind: 'agent', ...opts })}
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
@@ -1734,6 +1750,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onNewSession={onTabBarNewSession}
         onNewShell={onTabBarNewShell}
         newSessionDisabledReason={tabBarNewSessionReasons}
+        enabledBackends={backends}
         onReorderVps={(vpsIds) => void reorderWorkspaceTabs({ scope: 'vps', vpsIds })}
         onReorderPaths={(vpsId, paths) => void reorderWorkspaceTabs({ scope: 'groups', vpsId, paths })}
         onReorderTabs={(vpsId, path, ids) => void reorderWorkspaceTabs({ scope: 'tabs', vpsId, path, ids })}
@@ -1955,6 +1972,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onFix={handleVpsFix}
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
+          enabledBackends={backends}
+          onOpenSettings={(section) => { setWizard(null); setSettingsCat(section); setSettingsOpen(true); }}
         />
       )}
 
@@ -1982,7 +2001,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         />
       )}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} vpsList={vpsList} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
+      {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); setSettingsCat(null); }} vpsList={vpsList} initialCat={settingsCat ?? undefined} modelNotices={modelNotices} onModelsSeen={markModelsSeen} />}
       {dataOpen && (
         <DataModal
           onClose={() => setDataOpen(false)}

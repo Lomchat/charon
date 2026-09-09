@@ -36,18 +36,34 @@ type Props = {
   /** Passed by ClaudePanel — used to source the per-VPS Codex catalog for the
    *  codex-defaults pickers (first codex-capable VPS wins). */
   vpsList?: Vps[];
+  /** Section to open on. Used by the "enable one in Settings" link the wizard
+   *  shows when both backends are switched off. */
+  initialCat?: Cat;
   modelNotices: ModelNoticesResponse;
   onModelsSeen: (provider: AgentKind, ids: string[]) => Promise<void>;
 };
 
 type Cat = 'general' | 'claude' | 'codex' | 'notifications' | 'updates';
+/** Deep-link target for `initialCat` (the wizard sends the user here when both
+ *  backends are off). Exported so callers don't restate the union. */
+export type SettingsCategory = Cat;
 
-const CATS: { id: Cat; label: string }[] = [
-  { id: 'general', label: 'general' },
-  { id: 'claude', label: 'claude' },
-  { id: 'codex', label: 'codex' },
-  { id: 'notifications', label: 'notifications' },
-  { id: 'updates', label: 'updates' },
+// The nav is grouped by THEME rather than one flat list: "what this hub looks
+// like and how it reaches me" (hub), "the two backends" (agents), "keeping the
+// fleet current" (maintenance). Five equal-weight entries read as a pile;
+// three labelled groups read as a map.
+const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[] }[] = [
+  { id: 'hub', label: 'hub', cats: [
+    { id: 'general', label: 'general' },
+    { id: 'notifications', label: 'notifications' },
+  ] },
+  { id: 'agents', label: 'agents', cats: [
+    { id: 'claude', label: 'claude' },
+    { id: 'codex', label: 'codex' },
+  ] },
+  { id: 'maintenance', label: 'maintenance', cats: [
+    { id: 'updates', label: 'updates' },
+  ] },
 ];
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
@@ -65,7 +81,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
-export default function SettingsModal({ onClose, vpsList, modelNotices, onModelsSeen }: Props) {
+export default function SettingsModal({ onClose, vpsList, initialCat, modelNotices, onModelsSeen }: Props) {
   // The theme picker previews LIVE (a swatch cannot tell you whether a theme is
   // comfortable), so the modal owns an undo: everything that closes without
   // saving restores the theme in effect when it opened.
@@ -83,7 +99,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
   }
   const [s, setS] = useState<Record<string, string> | null>(null);
   const [dirty, setDirty] = useState<Record<string, string>>({});
-  const [cat, setCat] = useState<Cat>('general');
+  const [cat, setCat] = useState<Cat>(initialCat ?? 'general');
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -186,6 +202,29 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
     return <span className="nav-ico">↻</span>;
   };
 
+  // The backend switches, read the same way everywhere: anything but the
+  // literal 'false' is ON (app/enabledBackends.ts). The nav carries the state
+  // as a green/red dot so "why is there no ＋ Codex button" is answered without
+  // opening the section.
+  const backendOn = (kind: AgentKind) => s?.[`${kind}.enabled`] !== 'false';
+  const backendSwitch = (kind: AgentKind, label: string) => (
+    <>
+      <div className="switch-row">
+        <span>{label} available in this hub</span>
+        <Toggle
+          checked={backendOn(kind)}
+          onChange={(v) => set(`${kind}.enabled`, v ? 'true' : 'false')}
+          label={`offer ${label} sessions in this hub`}
+        />
+      </div>
+      <p className="set-meta">
+        Off hides every {label} launcher — the ＋ button on each VPS, the one in
+        the tab bar, and its row in the new-session wizard. Existing {label}{' '}
+        sessions keep running and stay in the sidebar.
+      </p>
+    </>
+  );
+
   return (
     <>
     <div style={sessionSettings ? { display: 'none' } : undefined} className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
@@ -197,19 +236,31 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
           <>
             <div className="settings-body">
               <nav className="settings-nav" aria-label="settings sections">
-                {CATS.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className={cat === c.id ? 'on' : ''}
-                    onClick={() => setCat(c.id)}
-                  >
-                    {navIcon(c.id)}
-                    <span>{c.label}</span>
-                    {(c.id === 'claude' || c.id === 'codex') && modelNotices[c.id].length > 0 && (
-                      <span className="model-notice-badge" aria-label="new models available">new</span>
-                    )}
-                  </button>
+                {NAV_GROUPS.map((g) => (
+                  <div key={g.id} className="settings-nav-group">
+                    <div className="settings-nav-group-label">{g.label}</div>
+                    {g.cats.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        className={cat === c.id ? 'on' : ''}
+                        onClick={() => setCat(c.id)}
+                      >
+                        {navIcon(c.id)}
+                        <span>{c.label}</span>
+                        {(c.id === 'claude' || c.id === 'codex') && modelNotices[c.id].length > 0 && (
+                          <span className="model-notice-badge" aria-label="new models available">new</span>
+                        )}
+                        {(c.id === 'claude' || c.id === 'codex') && (
+                          <span
+                            className={`nav-state${backendOn(c.id) ? ' on' : ' off'}`}
+                            title={backendOn(c.id) ? `${c.label} is available` : `${c.label} is switched off`}
+                            aria-label={backendOn(c.id) ? `${c.label} enabled` : `${c.label} disabled`}
+                          />
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </nav>
 
@@ -241,6 +292,8 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
 
                 {cat === 'claude' && (
                   <>
+                    {backendSwitch('claude', 'Claude')}
+                    <div className="settings-sub">new session defaults</div>
                     <p className="set-hint">defaults for new Claude sessions — blank = SDK default.</p>
                     <label>default model
                       <ModelPicker
@@ -322,6 +375,8 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
 
                 {cat === 'codex' && (
                   <>
+                    {backendSwitch('codex', 'Codex')}
+                    <div className="settings-sub">new session defaults</div>
                     <p className="set-hint">
                       defaults for new Codex sessions — blank = Codex default.
                       {codexVps

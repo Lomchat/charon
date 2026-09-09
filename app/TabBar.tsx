@@ -7,6 +7,7 @@ import type { PermissionRequest, PendingQuestion, PendingExitPlan } from './sess
 import { IconTerminal, IconTools } from './icons';
 import { IconForKind, fileKind } from './fileIcons';
 import AgentLogo from './AgentLogo';
+import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 
 // TabBar — the workspace strip above the main column. §14.78
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,6 +173,10 @@ type Props = {
    *  the sidebar's ＋ buttons — two launchers disagreeing is worse than a
    *  disabled button. */
   newSessionDisabledReason: Record<AgentKind, string | null>;
+  /** Backends this hub offers (Settings). A disabled one loses its ＋ button
+   *  here exactly as it does in the sidebar — two launchers disagreeing about
+   *  which backends exist is worse than no launcher. */
+  enabledBackends?: EnabledBackends;
   onReorderVps: (vpsIds: string[]) => void;
   onReorderPaths: (vpsId: string, paths: string[]) => void;
   onReorderTabs: (vpsId: string, path: string, ids: string[]) => void;
@@ -182,6 +187,7 @@ export default function TabBar({
   onVpsClick, onPathClick, onTabClick, onTabDoubleClick, onTabClose, onTabContext,
   onVpsClose, onPathClose,
   onNewSession, onNewShell, newSessionDisabledReason,
+  enabledBackends = ALL_BACKENDS_ENABLED,
   onReorderVps, onReorderPaths, onReorderTabs,
 }: Props) {
   const { vpsRows, pathRows, tabRows } = useMemo(() => {
@@ -345,32 +351,26 @@ export default function TabBar({
 
         {activeVpsId && (
           <span className="tab-row-actions">
-            {/* One button per backend, like the sidebar's per-VPS ＋ row: this
-                strip is the fast path to "another agent right here", and
-                Codex being reachable only from the sidebar made it the
+            {/* One button per ENABLED backend, like the sidebar's per-VPS ＋
+                row: this strip is the fast path to "another agent right here",
+                and Codex being reachable only from the sidebar made it the
                 second-class backend it isn't. */}
-            <button
-              className="tab-new-btn tab-new-session"
-              onClick={() => onNewSession(activeVpsId, activePath ?? '', 'claude')}
-              disabled={!!newSessionDisabledReason.claude}
-              title={newSessionDisabledReason.claude
-                ? `Claude — ${newSessionDisabledReason.claude}`
-                : 'new Claude agent in this folder'}
-            >
-              <span className="tab-new-plus">+</span>
-              <span className="tab-new-glyph"><AgentLogo kind="claude" size={12} /></span>
-            </button>
-            <button
-              className="tab-new-btn tab-new-session codex"
-              onClick={() => onNewSession(activeVpsId, activePath ?? '', 'codex')}
-              disabled={!!newSessionDisabledReason.codex}
-              title={newSessionDisabledReason.codex
-                ? `Codex — ${newSessionDisabledReason.codex}`
-                : 'new Codex agent in this folder'}
-            >
-              <span className="tab-new-plus">+</span>
-              <span className="tab-new-glyph"><AgentLogo kind="codex" size={12} /></span>
-            </button>
+            {enabledKinds(enabledBackends).map((k) => {
+              const label = k === 'codex' ? 'Codex' : 'Claude';
+              const reason = newSessionDisabledReason[k];
+              return (
+                <button
+                  key={k}
+                  className={`tab-new-btn tab-new-session${k === 'codex' ? ' codex' : ''}`}
+                  onClick={() => onNewSession(activeVpsId, activePath ?? '', k)}
+                  disabled={!!reason}
+                  title={reason ? `${label} — ${reason}` : `new ${label} agent in this folder`}
+                >
+                  <span className="tab-new-plus">+</span>
+                  <span className="tab-new-glyph"><AgentLogo kind={k} size={12} /></span>
+                </button>
+              );
+            })}
             <button
               className="tab-new-btn tab-new-shell"
               onClick={() => onNewShell(activeVpsId, activePath ?? '')}

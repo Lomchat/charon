@@ -9,7 +9,7 @@ import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
-import { IconTerminal } from './icons';
+import { IconRobot, IconTerminal } from './icons';
 import type {
   AgentKind, CodexSessionConfig, ProviderSessionConfig, SessionPathResponse,
 } from '@/lib/types/api';
@@ -18,6 +18,7 @@ import {
   type CodexSandboxMode,
 } from '@/lib/sessionCapabilities';
 import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
+import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 
 // 3-step "new session" wizard (prod). `kind` (agent vs shell) is fixed by the
@@ -62,6 +63,11 @@ type Props = {
   onFix?: (v: Vps, action: VpsFixAction) => void;
   refreshingAgentVpsIds?: Set<string>;
   updatingAgentVpsIds?: Set<string>;
+  /** Backends this hub offers (Settings → Claude/Codex). Only enabled ones get
+   *  a row here; with both off the wizard says so and links to Settings. */
+  enabledBackends?: EnabledBackends;
+  /** Opens Settings on that section (the link in the "no backend" notice). */
+  onOpenSettings?: (section: 'claude' | 'codex') => void;
 };
 
 function basename(p: string): string {
@@ -72,12 +78,32 @@ export default function NewSessionWizard({
   kind, agentKind, vpsList, vpsFolders, vpsPaths, initialVpsId, initialCwd, onClose,
   onCreatedSession, onCreatedShell,
   onFix, refreshingAgentVpsIds, updatingAgentVpsIds,
+  enabledBackends = ALL_BACKENDS_ENABLED, onOpenSettings,
 }: Props) {
   const hasInitialCwd = typeof initialCwd === 'string' && initialCwd.trim() !== '';
-  // Backend is fixed either by the caller (agentKind) or trivially for shells.
-  // When agent + unfixed, the user picks it in the VPS step.
-  const backendFixed = kind !== 'agent' || agentKind != null;
-  const [selKind, setSelKind] = useState<AgentKind>(agentKind ?? 'claude');
+  // Backends this hub offers. A switch in Settings, not an availability: a
+  // disabled backend is not GREYED here, it is absent — and when both are off
+  // the wizard is a notice pointing at the switch instead of a picker with
+  // nothing to pick. (app/enabledBackends.ts)
+  const allowedKinds = enabledKinds(enabledBackends);
+  const noBackend = kind === 'agent' && allowedKinds.length === 0;
+  // Backend is fixed by the caller (agentKind), trivially for shells, or by
+  // there being exactly one enabled backend left to choose from.
+  const fixedKind: AgentKind | null = kind !== 'agent'
+    ? null
+    : (agentKind && allowedKinds.includes(agentKind)) ? agentKind
+    : allowedKinds.length === 1 ? allowedKinds[0]
+    : null;
+  const backendFixed = kind !== 'agent' || fixedKind != null;
+  const [selKind, setSelKind] = useState<AgentKind>(fixedKind ?? allowedKinds[0] ?? 'claude');
+  // A backend switched off in another tab while this wizard is open must not
+  // leave the selection pointing at it (the settings bus is live, §9).
+  useEffect(() => {
+    if (kind !== 'agent' || allowedKinds.length === 0 || allowedKinds.includes(selKind)) return;
+    setSelKind(fixedKind ?? allowedKinds[0]);
+    // allowedKinds is rebuilt every render; the enabled flags are the real dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, selKind, fixedKind, enabledBackends.claude, enabledBackends.codex]);
   const [vpsId, setVpsId] = useState<string | null>(initialVpsId ?? null);
   const [path, setPath] = useState<string | null>(hasInitialCwd ? initialCwd! : null);
   const [pathChosen, setPathChosen] = useState<boolean>(hasInitialCwd);
@@ -251,7 +277,7 @@ export default function NewSessionWizard({
     if (!agent.ok) return [{ text: agent.reason, fix: agent.fix }];
     if (kind !== 'agent') return [];
     const out: { text: string; fix?: VpsFix }[] = [];
-    const kinds: AgentKind[] = backendFixed ? [selKind] : ['claude', 'codex'];
+    const kinds: AgentKind[] = backendFixed ? [selKind] : allowedKinds;
     for (const k of kinds) {
       const av = backendAvailability(v, k);
       if (av.ok) continue;
@@ -293,9 +319,8 @@ export default function NewSessionWizard({
       if (availFor(v, selKind).ok) pickVps(v);
       return;
     }
-    const cl = availFor(v, 'claude').ok;
-    const cx = availFor(v, 'codex').ok;
-    if (cl !== cx) pickVps(v, cl ? 'claude' : 'codex');
+    const usable = allowedKinds.filter((k) => availFor(v, k).ok);
+    if (usable.length === 1) pickVps(v, usable[0]);
   }
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape' && vpsQuery) {
@@ -592,6 +617,35 @@ export default function NewSessionWizard({
 
   const pathLabel = pathChosen ? (path == null ? '~ (home)' : path) : 'Path';
 
+  // Both backends switched off in Settings: there is nothing to pick, so the
+  // wizard is one sentence and the way to undo it. The generic "＋ Agent"
+  // button deliberately stays in the sidebar (only the per-backend ones go
+  // away), so "where did my agents go" is answered in one click instead of
+  // looking like a bug.
+  if (noBackend) {
+    return (
+      <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="claude-modal wizard kind-agent">
+          <button className="modal-close" onClick={onClose}>✕</button>
+          <div className="wiz-head">
+            <span className="wiz-kind"><IconRobot /> New agent</span>
+          </div>
+          <div className="wiz-body">
+            <div className="wiz-no-backend">
+              <p>Claude and Codex are both turned off, so there is no agent to start.</p>
+              <p>Turn at least one back on in <b>Settings → Agents</b>.</p>
+              {onOpenSettings && (
+                <button type="button" className="wiz-btn primary" onClick={() => onOpenSettings('claude')}>
+                  Open Settings
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className={`claude-modal wizard kind-${kind}`}>
@@ -680,8 +734,6 @@ export default function NewSessionWizard({
                     // Agent + unfixed backend: two buttons (Claude / Codex),
                     // each greyed by its own availability with an explanatory tip.
                     if (kind === 'agent' && !backendFixed) {
-                      const cl = availFor(v, 'claude');
-                      const cx = availFor(v, 'codex');
                       return (
                         <div key={v.id} className="wiz-pick static">
                           <span className={`wiz-pick-dot agent-${status}`} />
@@ -692,16 +744,17 @@ export default function NewSessionWizard({
                             {issuesEl}
                           </span>
                           <span className="wiz-kind-btns">
-                            <button type="button" className="wiz-kind-btn"
-                              disabled={!cl.ok} title={cl.reason}
-                              onClick={() => pickVps(v, 'claude')}>
-                              <AgentLogo kind="claude" size={15} /><span>Claude</span>
-                            </button>
-                            <button type="button" className="wiz-kind-btn"
-                              disabled={!cx.ok} title={cx.reason}
-                              onClick={() => pickVps(v, 'codex')}>
-                              <AgentLogo kind="codex" size={15} /><span>Codex</span>
-                            </button>
+                            {allowedKinds.map((k) => {
+                              const av = availFor(v, k);
+                              return (
+                                <button key={k} type="button" className="wiz-kind-btn"
+                                  disabled={!av.ok} title={av.reason}
+                                  onClick={() => pickVps(v, k)}>
+                                  <AgentLogo kind={k} size={15} />
+                                  <span>{k === 'codex' ? 'Codex' : 'Claude'}</span>
+                                </button>
+                              );
+                            })}
                           </span>
                         </div>
                       );

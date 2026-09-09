@@ -3728,6 +3728,14 @@
   padding: 18px 12px; text-align: center; font-style: italic;
   color: var(--text-muted); font-size: 12px;
 }
+/* Both backends switched off in Settings — the wizard has nothing to pick. */
+.wiz-no-backend {
+  padding: 26px 16px; text-align: center;
+  color: var(--text-muted); font-size: 13px; line-height: 1.6;
+}
+.wiz-no-backend p { margin: 0 0 10px; }
+.wiz-no-backend b { color: var(--text); font-weight: 500; }
+.wiz-no-backend .wiz-btn { margin-top: 8px; }
 /* "matched because of this project path" hint under a filtered row */
 .wiz-pick-match { color: var(--accent); opacity: 0.75; font-size: 10.5px; }
 .wiz-folder { margin-bottom: 12px; }
@@ -4241,6 +4249,21 @@
 }
 .settings-nav button:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .settings-nav button.on { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* Sections grouped by theme (hub / agents / maintenance). */
+.settings-nav-group { display: flex; flex-direction: column; gap: 2px; }
+.settings-nav-group + .settings-nav-group { margin-top: 14px; }
+.settings-nav-group-label {
+  font-family: var(--display); font-size: 9px;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-faint); padding: 0 12px 4px;
+}
+/* Backend availability pastille (claude.enabled / codex.enabled). */
+.settings-nav .nav-state {
+  margin-left: auto; flex: none;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--success);
+}
+.settings-nav .nav-state.off { background: var(--danger); }
 .settings-nav .nav-ico {
   width: 18px; display: inline-flex; justify-content: center;
   font-size: 13px; opacity: 0.85;
@@ -4269,6 +4292,14 @@
     padding: 0 0 8px;
   }
   .settings-nav button { flex: none; padding: 8px 10px; }
+  /* One horizontal strip: the groups stay adjacent, separated by a rule
+     instead of a heading (a stack of labels would eat the whole row). */
+  .settings-nav-group { flex-direction: row; }
+  .settings-nav-group + .settings-nav-group {
+    margin: 0 0 0 8px; padding-left: 8px; border-left: 1px solid var(--border);
+  }
+  .settings-nav-group-label { display: none; }
+  .settings-nav .nav-state { margin-left: 2px; }
   .settings-pane { padding: 14px 2px 10px; }
 }
 
