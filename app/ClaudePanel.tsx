@@ -4,7 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
-import type { WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/claude/types';
 import type { AgentKind, TabDTO } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
@@ -85,29 +85,6 @@ function sameSessionRows(a: SessionListItem[], b: SessionListItem[]): boolean {
   }
   return true;
 }
-
-const STATUS_LABEL: Record<WorkerStatus, string> = {
-  starting: 'starting',
-  active: 'active',
-  thinking: 'thinking',
-  failed: 'error',
-  background: 'background',
-  sleeping: 'sleeping',
-  killed: 'killed',
-  error: 'error',
-  reconnecting: 'reconnecting…',
-};
-const STATUS_DOT: Record<WorkerStatus, string> = {
-  starting: 'amber',
-  active: 'green',
-  thinking: 'amber-pulse',
-  failed: 'red',
-  background: 'violet-pulse',
-  sleeping: 'gray',
-  killed: 'gray',
-  error: 'red',
-  reconnecting: 'amber-pulse',
-};
 
 // SessionState/emptyState removed in the refactor: per-session state now
 // lives in `useClaudeSessionStream` (consumed by `<ClaudeSessionView>`).
@@ -841,9 +818,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
   const selected = sessions.find((s) => s.id === selectedId) ?? null;
   const selectedShell = selectedShellId ? shells.find((s) => s.id === selectedShellId) ?? null : null;
-  const selectedShellVps = selectedShell
-    ? vpsList.find((v) => v.id === selectedShell.vpsId) ?? null
-    : null;
   const selectedShellWorkspaceRoot = selectedShell
     ? (selectedShell.cwd?.trim() || shellHomeByVps[selectedShell.vpsId] || null)
     : null;
@@ -885,18 +859,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   useEffect(() => {
     refreshUsage(selectedVps?.id);
   }, [selectedVps?.id, refreshUsage]);
-
-  // "Active session has a pending interaction" indicator — used by the
-  // status pill in the header. Comes from the cross-session feed, not from
-  // the per-session state (which no longer exists in ClaudePanel after the refactor).
-  const selectedHasPending = useMemo(() => {
-    if (!selectedId) return false;
-    return (
-      permQueue.some((p) => p.sessionId === selectedId) ||
-      questionQueue.some((q) => q.sessionId === selectedId) ||
-      exitPlanQueue.some((e) => e.sessionId === selectedId)
-    );
-  }, [permQueue, questionQueue, exitPlanQueue, selectedId]);
 
   // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
   // change to sessions/shells/installs/pendings — cheap, ~O(n).
@@ -1687,37 +1649,16 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               onRefresh={() => refreshUsage(selectedVps?.id)}
             />
           </div>
-          {selected && selectedVps && (
-            <span className="ctx">{selectedVps.name}:{selected.cwd}</span>
-          )}
-          {!selected && selectedShell && selectedShellVps && (
-            <span className="ctx">{selectedShellVps.name}:{selectedShellWorkspaceRoot ?? '~'}</span>
-          )}
+          {/* No "<vps>:<cwd>" context string and no status pill here: the
+              session bar (`ClaudeSessionView`) already carries the name, the
+              cwd and the live state (ThinkingBar/status), and the sidebar card
+              carries it too — a third, 4s-stale copy in the app header was
+              pure duplication. */}
           {!!selected?.subscribers && selected.subscribers > 1 && (
             <span className="multi-pill" title={`${selected.subscribers} clients connected to this session`}>
               ×{selected.subscribers}
             </span>
           )}
-          {/* 3 visual states:
-              1) Claude is working → "thinking" amber-pulse
-              2) Awaiting a response from you → "awaiting your response" orange-pulse
-              3) Idle/done → "active" green
-              Source: `selected.liveStatus` (poll refresh 4s) + the
-              cross-session feed for the "pending". Max lag 4s vs real-time SSE
-              of the active view, acceptable for a header indicator. */}
-          {selected?.liveStatus === 'thinking' ? (
-            <span className="status-pill status-amber-pulse">
-              <span className="dot" /> {selected?.kind === 'codex' ? 'codex' : 'claude'} is thinking
-            </span>
-          ) : selectedHasPending ? (
-            <span className="status-pill status-orange-pulse">
-              <span className="dot" /> awaiting your response
-            </span>
-          ) : selected?.liveStatus ? (
-            <span className={`status-pill status-${STATUS_DOT[selected.liveStatus as WorkerStatus]}`}>
-              <span className="dot" /> {STATUS_LABEL[selected.liveStatus as WorkerStatus]}
-            </span>
-          ) : null}
           <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search" data-label="search">
             <IconSearch />
           </button>

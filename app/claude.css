@@ -88,10 +88,6 @@
 }
 .claude-head .back:hover { color: var(--gold-bright); border-color: var(--gold); }
 .claude-head .head-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
-.claude-head .ctx {
-  font-family: var(--mono); font-size: 12px;
-  color: var(--parchment-soft);
-}
 .claude-head .head-btn {
   background: var(--shadow);
   border: 1px solid var(--gold-deep);
@@ -156,23 +152,9 @@
   font-family: var(--mono); font-size: 11px;
 }
 
-.status-pill {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 4px 10px; border: 1px solid var(--gold-deep);
-  font-family: var(--display); font-size: 10px;
-  letter-spacing: 0.18em; text-transform: uppercase;
-  color: var(--parchment); white-space: nowrap;
-}
-.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.status-green       { color: #a0c87b; }
-.status-amber       { color: var(--gold-bright); }
-.status-amber-pulse { color: var(--gold-bright); animation: cpulse 1.2s infinite ease-in-out; }
-.status-orange-pulse { color: #f0a060; animation: cpulse 0.9s infinite ease-in-out; }
-.status-gray        { color: var(--parchment-soft); }
-.status-red         { color: var(--crimson); }
-/* Idle, but background tasks are still running (§14.91). Violet is the one
-   hue no other state uses, so it can never be misread as ready/working/error. */
-.status-violet-pulse { color: var(--violet-bright); animation: cpulse 1.6s infinite ease-in-out; }
+/* `.status-pill` and its `.status-<colour>` modifiers are gone with the app
+   header's context/state zone: the session bar and the sidebar cards own
+   liveness now. `cpulse` stays — install steps and banners animate with it. */
 @keyframes cpulse { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
 
 /* ── Sidebar ── */
@@ -3962,14 +3944,12 @@
   }
 
   /* Tighten the header so its button row doesn't overflow a phone width:
-     hide the wordmark (logo is enough), the cwd context, and the wide status
-     pill (the chat view already shows live status), and shrink gaps. */
+     hide the wordmark (the logo is enough) and shrink gaps. The cwd context
+     and status pill no longer exist — the chat view owns both. */
   .claude-head { padding: 10px 12px; gap: 8px; }
   .claude-head h1 { display: none; }
   .claude-head .brand-logo { width: 30px; height: 30px; }
-  .claude-head .ctx { display: none; }
   .claude-head .head-right { gap: 6px; }
-  .claude-head .status-pill { display: none; }
 
   /* Modals: fill the small screen instead of overflowing it. */
   .claude-modal {
