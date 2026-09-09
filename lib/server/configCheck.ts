@@ -2,6 +2,7 @@ import 'server-only';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseInstance } from './agent/agentPaths.js';
+import { isAuthRequired } from './authGate.js';
 
 // Startup configuration validation (P1.8). WARN-ONLY by design: a
 // misconfigured .env must degrade loudly, never brick the hub (the operator
@@ -40,6 +41,17 @@ export function validateConfigAtBoot(): void {
       'if another hub manages these VPSes, both are now driving the same daemon');
   } else if (inst.instance) {
     console.log(`[config] agent instance: ${inst.instance} (~/.charon-${inst.instance}, unit charon-agent-${inst.instance}.service)`);
+  }
+
+  // Also checked in EVERY environment, above the production gate (§12). An
+  // open hub is a deliberate choice, but it is the kind of choice that gets
+  // made once in a .env and then forgotten across a machine move — and the UI
+  // looks identical either way, since the only visible difference is a login
+  // screen that no longer appears. Say it on every boot.
+  if (!isAuthRequired()) {
+    console.error('[config] ⚠ CHARON_AUTH_REQUIRED is off — NO PASSWORD guards this hub');
+    console.error('[config]   anything that can reach this port gets root SSH on every VPS; ' +
+      'keep the port private (loopback + tunnel, VPN) or unset the variable');
   }
 
   if (process.env.NODE_ENV !== 'production') return; // dev setups are allowed to be sloppy

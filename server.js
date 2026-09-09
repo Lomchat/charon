@@ -81,7 +81,15 @@ function parseCookie(header, name) {
 // The cookie carries the RAW token; sessions.id stores its HMAC (see
 // lib/server/sessionHash.js — shared with lib/server/auth.ts).
 const { hashSessionToken } = require('./lib/server/sessionHash.js');
+// Hub-wide auth switch (§12) — the same module the Next middleware reads,
+// because the middleware never runs on an Upgrade request and this gate would
+// otherwise keep asking for a cookie the open hub no longer issues.
+const { isAuthRequired } = require('./lib/server/authGate.js');
 function sessionValid(id) {
+  // No password configured for this hub ⇒ nothing to validate. `originAllowed`
+  // still guards the handshake: it is not authentication, and cross-site WS
+  // hijacking is exactly what it exists for.
+  if (!isAuthRequired()) return true;
   if (!id || typeof id !== 'string') return false;
   const row = STMT_SESSION.get(hashSessionToken(id));
   if (!row) return false;

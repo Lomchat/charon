@@ -7,6 +7,7 @@ import {
 } from '@/lib/server/auth';
 import { seedInitialData } from '@/lib/server/seed';
 import { sanitizeNextPath } from '@/lib/nextPath';
+import { isAuthRequired } from '@/lib/server/authGate.js';
 import {
   check as rateLimitCheck,
   recordFailure as rateLimitFailure,
@@ -20,6 +21,15 @@ export async function loginAction(_prev: { error?: string } | null, formData: Fo
   // "/"). Lets a mobile user logged-out by inactivity return to /m/... instead
   // of the desktop UI.
   const next = sanitizeNextPath(formData.get('next'));
+
+  // §12: authentication is switched off for this hub. A form POST can still
+  // arrive from a tab that was open when the switch flipped — send it where
+  // it was going instead of checking a password that guards nothing. Nothing
+  // below this line should run without a password to compare against
+  // (checkPassword and deriveMasterKey both THROW when MASTER_PASSWORD is
+  // unset, which an open hub is allowed to be).
+  if (!isAuthRequired()) redirect(next);
+
   if (!password) return { error: 'password required' };
 
   // Brute-force throttle: ONE MASTER_PASSWORD guards the whole fleet, so gate

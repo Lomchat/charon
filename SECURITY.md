@@ -48,6 +48,11 @@ reverse proxy** (or on `localhost` only). The threat model assumes :
   reverse proxy with TLS).
 - An attacker who learns the `MASTER_PASSWORD` has full access — there is
   no MFA. Choose a strong passphrase and store it in a password manager.
+- The dashboard can be run with **no password at all**
+  (`CHARON_AUTH_REQUIRED=false`, off by default). That is an explicit operator
+  choice for a hub whose port is already private, and it moves the entire
+  authorization boundary onto the network: reaching the port then means root
+  SSH on every managed VPS. Reports that an open hub is open are out of scope.
 - The host's filesystem is trusted. Two settings are hardened against a
   stolen DB copy — secret settings (Telegram bot token, Anthropic API key,
   VAPID private key) are stored as AES-256-GCM `enc:v1:` blobs keyed by

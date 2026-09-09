@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { isAuthRequired } from '@/lib/server/authGate.js';
 
 export const config = {
   // notif.wav: notification sound, a non-sensitive static asset loaded by
@@ -59,6 +60,18 @@ export async function middleware(req: NextRequest) {
       }
     }
   }
+
+  // Hub-wide auth switch (§12). With CHARON_AUTH_REQUIRED=false there is no
+  // password, hence no cookie to look up, no sliding TTL to refresh and no
+  // /login to redirect to — open the gate here, before any DB work.
+  //
+  // The CSRF Origin check above deliberately runs FIRST and stays on. It is
+  // not authentication: with no password it becomes the only thing stopping
+  // any website the user happens to visit from POSTing into a hub reachable
+  // from their browser (a loopback-bound hub is reachable from every page
+  // they open). Same-origin requests and origin-less clients (curl) pass, so
+  // it costs legitimate use nothing.
+  if (!isAuthRequired()) return NextResponse.next();
 
   let valid = false;
   if (sid) {

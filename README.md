@@ -595,7 +595,7 @@ explicit message.
 
 | Variable          | Required | Description                                                                                            |
 | ----------------- | :------: | ------------------------------------------------------------------------------------------------------ |
-| `MASTER_PASSWORD` |   yes    | Login password (checked with a timing-safe compare; also seeds the scrypt-derived AES-256 key that encrypts secret settings at rest — see *About `MASTER_PASSWORD`* below). |
+| `MASTER_PASSWORD` |   yes    | Login password (checked with a timing-safe compare; also seeds the scrypt-derived AES-256 key that encrypts secret settings at rest — see *About `MASTER_PASSWORD`* below). Still required with `CHARON_AUTH_REQUIRED=false`, for the key. |
 | `MASTER_SALT`     |   yes    | scrypt salt. `openssl rand -hex 32`. Treat as a secret.                                                 |
 | `SESSION_SECRET`  |   yes    | HMAC key for session-token hashing: the browser cookie holds a raw random token, the DB stores only `HMAC-SHA256(SESSION_SECRET, token)` — a leaked DB copy can't be replayed into a valid cookie. Changing it logs everyone out. `openssl rand -hex 32`. |
 | `SYNC_TOKEN`      |   yes    | Bearer token gating `POST /api/sync`. `openssl rand -hex 32`.                                           |
@@ -604,6 +604,7 @@ explicit message.
 | `NODE_ENV`        |    no    | `production` enables HSTS + `Secure` cookies.                                                           |
 | `VAPID_SUBJECT`   |    no    | Web Push identity (`mailto:…`/`https:…`). Override-able in Settings. Default `mailto:admin@example.com`. |
 | `CHARON_INSTANCE` |    no    | Only if **two** Charon hubs share one VPS: names this hub's agent instance (`~/.charon-<id>`). Unset = the default instance. |
+| `CHARON_AUTH_REQUIRED` | no | Default (unset) asks for `MASTER_PASSWORD`. `false`/`0`/`no`/`off` serves the dashboard with **no login screen and no session checks** — see *Running without a password* below. Anything unrecognised keeps the password on. |
 
 ## Architecture notes
 
@@ -651,6 +652,26 @@ secrets loses them** — decryption fails closed and the UI shows them as
 unconfigured; re-enter them in Settings to recover. Rotation is manual today
 (re-enter secrets after changing the env). Still treat the DB file and
 backups as sensitive (transcripts aren't encrypted).
+
+### Running without a password
+
+`CHARON_AUTH_REQUIRED=false` removes the login screen and every session check:
+no cookie, no `/login`, no 401. It is meant for a hub whose port is *already*
+private — bound to `127.0.0.1` behind an SSH tunnel, on a VPN, or on a
+single-user machine — where a second password buys nothing.
+
+Understand what it costs before setting it. Charon holds SSH keys to every VPS
+it manages and runs arbitrary commands on them, so an open hub hands root on
+the whole fleet to anything that can open a TCP connection to it. The
+cross-origin (CSRF) guard deliberately stays on, because with no password it
+becomes the only thing stopping a random website your browser visits from
+POSTing into a hub it can reach — but it is not a substitute for the port being
+private.
+
+Two deliberate non-features: there is **no in-app setting** for it (a switch
+that disables authentication must not live behind the thing it protects), and
+the password itself is never editable from the UI — it is `MASTER_PASSWORD` in
+`.env`, nothing else. Every boot logs a warning while the hub is open.
 
 ### About the agent `.pyz` blob
 

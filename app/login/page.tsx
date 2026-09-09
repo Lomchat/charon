@@ -1,4 +1,6 @@
+import { redirect } from 'next/navigation';
 import { sanitizeNextPath } from '@/lib/nextPath';
+import { isAuthRequired } from '@/lib/server/authGate.js';
 import LoginForm from './LoginForm';
 
 export const dynamic = 'force-dynamic';
@@ -15,6 +17,11 @@ export default async function LoginPage({
 }) {
   const { next } = await searchParams;
   const safeNext = sanitizeNextPath(next);
+
+  // §12: no password on this hub — never show a form that has nothing to
+  // check. Bookmarks and stale tabs pointing at /login land on the dashboard
+  // instead of a field that would accept anything.
+  if (!isAuthRequired()) redirect(safeNext);
 
   return (
     <div className="auth-shell">
