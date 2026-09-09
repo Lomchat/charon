@@ -354,8 +354,8 @@ function CompactionMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
   return (
     <div className="compaction-marker" role="separator">
       <span className="cm-label">
-        Conversation compactée{auto ? ' automatiquement' : ''} — {kind === 'codex' ? 'Codex' : 'Claude'} ne se
-        souvient plus des messages au-dessus
+        Conversation compacted{auto ? ' automatically' : ''} — {kind === 'codex' ? 'Codex' : 'Claude'} no longer
+        remembers the messages above
       </span>
     </div>
   );
@@ -389,8 +389,8 @@ function ForkMarker({ m }: { m: Msg }) {
   return (
     <div className="fork-marker" role="separator">
       <span className="fm-label">
-        Conversation forkée{m.content ? ` depuis « ${m.content} »` : ''} — tout
-        ce qui précède est hérité
+        Conversation forked{m.content ? ` from “${m.content}”` : ''} — all
+        earlier history is inherited
       </span>
     </div>
   );

@@ -558,6 +558,10 @@ export const api = {
     send<ClaudeSettingsMap>('POST', '/api/claude/settings', data),
   testTelegram: () =>
     send<OkOrErrorResponse>('POST', '/api/claude/telegram/test'),
+  notificationSessions: () => send<import('@/lib/notificationPreferences').NotificationSession[]>('GET', '/api/claude/session-notifications'),
+  sessionNotifications: (id: string) => send<import('@/lib/notificationPreferences').SessionNotificationSettings>('GET', `/api/claude/sessions/${id}/notifications`),
+  updateSessionNotifications: (id: string, telegram: import('@/lib/notificationPreferences').ChannelNotificationPreferences | null) =>
+    send<import('@/lib/notificationPreferences').SessionNotificationSettings>('PUT', `/api/claude/sessions/${id}/notifications`, { telegram }),
   pushVapidKey: () =>
     send<PushVapidKeyResponse>('GET', '/api/claude/push/key'),
   pushSubscribe: (data: PushSubscribeBody) =>

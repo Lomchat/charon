@@ -230,3 +230,17 @@ export const IconEye = (p: Props) => (
     <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5M4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0" />
   </svg>
 );
+
+// Compact session transport controls.
+export const IconPause = (p: Props) => (
+  <svg {...base} {...p}><rect x="3" y="2" width="3.5" height="12" rx=".75" /><rect x="9.5" y="2" width="3.5" height="12" rx=".75" /></svg>
+);
+export const IconPlay = (p: Props) => (
+  <svg {...base} {...p}><path d="M4 2v12l10-6z" /></svg>
+);
+export const IconStop = (p: Props) => (
+  <svg {...base} {...p}><rect x="2.5" y="2.5" width="11" height="11" rx="1" /></svg>
+);
+export const IconRewind = (p: Props) => (
+  <svg {...base} {...p}><path d="M8 2.5v11L1 8zm7 0v11L8 8z" /></svg>
+);

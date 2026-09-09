@@ -527,7 +527,14 @@ export const claudeSettings = sqliteTable('claude_settings', {
   updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`)
 });
 
+// Absence means inherit the global Telegram settings; browser overrides stay per endpoint.
+export const sessionNotificationSettings = sqliteTable('session_notification_settings', {
+  sessionId: text('session_id').primaryKey().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  telegram: text('telegram').notNull(),
+});
+
 export const claudePushSubs = sqliteTable('claude_push_subscriptions', {
+  preferences: text('preferences'), // Browser-local choices mirrored per endpoint for background delivery.
   id: text('id').primaryKey(),
   endpoint: text('endpoint').notNull().unique(),
   p256dh: text('p256dh').notNull(),

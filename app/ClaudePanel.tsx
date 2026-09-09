@@ -1,4 +1,5 @@
 'use client';
+import { effectiveBrowserNotifications } from '@/lib/notificationPreferences';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -21,7 +22,7 @@ import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
 import { useInstallNotifications } from './useInstallNotifications';
-import { setFocus, subscribeAll } from './globalEventStream';
+import { setFocus, subscribeAll, subscribeReconnect } from './globalEventStream';
 import SessionContextMenu from './SessionContextMenu';
 import PromptModal from './PromptModal';
 import LocalAgentButton from './LocalAgentButton';
@@ -32,7 +33,8 @@ import { newestAccountUsage } from './accountUsageState';
 import { backendAvailability } from './vpsHealth';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
-import { pushCurrentEndpoint, pushSubscribe, pushUnsubscribe, pushSupported, ensureFreshServiceWorker } from './pushClient';
+import { ensureFreshServiceWorker } from './pushClient';
+import { useBrowserNotifications, saveBrowserNotifications, readBrowserNotifications } from './browserNotifications';
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
@@ -692,13 +694,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { notices: modelNotices, markSeen: markModelsSeen, hasNewModels } = useModelNotices();
   const [dataOpen, setDataOpen] = useState(false);
-  const [pushOn, setPushOn] = useState(false);
+  const browserNotifications = useBrowserNotifications();
+  const pushOn = browserNotifications.enabled;
+  const notifSoundEnabled = browserNotifications.sound;
   const [pushBusy, setPushBusy] = useState(false);
   // Telegram notifications = an INDEPENDENT channel from browser push. The
   // header toggle drives the `telegram.enabled` server setting (gated inside
   // sendPlainToTelegram→configured()); it has nothing to do with `pushOn`
-  // (this browser's Web Push subscription) or `notif.global_enabled` (the
-  // browser/push master). `tgConfigured` = token + chat_id are set.
+  // (this browser's preferences). `tgConfigured` = token + chat_id are set.
   const [tgEnabled, setTgEnabled] = useState(false);
   const [tgConfigured, setTgConfigured] = useState(false);
   const [tgBusy, setTgBusy] = useState(false);
@@ -1247,100 +1250,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, [refreshSessions]);
 
-  // ── Notification when a session takes a pending while we're elsewhere
-  // (another session, another tab, another window). Detects 0 → N
-  // transitions between 2 polls and fires a native Notification + a small sound.
-  const prevPendingRef = useRef<Map<string, number>>(new Map());
-  // First effect run after mount only seeds the baseline — it must NOT
-  // notify. Otherwise every page refresh (which resets prevPendingRef to
-  // empty) re-fires a notification for every session that already had a
-  // pending, even though the user was already notified when it happened.
-  const attentionBaselineSetRef = useRef(false);
-  useEffect(() => {
-    const prev = prevPendingRef.current;
-    const firstRun = !attentionBaselineSetRef.current;
-    const newAttentions: SessionListItem[] = [];
-    for (const s of sessions) {
-      const before = prev.get(s.id) ?? 0;
-      const now = s.pendingPermissions ?? 0;
-      if (!firstRun && now > before && s.id !== selectedId) {
-        newAttentions.push(s);
-      }
-      prev.set(s.id, now);
-    }
-    attentionBaselineSetRef.current = true;
-    if (newAttentions.length === 0) return;
-    // Title flash + native Notification if tab is hidden OR another session
-    for (const s of newAttentions) {
-      const label = s.name ?? s.cwd?.split('/').filter(Boolean).slice(-1)[0] ?? s.id.slice(0, 6);
-      const vpsName = vpsList.find((v) => v.id === s.vpsId)?.name;
-      const title = vpsName
-        ? `❓ ${vpsName} · ${label} is awaiting a response`
-        : `❓ ${label} is awaiting a response`;
-      const body = s.cwd ?? '';
-      try {
-        if (typeof window !== 'undefined' && 'Notification' in window
-            && Notification.permission === 'granted') {
-          const n = new Notification(title, { body, tag: 'claude-' + s.id });
-          n.onclick = () => {
-            window.focus();
-            openSessionById(s.id, false, { vpsId: s.vpsId, cwd: s.cwd ?? '' });
-            n.close();
-          };
-        }
-      } catch {}
-    }
-    // Always beep here (tab open). The service worker ALSO drives the
-    // sound immediately on the push event, but that depends on the SW
-    // being up-to-date and on background-audio not being throttled — so
-    // this poll-driven call is the reliable fallback. playBeep() debounces
-    // internally, so the two paths don't double-play the same notification.
-    if (notifSoundEnabled) playBeep();
-  }, [sessions, selectedId]);
-
-  // Notification permission request at mount (silent if already granted/denied)
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!('Notification' in window)) return;
-    if (Notification.permission === 'default') {
-      // Non-blocking ask at the next user click (otherwise Chrome blocks)
-      const ask = () => {
-        Notification.requestPermission().catch(() => {});
-        document.removeEventListener('click', ask);
-      };
-      document.addEventListener('click', ask, { once: true });
-    }
-  }, []);
-
-  // Local sound toggle (localStorage). MUST init to the SSR default and
-  // only read localStorage AFTER mount — otherwise the value read during
-  // hydration (if localStorage = '0') differs from the SSR'd `true`, the
-  // <button title> + icon swap produces a hydration mismatch, React 19
-  // recovers by re-rendering the entire root, the useEffect cleanups all
-  // run, and any module-level subscriptions (here: subscribeReconnect on
-  // the SSE) are torn down. End result: the SSE reconnect handler has no
-  // listeners → after `systemctl restart charon`, the chat stays frozen
-  // until F5. Don't reintroduce the localStorage-in-useState-init pattern
-  // here — see CLAUDE.md §14 gotcha 24.
-  const [notifSoundEnabled, setNotifSoundEnabled] = useState<boolean>(true);
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem('hub.claude.notif.sound');
-      if (stored === '0') setNotifSoundEnabled(false);
-    } catch {}
-  }, []);
-  function toggleNotifSound() {
-    setNotifSoundEnabled((v) => {
-      const next = !v;
-      try { localStorage.setItem('hub.claude.notif.sound', next ? '1' : '0'); } catch {}
-      return next;
-    });
+  async function toggleNotifSound() {
+    setPushBusy(true);
+    try { await saveBrowserNotifications({ ...readBrowserNotifications(), sound: !notifSoundEnabled }); }
+    catch (e) { alert('Notification settings: ' + (e instanceof Error ? e.message : String(e))); }
+    finally { setPushBusy(false); }
   }
-  // Ref mirroring the latest sound state so the service-worker message
-  // listener (registered once) reads a fresh value without re-subscribing.
-  // Used by the push-triggered in-app sound.
-  const notifSoundEnabledRef = useRef(notifSoundEnabled);
-  useEffect(() => { notifSoundEnabledRef.current = notifSoundEnabled; }, [notifSoundEnabled]);
 
   // Tab title: (N) hub claude when N sessions are waiting
   useEffect(() => {
@@ -1349,17 +1264,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     document.title = total > 0 ? `(${total}) hub claude` : 'hub claude';
   }, [sessions]);
 
-  // Initial detection of the push state + force the SW to refresh so a
-  // newly-deployed sw.js (e.g. notif-sound support) takes over without a
-  // manual DevTools unregister.
-  useEffect(() => {
-    (async () => {
-      if (!(await pushSupported())) return;
-      ensureFreshServiceWorker();
-      const ep = await pushCurrentEndpoint();
-      setPushOn(!!ep);
-    })();
-  }, []);
+  useEffect(() => { void ensureFreshServiceWorker(); }, []);
 
   // Listens for service worker messages: notification click (open-session)
   // and the push-triggered in-app sound (notif-sound). The SW fires
@@ -1378,7 +1283,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         // focused one, and a same-session click triggers no remount.
         try { window.dispatchEvent(new CustomEvent('charon:notif-open', { detail: { sessionId: sid } })); } catch {}
       } else if (e.data?.type === 'notif-sound') {
-        if (notifSoundEnabledRef.current) playBeep();
+        const prefs = effectiveBrowserNotifications(readBrowserNotifications(), e.data.sessionId);
+        if (prefs.enabled && prefs.sound && prefs.events[e.data.event as keyof typeof prefs.events]) playBeep();
       }
     };
     navigator.serviceWorker.addEventListener('message', onMsg);
@@ -1388,29 +1294,27 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   async function togglePush() {
     setPushBusy(true);
     try {
-      if (pushOn) {
-        await pushUnsubscribe();
-        setPushOn(false);
-      } else {
-        const r = await pushSubscribe();
-        if (!r.ok) alert('Push not enabled: ' + (r.reason ?? '?'));
-        setPushOn(r.ok);
-      }
+      await saveBrowserNotifications({ ...readBrowserNotifications(), enabled: !pushOn });
+    } catch (e) {
+      alert('Notification settings: ' + (e instanceof Error ? e.message : String(e)));
     } finally { setPushBusy(false); }
   }
 
-  // Load the Telegram on/off + configured state for the header toggle. Re-runs
-  // when the Settings modal closes so editing token/chat_id there refreshes the
-  // button (it doubles as the initial mount load — settingsOpen starts false).
+  // Telegram is shared: every browser refreshes on global changes and reconnect.
   useEffect(() => {
-    if (settingsOpen) return;
     let alive = true;
-    api.getClaudeSettings().then((s) => {
-      if (!alive) return;
-      setTgEnabled(s['telegram.enabled'] === 'true');
-      setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
-    }).catch(() => {});
-    return () => { alive = false; };
+    const refresh = () => {
+      api.getClaudeSettings().then((s) => {
+        if (!alive) return;
+        setTgEnabled(s['telegram.enabled'] === 'true');
+        setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
+      }).catch(() => {});
+    };
+    refresh();
+    const unsub = subscribeAll((ev) => { if (ev.type === 'settings_changed') refresh(); });
+    const reconnect = subscribeReconnect(refresh);
+    window.addEventListener('focus', refresh);
+    return () => { alive = false; unsub(); reconnect(); window.removeEventListener('focus', refresh); };
   }, [settingsOpen]);
 
   async function toggleTelegram() {
@@ -1678,6 +1582,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <button
             className={`head-btn toggle-btn ${notifSoundEnabled ? 'is-on' : 'is-off'}`}
             onClick={toggleNotifSound}
+            disabled={pushBusy}
             title={notifSoundEnabled
               ? 'In-app sound: ON — click to mute (only plays while this tab is open)'
               : 'In-app sound: OFF (muted) — click to unmute'}
@@ -1706,7 +1611,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             <IconServers />
           </button>
           <LocalAgentButton />
-          <button className="head-btn model-notice-anchor" onClick={() => setSettingsOpen(true)} title={hasNewModels ? "settings — nouveaux modèles disponibles" : "settings"} aria-label={hasNewModels ? "settings — nouveaux modèles disponibles" : "settings"} data-label="settings">
+          <button className="head-btn model-notice-anchor" onClick={() => setSettingsOpen(true)} title={hasNewModels ? "settings — new models available" : "settings"} aria-label={hasNewModels ? "settings — new models available" : "settings"} data-label="settings">
             <IconGear />
             {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
           </button>
@@ -1728,7 +1633,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         <button
           className="head-btn m-only usage-toggle model-notice-anchor"
           onClick={() => { setUsageOpen(true); setNavOpen(false); setToolsOpen(false); }}
-          title="usage & settings" aria-label={hasNewModels ? "open usage and settings — nouveaux modèles disponibles" : "open usage and settings"}
+          title="usage & settings" aria-label={hasNewModels ? "open usage and settings — new models available" : "open usage and settings"}
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />

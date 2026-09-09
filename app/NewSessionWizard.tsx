@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, sessionApi } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
@@ -872,28 +873,28 @@ export default function NewSessionWizard({
                           <CodexEffortPicker vpsId={vps.id} value={effort} onChange={setEffort} modelId={model} inheritPlaceholder="Codex default" />
                         </label>
                         <label className="wiz-adv-field">mode
-                          <select value={codexSandbox} onChange={(e) => setCodexSandbox(e.target.value as CodexSandboxMode | '')}>
+                          <PickerControl value={codexSandbox} onValueChange={(nextValue) => setCodexSandbox(nextValue as CodexSandboxMode | '')}>
                             <option value="">default — {globalDefaults?.codexMode || 'workspace-write'}</option>
                             {CODEX_SANDBOX_MODES.map((m) => (
                               <option key={m} value={m}>{m} — {CODEX_MODE_DESC[m]}</option>
                             ))}
-                          </select>
+                          </PickerControl>
                         </label>
                         <label className="wiz-adv-field">personality
-                          <select value={codexPersonality} onChange={(e) => setCodexPersonality(e.target.value as any)}>
+                          <PickerControl value={codexPersonality} onValueChange={(nextValue) => setCodexPersonality(nextValue as any)}>
                             <option value="friendly">friendly</option><option value="pragmatic">pragmatic</option><option value="none">none</option>
-                          </select>
+                          </PickerControl>
                         </label>
                         <label className="wiz-adv-field">reasoning summary
-                          <select value={codexSummary} onChange={(e) => setCodexSummary(e.target.value as any)}>
+                          <PickerControl value={codexSummary} onValueChange={(nextValue) => setCodexSummary(nextValue as any)}>
                             <option value="auto">auto</option><option value="concise">concise</option>
                             <option value="detailed">detailed</option><option value="none">none</option>
-                          </select>
+                          </PickerControl>
                         </label>
                         <label className="wiz-adv-field">service tier
-                          <select value={codexServiceTier} onChange={(e) => setCodexServiceTier(e.target.value as any)}>
+                          <PickerControl value={codexServiceTier} onValueChange={(nextValue) => setCodexServiceTier(nextValue as any)}>
                             <option value="fast">fast</option><option value="flex">flex</option>
-                          </select>
+                          </PickerControl>
                         </label>
                         <label className="wiz-adv-field">base instructions
                           <textarea value={baseInstructions} onChange={(e) => setBaseInstructions(e.target.value)} placeholder="system-level instructions for this thread" />

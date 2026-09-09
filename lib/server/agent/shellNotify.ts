@@ -1,7 +1,6 @@
 import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, shells as shellsTable, vps as vpsTable } from '@/lib/db';
-import { getSettingBool } from '@/lib/server/claude/settings';
 import { sendPushToAll } from '@/lib/server/claude/webPush';
 import { sendPlainToTelegram } from '@/lib/server/claude/telegram';
 import { emitGlobalShellStatus } from './sessionOps';
@@ -91,12 +90,6 @@ export function ensureShellIdleWatch(client: AgentClient): void {
 }
 
 function handleShellIdle(ev: Extract<AgentEvent, { event: 'shell_idle' }>): void {
-  // `shell.notify_idle` is the shell-specific master for BOTH channels. The
-  // per-channel gating below keeps browser push and Telegram INDEPENDENT
-  // (CLAUDE.md §7 / §14.42): push → notif.global_enabled; Telegram → its own
-  // telegram.enabled (checked inside sendPlainToTelegram→configured()).
-  if (!getSettingBool('shell.notify_idle')) return;
-
   const shellId = ev.shell_id;
   const [row] = db.select().from(shellsTable).where(eq(shellsTable.id, shellId)).all();
   if (!row) return; // unknown shell (not in our DB) → nothing to label/link
@@ -115,20 +108,9 @@ function handleShellIdle(ev: Extract<AgentEvent, { event: 'shell_idle' }>): void
   const title = `⌨ ${vpsName} · ${label}`;
   const body = `The shell went quiet after ${secs}s of output — finished something`;
 
-  // Web push (browser channel): gated by the browser/push master. `url` is the
-  // service-worker openWindow fallback (no sessionId — this is a shell,
-  // deep-linked via `?shell=`; ClaudePanel selects it).
-  if (getSettingBool('notif.global_enabled')) {
-    sendPushToAll({
-      title,
-      body,
-      url: `/?shell=${shellId}`,
-      tag: `shell-idle-${shellId}`,
-    }).catch(() => {});
-  }
-
-  // Telegram (independent channel): plain text, no buttons. Self-gated by
-  // telegram.enabled inside sendPlainToTelegram→configured(). The deep-link
-  // path mirrors the push `url` (`?shell=` → ClaudePanel selects the shell).
-  sendPlainToTelegram(`${title}\n${body}`, `/?shell=${shellId}`).catch(() => {});
+  sendPushToAll({
+    event: 'shell_idle', title, body,
+    url: `/?shell=${shellId}`, tag: `shell-idle-${shellId}`,
+  }).catch(() => {});
+  sendPlainToTelegram(`${title}\n${body}`, `/?shell=${shellId}`, 'shell_idle').catch(() => {});
 }

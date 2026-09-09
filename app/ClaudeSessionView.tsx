@@ -1,4 +1,6 @@
 'use client';
+import SessionSettingsModal from './SessionSettingsModal';
+import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
@@ -133,6 +135,8 @@ export default function ClaudeSessionView({
   onOpenTools,
   onOpenSession,
 }: Props) {
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const closeSessionSettings = useCallback(() => setSessionSettingsOpen(false), []);
   const stream = useAgentSessionStream(sessionId, {
     cache: sharedCacheRef,
     onKilled,
@@ -167,7 +171,7 @@ export default function ClaudeSessionView({
   const compactAllowed = canCompactSession(status);
 
   // ── Source control (§14.76) ───────────────────────────────────────────────
-  // The chip next to the cwd opens the ToolPanel on the git tab (and reveals
+  // The repository chip below context opens the ToolPanel on the git tab (and reveals
   // the drawer on narrow screens). One-shot so the user can move tabs after.
   const [requestedToolTab, setRequestedToolTab] = useState<ToolTab | null>(null);
   const clearRequestedToolTab = useCallback(() => setRequestedToolTab(null), []);
@@ -703,8 +707,10 @@ export default function ClaudeSessionView({
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <>
+      {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
       <main className="claude-main">
         <div className="claude-bar">
+          <div className="session-header-layout">
           {/* Session identity: title, cwd, then the live context gauge. The
               path is the fastest "where am I?" cue when several sessions
               share a name (or have none); context is the next thing most
@@ -723,11 +729,6 @@ export default function ClaudeSessionView({
             {selected.cwd && (
               <span className="bar-sub">
                 <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />
-                {/* Source-control state, pinned to the thing it describes: the
-                    cwd IS the repo. A bar in the message column would compete
-                    with ThinkingBar + BgTasksBar exactly during a turn, which
-                    is when the tree is dirtiest. §14.76 */}
-                <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
               </span>
             )}
             <HeaderContextGauge
@@ -737,47 +738,12 @@ export default function ClaudeSessionView({
               compactDisabled={!compactAllowed}
               compactError={compactError}
             />
+            {selected.cwd && <span className="bar-repo">
+              <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
+            </span>}
           </div>
-          {/* Account-usage gauges (5h / 7d) for this session's VPS account —
-              leftmost of the right-aligned control cluster (between the title
-              and the buttons). Hidden in-bar on mobile → shown in the right
-              drawer instead. cf. CLAUDE.md §14.58. */}
-          <UsageMeter usage={usage ?? null} vpsName={selectedVps?.name}
-                      compact onRefresh={onUsageRefresh} />
-          {status === 'sleeping' || status === 'error' ? (
-            <button onClick={() => doResume()}>resume</button>
-          ) : (
-            <button onClick={doSleep}>sleep</button>
-          )}
-          <button onClick={() => { setRewindError(null); setRewindOpen(true); }}
-            disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
-            title={status === 'sleeping' || status === 'error'
-              ? 'Resume the session before rewinding it'
-              : `Remove recent turns from ${sessionKind === 'codex' ? 'Codex' : 'Claude'} history`}>rewind</button>
-          {/* Same-provider forks are native. Cross-provider forks import a
-              portable model-visible transcript; Codex → Claude uses bounded
-              VPS handoff files because Claude exposes no injection API. */}
-          <button
-              onClick={() => { setForkError(null); setForkModalOpen(true); }}
-              disabled={!!forking || !selected.claudeSessionId}
-              title={selected.claudeSessionId
-                ? 'Branch this conversation to Claude or Codex — this one keeps running untouched'
-                : 'Nothing to fork yet — send a message first'}
-            >{forking ? 'forking…' : 'fork'}</button>
-          <button
-            className="kill"
-            onClick={forceStop}
-            disabled={!['thinking', 'active', 'starting', 'failed', 'background'].includes(status ?? '')}
-            title="Force cancel (SDK stuck) — session goes to sleeping, resume possible"
-          >force stop</button>
-          {/*
-            Model / effort badges. Compact display + popover for switching.
-            Both changes apply at the next SDK start (sleep+resume) — the
-            badge labels this with "applies on resume" when a switch is
-            pending. null values display as "inherit" so the user knows
-            they're following the global default.
-          */}
-          <ModelEffortBadges
+          <SessionRuntimePanel
+            usage={usage ?? null} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
             kind={sessionKind} vpsId={vpsId}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
@@ -786,6 +752,33 @@ export default function ClaudeSessionView({
             onSetModel={setModel} onSetEffort={setEffort}
             onApplyNow={doRestart}
           />
+
+          <div className="session-header-controls">
+            <div className="session-header-actions" role="group" aria-label="Session actions">
+              {status === 'sleeping' || status === 'error' ? (
+                <button type="button" className="session-action" onClick={() => doResume()} aria-label="Resume session" title="Resume session"><IconPlay /></button>
+              ) : (
+                <button type="button" className="session-action" onClick={doSleep} aria-label="Sleep session" title="Sleep session"><IconPause /></button>
+              )}
+              <button type="button" className="session-action session-action-stop" onClick={forceStop}
+                disabled={!['thinking', 'active', 'starting', 'failed', 'background'].includes(status ?? '')}
+                aria-label="Stop session" title="Force stop — the session can be resumed"><IconStop /></button>
+              <button type="button" className="session-action"
+                onClick={() => { setForkError(null); setForkModalOpen(true); }}
+                disabled={!!forking || !selected.claudeSessionId}
+                aria-label="Fork session" aria-busy={!!forking}
+                title={selected.claudeSessionId ? 'Fork conversation' : 'Send a message before forking'}>
+                <IconGitBranch />
+              </button>
+              <button type="button" className="session-action"
+                onClick={() => { setRewindError(null); setRewindOpen(true); }}
+                disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
+                aria-label="Rewind session" aria-busy={rewinding}
+                title={status === 'sleeping' || status === 'error' ? 'Resume the session before rewinding' : 'Rewind to an earlier turn'}><IconRewind /></button>
+              <button type="button" className="session-action session-settings-button" onClick={() => setSessionSettingsOpen(true)} aria-label="Session settings" title="Session settings"><IconGear /></button>
+            </div>
+          </div>
+          </div>
         </div>
 
         {status === 'reconnecting' && (
@@ -1613,7 +1606,7 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 /**
- * Branch chip for the session's repo, sitting next to the cwd.
+ * Repository name/link and branch chip, beneath the session context gauge.
  *
  * Shown for the whole life of a git cwd, not only when dirty: on a clean tree
  * the branch name is itself the thing worth knowing at a glance (am I on main
@@ -1641,6 +1634,7 @@ function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: (
   // forge link only makes sense when there is exactly one place to go.
   const multi = workspace.mode === 'multi' && workspace.repos.length > 1;
   const one = multi ? null : workspace.repos[0];
+  const repoName = one?.name || one?.root?.split('/').filter(Boolean).pop() || cwd.split('/').filter(Boolean).pop();
   const web = one?.remoteWebUrl;
   const host = web ? web.replace(/^https:\/\//, '').split('/')[0] : null;
 
@@ -1665,19 +1659,17 @@ function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: (
 
   return (
     <span className="git-chip-wrap">
+      {one && (web ? (
+        <a className="git-remote" href={web} target="_blank" rel="noopener noreferrer" title={`open ${repoName} on ${host}`}>
+          <span className="gr-name">{repoName}</span><IconExternal className="gr-ico" />
+        </a>
+      ) : <span className="git-repo-name" title={one.root ?? undefined}>{repoName}</span>)}
       <button type="button" className={`git-chip${multi ? ' multi' : ''}`} onClick={onOpen} title={title}>
         <span className="gc-branch">{label}</span>
         {n > 0 && <span className="gc-count">{n}</span>}
         {ahead > 0 && <span className="gc-ahead">↑{ahead}</span>}
       </button>
-      {web && (
-        // noreferrer as well as noopener: this URL comes out of a VPS's git
-        // config, so it is not ours to vouch for.
-        <a className="git-remote" href={web} target="_blank" rel="noopener noreferrer"
-           title={`open this repository on ${host}`}>
-          <IconExternal className="gr-ico" />
-        </a>
-      )}
+
     </span>
   );
 }
@@ -1739,35 +1731,15 @@ function fmtTokens(n: number): string {
   return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k';
 }
 
-/**
- * Compact header badges + click-to-edit popover for per-session
- * model + effort. Designed to be near-invisible when set to defaults
- * (a single neutral chip showing "model: inherit · effort: inherit"),
- * and to grow only when the user customizes.
- *
- * Changes are deferred ("applies on resume") because the underlying
- * Claude SDK binds model/effort at client construction. We surface that
- * via the `pending-apply` class so the badge gets a subtle accent until
- * the next sleep+resume cycle (which clears the flag via applyApiData).
- *
- * **Critical caveat we warn about in the popover** (cf. CLAUDE.md §14 #35):
- * the Anthropic-side `claude_session_id` is bound to ONE model. A session
- * created on Opus 4.7 cannot be hot-swapped to 4.8 via resume — the SDK
- * will keep replying as 4.7 even though our DB says 4.8. To actually
- * change the model on an existing session, the user forks it. A Claude target
- * uses the SDK's native transcript copy; a Codex target injects the portable
- * conversation into a fresh, durable Codex thread (§14.94).
- */
-function ModelEffortBadges({
-  kind, vpsId,
-  model, fallbackModel, effort,
-  modelPendingApply, effortPendingApply,
-  effectiveModel,
-  claudeSessionId,
+/** Direct choices use the same provider catalogs as the creation/settings forms. */
+function SessionRuntimePanel({
+  usage, vpsName, onUsageRefresh, kind, vpsId, model, fallbackModel, effort,
+  modelPendingApply, effortPendingApply, effectiveModel, claudeSessionId,
   onSetModel, onSetEffort, onApplyNow,
 }: {
-  /** Session backend — Codex sources its own per-VPS catalog, has no fallback
-   *  model, and applies changes on the next turn (no deferred badge). */
+  usage: AccountUsage | null;
+  vpsName?: string | null;
+  onUsageRefresh?: () => void;
   kind: AgentKind;
   vpsId: string;
   model: string | null;
@@ -1775,305 +1747,101 @@ function ModelEffortBadges({
   effort: string | null;
   modelPendingApply: boolean;
   effortPendingApply: boolean;
-  /** Model id Anthropic actually billed for the last AssistantMessage.
-   *  Null when no turn has happened since attach or the agent is < 0.6.0.
-   *  Displayed as a chip after the configured model when it adds info
-   *  (alias resolution, fallback kicked in, or mismatch on a session bound
-   *  to a different model). Source of truth — always trust this over what
-   *  Claude says in its text response. */
   effectiveModel: string | null;
-  /** Set if the SDK has already created an upstream session bound to a
-   *  model. When non-null and the user picks a different model, we show a
-   *  red-ish warning that the change won't actually swap the running
-   *  Anthropic session. */
   claudeSessionId: string | null;
   onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
   onSetEffort: (e: string | null) => Promise<void>;
-  /** In-place SDK restart (awaited sleep + resume) — shown as a ↻ "apply
-   *  now" button when a model/effort change is pending (§14.35). Claude only. */
   onApplyNow?: () => Promise<void> | void;
 }) {
   const isCodex = kind === 'codex';
-  const capabilities = sessionCapabilities(kind);
-  const hasFallbackModel = capabilities.fallbackModel !== 'none';
-  const [open, setOpen] = useState(false);
-  // Local edit buffers — only committed on Save so a half-typed model
-  // doesn't fire an RPC per keystroke (the SDK would log an error per
-  // unrecognized intermediate string). Resets on open from current state.
-  const [draftModel, setDraftModel] = useState(model ?? '');
-  const [draftFallback, setDraftFallback] = useState(fallbackModel ?? '');
-  const [draftEffort, setDraftEffort] = useState<string>(effort ?? '');
+  const [open, setOpen] = useState<'model' | 'effort' | null>(null);
   const [saving, setSaving] = useState(false);
-  // "apply now" (↻) in flight — the restart takes a few seconds (SDK
-  // teardown drains the in-flight turn, then the fresh client boots).
-  const [applying, setApplying] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setDraftModel(model ?? '');
-      setDraftFallback(fallbackModel ?? '');
-      setDraftEffort(effort ?? '');
-    }
-  }, [open, model, fallbackModel, effort]);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const modelButton = useRef<HTMLButtonElement>(null);
+  const effortButton = useRef<HTMLButtonElement>(null);
 
-  // Close on Escape + click outside.
-  const popRef = useRef<HTMLDivElement | null>(null);
+  function close() {
+    (open === 'model' ? modelButton : effortButton).current?.focus({ preventScroll: true });
+    setOpen(null);
+  }
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        (open === 'model' ? modelButton : effortButton).current?.focus({ preventScroll: true });
+        setOpen(null);
+      }
+    };
     const onClick = (e: MouseEvent) => {
-      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(false);
+      if (popRef.current && !popRef.current.contains(e.target as Node)) setOpen(null);
     };
     window.addEventListener('keydown', onKey);
-    // Fire on next tick so the click that opened the popover doesn't
-    // immediately close it.
-    const t = setTimeout(() => document.addEventListener('mousedown', onClick), 0);
+    document.addEventListener('mousedown', onClick);
     return () => {
       window.removeEventListener('keydown', onKey);
-      clearTimeout(t);
       document.removeEventListener('mousedown', onClick);
     };
   }, [open]);
 
-  async function save() {
+  async function choose(value: string) {
+    if (saving) return;
     setSaving(true);
+    setSaveError(null);
     try {
-      // Always submit BOTH to keep them in sync — even when only one
-      // changed. Server-side dedup in setModel skips the RPC if nothing
-      // moved, so this is free.
-      const nextModel = draftModel.trim() || null;
-      // Codex has no fallback model — always submit null so it can't leak in.
-      const nextFallback = hasFallbackModel ? (draftFallback.trim() || null) : null;
-      const nextEffort = draftEffort === '' ? null : draftEffort;
-      if (nextModel !== (model ?? null) || nextFallback !== (fallbackModel ?? null)) {
-        await onSetModel(nextModel, nextFallback);
+      if (open === 'model' && (value || null) !== model) {
+        // Preserve the independently configured fallback when changing Claude's model.
+        await onSetModel(value || null, isCodex ? null : fallbackModel);
+      } else if (open === 'effort' && (value || null) !== effort) {
+        await onSetEffort(value || null);
       }
-      if (nextEffort !== (effort ?? null)) {
-        await onSetEffort(nextEffort);
-      }
-      setOpen(false);
+      close();
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Could not save this selection.');
     } finally { setSaving(false); }
   }
 
-  // Compact display: "model · effort" with subtle hint when on defaults.
-  // When effectiveModel is known AND adds info (= isn't already exactly what
-  // the configured model says — accounts for alias resolution, fallback
-  // kicked in, OR mismatch from the claude_session_id binding caveat), we
-  // append a small "→ <effective>" chip in a contrasting color. This is
-  // explicitly to counter the unreliable LLM self-id: the user can SEE the
-  // model the API confirmed, no need to ask Claude.
-  const modelLabel = model ?? 'inherit';
-  const effortLabel = effort ?? 'inherit';
-  const showEffective = !!effectiveModel && effectiveModel !== model;
-  // Mismatch is genuinely interesting (= configured differs from what
-  // Anthropic billed). Could mean: alias resolved (opus → opus-4-8) which
-  // is benign; or session bound to old model so configured swap was ignored
-  // — that's the gotcha §35 footgun and worth a stronger color. Claude-only
-  // (the binding caveat is Anthropic-side; Codex has no such trap).
-  const mismatch = hasFallbackModel && !!model && !!effectiveModel && effectiveModel !== model
-    && !(['opus', 'sonnet', 'haiku'].includes(model)); // aliases legitimately resolve to a different id
-  // Codex applies model/effort/mode on the NEXT TURN (the *_changed events
-  // carry applied_at_next_start=false) → never show the deferred ⏳ / ↻ badge.
+  const modelLabel = (model ?? effectiveModel ?? 'Default').replace(/^claude-/, '');
+  const mismatch = !isCodex && !!model && !!effectiveModel && effectiveModel !== model
+    && !['opus', 'sonnet', 'haiku'].includes(model);
   const anyPending = !isCodex && (modelPendingApply || effortPendingApply);
-  const titleParts: string[] = [];
-  titleParts.push(`configured model: ${model ?? '(global default)'}`);
-  if (hasFallbackModel && fallbackModel) titleParts.push(`fallback: ${fallbackModel}`);
-  if (effectiveModel) titleParts.push(`effective (API-confirmed): ${effectiveModel}`);
-  titleParts.push(`effort: ${effort ?? '(global default)'}`);
-  if (mismatch) titleParts.push(
-    '⚠ effective model differs from configured — likely bound to original model_id on Anthropic side'
-  );
-  if (anyPending) titleParts.push('change pending — applies at next sleep+resume');
-  const title = `${isCodex ? 'Codex' : 'Claude'} session\n${titleParts.join('\n')}`;
+  const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
+  const pickerProps = { presentation: 'list' as const, disabled: saving, onChange: choose };
+  const toggle = (target: 'model' | 'effort') => {
+    setSaveError(null);
+    setOpen((current) => current === target ? null : target);
+  };
 
   return (
-    <span className="me-badges" style={{ position: 'relative', marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
-      <button
-        type="button"
-        className="me-badge-main"
-        onClick={() => setOpen((v) => !v)}
-        title={title}
-        style={{
-          background: 'transparent',
-          border: `1px solid ${
-            mismatch ? 'var(--crimson, #c94a4a)'
-            : anyPending ? 'var(--gold, #b8964b)'
-            : 'rgba(255,255,255,0.15)'
-          }`,
-          padding: '2px 8px',
-          borderRadius: 4,
-          fontSize: 11,
-          fontFamily: 'var(--mono)',
-          color: mismatch ? 'var(--crimson, #c94a4a)' : anyPending ? 'var(--gold, #b8964b)' : 'inherit',
-          cursor: 'pointer',
-          opacity: model || effort ? 1 : 0.6,
-          minWidth: 0,
-          maxWidth: '100%',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 5,
-        }}
-      >
-        <AgentLogo kind={kind} size={13} />
-        {modelLabel} · {effortLabel}
-        {showEffective && (
-          // Effective chip: small, dimmer when it's just an alias resolution,
-          // crimson when it's a genuine mismatch (likely the binding caveat).
-          <span
-            style={{
-              marginLeft: 6,
-              opacity: mismatch ? 1 : 0.7,
-              color: mismatch ? 'var(--crimson, #c94a4a)' : 'inherit',
-            }}
-          >
-            → {effectiveModel}
-          </span>
-        )}
-        {anyPending && <span style={{ marginLeft: 6 }}>⏳</span>}
-      </button>
-      {/* "Apply now": in-place SDK restart (sleep + resume) so the pending
-          model/effort takes effect immediately instead of at the next manual
-          cycle. Only rendered while something is actually pending. */}
-      {anyPending && onApplyNow && (
-        <button
-          type="button"
-          disabled={applying}
-          onClick={async () => {
-            if (applying) return;
-            setApplying(true);
-            try { await onApplyNow(); } finally { setApplying(false); }
-          }}
-          title="apply now — restarts the SDK session (sleep + resume, a few seconds)"
-          aria-label="apply pending model/effort now"
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--gold, #b8964b)',
-            color: 'var(--gold, #b8964b)',
-            padding: '2px 7px',
-            borderRadius: 4,
-            fontSize: 12,
-            lineHeight: '15px',
-            cursor: applying ? 'wait' : 'pointer',
-            flexShrink: 0,
-            animation: applying ? 'cpulse 1.2s infinite ease-in-out' : undefined,
-          }}
-        >
-          ↻
+    <div className="session-runtime-panel" role="group" aria-label="Model, effort and usage">
+      <div className="runtime-config" ref={popRef}>
+        <button ref={modelButton} type="button" className={`runtime-cell runtime-model${mismatch ? ' has-mismatch' : ''}${anyPending ? ' has-pending' : ''}`}
+          onClick={() => toggle('model')} disabled={saving} title={title} aria-label="Change model" aria-haspopup="menu" aria-expanded={open === 'model'}>
+          <span className="runtime-value"><AgentLogo kind={kind} size={15} /><span>{modelLabel}</span>{anyPending && <span className="runtime-pending" aria-label="Pending change">•</span>}</span>
+          {!!model && !!effectiveModel && effectiveModel !== model && <span className="runtime-effective">→ {effectiveModel}</span>}
         </button>
-      )}
-      {open && (
-        <div
-          ref={popRef}
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 4px)',
-            right: 0,
-            background: 'var(--stone, #1f1f1f)',
-            border: '1px solid rgba(255,255,255,0.18)',
-            borderRadius: 6,
-            padding: 12,
-            minWidth: 320,
-            // Phones: never wider than the viewport (the popover is
-            // right-anchored inside the header bar).
-            maxWidth: 'calc(100vw - 24px)',
-            zIndex: 50,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            fontSize: 12,
-            boxShadow: '0 6px 24px rgba(0,0,0,0.4)',
-          }}
-        >
-          <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}>
-            <AgentLogo kind={kind} size={13} />
-            {isCodex
-              ? 'Per-session Codex config — applies on the next turn.'
-              : 'Per-session Claude config — applies at next sleep + resume.'}
-          </div>
-          {!isCodex && claudeSessionId && (draftModel !== (model ?? '')) && (
-            <div
-              style={{
-                fontSize: 10.5,
-                color: 'var(--crimson, #c94a4a)',
-                border: '1px solid rgba(201, 74, 74, 0.5)',
-                background: 'rgba(201, 74, 74, 0.08)',
-                padding: 6,
-                borderRadius: 3,
-                lineHeight: 1.35,
-              }}
-            >
-              ⚠ This session is bound to its original model on Anthropic's
-              side (claude_session_id = <code style={{ fontSize: 9.5 }}>{claudeSessionId.slice(0, 8)}…</code>).
-              A simple resume with a new model will keep the original model.
-              <br />
-              To actually swap, fork this conversation and choose the agent
-              that should continue it.
-            </div>
-          )}
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <span style={{ fontFamily: 'var(--mono)' }}>model</span>
-            {isCodex ? (
-              <CodexModelPicker
-                vpsId={vpsId}
-                value={draftModel}
-                onChange={setDraftModel}
-                inheritPlaceholder="Codex default"
-                className="model-picker-popover"
-              />
-            ) : (
-              <ModelPicker
-                value={draftModel}
-                onChange={setDraftModel}
-                inheritPlaceholder="global default"
-                className="model-picker-popover"
-              />
-            )}
-          </label>
-          {/* Codex has no fallback-model concept — hide the control entirely. */}
-          {hasFallbackModel && (
-            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <span style={{ fontFamily: 'var(--mono)' }}>fallback model</span>
-              <ModelPicker
-                value={draftFallback}
-                onChange={setDraftFallback}
-                inheritPlaceholder="none"
-                className="model-picker-popover"
-              />
-            </label>
-          )}
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <span style={{ fontFamily: 'var(--mono)' }}>effort</span>
-            {/* Options derived from the model being set (draft, else current)
-               via the live catalog. See EffortPicker / CodexEffortPicker. */}
-            {isCodex ? (
-              <CodexEffortPicker
-                vpsId={vpsId}
-                value={draftEffort}
-                onChange={setDraftEffort}
-                modelId={draftModel || model || ''}
-                inheritPlaceholder="Codex default"
-                className="model-picker-popover"
-              />
-            ) : (
-              <EffortPicker
-                value={draftEffort}
-                onChange={setDraftEffort}
-                modelId={draftModel || model || ''}
-                inheritPlaceholder="global default"
-                className="model-picker-popover"
-              />
-            )}
-          </label>
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 4 }}>
-            <button type="button" onClick={() => setOpen(false)} disabled={saving}>cancel</button>
-            <button type="button" className="primary" onClick={save} disabled={saving}>
-              {saving ? '…' : 'apply'}
-            </button>
-          </div>
-        </div>
-      )}
-    </span>
+        <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
+          onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
+          <span className="runtime-value"><span className="runtime-effort-symbol" aria-hidden="true">✦</span><span>{effort ?? 'Default'}</span></span>
+        </button>
+        {open && <div className="runtime-choice-popover" aria-busy={saving}>
+          {open === 'model' ? (isCodex
+            ? <CodexModelPicker {...pickerProps} vpsId={vpsId} value={model ?? ''} />
+            : <ModelPicker {...pickerProps} value={model ?? ''} />)
+            : (isCodex
+              ? <CodexEffortPicker {...pickerProps} vpsId={vpsId} value={effort ?? ''} modelId={model || effectiveModel || ''} />
+              : <EffortPicker {...pickerProps} value={effort ?? ''} modelId={model || effectiveModel || ''} />)}
+          {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
+          {!isCodex && open === 'model' && claudeSessionId && <p className="runtime-choice-note">An existing Claude conversation may keep its original model. Use Fork to switch models while preserving history.</p>}
+          {anyPending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
+            setSaving(true); setSaveError(null);
+            try { await onApplyNow(); close(); }
+            catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not apply the change.'); }
+            finally { setSaving(false); }
+          }}>↻ Apply pending changes</button>}
+        </div>}
+      </div>
+      <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} />
+    </div>
   );
 }

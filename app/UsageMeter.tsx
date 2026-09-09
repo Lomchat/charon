@@ -142,10 +142,12 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
   );
 }
 
-export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }: {
+export default function UsageMeter({ usage, vpsName, compact = true, runtime = false, onRefresh }: {
   usage: AccountUsage | null;
   vpsName?: string | null;
   compact?: boolean;
+  /** Three-cell session header; keeps an explicit placeholder when usage is absent. */
+  runtime?: boolean;
   onRefresh?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -156,8 +158,10 @@ export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
 
   // ── Panel form (mobile drawer): full detail, no popover ──
@@ -167,17 +171,14 @@ export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }
   }
 
   // ── Compact form (header chip) ──
-  if (!usage || !usage.ok) {
-    // Nothing to show inline; keep the header clean. (The drawer shows the
-    // "unavailable" reason.)
-    if (!usage) return null;
-  }
-  // Two headline windows for the chip: prefer the two most-constrained limits.
-  const fh = usage.fiveHour?.utilization ?? null;
-  const sd = usage.sevenDay?.utilization ?? null;
+  // The runtime panel keeps its third cell even before a first reading.
+  if (!usage && !runtime) return null;
+  // Show both headline windows and every reported model-specific weekly cap.
+  const fh = usage?.fiveHour?.utilization ?? null;
+  const sd = usage?.sevenDay?.utilization ?? null;
   // Worst severity across all limits → chip accent.
   let worst = 'ok';
-  for (const l of usage.limits ?? []) {
+  for (const l of usage?.limits ?? []) {
     const c = sevClass(l.severity, l.percent);
     if (c === 'crit') { worst = 'crit'; break; }
     if (c === 'warn') worst = 'warn';
@@ -187,7 +188,7 @@ export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }
   // extra chip cells beside 5h / 7d, colored by their own severity so a
   // near-limit model (Fable 97%) pops. The endpoint only returns the relevant
   // scoped limits, so a truthy scopeModel is enough — no extra filtering.
-  const scoped = (usage.limits ?? []).filter((l) => l.scopeModel);
+  const scoped = (usage?.limits ?? []).filter((l) => l.scopeModel);
   const cells: Array<{ k: string; pct: number | null; sev?: string }> = [
     { k: '5h', pct: fh },
     { k: '7d', pct: sd },
@@ -195,7 +196,12 @@ export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }
   ];
 
   return (
-    <div className="usage-meter" ref={ref}>
+    <div className={`usage-meter${runtime ? ' runtime-usage' : ''}`} ref={ref}>
+      {runtime ? <button type="button" className={`runtime-cell runtime-usage-button um-${worst}`} onClick={() => setOpen((o) => !o)} title="Account usage" aria-label="Show account usage" aria-expanded={open}>
+        {usage?.ok ? <span className="runtime-usage-gauges">{cells.map((c) => <span className="runtime-usage-row" key={c.k}>
+          <span title={c.k}>{c.k}</span><span className="runtime-usage-track" aria-hidden="true"><span className={`um-fill um-${sevClass(c.sev, c.pct)}`} style={{ width: `${Math.min(100, Math.max(0, c.pct ?? 0))}%` }} /></span><b>{fmtPct(c.pct)}</b>
+        </span>)}</span> : <span className="runtime-usage-empty">Unavailable</span>}
+      </button> : (
       <button className={`usage-chip um-${worst}`} onClick={() => setOpen((o) => !o)}
               title="Account usage" aria-expanded={open}>
         {cells.map((c, i) => (
@@ -207,10 +213,10 @@ export default function UsageMeter({ usage, vpsName, compact = true, onRefresh }
             </span>
           </Fragment>
         ))}
-      </button>
+      </button>)}
       {open ? (
-        <div className="usage-pop">
-          <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} />
+        <div className="usage-pop" role="dialog" aria-label="Account usage">
+          {usage ? <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} /> : <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>}
         </div>
       ) : null}
     </div>

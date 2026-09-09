@@ -274,6 +274,20 @@
       "when": 1788437858906,
       "tag": "0038_charming_odin",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1788946827733,
+      "tag": "0039_medical_bedlam",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1788954777613,
+      "tag": "0040_mighty_trauma",
+      "breakpoints": true
     }
   ]
 }

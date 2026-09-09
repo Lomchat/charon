@@ -241,6 +241,7 @@ export type SyntheticEvent =
   // LOW_VOLUME: tabs are shared across devices, so every connection needs it
   // regardless of which session it is focused on. §14.78.
   | { type: 'tabs_changed' }
+  | { type: 'settings_changed' }
   // Account usage gauges fanned onto the global bus (sessionId = vpsId). Polled
   // from the agent's get_usage RPC by usagePoll.ts (60s + after each stop);
   // LOW_VOLUME → every tab. The header widget shows the CURRENT session's VPS

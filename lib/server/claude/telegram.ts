@@ -1,5 +1,7 @@
 import 'server-only';
-import { getSetting, getSettingBool } from './settings';
+import { telegramNotificationEnabled, telegramHasEnabledChannel } from './sessionNotifications';
+import type { NotificationEvent } from '@/lib/notificationPreferences';
+import { getSetting } from './settings';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { db, claudeSessions, vps as vpsTable } from '@/lib/db';
 import { eq } from 'drizzle-orm';
@@ -55,7 +57,7 @@ const state = g._tgState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function configured(): { token: string; chatId: string } | null {
-  if (!getSettingBool('telegram.enabled')) return null;
+  if (!telegramHasEnabledChannel()) return null;
   const token = (getSetting('telegram.bot_token') ?? '').trim();
   const chatId = (getSetting('telegram.chat_id') ?? '').trim();
   if (!token || !chatId) return null;
@@ -148,6 +150,7 @@ function sessionLabel(sessionId: string): string {
 export async function sendPermissionToTelegram(
   sessionId: string, permId: string, tool: string, input: any
 ): Promise<void> {
+  if (!telegramNotificationEnabled('permission', sessionId)) return;
   const cfg = configured();
   if (!cfg) return;
   const name = sessionLabel(sessionId);
@@ -189,6 +192,7 @@ export async function sendQuestionToTelegram(
   sessionId: string, qid: string,
   questions: Array<{ question: string; header?: string; multiSelect?: boolean; options: { label: string; description?: string }[] }>
 ): Promise<void> {
+  if (!telegramNotificationEnabled('question', sessionId)) return;
   const cfg = configured();
   if (!cfg) return;
   await sendOneQuestionStep(sessionId, qid, questions, {}, 0);
@@ -200,6 +204,7 @@ async function sendOneQuestionStep(
   answersSoFar: Record<string, string>,
   qIdx: number,
 ): Promise<void> {
+  if (!telegramNotificationEnabled('question', sessionId)) return;
   const cfg = configured();
   if (!cfg) return;
   const q = questions[qIdx];
@@ -430,7 +435,9 @@ export function markInteractionResolvedInTelegram(_kind: 'permission' | 'questio
 // into an absolute deep-link via `app.public_url` and appended on its own
 // line; Telegram auto-links the raw URL (plain text, no parse_mode). No link
 // when `app.public_url` is unset.
-export async function sendPlainToTelegram(text: string, linkPath?: string): Promise<void> {
+export async function sendPlainToTelegram(text: string, linkPath: string | undefined, event: NotificationEvent): Promise<void> {
+  const sessionId = linkPath?.match(/^\/\?session=([a-zA-Z0-9_-]+)$/)?.[1];
+  if (!telegramNotificationEnabled(event, sessionId)) return;
   const cfg = configured();
   if (!cfg) return;
   const link = linkPath ? deepLink(linkPath) : null;

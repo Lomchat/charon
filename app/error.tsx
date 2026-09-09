@@ -32,12 +32,12 @@ export default function AppError({
     >
       <div style={{ textAlign: 'center', padding: 24, maxWidth: 420 }}>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>
-          {chunk ? 'Mise à jour en cours…' : 'Une erreur est survenue'}
+          {chunk ? 'Updating…' : 'Something went wrong'}
         </div>
         <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 20, lineHeight: 1.5 }}>
           {chunk
-            ? 'Une nouvelle version a été déployée. La page se recharge automatiquement.'
-            : "Cette vue a rencontré une erreur. Réessayer devrait la résoudre."}
+            ? 'A new version has been deployed. This page will reload automatically.'
+            : "This view encountered an error. Try again to recover."}
         </div>
         <button
           onClick={() => (chunk ? window.location.reload() : reset())}
@@ -52,7 +52,7 @@ export default function AppError({
             cursor: 'pointer',
           }}
         >
-          {chunk ? 'Recharger' : 'Réessayer'}
+          {chunk ? 'Reload' : 'Try again'}
         </button>
       </div>
     </div>

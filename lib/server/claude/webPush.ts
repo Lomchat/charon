@@ -1,5 +1,6 @@
 import 'server-only';
 import webpush from 'web-push';
+import { parseBrowserNotifications, effectiveBrowserNotifications, type NotificationEvent } from '@/lib/notificationPreferences';
 import { db, claudePushSubs } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 import { getSetting, setSetting } from './settings';
@@ -34,6 +35,7 @@ export function getVapidPublic(): string | null {
 }
 
 export async function sendPushToAll(payload: {
+  event: NotificationEvent;
   title: string;
   body: string;
   url?: string;
@@ -43,13 +45,16 @@ export async function sendPushToAll(payload: {
   const k = ensureVapid();
   if (!k) return;
   const subs = db.select().from(claudePushSubs).all();
-  const body = JSON.stringify(payload);
+
   // Parallel + per-send 10s cap (P2.6): one hung push service must not
   // serialize/stall the whole notification fan-out (this runs inline in
   // event handlers). Sub count is tiny (one row per browser), so plain
   // allSettled is bounded enough — no need for a concurrency pool.
   const SEND_TIMEOUT_MS = 10_000;
   await Promise.allSettled(subs.map(async (s) => {
+    const preferences = effectiveBrowserNotifications(parseBrowserNotifications(s.preferences), payload.sessionId);
+    if (!preferences.enabled || !preferences.events[payload.event]) return;
+    const body = JSON.stringify({ ...payload, silent: !preferences.sound });
     const sub = {
       endpoint: s.endpoint,
       keys: { p256dh: s.p256dh, auth: s.authKey },

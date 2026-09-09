@@ -318,17 +318,15 @@ async function tick(): Promise<void> {
         .filter((v) => manualAxes.some((a) => a.outdated(v)))
         .map((v) => ({ name: v.name, reason: reason(v, manualAxes) }));
       const targets = manualAxes.map(targetOf);
-      // Telegram self-gates on telegram.enabled (§7 — never wrap it).
-      sendPlainToTelegram(formatUpdateAnnouncement({ targets, behind }), '/').catch(() => {});
-      // webPush does NOT self-gate → gate at the call-site (shellNotify model).
-      if (getSettingBool('notif.global_enabled')) {
-        sendPushToAll({
-          title: `${targets.join(' + ')} available`,
-          body: `${behind.length} VPS behind: ${behind.map((b) => b.name).join(', ')}`,
-          url: '/',
-          tag: 'sdk-latest',
-        }).catch(() => {});
-      }
+      // Each channel applies its own event preferences.
+      sendPlainToTelegram(formatUpdateAnnouncement({ targets, behind }), '/', 'updates').catch(() => {});
+      sendPushToAll({
+        event: 'updates',
+        title: `${targets.join(' + ')} available`,
+        body: `${behind.length} VPS behind: ${behind.map((b) => b.name).join(', ')}`,
+        url: '/',
+        tag: 'sdk-latest',
+      }).catch(() => {});
     }
     for (const a of newAxes) setSetting(a.notifiedKey, a.latest!);
 
@@ -438,7 +436,10 @@ async function tick(): Promise<void> {
       const text = formatUpdateSummary({
         targets: rolling.map(targetOf), updated, failed, busy: skippedBusy,
       });
-      if (text) sendPlainToTelegram(text, '/').catch(() => {});
+      if (text) {
+        sendPlainToTelegram(text, '/', 'updates').catch(() => {});
+        sendPushToAll({ event: 'updates', title: 'Agent / SDK update results', body: text, url: '/', tag: 'sdk-update-result' }).catch(() => {});
+      }
     }
   } catch (e) {
     console.error('[sdkWatch] tick failed', e);

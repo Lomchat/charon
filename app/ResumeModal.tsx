@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, ClaudeSession } from '@/lib/db/schema';
@@ -182,11 +183,11 @@ export default function ResumeModal({
         <h2>resumable sessions</h2>
 
         <label>VPS
-          <select value={vpsId} onChange={(e) => setVpsId(e.target.value)}>
+          <PickerControl value={vpsId} onValueChange={(nextValue) => setVpsId(nextValue)}>
             {vpsList.map((v) => (
               <option key={v.id} value={v.id}>{v.name}</option>
             ))}
-          </select>
+          </PickerControl>
         </label>
 
         <div className="resume-tabs" role="tablist">

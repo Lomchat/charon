@@ -1,6 +1,12 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
+import { NOTIFICATION_EVENTS, normalizeChannelNotifications, type NotificationSession } from '@/lib/notificationPreferences';
+import { NotificationTable } from './NotificationSettings';
+import NotificationExceptions from './NotificationExceptions';
+import SessionSettingsModal from './SessionSettingsModal';
+import { useBrowserNotifications, saveBrowserNotifications } from './browserNotifications';
 import type { Vps } from '@/lib/db/schema';
 import ModelPicker from './ModelPicker';
 import ModelReleaseNotice from './ModelReleaseNotice';
@@ -58,7 +64,18 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 export default function SettingsModal({ onClose, vpsList, modelNotices, onModelsSeen }: Props) {
+  const [sessionSettings, setSessionSettings] = useState<NotificationSession | null>(null);
+  const browserNotifications = useBrowserNotifications();
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
+  async function updateBrowser(value: typeof browserNotifications) {
+    setBrowserBusy(true); setBrowserError(null);
+    try { await saveBrowserNotifications(value); }
+    catch (e) { setBrowserError(e instanceof Error ? e.message : String(e)); }
+    finally { setBrowserBusy(false); }
+  }
   const [s, setS] = useState<Record<string, string> | null>(null);
+  const [dirty, setDirty] = useState<Record<string, string>>({});
   const [cat, setCat] = useState<Cat>('general');
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -79,10 +96,10 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
   }, [vpsList]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !sessionSettings) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, sessionSettings]);
 
   useEffect(() => {
     api.getClaudeSettings().then((r) => setS(r)).catch(() => setS({}));
@@ -90,13 +107,14 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
 
   function set(k: string, v: string) {
     setS((prev) => ({ ...(prev ?? {}), [k]: v }));
+    setDirty((prev) => ({ ...prev, [k]: v }));
   }
 
   async function save() {
     if (!s) return;
     setBusy(true);
     try {
-      const resp: any = await api.updateClaudeSettings(s);
+      const resp: any = await api.updateClaudeSettings(dirty);
       const rejected: string[] | undefined = resp?.rejected;
       delete resp?.rejected;
       if (rejected?.includes('claude.api_key')) {
@@ -118,7 +136,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const saved: any = await api.updateClaudeSettings(s); // persist the key first
+      const saved: any = await api.updateClaudeSettings(dirty); // persist the key first
       if (saved?.rejected?.includes('claude.api_key')) {
         setSyncMsg({ ok: false, msg: 'key rejected — it must start with "sk-ant-". A browser autofill likely replaced it with your login password; retype the real Anthropic key.' });
         return;
@@ -141,7 +159,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
     setTesting(true);
     setTestResult(null);
     try {
-      await api.updateClaudeSettings(s); // persist first, then test
+      await api.updateClaudeSettings(dirty); // persist first, then test
       await api.testTelegram();
       setTestResult({ ok: true, msg: 'test message sent ✓ — check Telegram' });
     } catch (e: any) {
@@ -158,9 +176,10 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
   };
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal settings-modal">
-        <button className="modal-close" onClick={onClose}>✕</button>
+    <>
+    <div style={sessionSettings ? { display: 'none' } : undefined} className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="claude-modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+        <button className="modal-close" onClick={onClose} aria-label="Close settings" title="Close settings">✕</button>
         <h2>settings</h2>
         {s == null && <div className="empty">loading…</div>}
         {s && (
@@ -177,7 +196,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                     {navIcon(c.id)}
                     <span>{c.label}</span>
                     {(c.id === 'claude' || c.id === 'codex') && modelNotices[c.id].length > 0 && (
-                      <span className="model-notice-badge" aria-label="nouveaux modèles disponibles">nouveau</span>
+                      <span className="model-notice-badge" aria-label="new models available">new</span>
                     )}
                   </button>
                 ))}
@@ -191,9 +210,6 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                     </label>
                     <label>public URL of this hub (deep links in Telegram / push)
                       <input value={s['app.public_url'] ?? ''} onChange={(e) => set('app.public_url', e.target.value)} placeholder="https://charon.example.com" type="url" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
-                    </label>
-                    <label>VAPID subject (mailto for push)
-                      <input value={s['vapid.subject'] ?? ''} onChange={(e) => set('vapid.subject', e.target.value)} placeholder="mailto:you@example.com" />
                     </label>
                   </>
                 )}
@@ -226,14 +242,14 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                       />
                     </label>
                     <label>default mode
-                      <select
+                      <PickerControl
                         value={s['claude.default_permission_mode'] ?? 'normal'}
-                        onChange={(e) => set('claude.default_permission_mode', e.target.value)}
+                        onValueChange={(nextValue) => set('claude.default_permission_mode', nextValue)}
                       >
                         {CLAUDE_PERMISSION_MODES.map((mode) => (
                           <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
                         ))}
-                      </select>
+                      </PickerControl>
                     </label>
 
                     <div className="settings-sub">model catalog</div>
@@ -321,14 +337,14 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                       </>
                     )}
                     <label>default mode
-                      <select
+                      <PickerControl
                         value={s['codex.default_permission_mode'] ?? 'workspace-write'}
-                        onChange={(e) => set('codex.default_permission_mode', e.target.value)}
+                        onValueChange={(nextValue) => set('codex.default_permission_mode', nextValue)}
                       >
                         {CODEX_SANDBOX_MODES.map((mode) => (
                           <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
                         ))}
-                      </select>
+                      </PickerControl>
                     </label>
                     <div className="switch-row">
                       <span>automatic approval reviewer</span>
@@ -347,53 +363,39 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
                 )}
 
                 {cat === 'notifications' && (
-                  <>
-                    <div className="switch-row">
-                      <span>browser push notifications</span>
-                      <Toggle
-                        checked={(s['notif.global_enabled'] ?? 'true') === 'true'}
-                        onChange={(v) => set('notif.global_enabled', v ? 'true' : 'false')}
-                        label="browser push notifications"
-                      />
-                    </div>
-                    <div className="switch-row">
-                      <span>notify when a shell goes idle</span>
-                      <Toggle
-                        checked={(s['shell.notify_idle'] ?? 'true') === 'true'}
-                        onChange={(v) => set('shell.notify_idle', v ? 'true' : 'false')}
-                        label="notify when a shell goes idle"
-                      />
-                    </div>
-
-                    <div className="settings-sub">telegram</div>
-                    <p className="set-hint">
-                      respond to permissions and questions from Telegram (inline
-                      buttons + free text). Bot via <code>@BotFather</code>, chat_id
-                      via <code>@userinfobot</code>.
-                    </p>
-                    <div className="switch-row">
-                      <span>enable</span>
-                      <Toggle
-                        checked={s['telegram.enabled'] === 'true'}
-                        onChange={(v) => set('telegram.enabled', v ? 'true' : 'false')}
-                        label="enable Telegram"
-                      />
-                    </div>
-                    <label>bot token
-                      <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
-                    </label>
-                    <label>chat_id
-                      <input value={s['telegram.chat_id'] ?? ''} onChange={(e) => set('telegram.chat_id', e.target.value)} placeholder="123456789" inputMode="numeric" />
-                    </label>
-                    <div className="tg-test-row">
-                      <button type="button" onClick={testTelegram} disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>
-                        {testing ? 'sending…' : 'test connection'}
-                      </button>
-                      {testResult && (
-                        <span className={`tg-result ${testResult.ok ? 'ok' : 'err'}`}>{testResult.msg}</span>
-                      )}
-                    </div>
-                  </>
+                  <div className="notification-settings">
+                    <h3 className="notification-page-title">Notifications</h3>
+                    <p className="notification-intro">Choose which events you receive on each channel.</p>
+                    <NotificationTable
+                      browser={{ value: browserNotifications, busy: browserBusy,
+                        onChange: (value) => void updateBrowser({ ...browserNotifications, ...value }) }}
+                      telegram={{ value: normalizeChannelNotifications({ enabled: s['telegram.enabled'] === 'true', events: Object.fromEntries(NOTIFICATION_EVENTS.map(({ id }) => [id, (s[`telegram.notify.${id}`] ?? 'true') === 'true'])) }),
+                        onChange: (value) => {
+                          if (value.enabled !== (s['telegram.enabled'] === 'true')) set('telegram.enabled', String(value.enabled));
+                          for (const { id } of NOTIFICATION_EVENTS) {
+                            if (value.events[id] !== ((s[`telegram.notify.${id}`] ?? 'true') === 'true')) set(`telegram.notify.${id}`, String(value.events[id]));
+                          }
+                        } }} />
+                    <p className="notification-note">Browser changes are saved automatically. Click Save to apply Telegram settings.</p>
+                    {browserError && <p className="notification-error" role="alert">{browserError}</p>}
+                      <details className="notification-connection">
+                        <summary>Telegram connection <span aria-hidden="true">›</span></summary>
+                        <p className="set-hint">Reply to permission requests and questions from Telegram. Create a bot with <code>@BotFather</code>.</p>
+                        <label>bot token
+                          <input value={s['telegram.bot_token'] ?? ''} onChange={(e) => set('telegram.bot_token', e.target.value)} placeholder="123456:ABC-…" type="text" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+                        </label>
+                        <label>chat_id
+                          <input value={s['telegram.chat_id'] ?? ''} onChange={(e) => set('telegram.chat_id', e.target.value)} placeholder="123456789" inputMode="numeric" />
+                        </label>
+                        <div className="tg-test-row">
+                          <button type="button" onClick={testTelegram} disabled={testing || s['telegram.enabled'] !== 'true' || !s['telegram.bot_token'] || !s['telegram.chat_id']}>
+                            {testing ? 'sending…' : 'Test connection'}
+                          </button>
+                          {testResult && <span className={`tg-result ${testResult.ok ? 'ok' : 'err'}`}>{testResult.msg}</span>}
+                        </div>
+                      </details>
+                    <NotificationExceptions onOpen={setSessionSettings} />
+                  </div>
                 )}
 
                 {cat === 'updates' && (
@@ -436,5 +438,7 @@ export default function SettingsModal({ onClose, vpsList, modelNotices, onModels
         )}
       </div>
     </div>
+    {sessionSettings && <SessionSettingsModal session={sessionSettings} onClose={() => setSessionSettings(null)} />}
+    </>
   );
 }

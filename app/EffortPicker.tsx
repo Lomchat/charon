@@ -1,10 +1,13 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { KnownClaudeModel } from '@/lib/types/api';
 import { CANONICAL_EFFORTS } from '@/lib/types/api';
 import { getModels, getEfforts, peekModels, peekEfforts } from './modelsCache';
 
 type Props = {
+  presentation?: 'select' | 'list';
+  disabled?: boolean;
   /** Current effort. Empty string = inherit. */
   value: string;
   onChange: (v: string) => void;
@@ -37,6 +40,7 @@ type Props = {
  */
 export default function EffortPicker({
   value, onChange, modelId, inheritPlaceholder, noInherit, className, style, id,
+  presentation, disabled,
 }: Props) {
   const [models, setModels] = useState<KnownClaudeModel[]>(() => peekModels() ?? []);
   const [globalEfforts, setGlobalEfforts] = useState<string[]>(
@@ -76,12 +80,14 @@ export default function EffortPicker({
     : withUltra;
 
   return (
-    <select
+    <PickerControl
+      presentation={presentation}
+      disabled={disabled}
       id={id}
       className={className}
       style={style}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onValueChange={onChange}
     >
       {!noInherit && (
         <option value="">
@@ -97,6 +103,6 @@ export default function EffortPicker({
           {value === lvl && perModel !== null && !perModel.includes(lvl) && lvl !== 'ultracode' ? ' (unsupported)' : ''}
         </option>
       ))}
-    </select>
+    </PickerControl>
   );
 }

@@ -9,7 +9,7 @@ process.env.DATABASE_URL = path.join(
 );
 
 const telegramMocks = vi.hoisted(() => ({
-  sendPlainToTelegram: vi.fn(async (_text: string, _linkPath?: string) => {}),
+  sendPlainToTelegram: vi.fn(async (_text: string, _linkPath?: string, _event?: string) => {}),
 }));
 const pushMocks = vi.hoisted(() => ({ sendPushToAll: vi.fn(async (_payload: any) => {}) }));
 vi.mock('@/lib/server/claude/webPush', () => pushMocks);
@@ -161,13 +161,23 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(1);
     const body = `${kind === 'codex' ? 'Codex' : 'Claude'} finished its response — 1 background task still running`;
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
-      `✓ test-vps · build\n${body}`, `/?session=${SID}`,
+      `✓ test-vps · build\n${body}`, `/?session=${SID}`, 'session_background',
     );
     expect(pushMocks.sendPushToAll).toHaveBeenCalledWith({
-      title: '✓ test-vps · build', body, tag: `stop-${SID}`,
+      event: 'session_background', title: '✓ test-vps · build', body, tag: `stop-${SID}`,
       sessionId: SID, url: `/?session=${SID}`,
     });
     expect(sessionRow().unreadStop).toBe(0);
+  });
+
+  it('notifies a fatal error without needing a stop, and deduplicates a later stop', () => {
+    const stream = createStream('thinking');
+    stream._onAgentEvent({ event: 'error', session_id: SID, fatal: true, msg: 'SDK crashed', seq: 1 });
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledWith(expect.objectContaining({ event: 'session_error' }));
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
+    stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'error', seq: 2 });
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(1);
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
   });
 
   it('does not notify a background stop first seen during replay', () => {
@@ -320,9 +330,10 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     // Announce the response while preserving the background status/marker.
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
       '✓ test-vps · build\nClaude finished its response — 1 background task still running',
-      `/?session=${SID}`,
+      `/?session=${SID}`, 'session_background',
     );
-    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+    // Browser filtering is now per subscription, inside webPush.
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledWith(expect.objectContaining({ event: 'session_background' }));
     expect(sessionRow().unreadStop).toBe(0);
 
     // The daemon goes idle the moment the turn ends and knows nothing about

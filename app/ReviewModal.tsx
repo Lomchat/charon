@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -33,12 +34,12 @@ export default function ReviewModal({ provider, busy, error, onConfirm, onClose 
           <button type="button" className="modal-close" disabled={busy} onClick={onClose}>×</button>
         </div>
         <label className="nw-field"><span>Target</span>
-          <select value={kind} onChange={(e) => { setKind(e.target.value as Kind); setValue(''); }}>
+          <PickerControl value={kind} onValueChange={(nextValue) => { setKind(nextValue as Kind); setValue(''); }}>
             <option value="uncommittedChanges">Uncommitted changes</option>
             <option value="baseBranch">Compare with base branch</option>
             <option value="commit">Specific commit</option>
             <option value="custom">Custom instructions</option>
-          </select>
+          </PickerControl>
         </label>
         {needsValue && <label className="nw-field"><span>{kind === 'baseBranch' ? 'Branch' : kind === 'commit' ? 'Commit SHA' : 'Instructions'}</span>
           {kind === 'custom'

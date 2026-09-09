@@ -1192,6 +1192,7 @@ export type ClaudeSettingsMap = Record<string, string>;
 export type PushVapidKeyResponse = { publicKey: string };
 
 export type PushSubscribeBody = {
+  preferences?: import('@/lib/notificationPreferences').BrowserNotificationPreferences;
   endpoint: string;
   keys: { p256dh: string; auth: string };
   userAgent?: string;

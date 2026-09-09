@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { KnownClaudeModel, ClaudeModelGroup } from '@/lib/types/api';
 import { getModels, peekModels } from './modelsCache';
@@ -24,6 +25,8 @@ const GROUP_LABELS: Record<ClaudeModelGroup, string> = {
 };
 
 type Props = {
+  presentation?: 'select' | 'list';
+  disabled?: boolean;
   /** Currently selected id. Empty string = inherit global default. */
   value: string;
   onChange: (id: string) => void;
@@ -45,7 +48,7 @@ type Props = {
  *   - NewSessionDialog (desktop "model" + "fallback model")
  *   - NewSessionSheet (mobile)
  *   - SettingsModal (global defaults)
- *   - ModelEffortBadges popover (per-session change in-flight)
+ *   - SessionRuntimePanel direct choices
  *
  * The list is fetched once per tab from /api/claude/models via modelsCache.
  * Until the fetch resolves, we render a 6-item baseline so the dropdown is
@@ -65,11 +68,11 @@ type Props = {
  */
 export default function ModelPicker({
   value, onChange, inheritPlaceholder, noInherit, className, id, catalogVersion,
+  presentation, disabled,
 }: Props) {
   const [models, setModels] = useState<KnownClaudeModel[]>(
     () => peekModels() ?? FALLBACK_MODELS,
   );
-  const [loaded, setLoaded] = useState(() => peekModels() != null);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,14 +80,9 @@ export default function ModelPicker({
       .then((m) => {
         if (cancelled) return;
         setModels(m);
-        setLoaded(true);
       })
       .catch(() => {
-        // Stay on FALLBACK_MODELS. The 5s polling in useClaudeSessionStream
-        // won't help here, but the user can still pick from the baseline.
-        // Marking loaded=true keeps the picker functional instead of stuck
-        // looking like it's still fetching.
-        if (!cancelled) setLoaded(true);
+        // Keep the usable baseline when the catalog cannot be fetched.
       });
     return () => { cancelled = true; };
   }, [catalogVersion]);
@@ -108,12 +106,14 @@ export default function ModelPicker({
   };
 
   return (
-    <select
+    <PickerControl
+      presentation={presentation}
+      disabled={disabled}
       id={id}
       className={className}
       value={value}
-      onChange={(e) => {
-        if (e.target.value === '__custom__') {
+      onValueChange={(nextValue) => {
+        if (nextValue === '__custom__') {
           // Explicit escape hatch. prompt() keeps the shared component a pure
           // <select> (no per-call-site layout change). Trim + ignore empty so
           // a cancelled prompt leaves the current value untouched.
@@ -121,9 +121,8 @@ export default function ModelPicker({
           if (v) onChange(v);
           return;
         }
-        onChange(e.target.value);
+        onChange(nextValue);
       }}
-      disabled={!loaded && models === FALLBACK_MODELS && false /* keep enabled — fallback is plenty */}
     >
       {!noInherit && (
         <option value="">
@@ -146,6 +145,6 @@ export default function ModelPicker({
         );
       })}
       <option value="__custom__">✎ enter a model id…</option>
-    </select>
+    </PickerControl>
   );
 }

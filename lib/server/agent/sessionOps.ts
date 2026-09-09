@@ -1,5 +1,6 @@
 import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import 'server-only';
+import type { NotificationEvent } from '@/lib/notificationPreferences';
 import crypto from 'node:crypto';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import {
@@ -287,6 +288,11 @@ export function emitGlobalTabsChanged(): void {
   emitGlobalSession({ type: 'tabs_changed', sessionId: 'tabs' } as GlobalSessionEvent);
 }
 
+export function emitGlobalSettingsChanged(): void {
+  emitGlobalSession({ type: 'settings_changed', sessionId: 'settings' });
+}
+
+
 /**
  * Fan "an agent is touching this file" onto the global bus (sessionId = vpsId).
  *
@@ -511,6 +517,7 @@ export class SessionStream {
   // Raw SDK/provider error held until `stop` tells us whether it actually
   // blocked the turn. Non-blocking diagnostics keep their live banner only;
   // a failed stop promotes this into one durable role='error' chat row.
+  private fatalErrorNotified = false;
   private pendingAgentError: { msg: string; fatal: boolean } | null = null;
   private pendingTurnErrorKind: string | null = null;
   private pendingBlockingErrorRecorded = false;
@@ -1143,6 +1150,7 @@ export class SessionStream {
             expiresAt,
           });
           this._maybePush({
+            event: 'question',
             title: `❓ ${this.vpsName} · ${this._label()} : question`,
             body: `${ev.questions[0]?.question ?? 'user question'}`,
             tag: `q-${this.id}`,
@@ -1180,10 +1188,12 @@ export class SessionStream {
             expiresAt: ev.expires_at,
           });
           this._maybePush({
+            event: 'plan',
             title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
             body: 'Claude finished planning — tap to approve',
             tag: `plan-${this.id}`,
           });
+          sendPlainToTelegram(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan').catch(() => {});
         }
         break;
       }
@@ -1544,7 +1554,8 @@ export class SessionStream {
         // successful finish notification followed by an idle session.
         const typedFailure = ev.is_error === true
           || ev.terminal_reason === 'api_error'
-          || ev.subtype === 'error';
+          || ev.subtype === 'error'
+          || this.pendingAgentError?.fatal === true;
         const assistantTerminalError = this.pendingTerminalAssistantError;
         const typedErrorText = this.pendingAgentError?.msg ?? this.terminalErrorText
           ?? `The turn ended with an API error${ev.api_error_status ? ` (${ev.api_error_status})` : ''}.`;
@@ -1643,7 +1654,7 @@ export class SessionStream {
           // Announce the response even while tasks remain, with their count.
           // The green unread marker and final background-work notice still
           // wait for the last task (§14.91).
-          if (!this.isReplaying && isNewFinish) {
+          if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified) {
             const terminalError = this.terminalErrorLatched;
             const providerLabel = this.kind === 'codex' ? 'Codex' : 'Claude';
             const bgCount = bgPending ? this.bgRunning!.size : 0;
@@ -1655,27 +1666,24 @@ export class SessionStream {
               : this.terminalErrorKind === 'rate_limit'
                 ? 'a rate-limit error'
                 : 'an API error';
+            const event: NotificationEvent = terminalError ? 'session_error'
+              : bgPending ? 'session_background' : 'session_finished';
             this._maybePush(terminalError ? {
+              event,
               title: `⚠ ${this.vpsName} · ${this._label()}`,
               body: `${providerLabel} ended with ${terminalErrorLabel}`,
               tag: `stop-${this.id}`,
             } : {
+              event,
               title: `✓ ${this.vpsName} · ${this._label()}`,
               body: finishedBody,
               tag: `stop-${this.id}`,
             });
-            // Mirror the "finished" notification to Telegram (plain text, no
-            // buttons — stop isn't interactive). Telegram is an INDEPENDENT
-            // channel: gated ONLY by telegram.enabled (checked inside
-            // sendPlainToTelegram→configured()), NOT by notif.global_enabled
-            // (that's the browser/push master). The isNewFinish seq-dedup
-            // already prevents reconnect/replay storms. No-op if Telegram is
-            // off/unconfigured. (CLAUDE.md §7)
             sendPlainToTelegram(
               terminalError
                 ? `⚠ ${this.vpsName} · ${this._label()}\n${providerLabel} ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
                 : `✓ ${this.vpsName} · ${this._label()}\n${finishedBody}`,
-              `/?session=${this.id}`,
+              `/?session=${this.id}`, event,
             ).catch(() => {});
           }
           // Passive in-app "finished, unread" marker (CLAUDE.md §14.47). Light
@@ -1716,11 +1724,17 @@ export class SessionStream {
         // no following stop event. Persist now; a later stop is deduped by the
         // per-turn flag and replay identity.
         if (ev.fatal === true && !this.pendingBlockingErrorRecorded) {
-          this._recordBlockingError(ev.msg, {
+          const recorded = this._recordBlockingError(ev.msg, {
             fatal: true,
             turnFailure: false,
             hint: this.pendingTurnErrorKind,
           });
+          if (recorded && !this.isReplaying && !this.fatalErrorNotified) {
+            this.fatalErrorNotified = true;
+            const title = `⚠ ${this.vpsName} · ${this._label()}`;
+            this._maybePush({ event: 'session_error', title, body: ev.msg.slice(0, 300), tag: `stop-${this.id}` });
+            sendPlainToTelegram(`${title}\n${ev.msg.slice(0, 300)}`, `/?session=${this.id}`, 'session_error').catch(() => {});
+          }
         }
         break;
     }
@@ -2412,13 +2426,14 @@ export class SessionStream {
       if (this.status !== 'active') return;         // a new turn / sleep took over
       if (this.hasRunningBgTasks()) return;         // more work showed up
       this._maybePush({
+        event: 'session_finished',
         title: `✓ ${this.vpsName} · ${this._label()}`,
         body: 'background tasks finished',
         tag: `stop-${this.id}`,
       });
       sendPlainToTelegram(
         `✓ ${this.vpsName} · ${this._label()}\nbackground tasks finished`,
-        `/?session=${this.id}`,
+        `/?session=${this.id}`, 'session_finished',
       ).catch(() => {});
       // Same passive marker as a normal finish (§14.47) — this IS the finish.
       if (!(sessionFocusChecker?.(this.id) ?? false)) {
@@ -2436,6 +2451,7 @@ export class SessionStream {
 
   /** Explicit user/lifecycle recovery permits the daemon's active status again. */
   clearTerminalErrorLatch(): void {
+    this.fatalErrorNotified = false;
     this.terminalErrorLatched = false;
     this.pendingTerminalAssistantError = null;
     this.pendingAgentError = null;
@@ -2573,6 +2589,7 @@ export class SessionStream {
     this._broadcast({ type: 'permission_request', id, tool, input, expiresAt });
     this._log('info', 'permission', { id, tool });
     this._maybePush({
+      event: 'permission',
       title: `🔒 ${this.vpsName} · ${this._label()} : permission`,
       body: `tool ${tool} — tap to approve`,
       tag: `perm-${this.id}`,
@@ -2625,8 +2642,7 @@ export class SessionStream {
     return this.id.slice(0, 6);
   }
 
-  private _maybePush(payload: { title: string; body: string; tag?: string }): void {
-    if (!getSettingBool('notif.global_enabled')) return;
+  private _maybePush(payload: { event: NotificationEvent; title: string; body: string; tag?: string }): void {
     // `url` is the openWindow fallback used by the service worker when no
     // Charon tab is already open. The hub is a single responsive app at `/`
     // — the ClaudePanel picks up `?session=…` via useSearchParams and

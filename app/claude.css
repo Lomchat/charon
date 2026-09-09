@@ -739,9 +739,7 @@
   text-transform: uppercase;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* Second line of the identity block: the cwd, plus the git chip pinned to it.
-   `.bar-cwd` keeps flex:1 so the PATH is what shrinks — the chip is short and
-   load-bearing, and must never be the thing that ellipsizes away. */
+/* Cwd subtitle; repository name/link and branch sit below the context gauge. */
 .claude-bar .bar-sub { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .claude-bar .bar-sub .bar-cwd { flex: 1 1 auto; }
 /* cwd subtitle: only .c-head ellipsizes, .c-tail (last segment) is pinned. */
@@ -2550,13 +2548,13 @@
   padding: 12px; background: var(--shadow); border: 1px solid var(--gold-deep);
   border-radius: 10px;
 }
-.data-add input, .data-add select {
+.data-add input, .data-add .picker-trigger {
   background: var(--stone-2); border: 1px solid var(--gold-deep);
   color: var(--parchment); padding: 8px 10px; border-radius: 7px;
   font-family: var(--mono); font-size: 12px;
   flex: 1; min-width: 80px; outline: none;
 }
-.data-add input:focus, .data-add select:focus { border-color: var(--gold); }
+.data-add input:focus, .data-add .picker-trigger:focus { border-color: var(--gold); }
 .data-add button.primary {
   background: linear-gradient(180deg, var(--stone-2), var(--stone));
   border: 1px solid var(--gold); color: var(--gold-bright); border-radius: 7px;
@@ -2666,14 +2664,14 @@
   color: var(--parchment-soft);
 }
 .claude-modal label input,
-.claude-modal label select {
+.claude-modal label .picker-trigger {
   display: block; width: 100%; margin-top: 6px;
   background: var(--shadow); border: 1px solid var(--gold-deep);
   color: var(--parchment); font-family: var(--body); font-size: 14px;
   padding: 8px 10px; outline: none;
 }
 .claude-modal label input:focus,
-.claude-modal label select:focus { border-color: var(--gold); }
+.claude-modal label .picker-trigger:focus { border-color: var(--gold); }
 
 /* Per-session model/effort popover (ClaudeSessionView) — keep the dark theme
    instead of the browser's default white <select>. Mirrors the modal styling. */
@@ -3829,7 +3827,7 @@
 }
 .wiz-adv-field > input,
 .wiz-adv-field > textarea,
-.wiz-adv-field > select {
+.wiz-adv-field > .picker-trigger {
   width: 100%; padding: 8px 9px; border-radius: 6px;
   background: var(--shadow); border: 1px solid var(--gold-deep);
   color: var(--parchment); font: 12px var(--body); outline: none;
@@ -4228,8 +4226,8 @@
 
 /* ── Settings modal: two-pane (category nav + content), claude.ai-style ── */
 .claude-modal.settings-modal {
-  width: 880px; max-width: 94vw;
-  height: 660px; max-height: 92vh;
+  width: 960px; max-width: 94vw;
+  height: 800px; max-height: 92vh;
   display: flex; flex-direction: column;
   border-radius: 16px;
   padding: 28px 28px 20px;
@@ -4386,8 +4384,7 @@
 .cxl-account { font-family: var(--mono); font-size: 11px; color: var(--parchment-soft); }
 
 /* ── Source control (§14.76) ─────────────────────────────────────────────── */
-/* The chip next to the cwd. Quiet by default and absent entirely on a clean
-   tree — it must never be the reason the header grows a line.
+/* Repository branch chip below context, visible on clean repositories too.
    Selector carries `.claude-bar` on purpose: `.claude-bar button` (0,1,1)
    would otherwise win and dress an INDICATOR up as one of the bar's control
    buttons, at their padding and weight. */
@@ -5727,7 +5724,7 @@
 .review-delivery small { color: var(--parchment-soft); font-size: 10px; }
 .si-control { display: grid; grid-template-columns: 72px 1fr; align-items: center;
   gap: 7px; margin: 5px 0; font-size: 11px; color: var(--parchment-soft); }
-.si-control select { min-width: 0; background: var(--stone-2); color: var(--parchment);
+.si-control .picker-trigger { min-width: 0; background: var(--stone-2); color: var(--parchment);
   border: 1px solid rgba(106,115,136,0.4); border-radius: 5px; padding: 3px 5px; }
 .si-denials { margin-top: 8px; }
 .si-denial { display: flex; align-items: center; gap: 6px; margin-top: 4px;
@@ -5775,3 +5772,174 @@
   display: block; margin-top: 5px; color: var(--gold-bright);
   font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
 }
+
+/* Notification matrix: shared event rows, independent delivery columns. */
+.notification-settings { padding-bottom: 6px; }
+.notification-page-title { margin: 0 0 6px; font: 600 17px/1.3 var(--body); color: var(--parchment); letter-spacing: 0; text-transform: none; }
+.notification-intro, .notification-note { color: var(--parchment-soft); font: 12px/1.5 var(--body); margin: 0 0 20px; }
+.notification-note { font-size: 11px; margin: 10px 0; }
+.notification-table { width: 100%; table-layout: fixed; border-collapse: collapse; color: var(--parchment); }
+.notification-channel-column { width: 112px; }
+.notification-table th, .notification-table td { padding: 10px 12px; border-bottom: 1px solid rgba(155,179,211,.12); vertical-align: middle; }
+.notification-table th:first-child { padding-left: 0; text-align: left; }
+.notification-table th { font: 500 12px/1.4 var(--body); }
+.notification-table td { text-align: center; }
+.notification-table td + td { border-left: 1px solid rgba(155,179,211,.06); }
+.notification-table thead th { padding-top: 0; padding-bottom: 14px; border-bottom-color: rgba(155,179,211,.25); text-align: center; }
+.notification-column-title { display: flex; justify-content: center; align-items: center; gap: 6px; font-weight: 600; }
+.notification-column-title svg { width: 14px; height: 14px; color: var(--parchment-soft); }
+.notification-table small { display: block; margin-top: 3px; color: var(--parchment-soft); font: 11px/1.45 var(--body); }
+.notification-table tbody tr:not(.notification-section-row):hover { background: rgba(155,179,211,.035); }
+.notification-table .notification-section-row th { padding-top: 19px; padding-bottom: 7px; color: var(--parchment-soft); font: 600 10px/1.4 var(--body); letter-spacing: .06em; text-transform: uppercase; }
+.claude-modal label.notification-toggle { display: inline-flex; align-items: center; justify-content: center; position: relative; width: 44px; min-height: 28px; margin: 0; padding: 0; cursor: pointer; }
+.notification-unavailable { color: var(--parchment-soft); font: 12px var(--body); opacity: .6; }
+.claude-modal input.notification-switch-input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; padding: 0; margin: 0; z-index: 1; cursor: pointer; }
+.notification-switch { position: relative; width: 30px; height: 17px; border-radius: 9px; flex: none; background: #49505d; transition: background .15s; }
+.notification-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 11px; height: 11px; border-radius: 50%; background: #e5eaf2; transition: transform .15s; }
+.notification-switch-input:checked + .notification-switch { background: #537ca8; }
+.notification-switch-input:checked + .notification-switch::after { transform: translateX(13px); }
+.notification-switch-input:focus-visible + .notification-switch { outline: 2px solid var(--gold-bright); outline-offset: 3px; }
+.notification-switch-input:disabled + .notification-switch { opacity: .45; cursor: wait; }
+.notification-error { padding: 10px 0; color: #f3a3a3; font: 12px/1.4 var(--body); }
+.notification-connection { margin-top: 14px; border-top: 1px solid rgba(155,179,211,.2); }
+.notification-connection summary { display: flex; justify-content: space-between; padding: 12px 0; font: 500 12px/1.4 var(--body); cursor: pointer; list-style: none; color: var(--parchment); }
+.notification-connection summary span { font-size: 17px; }
+.notification-connection[open] summary span { transform: rotate(90deg); }
+.notification-exceptions { border-top: 1px solid rgba(155,179,211,.2); margin-top: 24px; }
+.claude-modal button.notification-disclosure { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 0; border: 0; border-radius: 0; background: transparent; text-align: left; color: var(--parchment); font-family: var(--body); text-transform: none; letter-spacing: 0; cursor: pointer; }
+.claude-modal button.notification-disclosure:hover { background: rgba(155,179,211,.04); }
+.notification-disclosure > span:first-child { flex: 1; min-width: 0; }
+.notification-disclosure strong, .notification-disclosure small { display: block; overflow-wrap: anywhere; }
+.notification-disclosure strong { font-size: 12px; font-weight: 500; }
+.notification-disclosure small { font-size: 11px; line-height: 1.45; color: var(--parchment-soft); margin-top: 3px; }
+.notification-disclosure > span:last-child { font-size: 19px; color: var(--parchment-soft); }
+.notification-count { font: 11px var(--mono); color: var(--parchment-soft); }
+.notification-exception-list { border-top: 1px solid rgba(155,179,211,.1); }
+.notification-exception-list > button { border-bottom: 1px solid rgba(155,179,211,.1) !important; }
+.notification-exception-list > p { padding: 12px 0; }
+.claude-modal.session-settings-modal { width: min(900px, 94vw); max-width: none; max-height: 90dvh; display: flex; flex-direction: column; padding: 0; border-radius: 10px; overflow: hidden; }
+.notification-modal-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px; border-bottom: 1px solid rgba(155,179,211,.2); }
+.notification-modal-heading h2 { margin: 0; font: 600 16px/1.4 var(--body); letter-spacing: 0; text-transform: none; }
+.notification-modal-heading p { margin: 3px 0 0; color: var(--parchment-soft); font: 12px/1.4 var(--body); overflow-wrap: anywhere; }
+.claude-modal button.notification-close { width: 28px; height: 28px; padding: 0; flex: none; border: 0; border-radius: 4px; background: transparent; color: var(--parchment-soft); }
+.claude-modal button.notification-close:hover { background: rgba(155,179,211,.1); }
+.notification-modal-body { overflow-y: auto; padding: 24px; min-height: 0; }
+@media (max-width: 620px) {
+  .notification-channel-column { width: 74px; }
+  .notification-table th, .notification-table td { padding: 9px 4px; }
+  .notification-column-title { gap: 4px; font-size: 11px; }
+  .notification-column-title svg { display: none; }
+  .notification-table thead small { font-size: 10px; }
+  .notification-modal-body { padding: 18px; }
+  .notification-modal-heading { padding: 16px 18px; }
+}
+
+/* Session header: context + repository on the left, compact actions on the right. */
+.claude-bar { align-items: flex-start; }
+.claude-bar .bar-repo { display: flex; align-items: center; min-width: 0; margin-top: 3px; }
+.claude-bar .bar-repo:empty { display: none; }
+.claude-bar .git-chip-wrap { flex-wrap: wrap; gap: 4px 7px; min-width: 0; max-width: 100%; }
+.claude-bar .git-remote { width: auto; max-width: 100%; gap: 5px; padding: 2px 5px; font: 10px/1.4 var(--mono); }
+.claude-bar .gr-name, .claude-bar .git-repo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.claude-bar .git-repo-name { max-width: 100%; font: 10px/1.4 var(--mono); color: var(--parchment-soft); }
+.claude-bar .gr-ico { flex: none; }
+.session-header-controls { justify-self: end; align-self: center; min-width: 0; }
+.session-header-actions { display: flex; align-items: center; gap: 4px; }
+.claude-bar .session-action { display: grid; place-items: center; width: 30px; height: 30px; padding: 6px; border-radius: 7px; letter-spacing: 0; background: transparent; border-color: transparent; color: var(--parchment-soft); }
+.claude-bar .session-action svg { width: 16px; height: 16px; }
+.claude-bar .session-action:hover:not(:disabled) { background: rgba(155,179,211,.12); color: var(--parchment); }
+.claude-bar .session-action:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 2px; }
+.claude-bar .session-action-stop, .claude-bar .session-action-stop:hover:not(:disabled) { color: #ed6262; }
+.claude-bar .session-action[aria-busy="true"] { opacity: .5; }
+@media (max-width: 700px) {
+  .claude-bar .session-action { width: 32px; height: 32px; }
+}
+
+/* The header owns the size query: adapt to the chat column, not the viewport. */
+.claude-bar { display: block; container: session-header / inline-size; }
+.session-header-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 390px) minmax(0, 1fr); align-items: center; gap: 12px; width: 100%; }
+.session-runtime-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.4fr); width: 100%; min-width: 0; border: 1px solid rgba(152,180,220,.18); border-radius: 13px; background: linear-gradient(145deg, rgba(152,180,220,.085), rgba(152,180,220,.025)); box-shadow: inset 0 1px rgba(255,255,255,.035), 0 4px 14px #00000012; }
+.runtime-config { display: contents; }
+.claude-bar .runtime-cell { position: relative; display: flex; flex-direction: column; justify-content: center; gap: 8px; min-width: 0; width: 100%; min-height: 52px; padding: 10px; border: 0; border-radius: 0; background: transparent; color: var(--parchment); font-family: var(--body); font-size: 12px; text-transform: none; letter-spacing: 0; text-align: left; cursor: pointer; }
+.claude-bar .runtime-cell:hover { border: 0; color: var(--parchment); background: rgba(152,180,220,.075); }
+.claude-bar .runtime-cell:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: -2px; }
+.claude-bar .runtime-model { border-radius: 12px 0 0 12px; }
+.claude-bar .runtime-usage-button { border-radius: 0 12px 12px 0; height: 100%; }
+.runtime-model::after, .runtime-effort::after { content: ''; position: absolute; right: 0; top: 13px; bottom: 13px; width: 1px; background: rgba(152,180,220,.16); }
+.runtime-value { display: flex; align-items: center; gap: 6px; min-width: 0; font: 600 12px/1.35 var(--body); color: var(--parchment); }
+.runtime-value > span:not(.agent-logo):not(.runtime-effort-symbol):not(.runtime-pending) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-value .agent-logo { flex: none; }
+.runtime-effort-symbol { color: #b1a1e4; font-size: 14px; flex: none; }
+.runtime-effective { display: block; font: 9px/1.2 var(--mono); color: var(--parchment-soft); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: -3px; }
+.runtime-pending { color: #e0b46a; }
+.has-mismatch .runtime-effective { color: #ed8585; }
+.claude-bar .runtime-usage { display: flex; position: static; min-width: 0; }
+.runtime-usage-gauges { display: grid; gap: 5px; width: 100%; }
+.runtime-usage-row { display: grid; grid-template-columns: minmax(27px, .8fr) minmax(12px, 1fr) 28px; align-items: center; gap: 4px; color: var(--parchment-soft); font: 9px/1 var(--mono); }
+.runtime-usage-row b { text-align: right; font-weight: 500; color: var(--parchment); }
+.runtime-usage-track { height: 3px; border-radius: 3px; background: rgba(152,180,220,.14); overflow: hidden; }
+.runtime-usage-track .um-fill { display: block; height: 100%; }
+.runtime-usage-empty { font: 10px/1.3 var(--body); color: var(--parchment-soft); }
+.runtime-usage .usage-pop { left: 50%; right: auto; transform: translateX(-50%); width: min(320px, calc(100vw - 24px)); max-width: none; box-sizing: border-box; max-height: 70dvh; overflow-y: auto; }
+@container session-header (max-width: 700px) {
+  .session-header-layout { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  .session-header-layout > .bar-ident { grid-column: 1; grid-row: 1; }
+  .session-header-controls { grid-column: 2; grid-row: 1; }
+  .session-runtime-panel { grid-column: 1 / -1; grid-row: 2; justify-self: center; max-width: 400px; }
+}
+@container session-header (max-width: 420px) {
+  .session-header-layout > .bar-ident { grid-column: 1 / -1; }
+  .session-header-controls { grid-column: 1 / -1; grid-row: 2; }
+  .session-runtime-panel { grid-row: 3; }
+  .claude-bar .runtime-cell { padding: 10px; min-height: 52px; }
+}
+
+
+/* Mobile keeps model/effort and the five actions on one compact toolbar. */
+@media (max-width: 820px) {
+  .session-header-layout { position: relative; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 6px; }
+  .session-header-layout > .bar-ident { grid-column: 1 / -1; grid-row: 1; }
+  .session-runtime-panel { position: static; grid-column: 1; grid-row: 2; justify-self: start; max-width: 300px; grid-template-columns: minmax(0, 1fr) minmax(0, .6fr); border-radius: 8px; box-shadow: none; }
+  .session-header-controls { grid-column: 2; grid-row: 2; align-self: center; }
+  .session-header-actions { gap: 2px; }
+  .claude-bar .session-action { width: 28px; height: 32px; padding: 6px; }
+  .claude-bar .runtime-cell { min-height: 32px; height: 32px; padding: 4px 6px; gap: 2px; }
+  .claude-bar .runtime-model { border-radius: 7px 0 0 7px; }
+  .claude-bar .runtime-effort { border-radius: 0 7px 7px 0; }
+  .runtime-model::after { top: 8px; bottom: 8px; }
+  .runtime-effort::after { display: none; }
+  .runtime-value { font-size: 10.5px; line-height: 1.25; gap: 3px; }
+  .runtime-value .agent-logo, .runtime-effort-symbol { display: none; }
+  .runtime-effective { font-size: 8px; line-height: 1; margin-top: 0; }
+  .claude-bar .runtime-usage { display: none; }
+}
+
+.runtime-usage-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-choice-popover { position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 50; width: min(350px, calc(100vw - 24px)); padding: 6px; box-sizing: border-box; border: 1px solid rgba(152,180,220,.22); border-radius: 14px; background: var(--stone, #1f1f1f); box-shadow: 0 12px 35px #0005; max-height: min(65dvh, 520px); overflow-y: auto; }
+.picker-options { display: flex; flex-direction: column; gap: 2px; }
+.picker-options button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--parchment); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; }
+.picker-options button > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.picker-options button:hover:not(:disabled), .picker-options button:focus-visible { background: rgba(152,180,220,.10); outline: none; }
+.picker-options button[data-selected="true"] { background: rgba(152,180,220,.14); color: var(--gold-bright); }
+.picker-check { width: 14px; flex: none; }
+.picker-group-label { padding: 12px 12px 5px; color: var(--parchment-soft); font: 10px/1.3 var(--body); }
+.runtime-choice-note, .runtime-choice-error { margin: 6px; padding: 10px 6px; border-top: 1px solid rgba(152,180,220,.14); color: var(--parchment-soft); font: 11px/1.5 var(--body); }
+.runtime-choice-error { color: #ed8585; }
+.claude-bar .runtime-apply { margin: 6px; padding: 8px; color: #e0b46a; font: 11px/1.4 var(--body); text-transform: none; letter-spacing: 0; }
+
+/* Shared select triggers; popup lives above scrolling modals via a workspace portal. */
+button.picker-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; max-width: 100%; padding: 8px 10px; border: 1px solid var(--gold-deep); border-radius: 6px; background: var(--stone-2, #202530); color: var(--parchment); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; cursor: pointer; }
+button.picker-trigger:hover:not(:disabled), button.picker-trigger[aria-expanded="true"] { border-color: var(--gold); }
+button.picker-trigger:focus-visible { outline: 2px solid var(--gold-bright); outline-offset: 2px; }
+button.picker-trigger:disabled { opacity: .5; cursor: default; }
+.picker-trigger > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.picker-chevron { flex: none; color: var(--parchment-soft); }
+.claude-modal label .picker-trigger, .nw-field > .picker-trigger, .wiz-adv-field > .picker-trigger { width: 100%; }
+.picker-popup { position: fixed; z-index: 2000; box-sizing: border-box; padding: 6px; border: 1px solid rgba(152,180,220,.22); border-radius: 12px; background: var(--stone, #1f1f1f); box-shadow: 0 12px 35px #0006; overflow-y: auto; overscroll-behavior: contain; }
+.picker-options button { cursor: pointer; flex-shrink: 0; }
+.picker-options button:disabled { opacity: .45; cursor: default; }
+.picker-options button:focus-visible { box-shadow: inset 0 0 0 1px var(--gold-bright); }
+
+.claude-modal label .picker-trigger { display: inline-flex; margin-top: 6px; }
+.data-add .picker-trigger { flex: 1; min-width: 80px; }
+button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }

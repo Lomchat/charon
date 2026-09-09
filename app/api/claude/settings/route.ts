@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server';
+import { NOTIFICATION_EVENTS } from '@/lib/notificationPreferences';
+import { emitGlobalSettingsChanged } from '@/lib/server/agent/sessionOps';
 import { requireApiSession } from '@/lib/server/session';
 import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
 import { isSessionMode } from '@/lib/sessionCapabilities';
 
 const ALLOWED_KEYS = [
   'ssh.private_key_path',
-  'notif.global_enabled',
-  'shell.notify_idle',
-  'vapid.subject',
+  ...NOTIFICATION_EVENTS.map(({ id }) => `telegram.notify.${id}`),
   'telegram.enabled',
   'telegram.bot_token',
   'telegram.chat_id',
@@ -66,8 +66,10 @@ function maskSecrets(all: Record<string, string>): Record<string, string> {
 }
 
 function sanitizeForResponse(all: Record<string, string>): Record<string, string> {
-  // Never expose the private VAPID key.
-  delete all['vapid.private'];
+  // Push authentication is internal; the public key has its own subscribe endpoint.
+  for (const key of Object.keys(all)) if (key.startsWith('vapid.')) delete all[key];
+  delete all['notif.global_enabled'];
+  delete all['shell.notify_idle'];
   // The cached model catalog can be several KB of JSON — not needed by the UI
   // (the picker fetches the merged list from /api/claude/models). Keep the
   // lightweight `claude.models_cache_at` timestamp for the "last sync" label.
@@ -95,6 +97,10 @@ export async function POST(req: Request) {
   for (const [k, v] of Object.entries(body)) {
     if (!ALLOWED_KEYS.includes(k)) continue;
     const val = String(v);
+    if ((k.startsWith('telegram.notify.') || k === 'telegram.enabled') && val !== 'true' && val !== 'false') {
+      rejected.push(k);
+      continue;
+    }
     if (k === 'claude.default_permission_mode' && !isSessionMode('claude', val)) {
       rejected.push(k);
       continue;
@@ -126,5 +132,6 @@ export async function POST(req: Request) {
     }
     setSetting(k as any, val);
   }
+  emitGlobalSettingsChanged();
   return NextResponse.json({ ...sanitizeForResponse(getAllSettings()), ...(rejected.length ? { rejected } : {}) });
 }

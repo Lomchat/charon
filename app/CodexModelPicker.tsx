@@ -1,9 +1,12 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { CodexModelPick } from '@/lib/types/api';
 import { getCodexModels, peekCodexModels } from './codexModelsCache';
 
 type Props = {
+  presentation?: 'select' | 'list';
+  disabled?: boolean;
   /** VPS whose Codex account drives the catalog. */
   vpsId: string;
   /** Currently selected id. Empty string = inherit the global default. */
@@ -26,6 +29,7 @@ type Props = {
  */
 export default function CodexModelPicker({
   vpsId, value, onChange, inheritPlaceholder, noInherit, className, id, catalogVersion,
+  presentation, disabled,
 }: Props) {
   const [models, setModels] = useState<CodexModelPick[]>(
     () => peekCodexModels(vpsId)?.models ?? [],
@@ -60,17 +64,19 @@ export default function CodexModelPicker({
   const all = customEntry ? [...models, customEntry] : models;
 
   return (
-    <select
+    <PickerControl
+      presentation={presentation}
+      disabled={disabled}
       id={id}
       className={className}
       value={value}
-      onChange={(e) => {
-        if (e.target.value === '__custom__') {
+      onValueChange={(nextValue) => {
+        if (nextValue === '__custom__') {
           const v = (window.prompt('Enter a Codex model id (e.g. gpt-5-codex):', value) || '').trim();
           if (v) onChange(v);
           return;
         }
-        onChange(e.target.value);
+        onChange(nextValue);
       }}
     >
       {!noInherit && (
@@ -88,6 +94,6 @@ export default function CodexModelPicker({
         </option>
       ))}
       <option value="__custom__">✎ enter a model id…</option>
-    </select>
+    </PickerControl>
   );
 }

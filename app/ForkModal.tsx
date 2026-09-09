@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -65,15 +66,15 @@ export default function ForkModal({
         </div>
         <p className="fork-intro">Choose the exact context, then the agent that should continue it.</p>
         <label className="nw-field"><span>Branch point</span>
-          <select value={pointIndex} disabled={!!busy || points == null} onChange={(e) => {
-            const index = Number(e.target.value); setPointIndex(index); setEditPrompt(false);
+          <PickerControl value={pointIndex} disabled={!!busy || points == null} onValueChange={(nextValue) => {
+            const index = Number(nextValue); setPointIndex(index); setEditPrompt(false);
             setReplacement(index >= 0 ? points?.[index]?.prompt ?? '' : '');
           }}>
             <option value={-1}>End of conversation</option>
             {(points ?? []).map((point, index) => <option value={index} key={point.turnId}>
               {new Date((point.createdAt ?? 0) * 1000).toLocaleString()} · {point.prompt.slice(0, 90)}
             </option>)}
-          </select>
+          </PickerControl>
         </label>
         {selected && <>
           <label className="fork-edit-toggle"><input type="checkbox" checked={editPrompt}

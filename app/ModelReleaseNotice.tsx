@@ -48,7 +48,7 @@ export default function ModelReleaseNotice({ provider, unread, onSeen }: {
   if (!displayed.length) return null;
   return (
     <span ref={element} className="model-release-notice" role="status">
-      {displayed.length === 1 ? 'Nouveau modèle' : 'Nouveaux modèles'} :{' '}
+      {displayed.length === 1 ? 'New model' : 'New models'} :{' '}
       {displayed.map((model) => model.label).join(', ')}
     </span>
   );

@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentKind } from '@/lib/types/api';
@@ -352,13 +353,13 @@ export default function SessionInsight({
         {!loaded.security ? <LoadingInsight /> : security?.ok ? <>
           <label className="si-control">
             <span>profile</span>
-            <select disabled={securityBusy} value={security.permission_profile ?? ''} onChange={(e) => {
-              void updateSecurity({ permissionProfile: e.target.value || null });
+            <PickerControl disabled={securityBusy} value={security.permission_profile ?? ''} onValueChange={(nextValue) => {
+              void updateSecurity({ permissionProfile: nextValue || null });
             }}>
               <option value="">legacy sandbox</option>
               {(security.profiles ?? []).map((profile) => <option key={profile.id} value={profile.id}
                 disabled={profile.allowed === false}>{profile.id}{profile.allowed === false ? ' (blocked)' : ''}</option>)}
-            </select>
+            </PickerControl>
           </label>
           {(security.profile_reason === 'unsupported' || security.runtime_reason || security.runtime_error) && (
             <p className="si-none">profiles unavailable until the Codex session is running on a compatible agent</p>

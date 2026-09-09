@@ -121,7 +121,7 @@ describe('terminal Claude assistant errors', () => {
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
     expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledWith(
       expect.stringContaining('Claude ended with an API error'),
-      `/?session=${SID}`,
+      `/?session=${SID}`, 'session_error',
     );
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
       .toContain('API Error: 529');

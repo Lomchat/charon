@@ -1,4 +1,5 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
@@ -599,15 +600,15 @@ export default function DataModal({
             <input placeholder="ssh user" value={vpsForm.sshUser} onChange={(e) => setVpsForm({ ...vpsForm, sshUser: e.target.value })} style={{ maxWidth: 100 }} />
             <input placeholder="port" value={vpsForm.sshPort} onChange={(e) => setVpsForm({ ...vpsForm, sshPort: e.target.value })} style={{ maxWidth: 60 }} inputMode="numeric" />
             <input placeholder="default path (opt.)" value={vpsForm.defaultPath} onChange={(e) => setVpsForm({ ...vpsForm, defaultPath: e.target.value })} />
-            <select
+            <PickerControl
               value={vpsForm.folderId}
-              onChange={(e) => setVpsForm({ ...vpsForm, folderId: e.target.value })}
+              onValueChange={(nextValue) => setVpsForm({ ...vpsForm, folderId: nextValue })}
               title="target folder"
             >
               {sortedFolders.map((f) => (
                 <option key={f.id} value={f.id}>{f.name}</option>
               ))}
-            </select>
+            </PickerControl>
             <button className="primary" onClick={addVps}>create</button>
           </div>
         )}
@@ -998,17 +999,17 @@ function SortableVpsCard({
         <span className="dv-glyph">▣</span>
         <span className="dv-name">{v.name}</span>
         <span className="dv-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
-        <select
+        <PickerControl
           className="dv-folder-select"
           value={v.folderId}
-          onChange={(e) => onChangeFolder(e.target.value)}
+          onValueChange={(nextValue) => onChangeFolder(nextValue)}
           onPointerDown={(e) => e.stopPropagation()}
           title="change folder"
         >
           {allFolders.map((f) => (
             <option key={f.id} value={f.id}>{f.name}</option>
           ))}
-        </select>
+        </PickerControl>
         <div className="dv-actions">
           <button className="dv-btn" onClick={onLogin} title="sign in to Claude (hosted OAuth code)">login</button>
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>

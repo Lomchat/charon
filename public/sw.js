@@ -18,6 +18,7 @@ self.addEventListener('push', (event) => {
     badge: '/icon.svg',
     tag: data.tag || data.sessionId || 'charon',
     renotify: true,
+    silent: data.silent === true,
     data: { url: data.url || '/', sessionId: data.sessionId || null },
   };
   event.waitUntil((async () => {
@@ -34,7 +35,7 @@ self.addEventListener('push', (event) => {
         all.find((c) => c.focused) ||
         all.find((c) => c.visibilityState === 'visible') ||
         all[0];
-      if (target) target.postMessage({ type: 'notif-sound' });
+      if (target && !data.silent) target.postMessage({ type: 'notif-sound', event: data.event, sessionId: data.sessionId });
     } catch {}
   })());
 });

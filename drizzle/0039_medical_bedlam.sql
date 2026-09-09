@@ -1,0 +1,1 @@
+ALTER TABLE `claude_push_subscriptions` ADD `preferences` text;

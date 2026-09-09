@@ -1,10 +1,13 @@
 'use client';
+import PickerControl from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { CodexModelPick } from '@/lib/types/api';
 import { CODEX_CANONICAL_EFFORTS } from '@/lib/types/api';
 import { getCodexModels, peekCodexModels } from './codexModelsCache';
 
 type Props = {
+  presentation?: 'select' | 'list';
+  disabled?: boolean;
   vpsId: string;
   /** Current effort. Empty string = inherit. */
   value: string;
@@ -29,6 +32,7 @@ type Props = {
  */
 export default function CodexEffortPicker({
   vpsId, value, onChange, modelId, inheritPlaceholder, noInherit, className, style, id,
+  presentation, disabled,
 }: Props) {
   const [models, setModels] = useState<CodexModelPick[]>(() => peekCodexModels(vpsId)?.models ?? []);
   const [globalEfforts, setGlobalEfforts] = useState<string[]>(
@@ -57,12 +61,14 @@ export default function CodexEffortPicker({
     : baseOptions;
 
   return (
-    <select
+    <PickerControl
+      presentation={presentation}
+      disabled={disabled}
       id={id}
       className={className}
       style={style}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onValueChange={onChange}
     >
       {!noInherit && (
         <option value="">
@@ -72,6 +78,6 @@ export default function CodexEffortPicker({
       {options.map((lvl) => (
         <option key={lvl} value={lvl}>{lvl}</option>
       ))}
-    </select>
+    </PickerControl>
   );
 }

@@ -1,4 +1,5 @@
 import 'server-only';
+import { NOTIFICATION_EVENTS, type NotificationEvent } from '@/lib/notificationPreferences';
 import { eq } from 'drizzle-orm';
 import { db, claudeSettings } from '@/lib/db';
 import { encrypt, tryDecrypt } from '@/lib/server/crypto';
@@ -68,19 +69,16 @@ function decryptFromRest(stored: string): string {
   return pt;
 }
 
-// `vapid.subject`: sender identity on the push servers side (web-push).
-// We read `VAPID_SUBJECT` from env if present; otherwise generic fallback
-// (the user can override from the SettingsModal in the UI). Avoids having
-// a personal email hardcoded in plaintext in the repo.
+// Internal push identity: legacy stored value, env default, then generic fallback.
+// VAPID keys/subject are not exposed through the settings UI/API.
 const DEFAULTS = {
   'ssh.private_key_path': '/root/.ssh/id_rsa',
   // NOTE: session.max_active / retention.killed_days were REMOVED (P1.7) —
   // they were exposed in the UI but had zero runtime consumers (decorative
   // settings). Re-add only WITH an implementation.
+  ...Object.fromEntries(NOTIFICATION_EVENTS.map(({ id }) => [`telegram.notify.${id}`, 'true'])) as Record<`telegram.notify.${NotificationEvent}`, string>,
+  // Legacy keys retained only for reading/migrating old preferences.
   'notif.global_enabled': 'true',
-  // When a persistent shell goes active→idle after a "consequential" output
-  // burst (see agent shell.py idle heuristic), Charon sends a push/telegram
-  // "shell finished" notification. Gated by this flag AND notif.global_enabled.
   'shell.notify_idle': 'true',
   'vapid.subject': process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
   'telegram.enabled': 'false',
@@ -194,7 +192,9 @@ export function getSetting(key: SettingKey): string | null {
     cache.set(key, v);
     return v;
   }
-  const def = (DEFAULTS as any)[key] ?? null;
+  const def = key === 'telegram.notify.shell_idle'
+    ? getSetting('shell.notify_idle')
+    : (DEFAULTS as any)[key] ?? null;
   if (def != null) cache.set(key, def);
   return def;
 }
@@ -218,6 +218,7 @@ export function getAllSettings(): Record<string, string> {
   for (const r of rows) {
     out[r.key] = SECRET_SETTING_KEYS.has(r.key) ? decryptFromRest(r.value) : r.value;
   }
+  out['telegram.notify.shell_idle'] = getSetting('telegram.notify.shell_idle') ?? 'true';
   return out;
 }
 

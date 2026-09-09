@@ -1,4 +1,5 @@
 import 'server-only';
+import { sendPlainToTelegram } from '@/lib/server/claude/telegram';
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
@@ -197,10 +198,13 @@ class InstallSession {
 
   private async _sendPush(): Promise<void> {
     const success = this.status === 'success';
+    const title = success ? '✓ install OK' : '✗ install failed';
+    const body = `${this.vpsName} — ${success ? 'agent installed and operational' : 'see the log'}`;
+    void sendPlainToTelegram(`${title}\n${body}`, '/?install=' + this.id, 'installation').catch(() => {});
     try {
       await sendPushToAll({
-        title: success ? '✓ install OK' : '✗ install failed',
-        body: `${this.vpsName} — ${success ? 'agent installed and operational' : 'see the log'}`,
+        event: 'installation',
+        title, body,
         // The URL contains the installId so the service worker (sw.js) can
         // open the right session via ?install=<id> on click.
         url: '/?install=' + this.id,

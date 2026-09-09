@@ -1,5 +1,6 @@
 // Client-side helpers for Web Push.
 import { api } from '@/lib/api';
+import type { BrowserNotificationPreferences } from '@/lib/notificationPreferences';
 
 function urlBase64ToUint8Array(base64: string): Uint8Array {
   const padding = '='.repeat((4 - base64.length % 4) % 4);
@@ -46,7 +47,7 @@ export async function pushCurrentEndpoint(): Promise<string | null> {
   return sub?.endpoint ?? null;
 }
 
-export async function pushSubscribe(): Promise<{ ok: boolean; reason?: string }> {
+export async function pushSubscribe(preferences: BrowserNotificationPreferences): Promise<{ ok: boolean; reason?: string }> {
   if (!(await pushSupported())) return { ok: false, reason: 'unsupported' };
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') return { ok: false, reason: 'permission denied' };
@@ -64,7 +65,7 @@ export async function pushSubscribe(): Promise<{ ok: boolean; reason?: string }>
   await api.pushSubscribe({
     endpoint: sub.endpoint,
     keys: { p256dh: bufferToBase64(p256), auth: bufferToBase64(auth) },
-    userAgent: navigator.userAgent,
+    userAgent: navigator.userAgent, preferences,
   });
   return { ok: true };
 }
@@ -76,4 +77,18 @@ export async function pushUnsubscribe(): Promise<void> {
   if (!sub) return;
   try { await api.pushUnsubscribe(sub.endpoint); } catch {}
   try { await sub.unsubscribe(); } catch {}
+}
+
+/** Mirror this browser's choices to its endpoint so closed-tab pushes are filtered before sending. */
+export async function syncPushPreferences(preferences: BrowserNotificationPreferences): Promise<void> {
+  if (!(await pushSupported())) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  if (!sub) return;
+  const p256 = sub.getKey('p256dh');
+  const auth = sub.getKey('auth');
+  if (!p256 || !auth) throw new Error('Push subscription keys missing');
+  await api.pushSubscribe({ endpoint: sub.endpoint,
+    keys: { p256dh: bufferToBase64(p256), auth: bufferToBase64(auth) },
+    userAgent: navigator.userAgent, preferences });
 }
