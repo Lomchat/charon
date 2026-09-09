@@ -89,6 +89,7 @@ from .protocol import (
     RpcError,
 )
 from .event_log import EventLog, cleanup_orphans, find_missing_ranges
+from .log_rotate import rotate_if_needed, rotation_loop
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .codex_session import (
     CodexSession,
@@ -2445,10 +2446,22 @@ class Server:
             except NotImplementedError:
                 pass
 
+        # agent.log is opened ONCE with O_APPEND by systemd (or the nohup
+        # fallback) and nothing ever truncated it — a box installed a few weeks
+        # earlier was carrying 147 MB. Rotate on boot (a daemon that just
+        # restarted is the cheapest moment for it) then on a timer.
+        log_path = self.state_path.parent / "agent.log"
+        try:
+            rotate_if_needed(log_path)
+        except Exception:
+            pass
+        log_task = asyncio.create_task(rotation_loop(log_path))
+
         async with server:
             serve_task = asyncio.create_task(server.serve_forever())
             await stop_evt.wait()
             self._stopping = True
+            log_task.cancel()
             serve_task.cancel()
             try:
                 await serve_task
