@@ -119,7 +119,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // prevents the initial session from mounting, being cleared by an empty tab
   // store, then mounting again after GET /api/tabs.
   hydrateTabs(initialTabs);
-  const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded } = useTabs();
+  const { tabs: workspaceTabs, dirty: dirtyIds, loaded: workspaceTabsLoaded } = useTabs(initialTabs);
   // Focus is a browser preference, not part of the shared workspace layout.
   // Restore after hydration so desktop/mobile never steer each other and the
   // first server/client render still agrees.

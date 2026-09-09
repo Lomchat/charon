@@ -15,7 +15,7 @@
  * lives in one browser and cannot be handed to another, so publishing it would
  * put a "modified" dot on a device that has no way to save it.
  */
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { api } from '@/lib/api';
 import type { ReorderTabsBody, TabDTO, TabKind } from '@/lib/types/api';
 
@@ -150,19 +150,20 @@ function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
   commit({ tabs: focusedTabs, loaded: true, activeId, dirty });
 }
 
-/** Seed the client store from the SSR payload before the first subscription.
- * A remounted/HMR store that is already live wins over the older SSR snapshot. */
+function initialTabState(tabs: TabDTO[]): State {
+  const activeId = tabs.find((t) => t.active)?.id ?? null;
+  return { tabs: projectLocalTabFocus(tabs, activeId), loaded: true, activeId, dirty: new Set() };
+}
+
+/** Seed only the BROWSER store. Server renders must use their own request's
+ * snapshot, never retain the first visitor's tabs in the process singleton. */
 export function hydrateTabs(tabs: TabDTO[]): void {
-  if (state.loaded) return;
+  if (typeof window === 'undefined' || state.loaded) return;
   // Use the SSR choice for the hydration frame only. Browser-local persisted
   // focus is restored in an effect so server/client markup stays identical.
-  const activeId = tabs.find((t) => t.active)?.id ?? tabs[0]?.id ?? null;
-  state = {
-    tabs: projectLocalTabFocus(tabs, activeId), loaded: true,
-    activeId, dirty: state.dirty,
-  };
+  state = initialTabState(tabs);
   g.__charonTabState = state;
-  touchMru(activeId);
+  touchMru(state.activeId);
 }
 
 /** Restore focus after hydration. No `storage` listener on purpose: even two
@@ -208,10 +209,16 @@ function runMutation<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-export function useTabs(): State {
+const EMPTY_TABS: TabDTO[] = [];
+
+export function useTabs(initialTabs: TabDTO[] = EMPTY_TABS): State {
+  // React also reads getServerSnapshot during browser hydration. Keep it
+  // immutable even if restoring local focus or another subscriber updates
+  // the live store before this subtree has finished hydrating (§14.78).
+  const serverSnapshot = useMemo(() => initialTabState(initialTabs), [initialTabs]);
   const sub = useCallback((cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; }, []);
   const snap = useCallback(() => state, []);
-  return useSyncExternalStore(sub, snap, () => state);
+  return useSyncExternalStore(sub, snap, () => serverSnapshot);
 }
 
 export const activeTab = (): TabDTO | null => state.tabs.find((t) => t.id === state.activeId) ?? null;
