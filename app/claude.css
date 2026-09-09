@@ -755,54 +755,56 @@
 .claude-bar button.kill { color: var(--danger); border-color: var(--danger-deep); }
 .claude-bar button.kill:hover { color: var(--danger); border-color: var(--danger); }
 
-/* ── Tab bar (2 rows, VSCode/Chrome-style) ─────────────────────────────────
-   Placed above .claude-bar via the grid `tabs` row.
-     Row 1 (.tab-row-vps)      → one tab per VPS that has an open entity
-     Row 2 (.tab-row-entities) → entities of the active VPS
+/* ── Tab bar (3 rows, one per level) ───────────────────────────────────────
+   Placed above .claude-bar via the grid `tabs` row. §14.78
 
-   Colors (border-top of each tab):
-     .tab-active   → green   (idle, ready for input)
-     .tab-thinking → amber pulse (claude currently working)
-     .tab-waiting  → orange pulse (perm/question/exit-plan pending)
-     .tab-starting → amber   (claude session booting)
-     .tab-sleeping → grey, dimmed; closable (× appears in row 2 only)
+     Row 1 (.tab-row-vps)      → the machines with something open
+     Row 2 (.tab-row-paths)    → the folders open on the active machine
+     Row 3 (.tab-row-entities) → what is open in the active folder
 
-   Row 1 reflects the AGGREGATE state of its VPS (waiting > thinking >
-   active > sleeping). Row 2 reflects each entity's own state.
+   A level per line, but ONE geometry for the three: same padding, same gap,
+   same min-height, and one font size on the items (§ `.tb-vps, .tb-path,
+   .tb-tab`). Three different scales made them read as three unrelated bars
+   stacked by accident. Merging the three onto ONE line was tried and rejected:
+   a level deserves its own line.
 
-   No drag-and-drop reordering — order follows the sidebar.            */
+   State lives in one dot per item (`.tb-dot`); on rows 1 and 2 it is the
+   loudest state under that group (waiting > … > sleeping, `rollUp`).        */
 .claude-tabbar {
   display: flex; flex-direction: column;
+  /* Breathing room before the session header underneath: the rows carry no
+     bottom padding (the gap between two rows IS the lower one's padding-top),
+     so the last one would otherwise sit right on this border. On the bar, not
+     on row 3 — a row is a scroller and its padding rides under the
+     horizontal scrollbar. */
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, var(--bg-inset), var(--bg-raised));
   min-width: 0;
 }
 .tab-row {
   display: flex; align-items: stretch;
-  gap: 4px;
-  padding: 6px 12px 0;
+  /* The separator tick is drawn in the MIDDLE of this gap, so the two numbers
+     go together: `.tb-item + .tb-item::before` sits at `left: -5px`. */
+  gap: 10px;
+  /* The gap BETWEEN two rows is the lower row's padding-top — items carry no
+     bottom padding — so this one number keeps the three evenly spaced. Items
+     stretch, so `min-height` minus that inset is the tab height, for all
+     three rows at once. */
+  padding: 2px 12px 0;
+  min-height: 28px;
   overflow-x: auto;
   overflow-y: hidden;
   min-width: 0;
 }
-
-/* Row 1: VPS tabs — slightly more compact, all in caps to look like a
-   "tab strip" header rather than a body tab. */
-.tab-row-entities {
-  background: color-mix(in srgb, var(--shade) 10%, transparent);
-  /* Same top inset as row 2, so the three rows are separated by one gap and
-     not by two different ones. */
-  padding: 2px 12px 0;
-  /* Items stretch, so the min-height has to shed the same 4px the padding did
-     or the tabs simply grow into the gap that was removed. */
-  min-height: 28px;
-}
+/* Only the top row differs, and only to breathe under the header. */
+.tab-row-vps { padding-top: 4px; min-height: 30px; }
 .tab-row-empty {
   display: inline-flex; align-items: center;
-  padding: 6px 4px;
+  padding: 0 4px;
   font-family: var(--body);
   font-style: italic;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
   opacity: 0.7;
 }
@@ -872,28 +874,40 @@
    a small "+" badge. Disabled state comes from the SAME diagnosis as the
    sidebar's ＋ buttons (vpsHealth § backendAvailability), per backend; the
    shell button is never gated — SSH works without the agent. */
+/* These are ACTIONS sitting in a row of tabs, and the tabs draw nothing at
+   rest — so anything drawn at all is what says "this is a control, not another
+   tab". One raised cluster rather than three chips (they are one group), and
+   the accent colour at rest rather than the tabs' muted grey. Going fully flat
+   like the tabs was tried: they read as three more tabs. */
 .tab-row-actions {
   display: inline-flex; align-items: center;
-  gap: 4px;
-  margin-left: 6px;
-  margin-bottom: 1px;          /* align baseline with tabs */
+  gap: 1px;
+  margin-left: 10px;
+  /* Centred, not stretched: the cluster has its own fixed height and would
+     otherwise be pulled a pixel below the tabs it sits next to. */
+  align-self: center;
   flex-shrink: 0;
+  height: 26px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-strong) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 .tab-new-btn {
   display: inline-flex; align-items: center; justify-content: center;
   gap: 2px;
-  background: var(--bg-inset);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
   color: var(--accent);
-  padding: 4px 8px;
+  padding: 0 6px;
   cursor: pointer;
-  height: 26px;
-  transition: background .12s, color .12s, border-color .12s;
+  height: 20px;
+  transition: background .12s, color .12s;
 }
 .tab-new-btn:hover:not(:disabled) {
   color: var(--accent-strong);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .tab-new-btn:disabled {
   opacity: 0.35;
@@ -908,7 +922,8 @@
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1;
-  color: var(--text-muted);
+  color: inherit;
+  opacity: 0.85;
   margin-left: 1px;
 }
 .tab-new-btn:hover:not(:disabled) .tab-new-plus { color: var(--accent-strong); }
@@ -1599,7 +1614,7 @@
 .code-block { position: relative; }
 /* The tool panes scroll VERTICALLY (max-height + auto), so their scrollbar
    runs down the right edge — exactly where the button is anchored. Thin, like
-   `.tab-row`'s, so the two don't fight over the corner. */
+   `.claude-tabbar`'s, so the two don't fight over the corner. */
 .code-block > .tu-detail, .code-block > .tr-detail { scrollbar-width: thin; }
 .code-block > .tu-detail::-webkit-scrollbar,
 .code-block > .tr-detail::-webkit-scrollbar { width: 6px; }
@@ -5468,16 +5483,19 @@
 
 
 /* ── One tab shape for all three rows (§14.80) ───────────────────────────── */
-/* Row 1 (machine), row 2 (folder) and row 3 (tab) are the same control at
-   three scales. They differ in height, font size and how loud the selected
-   state is — and in nothing else. Giving row 2 its own pill made it read as a
-   filter bar bolted on rather than as the middle of a hierarchy. */
+/* Machine, folder and tab are the same control at three levels — same size,
+   same shape, same weight of selected state. Giving row 2 its own pill made it
+   read as a filter bar bolted on rather than as the middle of a hierarchy. */
+/* A tab draws NOTHING at rest — label, dot, count, and that is all. Only the
+   one you are on gets a shape. Three rows of framed chips, or of full-height
+   rules between every item, turn the strip into a ruled table: at ~30 items on
+   screen the furniture outweighs the names, which are the only thing being
+   read. */
 .tb-item {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  border-radius: 4px 4px 0 0;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
   color: var(--text-muted);
   font-family: var(--mono);
   cursor: pointer;
@@ -5485,25 +5503,38 @@
   max-width: 260px;
   user-select: none;
 }
+/* The separator between two tabs is a SHORT centred tick sitting in the gap,
+   not a border on the item: a full-height rule is what made it read as table
+   cells. It is a pseudo-element on the second of each pair, so there is never
+   a trailing one after the last. */
+.tb-item + .tb-item::before {
+  content: ''; position: absolute; left: -5px; top: 50%;
+  width: 1px; height: 11px; margin-top: -5.5px;
+  background: color-mix(in srgb, var(--border) 75%, transparent);
+}
 .tb-item:hover { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* The current tab: a filled pill. Its edge is an OUTLINE, not a box-shadow —
+   `[data-over]` (the drag indicator) is a box-shadow and has lower specificity
+   than `.tb-item.selected`, so a shadow here would hide the drop indicator on
+   the tab you are dragging onto. */
 .tb-item.selected {
   color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: -1px;
 }
-/* The selected tab bleeds into the row below it — the join that makes a strip
-   read as tabs rather than as buttons. */
-.tb-item.selected::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
+/* A pill already reads as separate from its neighbours. */
+.tb-item.selected::before, .tb-item.selected + .tb-item::before { display: none; }
 .tb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Translucent, not a solid grey block: on a strip that draws nothing else at
+   rest, a filled chip per tab was the loudest thing on screen. */
 .tb-count {
   flex: none; font-size: 9px;
-  background: var(--border); color: var(--bg);
-  border-radius: 2px; padding: 0 4px;
+  background: color-mix(in srgb, var(--text-strong) 13%, transparent);
+  color: var(--text-muted);
+  border-radius: 3px; padding: 0 4px;
 }
-.tb-item.selected .tb-count { background: var(--accent); }
+.tb-item.selected .tb-count { background: var(--accent); color: var(--bg); }
 .tb-glyph { flex: none; display: inline-flex; }
 .tb-glyph svg { width: 12px; height: 12px; }
 .tb-dirty { flex: none; color: var(--accent-strong); font-size: 9px; }
@@ -5518,23 +5549,22 @@
 .state-sleeping .tb-dot { background: color-mix(in srgb, var(--text-strong) 25%, transparent); }
 @keyframes tb-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-/* Sizes: the only thing that separates the rows. Every row is
-   `tb-item > tb-main + tb-close`, so the padding lives on the label button
-   and the item only keeps its left inset. */
-.tb-vps  { padding: 0 0 0 11px; font-size: 10.5px; letter-spacing: 0.05em; }
-.tb-path { padding: 0 0 0 10px; font-size: 10px; }
-.tb-tab  { padding: 0 0 0 9px; font-size: 10.5px; }
+/* ONE size for the three rows — machine, folder and tab are the same control
+   at three levels, so a different scale each only made the strip look
+   accidental. They keep separate classes for what genuinely differs (a preview
+   is italic, a tab carries a glyph), never for size.
+   Every item is `tb-item > tb-main + tb-close`, so the padding lives on the
+   label button and the item only keeps its left inset. */
+.tb-vps, .tb-path, .tb-tab { padding: 0 0 0 9px; font-size: 10.5px; }
 .tb-main {
   display: inline-flex; align-items: center; gap: 6px;
   background: transparent; border: 0; color: inherit; cursor: pointer;
   font: inherit; padding: 5px 2px 5px 0; min-width: 0;
 }
-.tb-path .tb-main { padding: 3px 2px 3px 0; }
 .tb-close {
   flex: none; background: transparent; border: 0; cursor: pointer;
   color: transparent; font-size: 10px; padding: 5px 7px 5px 3px;
 }
-.tb-path .tb-close { padding: 3px 7px 3px 3px; }
 /* Hidden until the item is hovered — three permanent ✕ per row is a lot of
    noise for an action taken once in a while. A coarse pointer has no hover,
    so there it stays visible: the tablet has no other way to close a group. */
@@ -5554,9 +5584,6 @@
 [data-over="after"]  { box-shadow: inset -2px 0 0 var(--accent-strong); }
 .cs-card[data-over="before"] { box-shadow: inset 0 2px 0 var(--accent-strong); }
 .cs-card[data-over="after"]  { box-shadow: inset 0 -2px 0 var(--accent-strong); }
-
-.tab-row-paths { gap: 3px; padding: 2px 6px 0; background: color-mix(in srgb, var(--shade) 10%, transparent); }
-.tab-row-entities { gap: 3px; }
 
 /* ── Explorer context menu (§14.80) ──────────────────────────────────────── */
 .tt-menu-scrim { position: fixed; inset: 0; z-index: 400; }

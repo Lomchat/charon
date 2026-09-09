@@ -11,7 +11,7 @@ import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enab
 
 // TabBar — the workspace strip above the main column. §14.78
 // ─────────────────────────────────────────────────────────────────────────────
-// Three rows, because a tab now has three coordinates:
+// Three rows — one per level — because a tab has three coordinates:
 //
 //   Row 1  VPS        — the machines with something open
 //   Row 2  path       — the folders open on that machine. THE new level: a VPS
@@ -19,6 +19,11 @@ import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enab
 //                       "everything open on chalco" tells you nothing about
 //                       which one you're in.
 //   Row 3  tabs       — what is open in that folder: sessions, shells, files.
+//
+// One level per line, but ONE SIZE for the three: they were drawn at three
+// different scales and paddings, which read as three unrelated bars stacked by
+// accident rather than as one hierarchy. Merging them onto a single line was
+// tried and rejected — a level deserves its own line.
 //
 // The set of tabs comes from the DB (shared across devices) instead of being
 // derived from "every non-sleeping session", which is what it used to be. So a
@@ -247,10 +252,10 @@ export default function TabBar({
 
   return (
     <div className="claude-tabbar">
-      {/* The three rows share one shape (`tb-item`) and differ only in size and
-          emphasis. They are the same kind of control at three scales, and
-          giving row 2 its own look made it read as a filter bar rather than as
-          part of the hierarchy. */}
+      {/* The three rows share one shape (`tb-item`) AND one size — what tells
+          them apart is their line and their content, nothing else. Giving row 2
+          its own scale made it read as a filter bar bolted on rather than as
+          the middle of a hierarchy. */}
       {/* Rows 1 and 2 close too, and closing one closes everything under it.
           Same shape as row 3 for that reason: the item is a DIV holding a
           `tb-main` button and a `tb-close` button — a button inside a button
