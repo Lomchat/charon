@@ -337,14 +337,15 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                     {/* §14.100 — the bottom of the chain, so no "inherit"
                         option here: this IS what a VPS and a session inherit.
                         A VPS overrides it from its card in the data modal. */}
-                    <div className="settings-sub">settings files sessions load</div>
-                    <SettingSourcesPicker
-                      value={safeParseSettingSources(s['claude.setting_sources']) ?? [...DEFAULT_SETTING_SOURCES]}
-                      // `next` is never null without an `inherited` prop; the
-                      // fallback keeps the fleet default from ever becoming ''.
-                      onChange={(next) => set('claude.setting_sources',
-                        formatSettingSources(next ?? DEFAULT_SETTING_SOURCES))}
-                    />
+                    <label>settings files sessions load
+                      <SettingSourcesPicker
+                        value={safeParseSettingSources(s['claude.setting_sources']) ?? [...DEFAULT_SETTING_SOURCES]}
+                        // `next` is never null without an `inherited` prop; the
+                        // fallback keeps the fleet default from ever becoming ''.
+                        onChange={(next) => set('claude.setting_sources',
+                          formatSettingSources(next ?? DEFAULT_SETTING_SOURCES))}
+                      />
+                    </label>
 
                     <div className="settings-sub">model catalog</div>
                     <label>Anthropic API key (catalog sync only — never inference)

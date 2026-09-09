@@ -1,17 +1,43 @@
 'use client';
 // ── Which Claude settings files a session loads (§14.100) ────────────────────
 // ONE control for the four layers that can express the choice: hub Settings,
-// the per-VPS modal, the per-VPS edit and the new-session wizard. They differ
-// only in whether "inherit" is offered — the hub default is the bottom of the
-// chain and must always name a scope, everything below it may defer upwards.
+// the per-VPS dialog and the wizard's advanced block. They differ only in
+// whether "inherit" is offered — the hub default is the bottom of the chain
+// and must always name a scope, everything below it may defer upwards.
 //
-// Each row states the FILE it stands for. "user / project / local" means
-// nothing on its own, and the whole point of the feature is that people know
-// exactly which file they just switched on.
+// A SELECT over named combinations, not three checkboxes: the useful answers
+// are a short list, they have names, and a row of boxes made the reader
+// assemble the meaning themselves. `PickerControl` is the shared trigger every
+// other form here uses (§11), so this reads like the rest of the app.
+// The line underneath still names the actual FILES — "user / project / local"
+// means nothing on its own, and knowing exactly what was just switched on is
+// the whole point of the feature.
+import PickerControl from './PickerControl';
 import {
-  CLAUDE_SETTING_SOURCES, SETTING_SOURCE_INFO, describeSettingSources,
-  settingSourcesWarning, type ClaudeSettingSource,
+  SETTING_SOURCE_INFO, describeSettingSources, formatSettingSources,
+  resolveSettingSources, safeParseSettingSources, settingSourcesWarning,
+  type ClaudeSettingSource,
 } from '@/lib/settingSources';
+
+// The 6 combinations worth naming, out of the 8 a 3-way toggle can produce.
+// The two left out (`local` alone, `user,local`) drop the repository's own
+// settings while keeping a file inside it — no one wants that on purpose, and
+// an out-of-list value arriving from the API or the env var is still rendered
+// verbatim below rather than silently snapped to something else.
+const PRESETS: Array<{ value: string; label: string; title: string }> = [
+  { value: 'project', label: 'Project — the repository’s settings and its CLAUDE.md',
+    title: 'Charon’s historical behaviour' },
+  { value: 'user,project', label: 'User + project — plus this machine’s own rules',
+    title: 'Your ~/.claude/settings.json applies to every session on the box' },
+  { value: 'user,project,local', label: 'User + project + local — everything',
+    title: 'What the claude CLI loads by default outside Charon' },
+  { value: 'project,local', label: 'Project + local — the repository, plus per-machine overrides',
+    title: 'For a repo checked out on both a production and a development box' },
+  { value: 'user', label: 'User only — this machine’s rules, no CLAUDE.md',
+    title: 'The repository gets no say at all, including its CLAUDE.md' },
+  { value: 'none', label: 'None — no settings file, no CLAUDE.md',
+    title: 'The SDK’s isolation mode' },
+];
 
 export default function SettingSourcesPicker({
   value, onChange, inherited, disabled = false,
@@ -23,60 +49,39 @@ export default function SettingSourcesPicker({
   inherited?: readonly ClaudeSettingSource[];
   disabled?: boolean;
 }) {
-  const inheriting = value == null;
-  const boxesDisabled = disabled || inheriting;
-
-  function toggle(source: ClaudeSettingSource, on: boolean) {
-    const current = value ?? [...(inherited ?? [])];
-    const next = on
-      ? CLAUDE_SETTING_SOURCES.filter((s) => s === source || current.includes(s))
-      : current.filter((s) => s !== source);
-    onChange(next);
-  }
-
-  const warning = settingSourcesWarning(value ?? inherited ?? null);
+  const current = formatSettingSources(value);
+  const custom = !!current && !PRESETS.some((preset) => preset.value === current);
+  const effective = resolveSettingSources(value, inherited);
+  const warning = settingSourcesWarning(effective);
 
   return (
     <div className="ss-picker">
-      {inherited && (
-        <label className="ss-inherit">
-          <input
-            type="checkbox"
-            checked={inheriting}
-            disabled={disabled}
-            // Leaving "inherit" seeds the custom value with what was actually
-            // in effect, so the first click never silently drops a scope the
-            // machine was already loading.
-            onChange={(e) => onChange(e.target.checked ? null : [...inherited])}
-          />
-          <span>use the default (<b>{describeSettingSources(inherited)}</b>)</span>
-        </label>
-      )}
-      <ul className="ss-list">
-        {CLAUDE_SETTING_SOURCES.map((source) => {
-          const info = SETTING_SOURCE_INFO[source];
-          const checked = (value ?? inherited ?? []).includes(source);
-          return (
-            <li key={source} className={checked ? 'is-on' : undefined}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={boxesDisabled}
-                  onChange={(e) => toggle(source, e.target.checked)}
-                />
-                <span className="ss-name">{source}</span>
-                <code className="ss-file">{info.file}</code>
-              </label>
-              <small className="ss-hint">{info.hint}</small>
-            </li>
-          );
-        })}
-      </ul>
+      <PickerControl
+        value={current}
+        disabled={disabled}
+        onValueChange={(next) => onChange(safeParseSettingSources(next))}
+        title="which settings files this reads"
+      >
+        {inherited && (
+          <option value="">Default — {describeSettingSources(inherited)}</option>
+        )}
+        {PRESETS.map((preset) => (
+          <option key={preset.value} value={preset.value} title={preset.title}>{preset.label}</option>
+        ))}
+        {/* A value set through the API or CHARON_CLAUDE_SETTING_SOURCES that
+            isn't one of the presets must still be selectable, or opening this
+            control would quietly rewrite it. */}
+        {custom && <option value={current}>{current}</option>}
+      </PickerControl>
+      <p className="ss-files">
+        {effective.length
+          ? effective.map((source) => SETTING_SOURCE_INFO[source].file).join('  ·  ')
+          : 'no settings file is read'}
+      </p>
       {warning && <p className="ss-warn">⚠ {warning}</p>}
       <p className="ss-note">
-        Read when a session starts: changing this affects new sessions, and
-        existing ones after a pause + resume.
+        Read when a session starts: this affects new sessions, and existing ones
+        after a pause + resume.
       </p>
     </div>
   );

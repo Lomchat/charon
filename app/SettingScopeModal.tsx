@@ -11,9 +11,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import SettingSourcesPicker from './SettingSourcesPicker';
-import {
-  formatSettingSources, parseSettingSources, type ClaudeSettingSource,
-} from '@/lib/settingSources';
+import { parseSettingSources, type ClaudeSettingSource } from '@/lib/settingSources';
 
 export default function SettingScopeModal({
   vpsName, initial, hubDefault, confirmLabel, busyLabel, onConfirm, onClose,
@@ -81,7 +79,6 @@ export default function SettingScopeModal({
             {busy ? (busyLabel ?? confirmLabel) : confirmLabel}
           </button>
         </div>
-        <p className="scope-stored">stored as <code>{formatSettingSources(value) || 'inherit'}</code></p>
       </div>
     </div>
   );

@@ -619,10 +619,10 @@ It is now a choice, made where it belongs and inherited downwards:
   machine *is* the VPS.
 - **Per session**, in the wizard's *advanced* block, for a one-off.
 
-Each level can defer to the one above it. Ticking nothing at all is a real
-answer too — no settings file, and no `CLAUDE.md` either.
+Each level can defer to the one above it, and one of the choices is *none* —
+no settings file at all, `CLAUDE.md` included.
 
-Two things worth knowing before you tick a box. Enabling `user` means an
+Two things worth knowing before you widen the scope. Enabling `user` means an
 `apiKeyHelper` or an `ANTHROPIC_API_KEY` sitting in that file will move your
 sessions off the subscription and onto API billing. And `local` lives inside
 the working tree the agent edits, so a session can write its own rules for its
