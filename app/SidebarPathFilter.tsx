@@ -283,18 +283,22 @@ export default function SidebarPathFilter({
               })}
               title="untick everything above — does not navigate"
             >reset</button>
-            {/* The way OUT of a filter already applied. `reset` only empties
-                the draft above; this one navigates, so it stays a separate
-                button and only exists while there is something to drop. */}
-            {active && (
+          </div>
+
+          {/* The way OUT of a filter already applied. `reset` only empties the
+              draft above; this one navigates, so it is neither one of the two
+              nor next to them — its own row, where it cannot be hit while
+              aiming for reset. */}
+          {active && (
+            <div className="wfb-clear-row">
               <button
                 type="button"
                 className="wfb-btn clear"
                 onClick={() => window.location.assign(urlFor(null))}
                 title="drop the filter and show everything"
               >show everything</button>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Read-only: the URL is derived from the ticks above, so an
               editable field would offer an edit that the next click discards.
@@ -306,7 +310,7 @@ export default function SidebarPathFilter({
               className="wfb-url"
               value={url}
               readOnly
-              rows={2}
+              rows={3}
               spellCheck={false}
               title={url}
               onFocus={(e) => e.currentTarget.select()}
