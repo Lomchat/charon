@@ -182,16 +182,19 @@ Closing a tab is a view operation: the session keeps running and stays in the
 sidebar. The layout lives in the hub, so **your phone and your desktop show the
 same workspace**; every row is drag-to-reorder.
 
-**A sidebar path filter.** `?path=/srv/app` scopes the sidebar to one folder;
-repeat it for several, prefix it with `!` to exclude one. The most specific
-rule wins, so `?path=!/&path=/srv/app` reads as “only that subtree”. The funnel
+**A sidebar filter, by machine and folder.** `?path=/srv/app` scopes the
+sidebar to one folder and `?vps=<id>` to one machine; repeat either for
+several, prefix with `!` to exclude. The two are crossed with AND, because a
+fleet built from one playbook has the same `/srv/app` on five boxes and a
+folder alone cannot mean one project. Among folders the most specific rule
+wins, so `?path=!/&path=/srv/app` reads as “only that subtree”. The funnel
 button on the `SESSIONS` row lights up while a filter is on and spells out how
 many hidden sessions are **waiting on you**; the selected session is never
 hidden and an unhealthy VPS never disappears — a filter must not leave you in
 front of a pane that will not move, nor silence a machine that needs attention.
-The same button opens a builder that turns the folders Charon already knows
-into that URL: **one bookmark per project**. Tabs are not filtered, and
-reordering always sees the complete list.
+The same button opens a builder, grouped by machine, that turns what Charon
+already knows into that URL: **one bookmark per project**. Tabs are not
+filtered, and reordering always sees the complete list.
 
 **A file explorer** rooted at the session's working directory: lazy per-folder
 expansion, per-type icons, symlink markers, and **git decorations** — status

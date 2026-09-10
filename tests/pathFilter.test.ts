@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFilterQuery, describeFilter, isFilterActive, isPathVisible,
-  nextPathState, normalizePath, parsePathFilter, pathState, withPathState,
+  isVpsVisible, nextPathState, normalizePath, parsePathFilter, parseVpsFilter,
+  pathState, withPathState,
 } from '../app/pathFilter';
 
 describe('normalizePath', () => {
@@ -199,5 +200,88 @@ describe('describeFilter', () => {
 
   it('is empty when nothing is filtered', () => {
     expect(describeFilter(parsePathFilter([]))).toBe('');
+  });
+});
+
+describe('parseVpsFilter', () => {
+  it('splits on the ! prefix and dedupes', () => {
+    expect(parseVpsFilter(['a', 'b', '!c', 'a'])).toEqual({
+      include: ['a', 'b'], exclude: ['c'],
+    });
+  });
+
+  it('finds the ! after trimming, like the path half', () => {
+    expect(parseVpsFilter([' !c '])).toEqual({ include: [], exclude: ['c'] });
+  });
+
+  it('drops empty values, ! alone included', () => {
+    expect(parseVpsFilter(['', '   ', '!', '! '])).toEqual({ include: [], exclude: [] });
+  });
+});
+
+describe('isVpsVisible', () => {
+  const none = parseVpsFilter([]);
+
+  it('shows every machine when no rule is set', () => {
+    expect(isVpsVisible('a', none)).toBe(true);
+  });
+
+  it('is an allow-list as soon as one machine is included', () => {
+    const filter = parseVpsFilter(['a']);
+    expect(isVpsVisible('a', filter)).toBe(true);
+    expect(isVpsVisible('b', filter)).toBe(false);
+  });
+
+  it('hides only the excluded machine when nothing is included', () => {
+    const filter = parseVpsFilter(['!a']);
+    expect(isVpsVisible('a', filter)).toBe(false);
+    expect(isVpsVisible('b', filter)).toBe(true);
+  });
+
+  // No hierarchy among machines, so no specificity ladder: a contradiction
+  // resolves to hiding, the same safer reading the path half uses on a tie.
+  it('lets an exclusion win over an inclusion of the same machine', () => {
+    expect(isVpsVisible('a', parseVpsFilter(['a', '!a']))).toBe(false);
+  });
+
+  // The regression the whole dimension exists for: /srv/charon lives on two
+  // boxes here, so the folder rule alone cannot mean one project.
+  it('crosses with the path half by AND', () => {
+    const vps = parseVpsFilter(['box-a']);
+    const paths = parsePathFilter(['/srv/charon']);
+    const shown = (v: string, p: string) => isVpsVisible(v, vps) && isPathVisible(p, paths);
+    expect(shown('box-a', '/srv/charon')).toBe(true);
+    expect(shown('box-b', '/srv/charon')).toBe(false);
+    expect(shown('box-a', '/srv/other')).toBe(false);
+  });
+});
+
+describe('buildFilterQuery with both halves', () => {
+  it('round-trips through both parsers, machines first', () => {
+    const paths = parsePathFilter(['/srv/app', '!/srv/scratch']);
+    const vps = parseVpsFilter(['box-a', '!box-b']);
+    const query = buildFilterQuery(paths, vps);
+    expect(query).toBe('?vps=box-a&vps=%21box-b&path=%2Fsrv%2Fapp&path=%21%2Fsrv%2Fscratch');
+    const params = new URLSearchParams(query.slice(1));
+    expect(parsePathFilter(params.getAll('path'))).toEqual(paths);
+    expect(parseVpsFilter(params.getAll('vps'))).toEqual(vps);
+  });
+
+  it('omits the vps half entirely when it is not passed', () => {
+    expect(buildFilterQuery(parsePathFilter(['/srv/app']))).toBe('?path=%2Fsrv%2Fapp');
+  });
+});
+
+describe('describeFilter with machines', () => {
+  it('names machines rather than printing their ids', () => {
+    expect(describeFilter(
+      parsePathFilter(['/srv/charon']),
+      parseVpsFilter(['e8c8d7b348e12a01']),
+      (id) => (id === 'e8c8d7b348e12a01' ? 'WS_MASTER' : id),
+    )).toBe('WS_MASTER — /srv/charon');
+  });
+
+  it('falls back to the id when the machine is unknown', () => {
+    expect(describeFilter(parsePathFilter([]), parseVpsFilter(['gone']))).toBe('gone');
   });
 });

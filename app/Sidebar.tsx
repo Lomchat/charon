@@ -144,7 +144,7 @@ type Props = {
   toolbarSlot?: React.ReactNode;
   /** Display filter. Applied when listing a VPS, never when computing a
    *  reorder: the drag handlers need the complete list (sidebarPathGroups). */
-  isPathShown?: (path: string | null, kind: 'session' | 'shell') => boolean;
+  isEntityShown?: (vpsId: string, path: string | null, kind: 'session' | 'shell') => boolean;
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
@@ -215,7 +215,7 @@ export default function Sidebar({
   selectedId, resetSessionSelectionTo, onSessionSelectionReset,
   selectedShellId, selectedInstallId,
   activeWorkspace = null,
-  toolbarSlot, isPathShown,
+  toolbarSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
   onNew, onNewShell, onScan, onOpenData,
@@ -383,15 +383,15 @@ export default function Sidebar({
     return sorted;
   }, [vpsFolders, vpsList]);
 
-  // Sessions / shells per VPS (paused switch, then the path filter).
+  // Sessions / shells per VPS (paused switch, then the machine+folder filter).
   // The selected entity is never dropped: a filter that excluded it would
   // leave the main pane blank with no explanation.
-  const showPath = isPathShown ?? (() => true);
+  const showEntity = isEntityShown ?? (() => true);
   function sessionsFor(vpsId: string): SessionListItem[] {
     return sessions
       .filter((s) => s.vpsId === vpsId)
       .filter((s) => showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      .filter((s) => s.id === selectedId || showPath(s.cwd, 'session'))
+      .filter((s) => s.id === selectedId || showEntity(s.vpsId, s.cwd, 'session'))
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
       // is position 0, so an untouched sidebar sorts exactly as it did before
       // and only a list that was actually dragged looks different.
@@ -402,7 +402,7 @@ export default function Sidebar({
     return shells
       .filter((sh) => sh.vpsId === vpsId)
       .filter((sh) => showPaused || !sh.exited)
-      .filter((sh) => sh.id === selectedShellId || showPath(sh.cwd, 'shell'))
+      .filter((sh) => sh.id === selectedShellId || showEntity(sh.vpsId, sh.cwd, 'shell'))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
@@ -473,7 +473,7 @@ export default function Sidebar({
   }
 
   const totalSleeping = sessions.filter(
-    (s) => (s.liveStatus ?? s.status) === 'sleeping' && showPath(s.cwd, 'session'),
+    (s) => (s.liveStatus ?? s.status) === 'sleeping' && showEntity(s.vpsId, s.cwd, 'session'),
   ).length;
 
   return (
@@ -567,7 +567,7 @@ export default function Sidebar({
             // Folders with no visible VPS are hidden below.
             .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0
               || installKeepsVpsVisible(x.install, selectedInstallId)
-              || (isPathShown != null && x.vps.agentStatus !== 'ok'));
+              || (isEntityShown != null && x.vps.agentStatus !== 'ok'));
 
           if (visibleVps.length === 0) return null;
 

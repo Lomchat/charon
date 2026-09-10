@@ -6132,6 +6132,16 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   overscroll-behavior: contain;
 }
 
+/* One machine and its folders. The gap between groups is what makes the
+   indent below readable as "under this machine" rather than as decoration. */
+.wfb-group { display: flex; flex-direction: column; gap: 3px; }
+.wfb-group + .wfb-group { margin-top: 8px; }
+/* The machine row: a rule, not a heading — it reads as one of the buttons,
+   only wider in the type, and it is the row the folders are indented from. */
+.wfb-vps { font-family: var(--body); font-weight: 600; }
+.wfb-under { margin-left: 12px; }
+.wfb-group-empty { margin-left: 12px; padding: 2px 7px; }
+
 .wfb-path {
   display: flex; align-items: baseline; gap: 6px;
   padding: 4px 7px;
