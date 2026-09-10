@@ -9,7 +9,10 @@ import type { AccountUsage } from '@/lib/server/claude/types';
 import type { AgentKind, TabDTO } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import SidebarPathFilter from './SidebarPathFilter';
-import { type PathFilter, isFilterActive, isPathVisible, normalizePath, parsePathFilter } from './pathFilter';
+import {
+  type PathFilter, type VpsFilter, isFilterActive, isPathVisible, isVpsVisible,
+  normalizePath, parsePathFilter, parseVpsFilter,
+} from './pathFilter';
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
 import type { EditSnapshot } from './sessionTypes';
 import {
@@ -268,7 +271,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Initialized from `?shell=` so a shell-idle notification tap opens it.
   const [selectedShellId, setSelectedShellId] = useState<string | null>(queryParamShell);
 
-  // --- Sidebar path filter (?path=) ---
+  // --- Sidebar filter (?vps= and ?path=) ---
   //
   // Sidebar receives the COMPLETE lists plus this predicate, never a
   // pre-filtered list. It expands a drag into a full VPS reorder through
@@ -282,35 +285,63 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const [pathFilter] = useState<PathFilter>(
     () => parsePathFilter(searchParams?.getAll('path') ?? []),
   );
-  const isPathShown = useCallback(
-    (path: string | null, kind: 'session' | 'shell') => isPathVisible(
-      path, pathFilter, kind === 'shell' ? 'hidden' : 'visible',
+  const [vpsFilter] = useState<VpsFilter>(
+    () => parseVpsFilter(searchParams?.getAll('vps') ?? []),
+  );
+  const filterActive = isFilterActive(pathFilter) || isFilterActive(vpsFilter);
+  // The two dimensions are crossed with AND: a folder rule says WHICH folder,
+  // a machine rule says WHERE. Several boxes here share a cwd (/srv on four of
+  // them, /srv/charon on two), so a path alone cannot mean one project.
+  const isEntityShown = useCallback(
+    (vpsId: string, path: string | null, kind: 'session' | 'shell') => (
+      isVpsVisible(vpsId, vpsFilter)
+      && isPathVisible(path, pathFilter, kind === 'shell' ? 'hidden' : 'visible')
     ),
-    [pathFilter],
+    [pathFilter, vpsFilter],
   );
   // Mirrors exactly what Sidebar drops, the selected-stays-visible rule
-  // included, so the chip can never disagree with the list.
+  // included, so the counter can never disagree with the list.
   const hiddenSessions = useMemo(
-    () => sessions.filter((s) => s.id !== selectedId && !isPathShown(s.cwd, 'session')),
-    [sessions, selectedId, isPathShown],
+    () => sessions.filter((s) => s.id !== selectedId && !isEntityShown(s.vpsId, s.cwd, 'session')),
+    [sessions, selectedId, isEntityShown],
   );
   const hiddenShells = useMemo(
-    () => shells.filter((sh) => sh.id !== selectedShellId && !isPathShown(sh.cwd, 'shell')),
-    [shells, selectedShellId, isPathShown],
+    () => shells.filter((sh) => sh.id !== selectedShellId && !isEntityShown(sh.vpsId, sh.cwd, 'shell')),
+    [shells, selectedShellId, isEntityShown],
   );
   const hiddenCount = hiddenSessions.length + hiddenShells.length;
 
-  // Every folder the builder can offer. Deliberately VPS-agnostic: the
-  // sidebar already groups by machine, so the filter reasons about folders.
-  const knownFilterPaths = useMemo(() => {
-    const set = new Set<string>();
-    const add = (p: string | null | undefined) => { const n = normalizePath(p); if (n) set.add(n); };
-    for (const s of sessions) add(s.cwd);
-    for (const sh of shells) add(sh.cwd);
-    for (const vp of vpsPaths) add(vp.path);
-    for (const v of vpsList) add(v.defaultPath);
-    return [...set].sort();
+  // What the builder can offer, grouped BY MACHINE — a flat folder list is
+  // ambiguous the moment two boxes share an arborescence, and a fleet built
+  // from the same playbook always does.
+  const knownFilterGroups = useMemo(() => {
+    const byVps = new Map<string, Set<string>>();
+    const bucket = (vpsId: string) => {
+      let set = byVps.get(vpsId);
+      if (!set) { set = new Set(); byVps.set(vpsId, set); }
+      return set;
+    };
+    const add = (vpsId: string, p: string | null | undefined) => {
+      const n = normalizePath(p);
+      if (n) bucket(vpsId).add(n);
+    };
+    for (const s of sessions) add(s.vpsId, s.cwd);
+    for (const sh of shells) add(sh.vpsId, sh.cwd);
+    for (const vp of vpsPaths) add(vp.vpsId, vp.path);
+    for (const v of vpsList) add(v.id, v.defaultPath);
+    // Sidebar order, so the builder reads like the list it filters. A machine
+    // with no known folder still gets a row: selecting the whole box is a
+    // legitimate filter, and it is the only way to reach a fresh one.
+    return vpsList.map((v) => ({
+      vpsId: v.id,
+      vpsName: v.name || v.ip,
+      paths: [...(byVps.get(v.id) ?? [])].sort(),
+    }));
   }, [sessions, shells, vpsPaths, vpsList]);
+  const vpsNameOf = useCallback(
+    (id: string) => vpsList.find((v) => v.id === id)?.name || id,
+    [vpsList],
+  );
 
   // Agent install sessions. In-memory only (shell pattern). One install
   // per VPS max (cf. installSession.ts § startInstall).
@@ -1761,15 +1792,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       <Sidebar
         toolbarSlot={(
           <SidebarPathFilter
-            knownPaths={knownFilterPaths}
+            groups={knownFilterGroups}
             filter={pathFilter}
+            vpsFilter={vpsFilter}
+            vpsNameOf={vpsNameOf}
             hiddenCount={hiddenCount}
             hiddenWaitingCount={hiddenWaitingCount}
           />
         )}
         // Passed only when a filter is really on, so Sidebar can read its
         // presence as "a filter is active" — and pays nothing when it is not.
-        isPathShown={isFilterActive(pathFilter) ? isPathShown : undefined}
+        isEntityShown={filterActive ? isEntityShown : undefined}
         sessionHandles={sessionHandles}
         showTools={showTools}
         onToggleShowTools={toggleShowTools}

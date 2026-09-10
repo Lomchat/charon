@@ -29,42 +29,58 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IconFunnel } from './icons';
 import {
-  type PathFilter, buildFilterQuery, describeFilter, isFilterActive,
+  type PathFilter, type VpsFilter, buildFilterQuery, describeFilter, isFilterActive,
   nextPathState, pathState, withPathState,
 } from './pathFilter';
 
+/** One machine and the folders known on it. */
+export type FilterGroup = { vpsId: string; vpsName: string; paths: string[] };
+
 type Props = {
-  /** Every known folder: session and shell cwds, registered paths, defaults. */
-  knownPaths: string[];
-  /** The filter currently applied, parsed from the URL. */
+  /** Known folders, grouped by machine, in sidebar order. */
+  groups: FilterGroup[];
+  /** The folder half of the filter currently applied, parsed from the URL. */
   filter: PathFilter;
+  /** The machine half. */
+  vpsFilter: VpsFilter;
+  /** Ids travel in the URL; the summary has to read as names. */
+  vpsNameOf: (id: string) => string;
   /** How many entities the filter is hiding right now. */
   hiddenCount: number;
   /** How many of those are waiting on the user. */
   hiddenWaitingCount: number;
 };
 
+/** The two halves are edited together and navigated to together. */
+type Draft = { paths: PathFilter; vps: VpsFilter };
+
 const STATE_LABEL = { off: 'ignored', include: 'included', exclude: 'excluded' } as const;
 const STATE_MARK = { off: '·', include: '✓', exclude: '−' } as const;
 
 export default function SidebarPathFilter({
-  knownPaths, filter, hiddenCount, hiddenWaitingCount,
+  groups, filter, vpsFilter, vpsNameOf, hiddenCount, hiddenWaitingCount,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<PathFilter>(filter);
+  const [draft, setDraft] = useState<Draft>({ paths: filter, vps: vpsFilter });
   const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const copiedTimer = useRef<number | null>(null);
 
-  // Keep the deep link. `?session=` / `?shell=` say WHAT is open, `?path=`
-  // says what the sidebar lists — they are orthogonal, and applying a filter
-  // must not close the session you are reading.
-  const urlFor = useCallback((next: PathFilter | null) => {
+  // Keep the deep link. `?session=` / `?shell=` say WHAT is open, `?vps=` and
+  // `?path=` say what the sidebar lists — they are orthogonal, and applying a
+  // filter must not close the session you are reading.
+  const urlFor = useCallback((next: Draft | null) => {
     if (typeof window === 'undefined') return '';
     const params = new URLSearchParams(window.location.search);
     params.delete('path');
-    const query = next ? new URLSearchParams(buildFilterQuery(next).slice(1)) : null;
-    if (query) for (const value of query.getAll('path')) params.append('path', value);
+    params.delete('vps');
+    const query = next
+      ? new URLSearchParams(buildFilterQuery(next.paths, next.vps).slice(1))
+      : null;
+    if (query) {
+      for (const value of query.getAll('vps')) params.append('vps', value);
+      for (const value of query.getAll('path')) params.append('path', value);
+    }
     const rest = params.toString();
     return window.location.origin + window.location.pathname + (rest ? '?' + rest : '');
   }, []);
@@ -92,8 +108,8 @@ export default function SidebarPathFilter({
     if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
   }, []);
 
-  const active = isFilterActive(filter);
-  const summary = describeFilter(filter);
+  const active = isFilterActive(filter) || isFilterActive(vpsFilter);
+  const summary = describeFilter(filter, vpsFilter, vpsNameOf);
 
   const copy = async () => {
     const done = () => {
@@ -127,13 +143,13 @@ export default function SidebarPathFilter({
         type="button"
         className={`cs-filter${active ? ' on' : ''}`}
         aria-expanded={open}
-        onClick={() => { setDraft(filter); setOpen((o) => !o); }}
+        onClick={() => { setDraft({ paths: filter, vps: vpsFilter }); setOpen((o) => !o); }}
         title={active
           ? `sidebar filtered — ${summary}${hiddenCount > 0
             ? `; ${hiddenCount} hidden${hiddenWaitingCount > 0 ? `, ${hiddenWaitingCount} waiting on you` : ''}`
             : ''}`
-          : 'filter the sidebar by folder'}
-        aria-label={active ? 'sidebar path filter (on)' : 'filter the sidebar by folder'}
+          : 'filter the sidebar by machine and folder'}
+        aria-label={active ? 'sidebar filter (on)' : 'filter the sidebar by machine and folder'}
       >
         <IconFunnel />
         {/* Something is hidden: a corner dot, the same "there is content here"
@@ -174,36 +190,69 @@ export default function SidebarPathFilter({
           )}
 
           <div className="wfb-panel-head">
-            Click a folder to cycle it:
+            Click to cycle:
             <span className="wfb-legend off">· ignored</span>
             <span className="wfb-legend include">✓ included</span>
             <span className="wfb-legend exclude">− excluded</span>
           </div>
 
           <div className="wfb-paths">
-            {knownPaths.length === 0 && <div className="wfb-empty">no folder known yet</div>}
-            {knownPaths.map((p) => {
-              const state = pathState(p, draft);
-              // Split parent from leaf: in a 280px sidebar a plain ellipsis
-              // eats the END of the path, which is the only part that tells
-              // /srv/projects/api from /srv/projects/web apart. The leaf never
-              // shrinks; the parent is what gives way.
-              const cut = p.lastIndexOf('/');
-              const parent = cut > 0 ? p.slice(0, cut + 1) : '';
-              const leaf = cut > 0 ? p.slice(cut + 1) : p;
+            {groups.length === 0 && <div className="wfb-empty">no machine known yet</div>}
+            {groups.map((group) => {
+              // The machine row is a rule in its own right, not a heading:
+              // several boxes here share a cwd, so "which folder" cannot mean
+              // one project on its own. Machine rules are crossed with the
+              // folder rules by AND — the folder rows below stay global,
+              // which is why they are indented under it rather than owned.
+              const vState = pathState(group.vpsId, draft.vps);
               return (
-                <button
-                  key={p}
-                  type="button"
-                  className={`wfb-path ${state}`}
-                  aria-label={`${p} — ${STATE_LABEL[state]}`}
-                  onClick={() => setDraft(withPathState(draft, p, nextPathState(state)))}
-                  title={p}
-                >
-                  <span className="wfb-path-mark" aria-hidden>{STATE_MARK[state]}</span>
-                  {parent && <span className="wfb-path-dir" aria-hidden>{parent}</span>}
-                  <span className="wfb-path-leaf" aria-hidden>{leaf}</span>
-                </button>
+                <div className="wfb-group" key={group.vpsId}>
+                  <button
+                    type="button"
+                    className={`wfb-path wfb-vps ${vState}`}
+                    aria-label={`${group.vpsName} — ${STATE_LABEL[vState]}`}
+                    onClick={() => setDraft({
+                      ...draft,
+                      vps: withPathState(draft.vps, group.vpsId, nextPathState(vState)),
+                    })}
+                    title={`${group.vpsName} — the whole machine`}
+                  >
+                    <span className="wfb-path-mark" aria-hidden>{STATE_MARK[vState]}</span>
+                    <span className="wfb-path-leaf" aria-hidden>{group.vpsName}</span>
+                  </button>
+
+                  {group.paths.length === 0 && (
+                    <div className="wfb-empty wfb-group-empty">no folder known yet</div>
+                  )}
+                  {group.paths.map((p) => {
+                    const state = pathState(p, draft.paths);
+                    // Split parent from leaf: in a 280px sidebar a plain
+                    // ellipsis eats the END of the path, which is the only
+                    // part that tells /srv/projects/api from
+                    // /srv/projects/web apart. The leaf never shrinks; the
+                    // parent is what gives way.
+                    const cut = p.lastIndexOf('/');
+                    const parent = cut > 0 ? p.slice(0, cut + 1) : '';
+                    const leaf = cut > 0 ? p.slice(cut + 1) : p;
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        className={`wfb-path wfb-under ${state}`}
+                        aria-label={`${p} — ${STATE_LABEL[state]}`}
+                        onClick={() => setDraft({
+                          ...draft,
+                          paths: withPathState(draft.paths, p, nextPathState(state)),
+                        })}
+                        title={p}
+                      >
+                        <span className="wfb-path-mark" aria-hidden>{STATE_MARK[state]}</span>
+                        {parent && <span className="wfb-path-dir" aria-hidden>{parent}</span>}
+                        <span className="wfb-path-leaf" aria-hidden>{leaf}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>
@@ -234,7 +283,10 @@ export default function SidebarPathFilter({
             <button
               type="button"
               className="wfb-btn"
-              onClick={() => setDraft({ include: [], exclude: [] })}
+              onClick={() => setDraft({
+                paths: { include: [], exclude: [] },
+                vps: { include: [], exclude: [] },
+              })}
               title="untick everything above — does not navigate"
             >reset</button>
             <button type="button" className="wfb-btn" onClick={() => setOpen(false)}>close</button>
