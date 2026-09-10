@@ -72,35 +72,17 @@ export const THEMES: readonly Theme[] = [
     },
   },
   {
-    id: 'ember',
-    label: 'Ember',
-    hint: 'dark orange — and the transcript loses its message frames',
-    dark: true,
-    themeColor: '#131010',
-    // The one place the warm register gives way: a terminal renders someone
-    // else's ANSI, so blue/cyan/magenta stay recognisably themselves (muted,
-    // not recoloured) — `ls` output has to keep meaning what it means.
-    xterm: {
-      background: '#100c0b', foreground: '#e0cdc2', cursor: '#ff9464',
-      selectionBackground: '#4a2a1e',
-      black: '#1a1413', red: '#e05b57', green: '#a3bb63', yellow: '#d9a441',
-      blue: '#8f9bc4', magenta: '#c58ab0', cyan: '#79a9a4', white: '#e0cdc2',
-      brightBlack: '#6e5348', brightRed: '#f2705f', brightGreen: '#c6d98d',
-      brightYellow: '#ffc857', brightBlue: '#a8b3d8', brightMagenta: '#dba8c6',
-      brightCyan: '#96c2bd', brightWhite: '#fdf1ea',
-    },
-  },
-  {
     id: 'etonc',
     label: 'Etonc',
-    // Contributed by Etoncoco (PR #39). Same structural bet as Ember — no
-    // message frames — but on a warm-grey ground with a coral primary, and
-    // with a capped reading column instead of full-width prose.
+    // Contributed by Etoncoco (PR #39). The one theme that drops the message
+    // frames: warm-grey ground, coral primary, and a capped reading column,
+    // since nothing else holds the line length down once the boxes go.
     hint: 'warm greys and coral — the transcript reads as a document',
     dark: true,
     themeColor: '#191817',
-    // Same reservation as Ember's: blue/cyan/magenta stay recognisably
-    // themselves, muted into the warm register rather than recoloured.
+    // One reservation: a terminal renders someone else's ANSI, so
+    // blue/cyan/magenta stay recognisably themselves — muted into the warm
+    // register, never recoloured. `ls` has to keep meaning what it means.
     xterm: {
       background: '#141312', foreground: '#e6e0d4', cursor: '#e8977a',
       selectionBackground: '#46352c',

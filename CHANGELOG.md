@@ -27,13 +27,14 @@ commit-by-commit — `git log` has the detail.
   what Charon already knows into that URL, one bookmark per project. The
   selected entity is never hidden, and an unhealthy VPS stays on screen so its
   agent bar cannot go silent. Tabs are deliberately not filtered.
-- **`Etonc`, a fourth theme** (contributed by Etoncoco): warm greys instead of
-  the slate blue, a coral primary, sage where the stock theme is teal, and —
-  as in `Ember` — a transcript with no message frames, here with a capped
-  reading column so dropping the boxes cannot let a line run to 200
-  characters. Two new tokens, `--bubble-measure` and `--bubble-align`, carry
-  that column: inert in every other theme, and the way a theme changes
-  structure without being allowed a `[data-theme] .bubble {…}` override.
+- **`Etonc`, a third theme** (contributed by Etoncoco): warm greys instead of
+  the slate blue, a coral primary, sage where the stock theme is teal, and a
+  transcript with no message frames, capped to a reading column so dropping
+  the boxes cannot let a line run to 200 characters. Two new tokens,
+  `--bubble-measure` and `--bubble-align`, carry that column: inert in the
+  other themes, and the way a theme changes structure without being allowed a
+  `[data-theme] .bubble {…}` override. Replaces `Ember`, whose frameless
+  transcript this one supersedes.
 - **Codex as a second backend.** Every session carries a `kind`
   (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
   SDK and translated into the same event vocabulary, so the whole chat UI is

@@ -29,8 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IconFunnel } from './icons';
 import {
-  type PathFilter, type VpsFilter, buildFilterQuery, describeFilter, isFilterActive,
-  nextPathState, pathState, withPathState,
+  type PathFilter, type VpsFilter, buildFilterQuery, describeFilter, explainFilter,
+  isFilterActive, nextPathState, pathState, withPathState,
 } from './pathFilter';
 
 /** One machine and the folders known on it. */
@@ -189,11 +189,17 @@ export default function SidebarPathFilter({
             </div>
           )}
 
-          <div className="wfb-panel-head">
-            Click to cycle:
-            <span className="wfb-legend off">· ignored</span>
-            <span className="wfb-legend include">✓ included</span>
-            <span className="wfb-legend exclude">− excluded</span>
+          {/* What the CURRENT selection does, recomputed under the reader's
+              clicks. A static legend can only name the three states, and the
+              question people actually have — what does crossing out change
+              that leaving alone doesn't? — has an answer that depends on the
+              rest of the selection. */}
+          <div className="wfb-panel-head">{explainFilter(draft.paths, draft.vps)}</div>
+          <div className="wfb-panel-legend">
+            click to cycle
+            <span className="wfb-legend off">·</span>
+            <span className="wfb-legend include">✓</span>
+            <span className="wfb-legend exclude">−</span>
           </div>
 
           <div className="wfb-paths">
@@ -221,9 +227,10 @@ export default function SidebarPathFilter({
                     <span className="wfb-path-leaf" aria-hidden>{group.vpsName}</span>
                   </button>
 
-                  {group.paths.length === 0 && (
-                    <div className="wfb-empty wfb-group-empty">no folder known yet</div>
-                  )}
+                  {/* A machine with no known folder shows its row and nothing
+                      else. "No folder known yet" was a line of apology per
+                      machine, on a list where most rows are that case: the
+                      machine row is already the whole rule you can set. */}
                   {group.paths.map((p) => {
                     const state = pathState(p, draft.paths);
                     // Split parent from leaf: in a 280px sidebar a plain
