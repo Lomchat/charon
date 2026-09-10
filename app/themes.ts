@@ -93,6 +93,43 @@ export const THEMES: readonly Theme[] = [
       brightCyan: '#bacfc2', brightWhite: '#fbf9f2',
     },
   },
+  {
+    id: 'cupertino',
+    label: 'Cupertino',
+    hint: 'light — a Mac app: grey window, white content, hairlines',
+    dark: false,
+    themeColor: '#f2f2f7',
+    // Terminal.app's own Basic profile is white-on-black-text, and its ANSI
+    // brights (#00d900, #e5e500) are invisible there — so the palette is the
+    // system one darkened to carry on white, keeping each hue recognisable.
+    xterm: {
+      background: '#ffffff', foreground: '#1d1d1f', cursor: '#007aff',
+      selectionBackground: '#b3d7ff',
+      black: '#1d1d1f', red: '#c02318', green: '#1a7f37', yellow: '#9a6700',
+      blue: '#0057c2', magenta: '#8944ab', cyan: '#0a7c8c', white: '#6e6e73',
+      brightBlack: '#8e8e93', brightRed: '#d70015', brightGreen: '#248a3d',
+      brightYellow: '#b25000', brightBlue: '#007aff', brightMagenta: '#a259c4',
+      brightCyan: '#0e8fa3', brightWhite: '#000000',
+    },
+  },
+  {
+    id: 'cupertino-night',
+    label: 'Cupertino Night',
+    hint: 'dark — the same Mac app after sunset',
+    dark: true,
+    themeColor: '#1c1c1e',
+    // Apple's Dark variants land almost exactly where a terminal wants them:
+    // bright enough on near-black, and each hue still itself.
+    xterm: {
+      background: '#121214', foreground: '#f5f5f7', cursor: '#0a84ff',
+      selectionBackground: '#3f638b',
+      black: '#1c1c1e', red: '#ff453a', green: '#30d158', yellow: '#ffd60a',
+      blue: '#0a84ff', magenta: '#bf5af2', cyan: '#40cbe0', white: '#d1d1d6',
+      brightBlack: '#8e8e93', brightRed: '#ff6961', brightGreen: '#30db5b',
+      brightYellow: '#ffd426', brightBlue: '#409cff', brightMagenta: '#da8fff',
+      brightCyan: '#5de6ff', brightWhite: '#ffffff',
+    },
+  },
 ];
 
 export const DEFAULT_THEME_ID = 'nordic';

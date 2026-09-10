@@ -21,7 +21,7 @@ import SettingSourcesPicker from './SettingSourcesPicker';
 import {
   DEFAULT_SETTING_SOURCES, formatSettingSources, safeParseSettingSources,
 } from '@/lib/settingSources';
-import { THEMES, DEFAULT_THEME_ID } from './themes';
+import { THEMES, DEFAULT_THEME_ID, type Theme } from './themes';
 import { applyTheme, currentThemeId } from './themeClient';
 
 const MODE_LABEL: Record<string, string> = {
@@ -69,6 +69,36 @@ const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[
     { id: 'updates', label: 'updates' },
   ] },
 ];
+
+// Dark first: it is what the hub defaults to and where most themes live.
+const THEME_GROUPS = [
+  { label: 'dark', themes: THEMES.filter((t) => t.dark) },
+  { label: 'light', themes: THEMES.filter((t) => !t.dark) },
+].filter(({ themes }) => themes.length);
+
+/** One row of the theme picker: the name, what it is for, and the palette it
+ *  would apply. The swatch sets `data-theme` ON ITSELF, so its chips resolve
+ *  that theme's tokens straight from themes.css — no colour is copied into
+ *  TypeScript, and a theme edited in the stylesheet updates its own preview.
+ *  The chips inherit that theme's `--radius-sm` too, so the corners preview
+ *  the geometry as well as the palette. */
+function ThemeChoice({ theme }: { theme: Theme }) {
+  return (
+    <span className="theme-choice">
+      <span className="theme-choice-text">
+        {theme.label}
+        <small>{theme.hint}</small>
+      </span>
+      <span className="theme-swatch" data-theme={theme.id} aria-hidden="true">
+        <i style={{ background: 'var(--bg-elevated)' }} />
+        <i style={{ background: 'var(--text)' }} />
+        <i style={{ background: 'var(--accent)' }} />
+        <i style={{ background: 'var(--success)' }} />
+        <i style={{ background: 'var(--danger)' }} />
+      </span>
+    </span>
+  );
+}
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
   return (
@@ -276,8 +306,14 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         value={s['app.theme'] ?? DEFAULT_THEME_ID}
                         onValueChange={(nextValue) => { set('app.theme', nextValue); applyTheme(nextValue); }}
                       >
-                        {THEMES.map((theme) => (
-                          <option key={theme.id} value={theme.id}>{theme.label} — {theme.hint}</option>
+                        {THEME_GROUPS.map(({ label, themes }) => (
+                          <optgroup key={label} label={label}>
+                            {themes.map((theme) => (
+                              <option key={theme.id} value={theme.id}>
+                                <ThemeChoice theme={theme} />
+                              </option>
+                            ))}
+                          </optgroup>
                         ))}
                       </PickerControl>
                     </label>

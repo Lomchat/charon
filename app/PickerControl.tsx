@@ -54,7 +54,13 @@ export default function PickerControl({ value, onValueChange, children, presenta
       const below = height + edgeY - rect.bottom - 14, above = rect.top - edgeY - 14;
       const upwards = below < 180 && above > below;
       const menuWidth = Math.min(Math.max(rect.width, 240), width - 24);
-      const maxHeight = Math.max(60, Math.min(340, upwards ? above : below));
+      // The bound that matters is the room the popup actually has (`below` /
+      // `above`, already measured). The old flat 340px was a second, arbitrary
+      // cap on top of it, and it made any list of more than a handful of rows
+      // scroll with half the screen empty underneath. Keep a
+      // viewport-proportional ceiling instead, so a long catalog still can't
+      // become a full-height wall on a large monitor.
+      const maxHeight = Math.max(60, Math.min(Math.round(height * 0.62), upwards ? above : below));
       setPosition({ width: menuWidth, maxHeight,
         left: Math.max(edgeX + 12, Math.min(rect.left, edgeX + width - menuWidth - 12)),
         top: upwards ? Math.max(edgeY + 12, rect.top - 6 - Math.min(menu.current?.scrollHeight ?? maxHeight, maxHeight)) : rect.bottom + 6 });
