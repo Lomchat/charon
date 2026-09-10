@@ -30,6 +30,7 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
 import ForkModal from './ForkModal';
+import { copySessionNotifications } from './browserNotifications';
 import RewindModal from './RewindModal';
 
 import {
@@ -282,6 +283,11 @@ export default function ClaudeSessionView({
         setForkError(j?.error || 'fork failed');
         return;
       }
+      // The branch inherits the source's notification rules. The Telegram half
+      // came across with the fork itself; this one is localStorage, so only
+      // this device can carry it — fire-and-forget, since a push-sync hiccup
+      // must not turn a successful fork into an error.
+      void copySessionNotifications(sessionId, j.session.id).catch(() => {});
       // Open the branch straight away: the point of forking is to work in it.
       // Creating, not browsing — so hand over the row we just got back and PIN
       // it (§14.78). Looking the id up in `sessions` would lose the race with

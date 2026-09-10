@@ -7,12 +7,17 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import {
   deleteSession,
   emitGlobalSessionListChanged,
+  emitGlobalSettingsChanged,
   getOrCreateStream,
   nextSessionPosition,
+  parseProviderConfig,
   resumeSession,
   startNewSession,
 } from '@/lib/server/agent/sessionOps';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import { copySessionNotificationSettings } from '@/lib/server/claude/sessionNotifications';
+import { isSessionEffort } from '@/lib/sessionCapabilities';
+import type { AgentKind, SharedSessionConfig } from '@/lib/types/api';
 import {
   batchCodexHistoryItems,
   codexItemsFromForkHistory,
@@ -126,6 +131,53 @@ function copyVisibleTranscript(sourceId: string, newId: string, cutoffId: number
   return copied;
 }
 
+/**
+ * The per-session notification override travels with the branch. Only the
+ * TELEGRAM half is here — the browser half is localStorage on one device and
+ * is copied client-side, next to where the branch is opened.
+ */
+function inheritNotifications(sourceId: string, newId: string): void {
+  if (copySessionNotificationSettings(sourceId, newId)) emitGlobalSettingsChanged();
+}
+
+/**
+ * What a CROSS-PROVIDER branch inherits besides the transcript.
+ *
+ * Same-provider forks copy the source row verbatim (model, fallback, effort,
+ * mode, construction config): a branch that silently ran under the fleet
+ * defaults would make every comparison with its source meaningless. Across
+ * providers the two vocabularies are not the same language, so each field is
+ * carried only where it still MEANS something:
+ *   model  — never. A Claude model id names nothing in Codex's catalog and
+ *            vice versa; a row advertising a model the session is not running
+ *            is worse than the target's own default.
+ *   effort — where the target knows the word. `low`/`medium`/`high`/`xhigh`/
+ *            `max` are shared; `ultracode`, `ultra`, `none` and `minimal` are
+ *            one provider's only, and are dropped rather than approximated.
+ *   mode   — never. `normal|acceptEdits|auto|plan` and the sandbox levels are
+ *            disjoint sets, and inventing a mapping would quietly widen or
+ *            narrow what the branch may touch (§14.59).
+ *   config — the `SharedSessionConfig` half only (instructions, schema, env,
+ *            §14.59). The rest names machinery the target does not have:
+ *            skills/settingSources are Claude's, reviewer/profile/overrides
+ *            are Codex's.
+ */
+function crossProviderInheritance(source: SourceSession, targetKind: AgentKind): {
+  effort: string | null; sessionConfig: SharedSessionConfig | null;
+} {
+  const config = parseProviderConfig(source.codexConfig) as SharedSessionConfig | null;
+  const shared: SharedSessionConfig = {
+    ...(config?.outputSchema != null ? { outputSchema: config.outputSchema } : {}),
+    ...(config?.baseInstructions != null ? { baseInstructions: config.baseInstructions } : {}),
+    ...(config?.developerInstructions != null ? { developerInstructions: config.developerInstructions } : {}),
+    ...(config?.env ? { env: config.env } : {}),
+  };
+  return {
+    effort: isSessionEffort(targetKind, source.effort) ? source.effort : null,
+    sessionConfig: Object.keys(shared).length ? shared : null,
+  };
+}
+
 function insertForkMarker(
   source: SourceSession,
   newId: string,
@@ -199,6 +251,7 @@ async function forkToClaude(
 
   const copied = copyVisibleTranscript(source.id, newId, cutoffId);
   insertForkMarker(source, newId, 'claude', cutoffId);
+  inheritNotifications(source.id, newId);
 
   // Start it. A branch you have to wake up before using reads as a failure,
   // and resume already knows how to bring a session up from a transcript id
@@ -269,6 +322,7 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
       cwd: source.cwd,
       name,
       kind: 'codex',
+      ...crossProviderInheritance(source, 'codex'),
     });
     const client = getAgentClientForVpsId(source.vpsId);
     const batches = batchCodexHistoryItems(newId, items);
@@ -288,6 +342,7 @@ async function forkToCodex(source: SourceSession, name: string, cutoffId: number
 
     const copied = copyVisibleTranscript(source.id, newId, cutoffId);
     insertForkMarker(source, newId, 'codex', cutoffId);
+    inheritNotifications(source.id, newId);
     await sendReplacement(newId, replacementPrompt);
     emitGlobalSessionListChanged(newId);
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
@@ -332,6 +387,7 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
     }).run();
     const copied = copyVisibleTranscript(source.id, newId, cutoffId);
     insertForkMarker(source, newId, 'codex', cutoffId);
+    inheritNotifications(source.id, newId);
     let started = false;
     let startError: unknown = null;
     try {
@@ -396,6 +452,7 @@ async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: 
       cwd: source.cwd,
       name,
       kind: 'claude',
+      ...crossProviderInheritance(source, 'claude'),
     });
     const client = getAgentClientForVpsId(source.vpsId);
     for (let i = 0; i < chunks.length; i += 1) {
@@ -407,6 +464,7 @@ async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: 
 
     const copied = copyVisibleTranscript(source.id, newId, cutoffId);
     insertForkMarker(source, newId, 'claude', cutoffId);
+    inheritNotifications(source.id, newId);
     await stream.sendUserMessage([
       'Continue the conversation whose complete provider-neutral transcript is stored in:',
       ...paths.map((p) => `- ${p}`),

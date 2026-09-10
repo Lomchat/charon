@@ -117,7 +117,8 @@ export default function ForkModal({
             <span className="fork-choice-go">{busy === 'codex' ? '…' : '→'}</span>
           </button>
         </div>
-        <p className="fork-note">The current session keeps running untouched.</p>
+        <p className="fork-note">The current session keeps running untouched. The branch inherits its
+          notification rules, plus the model and effort the chosen agent can still honour.</p>
         {error && <p className="confirm-err">{error}</p>}
       </div>
     </div>

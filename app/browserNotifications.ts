@@ -35,6 +35,20 @@ export function saveBrowserNotifications(value: BrowserNotificationPreferences):
   saving = task;
   return task;
 }
+/**
+ * Carry a session's browser override onto a branch (fork). The Telegram half
+ * travels server-side with the fork; this half is localStorage, so only the
+ * device doing the forking can copy it — and only if it HAS an override:
+ * absent means "inherit the defaults", which the branch already does.
+ * Never re-prompts for permission — an enabled override already makes
+ * `browserNotificationsEnabled` true, so this can only ever be a resync.
+ */
+export function copySessionNotifications(fromSessionId: string, toSessionId: string): Promise<void> {
+  const current = readBrowserNotifications();
+  const value = current.sessions?.[fromSessionId];
+  if (!value) return Promise.resolve();
+  return saveBrowserNotifications({ ...current, sessions: { ...current.sessions, [toSessionId]: value } });
+}
 let initializing: Promise<void> | null = null;
 function initialize(): Promise<void> {
   if (!initializing) {

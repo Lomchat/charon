@@ -132,6 +132,19 @@ describe('independent notification channels', () => {
       expect((await route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'session-a' }) })).status).toBe(400);
     }
   });
+  it('a fork inherits an override, and inherits nothing when the source has none', async () => {
+    const { copySessionNotificationSettings } = await import('@/lib/server/claude/sessionNotifications');
+    const route = await import('@/app/api/claude/sessions/[id]/notifications/route');
+    await route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify({ telegram: { enabled: true, events: { session_error: false } } }) }), { params: Promise.resolve({ id: 'session-a' }) });
+    expect(copySessionNotificationSettings('session-a', 'session-b')).toBe(true);
+    const branch = await (await route.GET(new Request('http://localhost'), { params: Promise.resolve({ id: 'session-b' }) })).json();
+    expect(branch.telegram).toMatchObject({ enabled: true, events: { session_error: false, session_finished: true } });
+    // No row means "inherit the defaults" — a branch of an inheriting session
+    // must inherit too, never freeze today's defaults into an override.
+    expect(copySessionNotificationSettings('killed', 'archived')).toBe(false);
+    expect(db.select().from(schema.sessionNotificationSettings).all().map((r: any) => r.sessionId).sort())
+      .toEqual(['session-a', 'session-b']);
+  });
   it('normalizes old or malformed preferences without treating string false as a boolean', () => {
     expect(parseBrowserNotifications(null).enabled).toBe(true);
     expect(parseBrowserNotifications('{broken', false).enabled).toBe(false);

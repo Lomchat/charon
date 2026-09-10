@@ -18,6 +18,23 @@ export function telegramNotificationEnabled(event: NotificationEvent, sessionId?
   const settings = sessionTelegramNotifications(sessionId) ?? telegramNotificationDefaults();
   return settings.enabled && settings.events[event];
 }
+/**
+ * Carry a session's Telegram override onto a branch (§14.94). A fork is a
+ * continuation, so it inherits the delivery rules with the conversation:
+ * falling back to the fleet default would silently re-enable — or silence —
+ * notifications on a session the user thinks of as the same one.
+ * NO row is the "inherit the defaults" state, and it copies as no row: never
+ * materialise today's defaults into an override the user never asked for.
+ * Returns whether anything was written, so the caller can announce it.
+ */
+export function copySessionNotificationSettings(fromSessionId: string, toSessionId: string): boolean {
+  const row = db.select().from(sessionNotificationSettings)
+    .where(eq(sessionNotificationSettings.sessionId, fromSessionId)).get();
+  if (!row) return false;
+  db.insert(sessionNotificationSettings).values({ sessionId: toSessionId, telegram: row.telegram })
+    .onConflictDoUpdate({ target: sessionNotificationSettings.sessionId, set: { telegram: row.telegram } }).run();
+  return true;
+}
 export function telegramHasEnabledChannel(): boolean {
   if (getSettingBool('telegram.enabled')) return true;
   return db.select().from(sessionNotificationSettings).all().some((row) => {
