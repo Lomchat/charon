@@ -108,6 +108,19 @@
   --bubble-tint:     1;
   --bubble-measure:  none;
   --bubble-align:    stretch;
+  --bubble-radius:   0;
+
+  /* Geometry — the second thing a theme gets to decide, after colour. Corner
+     rounding said more about "which design is this" than any single hue, and
+     it was 200 literals across the sheets: 15 arbitrary values where four
+     steps do. These four are the MODES of that old distribution, so the
+     themes that predate them are unchanged to within a pixel or two.
+     A circle (50%) and a pill (999px) are SHAPES, not style — they stay
+     literal, and a theme must not be able to un-round an avatar. */
+  --radius-sm:       3px;   /* chips, marks, tags                           */
+  --radius-md:       6px;   /* buttons, inputs, cards                       */
+  --radius-lg:       9px;   /* panels, popovers                             */
+  --radius-xl:       14px;  /* modals, the big containers                   */
 
   /* Type */
   --display: 'Inter', system-ui, -apple-system, sans-serif;
@@ -178,6 +191,12 @@
   --bubble-tint:     1;
   --bubble-measure:  none;
   --bubble-align:    stretch;
+  --bubble-radius:   0;
+
+  --radius-sm:       3px;
+  --radius-md:       6px;
+  --radius-lg:       9px;
+  --radius-xl:       14px;
 
   --display: 'Inter', system-ui, -apple-system, sans-serif;
   --body:    'Inter', system-ui, -apple-system, sans-serif;
@@ -258,10 +277,208 @@
   --bubble-tint:     0;
   --bubble-measure:  46rem;
   --bubble-align:    center;
+  --bubble-radius:   0;
+
+  --radius-sm:       3px;
+  --radius-md:       6px;
+  --radius-lg:       9px;
+  --radius-xl:       14px;
 
   --display: 'Inter', system-ui, -apple-system, sans-serif;
   --body:    'Inter', system-ui, -apple-system, sans-serif;
   --mono:    'JetBrains Mono', monospace;
+}
+
+/* Cupertino — the look of a Mac app: a grey window, white content, hairline
+   separators, and colour used only where it means something.
+
+   The palette is Apple's own system one rather than an impression of it. Two
+   choices carry the rest:
+
+   · Anything that is TEXT takes Apple's published *accessible* variant, not
+     the vivid one — systemRed #ff3b30 on white is 3:1 and this UI writes
+     errors in words, not just dots. The vivid values stay for the roles that
+     are a fill or a 9px dot.
+   · The type stack is the system one. On a Mac that IS SF Pro / SF Mono, and
+     no other single change reads as "Apple" so immediately; everywhere else it
+     degrades to that platform's own UI face, which is the right answer anyway.
+
+   Frames are kept (Apple groups content, it doesn't float it) but their fill
+   is halved: on white, the 40% wash the dark themes need is a smudge. */
+[data-theme='cupertino'] {
+  --bg-inset:        #ffffff;  /* fields are white on a grey window          */
+  --bg:              #f2f2f7;  /* systemGroupedBackground                    */
+  --bg-raised:       #fafafc;
+  --bg-elevated:     #ffffff;  /* cards and modals — the shadow lifts them   */
+  --bg-high:         #e5e5ea;  /* systemGray5, the hover fill                */
+
+  --text:            #1d1d1f;  /* Apple's near-black, never #000 for prose   */
+  --text-strong:     #000000;
+  --text-muted:      #6e6e73;
+  --text-faint:      #8e8e93;  /* systemGray                                 */
+
+  --border:          #d2d2d7;  /* the hairline, 241 uses — it sets the tone  */
+  --border-strong:   #b0b0b8;
+
+  --accent:          #007aff;  /* systemBlue                                 */
+  --accent-strong:   #0040dd;  /* Blue (accessible) — hover and selected text */
+  --accent-dim:      #7ab5ff;
+
+  --info:            #0e8fa3;
+  --info-deep:       #0a6c7c;
+  --danger:          #d70015;  /* Red (accessible)                           */
+  --danger-strong:   #a5000f;
+  --danger-soft:     #8a2b2b;  /* reads on --danger-bg, which is now pale    */
+  --danger-deep:     #7a0a12;
+  --danger-bg:       #ffeceb;
+  --danger-bg-strong: #ffd9d6;
+  --success:         #248a3d;  /* Green (accessible)                         */
+  --success-soft:    #30a14e;
+  --success-deep:    #16642b;
+  --warning:         #a9640a;
+  --warning-strong:  #c98a00;
+  --warning-soft:    #7d5410;
+  --attention:       #c93400;  /* Orange (accessible) — needs a human        */
+  --attention-strong: #e5511f;
+  --lavender:        #4b49c7;  /* systemIndigo, darkened to carry as text    */
+  --violet:          #8944ab;  /* Purple (accessible)                        */
+  --violet-soft:     #a259c4;
+  --violet-deep:     #6b2f87;
+
+  /* Xcode's own light editor: grey-blue comments, red strings. --diff-add
+     stays green — it means "added", not "a string". */
+  --syn-comment:     #5d6c79;
+  --syn-string:      #c41a16;
+  --diff-add:        #248a3d;
+
+  /* Black at the alphas this UI uses turns every inset row into a hole on a
+     white ground; the scrim alone still has to hide the page. */
+  --shade:           #8e8e93;
+  --shadow-color:    #3c3c43;
+  --scrim:           #000000;
+  --tint:            #3c3c43;
+
+  --logo-plate:      #f4f1ea;
+  --media-bg:        #ffffff;
+
+  --term-bg:         #ffffff;
+  --term-fg:         #1d1d1f;
+  --term-dim:        #8e8e93;
+
+  --bubble-edge:     1px;
+  --bubble-tint:     0.5;
+  --bubble-measure:  none;
+  --bubble-align:    stretch;
+  /* Rounder across the board — on this palette the corners are what carries
+     the resemblance once the hues are right. */
+  --bubble-radius:   12px;
+
+  --radius-sm:       6px;
+  --radius-md:       10px;
+  --radius-lg:       14px;
+  --radius-xl:       20px;
+
+  --display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  --body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --mono:    'SF Mono', ui-monospace, Menlo, monospace;
+}
+
+/* Cupertino Night — the same Mac app after dark. Deliberately the SAME
+   geometry and the SAME type stack as `cupertino`: what makes two themes read
+   as one family is the shape and the letterforms, not the hue. Only the
+   palette flips.
+
+   The greys are Apple's own dark ramp, not a dimmed version of the light one:
+   #1c1c1e → #2c2c2e → #3a3a3c are systemGray6/5/4, so a card sits where a Mac
+   user expects a card to sit. The accents are the *Dark* variants — systemBlue
+   is #0a84ff here, not #007aff, because Apple brightens every hue for a dark
+   ground rather than reusing it.
+
+   One inversion from the light sibling: --accent-strong is now BRIGHTER than
+   --accent (hover lifts off a dark ground, it doesn't deepen), and the bubble
+   fill goes back to full — the wash that smudged on white is what separates a
+   message from the pane here. */
+[data-theme='cupertino-night'] {
+  --bg-inset:        #121214;  /* wells and code, below the window          */
+  --bg:              #1c1c1e;  /* systemGray6 — the window                  */
+  --bg-raised:       #232325;
+  --bg-elevated:     #2c2c2e;  /* systemGray5 — cards, modals               */
+  --bg-high:         #3a3a3c;  /* systemGray4 — the hover fill              */
+
+  --text:            #f5f5f7;
+  --text-strong:     #ffffff;
+  --text-muted:      #98989f;  /* secondaryLabel, resolved off its alpha    */
+  --text-faint:      #6c6c70;  /* tertiaryLabel                             */
+
+  --border:          #38383a;  /* opaqueSeparator                           */
+  --border-strong:   #54545a;
+
+  /* NOT Apple's systemBlue (#0a84ff): it is tuned for small controls, and here
+     the accent paints borders, gauges and washes across a lot of surface,
+     where it glared — at 4.66:1 against the window, the worse contrast of the
+     candidates as well as the harshest.
+     This is nordic's blue, unchanged, and the reason it is comfortable is
+     LIGHTNESS, not chroma: 62% saturation, same as the softened blue it
+     replaced, but L=72% against 60% — a pale tint on a dark ground doesn't
+     glare the way a mid-luminance saturated colour does, and it reaches
+     7.88:1. Same hue as Apple's (212° vs 210°), so the family still holds. */
+  --accent:          #8ab4e4;
+  --accent-strong:   #a8c4ef;  /* hover lifts off a dark ground, 9.6:1      */
+  --accent-dim:      #537ca8;
+
+  --info:            #40cbe0;  /* systemTeal (dark)                         */
+  --info-deep:       #2a8c9c;
+  --danger:          #ff453a;  /* systemRed (dark)                          */
+  --danger-strong:   #ff6961;  /* Red (accessible, dark) — errors in words  */
+  --danger-soft:     #ffc9c5;
+  --danger-deep:     #a5251d;
+  --danger-bg:       #2c1414;
+  --danger-bg-strong: #4a1c18;
+  --success:         #30d158;  /* systemGreen (dark)                        */
+  --success-soft:    #6ee787;
+  --success-deep:    #1f8a3b;
+  --warning:         #e5c04a;  /* systemYellow softened — it carries text   */
+  --warning-strong:  #ffd60a;
+  --warning-soft:    #f5dd8f;
+  --attention:       #ff9f0a;  /* systemOrange (dark) — needs a human       */
+  --attention-strong: #ff7a45;
+  --lavender:        #7d7aff;  /* systemIndigo (accessible, dark)           */
+  --violet:          #bf5af2;  /* systemPurple (dark)                       */
+  --violet-soft:     #da8fff;
+  --violet-deep:     #8b3fb0;
+
+  /* Xcode's Default Dark, as the light one takes Default Light. */
+  --syn-comment:     #6c7986;
+  --syn-string:      #fc6a5d;
+  --diff-add:        #30d158;
+
+  --shade:           #000000;
+  --shadow-color:    #000000;
+  --scrim:           #000000;
+  --tint:            #ffffff;
+
+  --logo-plate:      #f4f1ea;
+  --media-bg:        #ffffff;
+
+  --term-bg:         #121214;
+  --term-fg:         #f5f5f7;
+  --term-dim:        #8e8e93;
+
+  --bubble-edge:     1px;
+  --bubble-tint:     1;
+  --bubble-measure:  none;
+  --bubble-align:    stretch;
+  --bubble-radius:   12px;
+
+  /* Identical to cupertino, on purpose. */
+  --radius-sm:       6px;
+  --radius-md:       10px;
+  --radius-lg:       14px;
+  --radius-xl:       20px;
+
+  --display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+  --body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --mono:    'SF Mono', ui-monospace, Menlo, monospace;
 }
 
 /* ── Legacy aliases ─────────────────────────────────────────────────────────

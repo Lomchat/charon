@@ -25,7 +25,7 @@
   font-size: 0.78em;
   padding: 2px 8px;
   margin-left: 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-family: inherit;
 }
@@ -39,7 +39,7 @@
 .claude-sidebar .vps-card {
   margin: 0 8px 14px;
   border: 1px solid color-mix(in srgb, var(--tint) 6%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--shade) 15%, transparent);
   overflow: hidden;
 }
@@ -117,7 +117,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 3px 9px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   line-height: 1.2;
   white-space: nowrap;
@@ -231,7 +231,7 @@
   background: var(--bg-inset);
   color: var(--term-fg);
   border: 1px solid color-mix(in srgb, var(--tint) 15%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   width: min(900px, 100%);
   max-height: 80vh;
   display: flex;
@@ -471,7 +471,7 @@
   font-family: var(--mono, monospace);
   font-size: 10.5px;
   padding: 2px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
 }
 .dv-agent.agent-ok      { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); background: color-mix(in srgb, var(--success) 8%, transparent); }
@@ -494,7 +494,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 4px 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   line-height: 1.2;
 }
@@ -554,7 +554,7 @@
   font-family: var(--body, inherit);
   font-size: 12px;
   padding: 3px 6px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   outline: none;
   min-width: 0;
 }
@@ -603,7 +603,7 @@
   font-family: var(--mono, monospace);
   font-size: 11px;
   padding: 4px 8px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   outline: none;
   min-width: 0;
 }
@@ -618,7 +618,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 4px 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 600;
 }
@@ -804,7 +804,7 @@
   border: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent);
   color: var(--term-dim);
   padding: 2px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -814,7 +814,7 @@
   border: 1px solid color-mix(in srgb, var(--danger-strong) 40%, transparent);
   color: var(--danger-strong);
   padding: 4px 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-family: var(--display, inherit);
   font-size: 10.5px;
   letter-spacing: 0.08em;
@@ -906,7 +906,7 @@
   color: var(--term-dim);
   font-size: 9px;
   padding: 1px 5px;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-left: auto;
@@ -927,7 +927,7 @@
   border: 1px solid color-mix(in srgb, var(--success) 40%, transparent);
   color: var(--success-soft);
   padding: 1px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   font-size: 0.75em;
   font-weight: 600;
   text-transform: uppercase;
@@ -996,7 +996,7 @@
   margin: 0 0 10px;
   padding: 8px 12px;
   background: var(--bg-inset); border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 .data-search:focus-within { border-color: var(--accent); }
 .data-search-glyph { color: var(--accent); font-family: var(--mono); font-size: 15px; line-height: 1; }
@@ -1012,7 +1012,7 @@
   padding: 2px 8px; flex-shrink: 0;
 }
 .data-search-clear {
-  flex-shrink: 0; cursor: pointer; padding: 2px 7px; border-radius: 6px;
+  flex-shrink: 0; cursor: pointer; padding: 2px 7px; border-radius: var(--radius-md);
   background: transparent; border: 1px solid transparent;
   color: var(--text-muted); font-size: 12px; line-height: 1;
 }
@@ -1170,14 +1170,14 @@
    square v2 styles above without touching them. */
 .data-modal-v2 .data-head { padding-bottom: 14px; margin-bottom: 16px; }
 .data-modal-v2 .data-add-vps-btn {
-  border-radius: 8px; padding: 7px 14px;
+  border-radius: var(--radius-lg); padding: 7px 14px;
   background: color-mix(in srgb, var(--shade) 25%, transparent);
 }
 .data-modal-v2 .data-add-vps-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
 .data-folder-list { gap: 16px; }
 .data-folder-card {
-  border-radius: 12px; overflow: hidden;
+  border-radius: var(--radius-xl); overflow: hidden;
   border-color: var(--border);
   background: color-mix(in srgb, var(--bg-raised) 45%, transparent);
 }
@@ -1186,12 +1186,12 @@
   padding: 11px 14px;
 }
 .data-folder-static .data-folder-head { background: color-mix(in srgb, var(--danger) 6%, transparent); }
-.data-folder-count { border-radius: 9px; }
-.data-folder-empty { border-radius: 8px; }
+.data-folder-count { border-radius: var(--radius-lg); }
+.data-folder-empty { border-radius: var(--radius-lg); }
 
 .data-vps-list { gap: 14px; }
 .data-vps-card {
-  border-radius: 10px; overflow: hidden;
+  border-radius: var(--radius-lg); overflow: hidden;
   background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
 }
 .data-vps-card.agent-error { border-color: var(--danger-deep); }
@@ -1199,16 +1199,16 @@
   background: color-mix(in srgb, var(--shade) 18%, transparent);
   padding: 10px 12px;
 }
-.dv-agent { border-radius: 8px; }
+.dv-agent { border-radius: var(--radius-lg); }
 .dv-actions { gap: 6px; }
-.dv-btn { border-radius: 7px; padding: 5px 11px; }
+.dv-btn { border-radius: var(--radius-md); padding: 5px 11px; }
 .dv-btn.danger { padding: 5px 9px; }
-.dv-folder-select { border-radius: 7px; padding: 5px 8px; max-width: 150px; }
-.dv-path-label { border-radius: 6px; }
-.dv-path-del { border-radius: 6px; }
-.dv-add-path input { border-radius: 6px; padding: 5px 9px; }
-.dv-add-btn { border-radius: 7px; padding: 5px 13px; }
-.dv-card-drag-overlay, .dv-folder-drag-overlay { border-radius: 10px; }
+.dv-folder-select { border-radius: var(--radius-md); padding: 5px 8px; max-width: 150px; }
+.dv-path-label { border-radius: var(--radius-md); }
+.dv-path-del { border-radius: var(--radius-md); }
+.dv-add-path input { border-radius: var(--radius-md); padding: 5px 9px; }
+.dv-add-btn { border-radius: var(--radius-md); padding: 5px 13px; }
+.dv-card-drag-overlay, .dv-folder-drag-overlay { border-radius: var(--radius-lg); }
 
 /* Scroll fix: the rounded panels use overflow:hidden (for the corners), so
    in the fixed-height flex column they must NOT flex-shrink — otherwise the

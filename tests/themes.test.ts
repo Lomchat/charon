@@ -108,4 +108,18 @@ describe('theme tokens', () => {
       expect(literals, `${sheet} hardcodes a colour`).toEqual([]);
     }
   });
+
+  it('no stylesheet outside themes.css carries a literal corner radius', () => {
+    // Same rule as colour, one exception: a circle and a pill are SHAPES. An
+    // avatar is round because it is an avatar, not because a theme said so,
+    // and `0` means "explicitly none". Everything else is a --radius step.
+    const shapes = /^(50%|999px|0)$/;
+    for (const sheet of SHEETS) {
+      const css = read(sheet).replace(/\/\*[\s\S]*?\*\//g, '');
+      const literals = [...css.matchAll(/border-radius:\s*([^;}]+)/g)]
+        .map((m) => m[1].trim())
+        .filter((value) => !/var\(--[a-z-]*radius[a-z-]*\)/.test(value) && !shapes.test(value));
+      expect(literals, `${sheet} hardcodes a corner radius`).toEqual([]);
+    }
+  });
 });
