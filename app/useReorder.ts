@@ -17,6 +17,9 @@ import { useCallback, useRef, useState } from 'react';
  *    dragger was looking at, and these lists are shared and polled.
  *  - a drop outside the list, or one that changes nothing, is a no-op — a
  *    reorder nobody asked for is worse than one that didn't happen.
+ *  - a list stays transparent to a drag it did not start, which is what lets
+ *    the sidebar nest one (session cards) inside another's drop target (the
+ *    path group a heading drag lands on).
  *
  * Drops land BEFORE or AFTER the row under the pointer, decided by the row's
  * midpoint along `axis`. That is what makes the LAST slot reachable: an
@@ -24,19 +27,21 @@ import { useCallback, useRef, useState } from 'react';
  * so the end of the list has no target and the tail is unreachable — you could
  * put a row second-to-last and no further.
  */
+export type ReorderItemProps = {
+  draggable: true;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
+  onDragEnd: () => void;
+  'data-dragging'?: string;
+  'data-over'?: string;
+};
+
 export type ReorderHandlers = {
   draggingId: string | null;
   overId: string | null;
-  /** Spread onto each item element. */
-  itemProps: (id: string) => {
-    draggable: true;
-    onDragStart: (e: React.DragEvent) => void;
-    onDragOver: (e: React.DragEvent) => void;
-    onDrop: (e: React.DragEvent) => void;
-    onDragEnd: () => void;
-    'data-dragging'?: string;
-    'data-over'?: string;
-  };
+  /** Spread onto each item element, or split when the handle is not the target. */
+  itemProps: (id: string) => ReorderItemProps;
 };
 
 type Opts = {
@@ -122,15 +127,19 @@ export function useReorder(
       setOver({ id, after });
     },
     onDrop: (e: React.DragEvent) => {
+      const from = draggingRef.current;
+      // Not this list's drag: stay transparent so it reaches whatever is
+      // listening outside. A session card sits INSIDE the path group that is
+      // the drop target for a heading drag, and swallowing the event here is
+      // exactly how that drop would silently do nothing.
+      if (!from) { finish(); return; }
       e.preventDefault();
       e.stopPropagation();
-      const from = draggingRef.current;
       // The drop side comes from this event, not from the last dragover: a
       // pointer can move between the two, and the indicator the user saw must
       // be the one that lands.
       const after = isAfter(e);
       finish();
-      if (!from) return;
       const next = insertRelative(idsRef.current, from, id, after);
       if (next) onCommit(next);
     },

@@ -4,14 +4,17 @@ import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import AgentLogo from './AgentLogo';
-import { useReorder } from './useReorder';
+import { useReorder, type ReorderItemProps } from './useReorder';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, parseAgentLastError } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
-import { mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrderedIds } from './sidebarPathGroups';
+import {
+  mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
+  sidebarPathOrderedIds,
+} from './sidebarPathGroups';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 
@@ -1051,6 +1054,13 @@ const STATUS_TEXT: Record<string, string> = {
  * Path-group order follows the first entity currently present in each path,
  * preserving the existing VPS order. A group component owns its own reorder
  * hook, which structurally prevents cross-path drops.
+ *
+ * TWO nested drags, and they never meet: a card moves inside its own group
+ * (that group's hook), a HEADING moves the whole path (this one). There is no
+ * path order to store — it is read off the session order — so moving a heading
+ * commits every session of that path at once. A heading is the handle, but the
+ * drop target is the whole group: a 9px caption is not something to aim at,
+ * and its midpoint decides before/after just as a row's does.
  */
 function WorkspacePathGroups({
   vpsId, sessions, selectedId, selectedSessionIds, deletingSessionIds,
@@ -1096,11 +1106,24 @@ function WorkspacePathGroups({
     return [...byPath.values()];
   }, [sessions, shells]);
 
+  // Only a path holding sessions can move: order lives in `position` on the
+  // session rows, so a shell-only group has nothing to carry it — and since
+  // the map above is filled from the sessions first, those groups already sit
+  // at the end, which is where they would land anyway. Read off the SAME list
+  // the commit expands, so the drag list and the merge cannot drift apart.
+  const movablePaths = useMemo(() => sidebarPathOrder(sessions), [sessions]);
+  const pathDnd = useReorder(movablePaths, (orderedPaths) => {
+    const fullOrder = mergeSidebarPathGroupOrder(sessions, orderedPaths);
+    if (fullOrder) onReorder?.(vpsId, fullOrder);
+  }, { axis: 'y' });
+  const pathsMovable = !!onReorder && movablePaths.length > 1;
+
   return (
     <>
       {groups.map((group) => (
         <SessionPathGroup
           key={group.path}
+          dnd={pathsMovable && group.sessions.length > 0 ? pathDnd.itemProps(group.path) : undefined}
           vpsId={vpsId}
           path={group.path}
           collapsed={collapsedPaths.has(pathCollapseKey(vpsId, group.path))}
@@ -1135,10 +1158,12 @@ function SessionPathGroup({
   selectedId, selectedShellId, selectedSessionIds, deletingSessionIds,
   showDetails, sessionHandles, activeWorkspace,
   onSelect, onSelectShell, onSelectionGesture, onContext, onContextShell,
-  editingId, onRenameSubmit, onRenameCancel, onReorder,
+  editingId, onRenameSubmit, onRenameCancel, onReorder, dnd: pathDnd,
 }: {
   vpsId: string;
   path: string;
+  /** Heading drag: the handle is the caption, the drop target the whole group. */
+  dnd?: ReorderItemProps;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   sessions: SessionListItem[];
@@ -1167,12 +1192,22 @@ function SessionPathGroup({
   }, { axis: 'y' });
   const current = path !== '~' && isSameWorkspace(activeWorkspace, vpsId, path);
   const count = sessions.length + shells.length;
+  const label = path === '~' ? 'default home directory' : path;
 
   return (
-    <section className={`cs-path-group${current ? ' current' : ''}`}>
+    <section
+      className={`cs-path-group${current ? ' current' : ''}`}
+      onDragOver={pathDnd?.onDragOver}
+      onDrop={pathDnd?.onDrop}
+      data-dragging={pathDnd?.['data-dragging']}
+      data-over={pathDnd?.['data-over']}
+    >
       <button type="button" className="cs-path-head" onClick={onToggleCollapsed}
         aria-expanded={!collapsed} aria-label={`${collapsed ? 'expand' : 'collapse'} path ${path}`}
-        title={path === '~' ? 'default home directory' : path}>
+        draggable={pathDnd?.draggable}
+        onDragStart={pathDnd?.onDragStart}
+        onDragEnd={pathDnd?.onDragEnd}
+        title={pathDnd ? `${label} · drag to move this path and its sessions` : label}>
         <span className="cs-caret" aria-hidden>{collapsed ? '▸' : '▾'}</span>
         <span className="cs-path-mark" aria-hidden />
         <span className="cs-path-name">{path}</span>
