@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildFilterQuery, describeFilter, isFilterActive, isPathVisible,
+  buildFilterQuery, describeFilter, explainFilter, isFilterActive, isPathVisible,
   isVpsVisible, nextPathState, normalizePath, parsePathFilter, parseVpsFilter,
   pathState, withPathState,
 } from '../app/pathFilter';
@@ -283,5 +283,33 @@ describe('describeFilter with machines', () => {
 
   it('falls back to the id when the machine is unknown', () => {
     expect(describeFilter(parsePathFilter([]), parseVpsFilter(['gone']))).toBe('gone');
+  });
+});
+
+describe('explainFilter', () => {
+  it('says nothing is filtered when the selection is empty', () => {
+    expect(explainFilter(parsePathFilter([]), parseVpsFilter([])))
+      .toMatch(/^Nothing is filtered/);
+  });
+
+  it('reads as a blacklist when only crossings are set', () => {
+    expect(explainFilter(parsePathFilter(['!/srv/scratch'])))
+      .toBe('Everything is listed, except what is crossed out (−).');
+  });
+
+  // The question the sentence exists to answer: once anything is ticked, a
+  // row left alone is hidden too, so crossing out has one job left.
+  it('warns that leaving a row alone already hides it, once something is ticked', () => {
+    const text = explainFilter(parsePathFilter(['/srv/app']));
+    expect(text).toContain('Only what is ticked');
+    expect(text).toContain('left alone');
+    expect(text).toContain('carving a folder out of a ticked parent');
+  });
+
+  it('counts a machine rule as a tick, not just a path', () => {
+    expect(explainFilter(parsePathFilter([]), parseVpsFilter(['box-a'])))
+      .toMatch(/^Only what is ticked/);
+    expect(explainFilter(parsePathFilter([]), parseVpsFilter(['!box-a'])))
+      .toMatch(/^Everything is listed, except/);
   });
 });

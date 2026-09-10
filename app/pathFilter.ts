@@ -216,6 +216,37 @@ export function withPathState<F extends PathFilter | VpsFilter>(
 }
 
 /**
+ * What the CURRENT selection does, in one sentence, for the builder.
+ *
+ * The three-state button is the feature's one genuinely confusing part, and
+ * naming the states ("ignored / included / excluded") does not fix it: a
+ * reader wants to know what changes, not what a state is called. The honest
+ * answer is that it DEPENDS on the rest of the selection —
+ *
+ *   · nothing ticked          → no filter at all
+ *   · only crossings          → a blacklist
+ *   · anything ticked         → an ALLOW-list, and from that point a row left
+ *                               alone is hidden just as surely as a crossed
+ *                               one. Crossing out then has exactly one job
+ *                               left: carving a branch out of a ticked parent
+ *                               (`/srv` ✓ with `/srv/scratch` −), which is the
+ *                               one thing leaving it alone cannot do.
+ *
+ * — so the sentence is computed from the draft rather than written once on
+ * the wall, and it changes under the reader's clicks.
+ */
+export function explainFilter(filter: PathFilter, vps?: VpsFilter): string {
+  const included = filter.include.length > 0 || (vps?.include.length ?? 0) > 0;
+  const excluded = filter.exclude.length > 0 || (vps?.exclude.length ?? 0) > 0;
+  if (included) {
+    return 'Only what is ticked (✓) is listed. A row left alone (·) is hidden too — '
+      + 'crossing out (−) is for carving a folder out of a ticked parent.';
+  }
+  if (excluded) return 'Everything is listed, except what is crossed out (−).';
+  return 'Nothing is filtered — everything is listed. Tick a machine or a folder to keep only it.';
+}
+
+/**
  * Human-readable summary. `nameOf` turns a VPS id back into its name: the id
  * is what travels in the URL, but a summary reading "e8c8d7b348e12a01" tells
  * the reader nothing about what is hidden — which is the summary's only job.

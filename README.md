@@ -319,7 +319,7 @@ sidebar and the tool panel become drawers, the tab bar folds away):
 | --- | --- |
 | **Nordic Tokyo** | the default — deep blue-grey, low glare |
 | **Daylight** | light, for a bright room or a sunlit screen |
-| **Ember** | dark orange, and the transcript loses its message frames |
+| **Etonc** | warm greys and coral, and the transcript reads as a document |
 
 The theme is **hub-wide**: pick it once and every device follows, live — the
 change reaches other open tabs and your phone over the same event stream, with
@@ -359,10 +359,11 @@ translucent variants are *derived* (`color-mix(in srgb, var(--accent) 14%,
 transparent)`) rather than written out again as an `rgba()` that would quietly
 pin the old palette.
 
-A theme can also change **structure**, still without per-theme CSS: a couple of
-tokens aren't colours. `--bubble-edge` and `--bubble-tint` are the border width
-and fill strength of the chat's message rectangles, which is how Ember renders
-a transcript as plain text.
+A theme can also change **structure**, still without per-theme CSS: four tokens
+aren't colours. `--bubble-edge` and `--bubble-tint` are the border width and
+fill strength of the chat's message rectangles, `--bubble-measure` and
+`--bubble-align` its reading column — which together are how Etonc renders a
+transcript as plain text without letting a line run the width of the pane.
 
 `tests/themes.test.ts` enforces the contract — every theme defines exactly the
 same token set, every `var()` resolves, and no stylesheet contains a literal
