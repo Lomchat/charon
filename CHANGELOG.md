@@ -12,6 +12,16 @@ commit-by-commit — `git log` has the detail.
 
 ### Added
 
+- **Drag a path heading in the sidebar to move the whole project.** Sessions
+  already reordered inside their folder; the folder itself was stuck in the
+  order its oldest session happened to give it. Grab the heading and the group
+  moves as one, sessions included — a drop lands above or below the group under
+  the pointer, decided by its midpoint, and the whole group dims while it
+  travels so it is clear what is moving. There is no separate path order to
+  store: it is read off the session order, so the drag simply commits every
+  session of that path at once. Only a path that holds sessions moves — a
+  heading with nothing but SSH shells under it has no order to carry, and
+  already sits at the end.
 - **Sidebar filter (`?vps=` and `?path=`).** Scope the sidebar to one or more
   machines and folders from the URL: `?path=/srv/app`, repeated for several,
   prefixed with `!` to exclude one, and `?vps=<id>` for the machine half. The

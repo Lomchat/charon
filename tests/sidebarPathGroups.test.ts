@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrderedIds } from '@/app/sidebarPathGroups';
+import {
+  mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
+  sidebarPathOrderedIds,
+} from '@/app/sidebarPathGroups';
 
 describe('sidebar path groups', () => {
   const sessions = [
@@ -26,5 +29,26 @@ describe('sidebar path groups', () => {
   it('rejects ids from another path or an incomplete subgroup', () => {
     expect(mergeSidebarPathOrder(sessions, '/srv/a', ['a2', 'b1'])).toBeNull();
     expect(mergeSidebarPathOrder(sessions, '/srv/a', ['a2'])).toBeNull();
+  });
+
+  it('lists the headings in the order the sidebar draws them', () => {
+    expect(sidebarPathOrder(sessions)).toEqual(['/srv/a', '/srv/b']);
+  });
+
+  it('moves a whole path by moving every session it holds', () => {
+    expect(mergeSidebarPathGroupOrder(sessions, ['/srv/b', '/srv/a']))
+      .toEqual(['b1', 'b2', 'a1', 'a2']);
+  });
+
+  it('keeps a heading the drag never saw in its own slot', () => {
+    const withHome = [...sessions, { id: 'h1', cwd: null }, { id: 'c1', cwd: '/srv/c' }];
+    // Only the two `/srv` groups are dragged; `~` and `/srv/c` stay put.
+    expect(mergeSidebarPathGroupOrder(withHome, ['/srv/b', '/srv/a']))
+      .toEqual(['b1', 'b2', 'a1', 'a2', 'h1', 'c1']);
+  });
+
+  it('rejects a heading list that would drop or duplicate a group', () => {
+    expect(mergeSidebarPathGroupOrder(sessions, ['/srv/a', '/srv/a'])).toBeNull();
+    expect(mergeSidebarPathGroupOrder(sessions, ['/srv/a', '/srv/zzz'])).toBeNull();
   });
 });

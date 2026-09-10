@@ -413,8 +413,8 @@ notify-on-event window over your whole fleet.
   workspace; inspect per-session edit history and safely restore Claude
   before/after snapshots.
 - **Multi-VPS dashboard:** folders, health chips for SSH/agent/provider login,
-  filterable and draggable VPS/session lists, paused-session visibility and
-  one responsive desktop/tablet/phone UI.
+  filterable VPS/session lists you can drag by session or by whole project
+  folder, paused-session visibility and one responsive desktop/tablet/phone UI.
 - **Shared workspace tabs:** machine → folder → preview/pinned tabs, persisted
   across devices for sessions, terminals, files and install logs.
 - **Remote file explorer and editor:** lazy tree, git decorations, live agent

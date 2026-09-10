@@ -5610,6 +5610,11 @@
 [data-over="after"]  { box-shadow: inset -2px 0 0 var(--accent-strong); }
 .cs-card[data-over="before"] { box-shadow: inset 0 2px 0 var(--accent-strong); }
 .cs-card[data-over="after"]  { box-shadow: inset 0 -2px 0 var(--accent-strong); }
+/* A path group lands ABOVE or BELOW a whole other group, so its bar spans the
+   group, not a row — and the dragged group dims entirely, cards included, or
+   only its 9px caption would say what is moving. */
+.cs-path-group[data-over="before"] { box-shadow: inset 0 2px 0 var(--accent-strong); }
+.cs-path-group[data-over="after"]  { box-shadow: inset 0 -2px 0 var(--accent-strong); }
 
 /* ── Explorer context menu (§14.80) ──────────────────────────────────────── */
 .tt-menu-scrim { position: fixed; inset: 0; z-index: 400; }
