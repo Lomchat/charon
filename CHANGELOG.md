@@ -12,6 +12,17 @@ commit-by-commit — `git log` has the detail.
 
 ### Added
 
+- **Sidebar path filter (`?path=`).** Scope the sidebar to one or more
+  folders from the URL: `?path=/srv/app`, repeated for several, prefixed with
+  `!` to exclude one. The most specific rule wins, so `?path=!/&path=/srv/app`
+  means “only that subtree”; matching is segment-wise, so `/srv/ap` never
+  catches `/srv/app`. The filter is a display filter only — reorders still see
+  the complete list. A chip reports how many entities are hidden and how many
+  are **waiting on you** (from the live interaction queues), the selected
+  entity is never hidden, and an unhealthy VPS stays on screen so its agent
+  bar cannot go silent. A builder turns the known folders into that URL, so
+  one bookmark per project restores a “one desktop per project” workflow.
+  Tabs are deliberately not filtered.
 - **Codex as a second backend.** Every session carries a `kind`
   (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
   SDK and translated into the same event vocabulary, so the whole chat UI is

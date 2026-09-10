@@ -27,7 +27,13 @@ export default function NotificationClickHandler() {
       const d = e.data;
       if (!d || d.type !== 'open-session' || typeof d.sessionId !== 'string' || !d.sessionId) return;
       const sessionId = d.sessionId as string;
-      router.push(`/?session=${encodeURIComponent(sessionId)}`);
+      // Keep every other parameter (?path=, ...): this is a soft
+      // navigation, so dropping them would desync the URL from the
+      // state the page is already rendering.
+      const next = new URLSearchParams(window.location.search);
+      next.set('session', sessionId);
+      next.delete('shell');
+      router.push(`/?${next.toString()}`);
     };
     navigator.serviceWorker.addEventListener('message', onMsg);
     return () => navigator.serviceWorker.removeEventListener('message', onMsg);

@@ -8,6 +8,8 @@ import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { AccountUsage } from '@/lib/server/claude/types';
 import type { AgentKind, TabDTO } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
+import WorkspaceFilterBar from './WorkspaceFilterBar';
+import { type PathFilter, isFilterActive, isPathVisible, normalizePath, parsePathFilter } from './pathFilter';
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
 import type { EditSnapshot } from './sessionTypes';
 import {
@@ -265,6 +267,50 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // If non-null, a shell is displayed in the main panel (instead of the chat).
   // Initialized from `?shell=` so a shell-idle notification tap opens it.
   const [selectedShellId, setSelectedShellId] = useState<string | null>(queryParamShell);
+
+  // --- Sidebar path filter (?path=) ---
+  //
+  // Sidebar receives the COMPLETE lists plus this predicate, never a
+  // pre-filtered list. It expands a drag into a full VPS reorder through
+  // sidebarPathGroups, whose contract is explicit that it needs every
+  // session: handing it a subset would rewrite the stored position of
+  // every hidden one, server-side, for every client.
+  //
+  // Shells resolve `unknown` differently: they are stored with cwd=null
+  // whenever opened without an explicit directory, so treating that as
+  // "show it" would leak every home shell through the filter.
+  const [pathFilter] = useState<PathFilter>(
+    () => parsePathFilter(searchParams?.getAll('path') ?? []),
+  );
+  const isPathShown = useCallback(
+    (path: string | null, kind: 'session' | 'shell') => isPathVisible(
+      path, pathFilter, kind === 'shell' ? 'hidden' : 'visible',
+    ),
+    [pathFilter],
+  );
+  // Mirrors exactly what Sidebar drops, the selected-stays-visible rule
+  // included, so the chip can never disagree with the list.
+  const hiddenSessions = useMemo(
+    () => sessions.filter((s) => s.id !== selectedId && !isPathShown(s.cwd, 'session')),
+    [sessions, selectedId, isPathShown],
+  );
+  const hiddenShells = useMemo(
+    () => shells.filter((sh) => sh.id !== selectedShellId && !isPathShown(sh.cwd, 'shell')),
+    [shells, selectedShellId, isPathShown],
+  );
+  const hiddenCount = hiddenSessions.length + hiddenShells.length;
+
+  // Every folder the builder can offer. Deliberately VPS-agnostic: the
+  // sidebar already groups by machine, so the filter reasons about folders.
+  const knownFilterPaths = useMemo(() => {
+    const set = new Set<string>();
+    const add = (p: string | null | undefined) => { const n = normalizePath(p); if (n) set.add(n); };
+    for (const s of sessions) add(s.cwd);
+    for (const sh of shells) add(sh.cwd);
+    for (const vp of vpsPaths) add(vp.path);
+    for (const v of vpsList) add(v.defaultPath);
+    return [...set].sort();
+  }, [sessions, shells, vpsPaths, vpsList]);
 
   // Agent install sessions. In-memory only (shell pattern). One install
   // per VPS max (cf. installSession.ts § startInstall).
@@ -862,6 +908,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // blocked all POSTs.
   const { perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue } =
     useCrossSessionInteractionFeed();
+
+  // How many hidden sessions are actually waiting on the user. Exit plans
+  // count too: `pendingPermissions` covers permissions and questions only,
+  // so a session stopped on a plan would otherwise report nothing.
+  const hiddenWaitingCount = useMemo(() => {
+    const blocked = new Set<string>([
+      ...permQueue.map((p) => p.sessionId),
+      ...questionQueue.map((q) => q.sessionId),
+      ...exitPlanQueue.map((e) => e.sessionId),
+    ]);
+    return hiddenSessions.filter(
+      (s) => blocked.has(s.id) || s.pendingPermissions > 0,
+    ).length;
+  }, [hiddenSessions, permQueue, questionQueue, exitPlanQueue]);
 
   // [esRef, chatBodyRef, assistantBufRef, scroll mechanics (isAtBottomRef,
   //  newCount, lastMessageCountRef, handleChatScroll, onPillClick) — all of
@@ -1699,6 +1759,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       </header>
 
       <Sidebar
+        topSlot={(
+          <WorkspaceFilterBar
+            knownPaths={knownFilterPaths}
+            filter={pathFilter}
+            hiddenCount={hiddenCount}
+            hiddenWaitingCount={hiddenWaitingCount}
+          />
+        )}
+        // Passed only when a filter is really on, so Sidebar can read its
+        // presence as "a filter is active" — and pays nothing when it is not.
+        isPathShown={isFilterActive(pathFilter) ? isPathShown : undefined}
         sessionHandles={sessionHandles}
         showTools={showTools}
         onToggleShowTools={toggleShowTools}

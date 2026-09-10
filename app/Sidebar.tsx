@@ -138,6 +138,11 @@ type Props = {
   /** The active tab-row group. Every session/shell at this exact VPS + path
    *  receives the workspace ring, independently of which entity is open. */
   activeWorkspace?: WorkspaceScope | null;
+  /** Rendered at the very top of the aside, above the SESSIONS header. */
+  topSlot?: React.ReactNode;
+  /** Display filter. Applied when listing a VPS, never when computing a
+   *  reorder: the drag handlers need the complete list (sidebarPathGroups). */
+  isPathShown?: (path: string | null, kind: 'session' | 'shell') => boolean;
   onSelect: (id: string, pin?: boolean) => void;
   onSelectShell: (id: string, pin?: boolean) => void;
   onSelectInstall: (id: string) => void;
@@ -208,6 +213,7 @@ export default function Sidebar({
   selectedId, resetSessionSelectionTo, onSessionSelectionReset,
   selectedShellId, selectedInstallId,
   activeWorkspace = null,
+  topSlot, isPathShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
   onNew, onNewShell, onScan, onOpenData,
@@ -375,11 +381,15 @@ export default function Sidebar({
     return sorted;
   }, [vpsFolders, vpsList]);
 
-  // Sessions / shells per VPS (sessions filtered by the paused switch).
+  // Sessions / shells per VPS (paused switch, then the path filter).
+  // The selected entity is never dropped: a filter that excluded it would
+  // leave the main pane blank with no explanation.
+  const showPath = isPathShown ?? (() => true);
   function sessionsFor(vpsId: string): SessionListItem[] {
     return sessions
       .filter((s) => s.vpsId === vpsId)
       .filter((s) => showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
+      .filter((s) => s.id === selectedId || showPath(s.cwd, 'session'))
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
       // is position 0, so an untouched sidebar sorts exactly as it did before
       // and only a list that was actually dragged looks different.
@@ -390,6 +400,7 @@ export default function Sidebar({
     return shells
       .filter((sh) => sh.vpsId === vpsId)
       .filter((sh) => showPaused || !sh.exited)
+      .filter((sh) => sh.id === selectedShellId || showPath(sh.cwd, 'shell'))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
@@ -459,10 +470,13 @@ export default function Sidebar({
     );
   }
 
-  const totalSleeping = sessions.filter((s) => (s.liveStatus ?? s.status) === 'sleeping').length;
+  const totalSleeping = sessions.filter(
+    (s) => (s.liveStatus ?? s.status) === 'sleeping' && showPath(s.cwd, 'session'),
+  ).length;
 
   return (
     <aside className="claude-sidebar" ref={asideRef}>
+      {topSlot}
       <div className="cs-top">
         <div className="cs-top-row">
           <span className="cs-title">SESSIONS</span>
@@ -538,12 +552,16 @@ export default function Sidebar({
               };
             })
             // A VPS shows ONLY when it has a visible session/shell (the paused
-            // switch decides via sessionsFor/shellsFor), with one exception:
+            // switch decides via sessionsFor/shellsFor), with two exceptions:
             // an install session — otherwise a machine with nothing on it yet
             // (the normal case for a fresh install) has no row to hold the
-            // install log. Folders with no visible VPS are hidden below.
+            // install log; and, under a path filter, an unhealthy VPS the
+            // filter emptied — its agent/login bar is the only place that
+            // alarm is shown, and it lives on the VPS head, not on its rows.
+            // Folders with no visible VPS are hidden below.
             .filter((x) => x.vpsSessions.length + x.vpsShells.length > 0
-              || installKeepsVpsVisible(x.install, selectedInstallId));
+              || installKeepsVpsVisible(x.install, selectedInstallId)
+              || (isPathShown != null && x.vps.agentStatus !== 'ok'));
 
           if (visibleVps.length === 0) return null;
 

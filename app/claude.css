@@ -6006,3 +6006,201 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 /* An inventory entry the running session cannot reach (its scope is off). */
 .si-resources > li.is-unreachable { opacity: .6; }
 .si-resources .si-unreachable { display: block; color: var(--warning); font: 10px/1.4 var(--body); }
+/* =====================================================================
+ *  Sidebar path filter (WorkspaceFilterBar)
+ *
+ *  First child of the aside, above .cs-top. Colours come from the existing
+ *  tokens only, so the bar follows any future theme without a second
+ *  definition.
+ * ===================================================================== */
+.wfb {
+  position: relative;
+  /* `flex: 0 0 auto` — the aside is a flex column; without it the session
+     list below would squeeze the bar away. */
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  background: var(--stone);
+  border-bottom: 1px solid var(--gold-deep);
+  font-size: 11px;
+}
+
+.wfb-toggle {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--gold-deep);
+  border-radius: 6px;
+  color: var(--parchment-soft);
+  background: transparent;
+  font-size: 11px;
+}
+.wfb-toggle:hover { color: var(--parchment); border-color: var(--gold); }
+.wfb-toggle.on { color: var(--gold); border-color: var(--gold); }
+
+/* The summary is what tells you WHY things are missing, so it gets the
+   leftover width and the counter gives way before it does. */
+.wfb-summary {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--parchment-soft);
+}
+
+/* Hidden-entity counter. In `warn` a hidden session is waiting on the user:
+   it must not go unnoticed. Kept to digits + an hourglass so it cannot crowd
+   the summary out on a narrow drawer; the full sentence is in the title. */
+.wfb-hidden {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--stone-3);
+  color: var(--parchment);
+}
+.wfb-hidden.warn { background: var(--crimson-deep); color: var(--parchment); font-weight: 600; }
+
+/* The only one-click way out of a filter: never let it be the element that
+   gets pushed out of the box. */
+.wfb-clear {
+  flex: none;
+  color: var(--parchment-soft);
+  background: transparent;
+  padding: 2px 6px;
+}
+.wfb-clear:hover { color: var(--crimson); }
+
+/* --- The builder popover --- */
+
+.wfb-panel {
+  position: absolute;
+  top: 100%; left: 8px; right: 8px;
+  z-index: 40;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px;
+  background: var(--stone);
+  border: 1px solid var(--gold-deep);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  /* .claude-sidebar is overflow: hidden, so this popover is clipped by it.
+     dvh companion for mobile, where 100vh is the *large* viewport while the
+     drawer follows the current one. */
+  max-height: calc(100vh - 140px);
+  max-height: calc(100dvh - 140px);
+  overscroll-behavior: contain;
+}
+
+/* Everything except the folder list keeps its height: on a short window the
+   list is what should give way, not the actions you need to reach. */
+.wfb-panel-head,
+.wfb-actions,
+.wfb-tip { flex: 0 0 auto; }
+
+.wfb-panel-head {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  color: var(--parchment-soft);
+}
+
+/* Mirrors a row exactly — same glyph, same colour, no border on `off`. */
+.wfb-legend { padding: 1px 6px; border-radius: 999px; }
+.wfb-legend.include { color: var(--teal); }
+.wfb-legend.exclude { color: var(--crimson); }
+
+.wfb-paths {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.wfb-path {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: var(--parchment);
+  background: transparent;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.wfb-path:hover { background: var(--stone-3); }
+.wfb-path.include { color: var(--teal); border-color: var(--teal-deep); }
+.wfb-path.exclude {
+  color: var(--crimson); border-color: var(--crimson-deep);
+  text-decoration: line-through;
+}
+
+.wfb-path-mark { flex: none; width: 12px; text-align: center; }
+/* The parent gives way, the leaf never does: `/srv/projects/api` and
+   `/srv/projects/web` must stay distinguishable at 206px. */
+.wfb-path-dir {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+  opacity: 0.6;
+}
+.wfb-path-leaf { flex: none; }
+
+/* The built URL: this is the output you are meant to read and copy, so it
+   gets full-strength text rather than the muted tone. `user-select: all`
+   is the fallback for when the clipboard API is refused (it can fail
+   without surfacing an error). */
+.wfb-url {
+  flex: 0 1 auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--shadow);
+  color: var(--parchment);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  user-select: all;
+  max-height: 60px; overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.wfb-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.wfb-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--gold-deep);
+  border-radius: 6px;
+  color: var(--parchment-soft);
+  background: transparent;
+  font-size: 11px;
+}
+.wfb-btn:hover { color: var(--parchment); border-color: var(--gold); }
+/* `open` navigates, the others don't — the only one worth highlighting. */
+.wfb-btn.primary { color: var(--gold); border-color: var(--gold); }
+/* Fixed width so "copy URL" → "copied ✓" cannot reflow the row under the
+   cursor right after the click. */
+.wfb-btn.wide { min-width: 74px; }
+
+.wfb-empty,
+.wfb-tip { color: var(--parchment-soft); font-size: 10px; font-style: italic; }
+
+/* House focus ring (cf. .cs-add-btn, .wiz-btn) rather than the UA default,
+   which renders as a pale box on this background. */
+.wfb-toggle:focus-visible,
+.wfb-clear:focus-visible,
+.wfb-path:focus-visible,
+.wfb-btn:focus-visible {
+  outline: 1px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* Finger-sized hit targets in the drawer, same threshold and same intent as
+   .cs-mobile-refresh / .session-ctx-menu button. */
+@media (max-width: 820px) {
+  .wfb { padding: 10px 12px; gap: 10px; font-size: 13px; }
+  .wfb-toggle { padding: 7px 10px; font-size: 13px; }
+  .wfb-clear { padding: 7px 10px; font-size: 15px; }
+  .wfb-hidden { padding: 5px 9px; font-size: 13px; }
+  .wfb-summary { font-size: 13px; }
+  .wfb-panel-head { font-size: 12px; }
+  .wfb-path { padding: 9px 10px; font-size: 13px; }
+  .wfb-paths { gap: 6px; }
+  .wfb-btn { padding: 9px 14px; font-size: 13px; }
+  .wfb-btn.wide { min-width: 88px; }
+  .wfb-url { font-size: 12px; max-height: 76px; }
+  .wfb-empty, .wfb-tip { font-size: 12px; }
+}
