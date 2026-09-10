@@ -195,6 +195,9 @@ const DEFAULTS = {
   // "these numbers are N minutes old" instead. Never authoritative — the next
   // successful poll overwrites it.
   'usage.snapshots': '',
+  // Appearance. 'classic' = stock; any other value is stamped on <html>
+  // as data-theme by layout.tsx and picked up by a themed stylesheet.
+  'ui.theme': 'classic',
 } as const;
 export type SettingKey = keyof typeof DEFAULTS | 'vapid.public' | 'vapid.private';
 
