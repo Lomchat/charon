@@ -17,12 +17,12 @@ commit-by-commit — `git log` has the detail.
   `!` to exclude one. The most specific rule wins, so `?path=!/&path=/srv/app`
   means “only that subtree”; matching is segment-wise, so `/srv/ap` never
   catches `/srv/app`. The filter is a display filter only — reorders still see
-  the complete list. A chip reports how many entities are hidden and how many
-  are **waiting on you** (from the live interaction queues), the selected
-  entity is never hidden, and an unhealthy VPS stays on screen so its agent
-  bar cannot go silent. A builder turns the known folders into that URL, so
-  one bookmark per project restores a “one desktop per project” workflow.
-  Tabs are deliberately not filtered.
+  the complete list. A funnel button on the `SESSIONS` row lights up while a
+  filter is on, carries a dot for what is hidden and digits for how much of it
+  is **waiting on you** (from the live interaction queues), and opens a builder
+  that turns the known folders into that URL — one bookmark per project. The
+  selected entity is never hidden, and an unhealthy VPS stays on screen so its
+  agent bar cannot go silent. Tabs are deliberately not filtered.
 - **Codex as a second backend.** Every session carries a `kind`
   (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
   SDK and translated into the same event vocabulary, so the whole chat UI is

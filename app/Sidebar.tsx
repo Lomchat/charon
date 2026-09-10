@@ -138,8 +138,10 @@ type Props = {
   /** The active tab-row group. Every session/shell at this exact VPS + path
    *  receives the workspace ring, independently of which entity is open. */
   activeWorkspace?: WorkspaceScope | null;
-  /** Rendered at the very top of the aside, above the SESSIONS header. */
-  topSlot?: React.ReactNode;
+  /** Rendered on the SESSIONS row, in the button group at its right. A
+   *  control that is off almost all the time does not get a line of the
+   *  sidebar to itself. */
+  toolbarSlot?: React.ReactNode;
   /** Display filter. Applied when listing a VPS, never when computing a
    *  reorder: the drag handlers need the complete list (sidebarPathGroups). */
   isPathShown?: (path: string | null, kind: 'session' | 'shell') => boolean;
@@ -213,7 +215,7 @@ export default function Sidebar({
   selectedId, resetSessionSelectionTo, onSessionSelectionReset,
   selectedShellId, selectedInstallId,
   activeWorkspace = null,
-  topSlot, isPathShown,
+  toolbarSlot, isPathShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
   onNew, onNewShell, onScan, onOpenData,
@@ -476,24 +478,28 @@ export default function Sidebar({
 
   return (
     <aside className="claude-sidebar" ref={asideRef}>
-      {topSlot}
       <div className="cs-top">
         <div className="cs-top-row">
           <span className="cs-title">SESSIONS</span>
-          <button
-            type="button"
-            className="cs-mobile-refresh"
-            onClick={() => window.location.reload()}
-            title="reload the page"
-            aria-label="reload the page"
-          >↻</button>
-          <button
-            type="button"
-            className="cs-manage"
-            onClick={onOpenData}
-            title="manage VPS, folders and paths"
-            aria-label="manage VPS and folders"
-          ><IconServers /></button>
+          {/* One group holds the auto margin, so adding a button here is not
+              a question of which one carries `margin-left: auto`. */}
+          <div className="cs-top-actions">
+            <button
+              type="button"
+              className="cs-mobile-refresh"
+              onClick={() => window.location.reload()}
+              title="reload the page"
+              aria-label="reload the page"
+            >↻</button>
+            {toolbarSlot}
+            <button
+              type="button"
+              className="cs-manage"
+              onClick={onOpenData}
+              title="manage VPS, folders and paths"
+              aria-label="manage VPS and folders"
+            ><IconServers /></button>
+          </div>
         </div>
         <div className="cs-add full">
           {/* Backend-free entry point: it stays even with both backends off,

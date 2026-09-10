@@ -1,17 +1,25 @@
 'use client';
 /**
- * Filter chip + URL builder for the sidebar path filter.
+ * Toolbar button + URL builder for the sidebar path filter.
  *
  * Two jobs:
  *
  *  - WARN while a filter is on. A forgotten filter costs half an hour, so the
- *    chip permanently shows what is hidden — and above all how many hidden
- *    sessions are WAITING on the user. Without that counter a blocked session
- *    becomes invisible and you wait in front of a pane that never moves.
+ *    button stays lit for as long as one is applied — and when a HIDDEN
+ *    session is waiting on the user, the count is spelled out beside it
+ *    rather than folded into the dot. Without that a blocked session becomes
+ *    invisible and you wait in front of a pane that never moves. This is the
+ *    one piece of state that earns width in a 280px toolbar.
  *
  *  - BUILD the URL. Every known folder has a three-state button
  *    (ignored / included / excluded), the URL updates live, and it can be
  *    opened or copied to become a bookmark — one bookmark per project.
+ *
+ * It sits ON the `SESSIONS` row (`Sidebar § toolbarSlot`) rather than in a bar
+ * of its own: a permanent full-width bar spent a line of the sidebar on a
+ * feature that is off almost all the time. Everything the bar used to show at
+ * rest — the summary, the exact counts, the way out — moved INTO the popover,
+ * which is where you are already looking once you care.
  *
  * Navigation uses `window.location.assign`, a real page load, not
  * `router.push`. That is deliberate: ClaudePanel reads the filter once on
@@ -19,6 +27,7 @@
  * DeepLinkGuard. A hard load keeps the two mechanisms from racing.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { IconFunnel } from './icons';
 import {
   type PathFilter, buildFilterQuery, describeFilter, isFilterActive,
   nextPathState, pathState, withPathState,
@@ -38,7 +47,7 @@ type Props = {
 const STATE_LABEL = { off: 'ignored', include: 'included', exclude: 'excluded' } as const;
 const STATE_MARK = { off: '·', include: '✓', exclude: '−' } as const;
 
-export default function WorkspaceFilterBar({
+export default function SidebarPathFilter({
   knownPaths, filter, hiddenCount, hiddenWaitingCount,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -116,40 +125,54 @@ export default function WorkspaceFilterBar({
     <div className="wfb" ref={rootRef}>
       <button
         type="button"
-        className={`wfb-toggle${active ? ' on' : ''}`}
+        className={`cs-filter${active ? ' on' : ''}`}
         aria-expanded={open}
         onClick={() => { setDraft(filter); setOpen((o) => !o); }}
-        title="filter the sidebar by folder"
+        title={active
+          ? `sidebar filtered — ${summary}${hiddenCount > 0
+            ? `; ${hiddenCount} hidden${hiddenWaitingCount > 0 ? `, ${hiddenWaitingCount} waiting on you` : ''}`
+            : ''}`
+          : 'filter the sidebar by folder'}
+        aria-label={active ? 'sidebar path filter (on)' : 'filter the sidebar by folder'}
       >
-        ▤ {active ? 'filtered' : 'filter'}
+        <IconFunnel />
+        {/* Something is hidden: a corner dot, the same "there is content here"
+            signal the ToolPanel tabs use when their label doesn't fit. */}
+        {active && hiddenCount > 0 && hiddenWaitingCount === 0 && (
+          <span className="cs-filter-dot" aria-hidden />
+        )}
       </button>
 
-      {active && (
-        <>
-          <span className="wfb-summary" title={summary}>{summary}</span>
-          {hiddenCount > 0 && (
-            <span
-              className={`wfb-hidden${hiddenWaitingCount > 0 ? ' warn' : ''}`}
-              role="status"
-              title={hiddenWaitingCount > 0
-                ? `${hiddenCount} hidden, ${hiddenWaitingCount} waiting on you`
-                : `${hiddenCount} hidden by the filter`}
-            >
-              {hiddenCount}{hiddenWaitingCount > 0 && ` · ${hiddenWaitingCount}⏳`}
-            </span>
-          )}
-          <button
-            type="button"
-            className="wfb-clear"
-            onClick={() => window.location.assign(urlFor(null))}
-            title="show everything"
-            aria-label="clear the filter and show everything"
-          >✕</button>
-        </>
+      {/* A hidden session WAITING on the user is the one case a dot cannot
+          carry: it is an alarm, and it has to survive being glanced past. It
+          gets digits, outside the button so it is not swallowed by its box. */}
+      {active && hiddenWaitingCount > 0 && (
+        <span
+          className="wfb-waiting"
+          role="status"
+          title={`${hiddenWaitingCount} hidden session(s) waiting on you (${hiddenCount} hidden in total)`}
+        >
+          {hiddenWaitingCount}⏳
+        </span>
       )}
 
       {open && (
         <div className="wfb-panel" role="dialog" aria-label="sidebar path filter">
+          {/* What the bar used to say at rest. It belongs here now: the
+              summary is WHY something is missing, and you open this the
+              moment you ask that question. */}
+          {active && (
+            <div className="wfb-state">
+              <span className="wfb-summary" title={summary}>{summary}</span>
+              {hiddenCount > 0 && (
+                <span className={`wfb-hidden${hiddenWaitingCount > 0 ? ' warn' : ''}`}>
+                  {hiddenCount} hidden
+                  {hiddenWaitingCount > 0 && ` · ${hiddenWaitingCount} waiting on you`}
+                </span>
+              )}
+            </div>
+          )}
+
           <div className="wfb-panel-head">
             Click a folder to cycle it:
             <span className="wfb-legend off">· ignored</span>
@@ -193,6 +216,18 @@ export default function WorkspaceFilterBar({
               className="wfb-btn primary"
               onClick={() => window.location.assign(url)}
             >open</button>
+            {/* The way OUT. It used to be a ✕ on the bar; with the bar gone
+                it has to be reachable in one click from the button that says
+                a filter is on, and it must not be the item that wraps out of
+                sight — hence its place next to `open`, not at the end. */}
+            {active && (
+              <button
+                type="button"
+                className="wfb-btn clear"
+                onClick={() => window.location.assign(urlFor(null))}
+                title="drop the filter and show everything"
+              >show everything</button>
+            )}
             <button type="button" className="wfb-btn wide" onClick={copy}>
               {copied ? 'copied ✓' : 'copy URL'}
             </button>
