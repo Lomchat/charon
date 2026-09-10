@@ -6176,23 +6176,55 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 }
 .wfb-path-leaf { flex: none; }
 
-/* The built URL: this is the output you are meant to read and copy, so it
-   gets full-strength text rather than the muted tone. `user-select: all`
-   is the fallback for when the clipboard API is refused (it can fail
-   without surfacing an error). */
-.wfb-url {
+/* The built URL and its copy button share one well, so the button reads as
+   belonging to the field rather than as a fourth action. `align-items:
+   stretch` — the button matches the field's height whatever it wraps to. */
+.wfb-url-row {
   flex: 0 1 auto;
+  display: flex; align-items: stretch; gap: 6px;
+  min-height: 0;
+}
+
+/* The built URL: this is the output you are meant to read and copy, so it
+   gets full-strength text rather than the muted tone. Read-only, but a real
+   field: focusable, and selectable by hand when the clipboard is refused
+   (it can fail without surfacing an error). */
+.wfb-url {
+  flex: 1 1 auto; min-width: 0;
   padding: 6px 8px;
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-inset);
   color: var(--text);
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
-  user-select: all;
+  resize: none;
   max-height: 60px; overflow-y: auto;
   overscroll-behavior: contain;
 }
+.wfb-url:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+/* Same flash idiom as every other copy affordance (.bubble-copy-btn): the
+   glyph becomes a green ✓ for 1.5s, which is the only feedback a clipboard
+   write can give — nothing visible happens otherwise. */
+.wfb-copy {
+  flex: none;
+  width: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+  transition: color .12s, border-color .12s;
+}
+.wfb-copy svg { width: 12px; height: 12px; display: block; }
+.wfb-copy:hover { color: var(--text); border-color: var(--accent); }
+.wfb-copy.copied { color: var(--success); border-color: var(--success-deep); font-size: 12px; }
+.wfb-copy:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 .wfb-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -6207,9 +6239,6 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .wfb-btn:hover { color: var(--text); border-color: var(--accent); }
 /* `open` navigates, the others don't — the only one worth highlighting. */
 .wfb-btn.primary { color: var(--accent); border-color: var(--accent); }
-/* Fixed width so "copy URL" → "copied ✓" cannot reflow the row under the
-   cursor right after the click. */
-.wfb-btn.wide { min-width: 74px; }
 
 .wfb-empty,
 .wfb-tip { color: var(--text-muted); font-size: 10px; font-style: italic; }
@@ -6236,7 +6265,8 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .wfb-path { padding: 9px 10px; font-size: 13px; }
   .wfb-paths { gap: 6px; }
   .wfb-btn { padding: 9px 14px; font-size: 13px; }
-  .wfb-btn.wide { min-width: 88px; }
+  .wfb-copy { width: 38px; }
+  .wfb-copy svg { width: 14px; height: 14px; }
   .wfb-url { font-size: 12px; max-height: 76px; }
   .wfb-empty, .wfb-tip { font-size: 12px; }
 }

@@ -27,7 +27,7 @@
  * DeepLinkGuard. A hard load keeps the two mechanisms from racing.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { IconFunnel } from './icons';
+import { IconClipboard, IconFunnel } from './icons';
 import {
   type PathFilter, type VpsFilter, buildFilterQuery, describeFilter, explainFilter,
   isFilterActive, nextPathState, pathState, withPathState,
@@ -264,29 +264,16 @@ export default function SidebarPathFilter({
             })}
           </div>
 
-          <div className="wfb-url" title={url}>{url}</div>
-
+          {/* Actions above the URL: what you came to do, before the artefact
+              it produces. No `close` — Escape and a click outside already do
+              it, and a button that only dismisses the thing you opened is a
+              row of width spent on nothing. */}
           <div className="wfb-actions">
             <button
               type="button"
               className="wfb-btn primary"
               onClick={() => window.location.assign(url)}
             >open</button>
-            {/* The way OUT. It used to be a ✕ on the bar; with the bar gone
-                it has to be reachable in one click from the button that says
-                a filter is on, and it must not be the item that wraps out of
-                sight — hence its place next to `open`, not at the end. */}
-            {active && (
-              <button
-                type="button"
-                className="wfb-btn clear"
-                onClick={() => window.location.assign(urlFor(null))}
-                title="drop the filter and show everything"
-              >show everything</button>
-            )}
-            <button type="button" className="wfb-btn wide" onClick={copy}>
-              {copied ? 'copied ✓' : 'copy URL'}
-            </button>
             <button
               type="button"
               className="wfb-btn"
@@ -296,7 +283,44 @@ export default function SidebarPathFilter({
               })}
               title="untick everything above — does not navigate"
             >reset</button>
-            <button type="button" className="wfb-btn" onClick={() => setOpen(false)}>close</button>
+            {/* The way OUT of a filter already applied. `reset` only empties
+                the draft above; this one navigates, so it stays a separate
+                button and only exists while there is something to drop. */}
+            {active && (
+              <button
+                type="button"
+                className="wfb-btn clear"
+                onClick={() => window.location.assign(urlFor(null))}
+                title="drop the filter and show everything"
+              >show everything</button>
+            )}
+          </div>
+
+          {/* Read-only: the URL is derived from the ticks above, so an
+              editable field would offer an edit that the next click discards.
+              A <textarea> rather than a <div> all the same — it wraps, it
+              scrolls, and it is focusable, so the URL is reachable by
+              keyboard and selectable by hand when the clipboard is refused. */}
+          <div className="wfb-url-row">
+            <textarea
+              className="wfb-url"
+              value={url}
+              readOnly
+              rows={2}
+              spellCheck={false}
+              title={url}
+              onFocus={(e) => e.currentTarget.select()}
+              aria-label="the URL this filter builds"
+            />
+            <button
+              type="button"
+              className={`wfb-copy${copied ? ' copied' : ''}`}
+              onClick={copy}
+              title={copied ? 'copied' : 'copy the URL'}
+              aria-label="copy the URL"
+            >
+              {copied ? '✓' : <IconClipboard />}
+            </button>
           </div>
 
           <div className="wfb-tip">Bookmark this URL — one bookmark per project.</div>
