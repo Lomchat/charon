@@ -184,13 +184,14 @@ same workspace**; every row is drag-to-reorder.
 
 **A sidebar path filter.** `?path=/srv/app` scopes the sidebar to one folder;
 repeat it for several, prefix it with `!` to exclude one. The most specific
-rule wins, so `?path=!/&path=/srv/app` reads as “only that subtree”. The chip
-at the top says what is filtered and how many hidden sessions are **waiting on
-you**; the selected session is never hidden and an unhealthy VPS never
-disappears — a filter must not leave you in front of a pane that will not move,
-nor silence a machine that needs attention. A builder next to it turns the
-folders it already knows into that URL: **one bookmark per project**. Tabs are
-not filtered, and reordering always sees the complete list.
+rule wins, so `?path=!/&path=/srv/app` reads as “only that subtree”. The funnel
+button on the `SESSIONS` row lights up while a filter is on and spells out how
+many hidden sessions are **waiting on you**; the selected session is never
+hidden and an unhealthy VPS never disappears — a filter must not leave you in
+front of a pane that will not move, nor silence a machine that needs attention.
+The same button opens a builder that turns the folders Charon already knows
+into that URL: **one bookmark per project**. Tabs are not filtered, and
+reordering always sees the complete list.
 
 **A file explorer** rooted at the session's working directory: lazy per-folder
 expansion, per-type icons, symlink markers, and **git decorations** — status

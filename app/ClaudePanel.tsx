@@ -8,7 +8,7 @@ import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { AccountUsage } from '@/lib/server/claude/types';
 import type { AgentKind, TabDTO } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
-import WorkspaceFilterBar from './WorkspaceFilterBar';
+import SidebarPathFilter from './SidebarPathFilter';
 import { type PathFilter, isFilterActive, isPathVisible, normalizePath, parsePathFilter } from './pathFilter';
 import TabBar, { resolveTabs, type ResolvedTab } from './TabBar';
 import type { EditSnapshot } from './sessionTypes';
@@ -1759,8 +1759,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       </header>
 
       <Sidebar
-        topSlot={(
-          <WorkspaceFilterBar
+        toolbarSlot={(
+          <SidebarPathFilter
             knownPaths={knownFilterPaths}
             filter={pathFilter}
             hiddenCount={hiddenCount}
