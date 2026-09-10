@@ -29,8 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IconClipboard, IconFunnel } from './icons';
 import {
-  type PathFilter, type VpsFilter, buildFilterQuery, describeFilter, explainFilter,
-  isFilterActive, nextPathState, pathState, withPathState,
+  type PathFilter, type PathState, type VpsFilter, buildFilterQuery, describeFilter,
+  explainFilter, isFilterActive, nextPathState, pathState, withPathState,
 } from './pathFilter';
 
 /** One machine and the folders known on it. */
@@ -51,8 +51,18 @@ type Props = {
   hiddenWaitingCount: number;
 };
 
-/** The two halves are edited together and navigated to together. */
-type Draft = { paths: PathFilter; vps: VpsFilter };
+/**
+ * The two halves are edited together and navigated to together.
+ *
+ * `autoVps` holds the machines the builder ticked ON THE READER'S BEHALF,
+ * when they ticked a folder under one. Ticking a folder alone means "this
+ * folder on every machine that has it", which is almost never what someone
+ * clicking inside a machine's group meant — the grouping promises scoping, so
+ * the click has to deliver it. Remembering WHICH ticks were ours is what lets
+ * unticking the last folder of a machine put the machine back as it was,
+ * without also undoing a machine the reader ticked deliberately.
+ */
+type Draft = { paths: PathFilter; vps: VpsFilter; autoVps: string[] };
 
 const STATE_LABEL = { off: 'ignored', include: 'included', exclude: 'excluded' } as const;
 const STATE_MARK = { off: '·', include: '✓', exclude: '−' } as const;
@@ -61,10 +71,53 @@ export default function SidebarPathFilter({
   groups, filter, vpsFilter, vpsNameOf, hiddenCount, hiddenWaitingCount,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<Draft>({ paths: filter, vps: vpsFilter });
+  const [draft, setDraft] = useState<Draft>({ paths: filter, vps: vpsFilter, autoVps: [] });
   const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const copiedTimer = useRef<number | null>(null);
+
+  /**
+   * Cycle one FOLDER row, and keep its machine in step.
+   *
+   * Ticking a folder ticks its machine too, because the AND of the two halves
+   * is what turns "this folder" into "this folder here" — without it, ticking
+   * /srv/charon under one box lists it on both boxes that have it, which is
+   * the thing the grouped list makes you expect not to happen.
+   *
+   * Unticking releases only what we added ourselves (`autoVps`), and only once
+   * no ticked folder of that machine is left: a machine the reader ticked on
+   * purpose survives every folder click, and a machine we ticked on their
+   * behalf does not outlive the folder that caused it.
+   */
+  const cyclePath = useCallback((group: FilterGroup, path: string, state: PathState) => {
+    setDraft((prev) => {
+      const paths = withPathState(prev.paths, path, nextPathState(state));
+      let vps = prev.vps;
+      let autoVps = prev.autoVps;
+      const ticked = pathState(path, paths) === 'include';
+      if (ticked && pathState(group.vpsId, vps) === 'off') {
+        vps = withPathState(vps, group.vpsId, 'include');
+        autoVps = [...autoVps, group.vpsId];
+      } else if (!ticked && autoVps.includes(group.vpsId)) {
+        const stillTicked = group.paths.some((p) => paths.include.includes(p));
+        if (!stillTicked) {
+          vps = withPathState(vps, group.vpsId, 'off');
+          autoVps = autoVps.filter((id) => id !== group.vpsId);
+        }
+      }
+      return { paths, vps, autoVps };
+    });
+  }, []);
+
+  /** Cycle a MACHINE row. Clicking it makes the tick deliberate, so it stops
+   *  being ours to take back when the folder that caused it is unticked. */
+  const cycleVps = useCallback((vpsId: string, state: PathState) => {
+    setDraft((prev) => ({
+      ...prev,
+      vps: withPathState(prev.vps, vpsId, nextPathState(state)),
+      autoVps: prev.autoVps.filter((id) => id !== vpsId),
+    }));
+  }, []);
 
   // Keep the deep link. `?session=` / `?shell=` say WHAT is open, `?vps=` and
   // `?path=` say what the sidebar lists — they are orthogonal, and applying a
@@ -143,7 +196,7 @@ export default function SidebarPathFilter({
         type="button"
         className={`cs-filter${active ? ' on' : ''}`}
         aria-expanded={open}
-        onClick={() => { setDraft({ paths: filter, vps: vpsFilter }); setOpen((o) => !o); }}
+        onClick={() => { setDraft({ paths: filter, vps: vpsFilter, autoVps: [] }); setOpen((o) => !o); }}
         title={active
           ? `sidebar filtered — ${summary}${hiddenCount > 0
             ? `; ${hiddenCount} hidden${hiddenWaitingCount > 0 ? `, ${hiddenWaitingCount} waiting on you` : ''}`
@@ -217,10 +270,7 @@ export default function SidebarPathFilter({
                     type="button"
                     className={`wfb-path wfb-vps ${vState}`}
                     aria-label={`${group.vpsName} — ${STATE_LABEL[vState]}`}
-                    onClick={() => setDraft({
-                      ...draft,
-                      vps: withPathState(draft.vps, group.vpsId, nextPathState(vState)),
-                    })}
+                    onClick={() => cycleVps(group.vpsId, vState)}
                     title={`${group.vpsName} — the whole machine`}
                   >
                     <span className="wfb-path-mark" aria-hidden>{STATE_MARK[vState]}</span>
@@ -247,10 +297,7 @@ export default function SidebarPathFilter({
                         type="button"
                         className={`wfb-path wfb-under ${state}`}
                         aria-label={`${p} — ${STATE_LABEL[state]}`}
-                        onClick={() => setDraft({
-                          ...draft,
-                          paths: withPathState(draft.paths, p, nextPathState(state)),
-                        })}
+                        onClick={() => cyclePath(group, p, state)}
                         title={p}
                       >
                         <span className="wfb-path-mark" aria-hidden>{STATE_MARK[state]}</span>
@@ -280,6 +327,7 @@ export default function SidebarPathFilter({
               onClick={() => setDraft({
                 paths: { include: [], exclude: [] },
                 vps: { include: [], exclude: [] },
+                autoVps: [],
               })}
               title="untick everything above — does not navigate"
             >reset</button>
