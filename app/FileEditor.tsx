@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
-import type { FsReadResponse } from '@/lib/types/api';
+import type { FsLinkInfo, FsReadResponse } from '@/lib/types/api';
 import { fileKind, isMediaName } from './fileIcons';
 import { fmtSize } from './sessionAttachments';
 import { setTabDirty } from './tabStore';
@@ -61,6 +61,9 @@ const EMPTY_DIAGS: LspDiagnostic[] = [];
  */
 export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpenLocation }: Props) {
   const [res, setRes] = useState<FsReadResponse | null>(null);
+  // Kept apart from `res`: a media file never goes through fs_read, and the
+  // header still owes the reader "these bytes live somewhere else".
+  const [link, setLink] = useState<FsLinkInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -107,10 +110,14 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
     setLoading(true);
     setErr(null);
     setNote(null);
+    // Cleared up front: this pane switches files without remounting, and a
+    // header naming the PREVIOUS file's link target is worse than no subtext.
+    setLink(null);
     try {
       const r = await api.readFsFile(vpsId, root, path);
       if (!r.ok) { setErr(r.error ?? 'could not read this file'); setRes(null); return; }
       setRes(r);
+      setLink(r.symlink ? r : null);
       buf.current = r.content ?? '';
       shaRef.current = r.sha256 ?? null;
       versionRef.current = r.version ?? null;
@@ -125,6 +132,18 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   }, [vpsId, root, path, markDirty]);
 
   useEffect(() => { if (!media) void load(); else setLoading(false); }, [load, media]);
+  // Media skips fs_read entirely, so the one cheap probe is what tells the
+  // header this PNG is a link into another tree. Failures stay silent: the
+  // subtext is a courtesy, never a reason to fail opening a file.
+  useEffect(() => {
+    if (!media) return;
+    let alive = true;
+    setLink(null);
+    void api.statFsFile(vpsId, root, path)
+      .then((s) => { if (alive && s.ok && s.symlink) setLink(s); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [media, vpsId, root, path]);
   useEffect(() => {
     statSupportedRef.current = true;
     versionRef.current = null;
@@ -397,7 +416,16 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   return (
     <div className="file-editor">
       <header className="fe-head">
-        <span className="fe-path" title={`${root}/${path}`}>{path}</span>
+        <span className="fe-title">
+          <span className="fe-path" title={`${root}/${path}`}>{path}</span>
+          {/* Editing a link edits the file behind it — say which one, or the
+              save lands somewhere the reader never agreed to. */}
+          {link && (
+            <span className="fe-link" title={link.linkResolved ?? link.linkTarget ?? undefined}>
+              ↗ symlink → {link.linkTarget ?? 'unknown target'}
+            </span>
+          )}
+        </span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
         {tabular && res?.content != null && !res.binary && !res.tooLarge && (

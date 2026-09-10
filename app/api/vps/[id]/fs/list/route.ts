@@ -4,7 +4,7 @@ import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
-import type { FsListResponse } from '@/lib/types/api';
+import type { FsEntry, FsListResponse } from '@/lib/types/api';
 
 // GET /api/vps/[id]/fs/list?root=<session cwd>&path=<rel>[&git=1]
 //
@@ -14,9 +14,10 @@ import type { FsListResponse } from '@/lib/types/api';
 // contract would make a bug in the tree break session creation.
 //
 // `root` is the session's cwd and the containment boundary; the agent refuses
-// anything resolving outside it (fsnav `_contained`, realpath on both sides).
-// That isn't a privilege boundary — the hub hands out shells on the same box —
-// it just stops a stray `..` turning a project browser into a tour of /etc.
+// anything SPELLED outside it (fsnav `contained_path`), while following a
+// symlink placed inside it. That isn't a privilege boundary — the hub hands
+// out shells on the same box — it just stops a stray `..` turning a project
+// browser into a tour of /etc.
 //
 // `git=1` adds the gitignored flag, and is opt-in because it costs a
 // `check-ignore` subprocess and only the client knows whether this is a repo.
@@ -42,7 +43,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       return NextResponse.json<FsListResponse>({ ok: false, error: 'the agent is not connected', entries: [] });
     }
     const r = await client.call<FsListResponse>('fs_list', { root, path, with_git: withGit });
-    return NextResponse.json(r);
+    // The agent speaks snake_case; only a symlink carries the extra field.
+    const entries = (r.entries ?? []).map((e) => {
+      const { link_target: linkTarget, ...rest } = e as FsEntry & { link_target?: string };
+      return linkTarget ? { ...rest, linkTarget } : rest;
+    });
+    return NextResponse.json<FsListResponse>({ ...r, entries });
   } catch (e: unknown) {
     if (e instanceof AgentRpcError && e.code === -32601) {
       return NextResponse.json<FsListResponse>({

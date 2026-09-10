@@ -292,6 +292,26 @@ class ApplyEditTest(unittest.TestCase):
         finally:
             os.unlink(outside.name)
 
+    def test_edits_a_file_opened_through_a_symlink_without_breaking_it(self):
+        # Same rule as the explorer (fsnav.contained_path): a link spelled
+        # inside the root is editable, and the rename lands on its target.
+        outside_dir = tempfile.mkdtemp(prefix="charon-edit-outside-")
+        target = os.path.join(outside_dir, "shared.py")
+        with open(target, "w") as f:
+            f.write("alpha = 1\n")
+        link = os.path.join(self.dir, "shared.py")
+        os.symlink(target, link)
+        try:
+            r = L.lsp_apply_edit({"root": self.dir, "changes": {
+                L.path_to_uri(link): [self._edit(0, 0, 0, 5, "renamed")],
+            }})
+            self.assertTrue(r["ok"], r)
+            self.assertTrue(os.path.islink(link))
+            with open(target) as f:
+                self.assertEqual(f.read(), "renamed = 1\n")
+        finally:
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
     def test_validates_every_file_before_writing_any(self):
         # A rename that touches six files and dies on the fourth is the worst
         # possible outcome: the bad target is caught before anything lands.

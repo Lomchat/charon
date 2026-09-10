@@ -18,7 +18,8 @@ Three RPCs, all stdlib-only and all returning JSON-native values only:
   search precise (the globs, the case/word/regex switches) and differ only in
   what the pattern is matched against.
 
-All tree RPCs are CONTAINED under a caller-supplied root (the session's cwd).
+All tree RPCs are CONTAINED under a caller-supplied root (the session's cwd),
+and containment is judged on how a path is SPELLED (see `contained_path`).
 The ssh user can already read anything — the hub hands out shells — so this is
 not a privilege boundary; it is there so that a `..` in a path can't quietly
 turn a file browser into a way to page through `/etc` by accident.
@@ -83,42 +84,71 @@ def list_dir(raw: str) -> dict[str, Any]:
 
 
 # ── File tree (agent >= 0.25.0) ─────────────────────────────────────────────
-def _contained(root: str, target: str) -> str | None:
-    """Realpath of `target` if it stays under `root`, else None.
+def contained_path(root: str, target: str) -> str | None:
+    """`target` under `root`, or None when its SPELLING leaves the tree.
 
-    realpath on BOTH sides so a symlink pointing out of the tree is caught —
-    the check has to be on where the path lands, not on how it is spelled.
+    Containment is judged on how the path is written — `..` collapsed
+    lexically, an absolute path elsewhere refused — and NOT on where it finally
+    lands. A symlink placed inside the tree is therefore FOLLOWED, wherever it
+    points, which is the entire reason someone puts one in a project: a
+    checkout linking to `/srv/shared` has to open, not read as an error.
+
+    Until 0.85.0 this realpath'd both sides, which caught that link too. It
+    never was a privilege boundary (the hub hands out shells on the same box),
+    only a guard against a stray `..` turning the browser into a tour of
+    `/etc` — and the lexical rule keeps exactly that guard. What is returned is
+    what callers open, so the kernel resolves the same path judged here.
     """
-    try:
-        real_root = os.path.realpath(os.path.expanduser(root))
-        real = os.path.realpath(os.path.join(real_root, os.path.expanduser(target or "")))
-    except (OSError, ValueError):
+    if "\0" in (root or "") or "\0" in (target or ""):
         return None
-    if real != real_root and not real.startswith(real_root + os.sep):
-        return None
-    return real
-
-
-def _contained_entry(root: str, target: str) -> str | None:
-    """Spelled final entry if its resolved parent stays under ``root``.
-
-    Mutations that remove one directory entry must not resolve that final
-    entry: doing so would make deleting a symlink unlink its target instead.
-    The parent is still resolved, so a symlink in an earlier path component
-    cannot escape the explorer root.
-    """
     try:
         real_root = os.path.realpath(os.path.expanduser(root))
         spelled = os.path.join(real_root, os.path.expanduser(target or ""))
-        name = os.path.basename(spelled)
-        if name in ("", ".", ".."):
-            return None
-        parent = os.path.realpath(os.path.dirname(spelled))
     except (OSError, ValueError):
         return None
-    if parent != real_root and not parent.startswith(real_root + os.sep):
+    resolved = os.path.normpath(spelled)
+    if resolved != real_root and not resolved.startswith(real_root + os.sep):
         return None
-    return os.path.join(parent, name)
+    return resolved
+
+
+def contained_entry(root: str, target: str) -> str | None:
+    """`contained_path`, for a mutation that acts on ONE directory entry.
+
+    Deleting or renaming must never resolve the final entry: doing so would
+    unlink a symlink's target instead of the link, or rename the file behind
+    it. Nothing is resolved here, so that holds by construction; this only
+    adds the guard that the spelling names an entry at all. The root itself
+    comes back — its callers refuse it with a message that says why.
+    """
+    resolved = contained_path(root, target)
+    if resolved is None:
+        return None
+    name = os.path.basename(resolved)
+    if name in ("", ".", ".."):
+        return None
+    return resolved
+
+
+def _link_info(target: str) -> dict[str, Any]:
+    """Where a symlink points, for the tree's tooltip and the editor header.
+
+    The RAW `readlink` first: it is what the user wrote, what `ls -l` shows,
+    and the only form that stays true when the checkout moves. The resolved
+    absolute path rides along only when it says something the raw one doesn't
+    — it is the answer to "which file am I actually editing".
+    """
+    if not os.path.islink(target):
+        return {"symlink": False}
+    try:
+        raw = os.readlink(target)
+    except OSError:
+        return {"symlink": True}
+    info: dict[str, Any] = {"symlink": True, "link_target": raw}
+    resolved = os.path.realpath(target)
+    if resolved != raw:
+        info["link_resolved"] = resolved
+    return info
 
 
 def _ignored_names(directory: str, names: list[str]) -> set[str]:
@@ -159,7 +189,7 @@ def fs_list(root: str, path: str = "", with_git: bool = False) -> dict[str, Any]
     subprocess and only the caller knows whether this cwd is in a repo.
     """
     try:
-        target = _contained(root, path)
+        target = contained_path(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root", "entries": []}
         if not os.path.isdir(target):
@@ -171,13 +201,21 @@ def fs_list(root: str, path: str = "", with_git: bool = False) -> dict[str, Any]
                 try:
                     is_dir = e.is_dir(follow_symlinks=True)
                     st = e.stat(follow_symlinks=False)
-                    entries.append({
+                    entry = {
                         "name": e.name,
                         "dir": is_dir,
                         "size": 0 if is_dir else st.st_size,
                         "mtime": int(st.st_mtime),
                         "symlink": e.is_symlink(),
-                    })
+                    }
+                    if entry["symlink"]:
+                        # One readlink per link, none per plain file: the tree
+                        # names its destination without a call per hover.
+                        try:
+                            entry["link_target"] = os.readlink(e.path)
+                        except OSError:
+                            pass
+                    entries.append(entry)
                 except OSError:
                     continue  # broken symlink / racing unlink
         total = len(entries)
@@ -226,11 +264,14 @@ def _version_from_stat(st: os.stat_result) -> str:
 def fs_stat(root: str, path: str) -> dict[str, Any]:
     """Cheap version probe for one open editor (agent >= 0.28.0)."""
     try:
-        target = _contained(root, path)
+        target = contained_path(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root"}
+        # `lexists`, so a broken link still reports what it points at — that
+        # is exactly the case where the editor has to explain itself.
         if not os.path.exists(target):
-            return {"ok": True, "path": path, "exists": False, "version": None}
+            return {"ok": True, "path": path, "exists": False, "version": None,
+                    **_link_info(target)}
         if not os.path.isfile(target):
             return {"ok": False, "error": "not a file"}
         st = os.stat(target)
@@ -238,6 +279,7 @@ def fs_stat(root: str, path: str) -> dict[str, Any]:
             "ok": True, "path": path, "exists": True,
             "size": st.st_size, "mtime_ns": st.st_mtime_ns,
             "version": _version_from_stat(st),
+            **_link_info(target),
         }
     except PermissionError:
         return {"ok": False, "error": "permission denied"}
@@ -254,7 +296,7 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
     first 2MB of a 40MB log and says so beats one that appears to show all of it.
     """
     try:
-        target = _contained(root, path)
+        target = contained_path(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root"}
         if os.path.isdir(target):
@@ -262,6 +304,7 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
         if not os.path.isfile(target):
             return {"ok": False, "error": "not found"}
 
+        link = _link_info(target)
         size = os.path.getsize(target)
         with open(target, "rb") as f:
             head = f.read(8000)
@@ -271,7 +314,7 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
                 st = os.stat(target)
                 return {"ok": True, "path": path, "size": size, "binary": binary,
                         "too_large": True, "content": None, "encoding": None,
-                        "truncated": True, "version": _version_from_stat(st)}
+                        "truncated": True, "version": _version_from_stat(st), **link}
             rest = f.read(cap - len(head) + 1)
         data = head + rest
         truncated = len(data) > cap
@@ -286,11 +329,11 @@ def fs_read(root: str, path: str) -> dict[str, Any]:
             return {"ok": True, "path": path, "size": size, "binary": True,
                     "encoding": "base64", "content": base64.b64encode(data).decode(),
                     "truncated": truncated, "too_large": False, "sha256": sha,
-                    "version": version}
+                    "version": version, **link}
         return {"ok": True, "path": path, "size": size, "binary": False,
                 "encoding": "utf8", "content": data.decode("utf-8", "replace"),
                 "truncated": truncated, "too_large": False, "sha256": sha,
-                "version": version}
+                "version": version, **link}
     except PermissionError:
         return {"ok": False, "error": "permission denied"}
     except OSError as e:
@@ -329,7 +372,7 @@ def stream_file_to(
     """
     if offset < 0 or length is not None and length < 0:
         return STREAM_BAD_RANGE, "invalid byte range"
-    target = _contained(root, path)
+    target = contained_path(root, path)
     if target is None:
         return STREAM_BAD_PATH, "path outside the root"
     try:
@@ -403,7 +446,7 @@ def stream_directory_zip_to(root: str, path: str, output: BinaryIO) -> tuple[int
     descriptors when ``output`` is unseekable, which makes stdout a genuine
     streaming target even though the central directory lands at EOF.
     """
-    target = _contained(root, path)
+    target = contained_path(root, path)
     if target is None:
         return STREAM_BAD_PATH, "path outside the root"
     if not os.path.exists(target):
@@ -516,13 +559,20 @@ def fs_write(root: str, path: str, content: str, expected_sha256: str | None = N
       rename within a directory is the only way to guarantee a reader sees
       either the old bytes or the new ones.
 
+    A symlink is written THROUGH, never over: the atomic rename would otherwise
+    replace the link with a regular file, so saving `CLAUDE.md` would quietly
+    unpair it from the `AGENTS.md` it was created to share (§14.80), and the
+    bytes the editor showed would stop being the bytes anyone else reads.
+
     Text only. The editor is for text; shipping arbitrary bytes back through
     the JSON RPC is a different feature with different limits.
     """
     try:
-        target = _contained(root, path)
+        target = contained_path(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
+        if os.path.islink(target):
+            target = os.path.realpath(target)
         if os.path.isdir(target):
             return {"ok": False, "error": "that is a directory", "reason": "bad_path"}
         if len(content.encode("utf-8", "surrogateescape")) > MAX_TEXT_BYTES:
@@ -582,7 +632,7 @@ def fs_write(root: str, path: str, content: str, expected_sha256: str | None = N
 def fs_mkdir(root: str, path: str) -> dict[str, Any]:
     """Create a directory (and any missing parents) under `root`."""
     try:
-        target = _contained(root, path)
+        target = contained_path(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
         if os.path.exists(target):
@@ -603,12 +653,20 @@ def fs_rename(root: str, path: str, to: str) -> dict[str, Any]:
     Refuses to clobber an existing destination: `os.replace` would silently
     delete it, and a rename that eats a file is not something a user can undo
     from here.
+
+    Like `fs_delete`, this moves the DIRECTORY ENTRY and nothing else: nothing
+    is resolved, so renaming a symlink renames the link and leaves what it
+    points at exactly where it is, under the name it already had. `lexists` on
+    both ends for the same reason — a broken link is still an entry the user
+    can see and move, and still one a rename must not silently eat.
     """
     try:
-        src = _contained(root, path)
+        src = contained_entry(root, path)
         if src is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
-        if not os.path.exists(src):
+        if src == os.path.realpath(os.path.expanduser(root)):
+            return {"ok": False, "error": "refusing to rename the root folder", "reason": "bad_path"}
+        if not os.path.lexists(src):
             return {"ok": False, "error": "not found", "reason": "missing"}
         # The destination does not exist yet, so realpath can't resolve it —
         # contain its PARENT and rebuild, which is what actually bounds it.
@@ -617,11 +675,11 @@ def fs_rename(root: str, path: str, to: str) -> dict[str, Any]:
             return {"ok": False, "error": "invalid destination", "reason": "bad_path"}
         real_root = os.path.realpath(os.path.expanduser(root))
         dest_abs = os.path.join(real_root, dest_rel) if not os.path.isabs(dest_rel) else dest_rel
-        parent = _contained(root, os.path.dirname(os.path.relpath(dest_abs, real_root)) or ".")
+        parent = contained_path(root, os.path.dirname(os.path.relpath(dest_abs, real_root)) or ".")
         if parent is None or not os.path.isdir(parent):
             return {"ok": False, "error": "destination folder is outside the root", "reason": "bad_path"}
         dest = os.path.join(parent, os.path.basename(dest_abs))
-        if os.path.exists(dest):
+        if os.path.lexists(dest):
             return {"ok": False, "error": "a file with that name already exists", "reason": "exists"}
         os.rename(src, dest)
         return {"ok": True, "path": os.path.relpath(dest, real_root)}
@@ -657,8 +715,8 @@ def fs_symlink(root: str, path: str, to: str) -> dict[str, Any]:
 
         source_parent_rel = os.path.dirname(os.path.relpath(source_abs, real_root)) or "."
         link_parent_rel = os.path.dirname(os.path.relpath(link_abs, real_root)) or "."
-        source_parent = _contained(root, source_parent_rel)
-        link_parent = _contained(root, link_parent_rel)
+        source_parent = contained_path(root, source_parent_rel)
+        link_parent = contained_path(root, link_parent_rel)
         if source_parent is None or link_parent is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
         if not os.path.isdir(source_parent) or not os.path.isdir(link_parent):
@@ -671,7 +729,7 @@ def fs_symlink(root: str, path: str, to: str) -> dict[str, Any]:
             }
 
         source_spelled = os.path.join(source_parent, source_name)
-        source = _contained(root, source_spelled)
+        source = contained_path(root, source_spelled)
         if source is None:
             return {"ok": False, "error": "symlink target is outside the root", "reason": "bad_path"}
         if not os.path.isfile(source):
@@ -707,10 +765,10 @@ def fs_delete(root: str, path: str, recursive: bool = False,
     snapshot, the older UI action must not delete the newer work.
     """
     try:
-        # Resolve the parent for containment, but preserve the last directory
-        # entry. `_contained()` follows a final symlink and would therefore
-        # delete the linked file while leaving a broken link in the tree.
-        target = _contained_entry(root, path)
+        # Contained without resolving anything: `os.unlink` on the spelled
+        # path removes the link itself, where following it would delete the
+        # linked file and leave a broken link in the tree.
+        target = contained_entry(root, path)
         if target is None:
             return {"ok": False, "error": "path outside the root", "reason": "bad_path"}
         # Deleting the root itself would take the session's cwd with it.
@@ -1075,7 +1133,7 @@ def fs_search(root: str, query: str, mode: str = "text", regex: bool = False,
         return base
 
     try:
-        real_root = _contained(root, "")
+        real_root = contained_path(root, "")
         if real_root is None or not os.path.isdir(real_root):
             return {"ok": False, "error": "the folder is not readable",
                     "reason": "bad_path", "files": []}

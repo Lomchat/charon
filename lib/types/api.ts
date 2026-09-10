@@ -168,8 +168,21 @@ export type FsEntry = {
   size: number;
   mtime: number;
   symlink: boolean;
+  /** Where a symlink points, RAW (`readlink`) — the tree's ↗ tooltip. */
+  linkTarget?: string;
   /** Only present when the caller asked for git decoration (`withGit`). */
   ignored?: boolean;
+};
+
+/**
+ * Symlink half of `fs_read`/`fs_stat` (agent >= 0.85.0): the raw target is
+ * what `ls -l` shows, and `linkResolved` only appears when it says something
+ * the raw one doesn't — which file is actually being edited.
+ */
+export type FsLinkInfo = {
+  symlink?: boolean;
+  linkTarget?: string | null;
+  linkResolved?: string | null;
 };
 
 export type FsListResponse = {
@@ -183,7 +196,7 @@ export type FsListResponse = {
   truncated?: boolean;
 };
 
-export type FsReadResponse = {
+export type FsReadResponse = FsLinkInfo & {
   ok: boolean;
   error?: string;
   path?: string;
@@ -200,7 +213,7 @@ export type FsReadResponse = {
   version?: string | null;
 };
 
-export type FsStatResponse = {
+export type FsStatResponse = FsLinkInfo & {
   ok: boolean;
   error?: string;
   reason?: 'offline' | 'unsupported' | 'error';

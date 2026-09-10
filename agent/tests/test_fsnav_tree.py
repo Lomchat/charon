@@ -2,9 +2,11 @@
 
 What's worth pinning here is containment and honesty:
 
-  * `_contained` compares REALPATHS, so a symlink pointing out of the tree is
-    caught — checking the spelling of the path would not catch it, and this
-    guards a read of arbitrary files;
+  * `contained_path` judges the SPELLING of a path, so `..` and an absolute
+    path elsewhere are refused while a symlink inside the tree is followed
+    wherever it points — a link is something the user put there on purpose;
+  * a write goes THROUGH a symlink, never over it: the atomic rename would
+    otherwise turn the link into a regular file behind the editor's back;
   * text vs binary is decided by git's own heuristic (a NUL in the first
     block), because that is what decides whether the viewer renders characters
     or hands the bytes to the browser;
@@ -78,13 +80,67 @@ class TreeTest(unittest.TestCase):
             self.assertFalse(r["ok"], bad)
             self.assertEqual(r["entries"], [])
 
-    def test_symlink_out_of_the_tree_is_refused(self):
-        # The spelling of this path is innocent; only the realpath reveals it.
+    def test_symlink_out_of_the_tree_is_followed(self):
+        # A link inside the tree is deliberate: the project that points at
+        # /srv/shared is browsed from here or not at all.
         outside = tempfile.mkdtemp(prefix="charon-outside-")
         try:
-            os.symlink(outside, os.path.join(self.root, "escape"))
-            r = F.fs_list(self.root, "escape")
-            self.assertFalse(r["ok"])
+            with open(os.path.join(outside, "shared.txt"), "w") as f:
+                f.write("shared\n")
+            os.symlink(outside, os.path.join(self.root, "linked"))
+            r = F.fs_list(self.root, "linked")
+            self.assertTrue(r["ok"], r)
+            self.assertEqual([e["name"] for e in r["entries"]], ["shared.txt"])
+            self.assertEqual(r["path"], "linked")
+            self.assertEqual(F.fs_read(self.root, "linked/shared.txt")["content"], "shared\n")
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_a_link_says_where_it_points(self):
+        # The tree's ↗ tooltip and the editor header both read this: a link
+        # nobody can resolve without an ssh session is a link nobody reads.
+        outside = tempfile.mkdtemp(prefix="charon-outside-")
+        target = os.path.join(outside, "shared.md")
+        with open(target, "w") as f:
+            f.write("shared\n")
+        os.symlink(target, os.path.join(self.root, "absolute.md"))
+        os.symlink("README.md", os.path.join(self.root, "relative.md"))
+        os.symlink("nowhere.md", os.path.join(self.root, "broken.md"))
+        try:
+            by = {e["name"]: e for e in F.fs_list(self.root)["entries"]}
+            self.assertEqual(by["absolute.md"]["link_target"], target)
+            self.assertEqual(by["relative.md"]["link_target"], "README.md")
+            self.assertEqual(by["broken.md"]["link_target"], "nowhere.md")
+            self.assertNotIn("link_target", by["README.md"])
+
+            # The raw target is what `ls -l` shows; the resolved one rides
+            # along only when it adds something.
+            rel = F.fs_read(self.root, "relative.md")
+            self.assertTrue(rel["symlink"])
+            self.assertEqual(rel["link_target"], "README.md")
+            self.assertEqual(rel["link_resolved"], os.path.join(self.root, "README.md"))
+            self.assertFalse(F.fs_read(self.root, "README.md")["symlink"])
+            self.assertNotIn("link_resolved", F.fs_read(self.root, "absolute.md"))
+
+            # …including on the cheap probe, and on a link with nothing behind
+            # it — that is exactly when the header has to explain itself.
+            self.assertEqual(F.fs_stat(self.root, "relative.md")["link_target"], "README.md")
+            dangling = F.fs_stat(self.root, "broken.md")
+            self.assertFalse(dangling["exists"])
+            self.assertEqual(dangling["link_target"], "nowhere.md")
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_dotdot_is_collapsed_before_a_link_is_ever_opened(self):
+        # Containment is lexical, so `..` never walks out of a link's target:
+        # `linked/..` is the root, and one more level is still an escape.
+        outside = tempfile.mkdtemp(prefix="charon-outside-")
+        try:
+            os.symlink(outside, os.path.join(self.root, "linked"))
+            back = F.fs_list(self.root, "linked/..")
+            self.assertTrue(back["ok"], back)
+            self.assertIn("README.md", [e["name"] for e in back["entries"]])
+            self.assertFalse(F.fs_list(self.root, "linked/../..")["ok"])
         finally:
             shutil.rmtree(outside, ignore_errors=True)
 
@@ -271,6 +327,27 @@ class WriteTest(unittest.TestCase):
         r = F.fs_write(self.root, "d", "x")
         self.assertFalse(r["ok"])
 
+    def test_saving_a_link_writes_through_it_and_keeps_it(self):
+        # The atomic rename lands on the TARGET: a link that survives only
+        # until its first save is a link the editor quietly broke.
+        outside = tempfile.mkdtemp(prefix="charon-outside-")
+        target = os.path.join(outside, "shared.md")
+        with open(target, "w") as f:
+            f.write("shared\n")
+        link = os.path.join(self.root, "shared.md")
+        os.symlink(target, link)
+        try:
+            opened = F.fs_read(self.root, "shared.md")
+            r = F.fs_write(self.root, "shared.md", "edited\n",
+                           expected_sha256=opened["sha256"])
+            self.assertTrue(r["ok"], r)
+            self.assertTrue(os.path.islink(link))
+            with open(target) as f:
+                self.assertEqual(f.read(), "edited\n")
+            self.assertEqual(F.fs_stat(self.root, "shared.md")["version"], r["version"])
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
     def test_mode_is_preserved(self):
         # Saving a shell script must not make it non-executable.
         p = os.path.join(self.root, "run.sh")
@@ -345,17 +422,56 @@ class SymlinkTest(unittest.TestCase):
         with open(target) as f:
             self.assertEqual(f.read(), "shared instructions\n")
 
-    def test_delete_does_not_follow_a_symlinked_parent_outside_root(self):
+    def test_rename_moves_the_link_and_never_what_it_points_at(self):
+        # THE rule for rename and delete: they act on the directory entry the
+        # user clicked, never on the file behind it. Resolving the path here
+        # would rename the target and leave the link dangling.
+        outside_dir = tempfile.mkdtemp(prefix="charon-symlink-outside-")
+        target = os.path.join(outside_dir, "real.md")
+        with open(target, "w") as f:
+            f.write("target\n")
+        os.symlink(target, os.path.join(self.root, "link.md"))
+        try:
+            r = F.fs_rename(self.root, "link.md", "moved.md")
+            self.assertTrue(r["ok"], r)
+            moved = os.path.join(self.root, "moved.md")
+            self.assertTrue(os.path.islink(moved))
+            self.assertEqual(os.readlink(moved), target)
+            self.assertEqual(os.listdir(outside_dir), ["real.md"])
+        finally:
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
+    def test_a_broken_link_is_still_an_entry_to_move_and_never_clobbered(self):
+        # `exists()` says no on a broken link, but the user sees the row and
+        # the rename is about that row.
+        os.symlink("nowhere.md", os.path.join(self.root, "broken.md"))
+        moved = F.fs_rename(self.root, "broken.md", "still-broken.md")
+        self.assertTrue(moved["ok"], moved)
+        self.assertTrue(os.path.islink(os.path.join(self.root, "still-broken.md")))
+
+        with open(os.path.join(self.root, "victim.md"), "w") as f:
+            f.write("keep\n")
+        os.symlink("nowhere.md", os.path.join(self.root, "second.md"))
+        clash = F.fs_rename(self.root, "victim.md", "second.md")
+        self.assertFalse(clash["ok"])
+        self.assertEqual(clash["reason"], "exists")
+        with open(os.path.join(self.root, "victim.md")) as f:
+            self.assertEqual(f.read(), "keep\n")
+
+    def test_delete_through_a_linked_folder_removes_the_named_file(self):
+        # Not the same case as the link itself: here the clicked entry IS the
+        # file inside the linked folder, so deleting it deletes that file. The
+        # LINK's own deletion (above) is what must never reach its target.
         outside_dir = tempfile.mkdtemp(prefix="charon-symlink-outside-")
         outside_file = os.path.join(outside_dir, "keep.txt")
         with open(outside_file, "w") as f:
             f.write("keep\n")
-        os.symlink(outside_dir, os.path.join(self.root, "escape"))
+        os.symlink(outside_dir, os.path.join(self.root, "linked"))
         try:
-            deleted = F.fs_delete(self.root, "escape/keep.txt")
-            self.assertFalse(deleted["ok"])
-            self.assertEqual(deleted["reason"], "bad_path")
-            self.assertTrue(os.path.isfile(outside_file))
+            deleted = F.fs_delete(self.root, "linked/keep.txt")
+            self.assertTrue(deleted["ok"], deleted)
+            self.assertFalse(os.path.exists(outside_file))
+            self.assertTrue(os.path.isdir(outside_dir))
         finally:
             shutil.rmtree(outside_dir, ignore_errors=True)
 
@@ -444,16 +560,21 @@ class FileStreamTest(unittest.TestCase):
         self.assertEqual(code, F.STREAM_BAD_RANGE)
         self.assertEqual(invalid.getvalue(), b"")
 
-    def test_rejects_a_symlink_escape(self):
+    def test_downloads_a_linked_file_and_still_refuses_a_spelled_escape(self):
         outside = tempfile.NamedTemporaryFile(delete=False)
-        outside.write(b"secret")
+        outside.write(b"linked payload")
         outside.close()
-        os.symlink(outside.name, os.path.join(self.root, "escape.bin"))
+        os.symlink(outside.name, os.path.join(self.root, "linked.bin"))
         try:
             output = io.BytesIO()
-            code, _ = F.stream_file_to(self.root, "escape.bin", output)
+            code, error = F.stream_file_to(self.root, "linked.bin", output)
+            self.assertEqual((code, error), (0, None))
+            self.assertEqual(output.getvalue(), b"linked payload")
+
+            spelled = io.BytesIO()
+            code, _ = F.stream_file_to(self.root, f"../{os.path.basename(outside.name)}", spelled)
             self.assertEqual(code, F.STREAM_BAD_PATH)
-            self.assertEqual(output.getvalue(), b"")
+            self.assertEqual(spelled.getvalue(), b"")
         finally:
             os.unlink(outside.name)
 

@@ -874,7 +874,14 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
                   <IconForKind kind={kind} open={isOpen} className="tt-ico" />
                   <span className="tt-name">{r.name}</span>
                   {isDeleting && <span className="tt-deleting">deleting…</span>}
-                  {r.entry.symlink && <span className="tt-link" title="symlink">↗</span>}
+                  {/* Where it points, not just THAT it points: a link whose
+                      destination needs an ssh session to read is one nobody
+                      reads. `title` is the whole affordance — the icon is
+                      10px wide and carries no other label. */}
+                  {r.entry.symlink && (
+                    <span className="tt-link"
+                          title={r.entry.linkTarget ? `symlink → ${r.entry.linkTarget}` : 'symlink'}>↗</span>
+                  )}
                   {/* Files carry the letter; folders carry only the colour, so
                       the gutter stays a single column of real changes. */}
                   {st && !r.dir && <span className="tt-st">{deco}</span>}
