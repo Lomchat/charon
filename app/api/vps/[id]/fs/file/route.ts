@@ -13,7 +13,7 @@ import { previewMimeFor } from '@/lib/server/claude/attachmentNames';
 import { sshKeyArgs } from '@/lib/server/claude/sshExec';
 import { compareVersions } from '@/lib/version';
 import { parseByteRange } from '@/lib/fileRange';
-import type { FsListResponse, FsReadResponse, FsStatResponse } from '@/lib/types/api';
+import type { FsLinkInfo, FsListResponse, FsReadResponse, FsStatResponse } from '@/lib/types/api';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,6 +23,14 @@ const ZIP_STREAM_AGENT_VERSION = '0.78.0';
 const STREAM_START_TIMEOUT_MS = 20_000;
 
 type RouteContext = { params: Promise<{ id: string }> };
+
+/** Symlink half of the agent's answer, snake_case on the wire (§14.77). */
+type AgentLinkInfo = { symlink?: boolean; link_target?: string; link_resolved?: string };
+
+function linkInfo(r: AgentLinkInfo): FsLinkInfo {
+  if (!r.symlink) return {};
+  return { symlink: true, linkTarget: r.link_target ?? null, linkResolved: r.link_resolved ?? null };
+}
 
 function byteHeaders(base: string, inline: boolean): Record<string, string> {
   const previewMime = inline ? previewMimeFor(base) : null;
@@ -268,8 +276,9 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
   let r: FsReadResponse;
   try {
     if (stat) {
-      const sr = await client.call<FsStatResponse & { mtime_ns?: number }>('fs_stat', { root, path });
-      return NextResponse.json<FsStatResponse>({ ...sr, mtimeNs: sr.mtime_ns });
+      const sr = await client.call<FsStatResponse & AgentLinkInfo & { mtime_ns?: number }>(
+        'fs_stat', { root, path });
+      return NextResponse.json<FsStatResponse>({ ...sr, mtimeNs: sr.mtime_ns, ...linkInfo(sr) });
     }
     r = await client.call<FsReadResponse>('fs_read', { root, path });
   } catch (e: unknown) {
@@ -286,8 +295,10 @@ async function handle(req: Request, { params }: RouteContext, headOnly: boolean)
   }
 
   if (!(inline || raw)) {
-    const raw2 = r as FsReadResponse & { too_large?: boolean };
-    return NextResponse.json<FsReadResponse>({ ...r, tooLarge: raw2.too_large === true });
+    const raw2 = r as FsReadResponse & AgentLinkInfo & { too_large?: boolean };
+    return NextResponse.json<FsReadResponse>({
+      ...r, tooLarge: raw2.too_large === true, ...linkInfo(raw2),
+    });
   }
   if (!r.ok || r.content == null || r.encoding == null) {
     const tooLarge = (r as FsReadResponse & { too_large?: boolean }).too_large;

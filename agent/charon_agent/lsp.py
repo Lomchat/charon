@@ -39,6 +39,8 @@ import threading
 import time
 from typing import Any
 
+from .fsnav import contained_path
+
 # One server per (root, language). Beyond this, the oldest idle one is stopped:
 # a fleet VPS is not a workstation and a runaway set of language servers is the
 # fastest way to OOM a small box.
@@ -640,7 +642,9 @@ def lsp_apply_edit(params: dict[str, Any]) -> dict[str, Any]:
     ones `fs_write` lives by (§14.79) because the hazard is identical — an
     agent may be writing these files right now:
 
-      * every path is CONTAINED under `root`, realpath'd on both sides;
+      * every path is CONTAINED under `root` by `fsnav.contained_path`, the
+        explorer's own rule — a server naming a file the editor opened through
+        a symlink must not be refused where saving it works;
       * each file is read, patched, and written tmp+fsync+rename, preserving
         the mode. A half-written source file is worse than an unwritten one;
       * it is ALL-OR-NOTHING in intent: every target is validated and patched
@@ -655,13 +659,15 @@ def lsp_apply_edit(params: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(changes, dict) or not changes:
         return {"ok": False, "error": "nothing to apply", "reason": "no_changes"}
 
-    staged: list[tuple[str, str, int]] = []          # (path, new text, mode)
+    staged: list[tuple[str, str, str, int]] = []      # (path, file, new text, mode)
     for uri, edits in changes.items():
-        path = uri_to_path(str(uri))
-        real = os.path.realpath(path)
-        if real != root and not real.startswith(root + os.sep):
+        path = contained_path(root, uri_to_path(str(uri)))
+        if path is None:
             return {"ok": False, "reason": "outside_root",
-                    "error": f"refusing to edit outside the project: {path}"}
+                    "error": f"refusing to edit outside the project: {uri_to_path(str(uri))}"}
+        # Write THROUGH a link rather than over it (fsnav.fs_write, §14.79),
+        # while the document keeps the name the editor opened it under.
+        real = os.path.realpath(path) if os.path.islink(path) else path
         if not isinstance(edits, list) or not edits:
             continue
         try:
@@ -672,13 +678,13 @@ def lsp_apply_edit(params: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "reason": "read", "error": f"{path}: {ex}"}
         after = _apply_text_edits(before, edits)
         if after != before:
-            staged.append((real, after, mode))
+            staged.append((path, real, after, mode))
 
     if not staged:
         return {"ok": True, "changed": [], "note": "nothing to change"}
 
     written: list[str] = []
-    for real, after, mode in staged:
+    for path, real, after, mode in staged:
         tmp = real + ".charon-lsp.tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
@@ -687,7 +693,7 @@ def lsp_apply_edit(params: dict[str, Any]) -> dict[str, Any]:
                 os.fsync(f.fileno())
             os.chmod(tmp, mode)
             os.replace(tmp, real)
-            written.append(real)
+            written.append(path)
         except OSError as ex:
             try:
                 os.unlink(tmp)
