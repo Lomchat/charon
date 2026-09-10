@@ -8,6 +8,7 @@ import { formatSettingSources, parseSettingSources } from '@/lib/settingSources'
 import { isThemeId } from '@/app/themes';
 
 const ALLOWED_KEYS = [
+  'ui.theme',
   'ssh.private_key_path',
   ...NOTIFICATION_EVENTS.map(({ id }) => `telegram.notify.${id}`),
   'telegram.enabled',
