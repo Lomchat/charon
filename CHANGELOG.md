@@ -23,14 +23,13 @@ commit-by-commit — `git log` has the detail.
   that turns the known folders into that URL — one bookmark per project. The
   selected entity is never hidden, and an unhealthy VPS stays on screen so its
   agent bar cannot go silent. Tabs are deliberately not filtered.
-- **Theme hook, and one alternative palette.** A `ui.theme` setting is
-  stamped on `<html>` as `data-theme` during the server render, so a themed
-  stylesheet can restyle the app with no flash of the other theme on load.
-  The default is `classic` — the stock appearance is unchanged unless you opt
-  in. `app/theme-emc.css` ships as the worked example: warm greys, a coral
-  primary, an uncased transcript with a reading column. Note for anyone
-  adding a theme: `.claude-root` redeclares all seventeen colour variables
-  for itself, so a `:root` override alone only reaches the login page.
+- **`Etonc`, a fourth theme** (contributed by Etoncoco): warm greys instead of
+  the slate blue, a coral primary, sage where the stock theme is teal, and —
+  as in `Ember` — a transcript with no message frames, here with a capped
+  reading column so dropping the boxes cannot let a line run to 200
+  characters. Two new tokens, `--bubble-measure` and `--bubble-align`, carry
+  that column: inert in every other theme, and the way a theme changes
+  structure without being allowed a `[data-theme] .bubble {…}` override.
 - **Codex as a second backend.** Every session carries a `kind`
   (`claude` | `codex`); Codex sessions are driven by the `openai-codex` Python
   SDK and translated into the same event vocabulary, so the whole chat UI is

@@ -90,6 +90,27 @@ export const THEMES: readonly Theme[] = [
       brightCyan: '#96c2bd', brightWhite: '#fdf1ea',
     },
   },
+  {
+    id: 'etonc',
+    label: 'Etonc',
+    // Contributed by Etoncoco (PR #39). Same structural bet as Ember — no
+    // message frames — but on a warm-grey ground with a coral primary, and
+    // with a capped reading column instead of full-width prose.
+    hint: 'warm greys and coral — the transcript reads as a document',
+    dark: true,
+    themeColor: '#191817',
+    // Same reservation as Ember's: blue/cyan/magenta stay recognisably
+    // themselves, muted into the warm register rather than recoloured.
+    xterm: {
+      background: '#141312', foreground: '#e6e0d4', cursor: '#e8977a',
+      selectionBackground: '#46352c',
+      black: '#1a1917', red: '#d4534b', green: '#93b071', yellow: '#d7a54e',
+      blue: '#8fa2bf', magenta: '#b491c9', cyan: '#9db5a8', white: '#e6e0d4',
+      brightBlack: '#6b665c', brightRed: '#e56a5c', brightGreen: '#b9d19a',
+      brightYellow: '#f0c168', brightBlue: '#a9bad4', brightMagenta: '#cdaede',
+      brightCyan: '#bacfc2', brightWhite: '#fbf9f2',
+    },
+  },
 ];
 
 export const DEFAULT_THEME_ID = 'nordic';

@@ -1579,6 +1579,10 @@
   border: var(--bubble-edge) solid var(--border);
   padding: 8px 12px;
   background: color-mix(in srgb, var(--bg-raised) calc(40% * var(--bubble-tint)), transparent);
+  /* `none` / `stretch` everywhere except a frameless theme, where the boxes
+     were the only thing holding the line length down. */
+  max-width: var(--bubble-measure);
+  align-self: var(--bubble-align);
 }
 .bubble .bubble-h {
   display: flex; align-items: center; gap: 8px;
