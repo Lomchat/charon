@@ -14,6 +14,7 @@ import urllib.request
 from typing import Callable
 
 from .custom_endpoints import _NoRedirect
+from .endpoint_responses import response_stream
 
 
 def request_body(body: dict, endpoint: dict, engine: str) -> dict:
@@ -74,6 +75,11 @@ class EndpointProxy:
                         self.send_response(upstream.status)
                         self.send_header("Content-Type", upstream.headers.get("Content-Type", "application/json"))
                         self.end_headers()
+                        if (owner.engine == "codex" and self.path.split("?", 1)[0] == "/v1/responses"
+                                and upstream.headers.get_content_type() == "text/event-stream"):
+                            for chunk in response_stream(upstream):
+                                self.wfile.write(chunk); self.wfile.flush()
+                            return
                         while True:
                             chunk = upstream.read1(65536)
                             if not chunk: break
