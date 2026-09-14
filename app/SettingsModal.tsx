@@ -21,6 +21,7 @@ import CursorEffortPicker from './CursorEffortPicker';
 import { catalogVpsFor } from './modelPickers';
 import { MODE_LABELS, providerText } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
+import { IconPlug } from './icons';
 import { invalidateModels } from './modelsCache';
 import {
   CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES, CURSOR_MODES, PROVIDERS,
@@ -227,6 +228,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     if (isSessionProvider(id)) return <AgentLogo kind={id} size={14} />;
     if (id === 'general') return <span className="nav-ico">⚙</span>;
     if (id === 'notifications') return <span className="nav-ico">✉</span>;
+    if (id === 'endpoints') return <span className="nav-ico"><IconPlug /></span>;
     return <span className="nav-ico">↻</span>;
   };
 
@@ -656,8 +658,9 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
             </div>
 
             <div className="settings-foot modal-actions">
-              <button className="primary" onClick={save} disabled={busy}>save</button>
-              <button onClick={close}>cancel</button>
+              {cat === 'endpoints' && !Object.keys(dirty).length
+                ? <><span className="set-meta endpoint-settings-footnote">Connections are saved individually.</span><button onClick={close}>done</button></>
+                : <><button className="primary" onClick={save} disabled={busy}>save</button><button onClick={close}>cancel</button></>}
             </div>
           </>
         )}
