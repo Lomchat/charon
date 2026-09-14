@@ -31,7 +31,11 @@ export function PickerOption(
   const lines = (Array.isArray(sub) ? sub : [sub]).filter(Boolean) as string[];
   return (
     <span className="picker-line">
-      {title}
+      {/* The title is wrapped because the stack is a flex COLUMN: a title made
+          of several nodes (a name plus a price tier) would otherwise contribute
+          one flex ITEM PER NODE, and the tier would sit on its own row where it
+          reads as a fact rather than as a mark beside the name. */}
+      <span className="picker-title">{title}</span>
       {lines.map((line, i) => <small key={i}>{line}</small>)}
     </span>
   );
