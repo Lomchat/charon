@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from .endpoint_responses import response_event
+
 MAX_BYTES = 2 * 1024 * 1024
 
 
@@ -44,7 +46,9 @@ def _request(endpoint: dict, path: str, body: dict | None = None) -> Any:
             if not line.startswith(b"data:"): continue
             value = line[5:].strip()
             if value == b"[DONE]": break
-            try: events.append(json.loads(value))
+            try:
+                event = json.loads(value)
+                events.append(response_event(event) if path == "/v1/responses" else event)
             except (ValueError, UnicodeError): continue
         return events
 
