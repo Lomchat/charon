@@ -1,3 +1,4 @@
+import { publicConnection } from '@/lib/server/customEndpoints';
 import { NextResponse } from 'next/server';
 import { desc, eq, and, sql } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
@@ -92,6 +93,7 @@ export async function GET(req: Request) {
       return {
         ...r,
         codexConfig: undefined,
+        endpoint: publicConnection(r.codexConfig),
         liveStatus,
         // Handles are durable for both providers. Only a sufficiently recent
         // live daemon can route them, so sleeping/stale targets stay out of the

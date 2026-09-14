@@ -390,6 +390,7 @@ export type AgentMethodName =
   // The fs route falls back to a one-shot ssh ls on older agents. NB: no
   // semicolon CHARACTER anywhere in comments inside this union —
   // check-protocol-sync.mjs slices the type body at the first one.
+  | 'endpoint_probe'
   | 'list_dir'
   // Read-only file tree (agent >= 0.25.0, fsnav.py) - fs_list is ONE directory
   // per call (lazy expansion) and fs_read returns utf-8 or base64. Both are

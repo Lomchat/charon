@@ -1,4 +1,10 @@
 'use client';
+import { api } from '@/lib/api';
+import PickerControl from './PickerControl';
+import dynamic from 'next/dynamic';
+import { useSessionEndpoint } from './useSessionEndpoint';
+import { endpointEfforts, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
+
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -112,12 +118,15 @@ const sharedCacheRef: StreamCache = {
   extendWithOlder: (id, older) => extendCacheWithOlder(id, older),
 };
 
+const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr: false });
+
 export default function ClaudeSessionView({
   sessionId, selected, showTools, selectedVps, handle, handleConfirmed, siblings,
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
   onOpenSession,
 }: Props) {
+  const [endpoint, refreshEndpoint] = useSessionEndpoint(sessionId, selected.endpoint);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
   const closeSessionSettings = useCallback(() => setSessionSettingsOpen(false), []);
   const stream = useAgentSessionStream(sessionId, {
@@ -720,7 +729,7 @@ export default function ClaudeSessionView({
               </span>
             )}
             <HeaderContextGauge
-              context={sessionContext}
+              context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
               onCompact={doCompact}
               compacting={compacting}
               compactDisabled={!compactAllowed}
@@ -732,7 +741,7 @@ export default function ClaudeSessionView({
           </div>
           <SessionRuntimePanel
             usage={usage ?? null} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
-            kind={sessionKind} vpsId={vpsId}
+            kind={sessionKind} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
@@ -828,12 +837,12 @@ export default function ClaudeSessionView({
             ) : (
               <>
                 {currentAssistant && (
-                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={onReauth} />
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth} />
                 )}
                 <MessageHistory
                   renderable={visibleRenderable}
                   kind={sessionKind}
-                  onReauth={onReauth}
+                  onReauth={endpoint.active ? undefined : onReauth}
                   continuableMsgId={continuableMsgId}
                   onContinue={sendContinue}
                   onScheduleResume={scheduleResume}
@@ -931,7 +940,7 @@ export default function ClaudeSessionView({
           />
         )}
 
-        {showTools && liveUsage?.final && liveUsage.costUsd != null && liveUsage.costUsd > 0 && (
+        {!endpoint.active && showTools && liveUsage?.final && liveUsage.costUsd != null && liveUsage.costUsd > 0 && (
           <div className="turn-cost" role="status">
             <span>last turn</span>
             <strong>{fmtCost(liveUsage.costUsd)}</strong>
@@ -1693,8 +1702,9 @@ function fmtTokens(n: number): string {
 function SessionRuntimePanel({
   usage, vpsName, onUsageRefresh, kind, vpsId, model, fallbackModel, effort,
   modelPendingApply, effortPendingApply, effectiveModel, claudeSessionId,
-  onSetModel, onSetEffort, onApplyNow,
+  onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged,
 }: {
+  sessionId: string; endpoint: EndpointState; onEndpointChanged: () => void;
   usage: AccountUsage | null;
   vpsName?: string | null;
   onUsageRefresh?: () => void;
@@ -1711,6 +1721,7 @@ function SessionRuntimePanel({
   onSetEffort: (e: string | null) => Promise<void>;
   onApplyNow?: () => Promise<void> | void;
 }) {
+  const [endpointOpen, setEndpointOpen] = useState(false);
   const [open, setOpen] = useState<'model' | 'effort' | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1761,6 +1772,7 @@ function SessionRuntimePanel({
     } finally { setSaving(false); }
   }
 
+  const customEfforts = endpointEfforts(endpoint.active, kind, model || '');
   const modelLabel = (model ?? effectiveModel ?? 'Default').replace(/^claude-/, '');
   // The amber "your model was replaced" warning belongs to the ONE backend
   // that has a fallback model, and the alias allow-list below is that
@@ -1773,7 +1785,7 @@ function SessionRuntimePanel({
   // No provider test: both flags come from the provider's own
   // `applied_at_next_start`, which is authoritative and already false for a
   // backend that applies per turn.
-  const anyPending = modelPendingApply || effortPendingApply;
+  const anyPending = modelPendingApply || effortPendingApply || !!endpoint.pending;
   const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
   const pickerProps = { presentation: 'list' as const, disabled: saving, onChange: choose };
   const toggle = (target: 'model' | 'effort') => {
@@ -1786,7 +1798,8 @@ function SessionRuntimePanel({
       <div className="runtime-config" ref={popRef}>
         <button ref={modelButton} type="button" className={`runtime-cell runtime-model${mismatch ? ' has-mismatch' : ''}${anyPending ? ' has-pending' : ''}`}
           onClick={() => toggle('model')} disabled={saving} title={title} aria-label="Change model" aria-haspopup="menu" aria-expanded={open === 'model'}>
-          <span className="runtime-value"><AgentLogo kind={kind} size={15} /><span>{modelLabel}</span>{anyPending && <span className="runtime-pending" aria-label="Pending change">•</span>}</span>
+          <span className="runtime-value"><AgentLogo kind={kind} size={15} endpointName={endpoint.active?.name} /><span>{modelLabel}</span>{anyPending && <span className="runtime-pending" aria-label="Pending change">•</span>}</span>
+          {endpoint.active && <span className="runtime-effective">{endpoint.active.name}</span>}
           {!!model && !!effectiveModel && effectiveModel !== model && <span className="runtime-effective">→ {effectiveModel}</span>}
         </button>
         {/* Only a backend with a real effort AXIS gets the control — a provider
@@ -1794,18 +1807,36 @@ function SessionRuntimePanel({
             `hasEffortAxis`, never `efforts.length`: an empty list also describes
             a ladder declared PER MODEL (Cursor's, §14.103), which the control
             fills from the selection beside it. */}
-        {hasEffortAxis(kind) && (
+        {hasEffortAxis(kind) && (!endpoint.active || customEfforts.length > 0) && (
           <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
             onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
             <span className="runtime-value"><span className="runtime-effort-symbol" aria-hidden="true">✦</span><span>{effort ?? 'Default'}</span></span>
           </button>
         )}
         {open && <div className="runtime-choice-popover" aria-busy={saving}>
+          {open === 'model' && supportsCustomEndpoint(kind) && <div className="endpoint-picker-actions">
+            <button type="button" onClick={() => { close(); setEndpointOpen(true); }}>⚯ {endpoint.active ? 'Change endpoint…' : 'Custom endpoint…'}</button>
+            {endpoint.active && <button type="button" disabled={saving} onClick={async () => {
+              setSaving(true); setSaveError(null);
+              try { await api.setSessionEndpoint(sessionId, { endpoint: null }); onEndpointChanged(); close(); }
+              catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not restore connection.'); }
+              finally { setSaving(false); }
+            }}>Return to standard connection</button>}
+          </div>}
+          {endpoint.pending && <p className="runtime-choice-note">Connection change queued until current work finishes. <button type="button" onClick={async () => { try { await api.setSessionEndpoint(sessionId, { cancelPending: true }); onEndpointChanged(); } catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not cancel change.'); } }}>Cancel change</button></p>}
+          {endpoint.error && <p role="alert" className="runtime-choice-error">{endpoint.error}</p>}
+
           {/* One control per backend, resolved through PROVIDER_CATALOGS
               (§14.102) — the header must never offer a catalog the session's
               provider cannot run. */}
           {(() => {
             const { Model, Effort } = PROVIDER_CATALOGS[kind];
+            if (endpoint.active) {
+              if (open === 'effort') return <PickerControl presentation="list" value={effort || ''} disabled={saving} onValueChange={choose}><option value="">Model default</option>{customEfforts.map((e) => <option key={e} value={e}>{e}</option>)}</PickerControl>;
+              const ids = Array.from(new Set([model || endpoint.active.model, ...(endpoint.active.models || []).map((m) => m.id)]));
+              return <PickerControl presentation="list" value={model || ''} disabled={saving} onValueChange={choose}>{ids.map((id) => <option key={id} value={id}>{id}</option>)}</PickerControl>;
+            }
+
             return open === 'model'
               ? <Model {...pickerProps} vpsId={vpsId} value={model ?? ''} />
               : <Effort {...pickerProps} vpsId={vpsId} value={effort ?? ''}
@@ -1815,7 +1846,7 @@ function SessionRuntimePanel({
           {open === 'model' && claudeSessionId && providerText.modelChangeNote(kind) && (
             <p className="runtime-choice-note">{providerText.modelChangeNote(kind)}</p>
           )}
-          {anyPending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
+          {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
             setSaving(true); setSaveError(null);
             try { await onApplyNow(); close(); }
             catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not apply the change.'); }
@@ -1823,7 +1854,8 @@ function SessionRuntimePanel({
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>
-      <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />
+      {!endpoint.active && <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />}
+      {endpointOpen && supportsCustomEndpoint(kind) && <CustomEndpointModal sessionId={sessionId} engine={kind} vpsId={vpsId} initial={endpoint.active} onClose={() => setEndpointOpen(false)} onApplied={onEndpointChanged} />}
     </div>
   );
 }

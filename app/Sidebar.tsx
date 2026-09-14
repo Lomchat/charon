@@ -1317,7 +1317,7 @@ function SessionRow({
       <span className="cs-card-stripe" />
       <div className="cs-card-top">
         <span className={`dot ${deleting ? 'dot-red' : dotClass}`} />
-        <span className="cs-card-glyph"><AgentLogo kind={(s.kind as AgentKind) ?? 'claude'} size={14} /></span>
+        <span className="cs-card-glyph"><AgentLogo kind={(s.kind as AgentKind) ?? 'claude'} size={14} endpointName={s.endpoint?.active?.name} /></span>
         <span className="cs-card-name">{headline}</span>
         {unread && (
           <span className="cs-unread" title="finished — unread (open to clear)">✓</span>

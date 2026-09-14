@@ -91,6 +91,7 @@ METHODS = {
     "codex_unarchive_thread",
     # Filesystem navigation for the hub's path autocomplete - subdirs of a
     # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.
+    "endpoint_probe",
     "list_dir",
     # Read-only file tree for the ToolPanel explorer (agent >= 0.25.0,
     # fsnav.py). fs_list is one directory at a time - lazy expansion, so a

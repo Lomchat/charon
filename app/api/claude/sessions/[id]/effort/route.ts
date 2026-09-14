@@ -1,3 +1,7 @@
+import { db, claudeSessions } from '@/lib/db';
+import { eq } from 'drizzle-orm';
+import { connectionConfig } from '@/lib/server/customEndpoints';
+import { endpointEfforts } from '@/lib/customEndpoints';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
@@ -48,6 +52,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       { error: `invalid effort '${raw}'; expected a ${PROVIDERS[kind].label} effort level or null` },
       { status: 400 },
     );
+  }
+  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+  const endpoint = connectionConfig(row?.codexConfig).customEndpoint;
+  if (endpoint && effort && !endpointEfforts(endpoint, kind, row?.model || '').includes(effort)) {
+    return NextResponse.json({ error: 'This endpoint has not declared support for that effort level.' }, { status: 400 });
   }
   try {
     await stream.setEffort(effort as any);

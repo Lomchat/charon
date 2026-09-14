@@ -1,3 +1,4 @@
+import { publicConnection } from '@/lib/server/customEndpoints';
 import './claude.css';
 import { db, vps as vpsTable, vpsFolders as vpsFoldersTable, vpsPaths as vpsPathsTable, claudeSessions } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
@@ -35,6 +36,8 @@ export default async function CharonPage() {
     ) >= 0;
     return {
       ...r,
+      codexConfig: null,
+      endpoint: publicConnection(r.codexConfig),
       addressable: !!r.handle && peerAgentReady
         && ['starting', 'active', 'thinking', 'background', 'failed'].includes(r.status),
     };

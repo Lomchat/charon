@@ -1694,7 +1694,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               toggle buttons that open it live OUTSIDE head-right (below) so they
               stay visible. Hidden on desktop — the buttons flow inline as
               before. cf. CLAUDE.md §14.58. */}
-          <div className="head-usage-panel">
+          {!selected?.endpoint?.active && <div className="head-usage-panel">
             <UsageMeter
               usage={usageFor(selectedVps?.id, selected?.kind as AgentKind | undefined)}
               kind={selected?.kind as AgentKind | undefined}
@@ -1702,7 +1702,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               compact={false}
               onRefresh={() => refreshUsage(selectedVps?.id)}
             />
-          </div>
+          </div>}
           {/* No "<vps>:<cwd>" context string and no status pill here: the
               session bar (`ClaudeSessionView`) already carries the name, the
               cwd and the live state (ThinkingBar/status), and the sidebar card

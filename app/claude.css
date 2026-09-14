@@ -6457,3 +6457,22 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .wfb-url { font-size: 12px; height: 68px; }
   .wfb-empty, .wfb-tip { font-size: 12px; }
 }
+/* Custom connections use the same semantic tokens and responsive modal as settings. */
+.endpoint-modal-bg { z-index: 1500; }
+.endpoint-modal { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.endpoint-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.endpoint-modal-head h2 { margin: 0; }
+.endpoint-modal label { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; }
+.endpoint-modal input { width: 100%; min-width: 0; }
+.endpoint-token { -webkit-text-security: disc; }
+.endpoint-test-target { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.endpoint-test-actions, .endpoint-saved-row > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.endpoint-test-result { margin: 14px 0; padding: 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 12px; }
+.endpoint-test-result p { margin: 6px 0 0; }
+.endpoint-test-result.is-error { color: var(--danger); }
+.endpoint-saved-row { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.endpoint-saved-row small { color: var(--text-muted); }
+.endpoint-picker-actions { position: sticky; top: 0; z-index: 2; background: var(--bg-elevated); display: flex; flex-direction: column; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border); }
+.endpoint-picker-actions button { text-align: left; padding: 8px 10px; }
+.agent-logo.has-endpoint { position: relative; overflow: visible; }
+.endpoint-logo-badge { position: absolute; width: 10px; height: 10px; right: -5px; bottom: -4px; padding: 1px; background: var(--bg-elevated); border-radius: var(--radius-sm); color: var(--text); }

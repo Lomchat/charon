@@ -1,3 +1,4 @@
+import type { EndpointState, CustomEndpoint } from '@/lib/customEndpoints';
 // Request/response types for `lib/api.ts`.
 // Every `api.*` method must have its `XxxBody` / `XxxResponse` pair here.
 // Reuse DB types (Vps, ClaudeSession, ...) and protocol types (PermissionMode,
@@ -920,6 +921,7 @@ export type ScanVpsSessionsQuery = {
 export type ClaudeSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
 
 export type SessionListItem = ClaudeSession & {
+  endpoint?: EndpointState;
   liveStatus: WorkerStatus | string;
   subscribers: number;
   pendingPermissions: number;
@@ -1031,7 +1033,7 @@ export type SessionBackgroundTask = {
 };
 
 export type ClaudeSessionDetailResponse = {
-  session: ClaudeSession;
+  session: ClaudeSession & { endpoint?: EndpointState };
   liveStatus: WorkerStatus | string;
   subscribers: number;
   // Window of the last `limit` "chat" messages (user/assistant/tool_use/
@@ -1124,6 +1126,7 @@ export type CreateClaudeSessionBody = {
 };
 
 export type SharedSessionConfig = {
+  customEndpoint?: CustomEndpoint & { secret?: string };
   outputSchema?: Record<string, unknown> | null;
   baseInstructions?: string | null;
   developerInstructions?: string | null;
@@ -1407,3 +1410,8 @@ export type ModelNotice = { id: string; label: string };
 export type ModelNoticesResponse =
   { revision: number } & Record<SessionProvider, ModelNotice[]>;
 export type MarkModelsSeenBody = { provider: AgentKind; ids: string[] };
+
+export type EndpointProbeBody = { endpoint: import('@/lib/customEndpoints').EndpointInput; engine: import('@/lib/customEndpoints').EndpointEngine; vpsId?: string; sessionId?: string; action?: 'models' | 'test' };
+export type EndpointProbeResponse = { ok: boolean; models: import('@/lib/customEndpoints').EndpointModel[]; check?: import('@/lib/customEndpoints').EndpointCheck; catalogError?: string };
+export type EndpointSaveBody = { endpoint: import('@/lib/customEndpoints').EndpointInput; id?: string; vpsId?: string };
+export type SessionEndpointBody = { endpoint?: import('@/lib/customEndpoints').EndpointInput | null; saveForReuse?: boolean; cancelPending?: boolean };

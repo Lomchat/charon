@@ -603,3 +603,9 @@ export type AgentPendingPermission = ClaudePendingPermission;
 export type AgentPendingQuestion = ClaudePendingQuestion;
 export type AgentSessionAttachment = ClaudeSessionAttachment;
 export type AgentSessionLog = ClaudeSessionLog;
+
+// Reusable connection templates; session copies remain independent. Credentials in config use AES-GCM.
+export const customEndpoints = sqliteTable('custom_endpoints', {
+  id: text('id').primaryKey(),
+  config: text('config').notNull(),
+});
