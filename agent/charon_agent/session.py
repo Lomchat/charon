@@ -12,6 +12,10 @@ Lifecycle :
 """
 from __future__ import annotations
 
+from .endpoint_credentials import public_config
+from .endpoint_proxy import EndpointProxy
+from .endpoint_runtime import endpoint_of, claude_env, redact
+
 import asyncio
 import json
 import os
@@ -449,6 +453,7 @@ class AgentSession:
                       if isinstance(v, str) and v in AgentSession.VALID_SETTING_SOURCES}
             setting_sources = [v for v in AgentSession.VALID_SETTING_SOURCES if v in picked]
         return {
+            "customEndpoint": endpoint_of(raw_cfg),
             "baseInstructions": raw_cfg.get("baseInstructions")
             if isinstance(raw_cfg.get("baseInstructions"), str) else None,
             "developerInstructions": raw_cfg.get("developerInstructions")
@@ -497,7 +502,8 @@ class AgentSession:
         self.model = model or None
         self.fallback_model = fallback_model or None
         self.effort = effort if effort in self.VALID_EFFORTS else None
-        self._emit_to_server = emit
+        self._endpoint_proxy = None
+        self._emit_to_server = lambda event: emit(redact(event, endpoint_of(self.session_config)))
         self._on_state_change = on_state_change
 
         self.status: str = "starting"
@@ -572,6 +578,9 @@ class AgentSession:
         self._main_task = asyncio.create_task(self._run(), name=f"session-{self.session_id}")
 
     async def stop(self, *, mark: str = "sleeping") -> None:
+        if self._endpoint_proxy:
+            self._endpoint_proxy.stop()
+            self._endpoint_proxy = None
         """Cleanly stops the session (mark: 'sleeping' or 'killed')."""
         self.status = mark
         self._emit("status", status=mark)
@@ -1086,7 +1095,7 @@ class AgentSession:
             "model": self.model,
             "fallback_model": self.fallback_model,
             "effort": self.effort,
-            "provider_config": self.session_config,
+            "provider_config": public_config(self.session_config),
         }
 
     def to_persist(self) -> dict[str, Any]:
@@ -1122,7 +1131,7 @@ class AgentSession:
         if peer_request_id:
             msg["_peer_request_id"] = peer_request_id
         try:
-            self._emit_to_server(msg)
+            self._emit_to_server(redact(msg, endpoint_of(self.session_config)))
         except Exception:
             traceback.print_exc(file=sys.stderr)
 
@@ -2098,6 +2107,16 @@ class AgentSession:
             elif self.effort:
                 options_kwargs["effort"] = self.effort
             options_kwargs.update(self._advanced_option_kwargs())
+            endpoint = endpoint_of(self.session_config)
+            if endpoint:
+                if self._endpoint_proxy is None:
+                    self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.session_config) or {}, "claude")
+                routed_env = claude_env(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
+                options_kwargs["env"] = {**options_kwargs.get("env", {}), **routed_env}
+                inline = json.loads(options_kwargs.get("settings") or "{}")
+                inline.update({"env": routed_env, "apiKeyHelper": "", "enableAllProjectMcpServers": False})
+                options_kwargs["settings"] = json.dumps(inline)
+                options_kwargs.pop("fallback_model", None)
             # Live token usage (§14.50): receive the raw Anthropic stream events
             # (StreamEvent) so we can surface a growing token counter. Dropped by
             # _build_options_with_fallback on an SDK too old to know the kwarg →

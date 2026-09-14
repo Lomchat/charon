@@ -921,7 +921,7 @@ class Server:
         "cursor_auth_status", "cursor_logout",
         "cursor_list_models", "cursor_list_agents", "cursor_agent_messages",
         "cursor_archive_agent", "cursor_unarchive_agent",
-        "list_dir",
+        "endpoint_probe", "list_dir",
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
         "git_pull", "git_discard",
         "git_branches", "git_checkout", "git_fetch", "git_delete_branch",
@@ -985,6 +985,12 @@ class Server:
                 "pid": os.getpid(),
                 "sessions": [s.to_info() for s in self.sessions.values()],
             }
+
+        if method == "endpoint_probe":
+            if params.get("action") == "capability":
+                return {"ok": True, "capabilities": ["custom_endpoints"]}
+            from .custom_endpoints import probe
+            return await probe(params.get("endpoint") or {}, str(params.get("engine") or ""), str(params.get("action") or "test"))
 
         if method == "ping":
             return {"pong": True, "ts": time.time()}
@@ -1595,6 +1601,8 @@ class Server:
         if method == "send_input":
             sid = self._require_sid(params)
             s = self._require_session(sid)
+            if getattr(s, "_connection_changing", False):
+                raise RpcError(ERR_INVALID_PARAMS, "Connection change in progress; retry the message")
             content = params.get("content")
             if not isinstance(content, str):
                 raise RpcError(ERR_INVALID_PARAMS, "content required (str)")
@@ -2135,6 +2143,9 @@ class Server:
                 await s.apply_session_config(incoming_config)
             if s.status in ("active", "thinking", "starting"):
                 return {"ok": True, "status": s.status, "noop": True}
+            for key in ("model", "fallback_model", "effort"):
+                if key in params:
+                    setattr(s, key, params[key])
             # ⚠ Status said stopped; the RUN may disagree. Starting a second
             # one over a live task gives one session two provider clients:
             # Codex's newcomer then cannot take the thread's writer lock
@@ -2164,6 +2175,11 @@ class Server:
             s._ready_evt.clear()
             s._session_id_emitted = False
             s._main_task = None
+            s._connection_changing = False
+            if "model" in params:
+                s._emit("model_changed", model=s.model, fallback_model=s.fallback_model, applied_at_next_start=False)
+            if "effort" in params:
+                s._emit("effort_changed", effort=s.effort, applied_at_next_start=False)
             await s.start()
             self.schedule_save()
             return {"ok": True, "status": s.status}
@@ -2171,6 +2187,10 @@ class Server:
         if method == "sleep_session":
             sid = self._require_sid(params)
             s = self._require_session(sid)
+            if params.get("only_if_idle"):
+                if s.status in ("thinking", "starting"):
+                    return {"ok": False, "busy": True}
+                s._connection_changing = True
             await s.stop(mark="sleeping")
             self.schedule_save()
             return {"ok": True}

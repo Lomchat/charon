@@ -1,3 +1,7 @@
+import { db, claudeSessions } from '@/lib/db';
+import { eq } from 'drizzle-orm';
+import { connectionConfig } from '@/lib/server/customEndpoints';
+import { supportsCustomEndpoint } from '@/lib/customEndpoints';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
@@ -24,8 +28,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const identity = await callSessionRpc(id, 'session_identity');
     return { ...normalizeCodexContextUsage(raw), identity };
   }, { force, maxAgeMs: 15_000 });
+  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+  const endpoint = connectionConfig(row?.codexConfig).customEndpoint;
+  const check = row && supportsCustomEndpoint(row.kind) ? endpoint?.checks?.[row.kind] : undefined;
+  const window = check?.model === row?.model ? check?.contextWindow : undefined;
+  const context = endpoint ? { ...usage, max_tokens: window ?? null,
+    percentage: window && Number.isFinite(Number(usage.total_tokens)) ? Number(usage.total_tokens) * 100 / window : null } : usage;
+  const recorded = recordedSessionUsage(id);
   return NextResponse.json({
-    ...usage,
-    recorded_usage: recordedSessionUsage(id),
+    ...context,
+    recorded_usage: endpoint ? { ...recorded, cost_usd: null } : recorded,
   });
 }

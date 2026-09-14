@@ -302,6 +302,13 @@
       "when": 1789061135304,
       "tag": "0042_salty_archangel",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1789390754312,
+      "tag": "0043_romantic_mojo",
+      "breakpoints": true
     }
   ]
 }

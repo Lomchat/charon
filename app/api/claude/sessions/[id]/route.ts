@@ -1,3 +1,4 @@
+import { publicConnection } from '@/lib/server/customEndpoints';
 import { NextResponse } from 'next/server';
 import { and, asc, desc, eq, gt, gte, lt, lte, notInArray, sql } from 'drizzle-orm';
 import {
@@ -227,7 +228,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   )).all();
 
   const response = NextResponse.json({
-    session: { ...row, codexConfig: undefined },
+    session: { ...row, codexConfig: undefined, endpoint: publicConnection(row.codexConfig) },
     liveStatus: stream ? stream.status : row.status,
     subscribers: focusCountFor(id),
     messages,
@@ -403,7 +404,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   if ('name' in update || 'handle' in update) emitGlobalSessionListChanged(id);
 
-  const publicRow = { ...row, codexConfig: undefined };
+  const publicRow = { ...row, codexConfig: undefined, endpoint: publicConnection(row.codexConfig) };
   return NextResponse.json(relocateNote ? { ...publicRow, _relocateNote: relocateNote } : publicRow);
 }
 

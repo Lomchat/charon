@@ -1,3 +1,4 @@
+import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 // Typed HTTP client for the dashboard's API routes.
 // For shapes: cf. lib/types/api.ts. Every new method must have its
 // `XxxBody` / `XxxResponse` pair declared there, then type the return
@@ -5,6 +6,7 @@
 
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import type {
+  EndpointProbeBody, EndpointProbeResponse, EndpointSaveBody, SessionEndpointBody,
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse, SessionPathResponse,
@@ -118,6 +120,13 @@ async function send<TRes = unknown>(
 }
 
 export const api = {
+  listCustomEndpoints: () => send<{ endpoints: CustomEndpoint[] }>('GET', '/api/custom-endpoints'),
+  saveCustomEndpoint: (body: EndpointSaveBody) => send<{ endpoint: CustomEndpoint }>('POST', '/api/custom-endpoints', body),
+  deleteCustomEndpoint: (id: string) => send<{ ok: boolean }>('DELETE', '/api/custom-endpoints', { id }),
+  probeCustomEndpoint: (body: EndpointProbeBody) => send<EndpointProbeResponse>('POST', '/api/custom-endpoints/probe', body, { timeoutMs: 65_000 }),
+  getSessionEndpoint: (id: string) => send<EndpointState>('GET', `/api/claude/sessions/${encodeURIComponent(id)}/endpoint`),
+  setSessionEndpoint: (id: string, body: SessionEndpointBody) => send<EndpointState>('POST', `/api/claude/sessions/${encodeURIComponent(id)}/endpoint`, body, { timeoutMs: 90_000 }),
+
   // ── VPS ────────────────────────────────────────────────────────────────────
   createVps: (data: CreateVpsBody) =>
     send<Vps>('POST', '/api/vps', data),

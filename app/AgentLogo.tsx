@@ -11,25 +11,27 @@ import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
 
 export default function AgentLogo({
-  kind = 'claude', size = 16, className, title,
+  kind = 'claude', size = 16, className, title, endpointName,
 }: {
   kind?: AgentKind | null;
   size?: number;
   className?: string;
   /** Override the tooltip; defaults to the kind's display name. */
   title?: string;
+  endpointName?: string | null;
 }) {
   const k = asSessionProvider(kind);
   const label = providerName(k);
   return (
     <span
-      className={`agent-logo agent-logo-${k}${className ? ' ' + className : ''}`}
-      title={title ?? label}
-      aria-label={label}
+      className={`agent-logo agent-logo-${k}${className ? ' ' + className : ''}${endpointName ? ' has-endpoint' : ''}`}
+      title={title ?? (endpointName ? `${label} · ${endpointName}` : label)}
+      aria-label={endpointName ? `${label} · custom endpoint: ${endpointName}` : label}
       style={{ ['--al-size' as any]: `${size}px` }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={PROVIDERS[k].logo} alt="" width={size} height={size} draggable={false} />
+      {endpointName && <svg className="endpoint-logo-badge" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 1v4m6-4v4M3 5h10v2a5 5 0 0 1-5 5v3M3 5v2a5 5 0 0 0 5 5" fill="none" stroke="currentColor" strokeWidth="2" /></svg>}
     </span>
   );
 }

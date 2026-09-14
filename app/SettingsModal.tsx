@@ -1,4 +1,6 @@
 'use client';
+import dynamic from 'next/dynamic';
+const CustomEndpointsSettings = dynamic(() => import('./CustomEndpointsSettings'), { ssr: false });
 import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
@@ -48,7 +50,7 @@ type Props = {
 // its own section, badge and green/red dot without a literal to update here.
 // Its PANEL BODY stays bespoke — an empty one is visible, so it cannot be
 // silently forgotten the way a missing list entry could.
-type Cat = 'general' | SessionProvider | 'notifications' | 'updates';
+type Cat = 'general' | SessionProvider | 'notifications' | 'updates' | 'endpoints';
 /** Deep-link target for `initialCat` (the wizard sends the user here when both
  *  backends are off). Exported so callers don't restate the union. */
 export type SettingsCategory = Cat;
@@ -61,6 +63,7 @@ const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[
   { id: 'hub', label: 'hub', cats: [
     { id: 'general', label: 'general' },
     { id: 'notifications', label: 'notifications' },
+    { id: 'endpoints', label: 'custom endpoints' },
   ] },
   { id: 'agents', label: 'agents', cats: SESSION_PROVIDERS.map((p) => (
     { id: p, label: p }
@@ -293,6 +296,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
               </nav>
 
               <div className="settings-pane">
+                {cat === 'endpoints' && <CustomEndpointsSettings vpsList={vpsList} />}
                 {cat === 'general' && (
                   <>
                     <label>theme

@@ -34,6 +34,10 @@ cards and session-scoped grants.
 """
 from __future__ import annotations
 
+from .endpoint_credentials import public_config
+from .endpoint_proxy import EndpointProxy
+from .endpoint_runtime import endpoint_of, codex_overrides, redact
+
 import asyncio
 import concurrent.futures
 import json
@@ -623,32 +627,16 @@ class CodexSession:
         self.permission_mode = permission_mode if permission_mode in CODEX_MODES else DEFAULT_CODEX_MODE
         # claude_session_id doubles as the Codex THREAD id (the resume handle).
         self.claude_session_id = claude_session_id
+        # A fresh app-server thread has no durable rollout until a turn starts.
+        self._thread_unmaterialized = not bool(claude_session_id)
         self.model = model or None
         # Codex has no fallback-model concept; keep the attr for contract parity
         # (always None) so server.py's set_model path is uniform.
         self.fallback_model = None
         self.effort = effort if effort in self.VALID_EFFORTS else None
-        cfg = codex_config if isinstance(codex_config, dict) else {}
-        self.codex_config: dict[str, Any] = {
-            "config_overrides": [str(v)[:2048] for v in (cfg.get("configOverrides") or [])[:64]
-                                 if isinstance(v, str) and v.strip()],
-            "output_schema": cfg.get("outputSchema") if isinstance(cfg.get("outputSchema"), dict) else None,
-            "base_instructions": cfg.get("baseInstructions") if isinstance(cfg.get("baseInstructions"), str) else None,
-            "developer_instructions": cfg.get("developerInstructions") if isinstance(cfg.get("developerInstructions"), str) else None,
-            "summary": cfg.get("summary") if cfg.get("summary") in ("auto", "concise", "detailed", "none") else None,
-            "personality": cfg.get("personality") if cfg.get("personality") in ("friendly", "pragmatic", "none") else None,
-            "service_tier": cfg.get("serviceTier") if cfg.get("serviceTier") in ("fast", "flex") else None,
-            "ephemeral": bool(cfg.get("ephemeral")),
-            "model_provider": cfg.get("modelProvider") if isinstance(cfg.get("modelProvider"), str) else None,
-            "env": {str(k): str(v)[:8192] for k, v in (cfg.get("env") or {}).items()}
-                   if isinstance(cfg.get("env"), dict) else {},
-            "codex_bin": cfg.get("codexBin") if isinstance(cfg.get("codexBin"), str) else None,
-            "approvals_reviewer": cfg.get("approvalsReviewer")
-            if cfg.get("approvalsReviewer") in ("user", "auto_review") else "auto_review",
-            "permission_profile": cfg.get("permissionProfile")
-            if isinstance(cfg.get("permissionProfile"), str) and cfg.get("permissionProfile").strip() else None,
-        }
-        self._emit_to_server = emit
+        self._configure(codex_config)
+        self._endpoint_proxy = None
+        self._emit_to_server = lambda event: emit(redact(event, endpoint_of(self.codex_config)))
         self._on_state_change = on_state_change
 
         self.status: str = "starting"
@@ -710,6 +698,9 @@ class CodexSession:
         self._main_task = asyncio.create_task(self._run(), name=f"codex-{self.session_id}")
 
     async def stop(self, *, mark: str = "sleeping") -> None:
+        if self._endpoint_proxy:
+            self._endpoint_proxy.stop()
+            self._endpoint_proxy = None
         self.status = mark
         self._emit("status", status=mark)
         self._cancel_pending_requests()
@@ -1144,6 +1135,33 @@ class CodexSession:
         )
         return {"ok": True, "count": len(items), "thread_id": thread_id}
 
+    def _configure(self, codex_config: dict | None) -> None:
+        cfg = codex_config if isinstance(codex_config, dict) else {}
+        self.codex_config: dict[str, Any] = {
+            "customEndpoint": endpoint_of(cfg),
+            "config_overrides": [str(v)[:2048] for v in (cfg.get("configOverrides") or [])[:64]
+                                 if isinstance(v, str) and v.strip()],
+            "output_schema": cfg.get("outputSchema") if isinstance(cfg.get("outputSchema"), dict) else None,
+            "base_instructions": cfg.get("baseInstructions") if isinstance(cfg.get("baseInstructions"), str) else None,
+            "developer_instructions": cfg.get("developerInstructions") if isinstance(cfg.get("developerInstructions"), str) else None,
+            "summary": cfg.get("summary") if cfg.get("summary") in ("auto", "concise", "detailed", "none") else None,
+            "personality": cfg.get("personality") if cfg.get("personality") in ("friendly", "pragmatic", "none") else None,
+            "service_tier": cfg.get("serviceTier") if cfg.get("serviceTier") in ("fast", "flex") else None,
+            "ephemeral": bool(cfg.get("ephemeral")),
+            "model_provider": cfg.get("modelProvider") if isinstance(cfg.get("modelProvider"), str) else None,
+            "env": {str(k): str(v)[:8192] for k, v in (cfg.get("env") or {}).items()}
+                   if isinstance(cfg.get("env"), dict) else {},
+            "codex_bin": cfg.get("codexBin") if isinstance(cfg.get("codexBin"), str) else None,
+            "approvals_reviewer": cfg.get("approvalsReviewer")
+            if cfg.get("approvalsReviewer") in ("user", "auto_review") else "auto_review",
+            "permission_profile": cfg.get("permissionProfile")
+            if isinstance(cfg.get("permissionProfile"), str) and cfg.get("permissionProfile").strip() else None,
+        }
+
+    async def apply_session_config(self, value: dict | None) -> None:
+        self._configure(value)
+        await self._save_state()
+
     def _session_sdk_config(self) -> Any:
         """Build the SDK config shared by the resident and transient clients."""
         overrides = list(self.codex_config.get("config_overrides") or ())
@@ -1162,10 +1180,18 @@ class CodexSession:
                 "mcp_servers.charon_peer.startup_timeout_sec=10",
                 "mcp_servers.charon_peer.tool_timeout_sec=30",
             ))
+        env = dict(self.codex_config.get("env") or {})
+        endpoint = endpoint_of(self.codex_config)
+        if endpoint:
+            if self._endpoint_proxy is None:
+                self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.codex_config) or {}, "codex")
+            custom, custom_env = codex_overrides(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
+            overrides.extend(custom)
+            env.update(custom_env)
         return make_codex_config(
             cwd=self.cwd,
             config_overrides=tuple(overrides),
-            env=self.codex_config.get("env") or None,
+            env=env or None,
             codex_bin=self.codex_config.get("codex_bin") or None,
         )
 
@@ -1208,9 +1234,9 @@ class CodexSession:
                     "lastTurnId": last_turn_id,
                     "baseInstructions": self.codex_config.get("base_instructions"),
                     "developerInstructions": self.codex_config.get("developer_instructions"),
-                    "modelProvider": self.codex_config.get("model_provider"),
+                    "modelProvider": "charon_custom" if endpoint_of(self.codex_config) else self.codex_config.get("model_provider"),
                     "serviceTier": self.codex_config.get("service_tier"),
-                    "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
+                    "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
                 }.items() if v is not None}
                 result = await client._client.thread_fork(self.claude_session_id, params)
                 from openai_codex.api import AsyncThread
@@ -1477,7 +1503,7 @@ class CodexSession:
         if kept:
             result = await self._client._client.thread_fork(old_id, {
                 "cwd": self.cwd, "lastTurnId": getattr(kept[-1], "id", None),
-                "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
+                "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
             })
             from openai_codex.api import AsyncThread
             new_thread = AsyncThread(self._client, result.thread.id)
@@ -2072,7 +2098,7 @@ class CodexSession:
         params: dict[str, Any] = {
             "cwd": self.cwd,
             "approvalPolicy": _approval_policy_wire(self.permission_mode),
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
+            "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
         }
         profile = self.codex_config.get("permission_profile")
         if profile and self.permission_mode != "accept-all":
@@ -2089,10 +2115,16 @@ class CodexSession:
             ("model_provider", "modelProvider"),
         ):
             value = self.codex_config.get(src)
+            if src == "model_provider" and endpoint_of(self.codex_config):
+                value = "charon_custom"
+            if src == "service_tier" and endpoint_of(self.codex_config):
+                value = None
             if src == "developer_instructions":
                 value = self._peer_developer_instructions()
             if value is not None:
                 params[dst] = _enum_val(value)
+        if endpoint_of(self.codex_config):
+            params["config"] = {"model_reasoning_effort": self.effort or "none"}
         if not resume and self.codex_config.get("ephemeral"):
             params["ephemeral"] = True
         # Lightweight test doubles and older SDKs retain the high-level path;
@@ -2133,7 +2165,7 @@ class CodexSession:
 
         params: dict[str, Any] = {
             "approvalPolicy": _approval_policy_wire(self.permission_mode),
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
+            "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
         }
         # A named profile is thread-scoped and cannot be combined with legacy
         # sandbox settings. With no profile, preserve the existing per-turn
@@ -2154,6 +2186,8 @@ class CodexSession:
             value = self.codex_config.get(src)
             if value is not None:
                 params[dst] = _enum_val(value)
+        # Preserve the handle even if the turn-start reply is lost.
+        self._record_materialized_thread()
         result = await self._client._client.turn_start(thread.id, content, params=params)
         return AsyncTurnHandle(self._client, thread.id, result.turn.id)
 
@@ -2161,7 +2195,7 @@ class CodexSession:
         return {
             "kind": "codex",
             "session_id": self.session_id,
-            "claude_session_id": self.claude_session_id,
+            "claude_session_id": None if getattr(self, "_thread_unmaterialized", False) else self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
@@ -2170,8 +2204,8 @@ class CodexSession:
             "model": self.model,
             "fallback_model": None,
             "effort": self.effort,
-            "provider_config": self._persisted_codex_config(),
-            "codex_config": self._persisted_codex_config(),
+            "provider_config": public_config(self._persisted_codex_config()),
+            "codex_config": public_config(self._persisted_codex_config()),
         }
 
     def to_persist(self) -> dict[str, Any]:
@@ -2181,7 +2215,7 @@ class CodexSession:
         return {
             "kind": "codex",
             "session_id": self.session_id,
-            "claude_session_id": self.claude_session_id,
+            "claude_session_id": None if getattr(self, "_thread_unmaterialized", False) else self.claude_session_id,
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
@@ -2203,7 +2237,7 @@ class CodexSession:
         if peer_request_id:
             msg["_peer_request_id"] = peer_request_id
         try:
-            self._emit_to_server(msg)
+            self._emit_to_server(redact(msg, endpoint_of(self.codex_config)))
         except Exception:
             traceback.print_exc(file=sys.stderr)
 
@@ -2230,7 +2264,14 @@ class CodexSession:
         parts.append("--- traceback ---\n" + traceback.format_exc())
         return "\n".join(parts)
 
+    def _record_materialized_thread(self) -> None:
+        self._thread_unmaterialized = False
+        if getattr(self, "claude_session_id", None) and not getattr(self, "_session_id_emitted", False):
+            self._emit("session_id", claude_session_id=self.claude_session_id)
+            self._session_id_emitted = True
+
     def _begin_turn(self) -> None:
+        self._record_materialized_thread()
         if self.status == "thinking":
             return
         self.status = "thinking"
@@ -2258,6 +2299,7 @@ class CodexSession:
 
     def _persisted_codex_config(self) -> dict[str, Any]:
         return {
+            "customEndpoint": endpoint_of(self.codex_config),
             "configOverrides": self.codex_config.get("config_overrides", []),
             "outputSchema": self.codex_config.get("output_schema"),
             "baseInstructions": self.codex_config.get("base_instructions"),
@@ -2266,10 +2308,10 @@ class CodexSession:
             "personality": self.codex_config.get("personality"),
             "serviceTier": self.codex_config.get("service_tier"),
             "ephemeral": self.codex_config.get("ephemeral", False),
-            "modelProvider": self.codex_config.get("model_provider"),
+            "modelProvider": "charon_custom" if endpoint_of(self.codex_config) else self.codex_config.get("model_provider"),
             "env": self.codex_config.get("env", {}),
             "codexBin": self.codex_config.get("codex_bin"),
-            "approvalsReviewer": self.codex_config.get("approvals_reviewer", "auto_review"),
+            "approvalsReviewer": "user" if endpoint_of(self.codex_config) else self.codex_config.get("approvals_reviewer", "auto_review"),
             "permissionProfile": self.codex_config.get("permission_profile"),
         }
 
@@ -3103,8 +3145,8 @@ class CodexSession:
             tid = getattr(thread, "id", None)
             if tid and not self._session_id_emitted:
                 self.claude_session_id = tid
-                self._emit("session_id", claude_session_id=tid)
-                self._session_id_emitted = True
+                if not getattr(self, "_thread_unmaterialized", False):
+                    self._record_materialized_thread()
                 asyncio.create_task(self._save_state())
 
             self.status = "active"
@@ -3231,6 +3273,8 @@ class CodexSession:
                 except Exception:
                     pass
                 self._client = None
+                if getattr(self, "_thread_unmaterialized", False):
+                    self.claude_session_id = None
                 self._thread = None
                 self._active_turn = None
                 self._loop = None

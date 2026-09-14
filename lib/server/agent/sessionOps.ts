@@ -1,3 +1,4 @@
+import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
 import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import 'server-only';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
@@ -766,6 +767,9 @@ export class SessionStream {
    * Preserves the semantics of SessionWorker.handleBridgeEvent.
    */
   private _onAgentEvent(ev: AgentEvent): void {
+    if ((ev.event === "status" && ev.status === "active") || ev.event === "stop" || ev.event === "turn_end" || ev.event === "bg_task") {
+      setTimeout(() => { import("./endpointOps").then((m) => m.applyPendingEndpoint(this.id)).catch(() => {}); }, 0);
+    }
     const seq = (ev as { seq?: unknown }).seq;
     this.currentEventSeq = typeof seq === 'number' ? seq : null;
     // The agent sends `ts` as unix SECONDS (float, from the durable log).
@@ -1469,7 +1473,9 @@ export class SessionStream {
         break;
       }
       case 'session_info':
-        if (this.kind === 'claude' && ev.models) observeClaudeCliModels(ev.models);
+        if (this.kind === 'claude' && ev.models
+          && !connectionConfig(db.select({ config: claudeSessions.codexConfig }).from(claudeSessions)
+            .where(eq(claudeSessions.id, this.id)).get()?.config).customEndpoint) observeClaudeCliModels(ev.models);
         // The CLI's init frame. Kept in memory only: it describes the CURRENT
         // CLI process, so persisting it would let a stale snapshot outlive the
         // process it described. `capabilities` is the sanctioned way to ask
@@ -1795,6 +1801,8 @@ export class SessionStream {
     codexInputs?: Array<Record<string, unknown>>,
     opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string },
   ): Promise<void> {
+    await (await import("./endpointOps")).applyPendingEndpoint(this.id);
+
     const client = getAgentClientForVpsId(this.vpsId);
     this.clearTerminalErrorLatch();
     if (opts?.persist !== false) this._persist('user', content);
@@ -1885,6 +1893,13 @@ export class SessionStream {
    * exists). Charon's _dispatchEvent handler does the DB write + broadcast.
    */
   async setModel(model: string | null, fallbackModel: string | null = null): Promise<void> {
+    const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+    const endpoint = connectionConfig(row?.config).customEndpoint;
+    if (endpoint) {
+      if (!model || model.length > 256) throw new Error('Enter a valid endpoint model ID.');
+      await (await import('./endpointOps')).queueEndpoint(this.id, { ...endpoint, model });
+      return;
+    }
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('set_model', {
       session_id: this.id,
@@ -2219,6 +2234,8 @@ export class SessionStream {
 
   private _flagProviderLoggedOut(): void {
     try {
+      const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+      if (connectionConfig(row?.config).customEndpoint) return;
       const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
       if (!v) return;
       if (providerBackendState(v as any, this.kind).loggedIn === 0) return;
@@ -2946,9 +2963,9 @@ export async function startNewSession(opts: {
       model: cfg.model,
       fallback_model: cfg.fallbackModel,
       effort: effortPersist,
-      session_config: providerConfig,
+      session_config: runtimeConnection(providerConfig),
       // Compatibility with an older agent that only reads this key.
-      codex_config: kind === 'codex' ? providerConfig : null,
+      codex_config: kind === 'codex' ? runtimeConnection(providerConfig) : null,
       // Stable Charon peer address. Claude also mirrors it to native --name.
       cli_name: handle,
     });
@@ -2983,6 +3000,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
   const existing = _resumeInflight.get(sessionId);
   if (existing) {
     return existing;
+  }
+  // Apply before owning the resume lock: applying an idle connection may itself
+  // resume the session. Holding both promises would make them await each other.
+  const pendingRow = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).get();
+  if (pendingRow && !pendingRow.archived && connectionConfig(pendingRow.codexConfig).pendingConnection) {
+    await (await import("./endpointOps")).applyPendingEndpoint(sessionId);
+    const concurrent = _resumeInflight.get(sessionId);
+    if (concurrent) return concurrent;
   }
   const p = (async () => {
     const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
@@ -3035,7 +3060,8 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         session_id: sessionId,
         handle: row.handle,
         cli_name: row.handle,
-        session_config: parseProviderConfig(row.codexConfig),
+        session_config: runtimeConnection(parseProviderConfig(row.codexConfig)),
+        model: row.model, fallback_model: row.fallbackModel, effort: row.effort,
       });
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
@@ -3060,8 +3086,8 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
-          session_config: parseProviderConfig(row.codexConfig),
-          codex_config: kind === 'codex' ? parseProviderConfig(row.codexConfig) : null,
+          session_config: runtimeConnection(parseProviderConfig(row.codexConfig)),
+          codex_config: kind === 'codex' ? runtimeConnection(parseProviderConfig(row.codexConfig)) : null,
           // Reassert both provider-neutral identity and Claude's native name.
           handle: row.handle,
           cli_name: row.handle,

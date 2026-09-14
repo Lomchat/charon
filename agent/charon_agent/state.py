@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from .endpoint_credentials import transform_state
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,7 @@ def load_state(path: Path) -> dict[str, Any]:
         sessions = data.get("sessions")
         if not isinstance(sessions, list):
             data["sessions"] = []
-        return data
+        return transform_state(data, path, encrypt=False)
     except (OSError, json.JSONDecodeError):
         return {"version": STATE_VERSION, "sessions": []}
 
@@ -65,7 +66,7 @@ def save_state(
     )
     try:
         with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(transform_state(data, path, encrypt=True), f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
