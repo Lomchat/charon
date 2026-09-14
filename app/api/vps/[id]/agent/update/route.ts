@@ -4,6 +4,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { runAgentUpdateFlow } from '@/lib/server/claude/agentUpdate';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
+import { PROVIDER_VERSION_COLUMNS } from '@/lib/vpsRuntimeFields';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,14 +33,21 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ ok: false, error: result.detail }, { status: 500 });
   }
 
+  // Every release line's post-update version, DERIVED from the registry — the
+  // sidebar badge ORs all the staleness axes, so a line named here for three
+  // backends and not the fourth left the "⇪ update" lit on a VPS that had just
+  // been updated (§14.52/§14.102). `UpdateAgentResult` reports each version
+  // under the same name as its column, which is what makes this loop legal.
+  const row = result as unknown as Record<string, string | undefined>;
+  const versions = Object.fromEntries(
+    PROVIDER_VERSION_COLUMNS.map((column) => [column, row[column] ?? null]),
+  );
+
   return NextResponse.json({
     ok: true,
     newVersion: result.newVersion ?? null,
     newPyzSha: result.newPyzSha ?? null,
-    sdkVersion: result.sdkVersion ?? null,
-    // Codex too — the badge ORs all three axes (§ UpdateVpsAgentResponse).
-    codexSdkVersion: result.codexSdkVersion ?? null,
-    codexCliVersion: result.codexCliVersion ?? null,
+    ...versions,
     builtPyzSha: getBuiltPyzSha(),
     detail: result.detail,
     // Partial failures (pip sub-steps are non-fatal): the client toasts these

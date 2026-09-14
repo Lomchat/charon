@@ -4,20 +4,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, sessionApi } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
-import ModelPicker from './ModelPicker';
-import EffortPicker from './EffortPicker';
-import CodexModelPicker from './CodexModelPicker';
-import CodexEffortPicker from './CodexEffortPicker';
 import AgentLogo from './AgentLogo';
+import { MODE_LABELS, providerName, providerText } from '@/lib/providerText';
 import { IconRobot, IconTerminal } from './icons';
 import type {
   AgentKind, CodexSessionConfig, ProviderSessionConfig, SessionPathResponse,
 } from '@/lib/types/api';
 import {
-  CODEX_SANDBOX_MODES, sessionCapabilities,
-  type CodexSandboxMode,
+  SESSION_PROVIDERS, defaultSessionMode, hasEffortAxis, providerSettingKey,
+  sessionCapabilities, sessionModes, supportsSessionCapability,
+  type SessionMode,
 } from '@/lib/sessionCapabilities';
-import { agentAvailability, backendAvailability, type VpsFix, type VpsFixAction } from './vpsHealth';
+import { PROVIDER_CATALOGS } from './modelPickers';
+import { agentAvailability, backendAvailability, backendLauncher, type VpsFix, type VpsFixAction } from './vpsHealth';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 import SettingSourcesPicker from './SettingSourcesPicker';
@@ -35,13 +34,6 @@ import {
 //   3. name it (+ optional model/effort/mode for agents) and launch
 type Step = 'vps' | 'path' | 'name';
 const DEFAULT_FOLDER_ID = 'default';
-
-const CODEX_MODE_DESC: Record<CodexSandboxMode, string> = {
-  'read-only': 'can read files & run read-only commands; no writes',
-  'workspace-write': 'can edit files in the workspace; network off by default',
-  'full-access': 'no sandbox, but sensitive actions can still ask',
-  'accept-all': 'no sandbox and no approval prompts (danger)',
-};
 
 type Props = {
   kind: 'agent' | 'shell';
@@ -105,9 +97,11 @@ export default function NewSessionWizard({
   useEffect(() => {
     if (kind !== 'agent' || allowedKinds.length === 0 || allowedKinds.includes(selKind)) return;
     setSelKind(fixedKind ?? allowedKinds[0]);
-    // allowedKinds is rebuilt every render; the enabled flags are the real dep.
+    // allowedKinds is rebuilt every render, so the real dep is the enabled
+    // FLAGS. Joined rather than listed per provider: hand-naming two of them
+    // meant switching the third off in another tab left this pointing at it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, selKind, fixedKind, enabledBackends.claude, enabledBackends.codex]);
+  }, [kind, selKind, fixedKind, allowedKinds.join(',')]);
   const [vpsId, setVpsId] = useState<string | null>(initialVpsId ?? null);
   const [path, setPath] = useState<string | null>(hasInitialCwd ? initialCwd! : null);
   const [pathChosen, setPathChosen] = useState<boolean>(hasInitialCwd);
@@ -141,7 +135,6 @@ export default function NewSessionWizard({
   const vpsSearch = useVpsSearch(vpsQuery, vpsPaths);
   const vpsSearchRef = useSearchAutoFocus<HTMLInputElement>(step === 'vps');
 
-  const isCodex = kind === 'agent' && selKind === 'codex';
   const capabilities = sessionCapabilities(selKind);
 
   // Optional per-session config (agent only). Blank = inherit the global
@@ -151,7 +144,12 @@ export default function NewSessionWizard({
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
-  const [codexSandbox, setCodexSandbox] = useState<CodexSandboxMode | ''>('');
+  // The selected backend's permission/sandbox/freedom mode. ONE state for
+  // every provider — filled from `sessionModes(selKind)` — because the picker
+  // it feeds is the same control; it used to be Codex-only, which left the
+  // third backend, whose mode IS its whole permission gate (§14.103), with no
+  // per-session surface at all.
+  const [sessionMode, setSessionMode] = useState<SessionMode | ''>('');
   const [baseInstructions, setBaseInstructions] = useState('');
   const [developerInstructions, setDeveloperInstructions] = useState('');
   const [codexOverrides, setCodexOverrides] = useState('');
@@ -168,7 +166,9 @@ export default function NewSessionWizard({
   // the VPS's scope (or the hub default). Claude only; Codex has no equivalent.
   const [settingSources, setSettingSources] = useState<ClaudeSettingSource[] | null>(null);
   const [globalDefaults, setGlobalDefaults] = useState<{
-    model: string; fallbackModel: string; effort: string; codexMode: string;
+    model: string; fallbackModel: string; effort: string;
+    /** Fleet default mode, per provider — labels the picker's "default" row. */
+    modes: Partial<Record<AgentKind, string>>;
     settingSources: ClaudeSettingSource[];
   } | null>(null);
 
@@ -210,7 +210,10 @@ export default function NewSessionWizard({
         model: s['claude.default_model'] ?? '',
         fallbackModel: s['claude.default_fallback_model'] ?? '',
         effort: s['claude.default_effort'] ?? '',
-        codexMode: s['codex.default_permission_mode'] ?? 'workspace-write',
+        modes: Object.fromEntries(SESSION_PROVIDERS.map((p) => [
+          p,
+          s[providerSettingKey(p, 'default_permission_mode')] || defaultSessionMode(p, 'create'),
+        ])),
         settingSources: resolveSettingSources(
           safeParseSettingSources(s['claude.setting_sources'])),
       }))
@@ -220,7 +223,7 @@ export default function NewSessionWizard({
   // Reset per-backend config when the backend switches (model ids / efforts
   // aren't comparable across Claude and Codex).
   useEffect(() => {
-    setModel(''); setFallbackModel(''); setEffort(''); setCodexSandbox('');
+    setModel(''); setFallbackModel(''); setEffort(''); setSessionMode('');
   }, [selKind]);
 
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
@@ -232,7 +235,7 @@ export default function NewSessionWizard({
     safeParseSettingSources(vps?.claudeSettingSources),
     globalDefaults?.settingSources,
   );
-  const agentLabel = selKind === 'codex' ? 'Codex agent' : 'Claude agent';
+  const agentLabel = providerText.agentNoun(selKind);
   const kindLabel = kind === 'agent' ? agentLabel : 'SSH shell';
   const KindIcon = kind === 'agent'
     ? () => <AgentLogo kind={selKind} size={15} />
@@ -299,8 +302,14 @@ export default function NewSessionWizard({
     for (const k of kinds) {
       const av = backendAvailability(v, k);
       if (av.ok) continue;
+      // A SIGN-IN blocker is carried by that backend's own button now — it
+      // opens the modal itself — so repeating it here would restore exactly the
+      // second control this design removes. A missing RUNTIME still gets its
+      // row: installing is not something a launcher may start (`vpsHealth §
+      // backendLauncher`).
+      if (backendLauncher(v, k).fix) continue;
       out.push({
-        text: backendFixed ? av.reason : `${k === 'codex' ? 'Codex' : 'Claude'}: ${av.reason}`,
+        text: backendFixed ? av.reason : providerText.blocker(k, av.reason),
         fix: av.fix,
       });
     }
@@ -590,8 +599,12 @@ export default function NewSessionWizard({
           developerInstructions: developerInstructions.trim() || null,
           env,
         };
+        // One branch PER PROVIDER, not `isCodex ? … : …`: that shape gave the
+        // third backend Claude's config shape, whose fields it reads none of —
+        // the wizard validated an output schema and an env block and then the
+        // session silently ignored both (§14.102).
         let sessionConfig: ProviderSessionConfig | null;
-        if (isCodex) {
+        if (selKind === 'codex') {
           sessionConfig = {
             ...shared,
             configOverrides: codexOverrides.split('\n').map((v) => v.trim()).filter(Boolean),
@@ -602,7 +615,7 @@ export default function NewSessionWizard({
             modelProvider: codexModelProvider.trim() || null,
             codexBin: codexBin.trim() || null,
           } satisfies CodexSessionConfig;
-        } else {
+        } else if (selKind === 'claude') {
           const skills = claudeSkills.split('\n').map((v) => v.trim()).filter(Boolean);
           sessionConfig = {
             ...shared,
@@ -611,6 +624,10 @@ export default function NewSessionWizard({
             // VPS → hub chain and persists the result (§14.100).
             ...(settingSources ? { settingSources } : {}),
           };
+        } else {
+          // Cursor: no instruction/schema/env surface at all. The mode carries
+          // the auto-review choice and the server resolves the rest.
+          sessionConfig = null;
         }
         const r = await sessionApi.create({
           vpsId: vps.id, cwd: path!.trim(),
@@ -618,7 +635,7 @@ export default function NewSessionWizard({
           kind: selKind,
           // Blank means the installation default. The server resolves and
           // persists it atomically, so a slow settings fetch cannot race this.
-          permissionMode: isCodex && codexSandbox ? codexSandbox : undefined,
+          permissionMode: sessionMode || undefined,
           model: model.trim() || null,
           // Codex has no fallback-model concept (server ignores it anyway).
           fallbackModel: capabilities.fallbackModel === 'none' ? null : (fallbackModel.trim() || null),
@@ -769,13 +786,18 @@ export default function NewSessionWizard({
                           </span>
                           <span className="wiz-kind-btns">
                             {allowedKinds.map((k) => {
-                              const av = availFor(v, k);
+                              const launcher = backendLauncher(v, k);
                               return (
-                                <button key={k} type="button" className="wiz-kind-btn"
-                                  disabled={!av.ok} title={av.reason}
-                                  onClick={() => pickVps(v, k)}>
+                                <button key={k} type="button"
+                                  className={`wiz-kind-btn${launcher.warn ? ' needs-fix' : ''}`}
+                                  disabled={!launcher.enabled} title={launcher.title}
+                                  onClick={() => {
+                                    if (launcher.ready) pickVps(v, k);
+                                    else if (launcher.fix) onFix?.(v, launcher.fix.action);
+                                  }}>
                                   <AgentLogo kind={k} size={15} />
-                                  <span>{k === 'codex' ? 'Codex' : 'Claude'}</span>
+                                  <span>{providerName(k)}</span>
+                                  {launcher.warn && <span className="wiz-kind-warn" aria-hidden="true">!</span>}
                                 </button>
                               );
                             })}
@@ -786,7 +808,10 @@ export default function NewSessionWizard({
                     // Shell OR fixed-backend agent: single clickable row. A
                     // shell needs the agent layer too (shell_start is an agent
                     // RPC) — same gating, minus the login/backend checks.
-                    const disabled = kind === 'agent' ? !availFor(v, selKind).ok : !agentAvailability(v).ok;
+                    // A fixed-backend row IS the button, so it follows the same
+                    // rule: signed out ⇒ still pressable, and it signs in.
+                    const rowLauncher = kind === 'agent' ? backendLauncher(v, selKind) : null;
+                    const disabled = rowLauncher ? !rowLauncher.enabled : !agentAvailability(v).ok;
                     if (disabled) {
                       // Not a <button>: the row hosts the repair buttons
                       // (nested <button> is invalid HTML) and isn't clickable.
@@ -802,16 +827,22 @@ export default function NewSessionWizard({
                         </div>
                       );
                     }
+                    const rowBlocked = rowLauncher && !rowLauncher.ready ? rowLauncher : null;
                     return (
                       <button key={v.id}
-                        className="wiz-pick"
-                        onClick={() => pickVps(v)}
+                        className={`wiz-pick${rowBlocked ? ' needs-fix' : ''}`}
+                        title={rowBlocked ? rowBlocked.title : undefined}
+                        onClick={() => {
+                          if (rowBlocked?.fix) onFix?.(v, rowBlocked.fix.action);
+                          else pickVps(v);
+                        }}
                       >
                         <span className={`wiz-pick-dot agent-${status}`} />
                         <span className="wiz-pick-main">
                           <span className="wiz-pick-name">{v.name}</span>
                           <span className="wiz-pick-sub">{v.sshUser}@{v.ip}</span>
                           {matchEl}
+                          {rowBlocked && <span className="wiz-pick-sub wiz-pick-blocked">⚠ {rowBlocked.title}</span>}
                         </span>
                         <span className="wiz-pick-go">›</span>
                       </button>
@@ -937,26 +968,56 @@ export default function NewSessionWizard({
             {kind === 'agent' && (
               <div className="wiz-adv">
                 <button className="wiz-adv-toggle" onClick={() => setShowAdv((v) => !v)}>
-                  {showAdv ? '▾' : '▸'} advanced · model, instructions{isCodex ? ', effort & mode' : ', effort & skills'}
+                  {showAdv ? '▾' : '▸'} advanced · model, effort & instructions
                 </button>
                 {showAdv && (
                   <div className="wiz-adv-body">
-                    {isCodex ? (
+                    {/* Model and effort come from the SELECTED backend's own
+                        catalog (§14.102). They used to sit inside an
+                        `isCodex ? … : …`, which offered a third provider
+                        Claude's models — a picker listing what its backend
+                        cannot run, with a green typecheck. */}
+                    {(() => {
+                      const { Model, Effort } = PROVIDER_CATALOGS[selKind];
+                      const inherit = providerText.agentLabel(selKind) + ' default';
+                      return (
+                        <>
+                          <label className="wiz-adv-field">model
+                            <Model vpsId={vps.id} value={model} onChange={setModel}
+                              inheritPlaceholder={globalDefaults?.model || inherit} />
+                          </label>
+                          {supportsSessionCapability(selKind, 'fallbackModel') && (
+                            <label className="wiz-adv-field">fallback model
+                              <Model vpsId={vps.id} value={fallbackModel} onChange={setFallbackModel}
+                                inheritPlaceholder={globalDefaults?.fallbackModel || 'none'} />
+                            </label>
+                          )}
+                          {hasEffortAxis(selKind) && (
+                            <label className="wiz-adv-field">effort
+                              <Effort vpsId={vps.id} value={effort} onChange={setEffort} modelId={model}
+                                inheritPlaceholder={globalDefaults?.effort || inherit} />
+                            </label>
+                          )}
+                        </>
+                      );
+                    })()}
+                    {/* The mode, for EVERY backend — filled from
+                        `sessionModes(selKind)` and worded by the shared
+                        MODE_LABELS. Offered only under `isCodex`, the third
+                        backend had no per-session way to pick its freedom
+                        rung, which for it IS the whole permission gate. */}
+                    <label className="wiz-adv-field">mode
+                      <PickerControl value={sessionMode} onValueChange={(nextValue) => setSessionMode(nextValue as SessionMode | '')}>
+                        <option value="">
+                          default — {globalDefaults?.modes?.[selKind] ?? defaultSessionMode(selKind, 'create')}
+                        </option>
+                        {sessionModes(selKind).map((m) => (
+                          <option key={m} value={m}>{MODE_LABELS[m] ?? m}</option>
+                        ))}
+                      </PickerControl>
+                    </label>
+                    {selKind === 'codex' && (
                       <>
-                        <label className="wiz-adv-field">model
-                          <CodexModelPicker vpsId={vps.id} value={model} onChange={setModel} inheritPlaceholder="Codex default" />
-                        </label>
-                        <label className="wiz-adv-field">effort
-                          <CodexEffortPicker vpsId={vps.id} value={effort} onChange={setEffort} modelId={model} inheritPlaceholder="Codex default" />
-                        </label>
-                        <label className="wiz-adv-field">mode
-                          <PickerControl value={codexSandbox} onValueChange={(nextValue) => setCodexSandbox(nextValue as CodexSandboxMode | '')}>
-                            <option value="">default — {globalDefaults?.codexMode || 'workspace-write'}</option>
-                            {CODEX_SANDBOX_MODES.map((m) => (
-                              <option key={m} value={m}>{m} — {CODEX_MODE_DESC[m]}</option>
-                            ))}
-                          </PickerControl>
-                        </label>
                         <label className="wiz-adv-field">personality
                           <PickerControl value={codexPersonality} onValueChange={(nextValue) => setCodexPersonality(nextValue as any)}>
                             <option value="friendly">friendly</option><option value="pragmatic">pragmatic</option><option value="none">none</option>
@@ -991,7 +1052,7 @@ export default function NewSessionWizard({
                         <label className="wiz-adv-field">environment <span className="wiz-opt">(KEY=value per line)</span>
                           <textarea className="mono" value={sessionEnv} onChange={(e) => setSessionEnv(e.target.value)} />
                         </label>
-                        <label className="wiz-adv-field">Codex binary
+                        <label className="wiz-adv-field">{providerText.binaryPath('codex')}
                           <input className="mono" value={codexBin} onChange={(e) => setCodexBin(e.target.value)} placeholder="SDK bundled binary" />
                         </label>
                         <label className="wiz-adv-check">
@@ -999,19 +1060,19 @@ export default function NewSessionWizard({
                           ephemeral thread (not kept in ~/.codex)
                         </label>
                       </>
-                    ) : (
+                    )}
+                    {/* ⚠ Instructions / output schema / env are NOT
+                        provider-neutral: they exist only where the backend's
+                        construction options carry them. Rendered in a
+                        `isCodex ? … : else` branch, they were offered for a
+                        third backend that reads none of them — validated on
+                        launch, then silently dropped (§14.102). Independent
+                        `selKind ===` guards, so provider n+1 renders nothing
+                        rather than inheriting someone else's block. */}
+                    {selKind === 'claude' && (
                       <>
-                        <label className="wiz-adv-field">model
-                          <ModelPicker value={model} onChange={setModel} inheritPlaceholder={globalDefaults?.model || undefined} />
-                        </label>
-                        <label className="wiz-adv-field">fallback model
-                          <ModelPicker value={fallbackModel} onChange={setFallbackModel} inheritPlaceholder={globalDefaults?.fallbackModel || 'none'} />
-                        </label>
-                        <label className="wiz-adv-field">effort
-                          <EffortPicker value={effort} onChange={setEffort} modelId={model} inheritPlaceholder={globalDefaults?.effort || undefined} />
-                        </label>
                         <label className="wiz-adv-field">base instructions
-                          <textarea value={baseInstructions} onChange={(e) => setBaseInstructions(e.target.value)} placeholder="instructions appended to Claude Code's system prompt" />
+                          <textarea value={baseInstructions} onChange={(e) => setBaseInstructions(e.target.value)} placeholder="instructions appended to the backend's own system prompt" />
                         </label>
                         <label className="wiz-adv-field">developer instructions
                           <textarea value={developerInstructions} onChange={(e) => setDeveloperInstructions(e.target.value)} placeholder="project conventions and constraints" />
@@ -1019,11 +1080,12 @@ export default function NewSessionWizard({
                         <label className="wiz-adv-field">output schema <span className="wiz-opt">(JSON object)</span>
                           <textarea className="mono" value={outputSchemaText} onChange={(e) => setOutputSchemaText(e.target.value)} placeholder={'{"type":"object","properties":{}}'} />
                         </label>
+                        {/* This backend's OWN mechanism: its skill filter and
+                            its settings-file chain (§14.100), whose scope words
+                            mean nothing to another runtime. */}
                         <label className="wiz-adv-field">skills <span className="wiz-opt">(one name per line; blank = CLI defaults)</span>
                           <textarea className="mono" value={claudeSkills} onChange={(e) => setClaudeSkills(e.target.value)} placeholder={'code-review\nfrontend-design'} />
                         </label>
-                        {/* §14.100 — the last layer of the chain. Inherits the
-                            VPS's scope, itself inheriting the hub default. */}
                         <div className="wiz-adv-field">settings files <span className="wiz-opt">(what this session reads)</span>
                           <SettingSourcesPicker
                             value={settingSources}

@@ -1,5 +1,7 @@
 'use client';
 import PickerControl from './PickerControl';
+import { agentKindLabel } from './AgentLogo';
+import { providerText } from '@/lib/providerText';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentKind } from '@/lib/types/api';
@@ -70,6 +72,10 @@ function LoadingInsight() {
 function why(r: { reason?: string; error?: string } | null): string | null {
   if (!r) return null;
   if (r.reason === 'unsupported') return 'needs a newer agent on this VPS';
+  // `unavailable` ≠ `unsupported`. The first is "this backend has no such
+  // surface, however new the agent gets"; the second is a rollout lag. Told
+  // apart, the inspector stopped advising an update for an already-current box.
+  if (r.reason === 'unavailable') return 'not reported by this backend';
   if (r.reason === 'offline') return 'the VPS agent is offline';
   if (r.error) return r.error;
   return null;
@@ -103,16 +109,23 @@ export default function SessionInsight({
   const isCodex = kind === 'codex';
   const capabilities = sessionCapabilities(kind);
   const hasSecurity = capabilities.permissionProfiles !== 'none';
+  // `session_resources` is the skills/commands/apps inventory — asked only
+  // where at least one of them exists.
+  const hasResources = capabilities.skills !== 'none'
+    || capabilities.slashCommands !== 'none'
+    || capabilities.apps !== 'none';
   const [mcp, setMcp] = useState<Mcp | null>(null);
   const [subagents, setSubagents] = useState<SubAgents | null>(null);
   const [openAgent, setOpenAgent] = useState<string | null>(null);
   const [agentMsgs, setAgentMsgs] = useState<SubMsg[] | null>(null);
   const [busy, setBusy] = useState(true);
+  // A section this backend does not have counts as LOADED: its request is
+  // never sent, and a spinner that never resolves reads as a hang.
   const [loaded, setLoaded] = useState<LoadedState>({
-    mcp: false,
-    subagents: false,
+    mcp: capabilities.mcp !== 'native',
+    subagents: capabilities.subagents === 'none',
     security: !hasSecurity,
-    resources: false,
+    resources: !hasResources,
   });
   const [security, setSecurity] = useState<Security | null>(null);
   const [securityBusy, setSecurityBusy] = useState(false);
@@ -172,15 +185,25 @@ export default function SessionInsight({
       // chat input even behind a proxy. The first three routes themselves
       // return non-blocking snapshots; security is last because older agents
       // can still make that one a normal, awaited RPC.
+      // Asked only where the backend HAS the surface (§14.102). Requested
+      // unconditionally, a backend that implements none of them paid three
+      // sequential round trips per load to be told so three times.
       const requests: Array<{
         key: keyof LoadedState;
         path: string;
         apply: (value: any) => void;
-      }> = [
-        { key: 'resources', path: `/api/claude/sessions/${sessionId}/resources`, apply: setResources },
-        { key: 'subagents', path: `/api/claude/sessions/${sessionId}/subagents`, apply: setSubagents },
-        { key: 'mcp', path: `/api/claude/sessions/${sessionId}/mcp`, apply: setMcp },
-      ];
+      }> = [];
+      if (hasResources) {
+        requests.push({ key: 'resources', path: `/api/claude/sessions/${sessionId}/resources`, apply: setResources });
+      }
+      if (capabilities.subagents !== 'none') {
+        requests.push({ key: 'subagents', path: `/api/claude/sessions/${sessionId}/subagents`, apply: setSubagents });
+      }
+      // NATIVE only: an `adapted` backend runs MCP servers Charon wired itself
+      // and has no inventory API to report them (§14.103).
+      if (capabilities.mcp === 'native') {
+        requests.push({ key: 'mcp', path: `/api/claude/sessions/${sessionId}/mcp`, apply: setMcp });
+      }
       if (hasSecurity) {
         requests.push({
           key: 'security',
@@ -343,7 +366,7 @@ export default function SessionInsight({
               Showing both makes a pending/failed convergence explicit. */}
           <ul className="si-cats">
             <li><span>Charon</span><b>{ctx.identity.name || '(unnamed)'}</b></li>
-            <li><span>{kind === 'codex' ? 'Codex' : 'Claude'}</span><b>{ctx.identity.cli_title || '—'}</b></li>
+            <li><span>{agentKindLabel(kind)}</span><b>{ctx.identity.cli_title || '—'}</b></li>
           </ul>
           {ctx.identity.cli_title && ctx.identity.cli_title !== ctx.identity.name && (
             <p className="si-none si-diverged">
@@ -372,7 +395,7 @@ export default function SessionInsight({
             </PickerControl>
           </label>
           {(security.profile_reason === 'unsupported' || security.runtime_reason || security.runtime_error) && (
-            <p className="si-none">profiles unavailable until the Codex session is running on a compatible agent</p>
+            <p className="si-none">{providerText.profilesUnavailable('codex')}</p>
           )}
           {!!security.denials?.length && <div className="si-denials">
             <p className="si-line">recent denials</p>
@@ -393,7 +416,10 @@ export default function SessionInsight({
         </> : <p className="si-none">{why(security) ?? 'not running'}</p>}
       </InsightSection>}
 
-      <InsightSection
+      {/* A section whose request is never sent renders nothing at all: an
+          empty panel saying "unavailable" reads as a fault, not as a backend
+          that has no such concept (§14.102). */}
+      {hasResources && <InsightSection
         title={capabilities.apps !== 'none' ? 'skills & apps' : 'skills & commands'}
         loading={!loaded.resources}
         meta={!loaded.resources ? 'loading…' : (resources?.ok
@@ -457,7 +483,7 @@ export default function SessionInsight({
           {!resources.skills?.length && !resources.apps?.length && !resources.commands?.length
             && <p className="si-none">none available</p>}
         </> : <p className="si-none">{why(resources) ?? 'not running'}</p>}
-      </InsightSection>
+      </InsightSection>}
 
       <InsightSection title="context window" defaultOpen loading={!contextLoaded}
         meta={!contextLoaded ? 'loading…' : contextPresentation.meta}>
@@ -516,7 +542,7 @@ export default function SessionInsight({
         </>}
       </InsightSection>
 
-      <InsightSection title="MCP servers" defaultOpen loading={!loaded.mcp}
+      {capabilities.mcp === 'native' && <InsightSection title="MCP servers" defaultOpen loading={!loaded.mcp}
         meta={!loaded.mcp ? 'loading…' : (mcp?.ok
           ? `${mcp.servers?.length ?? 0} configured` : 'unavailable')}>
         {!loaded.mcp ? <LoadingInsight /> : mcp?.ok && mcp.servers?.length ? (
@@ -568,9 +594,9 @@ export default function SessionInsight({
         ) : (
           <p className="si-none">{mcp?.ok ? 'none configured' : (why(mcp) ?? 'not running')}</p>
         )}
-      </InsightSection>
+      </InsightSection>}
 
-      <InsightSection title="sub-agents" loading={!loaded.subagents}
+      {capabilities.subagents !== 'none' && <InsightSection title="sub-agents" loading={!loaded.subagents}
         meta={!loaded.subagents ? 'loading…' : (subagents?.ok === false
           ? 'unavailable' : `${agents.length} spawned`)}>
         {!loaded.subagents ? <LoadingInsight /> : subagents?.ok === false ? (
@@ -602,7 +628,7 @@ export default function SessionInsight({
         ) : (
           <p className="si-none">none spawned</p>
         )}
-      </InsightSection>
+      </InsightSection>}
     </div>
   );
 }

@@ -4,9 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+import {
+  PROVIDERS, SESSION_PROVIDERS, asSessionProvider, providerLoginPatch,
+} from '@/lib/sessionCapabilities';
+import { PROVIDER_LOGIN } from './loginModals';
 import type { Vps, VpsFolder, VpsPath, ClaudeSession } from '@/lib/db/schema';
 import type { AccountUsage } from '@/lib/server/claude/types';
-import type { AgentKind, TabDTO } from '@/lib/types/api';
+import type { AgentKind, TabDTO, VpsStalenessBaselines } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import SidebarPathFilter from './SidebarPathFilter';
 import {
@@ -35,8 +39,10 @@ import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
 import { newestAccountUsage } from './accountUsageState';
-import { backendAvailability } from './vpsHealth';
-import { ALL_BACKENDS_ENABLED, enabledBackendsFromSettings } from './enabledBackends';
+import { backendAvailability, type VpsFixAction } from './vpsHealth';
+import {
+  AGENT_KINDS, ALL_BACKENDS_ENABLED, enabledBackendsFromSettings, sameBackends,
+} from './enabledBackends';
 import type { SettingsCategory } from './SettingsModal';
 import SessionErrorBoundary from './SessionErrorBoundary';
 import { revealLine } from './revealLine';
@@ -51,6 +57,7 @@ import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
 import { DeepLinkGuard } from './deepLinkGuard';
 import { mergeVpsRuntimeSnapshots } from './vpsRuntimeState';
+import { PROVIDER_VERSION_COLUMNS, pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import {
   DEFAULT_SETTING_SOURCES, formatSettingSources, resolveSettingSources,
   safeParseSettingSources, type ClaudeSettingSource,
@@ -66,8 +73,6 @@ const DataModal = dynamic(() => import('./DataModal'), { ssr: false });
 const ResumeModal = dynamic(() => import('./ResumeModal'), { ssr: false });
 const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
 const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
-const ClaudeLoginModal = dynamic(() => import('./ClaudeLoginModal'), { ssr: false });
-const CodexLoginModal = dynamic(() => import('./CodexLoginModal'), { ssr: false });
 const SettingScopeModal = dynamic(() => import('./SettingScopeModal'), { ssr: false });
 
 type Props = {
@@ -79,11 +84,11 @@ type Props = {
   // `__version__` of the pyz this hub ships — THE agent-staleness baseline
   // (§14.6); builtPyzSha is kept for identity/receipts only.
   builtAgentVersion: string | null;
-  // Latest claude-agent-sdk on PyPI (settings cache, null = never synced).
-  // Compared to vps.sdkVersion for the sidebar "SDK out of date" badge.
-  sdkLatestVersion: string | null;
-  codexLatestVersion?: string | null;
-  codexCliLatestVersion?: string | null;
+  // Every DECLARED release line's latest (settings cache, null = never
+  // synced), keyed by the registry's `latestKey`. Compared per axis against
+  // the VPS's installed version for the sidebar "out of date" badge and the
+  // health chips. One bag on purpose — see `buildMeta` below.
+  staleness: VpsStalenessBaselines;
   initialTabs: TabDTO[];
 };
 
@@ -105,7 +110,7 @@ function sameSessionRows(a: SessionListItem[], b: SessionListItem[]): boolean {
 
 const emptyEdits: Map<string, EditSnapshot> = new Map();
 
-export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, initialTabs }: Props) {
+export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initialFolders, vpsPaths: initialPaths, initialSessions, builtPyzSha, builtAgentVersion, staleness, initialTabs }: Props) {
   // The workspace is part of the SSR snapshot. Hydrating it synchronously
   // prevents the initial session from mounting, being cleared by an empty tab
   // store, then mounting again after GET /api/tabs.
@@ -142,12 +147,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // which still ≠ the stale prop). Refreshed from the session-list poll's
   // `meta` (60s while visible + on session_list_changed). The ref mirrors the state for
   // use inside stable-closure event handlers.
-  const [buildMeta, setBuildMeta] = useState({
+  // ONE bag, not N named fields: the `latest`s are keyed by the registry's
+  // declared `latestKey` (§14.102), so a newly declared release line reaches
+  // the sidebar, the health chips and the data modal without another four-file
+  // prop rename — which is precisely what the Cursor axis did NOT get, leaving
+  // it comparing against `undefined` on every consumer.
+  const [buildMeta, setBuildMeta] = useState<VpsStalenessBaselines>({
     builtPyzSha: builtPyzSha ?? null,
     builtAgentVersion: builtAgentVersion ?? null,
-    sdkLatestVersion: sdkLatestVersion ?? null,
-    codexLatestVersion: codexLatestVersion ?? null,
-    codexCliLatestVersion: codexCliLatestVersion ?? null,
+    ...staleness,
   });
   const buildMetaRef = useRef(buildMeta);
   useEffect(() => { buildMetaRef.current = buildMeta; }, [buildMeta]);
@@ -209,7 +217,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     { what: string; count: number; dirty: ResolvedTab[]; run: () => Promise<void> } | null
   >(null);
   // Interactive claude login console
-  const [loginVps, setLoginVps] = useState<Vps | null>(null);
+  // ONE sign-in target for every backend (§14.102): `{vps, provider}` instead of
+  // a `useState` per provider. Cross-panel (sidebar, health chips, install
+  // view, auth-error bubble), hence a single global mount below.
+  const [loginTarget, setLoginTarget] =
+    useState<{ vps: Vps; provider: AgentKind } | null>(null);
+  /** Open a provider's sign-in surface. Closing the wizard is the surface's own
+   *  declared behaviour, not the caller's guess. */
+  const openProviderLogin = useCallback((v: Vps, provider: AgentKind) => {
+    if (PROVIDER_LOGIN[provider].closesWizard) setWizard(null);
+    setLoginTarget({ vps: v, provider });
+  }, []);
 
   // "Which Claude settings files does this VPS load?" (§14.100). Opened by an
   // agent install, and by the VPS card in DataModal for a later change.
@@ -217,50 +235,26 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     { vps: Vps; hubDefault: ClaudeSettingSource[]; mode: 'install' | 'edit' } | null
   >(null);
 
-  // Codex device-code login modal (§14.61) — the Codex sibling of loginVps.
-  // On confirmed success the server has already persisted codexLoggedIn=1 +
-  // broadcast vps_status; patch locally too so THIS tab flips instantly.
-  const [codexLoginVps, setCodexLoginVps] = useState<Vps | null>(null);
-  const closeCodexLogin = useCallback((loggedIn: boolean) => {
-    const v = codexLoginVps;
-    setCodexLoginVps(null);
-    if (!v || !loggedIn) return;
-    setVpsList((prev) => prev.map((vp) => vp.id === v.id
-      ? ({ ...vp, codexLoggedIn: 1, codexLoggedInCheckedAt: Math.floor(Date.now() / 1000) } as Vps)
-      : vp));
-  }, [codexLoginVps]);
-
-  // Closing the Claude login modal (§14.64). On a CONFIRMED success we patch
-  // locally right away — the server already persisted the flag and broadcast
-  // `vps_status`, so other tabs follow on their own (mirrors closeCodexLogin).
-  // Otherwise we re-check: the user may have signed in (or out) by another
-  // route, and the result self-heals the sidebar button + health chips.
-  const closeLoginConsole = useCallback((loggedIn: boolean) => {
-    const v = loginVps;
-    setLoginVps(null);
-    if (!v) return;
-    if (loggedIn) {
-      setVpsList((prev) => prev.map((vp) => vp.id === v.id
-        ? ({ ...vp, claudeLoggedIn: 1, claudeLoggedInCheckedAt: Math.floor(Date.now() / 1000) } as Vps)
-        : vp));
-      return;
-    }
-    // Best-effort, async. If SSH crashes, we keep the old value.
-    api.checkVpsClaudeLogin(v.id)
-      .then((r) => {
-        if (!r.ok) return;
-        setVpsList((prev) => prev.map((vp) =>
-          vp.id === v.id
-            ? ({
-                ...vp,
-                claudeLoggedIn: r.loggedIn ? 1 : 0,
-                claudeLoggedInCheckedAt: r.checkedAt,
-              } as Vps)
-            : vp,
-        ));
-      })
-      .catch(() => {});
-  }, [loginVps]);
+  // Closing ANY provider's sign-in surface. On a CONFIRMED success the server
+  // has already persisted the flag and broadcast `vps_status`, so other tabs
+  // follow on their own — we patch locally too so THIS tab flips instantly, and
+  // the columns come from `providerLoginPatch` rather than being named here.
+  // Without confirmation, a provider that has a probe route re-checks: the user
+  // may have signed in (or out) elsewhere, and the result self-heals the
+  // sidebar button + the health chips.
+  const closeProviderLogin = useCallback((loggedIn: boolean) => {
+    const target = loginTarget;
+    setLoginTarget(null);
+    if (!target) return;
+    const { vps: v, provider } = target;
+    const patch = (fields: Record<string, number>) => setVpsList((prev) =>
+      prev.map((vp) => (vp.id === v.id ? ({ ...vp, ...fields } as Vps) : vp)));
+    if (loggedIn) { patch(providerLoginPatch(provider, 1)); return; }
+    // Best-effort, async. If it fails we keep the value we already show.
+    void PROVIDER_LOGIN[provider].recheck?.(v.id).then((r) => {
+      if (r) patch(providerLoginPatch(provider, r.loggedIn ? 1 : 0, r.checkedAt));
+    }).catch(() => {});
+  }, [loginTarget]);
   // Ephemeral SSH shells. Live list (polled on mount, updated locally).
   const [shells, setShells] = useState<ShellListItem[]>([]);
   // Shells created with no explicit cwd start in the SSH user's home and are
@@ -364,15 +358,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // shows the one matching the CURRENT session's kind. Fed by the LOW_VOLUME
   // `account_usage` SSE event (carries `provider`) + hydrated on session-select
   // via GET /api/vps/[id]/usage ({ usage, codexUsage }). §14.58 / §14.59.
-  const [usageByVps, setUsageByVps] = useState<Record<string, { claude?: AccountUsage; codex?: AccountUsage }>>({});
+  const [usageByVps, setUsageByVps] =
+    useState<Record<string, Partial<Record<AgentKind, AccountUsage>>>>({});
   const refreshUsage = useCallback((vpsId: string | null | undefined) => {
     if (!vpsId) return;
     api.getVpsUsage(vpsId)
       .then((r) => setUsageByVps((prev) => {
         const cur = prev[vpsId] ?? {};
         const next = { ...cur };
-        if (r.usage) next.claude = newestAccountUsage(cur.claude, r.usage);
-        if (r.codexUsage) next.codex = newestAccountUsage(cur.codex, r.codexUsage);
+        // Prefer the neutral map (§14.102) so a new backend's gauges land with
+        // no edit here; fall back to the historical fields on an older server.
+        const incoming: Partial<Record<AgentKind, AccountUsage | null | undefined>> =
+          r.byProvider ?? { claude: r.usage, codex: r.codexUsage };
+        for (const k of AGENT_KINDS) {
+          const fresh = incoming[k];
+          if (fresh) next[k] = newestAccountUsage(cur[k], fresh);
+        }
         return { ...prev, [vpsId]: next };
       }))
       .catch(() => {});
@@ -383,7 +384,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       if (!vpsId) return null;
       const e = usageByVps[vpsId];
       if (!e) return null;
-      return (kind === 'codex' ? e.codex : e.claude) ?? null;
+      return e[asSessionProvider(kind)] ?? null;
     },
     [usageByVps],
   );
@@ -502,33 +503,21 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         let changed = false;
         const next = prev.map((v) => {
           if (v.id !== vpsId) return v;
-          const agentVersion = ev.agentVersion !== undefined ? ev.agentVersion : v.agentVersion;
-          const agentPyzSha = ev.agentPyzSha !== undefined ? ev.agentPyzSha : v.agentPyzSha;
-          // sdkVersion: patch ONLY when the event carries the key — an event
-          // from an old agent's hello must not wipe a known SDK version
-          // (mirrors the DB no-clobber guard in AgentClient.ts).
-          const sdkVersion = ev.sdkVersion !== undefined ? ev.sdkVersion : v.sdkVersion;
-          // codex fields: same "key present ⇔ known" no-clobber contract.
-          const codexAvailable = (ev as any).codexAvailable !== undefined ? (ev as any).codexAvailable : (v as any).codexAvailable;
-          const codexSdkVersion = (ev as any).codexSdkVersion !== undefined ? (ev as any).codexSdkVersion : (v as any).codexSdkVersion;
-          const codexCliVersion = (ev as any).codexCliVersion !== undefined ? (ev as any).codexCliVersion : (v as any).codexCliVersion;
-          // agentLastError: classified failure reason (ssh vs daemon) — feeds
-          // the health chips (vpsHealth.tsx). Explicit null on 'ok' clears it.
-          const agentLastError = (ev as any).agentLastError !== undefined ? (ev as any).agentLastError : (v as any).agentLastError;
-          // Login flags, same no-clobber contract. Broadcast by the codex
-          // (§14.61) and claude (§14.64) device-code logins on success — this
-          // is what flips the chips/buttons in the OTHER tabs and devices
-          // (the originating tab also patches locally on modal close).
-          const codexLoggedIn = (ev as any).codexLoggedIn !== undefined ? (ev as any).codexLoggedIn : (v as any).codexLoggedIn;
-          const claudeLoggedIn = (ev as any).claudeLoggedIn !== undefined ? (ev as any).claudeLoggedIn : (v as any).claudeLoggedIn;
-          if (v.agentStatus === ev.agentStatus && v.agentVersion === agentVersion && v.agentPyzSha === agentPyzSha && v.sdkVersion === sdkVersion
-              && (v as any).codexAvailable === codexAvailable && (v as any).codexSdkVersion === codexSdkVersion && (v as any).codexCliVersion === codexCliVersion
-              && (v as any).agentLastError === agentLastError
-              && (v as any).codexLoggedIn === codexLoggedIn && (v as any).claudeLoggedIn === claudeLoggedIn) {
-            return v;
-          }
+          // Patch ONLY the keys the event actually carries — an event from an
+          // old agent's hello must not wipe a known SDK version (mirrors the DB
+          // no-clobber guard in AgentClient.ts). `agentLastError` rides the
+          // same rule, with an explicit null on 'ok' to clear it.
+          //
+          // The key SET is derived from the provider registry
+          // (`lib/vpsRuntimeFields`): hand-listed here, it never learned about
+          // the third backend, so a Cursor sign-in broadcast from another tab
+          // was received and then thrown away (§14.52).
+          const patch = pickVpsRuntimeFields({ ...(ev as Record<string, unknown>) });
+          patch.agentStatus = ev.agentStatus;
+          const row = v as unknown as Record<string, unknown>;
+          if (Object.entries(patch).every(([key, value]) => row[key] === value)) return v;
           changed = true;
-          return { ...v, agentStatus: ev.agentStatus, agentVersion, agentPyzSha, sdkVersion, codexAvailable, codexSdkVersion, codexCliVersion, agentLastError, codexLoggedIn, claudeLoggedIn } as Vps;
+          return { ...v, ...patch } as Vps;
         });
         return changed ? next : prev;
       });
@@ -550,7 +539,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       // extra two keys are harmless (UsageMeter only reads AccountUsage fields).
       // Store under the event's provider (Claude default) so a VPS running both
       // backends keeps both gauges live.
-      const provider = (ev as AccountUsage).provider === 'codex' ? 'codex' : 'claude';
+      const provider = asSessionProvider((ev as AccountUsage).provider);
       setUsageByVps((prev) => ({
         ...prev,
         [vpsId]: { ...(prev[vpsId] ?? {}), [provider]: newestAccountUsage(prev[vpsId]?.[provider], ev as AccountUsage) },
@@ -875,23 +864,25 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     setUpdatingAgentVpsIds((prev) => new Set(prev).add(vps.id));
     try {
       const r = await api.updateVpsAgent(vps.id);
-      // Patch the local row to reflect the new version/sha/SDK — prevents the
-      // "outdated" badge from staying displayed until the next hello.
-      setVpsList((prev) => prev.map((v) =>
-        v.id === vps.id
-          ? ({
-              ...v,
-              agentVersion: r?.newVersion ?? v.agentVersion,
-              agentPyzSha: r?.newPyzSha ?? v.agentPyzSha,
-              sdkVersion: r?.sdkVersion ?? v.sdkVersion,
-              // Codex too, or a VPS stale ONLY on the codex axis keeps the
-              // badge its own update just cleared (the sidebar ORs the three).
-              codexSdkVersion: (r as any)?.codexSdkVersion ?? (v as any).codexSdkVersion,
-              codexCliVersion: (r as any)?.codexCliVersion ?? (v as any).codexCliVersion,
-              agentStatus: 'ok',
-            } as Vps)
-          : v
-      ));
+      // Patch the local row to reflect the new versions — prevents the
+      // "outdated" badge from staying displayed until the next hello. EVERY
+      // provider's columns, derived from the registry: the sidebar ORs all the
+      // staleness axes, so a VPS stale only on a backend this patch forgot kept
+      // the badge its own update had just cleared (§14.52).
+      setVpsList((prev) => prev.map((v) => {
+        if (v.id !== vps.id) return v;
+        const result = (r ?? {}) as Record<string, unknown>;
+        const patch: Record<string, unknown> = {
+          agentVersion: result.newVersion ?? v.agentVersion,
+          agentPyzSha: result.newPyzSha ?? v.agentPyzSha,
+          agentStatus: 'ok',
+        };
+        for (const column of PROVIDER_VERSION_COLUMNS) {
+          const next = result[column];
+          if (typeof next === 'string' && next) patch[column] = next;
+        }
+        return { ...v, ...patch } as Vps;
+      }));
       // PARTIAL success (pyz deployed, a pip sub-step failed): say WHY the
       // "update" badge is about to relight instead of silently reverting.
       if (r?.warnings?.length) {
@@ -921,14 +912,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // wizard first; refresh/update run in place (the wizard rows / modal chips
   // repaint live via vpsList + the busy sets). Plain function (not
   // useCallback): it must close over the CURRENT runRefresh/runUpdate guards.
-  function handleVpsFix(v: Vps, action: 'install' | 'refresh' | 'update' | 'claude-login' | 'codex-login') {
-    if (action === 'install') { setWizard(null); openInstallSession(v); }
-    else if (action === 'claude-login') { setWizard(null); setLoginVps(v); }
-    // codex-login overlays whatever is open (wizard included — after the
-    // sign-in the row's Codex button re-enables live and the user launches).
-    else if (action === 'codex-login') { setCodexLoginVps(v); }
-    else if (action === 'refresh') { runRefreshAgent(v); }
-    else if (action === 'update') { runUpdateAgent(v); }
+  function handleVpsFix(v: Vps, action: VpsFixAction) {
+    switch (action) {
+      case 'install': setWizard(null); openInstallSession(v); break;
+      case 'refresh': runRefreshAgent(v); break;
+      case 'update': runUpdateAgent(v); break;
+      default: {
+        // Every remaining action is a `<provider>-login` (§14.102), routed by
+        // the registry — a new backend needs no branch here, only its entry
+        // in PROVIDER_LOGIN, which the type system already demands.
+        const p = SESSION_PROVIDERS.find((x) => PROVIDERS[x].backend.login.action === action);
+        if (p) openProviderLogin(v, p);
+        else console.warn('[vpsFix] no handler for action', action);
+      }
+    }
   }
 
   // Cross-session interaction queues: fed by
@@ -990,9 +987,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // across renders because <Message> is memoized (§14.38/65/68).
   const reauthSelectedVps = useCallback(() => {
     if (!selectedVps) return;
-    if ((selected?.kind ?? 'claude') === 'codex') setCodexLoginVps(selectedVps);
-    else setLoginVps(selectedVps);
-  }, [selected?.kind, selectedVps]);
+    openProviderLogin(selectedVps, asSessionProvider(selected?.kind));
+  }, [selected?.kind, selectedVps, openProviderLogin]);
 
   // Hydrate the current VPS's usage on select (SSE is live-only, §14.14): a
   // freshly-mounted tab has no snapshot until the next 60s poll — fetch once so
@@ -1287,12 +1283,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    *  sidebar greys out is greyed out here too, with the same wording. */
   const tabBarNewSessionReasons = useMemo((): Record<AgentKind, string | null> => {
     const vps = activeVpsId ? vpsList.find((v) => v.id === activeVpsId) : null;
-    if (!vps) return { claude: null, codex: null };
     const reason = (k: AgentKind) => {
+      if (!vps) return null;
       const av = backendAvailability(vps, k);
       return av.ok ? null : av.reason;
     };
-    return { claude: reason('claude'), codex: reason('codex') };
+    return Object.fromEntries(
+      AGENT_KINDS.map((k) => [k, reason(k)]),
+    ) as Record<AgentKind, string | null>;
   }, [vpsList, activeVpsId]);
 
   // ── Sessions list (slow convergence poll; SSE is the fast path) ──
@@ -1318,20 +1316,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       // phantom "update agent" badges that only F5 could clear.
       const m = r.meta;
       if (m) {
-        setBuildMeta((prev) =>
-          prev.builtPyzSha === m.builtPyzSha
-            && prev.builtAgentVersion === (m.builtAgentVersion ?? null)
-            && prev.sdkLatestVersion === m.sdkLatestVersion
-            && prev.codexLatestVersion === m.codexLatestVersion
-            && prev.codexCliLatestVersion === m.codexCliLatestVersion
-            ? prev
-            : {
-                builtPyzSha: m.builtPyzSha,
-                builtAgentVersion: m.builtAgentVersion ?? null,
-                sdkLatestVersion: m.sdkLatestVersion,
-                codexLatestVersion: m.codexLatestVersion,
-                codexCliLatestVersion: m.codexCliLatestVersion,
-              });
+        // Compared key-wise over whatever the server sent, so a line added to
+        // the registry converges here with no edit.
+        setBuildMeta((prev) => {
+          const next: VpsStalenessBaselines = {
+            ...m,
+            builtPyzSha: m.builtPyzSha ?? null,
+            builtAgentVersion: m.builtAgentVersion ?? null,
+          };
+          const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+          const same = [...keys].every((k) => (
+            (prev as Record<string, unknown>)[k] === (next as Record<string, unknown>)[k]
+          ));
+          return same ? prev : next;
+        });
       }
     } catch {}
   }, []);
@@ -1449,7 +1447,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         setTgConfigured(!!s['telegram.bot_token'] && !!s['telegram.chat_id']);
         setBackends((prev) => {
           const next = enabledBackendsFromSettings(s);
-          return prev.claude === next.claude && prev.codex === next.codex ? prev : next;
+          // `sameBackends`, never a hand-written pair: comparing only claude and
+          // codex discarded the whole object whenever those two agreed, pinning
+          // every later provider to its default (§14.102).
+          return sameBackends(prev, next) ? prev : next;
         });
         // The theme is hub-wide: this is how the OTHER tabs and devices follow
         // a change. Held while the settings modal is open — it is previewing a
@@ -1696,6 +1697,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <div className="head-usage-panel">
             <UsageMeter
               usage={usageFor(selectedVps?.id, selected?.kind as AgentKind | undefined)}
+              kind={selected?.kind as AgentKind | undefined}
               vpsName={selectedVps?.name}
               compact={false}
               onRefresh={() => refreshUsage(selectedVps?.id)}
@@ -1765,6 +1767,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             tools-toggle (ToolPanel drawer, ≤1100px) moved here from inside
             head-right for the same reason. cf. CLAUDE.md §14.58 / §11. */}
         <div className="head-toggles">
+        {/* App-wide settings. The gear in `head-right` is unreachable on a
+            phone — head-right IS the drawer there — so the settings need
+            their own always-visible entry, and it carries the new-models dot
+            for the same reason (the drawer one would be invisible until
+            opened). Left of the two drawer toggles and ruled off from them:
+            those open a panel of THIS session, this one leaves for app scope. */}
+        <button
+          className="head-btn m-only settings-toggle model-notice-anchor"
+          onClick={() => setSettingsOpen(true)}
+          title={hasNewModels ? 'settings — new models available' : 'settings'}
+          aria-label={hasNewModels ? 'settings — new models available' : 'settings'}
+        >
+          <IconGear />
+          {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
+        </button>
+        <span className="head-toggle-sep" aria-hidden />
         {(selectedId || selectedShellExists || selectedFile) && (
           <button
             className="head-btn m-only tools-toggle"
@@ -1775,16 +1793,15 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           </button>
         )}
         <button
-          className="head-btn m-only usage-toggle model-notice-anchor"
+          className="head-btn m-only usage-toggle"
           onClick={() => { setUsageOpen(true); setNavOpen(false); setToolsOpen(false); }}
-          title="usage & settings" aria-label={hasNewModels ? "open usage and settings — new models available" : "open usage and settings"}
+          title="usage & settings" aria-label="open usage and settings"
         >
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
             <path d="M12 12l4-3" />
             <path d="M5 18a8 8 0 1 1 14 0" />
           </svg>
-          {hasNewModels && <span className="model-notice-dot" aria-hidden="true" />}
         </button>
         </div>
       </header>
@@ -1846,10 +1863,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onRenameSubmit={renameSession}
         onRenameCancel={() => setEditingId(null)}
         onInstallAgent={openInstallSession}
-        onLoginAgent={(v) => setLoginVps(v)}
+        onProviderLogin={openProviderLogin}
         onUpdateAgent={(v) => { runUpdateAgent(v); }}
         onRefreshAgent={(v) => { runRefreshAgent(v); }}
-        onCodexLoginAgent={(v) => setCodexLoginVps(v)}
         onToggleFolderCollapsed={async (folderId, collapsed) => {
           // Optimistic: update immediately, then POST. Roll back if it fails.
           setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 1 : 0 } : f));
@@ -1860,10 +1876,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             setVpsFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, collapsed: collapsed ? 0 : 1 } : f));
           }
         }}
-        builtAgentVersion={buildMeta.builtAgentVersion}
-        sdkLatestVersion={buildMeta.sdkLatestVersion}
-        codexLatestVersion={buildMeta.codexLatestVersion}
-        codexCliLatestVersion={buildMeta.codexCliLatestVersion}
+        staleness={buildMeta}
         updatingAgentVpsIds={updatingAgentVpsIds}
         refreshingAgentVpsIds={refreshingAgentVpsIds}
       />
@@ -1947,7 +1960,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             vpsId={inst.vpsId}
             vpsName={inst.vpsName}
             onClosed={() => installClosed(inst.id)}
-            onSetupLogin={vps ? () => setLoginVps(vps) : undefined}
+            onSetupLogin={vps ? () => openProviderLogin(vps, 'claude') : undefined}
             onInstallSuccess={() => {
               // Local patch: the agent is now OK AND at the embedded version.
               // Without the agentPyzSha, the "outdated" badge would stay
@@ -2152,16 +2165,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onInstallAgent={openInstallSession}
           onRefreshAgent={(v) => { runRefreshAgent(v); }}
           onUpdateAgent={(v) => { runUpdateAgent(v); }}
-          onCodexLogin={(v) => setCodexLoginVps(v)}
-          onClaudeLogin={(v) => setLoginVps(v)}
+          onProviderLogin={openProviderLogin}
           onEditSettingScope={(v) => void openSettingScope(v)}
           refreshingAgentVpsIds={refreshingAgentVpsIds}
           updatingAgentVpsIds={updatingAgentVpsIds}
           liveVps={vpsList}
-          builtAgentVersion={buildMeta.builtAgentVersion}
-          sdkLatestVersion={buildMeta.sdkLatestVersion}
-          codexLatestVersion={buildMeta.codexLatestVersion}
-          codexCliLatestVersion={buildMeta.codexCliLatestVersion}
+          staleness={buildMeta}
         />
       )}
 
@@ -2169,12 +2178,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           wizard/data modal so they overlay whichever surface launched them.
           loginVps/codexLoginVps are cross-panel (sidebar, health chips,
           install view), hence a single global mount each. */}
-      {codexLoginVps && (
-        <CodexLoginModal vps={codexLoginVps} onClose={closeCodexLogin} />
-      )}
-      {loginVps && (
-        <ClaudeLoginModal vps={loginVps} onClose={closeLoginConsole} />
-      )}
+      {loginTarget && (() => {
+        const { Modal } = PROVIDER_LOGIN[loginTarget.provider];
+        return <Modal vps={loginTarget.vps} onClose={closeProviderLogin} />;
+      })()}
 
       {scopeModal && (
         <SettingScopeModal

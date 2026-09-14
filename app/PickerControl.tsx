@@ -9,19 +9,71 @@ type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'value' | 'onChange' 
   children: ReactNode;
   presentation?: 'select' | 'list';
 };
-type Choice = { value: string; label: ReactNode; title?: string; disabled?: boolean; group?: string };
+type Choice = { value: string; label: ReactNode; title?: string; disabled?: boolean;
+  group?: string; search?: string };
+
+/**
+ * A stacked option row: the name, then ONE LINE PER FACT under it.
+ *
+ * Every picker that had something to say beside the name said it as
+ * `Name — fact · fact · fact` on one line, which at 10px in a 340px panel is a
+ * wall with no shape to scan. Each fact gets its own line instead, so the eye
+ * can run down a column (all the prices, all the context windows) rather than
+ * re-reading a sentence per row. Shared markup, so a model catalog and a theme
+ * list cannot drift apart.
+ *
+ * Subtitles are HIDDEN in the collapsed trigger (`claude.css § .picker-line`)
+ * — one line of room there, and it belongs to the name.
+ */
+export function PickerOption(
+  { title, sub }: { title: ReactNode; sub?: string | null | (string | null | undefined)[] },
+) {
+  const lines = (Array.isArray(sub) ? sub : [sub]).filter(Boolean) as string[];
+  return (
+    <span className="picker-line">
+      {title}
+      {lines.map((line, i) => <small key={i}>{line}</small>)}
+    </span>
+  );
+}
+
+/** Plain text of a label, for the filter to match on when an option does not
+ *  carry an explicit `data-search`. */
+function nodeText(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join(' ');
+  if (isValidElement<{ children?: ReactNode; title?: ReactNode; sub?: unknown }>(node)) {
+    // `PickerOption` carries its words as PROPS, not children, so walking
+    // children alone would make every stacked row unsearchable.
+    const { children, title, sub } = node.props;
+    const subText = Array.isArray(sub) ? sub.filter(Boolean).join(' ') : (typeof sub === 'string' ? sub : '');
+    return [nodeText(children ?? null), nodeText(title ?? null), subText].filter(Boolean).join(' ');
+  }
+  return '';
+}
 
 /** Keep option labels (including empty-value placeholders), groups and disabled entries. */
 function readChoices(nodes: ReactNode, group?: string, groupDisabled = false): Choice[] {
   return Children.toArray(nodes).flatMap((node): Choice[] => {
-    if (!isValidElement<{ children?: ReactNode; value?: string | number; label?: string; disabled?: boolean; title?: string }>(node)) return [];
+    if (!isValidElement<{ children?: ReactNode; value?: string | number; label?: string;
+      disabled?: boolean; title?: string; 'data-search'?: string }>(node)) return [];
     if (node.type === Fragment) return readChoices(node.props.children, group, groupDisabled);
     if (node.type === 'optgroup') return readChoices(node.props.children, node.props.label, !!node.props.disabled);
     if (node.type !== 'option') return [];
+    // `data-search` lets an option be findable by more than it displays — a
+    // model row matches its ID as well as its name.
+    const own = node.props['data-search'];
     return [{ value: String(node.props.value ?? ''), label: node.props.children, title: node.props.title,
-      disabled: groupDisabled || node.props.disabled, group }];
+      disabled: groupDisabled || node.props.disabled, group,
+      search: (own ?? nodeText(node.props.children)).toLowerCase() }];
   });
 }
+
+/** Long enough that a reader scrolls instead of scanning. Below it a filter is
+ *  furniture; at 39 models it is the difference between finding one and giving
+ *  up. */
+const SEARCH_THRESHOLD = 12;
 
 /** Shared select: a trigger + viewport-contained popup, or a direct list in the session header. */
 export default function PickerControl({ value, onValueChange, children, presentation = 'select', disabled,
@@ -34,9 +86,22 @@ export default function PickerControl({ value, onValueChange, children, presenta
   const search = useRef({ text: '', at: 0 });
   const generatedId = useId();
   const menuId = `${id ?? generatedId}-options`;
-  const choices = readChoices(children);
-  const selected = choices.find((choice) => choice.value === String(value) && !choice.disabled)
-    ?? choices.find((choice) => choice.value === String(value));
+  const allChoices = readChoices(children);
+  const selected = allChoices.find((choice) => choice.value === String(value) && !choice.disabled)
+    ?? allChoices.find((choice) => choice.value === String(value));
+
+  // A filter appears once scanning by eye stops working. Driven by the LIST'S
+  // OWN LENGTH rather than a per-picker prop, so every long catalog gets it and
+  // none can be forgotten; a short mode ladder never grows a search box.
+  const [query, setQuery] = useState('');
+  const searchable = allChoices.length >= SEARCH_THRESHOLD;
+  const needle = searchable ? query.trim().toLowerCase() : '';
+  const terms = needle.split(/\s+/).filter(Boolean);
+  // Whitespace is AND, never fuzzy — the same rule as the VPS filter.
+  const choices = terms.length
+    ? allChoices.filter((c) => terms.every((t) => (c.search ?? '').includes(t)))
+    : allChoices;
+  const searchInput = useRef<HTMLInputElement>(null);
 
   function close(restoreFocus = true) {
     setOpen(false);
@@ -86,9 +151,20 @@ export default function PickerControl({ value, onValueChange, children, presenta
     if (!inline && !open) return;
     const chosen = menu.current?.querySelector<HTMLButtonElement>('[data-selected="true"]:not(:disabled)')
       ?? menu.current?.querySelector<HTMLButtonElement>('button:not(:disabled)');
-    chosen?.focus({ preventScroll: true });
+    // Always scroll the current choice into view; only TAKE focus when there is
+    // no search field, which owns it instead (and would be stolen from here).
     chosen?.scrollIntoView({ block: 'nearest' });
+    if (!searchable) chosen?.focus({ preventScroll: true });
+    else if (!window.matchMedia?.('(pointer: coarse)').matches) {
+      // Coarse pointers never autofocus: a phone keyboard would cover the very
+      // list being opened (§11). rAF so the portal is laid out first.
+      requestAnimationFrame(() => searchInput.current?.focus());
+    }
+    setQuery('');
     search.current = { text: '', at: 0 };
+    // `searchable` is derived from the child list, which is rebuilt every
+    // render; opening is the only moment focus should move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inline, open]);
 
   useEffect(() => {
@@ -116,12 +192,20 @@ export default function PickerControl({ value, onValueChange, children, presenta
   function navigate(e: KeyboardEvent) {
     const items = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []);
     if (!items.length) return;
+    const fromSearch = e.target === searchInput.current;
+    // Enter in the field takes the first match — the whole point of typing two
+    // letters and committing without reaching for the mouse.
+    if (fromSearch && e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      items[0].click();
+      return;
+    }
     const current = items.indexOf(document.activeElement as HTMLButtonElement);
     let next: number | undefined;
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
       next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
         : (current + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-    } else if (e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    } else if (!searchable && e.key.length === 1 && e.key !== ' ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const now = Date.now();
       search.current.text = now - search.current.at > 700 ? e.key : search.current.text + e.key;
       search.current.at = now;
@@ -140,6 +224,20 @@ export default function PickerControl({ value, onValueChange, children, presenta
     aria-label={buttonProps['aria-label'] ?? buttonProps.title ?? (inline ? 'Choices' : undefined)}
     aria-labelledby={!inline && !buttonProps['aria-label'] && !buttonProps.title ? id ?? generatedId : undefined}
     onKeyDown={navigate} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+    {searchable && (
+      <div className="picker-search">
+        <input
+          ref={searchInput}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="filter…"
+          aria-label="Filter the list"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
+    )}
     {choices.map((choice, index) => <Fragment key={`${choice.value}-${index}`}>
       {choice.group && choice.group !== choices[index - 1]?.group && <div className="picker-group-label" role="presentation">{choice.group}</div>}
       <button type="button" role={inline ? 'menuitemradio' : 'option'}
@@ -152,7 +250,11 @@ export default function PickerControl({ value, onValueChange, children, presenta
         <span className="picker-check" aria-hidden="true">{choice.value === String(value) ? '✓' : ''}</span>
       </button>
     </Fragment>)}
-    {!choices.length && <div className="picker-group-label">No options available</div>}
+    {!choices.length && (
+      <div className="picker-group-label">
+        {needle ? `nothing matches “${query.trim()}”` : 'No options available'}
+      </div>
+    )}
   </div>;
 
   if (inline) return list;

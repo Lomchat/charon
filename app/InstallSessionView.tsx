@@ -10,6 +10,7 @@ import { IconTools, IconRobot } from './icons';
 export type BootstrapEvent = {
   phase: 'verify' | 'detect_os' | 'install_python' | 'install_sdk'
        | 'install_codex'
+       | 'install_cursor'
        | 'install_claude_cli'
        | 'install_agent' | 'install_service' | 'ping_agent'
        | 'check_login' | 'done';
@@ -37,6 +38,7 @@ const PHASE_LABEL: Record<BootstrapEvent['phase'], string> = {
   install_python:     'installing python',
   install_sdk:        'installing claude-agent-sdk',
   install_codex:      'installing openai-codex',
+  install_cursor:     'installing cursor-sdk',
   install_claude_cli: 'installing claude CLI',
   install_agent:      'deploying charon-agent',
   install_service:    'systemd-user service',

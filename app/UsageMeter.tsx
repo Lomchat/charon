@@ -6,6 +6,9 @@
 //   - panel (compact=false): the full detail inline, for the mobile drawer.
 // cf. CLAUDE.md §14.58.
 import { Fragment, useEffect, useRef, useState } from 'react';
+import type { AgentKind } from '@/lib/types/api';
+import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
+import { providerText } from '@/lib/providerText';
 import type { AccountUsage, AccountUsageLimit } from '@/lib/server/claude/types';
 import AgentLogo from './AgentLogo';
 
@@ -142,14 +145,20 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
   );
 }
 
-export default function UsageMeter({ usage, vpsName, compact = true, runtime = false, onRefresh }: {
+export default function UsageMeter({ usage, vpsName, compact = true, runtime = false, onRefresh, kind }: {
   usage: AccountUsage | null;
   vpsName?: string | null;
   compact?: boolean;
   /** Three-cell session header; keeps an explicit placeholder when usage is absent. */
   runtime?: boolean;
   onRefresh?: () => void;
+  /** Whose usage this is. A provider that publishes no usage API gets a LINK to
+   *  the page that does show it (registry `usageDashboardUrl`) instead of a
+   *  meter it can never fill. */
+  kind?: AgentKind | null;
 }) {
+  const provider = asSessionProvider(kind);
+  const dashboard = PROVIDERS[provider].usageDashboardUrl;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
@@ -163,6 +172,37 @@ export default function UsageMeter({ usage, vpsName, compact = true, runtime = f
     window.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
   }, [open]);
+
+  // ── No usage API, and none coming: a LINK, not an empty gauge ──
+  //
+  // Below every hook on purpose. As an early return it was a latent "rendered
+  // fewer hooks than expected" crash: the condition reads `usage`, which flips
+  // from null to a snapshot on any provider that later grows an endpoint.
+  //
+  // The runtime form keeps the meter's own wrapper classes rather than
+  // inventing a parallel one, so every rule already written for the cell
+  // applies to it — including the ≤820px `.claude-bar .runtime-usage {
+  // display:none }` that moves usage into the drawer on a phone. A new element
+  // that must obey the same rules carries the same hooks; a private class means
+  // remembering to update each rule, which is how this shipped visible in the
+  // mobile header while the real gauges were hidden.
+  if (!usage && dashboard) {
+    const link = (
+      <a
+        className={runtime ? 'runtime-cell runtime-usage-link' : 'um-link'}
+        href={dashboard}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={providerText.usageOpenDashboard(provider)}
+      >
+        <span className="um-link-note">{providerText.usageOnWebOnly(provider)}</span>
+        <span className="um-link-cta">{providerText.usageOpenDashboard(provider)} ↗</span>
+      </a>
+    );
+    return runtime
+      ? <div className="usage-meter runtime-usage">{link}</div>
+      : <div className="um-panel um-link-panel">{link}</div>;
+  }
 
   // ── Panel form (mobile drawer): full detail, no popover ──
   if (!compact) {

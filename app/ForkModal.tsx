@@ -3,6 +3,9 @@ import PickerControl from './PickerControl';
 
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { providerName, providerText } from '@/lib/providerText';
+import { SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
+import { backendAvailability } from './vpsHealth';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 
@@ -11,7 +14,9 @@ type Props = {
   sessionId: string;
   sourceName: string;
   vpsName?: string | null;
-  codexAvailable: boolean;
+  /** The VPS row, so availability is read per provider from the registry
+   *  (§14.102) instead of one boolean per backend added by hand. */
+  vps?: { agentStatus?: string | null } | null;
   busy: AgentKind | null;
   error: string | null;
   onChoose: (kind: AgentKind, options?: { lastTurnId?: string; cutoffMessageId?: number; replacementPrompt?: string }) => void;
@@ -19,7 +24,7 @@ type Props = {
 };
 
 export default function ForkModal({
-  sourceKind, sessionId, sourceName, vpsName, codexAvailable, busy, error, onChoose, onClose,
+  sourceKind, sessionId, sourceName, vpsName, vps, busy, error, onChoose, onClose,
 }: Props) {
   type Point = { turnId: string; previousTurnId?: string | null; prompt: string; messageId?: number | null; cutoffId?: number | null; createdAt?: number };
   const [points, setPoints] = useState<Point[] | null>(null);
@@ -84,38 +89,33 @@ export default function ForkModal({
             onChange={(e) => setReplacement(e.target.value)} />}
           {!selected.previousTurnId && <p className="fork-note">The first prompt can be forked after its answer, but cannot be edited in place.</p>}
         </>}
+        {/* One choice per declared backend (§14.102): the transports table
+            already covers every pair, so the modal must offer every target or
+            a backend silently becomes un-forkable-to. */}
         <div className="fork-choices">
-          <button
-            type="button"
-            className="fork-choice"
-            autoFocus
-            onClick={() => choose('claude')}
-            disabled={!!busy || (editPrompt && !replacement.trim())}
-          >
-            <AgentLogo kind="claude" size={28} />
-            <span className="fork-choice-copy">
-              <b>Claude</b>
-              <small>{sourceKind === 'claude'
-                ? 'Native transcript fork · same model settings'
-                : 'Imports the complete transcript through VPS handoff files'}</small>
-            </span>
-            <span className="fork-choice-go">{busy === 'claude' ? '…' : '→'}</span>
-          </button>
-          <button
-            type="button"
-            className="fork-choice"
-            disabled={!!busy || !codexAvailable || (editPrompt && !replacement.trim())}
-            onClick={() => choose('codex')}
-          >
-            <AgentLogo kind="codex" size={28} />
-            <span className="fork-choice-copy">
-              <b>Codex</b>
-              <small>{codexAvailable
-                ? (sourceKind === 'codex' ? 'Native Codex thread fork' : 'Imports the conversation into a new Codex thread')
-                : `Unavailable${vpsName ? ` on ${vpsName}` : ' on this VPS'}`}</small>
-            </span>
-            <span className="fork-choice-go">{busy === 'codex' ? '…' : '→'}</span>
-          </button>
+          {SESSION_PROVIDERS.map((target, i) => {
+            const av = vps ? backendAvailability(vps as any, target) : { ok: true, reason: '' };
+            const unavailable = !av.ok;
+            return (
+              <button
+                key={target}
+                type="button"
+                className="fork-choice"
+                autoFocus={i === 0}
+                disabled={!!busy || unavailable || (editPrompt && !replacement.trim())}
+                onClick={() => choose(target)}
+              >
+                <AgentLogo kind={target} size={28} />
+                <span className="fork-choice-copy">
+                  <b>{providerName(target)}</b>
+                  <small>{unavailable
+                    ? `${av.reason}${vpsName ? ` on ${vpsName}` : ' on this VPS'}`
+                    : providerText.forkChoice(sourceKind, target)}</small>
+                </span>
+                <span className="fork-choice-go">{busy === target ? '…' : '→'}</span>
+              </button>
+            );
+          })}
         </div>
         <p className="fork-note">The current session keeps running untouched. The branch inherits its
           notification rules, plus the model and effort the chosen agent can still honour.</p>

@@ -3,46 +3,13 @@ import { NOTIFICATION_EVENTS } from '@/lib/notificationPreferences';
 import { emitGlobalSettingsChanged } from '@/lib/server/agent/sessionOps';
 import { requireApiSession } from '@/lib/server/session';
 import { getAllSettings, setSetting } from '@/lib/server/claude/settings';
-import { isSessionMode } from '@/lib/sessionCapabilities';
+import {
+  PROVIDERS, SESSION_PROVIDERS, isSessionMode, providerSettingKey,
+} from '@/lib/sessionCapabilities';
 import { formatSettingSources, parseSettingSources } from '@/lib/settingSources';
 import { isThemeId } from '@/app/themes';
+import { SETTINGS_WRITE_ALLOWLIST } from '@/lib/server/claude/settingsKeys';
 
-const ALLOWED_KEYS = [
-  'ssh.private_key_path',
-  ...NOTIFICATION_EVENTS.map(({ id }) => `telegram.notify.${id}`),
-  'telegram.enabled',
-  'telegram.bot_token',
-  'telegram.chat_id',
-  'app.public_url',
-  // Hub-wide look — an id from app/themes.ts, validated below (§11).
-  'app.theme',
-  // Hub-wide backend switches — 'false' hides that backend's launchers (§11).
-  'claude.enabled',
-  'codex.enabled',
-  'claude.default_model',
-  'claude.default_fallback_model',
-  'claude.default_effort',
-  'claude.default_permission_mode',
-  // Fleet default for the Claude settings scope (§14.100). A VPS and a session
-  // may each override it; validated below through the shared parser so 'none'
-  // and an unknown token can't be confused.
-  'claude.setting_sources',
-  // Codex (OpenAI) global defaults + auto-update toggle. codex.latest_version(_at)
-  // are written by the freshness sync, never accepted from a settings POST.
-  'codex.default_model',
-  'codex.default_effort',
-  'codex.default_permission_mode',
-  'codex.default_approvals_reviewer',
-  'codex.auto_update',
-  // Optional hub-side Anthropic API key, used only to auto-sync the model
-  // list from GET /v1/models (see modelSync.ts). models_cache/_at are written
-  // by the sync, never accepted from a settings POST.
-  'claude.api_key',
-  // Fleet-wide claude-agent-sdk auto-update (idle VPSes only, cf. sdkWatch).
-  // sdk.latest_version(_at) / sdk.last_notified_version are written by the
-  // sync/tick, never accepted from a settings POST.
-  'sdk.auto_update',
-];
 
 // Secrets are never returned in full to the browser. Two display shapes:
 //  - telegram.bot_token → `••••<last4>` (bullet mask).
@@ -87,6 +54,10 @@ function sanitizeForResponse(all: Record<string, string>): Record<string, string
   delete all['claude.models_cache'];
   delete all['claude.cli_models_cache'];
   delete all['models.notices'];
+  // Same: the parsed price table and the stored catalogs ride on the model
+  // routes, not on settings.
+  delete all['cursor.pricing_cache'];
+  delete all['cursor.models_cache'];
   // Same deal for the persisted account-usage snapshots (§14.72): several KB of
   // JSON the UI gets live over SSE / GET /api/vps/[id]/usage instead.
   delete all['usage.snapshots'];
@@ -106,19 +77,19 @@ export async function POST(req: Request) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'object required' }, { status: 400 });
   const rejected: string[] = [];
   for (const [k, v] of Object.entries(body)) {
-    if (!ALLOWED_KEYS.includes(k)) continue;
+    if (!SETTINGS_WRITE_ALLOWLIST.includes(k)) continue;
     const val = String(v);
+    const enabledKeys = SESSION_PROVIDERS.map((p) => PROVIDERS[p].settings.enabledKey);
     if ((k.startsWith('telegram.notify.') || k === 'telegram.enabled'
-         || k === 'claude.enabled' || k === 'codex.enabled')
+         || enabledKeys.includes(k))
         && val !== 'true' && val !== 'false') {
       rejected.push(k);
       continue;
     }
-    if (k === 'claude.default_permission_mode' && !isSessionMode('claude', val)) {
-      rejected.push(k);
-      continue;
-    }
-    if (k === 'codex.default_permission_mode' && !isSessionMode('codex', val)) {
+    // A default mode must be one THAT provider accepts, whichever it is.
+    const modeOwner = SESSION_PROVIDERS
+      .find((p) => k === providerSettingKey(p, 'default_permission_mode'));
+    if (modeOwner && !isSessionMode(modeOwner, val)) {
       rejected.push(k);
       continue;
     }

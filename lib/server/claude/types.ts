@@ -1,6 +1,6 @@
 // Events exchanged between the Python bridge and the SessionWorker (and to the
 // SSE clients). We keep a wide TS union + guard helpers.
-import type { ClaudeEffort, ClaudeMode } from '@/lib/sessionCapabilities';
+import type { ClaudeEffort, ClaudeMode, SessionProvider } from '@/lib/sessionCapabilities';
 import type { SessionErrorPayload } from '@/lib/sessionError';
 
 // One sub-agent inside a running Workflow-tool task (from the SDK's raw
@@ -125,13 +125,13 @@ export type BridgeEvent =
   // acts on nothing.
   | {
       type: 'external_message'; origin: string; text: string; from?: string;
-      fromProvider?: 'claude' | 'codex'; sourceSessionId?: string;
+      fromProvider?: SessionProvider; sourceSessionId?: string;
       messageId?: string; conversationId?: string; replyTo?: string;
       expectsReply?: boolean;
     }
   | {
       type: 'peer_message_status'; messageId: string; conversationId: string;
-      targetSessionId?: string; target?: string; targetProvider?: 'claude' | 'codex';
+      targetSessionId?: string; target?: string; targetProvider?: SessionProvider;
       text?: string; status: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out';
       error?: string; replyId?: string;
     }
@@ -169,7 +169,7 @@ export type AccountUsage = {
   // absent) reads api.anthropic.com/api/oauth/usage; 'codex' reads the Codex
   // app-server rate limits (get_codex_usage). A VPS can have BOTH — the header
   // shows the one matching the CURRENT session's kind. cf. CLAUDE.md §14.59.
-  provider?: 'claude' | 'codex';
+  provider?: SessionProvider;
   subscriptionType?: string | null;  // 'max' | 'pro' | …
   error?: string | null;       // when !ok: 'no_credentials' | 'http_error' | 'request_failed'
   statusCode?: number | null;  // when error==='http_error' (401 stale token, 429 throttled)
@@ -219,7 +219,12 @@ export type SyntheticEvent =
       agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null; codexCliVersion?: string | null;
       // Set by the codex device-code login route on completion (§14.61) and by
       // the claude device-code login session on success (§14.64).
-      codexLoggedIn?: number | null; claudeLoggedIn?: number | null }
+      codexLoggedIn?: number | null; claudeLoggedIn?: number | null;
+      // Third backend, same contract (§14.103/§14.104). The emitter forwards
+      // every provider's columns by derivation (`pickVpsRuntimeFields`), so
+      // these are here to TYPE the payload, not to enumerate it.
+      cursorAvailable?: number | null; cursorSdkVersion?: string | null;
+      cursorLoggedIn?: number | null }
   // Per-session "finished, unread" marker fanned onto the global SSE bus
   // (sessionId = the Claude session id). unread=true when a turn finished
   // (`stop`) while nobody was viewing the session; unread=false when the user

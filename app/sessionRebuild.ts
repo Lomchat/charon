@@ -15,6 +15,10 @@ import {
   applyBgTaskEvent, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
   type BgTask, type BgLaunchCandidate,
 } from './bgTasks';
+// Narrowed by the registry, never by `=== 'claude' || === 'codex'`: that test
+// nulls a peer provider this build DOES know about, so after a refetch an
+// inbound message from the newest backend lost its logo (§14.102).
+import { isSessionProvider } from '@/lib/sessionCapabilities';
 
 // Shape of a message as it comes from the `GET /api/claude/sessions/[id]` API.
 // Deliberately permissive (the `role` values in the DB are free-form strings).
@@ -152,8 +156,7 @@ export function rebuildStateFromMessages(
             id: 'm' + m.id, role: 'external',
             content: String(ev.text ?? ''), createdAt: m.createdAt,
             from: typeof ev.from === 'string' ? ev.from : null,
-            fromProvider: ev.fromProvider === 'claude' || ev.fromProvider === 'codex'
-              ? ev.fromProvider : null,
+            fromProvider: isSessionProvider(ev.fromProvider) ? ev.fromProvider : null,
             sourceSessionId: typeof ev.sourceSessionId === 'string' ? ev.sourceSessionId : null,
             messageId: typeof ev.messageId === 'string' ? ev.messageId : null,
             conversationId: typeof ev.conversationId === 'string' ? ev.conversationId : null,
@@ -171,8 +174,7 @@ export function rebuildStateFromMessages(
             peerStatus,
             peerTarget: typeof ev.target === 'string' ? ev.target : null,
             peerError: typeof ev.error === 'string' ? ev.error : null,
-            fromProvider: ev.targetProvider === 'claude' || ev.targetProvider === 'codex'
-              ? ev.targetProvider : null,
+            fromProvider: isSessionProvider(ev.targetProvider) ? ev.targetProvider : null,
           });
         }
       } catch {}

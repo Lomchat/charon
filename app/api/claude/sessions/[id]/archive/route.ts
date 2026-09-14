@@ -5,6 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { emitGlobalSessionListChanged, emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
 import { dropTabsForRef } from '@/lib/server/claude/tabs';
+import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
 
 async function rowFor(id: string) {
   return db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get() ?? null;
@@ -32,11 +33,16 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     // while no process backs it.
     db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
       .where(eq(claudeSessions.id, id)).run();
-    if (row.kind === 'codex' && row.claudeSessionId) {
-      const result = await client.call<{ ok?: boolean; error?: string }>('codex_archive_thread', {
+    // Mirror the state natively when this provider owns an archive store
+    // (§14.102); a provider Charon adapts hub-side has no RPC and skips this.
+    const kind = asSessionProvider(row.kind);
+    const archiveRpc = PROVIDERS[kind].nativeRpc.archive;
+    if (archiveRpc && row.claudeSessionId) {
+      const result = await client.call<{ ok?: boolean; error?: string }>(archiveRpc, {
         thread_id: row.claudeSessionId,
+        cwd: row.cwd,
       });
-      if (!result?.ok) throw new Error(result?.error || 'Codex archive failed');
+      if (!result?.ok) throw new Error(result?.error || `${PROVIDERS[kind].label} archive failed`);
     }
     db.transaction((tx) => {
       tx.update(claudeSessions).set({ archived: 1 })
@@ -64,11 +70,13 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const row = await rowFor(id);
   if (!row) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   try {
-    if (row.kind === 'codex' && row.claudeSessionId) {
+    const kind = asSessionProvider(row.kind);
+    const unarchiveRpc = PROVIDERS[kind].nativeRpc.unarchive;
+    if (unarchiveRpc && row.claudeSessionId) {
       const result = await getAgentClientForVpsId(row.vpsId).call<{ ok?: boolean; error?: string }>(
-        'codex_unarchive_thread', { thread_id: row.claudeSessionId },
+        unarchiveRpc, { thread_id: row.claudeSessionId, cwd: row.cwd },
       );
-      if (!result?.ok) throw new Error(result?.error || 'Codex unarchive failed');
+      if (!result?.ok) throw new Error(result?.error || `${PROVIDERS[kind].label} unarchive failed`);
     }
     db.update(claudeSessions).set({ archived: 0, status: 'sleeping', sleepRequested: 1, resumePending: 0 })
       .where(eq(claudeSessions.id, id)).run();

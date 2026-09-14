@@ -3,17 +3,20 @@ import PickerControl from './PickerControl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { Vps, ClaudeSession } from '@/lib/db/schema';
-import type { AgentKind, ScannedSession } from '@/lib/types/api';
-import AgentLogo from './AgentLogo';
+import type { AgentKind, ScanVpsSessionsResponse, ScannedSession } from '@/lib/types/api';
+import AgentLogo, { agentKindLabel } from './AgentLogo';
+import { SESSION_PROVIDERS, hasNativeCapability } from '@/lib/sessionCapabilities';
 import { backendAvailability } from './vpsHealth';
+import { appendScanPage, continuationQuery, scanPage } from './resumeScan';
 
-// "Scan existing sessions" — one modal, TWO backends behind a tab bar.
+// "Scan existing sessions" — one modal, one tab PER DECLARED BACKEND.
 //
-// Both halves are symmetric on purpose (§14.59): the Codex scan route answers
-// the same row shape as the Claude one, `claudeSessionId` carries the Codex
-// THREAD id, and the import route dispatches the history fetch on `kind`. So
-// the whole list/card rendering below is shared and only three things branch:
-// the scan endpoint, the DB-list filter, and the codex-availability gate.
+// Every half is symmetric on purpose (§14.59/§14.74): each scan route answers
+// the same row shape, `claudeSessionId` carries whatever native id that
+// backend resumes by, and the import route dispatches the history fetch on
+// `kind`. So the whole list/card rendering below is shared and only three
+// things branch: the scan endpoint, the DB-list filter, and the
+// availability gate — all three by `kind`, none by a hard-coded list.
 type Props = {
   vpsList: Vps[];
   dbSessions: ClaudeSession[];
@@ -25,7 +28,10 @@ type Props = {
   onResumed: (id: string) => void;
 };
 
-const KINDS: AgentKind[] = ['claude', 'codex'];
+// Every declared backend gets a tab, derived (§14.102). Hand-listed, the third
+// one had no tab at all — which quietly made its whole scan → import chain
+// (`cursor/scan` → `importCursorAgent`) unreachable from the UI.
+const KINDS: readonly AgentKind[] = SESSION_PROVIDERS;
 
 export default function ResumeModal({
   vpsList, dbSessions, initialVpsId, onClose, onImported, onResumed,
@@ -36,17 +42,24 @@ export default function ResumeModal({
   const [showArchivedCodex, setShowArchivedCodex] = useState(false);
   const [archivedDb, setArchivedDb] = useState<ClaudeSession[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
-  // Scans are cached per (vps, kind) so flipping tabs back and forth doesn't
-  // re-run an ssh round-trip that takes seconds on a big ~/.codex/sessions.
-  const [scans, setScans] = useState<Record<string, ScannedSession[]>>({});
+  // Scans are cached per VPS/provider/archive/folder scope so flipping tabs or
+  // folder filters does not repeat an expensive remote scan.
+  const [scans, setScans] = useState<Record<string, ScanVpsSessionsResponse>>({});
+  const [scanFolders, setScanFolders] = useState<Record<string, string[]>>({});
+  const [scanCwds, setScanCwds] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const reqSeq = useRef(0);
 
-  const archivedScan = kind === 'codex' && showArchivedCodex;
-  const cacheKey = `${vpsId}:${kind}:${archivedScan ? 'archived' : 'active'}`;
-  const scanned = scans[cacheKey] ?? null;
+  const archivedScan = hasNativeCapability(kind, 'archive') && showArchivedCodex;
+  const scanBaseKey = `${vpsId}:${kind}:${archivedScan ? 'archived' : 'active'}`;
+  const selectedScanCwd = scanCwds[scanBaseKey] ?? '';
+  const cacheKey = `${scanBaseKey}:${selectedScanCwd || '*'}`;
+  const currentScan = scans[cacheKey];
+  const scanned = currentScan?.sessions ?? null;
   const scanError = errors[cacheKey] ?? null;
+  const folders = currentScan?.folders ?? scanFolders[scanBaseKey] ?? [];
+  const continuation = continuationQuery(currentScan);
 
   const vps = vpsList.find((v) => v.id === vpsId);
   // ADVISORY only — never a gate. Scanning reads transcript files over ssh and
@@ -71,18 +84,34 @@ export default function ResumeModal({
   const resumable = dbForVps.filter((s) => s.archived !== 1 && (s.status === 'sleeping' || s.status === 'error'));
   const notImported = scanned ? scanned.filter((s) => !dbKnownIds.has(s.sessionId)) : null;
 
-  async function doScan(force = false) {
+  async function doScan(options: {
+    force?: boolean;
+    append?: boolean;
+    after?: string;
+    cwd?: string;
+  } = {}) {
     if (!vpsId) return;
-    const wantsArchived = kind === 'codex' && showArchivedCodex;
-    const key = `${vpsId}:${kind}:${wantsArchived ? 'archived' : 'active'}`;
-    if (!force && scans[key]) return;    // cached
+    const wantsArchived = hasNativeCapability(kind, 'archive') && showArchivedCodex;
+    const baseKey = `${vpsId}:${kind}:${wantsArchived ? 'archived' : 'active'}`;
+    const cwd = options.cwd ?? selectedScanCwd;
+    const key = `${baseKey}:${cwd || '*'}`;
+    if (!options.force && !options.append && scans[key]) return; // cached
     const seq = ++reqSeq.current;
     setScanLoading(true);
     setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
     try {
-      const r = kind === 'codex' ? await api.scanVpsCodex(vpsId, wantsArchived) : await api.scanVpsClaude(vpsId);
+      const r = await api.scanVpsSessions(vpsId, kind, {
+        archived: wantsArchived,
+        ...(options.after ? { after: options.after } : {}),
+        ...(cwd ? { cwd } : {}),
+      });
       if (seq !== reqSeq.current) return;  // a newer tab/VPS switch won
-      setScans((s) => ({ ...s, [key]: (r.sessions ?? []) as ScannedSession[] }));
+      if (r.ok === false) throw new Error(r.error || 'session scan failed');
+      if (r.folders) setScanFolders((f) => ({ ...f, [baseKey]: r.folders! }));
+      setScans((s) => ({
+        ...s,
+        [key]: options.append ? appendScanPage(s[key], r) : scanPage(r),
+      }));
     } catch (e: any) {
       if (seq !== reqSeq.current) return;
       setErrors((x) => ({ ...x, [key]: String(e?.message ?? e) }));
@@ -99,7 +128,7 @@ export default function ResumeModal({
 
   // Scan on mount and on every (vps, kind) switch — cached, so a tab flip back
   // is instant.
-  useEffect(() => { doScan(); }, [vpsId, kind, showArchivedCodex]); // eslint-disable-line
+  useEffect(() => { doScan(); }, [vpsId, kind, showArchivedCodex, selectedScanCwd]); // eslint-disable-line
 
   // Normal session lists deliberately hide archived rows. Load them only
   // while that provider tab is open so archives remain recoverable without
@@ -126,7 +155,7 @@ export default function ResumeModal({
       // An SDK archived scan returns native archived threads. Import the
       // transcript first (so the session route has a DB row), then restore the
       // native thread before handing it back to the ordinary session flow.
-      if (kind === 'codex' && archivedScan) await api.unarchiveSession(r.id);
+      if (archivedScan) await api.unarchiveSession(r.id);
       onImported({ id: r.id, vpsId, cwd: s.cwd });
     } catch (e: any) {
       alert('import: ' + (e?.message ?? e));
@@ -215,16 +244,16 @@ export default function ResumeModal({
 
         {unusable && (
           <p className="resume-warn">
-            {kind === 'codex' ? 'Codex' : 'Claude'} is {unusable} on this VPS — you can still
+            {agentKindLabel(kind)} is {unusable} on this VPS — you can still
             import (the transcript is read over ssh), but resuming will fail until it is fixed.
           </p>
         )}
 
-        {kind === 'codex' && (
+        {hasNativeCapability(kind, 'archive') && (
           <label className="wiz-adv-check">
             <input type="checkbox" checked={showArchivedCodex}
               onChange={(e) => setShowArchivedCodex(e.target.checked)} />
-            scan archived Codex threads
+            scan archived {agentKindLabel(kind)} threads
           </label>
         )}
 
@@ -260,10 +289,25 @@ export default function ResumeModal({
         </ul>
 
         <h3>on the VPS, not imported ({notImported ? notImported.length : '?'})
-          <button className="reload" onClick={() => doScan(true)} disabled={scanLoading}>
+          <button className="reload" onClick={() => doScan({ force: true })} disabled={scanLoading}>
             {scanLoading ? '…' : '⟳'}
           </button>
         </h3>
+        {folders.length > 0 && (
+          <label>folder
+            <PickerControl
+              value={selectedScanCwd}
+              onValueChange={(cwd) => setScanCwds((values) => ({
+                ...values, [scanBaseKey]: cwd,
+              }))}
+            >
+              <option value="">all known folders</option>
+              {folders.map((folder) => (
+                <option key={folder} value={folder}>{folder}</option>
+              ))}
+            </PickerControl>
+          </label>
+        )}
         {scanError && <p className="err">{scanError}</p>}
         {scanned && notImported?.length === 0 && (
           <p className="empty">nothing left to import</p>
@@ -301,6 +345,15 @@ export default function ResumeModal({
               );
             })}
           </ul>
+        )}
+        {!selectedScanCwd && continuation && (
+          <button
+            className="resume-more"
+            onClick={() => doScan({ force: true, append: true, after: continuation.after })}
+            disabled={scanLoading}
+          >
+            {scanLoading ? 'scanning…' : 'scan more folders'}
+          </button>
         )}
       </div>
     </div>

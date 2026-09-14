@@ -3,6 +3,7 @@
 // `XxxBody` / `XxxResponse` pair declared there, then type the return
 // here via `send<TRes>()`.
 
+import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import type {
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
@@ -20,8 +21,11 @@ import type {
   InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
   ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse, ScanVpsCodexResponse,
+  ScanVpsSessionsQuery, ScanVpsSessionsResponse,
   CheckClaudeLoginResponse, ClaudeLoginStatusResponse,
   CodexLoginStartResponse, CodexLoginStatusResponse,
+  CursorLoginStartResponse, CursorLoginStatusResponse, CursorLoginCheckResponse,
+  CursorModelsResponse,
   ClaudeSessionListQuery, ClaudeSessionsListResponse,
   ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
   ClaudeSessionEditsResponse,
@@ -334,6 +338,24 @@ export const api = {
   // so they can be imported + resumed like Claude ones.
   scanVpsCodex: (id: string, archived = false) =>
     send<ScanVpsCodexResponse>('GET', `/api/vps/${id}/codex/scan${archived ? '?archived=1' : ''}`),
+  /**
+   * Importable sessions for ANY backend. The route directory comes from the
+   * provider registry's `deployment.scanRouteDir` (§14.102), so a new backend
+   * is reachable here as soon as it declares one — no branch to add.
+   * Every scan answers the same row shape (§14.74).
+   */
+  scanVpsSessions: (
+    id: string, provider: SessionProvider, query: ScanVpsSessionsQuery = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (query.archived) p.set('archived', '1');
+    if (query.after) p.set('after', query.after);
+    if (query.cwd) p.set('cwd', query.cwd);
+    const qs = p.size ? `?${p}` : '';
+    return send<ScanVpsSessionsResponse>(
+      'GET', `/api/vps/${id}/${PROVIDERS[provider].deployment.scanRouteDir}/scan${qs}`,
+    );
+  },
   // Re-checks the VPS's `claude login` state. Persists in DB + returns.
   // Triggered when the login modal closes (the user may have just logged
   // in or out), or on manual demand.
@@ -362,6 +384,23 @@ export const api = {
     send<CodexLoginStatusResponse>('GET', `/api/vps/${id}/codex/login?loginId=${encodeURIComponent(loginId)}`),
   cancelCodexLogin: (id: string, loginId: string) =>
     send<OkResponse>('DELETE', `/api/vps/${id}/codex/login?loginId=${encodeURIComponent(loginId)}`),
+
+  // ── Cursor sign-in (§14.104): one link, nothing to paste back ─────────────
+  startCursorLogin: (id: string) =>
+    send<CursorLoginStartResponse>('POST', `/api/vps/${id}/cursor/login`),
+  cursorLoginStatus: (id: string, loginId: string) =>
+    send<CursorLoginStatusResponse>('GET', `/api/vps/${id}/cursor/login?loginId=${encodeURIComponent(loginId)}`),
+  cancelCursorLogin: (id: string, loginId: string) =>
+    send<OkResponse>('DELETE', `/api/vps/${id}/cursor/login?loginId=${encodeURIComponent(loginId)}`),
+  /** Forget the stored key on this VPS (local-only, like the SDK's logout). */
+  cursorSignOut: (id: string) =>
+    send<OkResponse & { error?: string }>('DELETE', `/api/vps/${id}/cursor/account`),
+  /** Authoritative sign-in probe — an unexpired key minted for this backend. */
+  checkVpsCursorLogin: (id: string) =>
+    send<CursorLoginCheckResponse>('POST', `/api/vps/${id}/cursor/check-login`),
+  /** Account model catalog for this VPS (no API key — like Codex, §14.59). */
+  getCursorModels: (vpsId: string) =>
+    send<CursorModelsResponse>('GET', `/api/cursor/models?vpsId=${encodeURIComponent(vpsId)}`),
 
   // ── Claude sessions ───────────────────────────────────────────────────────
   listClaudeSessions: (q?: ClaudeSessionListQuery) => {
@@ -517,7 +556,7 @@ export const api = {
     send<OkResponse>('POST', `/api/claude/sessions/${id}/question`, { id: qid, answers } as RespondQuestionBody),
   respondClaudeExitPlan: (id: string, qid: string, decision: 'approve' | 'reject', feedback?: string) =>
     send<OkResponse>('POST', `/api/claude/sessions/${id}/exit-plan`, { id: qid, decision, feedback } as RespondExitPlanBody),
-  setClaudeMode: (id: string, mode: import('@/lib/types/api').PermissionMode | import('@/lib/types/api').CodexSandboxMode) =>
+  setClaudeMode: (id: string, mode: import('@/lib/sessionCapabilities').SessionMode) =>
     send<SetClaudeModeResponse>('POST', `/api/claude/sessions/${id}/mode`, { mode }),
   // Per-session model / effort. Both take effect on next sleep+resume — the
   // UI should label "applied at next start" until then. Passing null clears

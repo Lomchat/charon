@@ -15,9 +15,13 @@ import {
   startNewSession,
 } from '@/lib/server/agent/sessionOps';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import type { AgentMethodName } from '@/lib/server/agent/types';
 import { copySessionNotificationSettings } from '@/lib/server/claude/sessionNotifications';
-import { isSessionEffort } from '@/lib/sessionCapabilities';
-import type { AgentKind, SharedSessionConfig } from '@/lib/types/api';
+import {
+  PROVIDERS, SESSION_PROVIDERS, asSessionProvider, isSessionEffort, isSessionProvider,
+  type SessionMode, type SessionProvider,
+} from '@/lib/sessionCapabilities';
+import type { AgentKind, ProviderSessionConfig, SharedSessionConfig } from '@/lib/types/api';
 import {
   batchCodexHistoryItems,
   codexItemsFromForkHistory,
@@ -27,38 +31,13 @@ import {
 import { randomBytes } from 'crypto';
 import { allocateSessionHandle } from '@/lib/server/agent/sessionHandles';
 
-/**
- * Heavy diff payloads are NOT carried into the branch: `edit_snapshot` rows are
- * 61% of all transcript bytes here (327MB of 537MB), and a fork is meant to be
- * cheap enough to make on a whim. They are side-channel rows the session GET
- * already strips and serves lazily from `.../edits` (§14.41), so the branch
- * loses the DIFFS of inherited edits — not the tool cards, not the answers —
- * and the source session still has every one of them.
- */
+/** Forks omit lazy `edit_snapshot` payloads while retaining chat and tools. */
 const UNCOPIED_ROLES = ['edit_snapshot'];
 
 /**
  * POST /api/claude/sessions/[id]/fork
- *   body: { targetKind?: 'claude'|'codex', upToMessageId?: string, name?: string }
- *
- * Branch a session's transcript into a NEW session.
- *
- * Why this exists: the Anthropic-side session is bound to the model it was
- * created with, so "change the model on a running session" was a dead end the
- * UI could only warn about (§14.35). More generally there was no way to try a
- * different direction without destroying the current one.
- *
- * Claude targets use the SDK's native transcript copy. Codex targets start a
- * fresh loaded thread and append portable Responses items with
- * `thread/inject_items`, which persists them into its model-visible rollout.
- * Neither path touches the source session.
- *
- * `upToMessageId` is a CLI transcript uuid (claude_session_messages.cli_uuid),
- * not one of our row ids: the SDK identifies the branch point by ITS id.
- * Omitted = fork the whole conversation.
- *
- * Both targets are started before success is returned so the newly-opened tab
- * is immediately usable. A failed Codex import removes its Charon session.
+ * Branch through FORK_TRANSPORTS without changing the source. Native anchors
+ * use provider ids; adapted paths hand off the visible transcript (§14.94).
  */
 type SourceSession = typeof claudeSessions.$inferSelect;
 
@@ -92,25 +71,8 @@ async function sendReplacement(sessionId: string, prompt?: string): Promise<void
 
 function copyVisibleTranscript(sourceId: string, newId: string, cutoffId: number | null): number {
 
-  // ── Carry the conversation across ───────────────────────────────────────
-  // The SDK copied the CLI transcript, so the MODEL remembers everything. Our
-  // transcript lives in SQLite keyed on OUR session id, so without this the
-  // branch renders as an empty chat against a model that has full context —
-  // the worst of both. One INSERT..SELECT: a 15k-row session is ~15MB and must
-  // not travel through JS.
-  //
-  // Two columns are deliberately NULLED on the copies:
-  //   seq      — replay identity (§14.31). The branch's durable event log
-  //              restarts at 1, and the idempotence gate is a SET of row seqs,
-  //              so inherited rows carrying seq 1..N would convince it the
-  //              branch's own first N events were already persisted and it
-  //              would swallow them.
-  //   cli_uuid — fork REMAPS every uuid, so an inherited uuid names an entry
-  //              that does not exist in the new transcript. Nulling it removes
-  //              "fork from here" on inherited messages (§14.94 only offers it
-  //              where the anchor exists) instead of branching at a bogus one.
-  // ts_ms is KEPT: wall-clock has no epochs (§14.71), so inherited rows sort
-  // correctly against anything the branch produces from now on.
+  // Copy UI history in SQLite. Replay seqs and native anchors belong to the
+  // new provider transcript and must start empty; wall-clock timestamps remain.
   let copied = 0;
   try {
     const res: any = db.run(sql`
@@ -140,28 +102,8 @@ function inheritNotifications(sourceId: string, newId: string): void {
   if (copySessionNotificationSettings(sourceId, newId)) emitGlobalSettingsChanged();
 }
 
-/**
- * What a CROSS-PROVIDER branch inherits besides the transcript.
- *
- * Same-provider forks copy the source row verbatim (model, fallback, effort,
- * mode, construction config): a branch that silently ran under the fleet
- * defaults would make every comparison with its source meaningless. Across
- * providers the two vocabularies are not the same language, so each field is
- * carried only where it still MEANS something:
- *   model  — never. A Claude model id names nothing in Codex's catalog and
- *            vice versa; a row advertising a model the session is not running
- *            is worse than the target's own default.
- *   effort — where the target knows the word. `low`/`medium`/`high`/`xhigh`/
- *            `max` are shared; `ultracode`, `ultra`, `none` and `minimal` are
- *            one provider's only, and are dropped rather than approximated.
- *   mode   — never. `normal|acceptEdits|auto|plan` and the sandbox levels are
- *            disjoint sets, and inventing a mapping would quietly widen or
- *            narrow what the branch may touch (§14.59).
- *   config — the `SharedSessionConfig` half only (instructions, schema, env,
- *            §14.59). The rest names machinery the target does not have:
- *            skills/settingSources are Claude's, reviewer/profile/overrides
- *            are Codex's.
- */
+/** Cross-provider forks keep shared instructions/env and compatible effort;
+ * model ids, modes, and provider-specific config do not cross (§14.59). */
 function crossProviderInheritance(source: SourceSession, targetKind: AgentKind): {
   effort: string | null; sessionConfig: SharedSessionConfig | null;
 } {
@@ -178,10 +120,31 @@ function crossProviderInheritance(source: SourceSession, targetKind: AgentKind):
   };
 }
 
+/** Same-provider branches keep runtime settings with every transport; cross-
+ * provider branches retain only fields meaningful to the target (§14.94). */
+function forkInheritance(source: SourceSession, targetKind: SessionProvider): {
+  model?: string | null;
+  fallbackModel?: string | null;
+  effort: string | null;
+  permissionMode?: SessionMode;
+  sessionConfig: ProviderSessionConfig | null;
+} {
+  if (asSessionProvider(source.kind) !== targetKind) {
+    return crossProviderInheritance(source, targetKind);
+  }
+  return {
+    model: source.model,
+    fallbackModel: source.fallbackModel,
+    effort: source.effort,
+    permissionMode: (source.permissionMode as SessionMode | null) ?? undefined,
+    sessionConfig: parseProviderConfig(source.codexConfig),
+  };
+}
+
 function insertForkMarker(
   source: SourceSession,
   newId: string,
-  targetKind: 'claude' | 'codex',
+  targetKind: SessionProvider,
   cutoffId: number | null,
 ): void {
   // The boundary marker. Everything above came from the source; everything
@@ -240,11 +203,7 @@ async function forkToClaude(
     model: source.model,
     fallbackModel: source.fallbackModel,
     effort: source.effort,
-    // The common construction config travels with the branch, exactly as it
-    // does for a Codex fork. Since agent 0.66 this column is provider-neutral
-    // (instructions, schema, env, skills — and the settings scope, §14.100):
-    // a branch that silently ran under different rules than its source would
-    // make every comparison between the two meaningless.
+    // Same-provider branches retain provider-neutral construction config.
     codexConfig: source.codexConfig,
     position: nextSessionPosition(source.vpsId),
   }).run();
@@ -411,7 +370,17 @@ async function forkCodexNative(source: SourceSession, name: string, lastTurnId?:
   }
 }
 
-async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: number | null,
+/**
+ * Fork by HANDOFF: write the visible transcript into bounded files on the VPS
+ * and name them in the branch's first prompt.
+ *
+ * The fallback for every pair with no native path — Codex→Claude (no Claude
+ * history-injection API) and every Cursor pair (its SDK forks nothing). It is
+ * provider-neutral by construction: the files hold plain prose, so the only
+ * thing that varies is which backend reads them.
+ */
+async function forkViaHandoff(source: SourceSession, name: string,
+  targetKind: SessionProvider, cutoffId: number | null,
   replacementPrompt?: string) {
   const filters = [
     eq(claudeSessionMessages.sessionId, source.id),
@@ -451,8 +420,8 @@ async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: 
       vpsId: source.vpsId,
       cwd: source.cwd,
       name,
-      kind: 'claude',
-      ...crossProviderInheritance(source, 'claude'),
+      kind: targetKind,
+      ...forkInheritance(source, targetKind),
     });
     const client = getAgentClientForVpsId(source.vpsId);
     for (let i = 0; i < chunks.length; i += 1) {
@@ -463,7 +432,7 @@ async function forkCodexToClaude(source: SourceSession, name: string, cutoffId: 
     }
 
     const copied = copyVisibleTranscript(source.id, newId, cutoffId);
-    insertForkMarker(source, newId, 'claude', cutoffId);
+    insertForkMarker(source, newId, targetKind, cutoffId);
     inheritNotifications(source.id, newId);
     await stream.sendUserMessage([
       'Continue the conversation whose complete provider-neutral transcript is stored in:',
@@ -498,8 +467,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const assistantRows = db.select({ id: claudeSessionMessages.id, cliUuid: claudeSessionMessages.cliUuid })
     .from(claudeSessionMessages).where(and(eq(claudeSessionMessages.sessionId, id),
       eq(claudeSessionMessages.role, 'assistant'))).orderBy(asc(claudeSessionMessages.id)).all();
-  if (source.kind === 'codex') {
-    const native = await callSessionRpc(id, 'codex_fork_points');
+  const forkPointsRpc = PROVIDERS[asSessionProvider(source.kind)].nativeRpc.forkPoints;
+  if (forkPointsRpc) {
+    const native = await callSessionRpc(id, forkPointsRpc as AgentMethodName);
     if (!native?.ok) return NextResponse.json(native, { status: native?.reason === 'unsupported' ? 501 : 400 });
     const points = (Array.isArray(native.points) ? native.points : []).map((point: any, index: number) => {
       const nextUser = users[index + 1]?.id ?? Number.MAX_SAFE_INTEGER;
@@ -523,6 +493,58 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   return NextResponse.json({ ok: true, points });
 }
 
+/** Arguments every transport receives; each uses the subset it can honour
+ *  (a native fork needs the provider's own turn anchor, a cross-provider one
+ *  needs the transcript cutoff). */
+type ForkArgs = {
+  source: SourceSession;
+  name: string;
+  lastTurnId?: string;
+  upToMessageId?: string;
+  cutoffId: number | null;
+  replacementPrompt?: string;
+};
+
+/**
+ * source provider → target provider → transport.
+ *
+ * Forking is the one place that is IRREDUCIBLY a cross-product (§14.94): each
+ * pair has its own transport (native file copy, native thread fork, injected
+ * Responses items, bounded VPS handoff files) and no generic path exists —
+ * guessing one would silently produce a branch with the wrong history.
+ *
+ * So the N² is made EXPLICIT instead of nested ternaries: a new provider turns
+ * this table into 2N+1 compile errors, each naming exactly one pair that needs
+ * a decision. That is the honest cost of a new backend, stated up front rather
+ * than discovered when a user forks into a blank session.
+ */
+const FORK_TRANSPORTS: Record<
+  SessionProvider,
+  Record<SessionProvider, (a: ForkArgs) => Promise<Response>>
+> = {
+  claude: {
+    claude: (a) => forkToClaude(a.source, a.name, a.lastTurnId ?? a.upToMessageId,
+      a.cutoffId, a.replacementPrompt),
+    codex: (a) => forkToCodex(a.source, a.name, a.cutoffId, a.replacementPrompt),
+    cursor: (a) => forkViaHandoff(a.source, a.name, 'cursor', a.cutoffId, a.replacementPrompt),
+  },
+  codex: {
+    codex: (a) => forkCodexNative(a.source, a.name, a.lastTurnId, a.cutoffId,
+      a.replacementPrompt),
+    claude: (a) => forkViaHandoff(a.source, a.name, 'claude', a.cutoffId, a.replacementPrompt),
+    cursor: (a) => forkViaHandoff(a.source, a.name, 'cursor', a.cutoffId, a.replacementPrompt),
+  },
+  // Cursor's SDK has no fork of its own — not even same-provider — so every
+  // Cursor pair goes through the handoff, INCLUDING cursor→cursor. That is a
+  // real difference from the other two and not a shortcut: a branch gets the
+  // visible transcript, not the provider's internal state.
+  cursor: {
+    cursor: (a) => forkViaHandoff(a.source, a.name, 'cursor', a.cutoffId, a.replacementPrompt),
+    claude: (a) => forkViaHandoff(a.source, a.name, 'claude', a.cutoffId, a.replacementPrompt),
+    codex: (a) => forkViaHandoff(a.source, a.name, 'codex', a.cutoffId, a.replacementPrompt),
+  },
+};
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
@@ -537,10 +559,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const body = await req.json().catch(() => ({}));
-  if (body?.targetKind != null && body.targetKind !== 'claude' && body.targetKind !== 'codex') {
-    return NextResponse.json({ error: 'targetKind must be claude or codex' }, { status: 400 });
+  if (body?.targetKind != null && !isSessionProvider(body.targetKind)) {
+    return NextResponse.json(
+      { error: `targetKind must be one of: ${SESSION_PROVIDERS.join(', ')}` },
+      { status: 400 },
+    );
   }
-  const targetKind: 'claude' | 'codex' = body?.targetKind === 'codex' ? 'codex' : 'claude';
+  // Omitting the target keeps the fork on Claude — the historical contract.
+  const targetKind = asSessionProvider(body?.targetKind);
   const upToMessageId = typeof body?.upToMessageId === 'string' ? body.upToMessageId : undefined;
   const requestedCutoff = body?.cutoffMessageId == null ? null : numericCutoff(id, body.cutoffMessageId);
   if (body?.cutoffMessageId != null && requestedCutoff == null) {
@@ -552,15 +578,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const name = typeof body?.name === 'string' && body.name.trim()
     ? body.name.trim()
-    : `${source.name || 'session'} (${targetKind === 'codex' ? 'Codex fork' : 'fork'})`;
+    : `${source.name || 'session'} (${targetKind === asSessionProvider(source.kind) ? 'fork' : `${PROVIDERS[targetKind].label} fork`})`;
   const lastTurnId = typeof body?.lastTurnId === 'string' && body.lastTurnId ? body.lastTurnId : undefined;
   const replacementPrompt = typeof body?.replacementPrompt === 'string'
     ? body.replacementPrompt.trim().slice(0, 100_000) : undefined;
 
-  if (source.kind === 'codex') {
-    if (targetKind === 'codex') return forkCodexNative(source, name, lastTurnId, cutoffId, replacementPrompt);
-    return forkCodexToClaude(source, name, cutoffId, replacementPrompt);
-  }
-  return targetKind === 'codex' ? forkToCodex(source, name, cutoffId, replacementPrompt)
-    : forkToClaude(source, name, lastTurnId ?? upToMessageId, cutoffId, replacementPrompt);
+  return FORK_TRANSPORTS[asSessionProvider(source.kind)][targetKind]({
+    source, name, lastTurnId, upToMessageId, cutoffId, replacementPrompt,
+  });
 }

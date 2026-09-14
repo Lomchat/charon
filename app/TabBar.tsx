@@ -7,6 +7,7 @@ import type { PermissionRequest, PendingQuestion, PendingExitPlan } from './sess
 import { IconTerminal, IconTools } from './icons';
 import { IconForKind, fileKind } from './fileIcons';
 import AgentLogo from './AgentLogo';
+import { providerName } from '@/lib/providerText';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 
 // TabBar — the workspace strip above the main column. §14.78
@@ -361,7 +362,7 @@ export default function TabBar({
                 and Codex being reachable only from the sidebar made it the
                 second-class backend it isn't. */}
             {enabledKinds(enabledBackends).map((k) => {
-              const label = k === 'codex' ? 'Codex' : 'Claude';
+              const label = providerName(k);
               const reason = newSessionDisabledReason[k];
               return (
                 <button

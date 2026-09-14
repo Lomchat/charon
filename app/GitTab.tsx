@@ -7,6 +7,7 @@ import BranchModal from './BranchModal';
 import HistoryModal from './HistoryModal';
 import ReviewModal from './ReviewModal';
 import { fileStatusLabel, gitReasonHint, refreshGit, useGitStatus, workspaceDirtyCount } from './gitStore';
+import { providerName, providerText } from '@/lib/providerText';
 import { IconSparkle } from './icons';
 import { IconExternal } from './fileIcons';
 import { workspaceScopeKey } from './workspaceScope';
@@ -121,9 +122,9 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
     <div className={`git-tab${multi ? ' multi' : ''}`}>
       {sessionId && (
         <div className="gt-reviewbar">
-          <span>Review this working tree with {kind === 'codex' ? 'Codex' : 'Claude'}</span>
+          <span>Review this working tree with {providerName(kind)}</span>
           <button type="button" onClick={() => { setReviewError(null); setReviewOpen(true); }}
-            disabled={reviewing || busy} title={`Run ${kind === 'codex' ? 'Codex' : 'Claude'} code review`}>
+            disabled={reviewing || busy} title={providerText.review(kind)}>
             <IconSparkle className="gt-sparkle" /> {reviewing ? 'starting…' : 'review'}
           </button>
         </div>
@@ -168,7 +169,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
         );
       })}
       {reviewOpen && (
-        <ReviewModal provider={kind === 'codex' ? 'Codex' : 'Claude'} busy={reviewing} error={reviewError}
+        <ReviewModal provider={providerName(kind)} busy={reviewing} error={reviewError}
           onConfirm={(target, delivery) => { void doReview(target, delivery); }}
           onClose={() => { if (!reviewing) setReviewOpen(false); }} />
       )}

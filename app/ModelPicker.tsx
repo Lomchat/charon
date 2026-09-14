@@ -1,5 +1,5 @@
 'use client';
-import PickerControl from './PickerControl';
+import PickerControl, { PickerOption } from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { KnownClaudeModel, ClaudeModelGroup } from '@/lib/types/api';
 import { getModels, peekModels } from './modelsCache';
@@ -138,7 +138,7 @@ export default function ModelPicker({
           <optgroup key={g} label={GROUP_LABELS[g]}>
             {items.map((m) => (
               <option key={m.id} value={m.id} title={m.hint ?? ''}>
-                {m.label}{m.hint ? ` — ${m.hint}` : ''}
+                <PickerOption title={m.label} sub={m.hint} />
               </option>
             ))}
           </optgroup>

@@ -6,8 +6,9 @@ import type { Vps } from '@/lib/db/schema';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
 import type { AccountUsage } from '@/lib/server/claude/types';
 import {
-  CODEX_SANDBOX_MODES, sessionCapabilities,
-  type CodexSandboxMode, type SessionMode,
+  asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
+  supportsSessionCapability,
+  type SessionMode,
 } from '@/lib/sessionCapabilities';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError } from '@/lib/sessionError';
@@ -26,9 +27,9 @@ import type {
 import { useAgentSessionStream, type StreamCache } from './useClaudeSessionStream';
 import ModelPicker from './ModelPicker';
 import EffortPicker from './EffortPicker';
-import CodexModelPicker from './CodexModelPicker';
-import CodexEffortPicker from './CodexEffortPicker';
+import { PROVIDER_CATALOGS } from './modelPickers';
 import AgentLogo from './AgentLogo';
+import { MODE_SWITCH_META, providerName, providerText } from '@/lib/providerText';
 import ForkModal from './ForkModal';
 import { copySessionNotifications } from './browserNotifications';
 import RewindModal from './RewindModal';
@@ -50,27 +51,8 @@ import { canCompactSession } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
 
-// ClaudeSessionView
-// ─────────────────────────────────────────────────────────────────────────────
-// Component that renders the entire "active session" area of the desktop
-// dashboard:
-//   - Actions bar (sleep / resume / force-stop) — permanent; interrupt lives
-//     beside the transient ThinkingBar label while a turn is running
-//     deletion goes through the context menu (right-click on the sidebar),
-//     not through a button in the bar (cf. kill→delete rework: only
-//     `sleep` is reversible, everything else destroys)
-//   - Reconnect / disconnect / error banner
-//   - Scroll-reverse chat + scroll pill
-//   - ThinkingBar during 'thinking'
-//   - Input bar (mode switch + textarea + send) — replaced by
-//     QuestionCard / ExitPlanCard / InlinePermissionCard when pending
-//   - ToolPanel (diffs / calls / files)
-//
-// All SSE + per-session state logic lives in useClaudeSessionStream,
-// so this component is essentially rendering + computeds.
-//
-// The parent (ClaudePanel) keeps: sidebar, global modals, push, service
-// worker, cross-session permission popup, sessions list polling, etc.
+// Renders one active session. Stream state lives in useClaudeSessionStream;
+// global navigation, modals and polling stay in ClaudePanel.
 
 type Props = {
   sessionId: string;
@@ -161,7 +143,7 @@ export default function ClaudeSessionView({
   // (permission modes vs sandbox levels), the model/effort pickers, the
   // per-message logo, the diff rendering, and whether a config change shows the
   // deferred "apply now ↻" badge (Codex applies on the next turn → no badge).
-  const sessionKind: AgentKind = (selected.kind as AgentKind) === 'codex' ? 'codex' : 'claude';
+  const sessionKind: AgentKind = asSessionProvider(selected.kind);
   const vpsId = selectedVps?.id ?? '';
   const {
     context: sessionContext,
@@ -169,7 +151,7 @@ export default function ClaudeSessionView({
     loading: contextLoading,
     refresh: refreshContext,
   } = useSessionContext(sessionId);
-  const compactAllowed = canCompactSession(status);
+  const compactAllowed = canCompactSession(status, sessionKind);
 
   // ── Source control (§14.76) ───────────────────────────────────────────────
   // The repository chip below context opens the ToolPanel on the git tab (and reveals
@@ -776,11 +758,15 @@ export default function ClaudeSessionView({
                 title={selected.claudeSessionId ? 'Fork conversation' : 'Send a message before forking'}>
                 <IconGitBranch />
               </button>
-              <button type="button" className="session-action"
-                onClick={() => { setRewindError(null); setRewindOpen(true); }}
-                disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
-                aria-label="Rewind session" aria-busy={rewinding}
-                title={status === 'sleeping' || status === 'error' ? 'Resume the session before rewinding' : 'Rewind to an earlier turn'}><IconRewind /></button>
+              {/* Rewind must be capability-gated before invoking its native
+                  history transport (§14.102). */}
+              {supportsSessionCapability(sessionKind, 'rewind') && (
+                <button type="button" className="session-action"
+                  onClick={() => { setRewindError(null); setRewindOpen(true); }}
+                  disabled={rewinding || status === 'thinking' || status === 'starting' || status === 'sleeping' || status === 'error'}
+                  aria-label="Rewind session" aria-busy={rewinding}
+                  title={status === 'sleeping' || status === 'error' ? 'Resume the session before rewinding' : 'Rewind to an earlier turn'}><IconRewind /></button>
+              )}
               <button type="button" className="session-action session-settings-button" onClick={() => setSessionSettingsOpen(true)} aria-label="Session settings" title="Session settings"><IconGear /></button>
             </div>
           </div>
@@ -936,13 +922,20 @@ export default function ClaudeSessionView({
 
         {status === 'thinking' && (
           <ThinkingBar
-            label={sessionKind === 'codex' ? 'Codex is thinking' : 'Claude is thinking'}
+            label={providerText.thinking(sessionKind)}
             onInterrupt={interrupt}
             currentTool={showTools ? currentTool : null}
             stepCount={showTools ? stepCount : 0}
             startedAt={turnStartedAt}
             tokens={showTools ? (liveUsage?.output ?? null) : null}
           />
+        )}
+
+        {showTools && liveUsage?.final && liveUsage.costUsd != null && liveUsage.costUsd > 0 && (
+          <div className="turn-cost" role="status">
+            <span>last turn</span>
+            <strong>{fmtCost(liveUsage.costUsd)}</strong>
+          </div>
         )}
 
         {/* Background tasks (Bash run_in_background / bg subagents): slim
@@ -955,7 +948,7 @@ export default function ClaudeSessionView({
             usual choice on a phone, where the preference is per-browser —
             could neither see nor stop background work. */}
         <BgTasksBar tasks={bgTasks} sessionId={sessionId}
-          provider={sessionKind === 'codex' ? 'codex' : 'claude'}
+          provider={asSessionProvider(sessionKind)}
           sessionStatus={status ?? 'sleeping'} />
 
         {/* Input area — replaced by resume CTA if disconnected, or
@@ -975,6 +968,7 @@ export default function ClaudeSessionView({
             )}
             {oldestPending.kind === 'exit_plan' && (
               <ExitPlanCard
+                kind={sessionKind}
                 plan={oldestPending.ep.plan || fallbackPlanFromMessages}
                 onApprove={() => respondExitPlan(oldestPending.ep.id, 'approve')}
                 onReject={(feedback) => respondExitPlan(oldestPending.ep.id, 'reject', feedback)}
@@ -1037,7 +1031,7 @@ export default function ClaudeSessionView({
           sessionId={sessionId}
           sourceName={selected.name || '(unnamed)'}
           vpsName={selectedVps?.name}
-          codexAvailable={selectedVps?.codexAvailable === 1}
+          vps={selectedVps ?? null}
           busy={forking}
           error={forkError}
           onChoose={(kind, options) => { void doFork(kind, options); }}
@@ -1045,7 +1039,7 @@ export default function ClaudeSessionView({
         />
       )}
       {rewindOpen && <RewindModal messages={messages}
-        provider={sessionKind === 'codex' ? 'Codex' : 'Claude'} busy={rewinding} error={rewindError}
+        provider={providerName(sessionKind)} busy={rewinding} error={rewindError}
         onConfirm={(messageId) => { void doRewind(messageId); }}
         onClose={() => { if (!rewinding) setRewindOpen(false); }} />}
     </>
@@ -1096,13 +1090,6 @@ const MessageHistory = memo(function MessageHistory({
 // long sessions lagged by seconds. Memoized too, so a parent re-render
 // (new message, status change) doesn't needlessly re-render it either.
 // See CLAUDE.md §11 / §14.
-const CODEX_MODE_META: Record<CodexSandboxMode, { glyph: string; label: string; title: string }> = {
-  'read-only': { glyph: '⊘', label: 'read only', title: 'read-only — can read files & run read-only commands; no writes' },
-  'workspace-write': { glyph: '✎', label: 'workspace', title: 'workspace write — can edit files in the workspace; network off by default' },
-  'full-access': { glyph: '⚡', label: 'full access', title: 'full access — no sandbox, but sensitive actions can still request approval (DANGER)' },
-  'accept-all': { glyph: '▶▶', label: 'accept all', title: 'accept all — no sandbox and no approval prompts (DANGER)' },
-};
-
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings,
@@ -1126,7 +1113,6 @@ const ChatInputBar = memo(function ChatInputBar({
    *  = the handle is predicted, not yet what the CLI answers to. */
   siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
 }) {
-  const isCodex = kind === 'codex';
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
   // app/inputDraftStore.ts. F5 wipes everything (in-memory Map).
@@ -1367,67 +1353,26 @@ const ChatInputBar = memo(function ChatInputBar({
 
   return (
     <footer className="claude-input-bar">
-      {isCodex ? (
-        // The automatic reviewer is a fleet default in Settings. Per-session
-        // controls only select execution semantics; accept-all is the one
-        // explicit sandbox+approval bypass, parallel to Claude's auto mode.
-        <div className="mode-switch codex" role="radiogroup" aria-label="Codex permission mode">
-          {CODEX_SANDBOX_MODES.map((m) => {
-            const meta = CODEX_MODE_META[m];
-            return (
-              <button
-                key={m}
-                type="button" role="radio"
-                aria-checked={permissionMode === m}
-                className={`m-btn ${m}${permissionMode === m ? ' on' : ''}`}
-                onClick={() => onSetMode(m)}
-                title={meta.title}
-              >
-                <span className="m-glyph">{meta.glyph}</span><span className="m-label">{meta.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="mode-switch" role="radiogroup" aria-label="permission mode">
-          <button
-            type="button" role="radio"
-            aria-checked={permissionMode === 'normal'}
-            className={`m-btn normal${permissionMode === 'normal' ? ' on' : ''}`}
-            onClick={() => onSetMode('normal')}
-            title="normal — asks permission for every tool"
-          >
-            <span className="m-glyph">▷</span><span className="m-label">normal</span>
-          </button>
-          <button
-            type="button" role="radio"
-            aria-checked={permissionMode === 'acceptEdits'}
-            className={`m-btn acceptEdits${permissionMode === 'acceptEdits' ? ' on' : ''}`}
-            onClick={() => onSetMode('acceptEdits')}
-            title="accept edits — auto-accepts file edits, asks for the rest"
-          >
-            <span className="m-glyph">▶▶</span><span className="m-label">accept edits</span>
-          </button>
-          <button
-            type="button" role="radio"
-            aria-checked={permissionMode === 'auto'}
-            className={`m-btn auto${permissionMode === 'auto' ? ' on' : ''}`}
-            onClick={() => onSetMode('auto')}
-            title="accept all — accepts everything without asking (DANGER)"
-          >
-            <span className="m-glyph">▶▶</span><span className="m-label">accept all</span>
-          </button>
-          <button
-            type="button" role="radio"
-            aria-checked={permissionMode === 'plan'}
-            className={`m-btn plan${permissionMode === 'plan' ? ' on' : ''}`}
-            onClick={() => onSetMode('plan')}
-            title="plan mode — proposes a plan without running tools"
-          >
-            <span className="m-glyph">⏸</span><span className="m-label">plan mode</span>
-          </button>
-        </div>
-      )}
+      {/* The provider registry owns the mode ladder; providerText owns labels
+          and glyphs (§14.102). */}
+      <div className={`mode-switch ${kind}`} role="radiogroup" aria-label={providerText.modeSwitchAria(kind)}>
+        {sessionModes(kind).map((m) => {
+          const meta = MODE_SWITCH_META[m];
+          if (!meta) return null;
+          return (
+            <button
+              key={m}
+              type="button" role="radio"
+              aria-checked={permissionMode === m}
+              className={`m-btn ${m}${permissionMode === m ? ' on' : ''}`}
+              onClick={() => onSetMode(m)}
+              title={meta.title}
+            >
+              <span className="m-glyph">{meta.glyph}</span><span className="m-label">{meta.label}</span>
+            </button>
+          );
+        })}
+      </div>
       {mention && mentionMatches.length > 0 && (
         <div className="ci-mentions" role="listbox" aria-label="sessions on this machine">
           {mentionMatches.map((x, i) => (
@@ -1464,8 +1409,8 @@ const ChatInputBar = memo(function ChatInputBar({
         onKeyUp={rememberCaret}
         onBlur={rememberCaret}
         placeholder={touchInput
-          ? `message to ${isCodex ? 'Codex' : 'Claude'} — use 📎 to attach (Enter for newline, tap send to send)`
-          : `message to ${isCodex ? 'Codex' : 'Claude'} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`}
+          ? providerText.composerHint(kind, true)
+          : providerText.composerHint(kind, false)}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing) return;
           // Mobile Enter always inserts a newline, even with the @ menu open.
@@ -1616,13 +1561,8 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 /**
- * Repository name/link and branch chip, beneath the session context gauge.
- *
- * Shown for the whole life of a git cwd, not only when dirty: on a clean tree
- * the branch name is itself the thing worth knowing at a glance (am I on main
- * or on the feature branch?), and a control that appears and disappears is
- * harder to rely on than one that is always in the same place. The COUNT is
- * the notification — it appears only when there is something to see.
+ * Repository link and branch stay visible for every git cwd. CSS moves them
+ * beside the title on mobile; the change count appears only when nonzero.
  *
  * It stays silent while the state is merely degraded (agent offline or too
  * old): the git tab explains that, and a header chip is the wrong place for an
@@ -1685,7 +1625,7 @@ function GitChip({ vpsId, cwd, onOpen }: { vpsId: string; cwd: string; onOpen: (
 }
 
 function ThinkingBar({
-  currentTool, stepCount, startedAt, tokens, onInterrupt, label = 'Claude is thinking',
+  currentTool, stepCount, startedAt, tokens, onInterrupt, label,
 }: {
   currentTool: ToolCallEntry | null;
   stepCount: number;
@@ -1728,6 +1668,14 @@ function ThinkingBar({
   );
 }
 
+/** A turn's cost. Sub-cent turns are the common case, so two decimals would
+ *  render most of them as "$0.00" — show enough digits to be a number. */
+function fmtCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(4)}`;
+}
+
 function fmtElapsed(s: number): string {
   if (s < 60) return s + 's';
   const m = Math.floor(s / 60);
@@ -1763,7 +1711,6 @@ function SessionRuntimePanel({
   onSetEffort: (e: string | null) => Promise<void>;
   onApplyNow?: () => Promise<void> | void;
 }) {
-  const isCodex = kind === 'codex';
   const [open, setOpen] = useState<'model' | 'effort' | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1801,7 +1748,10 @@ function SessionRuntimePanel({
     try {
       if (open === 'model' && (value || null) !== model) {
         // Preserve the independently configured fallback when changing Claude's model.
-        await onSetModel(value || null, isCodex ? null : fallbackModel);
+        // Preserve the independently configured fallback only where the
+        // backend HAS one; the others must not be sent a stale id.
+        await onSetModel(value || null,
+          supportsSessionCapability(kind, 'fallbackModel') ? fallbackModel : null);
       } else if (open === 'effort' && (value || null) !== effort) {
         await onSetEffort(value || null);
       }
@@ -1812,9 +1762,18 @@ function SessionRuntimePanel({
   }
 
   const modelLabel = (model ?? effectiveModel ?? 'Default').replace(/^claude-/, '');
-  const mismatch = !isCodex && !!model && !!effectiveModel && effectiveModel !== model
+  // The amber "your model was replaced" warning belongs to the ONE backend
+  // that has a fallback model, and the alias allow-list below is that
+  // backend's own vocabulary. Gated on `!isCodex`, it lit on every turn of a
+  // third provider whose configured id (`default`) is a ROUTER: the effective
+  // model legitimately differs and nothing went wrong (§14.102).
+  const mismatch = supportsSessionCapability(kind, 'fallbackModel')
+    && !!model && !!effectiveModel && effectiveModel !== model
     && !['opus', 'sonnet', 'haiku'].includes(model);
-  const anyPending = !isCodex && (modelPendingApply || effortPendingApply);
+  // No provider test: both flags come from the provider's own
+  // `applied_at_next_start`, which is authoritative and already false for a
+  // backend that applies per turn.
+  const anyPending = modelPendingApply || effortPendingApply;
   const title = `Model: ${model ?? 'default'}${effectiveModel ? ` · effective: ${effectiveModel}` : ''}${anyPending ? ' · pending until resume' : ''}`;
   const pickerProps = { presentation: 'list' as const, disabled: saving, onChange: choose };
   const toggle = (target: 'model' | 'effort') => {
@@ -1830,19 +1789,32 @@ function SessionRuntimePanel({
           <span className="runtime-value"><AgentLogo kind={kind} size={15} /><span>{modelLabel}</span>{anyPending && <span className="runtime-pending" aria-label="Pending change">•</span>}</span>
           {!!model && !!effectiveModel && effectiveModel !== model && <span className="runtime-effective">→ {effectiveModel}</span>}
         </button>
-        <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
-          onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
-          <span className="runtime-value"><span className="runtime-effort-symbol" aria-hidden="true">✦</span><span>{effort ?? 'Default'}</span></span>
-        </button>
+        {/* Only a backend with a real effort AXIS gets the control — a provider
+            with none would otherwise show furniture claiming a setting exists.
+            `hasEffortAxis`, never `efforts.length`: an empty list also describes
+            a ladder declared PER MODEL (Cursor's, §14.103), which the control
+            fills from the selection beside it. */}
+        {hasEffortAxis(kind) && (
+          <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
+            onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
+            <span className="runtime-value"><span className="runtime-effort-symbol" aria-hidden="true">✦</span><span>{effort ?? 'Default'}</span></span>
+          </button>
+        )}
         {open && <div className="runtime-choice-popover" aria-busy={saving}>
-          {open === 'model' ? (isCodex
-            ? <CodexModelPicker {...pickerProps} vpsId={vpsId} value={model ?? ''} />
-            : <ModelPicker {...pickerProps} value={model ?? ''} />)
-            : (isCodex
-              ? <CodexEffortPicker {...pickerProps} vpsId={vpsId} value={effort ?? ''} modelId={model || effectiveModel || ''} />
-              : <EffortPicker {...pickerProps} value={effort ?? ''} modelId={model || effectiveModel || ''} />)}
+          {/* One control per backend, resolved through PROVIDER_CATALOGS
+              (§14.102) — the header must never offer a catalog the session's
+              provider cannot run. */}
+          {(() => {
+            const { Model, Effort } = PROVIDER_CATALOGS[kind];
+            return open === 'model'
+              ? <Model {...pickerProps} vpsId={vpsId} value={model ?? ''} />
+              : <Effort {...pickerProps} vpsId={vpsId} value={effort ?? ''}
+                  modelId={model || effectiveModel || ''} />;
+          })()}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
-          {!isCodex && open === 'model' && claudeSessionId && <p className="runtime-choice-note">An existing Claude conversation may keep its original model. Use Fork to switch models while preserving history.</p>}
+          {open === 'model' && claudeSessionId && providerText.modelChangeNote(kind) && (
+            <p className="runtime-choice-note">{providerText.modelChangeNote(kind)}</p>
+          )}
           {anyPending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
             setSaving(true); setSaveError(null);
             try { await onApplyNow(); close(); }
@@ -1851,7 +1823,7 @@ function SessionRuntimePanel({
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>
-      <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} />
+      <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />
     </div>
   );
 }

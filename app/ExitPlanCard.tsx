@@ -2,16 +2,21 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { providerText } from '@/lib/providerText';
+import type { AgentKind } from '@/lib/types/api';
 
 type Props = {
   plan: string;
   onApprove: () => void;
   onReject: (feedback: string) => void;
+  /** Which backend raised it. Only Claude has `exitPlan: 'native'` today, but a
+   *  shared card must not be where that is assumed. */
+  kind?: AgentKind | null;
 };
 
 // Displayed when Claude calls ExitPlanMode: shows the plan in markdown,
 // + Approve / Request changes button (with textarea).
-export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
+export default function ExitPlanCard({ plan, onApprove, onReject, kind }: Props) {
   const [askingFeedback, setAskingFeedback] = useState(false);
   const [feedback, setFeedback] = useState('');
 
@@ -19,7 +24,7 @@ export default function ExitPlanCard({ plan, onApprove, onReject }: Props) {
     <div className="exit-plan-card">
       <header className="ep-head">
         <span className="ep-tag">📋 plan ready</span>
-        <span className="ep-sub">Claude is done planning — review and choose</span>
+        <span className="ep-sub">{providerText.planReady(kind)}</span>
       </header>
       <div className="ep-content md">
         {plan ? (

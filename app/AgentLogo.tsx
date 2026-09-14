@@ -1,19 +1,14 @@
 'use client';
-// Small per-agent-kind logo chip. Multi-agent support: a session is driven by
-// either Claude (Claude Agent SDK) or Codex (OpenAI). The logos live in
-// public/agents/{claude,codex}.png (128×128). Rendered on a small rounded chip
-// so both stay legible on the parchment/stone theme background — used in the
-// sidebar session cards, the chat header badge, and the per-message chip.
+// Small per-agent-kind logo chip. Multi-agent: a session is driven by one of
+// the providers declared in lib/sessionCapabilities § SESSION_PROVIDERS. Both
+// the artwork path and the display name come from that registry, so a new
+// backend needs no edit here — only its logo dropped under public/agents/ and
+// a `.agent-logo-<id>` rule in the stylesheet.
+// Used by the sidebar session cards, the chat header badge and the per-message
+// chip.
 import type { AgentKind } from '@/lib/types/api';
-
-const SRC: Record<AgentKind, string> = {
-  claude: '/agents/claude.png',
-  codex: '/agents/codex.png',
-};
-const LABEL: Record<AgentKind, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-};
+import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
+import { providerName } from '@/lib/providerText';
 
 export default function AgentLogo({
   kind = 'claude', size = 16, className, title,
@@ -24,20 +19,21 @@ export default function AgentLogo({
   /** Override the tooltip; defaults to the kind's display name. */
   title?: string;
 }) {
-  const k: AgentKind = kind === 'codex' ? 'codex' : 'claude';
+  const k = asSessionProvider(kind);
+  const label = providerName(k);
   return (
     <span
       className={`agent-logo agent-logo-${k}${className ? ' ' + className : ''}`}
-      title={title ?? LABEL[k]}
-      aria-label={LABEL[k]}
+      title={title ?? label}
+      aria-label={label}
       style={{ ['--al-size' as any]: `${size}px` }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={SRC[k]} alt="" width={size} height={size} draggable={false} />
+      <img src={PROVIDERS[k].logo} alt="" width={size} height={size} draggable={false} />
     </span>
   );
 }
 
-export function agentKindLabel(kind?: AgentKind | null): string {
-  return LABEL[kind === 'codex' ? 'codex' : 'claude'];
-}
+/** @deprecated Use `providerName` from `@/lib/providerText` — one atom, one
+ *  implementation. Kept so historical imports keep resolving. */
+export const agentKindLabel = providerName;

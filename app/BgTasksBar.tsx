@@ -3,6 +3,8 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { sessionApi } from '@/lib/api';
 import { CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
+import type { SessionProvider } from '@/lib/sessionCapabilities';
+import { providerText } from '@/lib/providerText';
 
 type CodexTerminal = {
   process_id?: string; processId?: string;
@@ -73,7 +75,7 @@ function taskTitle(t: BgTask): string {
 function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
   tasks: BgTask[];
   sessionId: string;
-  provider: 'claude' | 'codex';
+  provider: SessionProvider;
   sessionStatus: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -274,7 +276,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
                       ) : (
                         <span
                           className="bgtask-nostop"
-                          title="Codex has no per-item stop for this kind of work — interrupt the turn to end it"
+                          title={providerText.noPerItemStop(provider)}
                         >
                           no per-item stop
                         </span>

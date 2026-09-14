@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { Vps } from '@/lib/db/schema';
 import type { VpsRuntimeSnapshot } from '@/lib/types/api';
 import { mergeVpsRuntimeSnapshots } from '@/app/vpsRuntimeState';
+import { PROVIDERS, SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
 
 process.env.DATABASE_URL = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'charon-vps-runtime-test-')), 'test.db');
 vi.mock('server-only', () => ({}));
@@ -46,6 +47,10 @@ function vps(overrides: Partial<Vps> = {}): Vps {
     claudeLoggedInCheckedAt: 1,
     codexLoggedIn: 1,
     codexLoggedInCheckedAt: 1,
+    cursorAvailable: 1,
+    cursorSdkVersion: '1.0.31',
+    cursorLoggedIn: 1,
+    cursorLoggedInCheckedAt: 1,
     claudeSettingSources: null,
     createdAt: 1,
     ...overrides,
@@ -66,6 +71,9 @@ function snapshot(overrides: Partial<VpsRuntimeSnapshot> = {}): VpsRuntimeSnapsh
     codexCliVersion: row.codexCliVersion,
     claudeLoggedIn: row.claudeLoggedIn,
     codexLoggedIn: row.codexLoggedIn,
+    cursorAvailable: row.cursorAvailable,
+    cursorSdkVersion: row.cursorSdkVersion,
+    cursorLoggedIn: row.cursorLoggedIn,
     ...overrides,
   };
 }
@@ -74,11 +82,17 @@ describe('mergeVpsRuntimeSnapshots', () => {
   it('reads only the browser-safe runtime columns', () => {
     const row = listVpsRuntimeSnapshots().find((item) => item.id === 'snapshot-vps');
     expect(row).toBeDefined();
-    expect(Object.keys(row!).sort()).toEqual([
-      'agentLastError', 'agentPyzSha', 'agentStatus', 'agentVersion',
-      'claudeLoggedIn', 'codexAvailable', 'codexCliVersion', 'codexLoggedIn',
-      'codexSdkVersion', 'id', 'sdkVersion',
-    ].sort());
+    // Agent-level fields plus EVERY backend column the registry declares
+    // (§14.102) — derived, so a new provider extends this set by declaring
+    // its columns rather than by editing a literal here.
+    const backendColumns = SESSION_PROVIDERS.flatMap((p) => {
+      const b = PROVIDERS[p].backend;
+      return [b.availability.column, b.loggedInColumn, ...b.versions.map((v) => v.column)];
+    });
+    expect(Object.keys(row!).sort()).toEqual([...new Set([
+      'id', 'agentStatus', 'agentVersion', 'agentPyzSha', 'agentLastError',
+      ...backendColumns,
+    ])].sort());
     expect(row).not.toHaveProperty('ip');
     expect(row).not.toHaveProperty('sshUser');
   });

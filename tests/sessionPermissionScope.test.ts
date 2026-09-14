@@ -37,7 +37,7 @@ let startNewSession: any;
 let setSetting: any;
 let expireStalePendingInteractions: any;
 
-function insertSession(id: string, kind: 'claude' | 'codex') {
+  function insertSession(id: string, kind: 'claude' | 'codex') {
   db.insert(schema.claudeSessions).values({
     id, vpsId: VPS_ID, cwd: '/tmp/project', name: 'permissions',
     kind, status: 'active', permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
@@ -76,6 +76,7 @@ beforeEach(() => {
   setSetting('codex.default_approvals_reviewer', 'user');
   setSetting('claude.default_permission_mode', 'normal');
   setSetting('codex.default_permission_mode', 'workspace-write');
+  setSetting('cursor.default_permission_mode', 'agent');
 });
 
 describe('provider-aware permission scope', () => {
@@ -215,6 +216,24 @@ describe('provider-aware permission scope', () => {
       session_id: created.id,
       codex_config: expect.objectContaining({ approvalsReviewer: 'auto_review' }),
     }));
+  });
+
+  it('keeps Cursor auto-review mode-derived unless explicitly overridden', async () => {
+    const inherited = await startNewSession({
+      vpsId: VPS_ID, cwd: '/tmp/project', kind: 'cursor', permissionMode: 'force',
+      sessionConfig: { autoReview: null },
+    });
+    const inheritedConfig = JSON.parse(db.select().from(schema.claudeSessions).all()
+      .find((candidate: any) => candidate.id === inherited.id).codexConfig);
+    expect(inheritedConfig).not.toHaveProperty('autoReview');
+
+    const explicit = await startNewSession({
+      vpsId: VPS_ID, cwd: '/tmp/project', kind: 'cursor', permissionMode: 'force',
+      sessionConfig: { autoReview: false },
+    });
+    const explicitConfig = JSON.parse(db.select().from(schema.claudeSessions).all()
+      .find((candidate: any) => candidate.id === explicit.id).codexConfig);
+    expect(explicitConfig.autoReview).toBe(false);
   });
 
   it.each([

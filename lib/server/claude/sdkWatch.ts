@@ -3,8 +3,9 @@ import { and, eq, gt, inArray } from 'drizzle-orm';
 import { db, vps as vpsTable, claudeSessions, claudeSessionMessages, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation, displayVersion } from '@/lib/version';
-import { getSetting, setSetting, getSettingBool, type SettingKey } from './settings';
-import { getSdkLatestVersion, refreshSdkLatest, getCodexLatestVersion, refreshCodexLatest, getCodexCliLatestVersion, refreshCodexCliLatest } from './sdkSync';
+import { getSetting, setSetting, getSettingBool, isBackendEnabled, type SettingKey } from './settings';
+import { latestVersionsByKey, refreshAllLatests } from './sdkSync';
+import { PROVIDERS, SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { runAgentUpdateFlow, type AgentUpdateFlowResult } from './agentUpdate';
 import {
@@ -50,12 +51,10 @@ import { runningBgTasksFromDb, pruneStaleBgTasks } from './bgTaskState';
  * globalThis singleton guard so HMR / repeated seeds never double-arm.
  */
 
-// Dedup keys for the notification axes, parallel to
-// `sdk.last_notified_version`. Both are registered in settings.ts DEFAULTS
-// (internal keys — written here, never POSTable).
-const CODEX_LAST_NOTIFIED_KEY: SettingKey = 'codex.last_notified_version';
-const CODEX_CLI_LAST_NOTIFIED_KEY: SettingKey = 'codex.last_notified_cli_version';
-// Dedup key for the agent axis. Replaces `agent.last_notified_pyz_sha`: the
+// Dedup key for the agent axis. Every PACKAGE axis reads its own from the
+// registry (`versions[].notifiedKey`) — these used to be named here too, one
+// constant per line, which is one more list a new release line had to be
+// added to. Replaces `agent.last_notified_pyz_sha`: the
 // key must be the thing we now act on (§14.6), i.e. the VERSION we ship —
 // keyed on the sha, a rebuild with no bump would re-notify about an update
 // that no longer happens.
@@ -92,6 +91,9 @@ type Axis = {
   latest: string | null;
   auto: boolean;
   notifiedKey: SettingKey;
+  /** Installed independently of the pyz ⇒ an agent update can succeed while
+   *  this line stays behind: a PARTIAL failure to retry, not a success. */
+  independentInstall: boolean;
   installed: (v: Vps) => string | null;
   outdated: (v: Vps) => boolean;
   after: (r: AgentUpdateFlowResult) => string | null | undefined;
@@ -201,24 +203,15 @@ async function tick(): Promise<void> {
   if (!state || state.ticking) return; // a slow batch (serial pip installs) must not overlap
   state.ticking = true;
   try {
-    // Forced refresh (not IfStale): the tick period (6h) is our refresh
-    // cadence and the first boot run needs an answer NOW, not after the 12h
-    // TTL. refreshSdkLatest never throws; on failure fall back to the cached
-    // value below.
-    const r = await refreshSdkLatest();
-    if (!r.ok) console.warn('[sdkWatch] pypi refresh failed:', r.error);
-    // Codex (openai-codex) is a THIRD staleness axis, mirroring the SDK one
-    // (§14.53): the venv `openai-codex` (vps.codexSdkVersion, hello ≥0.15.0)
-    // behind the PyPI latest. It shares the SAME unified update flow (one
-    // runAgentUpdateFlow does pyz + pip -U claude-agent-sdk + pip -U
-    // openai-codex + restart), so a VPS behind on any axis is fixed by one run.
-    const rc = await refreshCodexLatest();
-    if (!rc.ok) console.warn('[sdkWatch] pypi codex refresh failed:', rc.error);
-    const rcli = await refreshCodexCliLatest();
-    if (!rcli.ok) console.warn('[sdkWatch] npm codex CLI refresh failed:', rcli.error);
-    const latest = getSdkLatestVersion();
-    const codexLatest = getCodexLatestVersion();
-    const codexCliLatest = getCodexCliLatestVersion();
+    // Forced refresh (not IfStale): the tick period IS our refresh cadence and
+    // the first boot run needs an answer NOW, not after the 12h TTL. Every
+    // DECLARED line, in one derived call — named one by one, this block was
+    // where a newly declared package silently never got refreshed and so was
+    // never stale (§14.102). None of them throws; on failure we fall back to
+    // the cached value below.
+    for (const [key, res] of Object.entries(await refreshAllLatests())) {
+      if (!res.ok) console.warn(`[sdkWatch] ${key} refresh failed:`, res.error);
+    }
     const builtSha = getBuiltPyzSha();
     const builtVersion = getBuiltAgentVersion();
     // FOUR independent staleness axes, ONE update flow (runAgentUpdateFlow
@@ -237,41 +230,59 @@ async function tick(): Promise<void> {
     //            a hub on an older build leaves a newer VPS alone instead of
     //            rolling it back every tick (§14.70). Equal version + different
     //            sha is NOT an axis: bump `__version__` to propagate.
-    if (!latest && !builtVersion && !codexLatest && !codexCliLatest) return; // no way to compare on any axis
+    // No `latest` anywhere and no built pyz ⇒ nothing is comparable on any
+    // axis. Derived from the registry's declared release lines.
+    const latestByKey = latestVersionsByKey();
+    const anyLatest = Object.values(latestByKey).some((x) => !!x);
+    if (!anyLatest && !builtVersion) return;
     const fleet: Vps[] = db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all();
     // Independent auto-update gates: `sdk.auto_update` covers the SDK + pyz
     // axes; `codex.auto_update` (default ON) covers both codex axes. Either
     // being on is enough to run the (unified) flow for its axis.
     const autoSdk = getSettingBool('sdk.auto_update');
-    const autoCodex = getSettingBool('codex.auto_update');
+    // One axis per DECLARED release line (§14.102), plus the agent's own.
+    // Derived, never re-listed: a backend that declares a package is enrolled
+    // in the fleet update here and in the health chip at once, and one that
+    // forgets to declare it would silently never update — the whole reason
+    // these four used to be four parallel ternaries in six places.
+    const providerAxes: Axis[] = SESSION_PROVIDERS.flatMap((p) => {
+      // Two gates, both required. The per-provider auto-update switch says
+      // "keep this fresh"; the backend switch says "this hub offers it at all".
+      // A backend turned OFF is not installed by the update flow either
+      // (bootstrap § install_cursor), so enrolling a VPS for its axis would
+      // sleep and resume every session to change nothing, every tick.
+      const auto = isBackendEnabled(p)
+        && getSettingBool(PROVIDERS[p].settings.autoUpdateKey as SettingKey);
+      return PROVIDERS[p].backend.versions.map((line): Axis => {
+        const lineLatest = latestByKey[line.latestKey] ?? null;
+        // A VPS that does not REPORT this line is never enrolled for it: NULL
+        // means "no such package here / agent too old to say", not "behind".
+        const installed = (v: Vps) => {
+          const raw = (v as unknown as Record<string, unknown>)[line.column];
+          return typeof raw === 'string' && raw ? raw : null;
+        };
+        return {
+          key: line.latestKey, label: line.packageLabel, short: line.short, prefix: '',
+          latest: lineLatest, auto, notifiedKey: line.notifiedKey as SettingKey,
+          independentInstall: line.independentInstall,
+          installed,
+          outdated: (v) => {
+            const have = installed(v);
+            return !!lineLatest && !!have && isVersionOutdated(have, lineLatest);
+          },
+          // The post-update version comes back under the SAME field name as
+          // the column (pinned by tests/providerRegistry).
+          after: (r) => (r as unknown as Record<string, string | undefined>)[line.column],
+        };
+      });
+    });
     const axes: Axis[] = [
-      {
-        key: 'sdk', label: 'claude-agent-sdk', short: 'claude', prefix: '',
-        latest, auto: autoSdk, notifiedKey: 'sdk.last_notified_version',
-        installed: (v) => v.sdkVersion,
-        outdated: (v) => !!latest && !!v.sdkVersion && isVersionOutdated(v.sdkVersion, latest),
-        after: (r) => r.sdkVersion,
-      },
-      {
-        // Only VPSes that actually report a codex version (codex installed,
-        // hello ≥0.15.0). NULL codexSdkVersion is invisible here — a VPS
-        // without codex is never enrolled just for the codex axis.
-        key: 'codex', label: 'openai-codex', short: 'codex', prefix: '',
-        latest: codexLatest, auto: autoCodex, notifiedKey: CODEX_LAST_NOTIFIED_KEY,
-        installed: (v) => v.codexSdkVersion,
-        outdated: (v) => !!codexLatest && !!v.codexSdkVersion && isVersionOutdated(v.codexSdkVersion, codexLatest),
-        after: (r) => r.codexSdkVersion,
-      },
-      {
-        key: 'codexCli', label: 'codex-cli', short: 'cli', prefix: '',
-        latest: codexCliLatest, auto: autoCodex, notifiedKey: CODEX_CLI_LAST_NOTIFIED_KEY,
-        installed: (v) => v.codexCliVersion,
-        outdated: (v) => !!codexCliLatest && !!v.codexCliVersion && isVersionOutdated(v.codexCliVersion, codexCliLatest),
-        after: (r) => r.codexCliVersion,
-      },
+      ...providerAxes,
       {
         key: 'agent', label: 'charon-agent', short: 'agent', prefix: 'v',
         latest: builtVersion, auto: autoSdk, notifiedKey: AGENT_LAST_NOTIFIED_KEY,
+        // The pyz carries every backend's adapter, so it is never "independent".
+        independentInstall: false,
         installed: (v) => v.agentVersion,
         outdated: (v) => isAgentOutdated(v.agentVersion, builtVersion),
         // ok:true means the pyz was deployed, restarted and pinged — the
@@ -299,7 +310,9 @@ async function tick(): Promise<void> {
     if (ahead.length) {
       console.log(`[sdkWatch] ${ahead.length} VPS ahead of this hub's build (v${builtVersion}) — left alone: ${ahead.map((v) => `${v.name} v${v.agentVersion}`).join(', ')}`);
     }
-    console.log(`[sdkWatch] tick: sdk-latest=${latest ?? '-'}, codex-sdk=${codexLatest ?? '-'}, codex-cli=${codexCliLatest ?? '-'}, agent=v${builtVersion ?? '-'} (pyz ${builtSha ? builtSha.slice(0, 7) : '-'}), fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
+    const lineLog = Object.entries(latestByKey)
+      .map(([key, value]) => `${key.replace(/LatestVersion$/, '')}=${value ?? '-'}`).join(', ');
+    console.log(`[sdkWatch] tick: ${lineLog}, agent=v${builtVersion ?? '-'} (pyz ${builtSha ? builtSha.slice(0, 7) : '-'}), fleet ok=${fleet.length}, outdated=${outdated.length}${outdated.length ? ` (${outdated.map((v) => v.name).join(', ')})` : ''}`);
     if (outdated.length === 0) return;
 
     // --- Heads-up: once per NEW version of an axis, durable across restarts
@@ -330,8 +343,9 @@ async function tick(): Promise<void> {
     }
     for (const a of newAxes) setSetting(a.notifiedKey, a.latest!);
 
-    // Nothing enabled on either axis → notify-only, no auto-update.
-    if (!autoSdk && !autoCodex) return;
+    // No gate on ANY axis → notify-only, no auto-update. Read off the axes
+    // themselves so a new backend's gate counts without an edit here.
+    if (!axes.some((a) => a.auto)) return;
     // Per-VPS eligibility: update iff it's stale on an axis whose gate is ON.
     const shouldAutoUpdate = (v: Vps) => axes.some((a) => a.auto && a.outdated(v));
     // What this tick is actually rolling out — the summary's head.
@@ -349,10 +363,12 @@ async function tick(): Promise<void> {
         console.log(`[sdkWatch] ${v.name}: outdated axis has auto-update OFF — skipped (badge/button remain)`);
         continue;
       }
-      // Key spans ALL axes so a new SDK version, a new codex version OR a
-      // newer agent version re-enables a previously-attempted VPS
-      // (in-memory; a restart also does).
-      const key = `${v.id}@${latest ?? '-'}/${builtVersion ?? '-'}/${codexLatest ?? '-'}/${codexCliLatest ?? '-'}`;
+      // Key spans ALL axes so a new version on ANY of them re-enables a
+      // previously-attempted VPS (in-memory; a restart also does). Built from
+      // `axes` rather than from named latests: a line missing here would make
+      // a fresh release fail to re-arm a VPS this process already tried, which
+      // looks exactly like "the auto-update stopped working".
+      const key = `${v.id}@${axes.map((a) => `${a.key}=${a.latest ?? '-'}`).join('/')}`;
       if (state.attempted.has(key)) {
         // Already attempted this exact target in this process (success or
         // failure) — no hammering; a NEW sdk/codex version or pyz build or a
@@ -389,8 +405,10 @@ async function tick(): Promise<void> {
         // A pyz restart can succeed while the independently downloaded CLI
         // falls back to the SDK bundle. That is a PARTIAL failure, not an
         // update success: keep retrying the same target on later ticks.
-        if (stillBehind.some((a) => a.key === 'codexCli')) {
-          const detail = `CLI stuck at ${res.codexCliVersion ? displayVersion(res.codexCliVersion) : 'unknown'} (target ${shown(codexCliLatest)})`;
+        const stuck = stillBehind.find((a) => a.independentInstall);
+        if (stuck) {
+          const post = stuck.after(res);
+          const detail = `${stuck.label} stuck at ${post ? displayVersion(post) : 'unknown'} (target ${shown(stuck.latest)})`;
           failed.push({ name: v.name, detail, repeated: !recordFailure(state.failing, v.id, key) });
           state.attempted.delete(key);
           console.warn(`[sdkWatch] ${v.name}: partial auto-update — ${detail}; will retry next tick`);

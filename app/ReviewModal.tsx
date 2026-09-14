@@ -7,7 +7,10 @@ import { createPortal } from 'react-dom';
 type Kind = 'uncommittedChanges' | 'baseBranch' | 'commit' | 'custom';
 
 export default function ReviewModal({ provider, busy, error, onConfirm, onClose }: {
-  provider: 'Claude' | 'Codex';
+  /** Provider DISPLAY name, from `agentKindLabel` — never a hard-coded pair,
+   *  or every new backend has to be added to a literal union that only ever
+   *  feeds a sentence. */
+  provider: string;
   busy: boolean;
   error: string | null;
   onConfirm: (target: Record<string, unknown>, delivery: 'inline' | 'detached') => void;

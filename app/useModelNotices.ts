@@ -3,16 +3,23 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import type { AgentKind, ModelNoticesResponse } from '@/lib/types/api';
 import { subscribeAll } from './globalEventStream';
-import { invalidateModels } from './modelsCache';
-import { invalidateCodexModels } from './codexModelsCache';
+import { PROVIDER_CATALOGS } from './modelPickers';
+import { SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
 
-const EMPTY: ModelNoticesResponse = { revision: -1, claude: [], codex: [] };
+// Derived, so a new provider gets its (empty) bucket without an edit here.
+const EMPTY: ModelNoticesResponse = {
+  revision: -1,
+  ...Object.fromEntries(SESSION_PROVIDERS.map((k) => [k, []])),
+} as ModelNoticesResponse;
 
 export function useModelNotices() {
   const [notices, setNotices] = useState(EMPTY);
   const accept = useCallback((next: ModelNoticesResponse) => {
-    if (next.claude.length) invalidateModels();
-    if (next.codex.length) invalidateCodexModels();
+    // A provider that just announced new models has a stale catalog cached;
+    // clear it through its registry entry (§14.102), never a per-name pair.
+    for (const p of SESSION_PROVIDERS) {
+      if (next[p]?.length) PROVIDER_CATALOGS[p].invalidate();
+    }
     setNotices((current) => next.revision > current.revision ? next : current);
   }, []);
 
@@ -46,5 +53,9 @@ export function useModelNotices() {
     accept(await api.markModelsSeen({ provider, ids }));
   }, [accept]);
 
-  return { notices, markSeen, hasNewModels: notices.claude.length + notices.codex.length > 0 };
+  return {
+    notices,
+    markSeen,
+    hasNewModels: SESSION_PROVIDERS.some((provider) => notices[provider].length > 0),
+  };
 }

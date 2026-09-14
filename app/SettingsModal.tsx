@@ -1,5 +1,5 @@
 'use client';
-import PickerControl from './PickerControl';
+import PickerControl, { PickerOption } from './PickerControl';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { NOTIFICATION_EVENTS, normalizeChannelNotifications, type NotificationSession } from '@/lib/notificationPreferences';
@@ -14,9 +14,16 @@ import type { AgentKind, ModelNoticesResponse } from '@/lib/types/api';
 import EffortPicker from './EffortPicker';
 import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
+import CursorModelPicker from './CursorModelPicker';
+import CursorEffortPicker from './CursorEffortPicker';
+import { catalogVpsFor } from './modelPickers';
+import { MODE_LABELS, providerText } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
 import { invalidateModels } from './modelsCache';
-import { CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES } from '@/lib/sessionCapabilities';
+import {
+  CLAUDE_PERMISSION_MODES, CODEX_SANDBOX_MODES, CURSOR_MODES, PROVIDERS,
+  SESSION_PROVIDERS, defaultSessionMode, isSessionProvider, type SessionProvider,
+} from '@/lib/sessionCapabilities';
 import SettingSourcesPicker from './SettingSourcesPicker';
 import {
   DEFAULT_SETTING_SOURCES, formatSettingSources, safeParseSettingSources,
@@ -24,16 +31,6 @@ import {
 import { THEMES, DEFAULT_THEME_ID, type Theme } from './themes';
 import { applyTheme, currentThemeId } from './themeClient';
 
-const MODE_LABEL: Record<string, string> = {
-  normal: 'normal — ask before tools',
-  acceptEdits: 'accept edits — edits without asking',
-  auto: 'accept all — never ask',
-  plan: 'plan mode — read and plan',
-  'read-only': 'read only — no writes',
-  'workspace-write': 'workspace — write inside the project',
-  'full-access': 'full access — unrestricted sandbox, approvals remain',
-  'accept-all': 'accept all — unrestricted and never ask',
-};
 
 type Props = {
   onClose: () => void;
@@ -47,7 +44,11 @@ type Props = {
   onModelsSeen: (provider: AgentKind, ids: string[]) => Promise<void>;
 };
 
-type Cat = 'general' | 'claude' | 'codex' | 'notifications' | 'updates';
+// One nav entry per declared provider, DERIVED (§14.102): a new backend gets
+// its own section, badge and green/red dot without a literal to update here.
+// Its PANEL BODY stays bespoke — an empty one is visible, so it cannot be
+// silently forgotten the way a missing list entry could.
+type Cat = 'general' | SessionProvider | 'notifications' | 'updates';
 /** Deep-link target for `initialCat` (the wizard sends the user here when both
  *  backends are off). Exported so callers don't restate the union. */
 export type SettingsCategory = Cat;
@@ -61,10 +62,9 @@ const NAV_GROUPS: { id: string; label: string; cats: { id: Cat; label: string }[
     { id: 'general', label: 'general' },
     { id: 'notifications', label: 'notifications' },
   ] },
-  { id: 'agents', label: 'agents', cats: [
-    { id: 'claude', label: 'claude' },
-    { id: 'codex', label: 'codex' },
-  ] },
+  { id: 'agents', label: 'agents', cats: SESSION_PROVIDERS.map((p) => (
+    { id: p, label: p }
+  )) },
   { id: 'maintenance', label: 'maintenance', cats: [
     { id: 'updates', label: 'updates' },
   ] },
@@ -85,10 +85,7 @@ const THEME_GROUPS = [
 function ThemeChoice({ theme }: { theme: Theme }) {
   return (
     <span className="theme-choice">
-      <span className="theme-choice-text">
-        {theme.label}
-        <small>{theme.hint}</small>
-      </span>
+      <PickerOption title={theme.label} sub={theme.hint} />
       <span className="theme-swatch" data-theme={theme.id} aria-hidden="true">
         <i style={{ background: 'var(--bg-elevated)' }} />
         <i style={{ background: 'var(--text)' }} />
@@ -141,16 +138,11 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [syncMsg, setSyncMsg] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  // The Codex catalog is per-VPS (account-driven). Use the first connected
-  // codex-capable VPS; fall back to any codex-capable one.
-  const codexVps = useMemo(() => {
-    const list = vpsList ?? [];
-    return (
-      list.find((v) => v.codexAvailable === 1 && v.agentStatus === 'ok') ??
-      list.find((v) => v.codexAvailable === 1) ??
-      null
-    );
-  }, [vpsList]);
+  // Both account-driven catalogs pick their box the same way — SIGNED IN
+  // first, because an installed-but-signed-out VPS answers with an empty list
+  // and the picker then looks like the provider has no models (§14.103).
+  const cursorVps = useMemo(() => catalogVpsFor('cursor', vpsList), [vpsList]);
+  const codexVps = useMemo(() => catalogVpsFor('codex', vpsList), [vpsList]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !sessionSettings) close(); };
@@ -229,8 +221,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   }
 
   const navIcon = (id: Cat) => {
-    if (id === 'claude') return <AgentLogo kind="claude" size={14} />;
-    if (id === 'codex') return <AgentLogo kind="codex" size={14} />;
+    if (isSessionProvider(id)) return <AgentLogo kind={id} size={14} />;
     if (id === 'general') return <span className="nav-ico">⚙</span>;
     if (id === 'notifications') return <span className="nav-ico">✉</span>;
     return <span className="nav-ico">↻</span>;
@@ -241,10 +232,12 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   // as a green/red dot so "why is there no ＋ Codex button" is answered without
   // opening the section.
   const backendOn = (kind: AgentKind) => s?.[`${kind}.enabled`] !== 'false';
-  const backendSwitch = (kind: AgentKind, label: string) => (
+  const backendSwitch = (kind: AgentKind) => {
+    const label = providerText.agentLabel(kind);
+    return (
     <>
       <div className="switch-row">
-        <span>{label} available in this hub</span>
+        <span>{providerText.backendAvailable(kind)}</span>
         <Toggle
           checked={backendOn(kind)}
           onChange={(v) => set(`${kind}.enabled`, v ? 'true' : 'false')}
@@ -257,7 +250,8 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
         sessions keep running and stay in the sidebar.
       </p>
     </>
-  );
+    );
+  };
 
   return (
     <>
@@ -282,10 +276,10 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       >
                         {navIcon(c.id)}
                         <span>{c.label}</span>
-                        {(c.id === 'claude' || c.id === 'codex') && modelNotices[c.id].length > 0 && (
+                        {isSessionProvider(c.id) && modelNotices[c.id].length > 0 && (
                           <span className="model-notice-badge" aria-label="new models available">new</span>
                         )}
-                        {(c.id === 'claude' || c.id === 'codex') && (
+                        {isSessionProvider(c.id) && (
                           <span
                             className={`nav-state${backendOn(c.id) ? ' on' : ' off'}`}
                             title={backendOn(c.id) ? `${c.label} is available` : `${c.label} is switched off`}
@@ -332,9 +326,9 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
 
                 {cat === 'claude' && (
                   <>
-                    {backendSwitch('claude', 'Claude')}
+                    {backendSwitch('claude')}
                     <div className="settings-sub">new session defaults</div>
-                    <p className="set-hint">defaults for new Claude sessions — blank = SDK default.</p>
+                    <p className="set-hint">{providerText.newSessionDefaults('claude')} — blank = SDK default.</p>
                     <label>default model
                       <ModelPicker
                         catalogVersion={`${catalogRefresh}:${modelNotices.claude.map((m) => m.id).join(",")}`}
@@ -365,7 +359,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         onValueChange={(nextValue) => set('claude.default_permission_mode', nextValue)}
                       >
                         {CLAUDE_PERMISSION_MODES.map((mode) => (
-                          <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
+                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
                         ))}
                       </PickerControl>
                     </label>
@@ -428,7 +422,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
 
                 {cat === 'codex' && (
                   <>
-                    {backendSwitch('codex', 'Codex')}
+                    {backendSwitch('codex')}
                     <div className="settings-sub">new session defaults</div>
                     <p className="set-hint">
                       defaults for new Codex sessions — blank = Codex default.
@@ -444,7 +438,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                             vpsId={codexVps.id}
                             value={s['codex.default_model'] ?? ''}
                             onChange={(v) => set('codex.default_model', v)}
-                            inheritPlaceholder="Codex default"
+                            inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
                           />
                           <ModelReleaseNotice key="codex" provider="codex" unread={modelNotices.codex} onSeen={onModelsSeen} />
                         </label>
@@ -454,7 +448,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                             modelId={s['codex.default_model'] || undefined}
                             value={s['codex.default_effort'] ?? ''}
                             onChange={(v) => set('codex.default_effort', v)}
-                            inheritPlaceholder="Codex default"
+                            inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
                           />
                         </label>
                       </>
@@ -475,7 +469,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         onValueChange={(nextValue) => set('codex.default_permission_mode', nextValue)}
                       >
                         {CODEX_SANDBOX_MODES.map((mode) => (
-                          <option key={mode} value={mode}>{MODE_LABEL[mode]}</option>
+                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
                         ))}
                       </PickerControl>
                     </label>
@@ -484,7 +478,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       <Toggle
                         checked={(s['codex.default_approvals_reviewer'] ?? 'auto_review') === 'auto_review'}
                         onChange={(v) => set('codex.default_approvals_reviewer', v ? 'auto_review' : 'user')}
-                        label="let the Codex reviewer decide approvals for new sessions"
+                        label={providerText.autoReviewDefault('codex')}
                       />
                     </div>
                     <p className="set-meta">
@@ -492,6 +486,86 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       sensitive actions; choose “accept all” as the mode when no
                       approval card should ever appear.
                     </p>
+                  </>
+                )}
+
+                {cat === 'cursor' && (
+                  <>
+                    {backendSwitch('cursor')}
+                    <div className="settings-sub">new session defaults</div>
+                    <p className="set-hint">
+                      defaults for new Cursor sessions — blank = Cursor default.
+                      {cursorVps
+                        ? <> catalog via <b>{cursorVps.name}</b>.</>
+                        : <> no cursor-capable VPS connected yet — enter ids manually.</>}
+                    </p>
+                    {cursorVps ? (
+                      <label>default model
+                        <CursorModelPicker
+                          vpsId={cursorVps.id}
+                          value={s['cursor.default_model'] ?? ''}
+                          onChange={(v) => set('cursor.default_model', v)}
+                          inheritPlaceholder={`${providerText.agentLabel('cursor')} default`}
+                        />
+                      </label>
+                    ) : (
+                      <label>default model
+                        <input value={s['cursor.default_model'] ?? ''} onChange={(e) => set('cursor.default_model', e.target.value)} placeholder="default" autoComplete="off" spellCheck={false} />
+                      </label>
+                    )}
+                    {cursorVps && (
+                      <label>default effort
+                        <CursorEffortPicker
+                          vpsId={cursorVps.id}
+                          value={s['cursor.default_effort'] ?? ''}
+                          onChange={(v) => set('cursor.default_effort', v)}
+                          modelId={s['cursor.default_model'] ?? ''}
+                          inheritPlaceholder="model default"
+                        />
+                      </label>
+                    )}
+                    <p className="set-meta">
+                      Effort here is the chosen model’s own parameters — its
+                      reasoning ladder and switches differ per model, so pick the
+                      model first.
+                    </p>
+                    <label>default mode
+                      <PickerControl
+                        value={s['cursor.default_permission_mode'] || defaultSessionMode('cursor')}
+                        onValueChange={(nextValue) => set('cursor.default_permission_mode', nextValue)}
+                      >
+                        {CURSOR_MODES.map((mode) => (
+                          <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
+                        ))}
+                      </PickerControl>
+                    </label>
+                    <p className="set-meta">
+                      ⚠ Cursor exposes no per-request approval, so Charon cannot
+                      show a permission card for it. The mode is the whole gate:
+                      every rung but “force” keeps Cursor’s own reviewer on.
+                    </p>
+                  </>
+                )}
+
+                {/* Account usage, for a backend that publishes no API for it
+                    (registry `usageDashboardUrl`, §14.103). Rendered from the
+                    SECTION's provider rather than inside one backend's block,
+                    so any provider that declares a dashboard gets the row and
+                    none can be forgotten. It lives here because it is an
+                    ACCOUNT fact: the other two surfaces both hang off an open
+                    session — the header cell, and the mobile usage drawer
+                    behind its gauge icon — so with no session open there was
+                    nowhere at all to read it. */}
+                {isSessionProvider(cat) && PROVIDERS[cat].usageDashboardUrl && (
+                  <>
+                    <div className="settings-sub">account usage</div>
+                    <p className="set-hint">{providerText.usageOnWebOnly(cat)}.</p>
+                    <a
+                      className="set-extlink"
+                      href={PROVIDERS[cat].usageDashboardUrl!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >{providerText.usageOpenDashboard(cat)} ↗</a>
                   </>
                 )}
 
@@ -533,31 +607,45 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
 
                 {cat === 'updates' && (
                   <>
-                    <div className="switch-row">
-                      <span>auto-update Claude (SDK + agent) when a VPS is idle</span>
-                      <Toggle
-                        checked={(s['sdk.auto_update'] ?? 'true') === 'true'}
-                        onChange={(v) => set('sdk.auto_update', v ? 'true' : 'false')}
-                        label="auto-update claude SDK when a VPS is idle"
-                      />
-                    </div>
-                    <div className="switch-row">
-                      <span>auto-update Codex (Python SDK + CLI) when a VPS is idle</span>
-                      <Toggle
-                        checked={(s['codex.auto_update'] ?? 'true') === 'true'}
-                        onChange={(v) => set('codex.auto_update', v ? 'true' : 'false')}
-                        label="auto-update codex when a VPS is idle"
-                      />
-                    </div>
-                    {(s['sdk.latest_version'] || s['codex.latest_version'] || s['codex.cli_latest_version']) && (
-                      <p className="set-meta">
-                        latest releases:
-                        {s['sdk.latest_version'] && <> claude-agent-sdk <b>{s['sdk.latest_version']}</b></>}
-                        {s['sdk.latest_version'] && s['codex.latest_version'] && ' · '}
-                        {s['codex.latest_version'] && <> openai-codex <b>{s['codex.latest_version']}</b></>}
-                        {s['codex.cli_latest_version'] && <> · codex-cli <b>{s['codex.cli_latest_version']}</b></>}
-                      </p>
-                    )}
+                    {/* One row per DECLARED backend, and the packages it names
+                        come from its own registry entry (§14.102). Hand-written,
+                        this block had two rows for three backends — and the
+                        third's gate defaults ON, so an opt-in backend nobody
+                        had enabled was sleeping and resuming every session on
+                        every quiet VPS at each of its releases. */}
+                    {SESSION_PROVIDERS.map((p) => {
+                      const key = PROVIDERS[p].settings.autoUpdateKey;
+                      const packages = PROVIDERS[p].backend.versions
+                        .map((line) => line.packageLabel).join(' + ');
+                      return (
+                        <div className="switch-row" key={p}>
+                          <span>
+                            auto-update {providerText.agentLabel(p)} ({packages}) when a VPS is idle
+                          </span>
+                          <Toggle
+                            checked={(s[key] ?? 'true') === 'true'}
+                            onChange={(v) => set(key, v ? 'true' : 'false')}
+                            label={`auto-update ${providerText.agentLabel(p)} when a VPS is idle`}
+                          />
+                        </div>
+                      );
+                    })}
+                    {(() => {
+                      // `latest` per DECLARED release line, read from the
+                      // settings map by the key the registry names for it.
+                      const lines = SESSION_PROVIDERS.flatMap((p) => PROVIDERS[p].backend.versions)
+                        .map((line) => ({ label: line.packageLabel, value: s[line.latestSettingKey] }))
+                        .filter((x) => !!x.value);
+                      if (!lines.length) return null;
+                      return (
+                        <p className="set-meta">
+                          latest releases:{' '}
+                          {lines.map((x, i) => (
+                            <span key={x.label}>{i > 0 && ' · '}{x.label} <b>{x.value}</b></span>
+                          ))}
+                        </p>
+                      );
+                    })()}
                   </>
                 )}
               </div>

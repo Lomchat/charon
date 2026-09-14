@@ -6,6 +6,7 @@ import { encrypt, tryDecrypt } from '@/lib/server/crypto';
 import { getEnvAesKey } from '@/lib/server/masterKey';
 import { parseSettingSources } from '@/lib/settingSources';
 import { DEFAULT_THEME_ID } from '@/app/themes';
+import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 
 // ── At-rest encryption of secret settings (P0.7) ────────────────────────────
 // Secret values are stored as `enc:v1:<aes-256-gcm blob>` (key = scrypt of
@@ -101,6 +102,9 @@ const DEFAULTS = {
   // install must not look like it lost a backend. cf. app/enabledBackends.ts.
   'claude.enabled': 'true',
   'codex.enabled': 'true',
+  // Opt-in (§14.103): Cursor needs its runtime installed and an account
+  // signed in, so a hub does not advertise it until someone asks.
+  'cursor.enabled': 'false',
   // Global defaults for Claude model / fallback / effort. Empty string =
   // not set → the agent passes nothing → SDK default applies.
   // New sessions inherit these unless overridden in NewSessionDialog.
@@ -135,6 +139,32 @@ const DEFAULTS = {
   // Auto-review is the normal Codex behavior. It is configured globally here,
   // not beside every composer, and copied into each new session row.
   'codex.default_approvals_reviewer': 'auto_review',
+  // ── Cursor (third backend, §14.103) ───────────────────────────────────────
+  // Model ids come from the account catalog, e.g. 'composer-2.5' or the
+  // account's own `default` router. Empty = not set → `CursorSession` falls
+  // back to `default`. (The docs' plausible-looking `auto-smart` is REJECTED
+  // by the backend with `invalid_argument` — a guessed id is never good enough
+  // here, which is why the fallback was verified against a live catalog.)
+  //
+  // ⚠ The effort key is REAL and is read, by `_resolveSessionConfig` like every
+  // other default. Cursor's reasoning axis is PER MODEL (`effortAxis:'model'`),
+  // so the value is a parameter SET (`effort=high&thinking=true`) rather than a
+  // level from a fixed vocabulary — which is why `efforts` is empty in the
+  // registry and why `hasEffortAxis`, not `efforts.length`, is what gates the
+  // control.
+  'cursor.default_model': '',
+  'cursor.default_effort': '',
+  // Freedom ladder: plan (read-only) | sandbox | agent (auto-review on) |
+  // force (no gate). `agent` is the safe source default.
+  'cursor.default_permission_mode': 'agent',
+  // Fleet-wide cursor-sdk auto-update toggle (parallel to sdk/codex).
+  'cursor.auto_update': 'true',
+  // Internal, written by the cursor freshness sync only (not in the settings
+  // POST allowlist): latest cursor-sdk version on PyPI, its check timestamp,
+  // and the last version announced (dedup across ticks/restarts).
+  'cursor.latest_version': '',
+  'cursor.latest_version_at': '',
+  'cursor.last_notified_version': '',
   // Fleet-wide openai-codex auto-update toggle (parallel to sdk.auto_update).
   // ON by default. User-editable (SettingsModal). cf. codexWatch (future).
   'codex.auto_update': 'true',
@@ -147,6 +177,16 @@ const DEFAULTS = {
   // Internal cache written by modelSync (not user-editable via settings POST):
   // JSON array of the live model list, + the unix-ms timestamp of the last
   // successful sync (drives the 24h TTL).
+  // Internal cache written by cursorPricing (not user-editable): the parsed
+  // $/million-token table from Cursor's public pricing doc, + its unix-ms
+  // timestamp (24h TTL). Fetched rather than checked in, so a price change
+  // cannot keep rendering as a confident stale number.
+  'cursor.pricing_cache': '',
+  'cursor.pricing_cache_at': '',
+  // Internal cache written by cursorModels (not user-editable): the last good
+  // catalog per VPS, so a hub restart does not cost a bridge launch the next
+  // time somebody opens the picker. Bounded — see MAX_STORED there.
+  'cursor.models_cache': '',
   'claude.models_cache': '',
   // Internal catalog discoveries + globally acknowledged release notices.
   'claude.cli_models_cache': '',
@@ -307,4 +347,20 @@ export function getSettingNumber(key: SettingKey, fallback = 0): number {
 
 export function getSettingBool(key: SettingKey): boolean {
   return getSetting(key) === 'true';
+}
+
+/**
+ * Is this backend offered on this hub? The SERVER half of
+ * `app/enabledBackends.ts`, with the same reading rule: anything but the
+ * literal 'false' is ON, and a key with no row falls back to the provider's
+ * DECLARED `defaultEnabled` — so a fetch/seed gap can neither subtract a
+ * configured backend nor advertise an opt-in one.
+ *
+ * Server-side it gates real work rather than furniture: the bootstrap only
+ * installs a runtime for a backend someone actually turned on (§14.103).
+ */
+export function isBackendEnabled(p: SessionProvider): boolean {
+  const stored = getSetting(PROVIDERS[p].settings.enabledKey as SettingKey);
+  if (stored === '' || stored == null) return PROVIDERS[p].settings.defaultEnabled;
+  return stored !== 'false';
 }

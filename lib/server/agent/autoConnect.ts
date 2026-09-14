@@ -3,7 +3,7 @@ import { and, eq, inArray, or } from 'drizzle-orm';
 import { db, claudeSessions, vps as vpsTable, claudeSessionLogs } from '@/lib/db';
 import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession } from './sessionOps';
-import { refreshClaudeLoginStatusIfStale } from './claudeLoginCheck';
+import { sweepProviderLogins } from './loginSweeps';
 import { ensureShellIdleWatch } from './shellNotify';
 import { armUsageWatch, armCodexUsageWatch } from './usagePoll';
 import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
@@ -46,8 +46,12 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
     // codex_available + login. cf. CLAUDE.md §14.58 / §14.59.
     if (hello.codex_available) armCodexUsageWatch(vpsId);
     try {
+      // Every provider that declares a stale-login sweep (loginSweeps.ts).
+      // Named one by one here, a backend whose credential EXPIRES simply
+      // never got re-probed and its lapsed sign-in showed up as a failing
+      // turn instead of a button (§14.102).
       const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-      if (fresh) refreshClaudeLoginStatusIfStale(fresh).catch(() => {});
+      if (fresh) sweepProviderLogins(fresh);
     } catch {}
   };
   client.onStatus((status) => {

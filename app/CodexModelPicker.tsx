@@ -1,5 +1,5 @@
 'use client';
-import PickerControl from './PickerControl';
+import PickerControl, { PickerOption } from './PickerControl';
 import { useEffect, useState } from 'react';
 import type { CodexModelPick } from '@/lib/types/api';
 import { getCodexModels, peekCodexModels } from './codexModelsCache';
@@ -90,7 +90,7 @@ export default function CodexModelPicker({
       )}
       {all.map((m) => (
         <option key={m.id} value={m.id} title={m.hint ?? ''}>
-          {m.label}{m.isDefault ? ' (default)' : ''}{m.hint ? ` — ${m.hint}` : ''}
+          <PickerOption title={`${m.label}${m.isDefault ? ' (default)' : ''}`} sub={m.hint} />
         </option>
       ))}
       <option value="__custom__">✎ enter a model id…</option>

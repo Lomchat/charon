@@ -2,6 +2,9 @@
 import PickerControl from './PickerControl';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
+import { providerText } from '@/lib/providerText';
+import type { AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
+import { PROVIDERS, SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import { diagnoseVps, VpsHealthChips, type VpsFixAction } from './vpsHealth';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
@@ -45,8 +48,9 @@ type Props = {
   // ClaudePanel renders both modals AFTER this one so they overlay it; on
   // success the liveVps merge below repaints the chips (claudeLoggedIn /
   // codexLoggedIn are merged keys).
-  onCodexLogin?: (vps: Vps) => void;
-  onClaudeLogin?: (vps: Vps) => void;
+  /** Sign in to ONE backend — delegated up to ClaudePanel so the modal
+   *  overlays this one (§14.102). Replaces the former per-provider pair. */
+  onProviderLogin?: (vps: Vps, provider: AgentKind) => void;
   // "settings scope" on a VPS card (§14.100). Delegated UP for the same reason
   // as the logins: ClaudePanel renders that dialog after this modal, so it
   // overlays instead of stacking a second surface inside it.
@@ -60,9 +64,8 @@ type Props = {
   liveVps?: Vps[];
   // "agent outdated" detection for the agent chip (same sources as Sidebar).
   builtAgentVersion?: string | null;
-  sdkLatestVersion?: string | null;
-  codexLatestVersion?: string | null;
-  codexCliLatestVersion?: string | null;
+  /** Every declared release line's latest, by registry `latestKey` (§14.102). */
+  staleness?: VpsStalenessBaselines;
 };
 
 const DEFAULT_FOLDER_ID = 'default';
@@ -74,13 +77,12 @@ const DEFAULT_FOLDER_ID = 'default';
 //   - Folders (the whole block) are sortable among themselves.
 // The "drop in the folder" area (= droppable id `folder-drop:<id>`) captures
 // VPSes dropped on the folder's empty space (not on a specific card).
-// Bundle passed down folder → card for the health chips: staleness inputs
-// (builtAgentVersion / sdkLatestVersion) + per-VPS busy sets for the fix buttons.
+// Bundle passed down folder → card for the health chips: the staleness
+// baselines + per-VPS busy sets for the fix buttons.
 type HealthOpts = {
   builtAgentVersion?: string | null;
-  sdkLatestVersion?: string | null;
-  codexLatestVersion?: string | null;
-  codexCliLatestVersion?: string | null;
+  /** Every declared release line's latest, by registry `latestKey` (§14.102). */
+  staleness?: VpsStalenessBaselines;
   refreshingIds?: Set<string>;
   updatingIds?: Set<string>;
 };
@@ -97,9 +99,9 @@ function decodeId(dragId: string): { kind: 'vps' | 'folder' | 'folder-drop'; id:
 
 export default function DataModal({
   onClose, initialVps, initialFolders, initialPaths, onChange, onInstallAgent,
-  onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin, onEditSettingScope,
+  onRefreshAgent, onUpdateAgent, onProviderLogin, onEditSettingScope,
   refreshingAgentVpsIds, updatingAgentVpsIds,
-  liveVps, builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion,
+  liveVps, builtAgentVersion, staleness,
 }: Props) {
   const [vpsList, setVpsList] = useState<Vps[]>(initialVps);
   const [folders, setFolders] = useState<VpsFolder[]>(initialFolders);
@@ -140,14 +142,15 @@ export default function DataModal({
   // One dispatcher for the health-chip fix buttons (cf. vpsHealth.tsx).
   // install → closes the modal (install session view takes over);
   // refresh/update → run in place (busy state on the card's button);
-  // claude-login / codex-login → delegated up (see the props above).
+  // any `<provider>-login` → delegated up, resolved through the registry so a
+  // new backend needs no branch here (§14.102).
   const handleFix = useCallback((v: Vps, action: VpsFixAction) => {
-    if (action === 'install') handleBootstrap(v);
-    else if (action === 'claude-login') onClaudeLogin?.(v);
-    else if (action === 'codex-login') onCodexLogin?.(v);
-    else if (action === 'refresh') onRefreshAgent?.(v);
-    else if (action === 'update') onUpdateAgent?.(v);
-  }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onCodexLogin, onClaudeLogin]);
+    if (action === 'install') { handleBootstrap(v); return; }
+    if (action === 'refresh') { onRefreshAgent?.(v); return; }
+    if (action === 'update') { onUpdateAgent?.(v); return; }
+    const p = SESSION_PROVIDERS.find((x) => PROVIDERS[x].backend.login.action === action);
+    if (p) onProviderLogin?.(v, p);
+  }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onProviderLogin]);
 
   // Follow ClaudePanel's live vpsList for HEALTH fields only (agent status,
   // classified error, logins, codex, versions). CRUD fields (name/ip/folder/
@@ -651,8 +654,8 @@ export default function DataModal({
                   onRename={(name) => renameFolder(folder.id, name)}
                   onDelete={() => deleteFolder(folder.id, folder.name)}
                   onFixVps={handleFix}
-                  healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
-                  onLogin={(v) => onClaudeLogin?.(v)}
+                  healthOpts={{ builtAgentVersion, staleness, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                  onLogin={(v) => onProviderLogin?.(v, 'claude')}
                   onSettingScope={(v) => onEditSettingScope?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -679,8 +682,8 @@ export default function DataModal({
                 collapsed={!search.active && collapsedFolders.has(defaultFolder.id)}
                 onToggleCollapsed={() => toggleFolderCollapsed(defaultFolder.id)}
                 onFixVps={handleFix}
-                healthOpts={{ builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
-                onLogin={(v) => onClaudeLogin?.(v)}
+                healthOpts={{ builtAgentVersion, staleness, refreshingIds: refreshingAgentVpsIds, updatingIds: updatingAgentVpsIds }}
+                onLogin={(v) => onProviderLogin?.(v, 'claude')}
                 onSettingScope={(v) => onEditSettingScope?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
@@ -989,7 +992,10 @@ function SortableVpsCard({
   // unusable. Each broken chip carries its OWN fix button right next to it
   // (problem → fix pairing). The permanent "login" button in dv-actions
   // stays for re-login/account-switch while everything is green.
-  const health = diagnoseVps(v, healthOpts);
+  const health = diagnoseVps(v, {
+    builtAgentVersion: healthOpts.builtAgentVersion,
+    ...healthOpts.staleness,
+  });
   const busy = {
     refresh: !!healthOpts.refreshingIds?.has(v.id),
     update: !!healthOpts.updatingIds?.has(v.id),
@@ -1022,15 +1028,14 @@ function SortableVpsCard({
           ))}
         </PickerControl>
         <div className="dv-actions">
-          <button className="dv-btn" onClick={onLogin} title="sign in to Claude (hosted OAuth code)">login</button>
+          <button className="dv-btn" onClick={onLogin} title={PROVIDERS.claude.backend.login.title}>login</button>
           {/* The scope chosen when the agent was installed (§14.100). A fresh
               box has no ~/.claude/settings.json yet, so that choice was a
               policy taken blind — it has to stay changeable here. */}
           <button
             className="dv-btn"
             onClick={onSettingScope}
-            title={`Claude settings files loaded on this VPS — ${
-              v.claudeSettingSources || 'inheriting the hub default'}`}
+            title={providerText.settingScopeTitle(v.claudeSettingSources)}
           >settings scope</button>
           <button className="dv-btn danger" onClick={onDelete} title="delete this VPS">✕</button>
         </div>
