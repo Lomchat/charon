@@ -12,7 +12,7 @@ import type { PermissionMode, WorkerStatus, AccountUsage } from '@/lib/server/cl
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
 import type {
-  CodexEffort, CodexSandboxMode, SessionProvider,
+  CodexEffort, CodexSandboxMode, SessionMode, SessionProvider,
 } from '@/lib/sessionCapabilities';
 import type { ClaudeSettingSource } from '@/lib/settingSources';
 
@@ -30,7 +30,14 @@ export type {
 // (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
 // (app-server rate limits), present only when the VPS runs Codex. The header
 // shows the one matching the current session's kind. cf. §14.58 / §14.59.
-export type VpsUsageResponse = { usage: AccountUsage | null; codexUsage?: AccountUsage | null };
+export type VpsUsageResponse = {
+  /** Historical Claude/Codex fields, kept for older clients. */
+  usage: AccountUsage | null;
+  codexUsage?: AccountUsage | null;
+  /** Provider-neutral map — what new clients read, so a backend's gauges need
+   *  no new response field (§14.102). Absent on older servers. */
+  byProvider?: Partial<Record<SessionProvider, AccountUsage | null>>;
+};
 
 // ── Multi-agent (Claude + Codex) discriminator & Codex config ────────────────
 // Duplicated here (not imported from server-only agent/types.ts) to keep client
@@ -665,6 +672,10 @@ export type UpdateVpsAgentResponse = {
   // and had no codex field to patch with.
   codexSdkVersion?: string | null;
   codexCliVersion?: string | null;
+  // Third backend's venv package, same contract. The route BUILDS these from
+  // the registry's declared release lines (`PROVIDER_VERSION_COLUMNS`) — this
+  // declaration types them, it does not enumerate them.
+  cursorSdkVersion?: string | null;
   builtPyzSha: string;
   detail: string;
   // Non-fatal sub-step failures on an ok update ("sdk upgrade failed: …",
@@ -787,6 +798,73 @@ export type CodexLoginStatusResponse = {
   error?: string | null;
 };
 
+// ── Cursor sign-in (§14.104) ────────────────────────────────────────────────
+// One url, no code: the SDK polls the browser handshake itself and stores the
+// minted key on the VPS. Charon never receives a credential.
+export type CursorLoginStartResponse = {
+  ok: boolean;
+  error?: string;
+  loginId?: string;
+  url?: string;
+};
+export type CursorLoginStatusResponse = {
+  ok: boolean;
+  status?: 'pending' | 'success' | 'error';
+  url?: string | null;
+  error?: string | null;
+};
+export type CursorLoginCheckResponse = {
+  ok: boolean;
+  loggedIn: boolean;
+  email?: string | null;
+  checkedAt?: number | null;
+  error?: string | null;
+};
+/** One tunable knob on a Cursor model (`thinking`, `fast`) with its allowed
+ *  values. This is Cursor's equivalent of an effort level — per MODEL rather
+ *  than global, which is why there is no effort picker (§14.103). */
+export type CursorModelParameter = {
+  id: string;
+  label: string;
+  values: { value: string; label?: string }[];
+};
+/** A shipped combination of parameter values. It has no id of its own — the
+ *  params ARE its identity, and Charon stores them as `id?thinking=true`. */
+export type CursorModelVariant = {
+  params: Record<string, string>;
+  label?: string;
+  description?: string;
+  isDefault?: boolean;
+};
+/** $/million tokens, from Cursor's public pricing doc (`cursorPricing.ts`).
+ *  Absent when the doc does not list that model — an unknown price shows
+ *  nothing, never a guess. */
+export type ModelPrice = {
+  input: number;
+  output: number;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  provider: string | null;
+};
+export type CursorModel = {
+  id: string;
+  label: string;
+  description?: string;
+  parameters?: CursorModelParameter[];
+  variants?: CursorModelVariant[];
+  /** Standard rate. */
+  price?: ModelPrice;
+  /** The `fast` lane's rate, which the doc lists as its own row — routinely
+   *  2-3x the standard one, and the clearest cost signal the catalog has. */
+  fastPrice?: ModelPrice;
+};
+export type CursorModelsResponse = {
+  ok: boolean;
+  models: CursorModel[];
+  reason?: string;
+  error?: string | null;
+};
+
 export type ScannedClaudeSession = {
   sessionId: string;
   cwd: string;
@@ -818,6 +896,25 @@ export type ScanVpsCodexResponse = { sessions: ScannedCodexSession[] };
 /** Either backend's scan row — what ResumeModal actually renders. */
 export type ScannedSession = ScannedClaudeSession | ScannedCodexSession;
 
+/** Provider-neutral scan response. Cursor adds workspace discovery and an
+ * inclusive continuation cursor because its store is scoped by cwd. */
+export type ScanVpsSessionsResponse = {
+  ok?: boolean;
+  sessions: ScannedSession[];
+  folders?: string[];
+  nextCwd?: string;
+  truncated?: boolean;
+  reason?: string;
+  error?: string;
+};
+export type ScanVpsSessionsQuery = {
+  archived?: boolean;
+  /** First workspace to scan on the next page. */
+  after?: string;
+  /** Scan exactly this workspace. */
+  cwd?: string;
+};
+
 // ── Claude sessions ──────────────────────────────────────────────────────────
 
 export type ClaudeSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
@@ -847,7 +944,23 @@ export type VpsRuntimeSnapshot = Pick<Vps,
   | 'codexCliVersion'
   | 'claudeLoggedIn'
   | 'codexLoggedIn'
+  | 'cursorAvailable'
+  | 'cursorSdkVersion'
+  | 'cursorLoggedIn'
 >;
+
+/**
+ * What a client compares a VPS against to decide "is this out of date".
+ *
+ * The pyz baseline (§14.6) plus one `latest` per DECLARED release line, keyed
+ * by the registry's `latestKey`. Consumed as a bag by `diagnoseVps`, the
+ * sidebar and the data modal — none of them may re-list the keys.
+ */
+export type VpsStalenessBaselines = {
+  builtPyzSha?: string | null;
+  /** `__version__` of the pyz this hub ships — THE staleness baseline (§14.6). */
+  builtAgentVersion?: string | null;
+} & Partial<Record<string, string | null>>;
 
 export type ClaudeSessionsListResponse = {
   sessions: SessionListItem[];
@@ -857,14 +970,11 @@ export type ClaudeSessionsListResponse = {
   // Live staleness baselines (hub pyz sha + PyPI latests) — refreshed by the
   // client on every list poll so long-open tabs never compare against frozen
   // SSR props (phantom "update agent" badge). Optional: older servers omit it.
-  meta?: {
-    builtPyzSha: string | null;
-    // `__version__` of the pyz this hub ships — THE staleness baseline (§14.6).
-    builtAgentVersion?: string | null;
-    sdkLatestVersion: string | null;
-    codexLatestVersion: string | null;
-    codexCliLatestVersion: string | null;
-  };
+  // The `latestKey`s are declared by the provider registry and produced in one
+  // place (`sdkSync § latestVersionsByKey`), so the index signature is the
+  // honest type: naming three of four here is how the fourth axis ended up
+  // comparing against `undefined` (§14.102).
+  meta?: VpsStalenessBaselines;
 };
 
 export type PendingPermissionPayload = {
@@ -994,8 +1104,12 @@ export type CreateClaudeSessionBody = {
   name?: string | null;
   // 'claude' (default) | 'codex'. Determines the backend + config semantics.
   kind?: AgentKind;
-  // Claude: normal/acceptEdits/auto/plan. Codex: sandbox mode or accept-all.
-  permissionMode?: PermissionMode | CodexSandboxMode;
+  // Whatever `sessionModes(kind)` declares for this backend: Claude's
+  // permission modes, Codex's sandbox levels, Cursor's freedom ladder. Typed as
+  // the union rather than as two of the three — the wizard sends the mode the
+  // picker offered, and naming two providers here made the third fail to
+  // compile at the one call site that was actually right (§14.102).
+  permissionMode?: SessionMode;
   // Per-session config. Pass null/omit to inherit the global defaults
   // (claude.default_* / codex.default_*). Effort validity depends on kind;
   // invalid values are silently dropped server-side.
@@ -1040,7 +1154,28 @@ export type CodexSessionConfig = SharedSessionConfig & {
   approvalsReviewer?: 'user' | 'auto_review';
   permissionProfile?: string | null;
 };
-export type ProviderSessionConfig = ClaudeSessionConfig | CodexSessionConfig;
+export type CursorSessionConfig = SharedSessionConfig & {
+  /** Ambient Cursor settings layers the session loads (`.cursor/rules`,
+   *  hooks, skills). Same idea as Claude's `settingSources` (§14.100),
+   *  resolved at CREATE and persisted so a fleet default never rewrites a
+   *  running session's rules. null = the agent's own default. */
+  settingSources?: CursorSettingSource[] | null;
+  /** Route local tool calls through Cursor's own safety classifier. Charon
+   *  cannot raise a per-request card for Cursor (§14.103), so this is the
+   *  gate — on by default for every mode except `force`. */
+  autoReview?: boolean | null;
+  /** Built-in tool allow/deny lists, by tool name. */
+  tools?: string[] | null;
+  disallowedTools?: string[] | null;
+};
+/** The scopes the SDK accepts, as a value so the create route can validate
+ *  against it rather than forwarding whatever a body contained. */
+export const CURSOR_SETTING_SOURCES = [
+  'project', 'user', 'team', 'mdm', 'plugins', 'all',
+] as const;
+export type CursorSettingSource = typeof CURSOR_SETTING_SOURCES[number];
+export type ProviderSessionConfig =
+  ClaudeSessionConfig | CodexSessionConfig | CursorSessionConfig;
 export type CreateClaudeSessionResponse = {
   id: string;
   kind: AgentKind;
@@ -1049,7 +1184,7 @@ export type CreateClaudeSessionResponse = {
   vpsId: string;
   cwd: string;
   name: string | null;
-  permissionMode: PermissionMode | CodexSandboxMode;
+  permissionMode: SessionMode;
   model: string | null;
   fallbackModel: string | null;
   effort: string | null;
@@ -1062,8 +1197,8 @@ export type ImportClaudeSessionBody = {
   cwd: string;
   name?: string | null;
   kind?: AgentKind;
-  // Claude: a PermissionMode. Codex: sandbox mode or accept-all.
-  permissionMode?: PermissionMode | CodexSandboxMode;
+  // Whatever this backend declares (`sessionModes(kind)`).
+  permissionMode?: SessionMode;
 };
 export type ImportClaudeSessionResponse = {
   id: string;
@@ -1098,8 +1233,8 @@ export type RespondExitPlanBody = {
   feedback?: string;
 };
 
-export type SetClaudeModeBody = { mode: PermissionMode | CodexSandboxMode };
-export type SetClaudeModeResponse = { ok: true; mode: PermissionMode | CodexSandboxMode };
+export type SetClaudeModeBody = { mode: SessionMode };
+export type SetClaudeModeResponse = { ok: true; mode: SessionMode };
 
 // Canonical provider-neutral aliases. Historical `Claude*` names remain part
 // of the public TypeScript surface so existing extensions do not break.
@@ -1267,9 +1402,8 @@ export type OkOrErrorResponse = { ok: boolean; error?: string };
 
 /** Hub-wide unread model releases; revision orders HTTP and SSE snapshots. */
 export type ModelNotice = { id: string; label: string };
-export type ModelNoticesResponse = {
-  revision: number;
-  claude: ModelNotice[];
-  codex: ModelNotice[];
-};
+// Same wire shape as before ({ revision, claude: [], codex: [] }) but DERIVED:
+// a new provider gets its bucket without another literal to remember.
+export type ModelNoticesResponse =
+  { revision: number } & Record<SessionProvider, ModelNotice[]>;
 export type MarkModelsSeenBody = { provider: AgentKind; ids: string[] };

@@ -2,7 +2,19 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
 import { isKnownEffort } from '@/lib/server/claude/modelSync';
-import { isSessionEffort } from '@/lib/sessionCapabilities';
+import {
+  PROVIDERS, asSessionProvider, isEffortValue, type SessionProvider,
+} from '@/lib/sessionCapabilities';
+
+/** A provider's accepted effort value. `isEffortValue` answers the part every
+ *  provider owes — a level from its static set, or a well-formed parameter set
+ *  when the ladder is declared per model. Claude additionally accepts anything
+ *  the LIVE catalog reports (§14.43), which no static set can know. The agent
+ *  is the final gate in every case (it drops a level its model rejects). */
+function isEffortAcceptable(kind: SessionProvider, raw: string): boolean {
+  if (isEffortValue(kind, raw)) return true;
+  return kind === 'claude' && isKnownEffort(raw);
+}
 
 // POST /api/claude/sessions/[id]/effort
 // Body: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null }
@@ -22,18 +34,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!stream) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   const body = await req.json().catch(() => ({}));
   const raw = body?.effort;
+  const kind = asSessionProvider(stream.kind);
   // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
   // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
   // the final gate for both (drops a level its SDK/model doesn't know).
   let effort: string | null;
   if (raw == null || raw === '') {
     effort = null;
-  } else if (typeof raw === 'string' &&
-             (stream.kind === 'codex' ? isSessionEffort('codex', raw) : isKnownEffort(raw))) {
+  } else if (typeof raw === 'string' && isEffortAcceptable(kind, raw)) {
     effort = raw;
   } else {
     return NextResponse.json(
-      { error: `invalid effort '${raw}'; expected a ${stream.kind === 'codex' ? 'codex' : 'catalog'} effort level or null` },
+      { error: `invalid effort '${raw}'; expected a ${PROVIDERS[kind].label} effort level or null` },
       { status: 400 },
     );
   }

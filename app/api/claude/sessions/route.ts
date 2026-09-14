@@ -6,14 +6,19 @@ import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { checkSessionPath } from '@/lib/server/claude/sessionPath';
 import { focusCountFor } from '@/lib/server/agent/eventConnections';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
-import { getSdkLatestVersion, getCodexLatestVersion, getCodexCliLatestVersion } from '@/lib/server/claude/sdkSync';
+import { latestVersionsByKey } from '@/lib/server/claude/sdkSync';
 import type {
-  AgentKind, ClaudeSessionConfig, CodexSessionConfig, ProviderSessionConfig,
+  AgentKind, ClaudeSessionConfig, CodexSessionConfig, CursorSessionConfig,
+  CursorSettingSource, ProviderSessionConfig,
 } from '@/lib/types/api';
+import { CURSOR_SETTING_SOURCES } from '@/lib/types/api';
 import type { SessionMode } from '@/lib/server/agent/types';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
-import { isSessionMode } from '@/lib/sessionCapabilities';
+import {
+  PROVIDERS, asSessionProvider, isSessionMode, providerBackendState,
+  unhandledProvider,
+} from '@/lib/sessionCapabilities';
 import { parseSettingSources } from '@/lib/settingSources';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
@@ -112,9 +117,12 @@ export async function GET(req: Request) {
       meta: {
         builtPyzSha: getBuiltPyzSha(),
         builtAgentVersion: getBuiltAgentVersion(),
-        sdkLatestVersion: getSdkLatestVersion(),
-        codexLatestVersion: getCodexLatestVersion(),
-        codexCliLatestVersion: getCodexCliLatestVersion(),
+        // Every declared release line's latest, keyed by its registry
+        // `latestKey` — the same shape `diagnoseVps` reads its opts in. Named
+        // one by one, this object listed three of the four lines and the
+        // fourth's staleness axis compared against `null`, i.e. was never
+        // stale and never lit its update chip (§14.102).
+        ...latestVersionsByKey(),
       },
     });
   } catch (e: any) {
@@ -154,40 +162,70 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
     developerInstructions: text(r.developerInstructions, 32_768),
     env,
   };
-  if (kind === 'claude') {
-    let skills: ClaudeSessionConfig['skills'] = null;
-    if (r.skills === 'all') skills = 'all';
-    else if (Array.isArray(r.skills)) {
-      skills = r.skills.filter((v): v is string => typeof v === 'string')
-        .map((v) => v.trim()).filter(Boolean).slice(0, 128).map((v) => v.slice(0, 256));
-    } else if (r.skills != null) {
-      throw new Error('skills must be "all", an array of names, or null');
+  const names = (value: unknown, max: number, cap: number): string[] | null => (
+    Array.isArray(value)
+      ? value.filter((v): v is string => typeof v === 'string')
+        .map((v) => v.trim()).filter(Boolean).slice(0, cap).map((v) => v.slice(0, max))
+      : null
+  );
+
+  // ⚠ A `switch` with `unhandledProvider`, never `if claude … else codex`.
+  // That shape is the §14.102 coercion one layer above `resolveProviderConfig`
+  // (which gets it right): a `kind:'cursor'` body was parsed as a Codex config,
+  // so its OWN fields — settings scope, auto-review, tool lists — were dropped
+  // on the floor while Codex fields nobody sent were persisted on its row.
+  switch (kind) {
+    case 'claude': {
+      let skills: ClaudeSessionConfig['skills'] = null;
+      if (r.skills === 'all') skills = 'all';
+      else if (Array.isArray(r.skills)) skills = names(r.skills, 256, 128) ?? [];
+      else if (r.skills != null) {
+        throw new Error('skills must be "all", an array of names, or null');
+      }
+      // Tri-state (§14.100): absent = "inherit the VPS / hub choice" and is
+      // filled in by startNewSession; [] = the caller explicitly asked for
+      // isolation. parseSettingSources throws on an unknown token, which the
+      // POST handler already turns into a 400.
+      const settingSources = parseSettingSources(r.settingSources);
+      return { ...shared, skills, ...(settingSources === null ? {} : { settingSources }) };
     }
-    // Tri-state (§14.100): absent = "inherit the VPS / hub choice" and is
-    // filled in by startNewSession; [] = the caller explicitly asked for
-    // isolation. parseSettingSources throws on an unknown token, which the
-    // POST handler already turns into a 400.
-    const settingSources = parseSettingSources(r.settingSources);
-    return { ...shared, skills, ...(settingSources === null ? {} : { settingSources }) };
+    case 'codex': {
+      const codex: CodexSessionConfig = {
+        ...shared,
+        configOverrides: names(r.configOverrides, 2048, 64) ?? [],
+        summary: pick(r.summary, ['auto', 'concise', 'detailed', 'none'] as const),
+        personality: pick(r.personality, ['friendly', 'pragmatic', 'none'] as const),
+        serviceTier: pick(r.serviceTier, ['fast', 'flex'] as const),
+        ephemeral: r.ephemeral === true,
+        modelProvider: text(r.modelProvider, 256),
+        codexBin: text(r.codexBin, 4096),
+        // Undefined means "inherit the fleet default"; startNewSession resolves
+        // and persists it exactly once.
+        approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? undefined,
+        permissionProfile: text(r.permissionProfile, 256),
+      };
+      return codex;
+    }
+    case 'cursor': {
+      // `shared` is deliberately NOT spread: `CursorSession` reads none of
+      // base/developer instructions, output schema or env, so accepting them
+      // would persist settings that silently do nothing (the wizard no longer
+      // offers them either).
+      const settingSources = Array.isArray(r.settingSources)
+        ? (names(r.settingSources, 32, 8) ?? [])
+          .filter((v): v is CursorSettingSource => CURSOR_SETTING_SOURCES.includes(v as CursorSettingSource))
+        : null;
+      const cursor: CursorSessionConfig = {
+        ...(settingSources === null ? {} : { settingSources }),
+        autoReview: typeof r.autoReview === 'boolean' ? r.autoReview : null,
+        tools: names(r.tools, 128, 128),
+        disallowedTools: names(r.disallowedTools, 128, 128),
+      };
+      return cursor;
+    }
+    default:
+      return unhandledProvider(kind);
   }
-  const configOverrides = Array.isArray(r.configOverrides)
-    ? r.configOverrides.filter((v): v is string => typeof v === 'string')
-      .map((v) => v.trim()).filter(Boolean).slice(0, 64).map((v) => v.slice(0, 2048))
-    : [];
-  const codex: CodexSessionConfig = {
-    ...shared, configOverrides,
-    summary: pick(r.summary, ['auto', 'concise', 'detailed', 'none'] as const),
-    personality: pick(r.personality, ['friendly', 'pragmatic', 'none'] as const),
-    serviceTier: pick(r.serviceTier, ['fast', 'flex'] as const),
-    ephemeral: r.ephemeral === true,
-    modelProvider: text(r.modelProvider, 256),
-    codexBin: text(r.codexBin, 4096),
-    // Undefined means "inherit the fleet default"; startNewSession resolves
-    // and persists it exactly once.
-    approvalsReviewer: pick(r.approvalsReviewer, ['user', 'auto_review'] as const) ?? undefined,
-    permissionProfile: text(r.permissionProfile, 256),
-  };
-  return codex;
 }
 
 // POST /api/claude/sessions
@@ -208,10 +246,12 @@ export async function POST(req: Request) {
   // Agent-type discriminator (multi-agent). A Codex session needs the VPS to
   // actually run Codex (openai-codex importable, agent >= 0.15.0) — reject
   // early with a clear message otherwise (codexAvailable is 1 when available).
-  const kind: AgentKind = body.kind === 'codex' ? 'codex' : 'claude';
-  if (kind === 'codex' && v.codexAvailable !== 1) {
+  const kind: AgentKind = asSessionProvider(body.kind);
+  const backend = PROVIDERS[kind].backend;
+  if (backend.availability.blocksLaunch
+      && providerBackendState(v as any, kind).available !== 1) {
     return NextResponse.json(
-      { error: 'Codex is not available on this VPS (agent < 0.15.0 or the openai-codex SDK is not installed).' },
+      { error: `${PROVIDERS[kind].label} is not available on this VPS (the agent is too old to report it, or ${backend.packageName} is not installed).` },
       { status: 400 },
     );
   }

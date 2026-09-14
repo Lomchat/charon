@@ -1,9 +1,18 @@
 import 'server-only';
 import type { AgentKind, ModelNotice, ModelNoticesResponse } from '@/lib/types/api';
 import { getSetting, setSetting } from './settings';
+import { SESSION_PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 
 type ProviderState = { known: string[]; unread: ModelNotice[] };
-type Ledger = { revision: number; claude: ProviderState | null; codex: ProviderState | null };
+type Ledger = { revision: number } & Record<SessionProvider, ProviderState | null>;
+/** A baseline ledger with one empty bucket per declared provider. */
+function emptyLedger(): Ledger {
+  return {
+    revision: 0,
+    ...Object.fromEntries(SESSION_PROVIDERS.map((k) => [k, null])),
+  } as Ledger;
+}
+
 const g = globalThis as unknown as { _modelNoticeListeners?: Set<(state: ModelNoticesResponse) => void> };
 const listeners = g._modelNoticeListeners ??= new Set();
 
@@ -13,15 +22,18 @@ function read(): Ledger {
     try {
       const state = JSON.parse(raw) as Ledger;
       if (Number.isSafeInteger(state.revision)
-          && [state.claude, state.codex].every((p) => p === null
-            || (Array.isArray(p?.known) && Array.isArray(p?.unread)))) return state;
+          && SESSION_PROVIDERS.every((k) => state[k] === null || state[k] === undefined
+            || (Array.isArray(state[k]?.known) && Array.isArray(state[k]?.unread)))) return state;
     } catch { /* A corrupt ledger starts a silent baseline again. */ }
   }
-  return { revision: 0, claude: null, codex: null };
+  return emptyLedger();
 }
 
 function response(state: Ledger): ModelNoticesResponse {
-  return { revision: state.revision, claude: state.claude?.unread ?? [], codex: state.codex?.unread ?? [] };
+  return {
+    revision: state.revision,
+    ...Object.fromEntries(SESSION_PROVIDERS.map((k) => [k, state[k]?.unread ?? []])),
+  } as ModelNoticesResponse;
 }
 
 function write(state: Ledger): void {
@@ -44,7 +56,14 @@ export function subscribeModelNotices(listener: (state: ModelNoticesResponse) =>
  * Bare aliases cannot announce releases: their ids never change. */
 export function normalizeNoticeModel(kind: AgentKind, model: ModelNotice): ModelNotice | null {
   if (!model.id || !model.label) return null;
-  if (kind === 'codex') return { id: model.id, label: model.label };
+  // The folding below is CLAUDE's OWN id scheme (§14.43): its catalog mixes
+  // bare aliases, dated ids and `[1m]` context variants of the same model, so
+  // they are collapsed before comparison and an id outside that family is not
+  // one of its models. Every other provider ships a list of distinct ids that
+  // needs none of it — and routing them through it dropped ALL of them, since
+  // nothing there starts with `claude-`. A `kind === 'codex' ? … : …` said this
+  // for two providers and silently mis-said it for the third (§14.102).
+  if (kind !== 'claude') return { id: model.id, label: model.label };
   const id = model.id.replace(/\[1m\]$/i, '').replace(/-\d{8}$/, '');
   return id.startsWith('claude-') ? { id, label: model.label } : null;
 }

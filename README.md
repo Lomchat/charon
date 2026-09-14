@@ -12,8 +12,8 @@
 >
 > 1. **A coding-agent hub** — launch and supervise
 >    [Claude Code](https://docs.claude.com/en/docs/claude-code) /
->    [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk) **and
->    [OpenAI Codex](https://github.com/openai/codex)** sessions, side by side on
+>    [Claude Agent SDK](https://docs.claude.com/en/docs/claude-code/sdk),
+>    **[OpenAI Codex](https://github.com/openai/codex) and Cursor** sessions, side by side on
 >    any SSH-reachable VPS, with streamed replies, human approval gates,
 >    fork / rewind / compact / review controls, diffs, usage gauges, skills,
 >    MCP tools, sub-agents and notifications.
@@ -44,14 +44,15 @@ the control plane.
 
 ---
 
-## 1 · Coding sessions — Claude _and_ Codex, one UI
+## 1 · Coding sessions — Claude, Codex and Cursor, one UI
 
 <img src="./docs/img/claude-chat.png" alt="Claude session: streamed answer, paired tool calls and a captured diff with a revert button" width="49%"></img>
 <img src="./docs/img/codex-chat.png" alt="Codex session: the same UI driving OpenAI Codex, with sandbox modes and a unified diff" width="49%"></img>
 
 Each session is an independent agent running **on the VPS**, not on your
-machine — a `ClaudeSDKClient` (Claude) or an OpenAI Codex thread (via the Codex
-app-server). Both speak the same UI:
+machine — a `ClaudeSDKClient` (Claude), an OpenAI Codex thread (via the Codex
+app-server), or a Cursor SDK agent. Claude and Codex share the controls below;
+[Cursor sessions](#cursor-sessions) expose the subset their SDK supports.
 
 - **Rich live transcripts.** Answers stream token by token; reasoning is
   collapsible; tool calls are paired with their results; shell output, plans,
@@ -132,6 +133,25 @@ permission profiles and an automatic approval reviewer. Controls that Charon
 can safely adapt — cross-provider fork, review, archive, stable handles and peer
 messaging — still look and persist the same way for both.
 
+### Cursor sessions
+
+Cursor is available as an optional third backend. Enable it in **Settings**,
+install its SDK through the VPS agent controls, then open the sign-in link in
+your browser. Sign-in completes without pasting a code or opening a VPS shell.
+The backend switch also controls SDK installation and automatic updates.
+
+Cursor sessions share the chat, workspace, lifecycle and stable `@handle`
+controls, including peer messaging. The model picker uses the signed-in
+account's catalog and offers each model's supported reasoning parameters.
+Turn usage includes recorded cost; account usage opens Cursor's dashboard.
+Import scans known workspaces with folder selection and pagination, including
+conversations beyond the first SDK page and histories from older Charon stores.
+
+Cursor has no native fork, rewind, manual compaction, context-window gauge or
+file-revert snapshots. Cross-provider handoffs and detached reviews use the
+shared transcript transfer, while unavailable controls follow the backend's
+declared capabilities.
+
 ### MCP and session-to-session messaging
 
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) lets an agent
@@ -141,7 +161,7 @@ tool count, errors and authentication state. Claude servers can be enabled or
 disabled from the panel; Codex servers can start their OAuth flow there.
 Reconnect is offered only when a server is not already ready.
 
-Charon also gives **every live Claude and Codex session** an internal MCP server
+Charon also gives **every live Claude, Codex and Cursor session** an internal MCP server
 named `charon_peer`. It exposes two tools:
 
 - `list_sessions` returns the other live sessions on the same VPS, with their
@@ -150,7 +170,7 @@ named `charon_peer`. It exposes two tools:
   session's normal input path.
 
 That makes a prompt such as _“Ask `@api-review` to inspect this migration and
-reply to you with its findings”_ actionable for either provider. The path is:
+reply to you with its findings”_ actionable for any provider. The path is:
 
 ```
 source agent → charon_peer MCP → charon-agent → target session → reply the same way

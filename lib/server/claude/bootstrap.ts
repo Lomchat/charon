@@ -6,6 +6,7 @@ import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { sshExec, openSshSession, closeSshSession, type SshResult, type SshSession } from './sshExec';
 import { parseVerifyOutput, isVenvPython } from './verifyParse';
+import { isBackendEnabled } from './settings';
 // Live mirror of the vps-row persists below (no cycle: sessionOps imports
 // neither bootstrap nor agentUpdate).
 import { emitGlobalVpsStatus } from '../agent/sessionOps';
@@ -37,6 +38,8 @@ export type BootstrapPhase =
   | 'install_sdk'        // claude-agent-sdk (Python lib for the agent)
   | 'install_codex'      // openai-codex (2nd backend — installed on EVERY VPS,
                          //   like the SDK; failure is loud but non-blocking)
+  | 'install_cursor'     // cursor-sdk (3rd backend — installed on EVERY VPS,
+                         //   like the others; failure is loud but non-blocking)
   | 'install_claude_cli' // `claude` CLI (curl install.sh — for `claude login`)
   | 'install_agent'      // drops the .pyz
   | 'install_service'    // systemd-user unit (or fallback)
@@ -357,6 +360,8 @@ export async function pingAgent(
   codexAvailable?: boolean;
   codexSdkVersion?: string;
   codexCliVersion?: string;
+  cursorAvailable?: boolean;
+  cursorSdkVersion?: string;
   detail: string;
 }> {
   // Give the daemon a bit of time to start
@@ -377,6 +382,8 @@ export async function pingAgent(
   let codexAvailable: boolean | undefined;
   let codexSdkVersion: string | undefined;
   let codexCliVersion: string | undefined;
+  let cursorAvailable: boolean | undefined;
+  let cursorSdkVersion: string | undefined;
   let pingOk = false;
   for (const l of lines) {
     try {
@@ -389,10 +396,14 @@ export async function pingAgent(
       if (typeof msg?.result?.codex_available === 'boolean') codexAvailable = msg.result.codex_available;
       if (typeof msg?.result?.codex_sdk_version === 'string') codexSdkVersion = msg.result.codex_sdk_version;
       if (typeof msg?.result?.codex_cli_version === 'string') codexCliVersion = msg.result.codex_cli_version;
+      // Cursor hello keys (§14.103). Same typeof guard, same reason.
+      if (typeof msg?.result?.cursor_available === 'boolean') cursorAvailable = msg.result.cursor_available;
+      if (typeof msg?.result?.cursor_sdk_version === 'string') cursorSdkVersion = msg.result.cursor_sdk_version;
     } catch {}
   }
   if (!pingOk) return { ok: false, detail: 'no pong response: ' + r.stdout.slice(-300) };
   const codexNote = codexAvailable ? ` · codex ${codexSdkVersion ?? 'on'}` : '';
+  const cursorNote = cursorAvailable ? ` · cursor ${cursorSdkVersion ?? 'on'}` : '';
   return {
     ok: true,
     version,
@@ -400,7 +411,9 @@ export async function pingAgent(
     codexAvailable,
     codexSdkVersion,
     codexCliVersion,
-    detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}${codexNote}`,
+    cursorAvailable,
+    cursorSdkVersion,
+    detail: `agent ${version ?? '?'}${pyzSha ? ` (${pyzSha})` : ''}${codexNote}${cursorNote}`,
   };
 }
 
@@ -518,7 +531,12 @@ const INSTALL_SDK_CMD = [
   // EOF, which is exactly the minute of silence the install console is
   // trying to fill (the hub tails the buffered result itself for the error
   // detail). Same reason on the line above.
-  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1`,
+  // ⚠ `|| exit 13`: there is no `set -e` here, so a FAILING pip used to fall
+  // through to the import check below — which happily validates the version
+  // ALREADY installed and prints the OK marker. Exit 0, marker matched, no
+  // warning: a refused upgrade reported as a successful one, and the badge
+  // relights next tick with nothing saying why.
+  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 || exit 13`,
   // Post-import check: the ONLY real proof that it works.
   `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
 ].join('\n');
@@ -661,6 +679,54 @@ finally:
 print("[install_codex] OK cli_version=" + version)
 `, 'utf8').toString('base64');
 
+// Cursor's runtime is ONE pip package. The wheel is platform-specific and
+// stages its own Node runtime (~130 MB) for the SDK bridge, which is exactly
+// why this backend needs nothing else on the box (§7) — and why the install is
+// this short compared to Codex's, which downloads a separate CLI artefact.
+const INSTALL_CURSOR_TIMEOUT_MS = 300_000;
+const INSTALL_CURSOR_CMD = [
+  `set -o pipefail`,
+  `if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
+  `  echo "[install_cursor] venv not ready (claude-agent-sdk install must run first)"; exit 12;`,
+  `fi`,
+  `echo "[install_cursor] pip install --upgrade cursor-sdk in ${VENV_DIR}"`,
+  // No `| tail`: it would hold the whole install until EOF and the console
+  // could not tail it live (same reason as INSTALL_SDK_CMD).
+  // ⚠ `|| exit 13`: there is no `set -e` here, so a FAILING pip used to fall
+  // through to the import check below — which happily validates the version
+  // ALREADY installed and prints the OK marker. Exit 0, marker matched, no
+  // warning: a refused upgrade reported as a successful one, and the badge
+  // relights next tick with nothing saying why.
+  `${VENV_PY} -m pip install --upgrade cursor-sdk 2>&1 || exit 13`,
+  // Success is the marker, gated on the EXIT CODE and anchored at ^ (§14.67):
+  // a crashing probe echoes its own source line, which once passed for output.
+  `${VENV_PY} -c "import cursor_sdk, importlib.metadata as m; print('[install_cursor] OK version=' + m.version('cursor-sdk'))"`,
+].join('\n');
+
+export type EnsureCursorResult = {
+  ok: boolean; cursorVersion?: string; error?: string; sshError?: string;
+};
+
+export async function ensureCursorLatest(
+  vps: Vps, session?: SshSession, onData?: (chunk: string) => void,
+): Promise<EnsureCursorResult> {
+  const own = session ?? openSshSession(vps);
+  try {
+    const r = await sshExec(vps, INSTALL_CURSOR_CMD,
+      { timeoutMs: INSTALL_CURSOR_TIMEOUT_MS, session: own, onData });
+    const sshErr = detectSshFailure(r);
+    if (sshErr) return { ok: false, error: sshErr, sshError: sshErr };
+    const out = r.stdout + r.stderr;
+    const m = out.match(/^\[install_cursor\] OK version=(\S+)/m);
+    if (!r.ok || !m) return { ok: false, error: (out.slice(-600) || `exit ${r.code}`).trim() };
+    return { ok: true, cursorVersion: m[1] };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    if (!session) await closeSshSession(own);
+  }
+}
+
 const INSTALL_CODEX_CMD = [
   `set -o pipefail`,
   // Venv must exist AND have a working pip (ensureSdkLatest guarantees this
@@ -674,7 +740,12 @@ const INSTALL_CODEX_CMD = [
   // bundled codex CLI) transitively — no extra step.
   // No `| tail`: it would hold the whole install until EOF and the console
   // could not tail it live (same reason as INSTALL_SDK_CMD).
-  `${VENV_PY} -m pip install --upgrade openai-codex 2>&1`,
+  // ⚠ `|| exit 13`: there is no `set -e` here, so a FAILING pip used to fall
+  // through to the import check below — which happily validates the version
+  // ALREADY installed and prints the OK marker. Exit 0, marker matched, no
+  // warning: a refused upgrade reported as a successful one, and the badge
+  // relights next tick with nothing saying why.
+  `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 || exit 13`,
   // The standalone CLI is an independent release line (e.g. CLI 0.147 while
   // the public Python SDK remains 0.144.4). Download the platform's native
   // npm artifact directly so a minimal worker needs no Node/npm installation.
@@ -747,6 +818,12 @@ export type UpdateAgentResult = {
   codexSdkVersion?: string;
   codexCliVersion?: string;
   codexAvailable?: boolean;
+  // cursor-sdk version + availability post-update. Same contract as codex:
+  // OPTIONAL, never fails the update, never null-clobbers (§14.53). The field
+  // name matches the vps COLUMN so the staleness axis reads its own result
+  // back (§14.102, pinned by tests/providerRegistry).
+  cursorSdkVersion?: string;
+  cursorAvailable?: boolean;
   detail: string;
   // PARTIAL failures on an ok:true update (the pip sub-steps are non-fatal by
   // design: the pyz deploy succeeded but claude-agent-sdk and/or openai-codex
@@ -784,6 +861,23 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     const codexNote = codex.ok
       ? `codex sdk ${codex.codexVersion}${codex.codexCliVersion ? ` / cli ${codex.codexCliVersion}` : ''}`
       : `codex ${codex.sshError ? 'skipped (ssh)' : 'skipped'}: ${(codex.error ?? '').slice(-160)}`;
+
+    // Step 1.7: upgrade cursor-sdk too (§14.103). Same contract as codex —
+    // OPTIONAL and warn-only — but GATED on the backend being enabled: the
+    // wheel carries its own Node runtime (~130 MB) and adds minutes to the
+    // window in which this VPS's sessions are asleep. Paying that on every
+    // update of every box for a backend that ships OFF is not a cost the
+    // operator asked for; flipping the switch on installs it at the next
+    // update (or the ⇩ install button, which runs this same flow).
+    const cursorWanted = isBackendEnabled('cursor');
+    const cursor = cursorWanted
+      ? await ensureCursorLatest(vps, session)
+      : null;
+    const cursorNote = !cursor
+      ? 'cursor off'
+      : cursor.ok
+        ? `cursor sdk ${cursor.cursorVersion}`
+        : `cursor ${cursor.sshError ? 'skipped (ssh)' : 'skipped'}: ${(cursor.error ?? '').slice(-160)}`;
 
     // Step 2: restart. Try systemd-user then nohup fallback.
     // IMPORTANT: join with '\n' to preserve shell syntax (if/then/else/fi).
@@ -850,9 +944,13 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     const codexCliVersion = ping.codexCliVersion ?? (codex.ok ? codex.codexCliVersion : undefined);
     // Partial failures → structured warnings (the UI toasts them; the badge
     // relighting after an "ok" update is otherwise a silent mystery).
+    const cursorSdkVersion = ping.cursorSdkVersion ?? (cursor?.ok ? cursor.cursorVersion : undefined);
     const warnings: string[] = [];
     if (!sdk.ok) warnings.push(sdkNote);
     if (!codex.ok) warnings.push(codexNote);
+    // A DISABLED backend is not a partial failure — it is the operator's
+    // choice, and toasting it on every update would be noise.
+    if (cursor && !cursor.ok) warnings.push(cursorNote);
     return {
       ok: true,
       newVersion: ping.version,
@@ -861,7 +959,9 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       ...(codexSdkVersion ? { codexSdkVersion } : {}),
       ...(codexCliVersion ? { codexCliVersion } : {}),
       ...(ping.codexAvailable !== undefined ? { codexAvailable: ping.codexAvailable } : {}),
-      detail: `${ping.detail} · ${sdkNote} · ${codexNote}`,
+      ...(cursorSdkVersion ? { cursorSdkVersion } : {}),
+      ...(ping.cursorAvailable !== undefined ? { cursorAvailable: ping.cursorAvailable } : {}),
+      detail: `${ping.detail} · ${sdkNote} · ${codexNote} · ${cursorNote}`,
       ...(warnings.length ? { warnings } : {}),
     };
   } finally {
@@ -1084,6 +1184,29 @@ async function* bootstrapVpsInner(
     yield { phase: 'install_codex', status: 'error', detail: `openai-codex NOT installed — Codex sessions unavailable on this VPS: ${codexError}` };
   }
 
+  // Phase 1.6: install cursor-sdk (§14.103), ONLY when the backend is enabled.
+  //
+  // Unlike the other two runtimes this wheel bundles its own Node (~130 MB),
+  // and Cursor ships OFF by default — installing it on every box for a backend
+  // nobody turned on is minutes of bootstrap and a lot of disk for nothing.
+  // Enabling it in Settings installs it at the next agent update. A failure is
+  // reported as an ERROR phase but never aborts: the agent still deploys, the
+  // other backends stay usable, and the box simply reports
+  // cursor_available=false so the sidebar hides its ＋.
+  let cursorError: string | null = null;
+  if (!isBackendEnabled('cursor')) {
+    yield { phase: 'install_cursor', status: 'warn', detail: 'Cursor is off in Settings — skipped (enable it, then update the agent)' };
+  } else {
+    yield { phase: 'install_cursor', status: 'running', detail: `pip install cursor-sdk in ${VENV_DIR}` };
+    const cursorRes = await ensureCursorLatest(vps, session, tail('install_cursor'));
+    if (cursorRes.ok) {
+      yield { phase: 'install_cursor', status: 'ok', detail: cursorRes.cursorVersion ? `cursor-sdk ${cursorRes.cursorVersion} in ${VENV_DIR}` : `installed in ${VENV_DIR}` };
+    } else {
+      cursorError = (cursorRes.sshError ?? cursorRes.error ?? 'install failed').slice(-200);
+      yield { phase: 'install_cursor', status: 'error', detail: `cursor-sdk NOT installed — Cursor sessions unavailable on this VPS: ${cursorError}` };
+    }
+  }
+
   // Phase 1.5: install Claude CLI (`claude`) if missing.
   // This is the shell CLI distinct from the Python SDK: required for
   // `claude login` (OAuth). The agent can run without it (it uses the
@@ -1211,16 +1334,24 @@ async function* bootstrapVpsInner(
   // does the same update: we deliberately duplicate here to have a
   // consistent DB state from the end of the bootstrap.
   try {
+    // Backend availability/versions from hello — ONLY the keys the agent
+    // actually reported (an old one omits them; never null-clobber, §14.53).
+    // EVERY backend: listed by hand, the third one's columns stayed NULL after
+    // a fresh bootstrap, so its health chip read "not installed" on a box that
+    // had just installed it.
+    const backends = {
+      ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
+      ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
+      ...(pingR.codexCliVersion !== undefined ? { codexCliVersion: pingR.codexCliVersion } : {}),
+      ...(pingR.cursorAvailable !== undefined ? { cursorAvailable: pingR.cursorAvailable ? 1 : 0 } : {}),
+      ...(pingR.cursorSdkVersion !== undefined ? { cursorSdkVersion: pingR.cursorSdkVersion } : {}),
+    };
     db.update(vpsTable).set({
       agentStatus: 'ok',
       agentVersion: pingR.version ?? null,
       agentPyzSha: pingR.pyzSha ?? null,
       agentLastSeenAt: Math.floor(Date.now() / 1000),
-      // Codex availability/version from hello — ONLY when the agent reported
-      // them (≥0.15.0). Old agents omit the keys → never null-clobber (§14.53).
-      ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
-      ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
-      ...(pingR.codexCliVersion !== undefined ? { codexCliVersion: pingR.codexCliVersion } : {}),
+      ...backends,
     }).where(eq(vpsTable.id, vps.id)).run();
     // Mirror onto the live bus: the install SSE only reaches the tab that
     // launched it, so without this every OTHER tab/device keeps "not
@@ -1229,9 +1360,7 @@ async function* bootstrapVpsInner(
       agentVersion: pingR.version ?? null,
       agentPyzSha: pingR.pyzSha ?? null,
       agentLastError: null,
-      ...(pingR.codexAvailable !== undefined ? { codexAvailable: pingR.codexAvailable ? 1 : 0 } : {}),
-      ...(pingR.codexSdkVersion !== undefined ? { codexSdkVersion: pingR.codexSdkVersion } : {}),
-      ...(pingR.codexCliVersion !== undefined ? { codexCliVersion: pingR.codexCliVersion } : {}),
+      ...backends,
     });
   } catch {}
 

@@ -25,6 +25,8 @@ import {
   IconClipboard, IconDiff, IconDownload, IconEye, IconFileEarmark, IconGitBranch,
   IconPaperclip, IconPlusSquare, IconSearch, IconTools, IconTrash,
 } from './icons';
+import { PROVIDERS } from '@/lib/sessionCapabilities';
+import { providerText } from '@/lib/providerText';
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { ToolCallEntry, EditSnapshot }
@@ -274,15 +276,25 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<EditSnapshot | null>(null);
 
-  // Codex hands us a ready-made unified diff (in `after`); Claude gives a
-  // before/after pair we diff ourselves. Side-by-side split + revert only make
-  // sense for the Claude pair (a bare patch has no clean "before" to restore).
-  const isCodex = kind === 'codex';
+  // WHAT an edit snapshot contains is declared by the registry, not inferred
+  // from the id (§14.102): one backend hands us a ready-made unified diff in
+  // `after`, another a before/after pair we diff ourselves, and a third reports
+  // no snapshots at all. Side-by-side split + revert only make sense for the
+  // pair — a bare patch has no clean "before" to restore. Read as
+  // `kind === 'codex'`, the third backend was silently given the pair renderer
+  // and a revert button for a pre-image it never sends.
+  const shape = PROVIDERS[kind].editSnapshot;
+  const isPair = shape === 'contents';
   const prepared = useMemo(() => edits.map((edit) => {
-    const patch = isCodex ? (edit.after ?? '') : makeUnifiedDiff(edit.filePath, edit.before ?? '', edit.after ?? '');
+    const patch = isPair
+      ? makeUnifiedDiff(edit.filePath, edit.before ?? '', edit.after ?? '')
+      : (edit.after ?? '');
     return { edit, patch, stats: countDiff(patch) };
-  }), [edits, isCodex]);
+  }), [edits, isPair]);
 
+  if (shape === 'none') {
+    return <div className="tp-empty">{providerText.noEditSnapshots(kind)}</div>;
+  }
   if (edits.length === 0) return <div className="tp-empty">no files modified in this session</div>;
 
   async function revert(filePath: string) {
@@ -312,7 +324,7 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
                     <span className="add">+{stats.add}</span>
                     <span className="del">−{stats.del}</span>
                   </span>
-                  {!isCodex && (
+                  {isPair && (
                     <>
                       <button className="compare" onClick={() => setOpen(e)} title="compare side by side">⇄ split</button>
                       <button className="revert" disabled={busy === e.filePath || e.truncated}
@@ -325,8 +337,8 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
                 </div>
               </div>
               {e.truncated && <div className="warn">⚠ truncated snapshot (file &gt; 256KB)</div>}
-              {!isCodex && e.before == null && <div className="note">new file (Write)</div>}
-              <pre className="diff-body">{isCodex ? renderRawPatch(patch) : renderDiffHtml(patch)}</pre>
+              {isPair && e.before == null && <div className="note">new file (Write)</div>}
+              <pre className="diff-body">{isPair ? renderDiffHtml(patch) : renderRawPatch(patch)}</pre>
             </div>
           );
         })}

@@ -1,3 +1,5 @@
+import type { AgentKind } from '@/lib/types/api';
+import { supportsSessionCapability } from '@/lib/sessionCapabilities';
 /**
  * MCP providers do not use one status enum: Codex reports `ready`, while
  * Claude SDK releases have used `connected` (and compatible servers may expose
@@ -105,7 +107,14 @@ export function contextWindowTokenLabel(context: SessionContextUsage | null): st
 }
 
 /** Native compaction requires an idle, loaded provider session. */
-export function canCompactSession(status: string | null | undefined): boolean {
+export function canCompactSession(
+  status: string | null | undefined,
+  kind?: AgentKind,
+): boolean {
+  // A backend with no compaction primitive must not offer the button: the
+  // agent used to fall through to Claude's mechanism, which sends the literal
+  // string "/compact" to the model as a prompt (§14.103).
+  if (kind && !supportsSessionCapability(kind, 'compact')) return false;
   return status === 'active' || status === 'failed' || status === 'background';
 }
 
@@ -125,6 +134,9 @@ export function contextUsagePresentation(
 
   let explicitFailure: string | null = null;
   if (context?.reason === 'unsupported') explicitFailure = 'needs a newer agent on this VPS';
+  // `unavailable` ≠ `unsupported`: the backend has no such surface at all, so
+  // telling the user to update an already-current agent would be a lie.
+  else if (context?.reason === 'unavailable') explicitFailure = 'not reported by this backend';
   else if (context?.reason === 'offline') explicitFailure = 'the VPS agent is offline';
   else if (context?.error) explicitFailure = context.error;
 

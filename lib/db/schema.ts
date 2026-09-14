@@ -104,6 +104,21 @@ export const vps = sqliteTable('vps', {
   // tokens), 0 = not, NULL = never checked. Mirrors claudeLoggedIn.
   codexLoggedIn: integer('codex_logged_in'),
   codexLoggedInCheckedAt: integer('codex_logged_in_checked_at'),
+  // ── Cursor availability on this VPS (third backend, §14.103). ──
+  // cursorAvailable: 1/0/NULL — whether the `cursor-sdk` Python package is
+  // importable in the VPS venv, as reported by `hello` (cursor_available).
+  // NULL = unknown / agent predating the probe; same no-null-clobber rule as
+  // the codex fields (§14.53).
+  cursorAvailable: integer('cursor_available'),
+  // Version of `cursor-sdk` in the venv (hello.cursor_sdk_version). The wheel
+  // carries its own hermetic Node runtime for the SDK bridge, so this single
+  // version covers the whole Cursor runtime — unlike Codex, which has an
+  // independent CLI release line.
+  cursorSdkVersion: text('cursor_sdk_version'),
+  // State of the Cursor SDK login on this VPS. 1 = ~/.cursor/sdk/auth.json
+  // holds an unexpired minted key, 0 = not, NULL = never checked.
+  cursorLoggedIn: integer('cursor_logged_in'),
+  cursorLoggedInCheckedAt: integer('cursor_logged_in_checked_at'),
   // Which Claude settings files sessions on THIS VPS load (§14.100), as the
   // canonical comma list ('user,project') or 'none' for isolation mode.
   // NULL = inherit the hub default (`claude.setting_sources`) — and NULL is

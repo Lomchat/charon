@@ -6,7 +6,7 @@ import { asc, desc, eq } from 'drizzle-orm';
 import ClaudePanel from './ClaudePanel';
 import { listTabs } from '@/lib/server/claude/tabs';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
-import { getSdkLatestVersion, refreshSdkLatestIfStale, getCodexLatestVersion, refreshCodexLatestIfStale, getCodexCliLatestVersion, refreshCodexCliLatestIfStale } from '@/lib/server/claude/sdkSync';
+import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/claude/sdkSync';
 import { compareVersions } from '@/lib/version';
 import { SESSION_PEER_AGENT_VERSION } from '@/lib/sessionHandle';
 
@@ -42,14 +42,12 @@ export default async function CharonPage() {
   const builtPyzSha = getBuiltPyzSha();
   // Version-ordered staleness baseline (§14.6) — the sha is display-only now.
   const builtAgentVersion = getBuiltAgentVersion();
-  // Latest claude-agent-sdk on PyPI (settings cache) → sidebar SDK-outdated
-  // badges. Kick a background refresh when stale (12h TTL, fire-and-forget).
-  const sdkLatestVersion = getSdkLatestVersion();
-  refreshSdkLatestIfStale();
-  const codexLatestVersion = getCodexLatestVersion();
-  const codexCliLatestVersion = getCodexCliLatestVersion();
-  refreshCodexLatestIfStale();
-  refreshCodexCliLatestIfStale();
+  // Every declared release line's latest (settings cache) → sidebar
+  // out-of-date badges and health chips. Kick a background refresh when stale
+  // (12h TTL, fire-and-forget). Derived from the registry, so a new backend's
+  // package is served to the browser the day it is declared (§14.102).
+  const staleness = latestVersionsByKey();
+  refreshAllLatestsIfStale();
   const initialTabs = listTabs();
 
   return (
@@ -60,9 +58,7 @@ export default async function CharonPage() {
       initialSessions={sessionRows}
       builtPyzSha={builtPyzSha}
       builtAgentVersion={builtAgentVersion}
-      sdkLatestVersion={sdkLatestVersion}
-      codexLatestVersion={codexLatestVersion}
-      codexCliLatestVersion={codexCliLatestVersion}
+      staleness={staleness}
       initialTabs={initialTabs}
     />
   );

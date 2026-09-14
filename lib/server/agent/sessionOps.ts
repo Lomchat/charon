@@ -19,7 +19,9 @@ import {
 } from '@/lib/server/claude/telegram';
 import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
-import type { ClaudeSessionConfig, CodexSessionConfig, ProviderSessionConfig } from '@/lib/types/api';
+import type {
+  ClaudeSessionConfig, CodexSessionConfig, CursorSessionConfig, ProviderSessionConfig,
+} from '@/lib/types/api';
 import { resolveSettingSources, safeParseSettingSources } from '@/lib/settingSources';
 import { AgentRpcError } from './types';
 import type { AgentClient, EventListener as AgentEventListener } from './AgentClient';
@@ -29,6 +31,7 @@ import {
   classifyTerminalClaudeError, type TerminalClaudeErrorKind,
 } from '@/lib/terminalClaudeError';
 import { classifySessionError, type SessionErrorPayload } from '@/lib/sessionError';
+import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
 import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
 import { dropTabsForRef } from '@/lib/server/claude/tabs';
@@ -42,8 +45,11 @@ import { bgTaskIdsBeforeEventFromDb, isBgTaskDone, pruneStaleBgTasks, runningBgT
 import { readCodexBgState } from '@/lib/server/claude/codexBgState';
 import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
+import { providerText } from '@/lib/providerText';
 import {
-  defaultSessionMode, isSessionEffort, isSessionMode,
+  PROVIDERS, asSessionProvider, defaultSessionMode, isEffortValue, isSessionEffort, isSessionMode,
+  providerBackendState, providerLabel as providerDisplayName, providerLoginPatch,
+  providerSettingKey, supportsSessionCapability, unhandledProvider,
 } from '@/lib/sessionCapabilities';
 
 // How long after the last background task finishes before the session is
@@ -73,17 +79,14 @@ function _resolveSessionConfig(
     const v = getSetting(settingKey);
     return v && v.length > 0 ? v : null;
   };
-  if (kind === 'codex') {
-    return {
-      model: pick(opts.model, 'codex.default_model'),
-      fallbackModel: null, // Codex has no fallback-model concept.
-      effort: pick(opts.effort, 'codex.default_effort'),
-    };
-  }
+  // Provider-derived keys keep defaults exhaustive (§14.102).
   return {
-    model: pick(opts.model, 'claude.default_model'),
-    fallbackModel: pick(opts.fallbackModel, 'claude.default_fallback_model'),
-    effort: pick(opts.effort, 'claude.default_effort'),
+    model: pick(opts.model, providerSettingKey(kind, 'default_model')),
+    // Fallback settings exist only for providers declaring that capability.
+    fallbackModel: supportsSessionCapability(kind, 'fallbackModel')
+      ? pick(opts.fallbackModel, `${kind}.default_fallback_model` as SettingKey)
+      : null,
+    effort: pick(opts.effort, providerSettingKey(kind, 'default_effort')),
   };
 }
 
@@ -91,10 +94,7 @@ function _resolveSessionConfig(
  * installation policy; the shared fallback remains safe for source checkouts
  * and for a corrupt/unknown stored value. */
 export function resolveConfiguredSessionMode(kind: AgentKind): SessionMode {
-  const key: SettingKey = kind === 'codex'
-    ? 'codex.default_permission_mode'
-    : 'claude.default_permission_mode';
-  const configured = getSetting(key);
+  const configured = getSetting(providerSettingKey(kind, 'default_permission_mode'));
   return (isSessionMode(kind, configured)
     ? configured
     : defaultSessionMode(kind, 'create')) as SessionMode;
@@ -125,6 +125,18 @@ function resolveCodexConfig(value: CodexSessionConfig | null | undefined): Codex
   return { ...(value ?? {}), approvalsReviewer: reviewer };
 }
 
+/** Persist Cursor overrides without freezing values derived from the mode. */
+function resolveCursorConfig(
+  value: CursorSessionConfig | null | undefined,
+): CursorSessionConfig {
+  const { autoReview, settingSources, ...rest } = value ?? {};
+  return {
+    ...rest,
+    ...(typeof autoReview === 'boolean' ? { autoReview } : {}),
+    settingSources: settingSources ?? ['project', 'user'],
+  };
+}
+
 /**
  * Fill in the Claude construction options a session inherits rather than
  * chooses (§14.100). Today that is only the settings scope, resolved OUTSIDE-IN
@@ -146,14 +158,34 @@ function resolveClaudeConfig(
   };
 }
 
+/** Resolve provider construction config exhaustively. */
+function resolveProviderConfig(
+  kind: AgentKind,
+  requested: ProviderSessionConfig | null,
+  vpsRow: { claudeSettingSources?: string | null } | null,
+): ProviderSessionConfig | null {
+  switch (kind) {
+    case 'codex':
+      return resolveCodexConfig(requested as CodexSessionConfig | null);
+    case 'claude':
+      return resolveClaudeConfig(requested as ClaudeSessionConfig | null, vpsRow);
+    case 'cursor':
+      return resolveCursorConfig(requested as CursorSessionConfig | null);
+    default:
+      return unhandledProvider(kind);
+  }
+}
+
 export function isValidEffort(v: string | null | undefined): v is EffortLevel {
   return isSessionEffort('claude', v);
 }
 // Kind-aware effort validity. A Codex session's effort is validated against the
 // Codex set (so 'ultra'/'none'/'minimal' aren't dropped); a Claude session uses
-// the Claude set. Invalid values are dropped (persisted as null → default).
+// the Claude set; a provider whose ladder is per model (Cursor) stores a
+// parameter set, validated by SHAPE since no hub-side vocabulary exists.
+// Invalid values are dropped (persisted as null → default).
 function isValidEffortForKind(v: string | null | undefined, kind: AgentKind): boolean {
-  return isSessionEffort(kind, v);
+  return isEffortValue(kind, v);
 }
 
 const newId = () => crypto.randomBytes(8).toString('hex');
@@ -233,23 +265,16 @@ export function emitGlobalVpsStatus(
     agentVersion?: string | null; agentPyzSha?: string | null; sdkVersion?: string | null;
     agentLastError?: string | null; codexAvailable?: number | null; codexSdkVersion?: string | null; codexCliVersion?: string | null;
     codexLoggedIn?: number | null; claudeLoggedIn?: number | null;
+    cursorAvailable?: number | null; cursorSdkVersion?: string | null;
+    cursorLoggedIn?: number | null;
   },
 ): void {
   emitGlobalSession({
     type: 'vps_status',
     agentStatus,
-    agentVersion: extra?.agentVersion,
-    agentPyzSha: extra?.agentPyzSha,
-    sdkVersion: extra?.sdkVersion,
-    // Health-chip fields (§11 vpsHealth): classified failure + codex
-    // availability/login. Same "key present ⇔ known" contract as sdkVersion —
-    // ClaudePanel patches only defined keys (no-clobber, §14.53).
-    agentLastError: extra?.agentLastError,
-    codexAvailable: extra?.codexAvailable,
-    codexSdkVersion: extra?.codexSdkVersion,
-    codexCliVersion: extra?.codexCliVersion,
-    codexLoggedIn: extra?.codexLoggedIn,
-    claudeLoggedIn: extra?.claudeLoggedIn,
+    // Forward all declared runtime fields while preserving absent keys
+    // (`undefined`) for the no-clobber contract (§14.52-53).
+    ...pickVpsRuntimeFields(extra),
     sessionId: vpsId,
   });
 }
@@ -1090,9 +1115,10 @@ export class SessionStream {
         // broad labels ("Codex command", "Codex file changes"); remembering
         // one would silently approve every later request of that class.
         // Codex receives the exact native Turn/Session grant below instead.
-        const autoAllow = this.kind === 'claude' && this.alwaysAllow.has(ev.tool);
+        const autoAllow = supportsSessionCapability(this.kind, 'toolNameAllowList')
+          && this.alwaysAllow.has(ev.tool);
         const expiresAt = ev.expires_at
-          ?? Math.floor(Date.now() / 1000) + (this.kind === 'claude' ? 601 : 1801);
+          ?? Math.floor(Date.now() / 1000) + PROVIDERS[this.kind].interactionTimeoutS.permission;
         this._scheduleInteractionExpiry('permission', ev.id, expiresAt);
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
         if (this.isReplaying && this.replayKnownPendingIds.has(ev.id)) {
@@ -1141,7 +1167,8 @@ export class SessionStream {
         // the pending write completed too — no transaction needed.
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
-        const expiresAt = ev.expires_at ?? Math.floor(Date.now() / 1000) + 1801;
+        const expiresAt = ev.expires_at
+          ?? Math.floor(Date.now() / 1000) + PROVIDERS[this.kind].interactionTimeoutS.question;
         this._scheduleInteractionExpiry('question', ev.id, expiresAt);
         // Codex 16.2: "pending exists" must NOT short-circuit the message
         // row — the pending may have survived a crash whose row insert
@@ -1212,7 +1239,7 @@ export class SessionStream {
           this._maybePush({
             event: 'plan',
             title: `📋 ${this.vpsName} · ${this._label()} : plan ready`,
-            body: 'Claude finished planning — tap to approve',
+            body: providerText.finishedPlanning(this.kind),
             tag: `plan-${this.id}`,
           });
           sendPlainToTelegram(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan').catch(() => {});
@@ -1678,7 +1705,7 @@ export class SessionStream {
           // wait for the last task (§14.91).
           if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified) {
             const terminalError = this.terminalErrorLatched;
-            const providerLabel = this.kind === 'codex' ? 'Codex' : 'Claude';
+            const providerLabel = providerDisplayName(this.kind);
             const bgCount = bgPending ? this.bgRunning!.size : 0;
             const finishedBody = `${providerLabel} finished its response${bgCount > 0
               ? ` — ${bgCount} background task${bgCount === 1 ? '' : 's'} still running`
@@ -1916,7 +1943,7 @@ export class SessionStream {
       throw new Error('This approval has already expired or been cancelled.');
     }
     try {
-      if (this.kind === 'claude' && always && allow) {
+      if (supportsSessionCapability(this.kind, 'toolNameAllowList') && always && allow) {
         this.alwaysAllow.add(row.toolName);
         this._persistAlwaysAllow();
       }
@@ -2176,9 +2203,11 @@ export class SessionStream {
   /** Restore it on stream creation. Tolerates any garbage in the column —
    *  a corrupt value must not stop a session from starting. */
   hydrateAlwaysAllow(raw: string | null | undefined): void {
-    // Codex session grants live in Codex and are scoped to the exact request.
-    // Historical rows may contain broad pre-fix labels; never hydrate them.
-    if (this.kind !== 'claude') return;
+    // Only a provider whose approval cards name a CONCRETE tool may remember a
+    // grant (§14.8). Codex's labels are broad ("Codex command"), so its grants
+    // live provider-side, scoped to the exact request; historical rows may hold
+    // those broad pre-fix labels and must never be hydrated.
+    if (!supportsSessionCapability(this.kind, 'toolNameAllowList')) return;
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw);
@@ -2192,21 +2221,18 @@ export class SessionStream {
     try {
       const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
       if (!v) return;
-      const alreadyLoggedOut = this.kind === 'codex'
-        ? v.codexLoggedIn === 0 : v.claudeLoggedIn === 0;
-      if (alreadyLoggedOut) return;
+      if (providerBackendState(v as any, this.kind).loggedIn === 0) return;
       const checkedAt = Math.floor(Date.now() / 1000);
-      db.update(vpsTable).set(this.kind === 'codex'
-        ? { codexLoggedIn: 0, codexLoggedInCheckedAt: checkedAt }
-        : { claudeLoggedIn: 0, claudeLoggedInCheckedAt: checkedAt })
+      db.update(vpsTable)
+        .set(providerLoginPatch(this.kind, 0, checkedAt))
         .where(eq(vpsTable.id, this.vpsId)).run();
       this._log('warn', `${this.kind}_auth_expired`, { vpsId: this.vpsId });
       // Only mirror a status we actually know: emitGlobalVpsStatus's union
       // excludes 'unknown', and sending a wrong agentStatus would corrupt the
       // badge (the client patches it from the event).
       if (v.agentStatus === 'ok' || v.agentStatus === 'missing' || v.agentStatus === 'error') {
-        emitGlobalVpsStatus(this.vpsId, v.agentStatus, this.kind === 'codex'
-          ? { codexLoggedIn: 0 } : { claudeLoggedIn: 0 });
+        emitGlobalVpsStatus(this.vpsId, v.agentStatus,
+          { [PROVIDERS[this.kind].backend.loggedInColumn]: 0 });
       }
     } catch {}
   }
@@ -2794,7 +2820,7 @@ export async function importExistingSession(opts: {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
   const sessionId = newId();
-  const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
+  const kind: AgentKind = asSessionProvider(opts.kind);
   const defaultMode = resolveConfiguredSessionMode(kind);
   const handle = allocateSessionHandle(opts.vpsId, {
     id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
@@ -2802,7 +2828,7 @@ export async function importExistingSession(opts: {
   // An IMPORTED session is a session like any other: it must inherit this
   // VPS's settings scope too, or the same transcript would run under different
   // rules depending on how it entered Charon.
-  const providerConfig = kind === 'codex' ? resolveCodexConfig(null) : resolveClaudeConfig(null, vps);
+  const providerConfig = resolveProviderConfig(kind, null, vps);
   db.insert(claudeSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
@@ -2847,7 +2873,7 @@ export async function startNewSession(opts: {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
 
-  const kind: AgentKind = opts.kind === 'codex' ? 'codex' : 'claude';
+  const kind: AgentKind = asSessionProvider(opts.kind);
   const defaultMode = resolveConfiguredSessionMode(kind);
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = opts.sessionId ?? newId();
@@ -2864,9 +2890,7 @@ export async function startNewSession(opts: {
   });
   const effortPersist = isValidEffortForKind(cfg.effort, kind) ? cfg.effort : null;
   const requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
-  const providerConfig: ProviderSessionConfig | null = kind === 'codex'
-    ? resolveCodexConfig(requestedConfig as CodexSessionConfig | null)
-    : resolveClaudeConfig(requestedConfig as ClaudeSessionConfig | null, vps);
+  const providerConfig = resolveProviderConfig(kind, requestedConfig, vps);
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
@@ -2881,7 +2905,7 @@ export async function startNewSession(opts: {
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
-    // Historical column name; the JSON is provider-neutral since agent 0.66.
+    // Historical column name; the JSON is provider-neutral.
     codexConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
@@ -3216,7 +3240,7 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
   if (isCodex && !processId) {
     // Sub-agent spawns and peer turns: real background work, but the provider
     // exposes no per-item stop. Say what DOES stop it.
-    throw new Error('Codex cannot stop this item on its own — interrupt the turn to stop its work');
+    throw new Error(providerText.cannotStopItem(row.kind));
   }
   try {
     const res: any = processId

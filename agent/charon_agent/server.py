@@ -90,9 +90,14 @@ from .protocol import (
 )
 from .event_log import EventLog, cleanup_orphans, find_missing_ranges
 from .log_rotate import rotate_if_needed, rotation_loop
+from .providers import DEFAULT_KIND, PROVIDER_KINDS, get_provider
+from .cursor_runtime import (
+    CURSOR_AVAILABLE,
+    CURSOR_IMPORT_ERROR,
+    CURSOR_SDK_VERSION,
+)
 from .session import AgentSession, SDK_AVAILABLE, SDK_IMPORT_ERROR, SDK_VERSION
 from .codex_session import (
-    CodexSession,
     CODEX_AVAILABLE,
     CODEX_IMPORT_ERROR,
     CODEX_SDK_VERSION,
@@ -644,6 +649,41 @@ class Server:
                         and row.get("reply_injection") == "pending":
                     self._schedule_peer_reply_injection(message_id)
 
+    #: Insight RPC → the session attribute that answers it. Used to degrade a
+    #: method a backend does not implement into an `unavailable` envelope
+    #: instead of an AttributeError (§14.103).
+    #:
+    #: ⚠ `unavailable`, NOT `unsupported`. The hub renders `unsupported` as
+    #: "needs a newer agent on this VPS" (§14.95) — true for a rollout lag,
+    #: a lie for a backend that will never have the method however new the
+    #: agent gets. Telling a user to update a box that is already current is
+    #: worse than saying nothing.
+    _SESSION_INSIGHT_ATTR = {
+        "get_context_usage": "context_usage",
+        "mcp_status": "mcp_status",
+        "mcp_toggle": "mcp_toggle",
+        "mcp_reconnect": "mcp_reconnect",
+        "mcp_oauth_login": "mcp_oauth_login",
+        "list_subagents": "subagents",
+        "get_subagent_messages": "subagent_messages",
+        "session_identity": "identity",
+        # Missing from this map, `session_resources` reached `s_.resources()`
+        # on a class that has none and surfaced the raw AttributeError
+        # (-32603 "'CursorSession' object has no attribute 'resources'") in
+        # the panel.
+        "session_resources": "resources",
+    }
+
+    def _insight_unavailable(self, session: Any, method: str) -> "dict[str, Any] | None":
+        """The `unavailable` envelope when this backend has no such surface."""
+        attr = self._SESSION_INSIGHT_ATTR.get(method)
+        if attr is None or callable(getattr(session, attr, None)):
+            return None
+        return {
+            "ok": False, "reason": "unavailable",
+            "error": f"{getattr(session, 'kind', 'this')} sessions do not support {method}",
+        }
+
     def _make_session(
         self,
         *,
@@ -659,10 +699,13 @@ class Server:
         handle: str | None = None,
         provider_config: dict[str, Any] | None = None,
     ) -> Any:
-        """Factory keyed on the agent-type discriminator. Claude → AgentSession,
-        Codex → CodexSession. Both share the exact constructor signature +
-        public/private contract that this server drives."""
-        cls = CodexSession if kind == "codex" else AgentSession
+        """Factory keyed on the agent-type discriminator, driven by the provider
+        REGISTRY (providers.py) rather than a ternary: every backend shares the
+        exact constructor signature + public/private contract this server
+        drives, and only its class and config kwarg differ. Adding a backend is
+        one registry entry — never an edit here."""
+        spec = get_provider(kind)
+        cls = spec.session_class()
         kwargs: dict[str, Any] = dict(
             cwd=cwd,
             name=name,
@@ -676,10 +719,7 @@ class Server:
             handle=handle,
             peer_mcp=self._peer_mcp_config(session_id),
         )
-        if kind == "codex":
-            kwargs["codex_config"] = provider_config
-        else:
-            kwargs["session_config"] = provider_config
+        kwargs[spec.config_kwarg] = provider_config
         return cls(
             session_id,
             **kwargs,
@@ -877,6 +917,10 @@ class Server:
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "codex_login_api_key", "codex_logout", "codex_archive_thread", "codex_unarchive_thread",
+        "cursor_login_start", "cursor_login_status", "cursor_login_cancel",
+        "cursor_auth_status", "cursor_logout",
+        "cursor_list_models", "cursor_list_agents", "cursor_agent_messages",
+        "cursor_archive_agent", "cursor_unarchive_agent",
         "list_dir",
         "git_status", "git_workspace", "git_diff", "git_commit", "git_push",
         "git_pull", "git_discard",
@@ -933,6 +977,11 @@ class Server:
                 "codex_error": CODEX_IMPORT_ERROR,
                 "codex_sdk_version": CODEX_SDK_VERSION,
                 "codex_cli_version": CODEX_CLI_VERSION,
+                # Cursor availability (§14.103). Same no-null-clobber contract:
+                # an agent predating this simply omits them.
+                "cursor_available": CURSOR_AVAILABLE,
+                "cursor_error": CURSOR_IMPORT_ERROR,
+                "cursor_sdk_version": CURSOR_SDK_VERSION,
                 "pid": os.getpid(),
                 "sessions": [s.to_info() for s in self.sessions.values()],
             }
@@ -1366,6 +1415,42 @@ class Server:
                 raise RpcError(ERR_INVALID_PARAMS, "thread_id required")
             return await codex_set_thread_archived(thread_id, False)
 
+        # ── Cursor (§14.103) ────────────────────────────────────────────────
+        # Sign-in is the SDK's browser-link flow driven through the wheel's own
+        # Node runtime (cursor_login); the catalog and agent management go
+        # through a SHORT-LIVED bridge so a box with no live session can still
+        # answer "which models?" and "what is importable?".
+        if method == "cursor_login_start":
+            from . import cursor_login
+            return await cursor_login.login_start(params)
+        if method == "cursor_login_status":
+            from . import cursor_login
+            return await cursor_login.login_status(params)
+        if method == "cursor_login_cancel":
+            from . import cursor_login
+            return await cursor_login.login_cancel(params)
+        if method == "cursor_auth_status":
+            from . import cursor_login
+            return await cursor_login.auth_status(params)
+        if method == "cursor_logout":
+            from . import cursor_login
+            return await cursor_login.logout(params)
+        if method == "cursor_list_models":
+            from . import cursor_catalog
+            return await cursor_catalog.list_models(params)
+        if method == "cursor_list_agents":
+            from . import cursor_catalog
+            return await cursor_catalog.list_agents(params)
+        if method == "cursor_agent_messages":
+            from . import cursor_catalog
+            return await cursor_catalog.agent_messages(params)
+        if method == "cursor_archive_agent":
+            from . import cursor_catalog
+            return await cursor_catalog.set_archived(params, True)
+        if method == "cursor_unarchive_agent":
+            from . import cursor_catalog
+            return await cursor_catalog.set_archived(params, False)
+
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 
     # ── Session handlers ─────────────────────────────────────────────────────
@@ -1389,15 +1474,15 @@ class Server:
             ):
                 raise RpcError(ERR_INVALID_PARAMS,
                                f"handle @{incoming_handle} is already in use")
-            kind = params.get("kind") or "claude"
-            if kind not in ("claude", "codex"):
-                raise RpcError(ERR_INVALID_PARAMS, f"unknown kind: {kind}")
-            if kind == "codex":
-                if not CODEX_AVAILABLE:
-                    raise RpcError(ERR_SDK_UNAVAILABLE, f"Codex SDK unavailable: {CODEX_IMPORT_ERROR}")
-            else:
-                if not SDK_AVAILABLE:
-                    raise RpcError(ERR_SDK_UNAVAILABLE, f"SDK unavailable: {SDK_IMPORT_ERROR}")
+            kind = params.get("kind") or DEFAULT_KIND
+            try:
+                spec = get_provider(kind)
+            except KeyError:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               f"unknown kind: {kind} (known: {', '.join(PROVIDER_KINDS)})")
+            usable, why = spec.availability()
+            if not usable:
+                raise RpcError(ERR_SDK_UNAVAILABLE, why)
             await self._create_session(
                 session_id=session_id,
                 cwd=cwd,
@@ -1614,6 +1699,15 @@ class Server:
                       "session_identity"):
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
+            # A backend implements the slice of this surface its runtime can
+            # answer; anything it does not is reported as `reason:'unavailable'`
+            # — an envelope the hub renders beside a chat rather than throwing
+            # (§14.95). Probing the session object rather than testing its kind
+            # is what lets a new provider (§14.103) implement one method at a
+            # time instead of stubbing all nine.
+            _missing = self._insight_unavailable(s_, method)
+            if _missing is not None:
+                return _missing
             # Codex now exposes context/status, identity and MCP inventory
             # through the SDK typed client. Sub-agent transcript browsing and
             # config mutation remain Claude-only.
@@ -1735,11 +1829,19 @@ class Server:
         if method == "compact_session":
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") == "codex":
+            kind_ = getattr(s_, "kind", "claude")
+            # Declared per backend (providers.py), never a kind ternary with a
+            # Claude fallthrough: `/compact` sent to a provider that does not
+            # know the command reaches the MODEL as a literal prompt.
+            strategy = get_provider(kind_).compact
+            if strategy is None:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               f"{kind_} sessions cannot be compacted")
+            if strategy == "native":
                 try:
                     return await s_.compact()
                 except Exception as e:
-                    raise RpcError(ERR_INTERNAL, f"Codex compaction failed: {e}")
+                    raise RpcError(ERR_INTERNAL, f"{kind_} compaction failed: {e}")
             # Claude's SDK has no compact() method; the CLI command travels
             # through the same query channel and emits the normal marker.
             await s_.send_input("/compact")
@@ -1748,7 +1850,15 @@ class Server:
         if method == "rollback_session":
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") == "codex":
+            kind_ = getattr(s_, "kind", "claude")
+            # ⚠ The fallthrough this replaces was DESTRUCTIVE, not merely wrong:
+            # `_rewind_claude_session` clears `claude_session_id`, which for a
+            # non-Claude backend is its only resume handle (§14.74).
+            strategy = get_provider(kind_).rewind
+            if strategy is None:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               f"{kind_} sessions cannot be rewound")
+            if strategy == "native":
                 num_turns = params.get("num_turns")
                 if not isinstance(num_turns, int) or isinstance(num_turns, bool) or not 1 <= num_turns <= 100:
                     raise RpcError(ERR_INVALID_PARAMS, "num_turns must be an integer from 1 to 100")
@@ -1757,7 +1867,7 @@ class Server:
                 except Exception as e:
                     if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
                         raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                    raise RpcError(ERR_INTERNAL, f"Codex rewind failed: {e}")
+                    raise RpcError(ERR_INTERNAL, f"{kind_} rewind failed: {e}")
             up_to = params.get("up_to_message_id")
             if up_to is not None and (not isinstance(up_to, str) or not up_to):
                 raise RpcError(ERR_INVALID_PARAMS, "up_to_message_id must be a non-empty string or null")
@@ -1842,6 +1952,9 @@ class Server:
         if method == "session_resources":
             sid = self._require_sid(params)
             s_ = self._require_session(sid)
+            _missing = self._insight_unavailable(s_, method)
+            if _missing is not None:
+                return _missing
             try:
                 return await s_.resources(bool(params.get("force_reload")))
             except Exception as e:
@@ -2037,8 +2150,16 @@ class Server:
                           file=sys.stderr, flush=True)
             # Claude's native --name is start-time only. The common handle was
             # already applied above even when this resume is a noop.
-            # Reset internal state so we can restart cleanly
+            # Reset internal state so we can restart cleanly.
+            # ⚠ The QUEUE is part of that state. `stop()` pushes an EOF
+            # sentinel, and when the run loop has already exited (a failed
+            # start, or a stop that timed out and cancelled the task) that
+            # sentinel simply STAYS. The next run loop then emits ready/active
+            # and immediately reads it — a session that reports itself alive
+            # and never executes another turn, with no error anywhere. Same
+            # reasoning as the rewind path, which has always done this.
             s.status = "starting"
+            s._stdin_queue = asyncio.Queue()
             s._stopped.clear()
             s._ready_evt.clear()
             s._session_id_emitted = False

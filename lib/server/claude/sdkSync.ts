@@ -24,6 +24,10 @@ const PYPI_URL = 'https://pypi.org/pypi/claude-agent-sdk/json';
 // each VPS's `vps.codexSdkVersion` (hello ≥0.15.0). Mirror of the SDK cache.
 const PYPI_CODEX_URL = 'https://pypi.org/pypi/openai-codex/json';
 const NPM_CODEX_URL = 'https://registry.npmjs.org/@openai%2Fcodex/latest';
+// Cursor ships ONE artefact Charon owns: the `cursor-sdk` wheel, which carries
+// its own Node runtime for the SDK bridge. The standalone `cursor-agent` CLI
+// self-updates and Charon deliberately does not drive it (§14.103).
+const PYPI_CURSOR_URL = 'https://pypi.org/pypi/cursor-sdk/json';
 const TTL_MS = 12 * 60 * 60 * 1000; // 12h
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -54,6 +58,73 @@ async function fetchPypiLatest(url: string): Promise<{ ok: true; version: string
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Every release line: how to READ its cached latest, and how to REFRESH it.
+ *
+ * THE seam between the provider registry and the registries a version is
+ * fetched from. A backend declares its release lines; this map is where each
+ * one is told how to learn its latest version. `tests/providerRegistry` asserts
+ * every declared `latestKey` appears here — a line with no entry would compare
+ * against `null`, i.e. silently never be stale, which is the exact failure the
+ * registry exists to prevent, and a line with no REFRESHER would be frozen at
+ * whatever it was when someone last called its function by name.
+ *
+ * Fetching stays per-package on purpose: PyPI and npm have different URLs,
+ * different response shapes and their own 12h TTL cache keys.
+ */
+export const LATEST_LINES: Readonly<Record<string, {
+  get: () => string | null;
+  refresh: () => Promise<SdkRefreshResult>;
+  refreshIfStale: () => void;
+}>> = {
+  sdkLatestVersion: {
+    get: getSdkLatestVersion,
+    refresh: () => refreshSdkLatest(),
+    refreshIfStale: () => refreshSdkLatestIfStale(),
+  },
+  codexLatestVersion: {
+    get: getCodexLatestVersion,
+    refresh: () => refreshCodexLatest(),
+    refreshIfStale: () => refreshCodexLatestIfStale(),
+  },
+  codexCliLatestVersion: {
+    get: getCodexCliLatestVersion,
+    refresh: () => refreshCodexCliLatest(),
+    refreshIfStale: () => refreshCodexCliLatestIfStale(),
+  },
+  cursorLatestVersion: {
+    get: getCursorLatestVersion,
+    refresh: () => refreshCursorLatest(),
+    refreshIfStale: () => refreshCursorLatestIfStale(),
+  },
+};
+
+/** Every release line's `latest`, keyed by the registry's `latestKey`
+ *  (`sessionCapabilities § PROVIDERS[p].backend.versions[].latestKey`). */
+export function latestVersionsByKey(): Record<string, string | null> {
+  return Object.fromEntries(
+    Object.entries(LATEST_LINES).map(([key, line]) => [key, line.get()]),
+  );
+}
+
+/** Fire-and-forget TTL refresh of every declared line. Safe to kick from SSR. */
+export function refreshAllLatestsIfStale(): void {
+  for (const line of Object.values(LATEST_LINES)) line.refreshIfStale();
+}
+
+/** Force-refresh every declared line, in parallel. Never throws: each entry
+ *  resolves to its own `{ok:false, error}` and the caller falls back to the
+ *  cached value. Derived, so a newly declared line is refreshed the day it
+ *  ships instead of on the tick that someone remembers to edit. */
+export async function refreshAllLatests(): Promise<Record<string, SdkRefreshResult>> {
+  const keys = Object.keys(LATEST_LINES);
+  const results = await Promise.all(
+    keys.map((key) => LATEST_LINES[key].refresh()
+      .catch((e: any) => ({ ok: false as const, error: String(e?.message ?? e) }))),
+  );
+  return Object.fromEntries(keys.map((key, i) => [key, results[i]]));
 }
 
 /** Latest PyPI version we know of (null = never successfully synced). */
@@ -100,6 +171,35 @@ export async function refreshCodexLatest(): Promise<SdkRefreshResult> {
   setSetting('codex.latest_version', r.version);
   setSetting('codex.latest_version_at', String(now));
   return { ok: true, version: r.version, syncedAt: now };
+}
+
+// ── Cursor (cursor-sdk) PyPI-latest tracking — mirror of the two above ─────
+
+/** Latest `cursor-sdk` PyPI version we know of (null = never synced). */
+export function getCursorLatestVersion(): string | null {
+  return getSetting('cursor.latest_version') || null;
+}
+
+/** Force a PyPI check now for cursor-sdk. Never throws. */
+export async function refreshCursorLatest(): Promise<SdkRefreshResult> {
+  const r = await fetchPypiLatest(PYPI_CURSOR_URL);
+  if (!r.ok) return { ok: false, error: r.error };
+  const now = Date.now();
+  setSetting('cursor.latest_version', r.version);
+  setSetting('cursor.latest_version_at', String(now));
+  return { ok: true, version: r.version, syncedAt: now };
+}
+
+let cursorInflight: Promise<unknown> | null = null;
+
+/** Best-effort background refresh of the cursor latest if older than the TTL. */
+export function refreshCursorLatestIfStale(): void {
+  const at = Number(getSetting('cursor.latest_version_at') || '0');
+  if (Number.isFinite(at) && Date.now() - at < TTL_MS) return;
+  if (cursorInflight) return;
+  cursorInflight = refreshCursorLatest()
+    .catch(() => {})
+    .finally(() => { cursorInflight = null; });
 }
 
 let codexInflight: Promise<unknown> | null = null;

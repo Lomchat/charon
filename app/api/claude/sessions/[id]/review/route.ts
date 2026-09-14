@@ -10,6 +10,10 @@ import {
 } from '@/lib/server/agent/sessionOps';
 import { allocateSessionHandle } from '@/lib/server/agent/sessionHandles';
 import { buildClaudeReviewPrompt, type ReviewTarget } from '@/lib/server/claude/reviewPrompt';
+import {
+  asSessionProvider, hasNativeCapability, type SessionProvider,
+} from '@/lib/sessionCapabilities';
+import { POST as forkSession } from '../fork/route';
 
 function normalizeTarget(value: unknown): ReviewTarget | null {
   if (!value || typeof value !== 'object') return null;
@@ -31,8 +35,10 @@ function normalizeTarget(value: unknown): ReviewTarget | null {
   return null;
 }
 
-async function startInlineReview(sessionId: string, kind: string, target: ReviewTarget) {
-  if (kind === 'claude') {
+async function startInlineReview(sessionId: string, kind: SessionProvider, target: ReviewTarget) {
+  // NATIVE review → the provider's own RPC; otherwise Charon adapts it into a
+  // read-only findings prompt. The capability level IS the routing rule.
+  if (!hasNativeCapability(kind, 'review')) {
     const stream = getOrCreateStream(sessionId);
     if (!stream) throw new Error('session not found');
     await stream.sendUserMessage(buildClaudeReviewPrompt(target));
@@ -41,6 +47,35 @@ async function startInlineReview(sessionId: string, kind: string, target: Review
   const result = await callSessionRpc(sessionId, 'review_session', { target, delivery: 'inline' });
   if (!result?.ok) throw new Error(result?.error || 'Codex review did not start');
   return result;
+}
+
+async function startAdaptedDetachedReview(
+  req: Request,
+  id: string,
+  source: typeof claudeSessions.$inferSelect,
+  target: ReviewTarget,
+) {
+  const forkReq = new Request(req.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      targetKind: asSessionProvider(source.kind),
+      name: `${source.name || 'session'} (review)`,
+      replacementPrompt: buildClaudeReviewPrompt(target),
+    }),
+  });
+  const response = await forkSession(forkReq, { params: Promise.resolve({ id }) });
+  const payload = await response.json();
+  if (!response.ok) return NextResponse.json(payload, { status: response.status });
+  const { codexConfig: _config, ...session } = payload.session ?? {};
+  return NextResponse.json({
+    ...payload,
+    ok: true,
+    delivery: 'detached',
+    strategy: 'review_prompt',
+    review_thread_id: session.claudeSessionId ?? null,
+    session,
+  });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -58,7 +93,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (delivery === 'inline') {
     try {
-      const result = await startInlineReview(id, source.kind, target);
+      const result = await startInlineReview(id, asSessionProvider(source.kind), target);
       return NextResponse.json(result);
     } catch (e: any) {
       const message = String(e?.message || e);
@@ -70,6 +105,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (!source.claudeSessionId) {
     return NextResponse.json({ error: 'send a message before creating a separate review session' }, { status: 400 });
+  }
+  const kind = asSessionProvider(source.kind);
+  if (!hasNativeCapability(kind, 'fork')) {
+    return startAdaptedDetachedReview(req, id, source, target);
   }
   const name = `${source.name || 'session'} (review)`;
   let forked: { ok?: boolean; claude_session_id?: string; error?: string; reason?: string };
@@ -96,7 +135,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }).run();
   try {
     await resumeSession(newId);
-    const result = await startInlineReview(newId, source.kind, target);
+    const result = await startInlineReview(newId, kind, target);
     emitGlobalSessionListChanged(newId);
     const [session] = db.select().from(claudeSessions).where(eq(claudeSessions.id, newId)).all();
     return NextResponse.json({

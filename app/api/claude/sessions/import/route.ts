@@ -5,7 +5,25 @@ import { requireApiSession } from '@/lib/server/session';
 import { importExistingSession } from '@/lib/server/agent/sessionOps';
 import { importJsonlMessages } from '@/lib/server/claude/importJsonl';
 import { importCodexRolloutMessages } from '@/lib/server/claude/importCodexRollout';
-import { isSessionMode } from '@/lib/sessionCapabilities';
+import { importCursorAgentMessages } from '@/lib/server/claude/importCursorAgent';
+import {
+  asSessionProvider, isSessionMode, type SessionProvider,
+} from '@/lib/sessionCapabilities';
+
+// Storage remains provider-specific; exhaustive dispatch prevents an importer
+// from being omitted when the provider union grows (§14.102).
+type HistoryImporter = (
+  vps: Parameters<typeof importJsonlMessages>[0],
+  nativeId: string,
+  cwd?: string,
+) => ReturnType<typeof importJsonlMessages>;
+const HISTORY_IMPORTERS: Record<SessionProvider, HistoryImporter> = {
+  claude: importJsonlMessages,
+  codex: importCodexRolloutMessages,
+  // Cursor's store is the SDK's own, so its history comes back over the agent
+  // RPC rather than off disk (§14.103).
+  cursor: importCursorAgentMessages,
+};
 import { deriveMessageStorage } from '@/lib/server/claude/messageWire';
 
 // POST /api/claude/sessions/import
@@ -30,7 +48,7 @@ export async function POST(req: Request) {
   if (!vpsId || !claudeSessionId || !cwd) {
     return NextResponse.json({ error: 'vpsId, claudeSessionId, cwd required' }, { status: 400 });
   }
-  const kind = body.kind === 'codex' ? 'codex' : 'claude';
+  const kind = asSessionProvider(body.kind);
 
   const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
   if (!v) return NextResponse.json({ error: 'vps not found' }, { status: 404 });
@@ -52,9 +70,7 @@ export async function POST(req: Request) {
     let importedCount = 0;
     let importError: string | undefined;
     try {
-      const r = kind === 'codex'
-        ? await importCodexRolloutMessages(v, claudeSessionId)
-        : await importJsonlMessages(v, claudeSessionId);
+      const r = await HISTORY_IMPORTERS[kind](v, claudeSessionId, cwd);
       if (!r.ok) {
         importError = r.error;
       } else if (r.messages.length > 0) {

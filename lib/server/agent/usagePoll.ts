@@ -10,6 +10,7 @@ import {
 import type { AgentUsageResult, AgentCodexUsageResult, CodexRateWindow } from './types';
 import { getSetting, setSetting } from '@/lib/server/claude/settings';
 import type { AccountUsage, AccountUsageWindow, AccountUsageLimit } from '@/lib/server/claude/types';
+import { asSessionProvider, type SessionProvider } from '@/lib/sessionCapabilities';
 
 // ── Account usage poller (the `/usage` gauges) — CLAUDE.md §14.58 / §14.72 ───
 //
@@ -650,10 +651,60 @@ export function triggerCodexUsagePoll(vpsId: string): void {
   (st.stopDebounce as any).unref?.();
 }
 
+// ── Per-provider usage adapters — THE seam ──────────────────────────────────
+// The POLLING stays per-provider on purpose: Claude's is account-scoped with
+// org-id grouping and Retry-After walls (§14.72), Codex's reads its own
+// app-server rate-limit windows (§14.59). Only the LOOKUP is unified, so every
+// consumer (the GET route, the reset resolver) stops asking "which provider is
+// this" and a new backend registers once. `Record` over the union ⇒ a missing
+// adapter is a compile error, not silently absent gauges.
+export type ProviderUsageAdapter = {
+  snapshot: (vpsId: string) => AccountUsage | null;
+  ageMs: (vpsId: string) => number;
+  poll: (vpsId: string, opts: { force?: boolean }) => Promise<AccountUsage | null>;
+  /** Whether a cached snapshot is good enough to skip a poll. Claude counts a
+   *  cached FAILURE as "nothing to show" so the ↻ can recover it (§14.72). */
+  needsForce: (cached: AccountUsage | null) => boolean;
+};
+
+export const PROVIDER_USAGE: Record<SessionProvider, ProviderUsageAdapter> = {
+  claude: {
+    snapshot: getUsageSnapshot,
+    ageMs: usageSnapshotAge,
+    poll: (vpsId, opts) => pollUsageForVps(vpsId, opts),
+    needsForce: (cached) => !cached || !cached.ok || !!cached.degraded,
+  },
+  codex: {
+    snapshot: getCodexUsageSnapshot,
+    ageMs: codexUsageSnapshotAge,
+    poll: (vpsId, opts) => pollCodexUsageForVps(vpsId, opts),
+    needsForce: (cached) => !cached,
+  },
+  cursor: {
+    // Cursor reports per-AGENT token counts and dollar cost (`get_usage`), not
+    // the account-level rate-limit WINDOWS these gauges render (§14.58/72).
+    // Answering "no snapshot" is the honest result: the widget shows nothing
+    // rather than a meter whose scale does not exist. Per-turn tokens still
+    // reach the transcript through the `turn_usage` event (`turnUsage` is a
+    // native capability), which is the part that has a real meaning here.
+    snapshot: () => null,
+    ageMs: () => Infinity,
+    poll: async () => null,
+    needsForce: () => false,
+  },
+};
+
+/** Latest cached gauges for one (VPS, provider), whatever the mechanism. */
+export function providerUsageSnapshot(
+  vpsId: string, p: SessionProvider,
+): AccountUsage | null {
+  return PROVIDER_USAGE[p].snapshot(vpsId);
+}
+
 setCodexUsagePollTrigger(triggerCodexUsagePoll);
 setCodexUsagePushHandler(ingestCodexUsagePush);
 setUsageResetResolver((vpsId, kind) => {
-  const snapshot = kind === 'codex' ? getCodexUsageSnapshot(vpsId) : getUsageSnapshot(vpsId);
+  const snapshot = providerUsageSnapshot(vpsId, asSessionProvider(kind));
   if (!snapshot?.ok) return null;
   const exhausted: number[] = [];
   const future: number[] = [];

@@ -6,6 +6,9 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
 import { invalidateGitStatus } from '@/lib/server/claude/git';
+import {
+  PROVIDERS, asSessionProvider, supportsSessionCapability,
+} from '@/lib/sessionCapabilities';
 
 type Snapshot = {
   file_path?: unknown;
@@ -41,8 +44,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const [session] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 });
-  if (session.kind !== 'claude') {
-    return NextResponse.json({ ok: false, error: 'Codex patch reverts are not available' }, { status: 400 });
+  // A revert needs an exact pre-image; a provider that only emits unified
+  // diffs cannot offer one (§14.59). Capability, not provider name.
+  const kind = asSessionProvider(session.kind);
+  if (!supportsSessionCapability(kind, 'safeFileRevert')) {
+    return NextResponse.json(
+      { ok: false, error: `${PROVIDERS[kind].label} patch reverts are not available` },
+      { status: 400 },
+    );
   }
 
   const [afterRow] = db.select().from(claudeSessionMessages).where(and(

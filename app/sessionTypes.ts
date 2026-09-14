@@ -1,4 +1,5 @@
 // Types for the chat view (ClaudePanel + ClaudeSessionView +
+import type { SessionProvider } from '@/lib/sessionCapabilities';
 // useClaudeSessionStream). Before this file, the desktop and the old separate
 // mobile view each redeclared the same types locally (Msg, ToolCallEntry,
 // EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
@@ -25,7 +26,7 @@ export type Msg = {
   // message. Rendered as a chip beside the role, the same way an assistant
   // bubble shows the model that produced it.
   from?: string | null;
-  fromProvider?: 'claude' | 'codex' | null;
+  fromProvider?: SessionProvider | null;
   sourceSessionId?: string | null;
   messageId?: string | null;
   conversationId?: string | null;

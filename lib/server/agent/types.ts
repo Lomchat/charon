@@ -78,6 +78,11 @@ export type AgentHelloResult = {
   codex_error?: string | null;
   codex_sdk_version?: string | null;
   codex_cli_version?: string | null;
+  // Cursor availability (§14.103). Absent on an agent predating the probe —
+  // same no-null-clobber contract as the codex fields above.
+  cursor_available?: boolean;
+  cursor_error?: string | null;
+  cursor_sdk_version?: string | null;
   pid: number;
   sessions: AgentSessionInfo[];
 };
@@ -363,6 +368,24 @@ export type AgentMethodName =
   | 'codex_logout'
   | 'codex_archive_thread'
   | 'codex_unarchive_thread'
+  // ── Cursor (§14.103) ───────────────────────────────────────────────────────
+  // Sign-in is the SDK's browser-link PKCE flow (§14.104), driven through the
+  // Node runtime bundled inside the cursor-sdk wheel: start → surface the URL →
+  // poll. No code is pasted back, unlike Claude's, and it is not a device code.
+  | 'cursor_login_start'
+  | 'cursor_login_status'
+  | 'cursor_login_cancel'
+  // Authoritative sign-in verdict (the stored key must also be unexpired and
+  // minted against this backend) + local sign-out.
+  | 'cursor_auth_status'
+  | 'cursor_logout'
+  // Box-level queries answered by a short-lived bridge, so a VPS whose
+  // sessions are all asleep still has a model catalog and an import list.
+  | 'cursor_list_models'
+  | 'cursor_list_agents'
+  | 'cursor_agent_messages'
+  | 'cursor_archive_agent'
+  | 'cursor_unarchive_agent'
   // Subdirs of a path — hub path autocomplete (agent >= 0.17.0, fsnav.py).
   // The fs route falls back to a one-shot ssh ls on older agents. NB: no
   // semicolon CHARACTER anywhere in comments inside this union —

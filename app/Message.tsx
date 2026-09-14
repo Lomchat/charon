@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
+import { providerName, providerText } from '@/lib/providerText';
 import { IconClipboard } from './icons';
 import { hastText } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
@@ -191,7 +192,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
       )}
       {isAssistant && onReauth && kind === 'claude' && isClaudeAuthExpired(m.content) && (
         <div className="bubble-reauth">
-          <span>This VPS's Claude sign-in has expired — the session can't run until it's renewed.</span>
+          <span>{providerText.signInExpired('claude')}</span>
           <button type="button" className="wiz-btn primary" onClick={onReauth}>
             Sign in to Claude
           </button>
@@ -234,9 +235,9 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume 
       )}
       {error.action === 'sign_in' && onReauth && (
         <div className="bubble-reauth">
-          <span>{error.provider === 'codex' ? 'Codex' : 'Claude'} is not signed in on this VPS — this session cannot continue until it is renewed.</span>
+          <span>{providerText.signInExpired(error.provider)}</span>
           <button type="button" className="wiz-btn primary" onClick={onReauth}>
-            Sign in to {error.provider === 'codex' ? 'Codex' : 'Claude'}
+            {providerText.signInAction(error.provider)}
           </button>
         </div>
       )}
@@ -354,7 +355,7 @@ function CompactionMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
   return (
     <div className="compaction-marker" role="separator">
       <span className="cm-label">
-        Conversation compacted{auto ? ' automatically' : ''} — {kind === 'codex' ? 'Codex' : 'Claude'} no longer
+        Conversation compacted{auto ? ' automatically' : ''} — {providerName(kind)} no longer
         remembers the messages above
       </span>
     </div>

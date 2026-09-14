@@ -1,4 +1,4 @@
-import type { SessionProvider } from './sessionCapabilities';
+import { isSessionProvider, type SessionProvider } from './sessionCapabilities';
 
 // Durable, provider-neutral description of a blocking session error. Stored in
 // claude_session_messages with role='error': the historical table name is a
@@ -64,7 +64,7 @@ export function parseSessionError(value: string | null | undefined): SessionErro
   try {
     const p = JSON.parse(value) as Partial<SessionErrorPayload>;
     if (p?.type !== 'session_error') return null;
-    if (p.provider !== 'claude' && p.provider !== 'codex') return null;
+    if (!isSessionProvider(p.provider)) return null;
     if (!['authentication', 'rate_limit', 'transport', 'api'].includes(String(p.kind))) return null;
     if (typeof p.message !== 'string' || !p.message.trim()) return null;
     const action = p.action === 'sign_in' || p.action === 'continue' ? p.action : null;

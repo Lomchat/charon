@@ -1,14 +1,15 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
-import type { SessionListItem, InstallInfo, AgentKind } from '@/lib/types/api';
+import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import AgentLogo from './AgentLogo';
+import { providerText } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
-import { backendAvailability, parseAgentLastError } from './vpsHealth';
+import { backendAvailability, backendLauncher, parseAgentLastError } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
 import {
@@ -16,6 +17,9 @@ import {
   sidebarPathOrderedIds,
 } from './sidebarPathGroups';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
+import {
+  DEFAULT_SESSION_PROVIDER, PROVIDERS, SESSION_PROVIDERS, providerBackendState,
+} from '@/lib/sessionCapabilities';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
@@ -98,9 +102,6 @@ function cwdTail(cwd: string, max = 34): string {
 // hard block). Returns a precise human reason when disabled (tooltip on the
 // greyed button): "VPS unreachable (SSH)" vs "agent stopped" vs "not signed
 // in"… cf. CLAUDE.md §14.59.
-const claudeAvailability = (v: Vps) => backendAvailability(v, 'claude');
-const codexAvailability = (v: Vps) => backendAvailability(v, 'codex');
-
 export type ShellListItem = {
   id: string;
   vpsId: string;
@@ -171,9 +172,8 @@ type Props = {
   // Opens an install session for this VPS (creates one if it doesn't
   // exist, focuses the existing one otherwise).
   onInstallAgent?: (vps: Vps) => void;
-  onLoginAgent?: (vps: Vps) => void;
+  onProviderLogin?: (vps: Vps, provider: AgentKind) => void;
   // Codex device-code sign-in (opens ClaudePanel's CodexLoginModal, §14.61).
-  onCodexLoginAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
   // Re-establish the agent connection (for a VPS shown as 'error' that is
   // actually healthy — the SSH transport just dropped). See
@@ -184,13 +184,11 @@ type Props = {
   // `__version__` of the .pyz embedded in the dashboard — THE out-of-date baseline: a VPS is stale iff it
   // runs a STRICTLY OLDER version (ordered, so a hub on an older build never
   // rolls a co-tenant's newer agent back, §14.70).
-  builtAgentVersion?: string | null;
-  // Latest claude-agent-sdk on PyPI (settings cache) — compared to each VPS's
-  // reported vps.sdkVersion for the "SDK out of date" badge / update bar.
-  sdkLatestVersion?: string | null;
-  // Latest openai-codex on PyPI — same mechanism for the codex sdk line (§14.59).
-  codexLatestVersion?: string | null;
-  codexCliLatestVersion?: string | null;
+  // Every DECLARED release line's latest, keyed by its registry `latestKey`
+  // — compared to the VPS's reported version for the "out of date" badge and
+  // the update bar. A bag, not N props: named individually, a newly declared
+  // line never reached this component and its axis was invisible (§14.102).
+  staleness?: VpsStalenessBaselines;
   // VPSes for which an update is in progress (UI loading)
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
@@ -224,8 +222,8 @@ export default function Sidebar({
   onNew, onNewShell, onScan, onOpenData,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
-  onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
-  builtAgentVersion, sdkLatestVersion, codexLatestVersion, codexCliLatestVersion, updatingAgentVpsIds, refreshingAgentVpsIds,
+  onInstallAgent, onProviderLogin, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
+  staleness, updatingAgentVpsIds, refreshingAgentVpsIds,
   sessionHandles,
   showTools, onToggleShowTools,
 }: Props) {
@@ -451,28 +449,11 @@ export default function Sidebar({
   // host, §14.70 — shows nothing rather than an update that would roll it back.
   function agentOutOfDateOf(v: Vps): boolean {
     const agentStatus = (v as any).agentStatus ?? 'unknown';
-    return agentStatus === 'ok' && isAgentOutdated((v as any).agentVersion, builtAgentVersion);
-  }
-
-  // "SDK out of date" — the claude-agent-sdk python package on the VPS is
-  // older than the PyPI latest. Requires BOTH versions known (an old agent
-  // that doesn't report sdk_version never flags on this path — its pyz is
-  // outdated anyway, which lights the same update bar).
-  function sdkOutdatedOf(v: Vps): boolean {
-    const agentStatus = (v as any).agentStatus ?? 'unknown';
-    const sdkVersion = (v as any).sdkVersion as string | null | undefined;
-    return agentStatus === 'ok' && isVersionOutdated(sdkVersion, sdkLatestVersion);
-  }
-
-  // Same rule for openai-codex: flags only when BOTH versions are known.
-  function codexOutdatedOf(v: Vps): boolean {
-    const agentStatus = (v as any).agentStatus ?? 'unknown';
-    const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
-    const codexCliVersion = (v as any).codexCliVersion as string | null | undefined;
-    return agentStatus === 'ok' && (
-      isVersionOutdated(codexSdkVersion, codexLatestVersion)
-      || isVersionOutdated(codexCliVersion, codexCliLatestVersion)
-    );
+    // ⚠ From `staleness`, never a separate prop. Split out, the parent stopped
+    // passing it, the comparison silently took `undefined` and EVERY
+    // agent-update badge went dark with nothing saying why (§14.52).
+    return agentStatus === 'ok'
+      && isAgentOutdated((v as any).agentVersion, staleness?.builtAgentVersion);
   }
 
   const totalSleeping = sessions.filter(
@@ -510,7 +491,7 @@ export default function Sidebar({
               link to Settings) — a vanished button explains nothing. */}
           <button className="cs-add-btn agent" onClick={() => onNew({})}
             title={enabledKinds(enabledBackends).length === 1
-              ? `new ${enabledBackends.codex ? 'Codex' : 'Claude'} agent`
+              ? providerText.newAgent(enabledKinds(enabledBackends)[0])
               : 'new agent'}>
             <IconRobot /><span>Agent</span>
           </button>
@@ -608,12 +589,7 @@ export default function Sidebar({
                     vpsInstall: x.install,
                     showDetails,
                     agentOutOfDate: agentOutOfDateOf(x.vps),
-                    builtAgentVersion,
-                    sdkOutdated: sdkOutdatedOf(x.vps),
-                    sdkLatestVersion,
-                    codexOutdated: codexOutdatedOf(x.vps),
-                    codexLatestVersion,
-                    codexCliLatestVersion,
+                    staleness,
                     selectedId, selectedShellId, selectedInstallId,
                     activeWorkspace,
                     deletingSessionIds,
@@ -623,7 +599,7 @@ export default function Sidebar({
                     onNew, onNewShell, onScan,
                     onContext: openSessionContext, onContextShell, onContextInstall,
                     editingId, onRenameSubmit, onRenameCancel,
-                    onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
+                    onInstallAgent, onProviderLogin, onUpdateAgent, onRefreshAgent,
                     updatingAgentVpsIds, refreshingAgentVpsIds,
                   }))}
                 </div>
@@ -651,14 +627,8 @@ type VpsRenderOpts = {
   agentOutOfDate: boolean;
   // `__version__` this hub ships — for the "vX → vY" labels and the 'ahead'
   // tooltip (the verdict itself is computed by the parent, §14.6).
-  builtAgentVersion?: string | null;
-  // The VPS's claude-agent-sdk is older than the PyPI latest (both known).
-  sdkOutdated: boolean;
-  sdkLatestVersion?: string | null;
-  // Same pair for openai-codex (the codex sdk line, §14.59).
-  codexOutdated: boolean;
-  codexLatestVersion?: string | null;
-  codexCliLatestVersion?: string | null;
+  // Every declared line's latest, by `latestKey` (see the Props above).
+  staleness?: VpsStalenessBaselines;
   selectedId: string | null;
   deletingSessionIds: ReadonlySet<string>;
   selectedShellId: string | null;
@@ -682,8 +652,7 @@ type VpsRenderOpts = {
   onRenameSubmit?: (id: string, name: string) => void;
   onRenameCancel?: () => void;
   onInstallAgent?: (vps: Vps) => void;
-  onLoginAgent?: (vps: Vps) => void;
-  onCodexLoginAgent?: (vps: Vps) => void;
+  onProviderLogin?: (vps: Vps, provider: AgentKind) => void;
   onUpdateAgent?: (vps: Vps) => void;
   onRefreshAgent?: (vps: Vps) => void;
   updatingAgentVpsIds?: Set<string>;
@@ -693,8 +662,8 @@ type VpsRenderOpts = {
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
     sessionHandles, collapsed, onToggleCollapsed, collapsedPaths, onTogglePath,
-    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate, builtAgentVersion,
-    sdkOutdated, sdkLatestVersion, codexOutdated, codexLatestVersion, codexCliLatestVersion,
+    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
+    staleness,
     selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     selectedSessionIds, onSessionSelectionGesture,
@@ -702,37 +671,43 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     onNew, onNewShell, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
-    onInstallAgent, onLoginAgent, onCodexLoginAgent, onUpdateAgent, onRefreshAgent,
+    onInstallAgent, onProviderLogin, onUpdateAgent, onRefreshAgent,
     updatingAgentVpsIds, refreshingAgentVpsIds,
   } = opts;
 
   const agentStatus = (v as any).agentStatus ?? 'unknown';
   const agentVersion = (v as any).agentVersion as string | undefined;
   const agentPyzSha = (v as any).agentPyzSha as string | undefined;
-  const sdkVersion = (v as any).sdkVersion as string | null | undefined;
-  const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
-  const codexCliVersion = (v as any).codexCliVersion as string | null | undefined;
-  const codexSdkOutdated = isVersionOutdated(codexSdkVersion, codexLatestVersion);
-  const codexCliOutdated = isVersionOutdated(codexCliVersion, codexCliLatestVersion);
+  // One clause per DECLARED release line (§14.102), so the tooltip and the
+  // amber "update" dot carry every staleness axis without three hand-written
+  // builders — the omission that once said "agent ✓" beside a lit button.
   const agentReady = agentStatus === 'ok';
-  const claudeAv = claudeAvailability(v);
-  const codexAv = codexAvailability(v);
+  const latestByKey: Record<string, string | null | undefined> = staleness ?? {};
+  const versionLines = SESSION_PROVIDERS.flatMap((p) =>
+    providerBackendState(v as any, p).versions.map((line) => {
+      const latest = latestByKey[line.latestKey] ?? null;
+      return {
+        ...line,
+        provider: p,
+        latest,
+        // Both versions must be KNOWN and the agent must have answered: an old
+        // recorded version on a dead box is not "behind", its pyz is stale
+        // anyway and that lights the same bar.
+        outdated: agentReady && isVersionOutdated(line.value, latest),
+      };
+    }));
+  const sdkVersion = (v as any).sdkVersion as string | null | undefined;
   const agentUpdating = !!updatingAgentVpsIds?.has(v.id);
   const agentRefreshing = !!refreshingAgentVpsIds?.has(v.id);
   const agentMeta = AGENT_BADGE[agentStatus] ?? AGENT_BADGE.unknown;
   // ONE update surface for every staleness axis (pyz, claude SDK, codex SDK) —
   // the update button repairs all three in a single flow (redeploy pyz +
   // pip install -U claude-agent-sdk + openai-codex).
-  const outdated = agentOutOfDate || sdkOutdated || codexOutdated;
-  const sdkTip = sdkVersion
-    ? (sdkOutdated && sdkLatestVersion ? ` — claude sdk ${sdkVersion} → ${sdkLatestVersion}` : ` — claude sdk ${sdkVersion}`)
-    : '';
-  const codexTip = codexSdkVersion
-    ? (codexOutdated && codexLatestVersion ? ` — codex sdk ${codexSdkVersion} → ${codexLatestVersion}` : ` — codex sdk ${codexSdkVersion}`)
-    : '';
-  const codexCliTip = codexCliVersion
-    ? (codexCliOutdated ? ` — codex cli ${codexCliVersion} → ${codexCliLatestVersion}` : ` — codex cli ${codexCliVersion}`)
-    : '';
+  const outdated = agentOutOfDate || versionLines.some((l) => l.outdated);
+  const versionTip = versionLines
+    .filter((l) => l.value)
+    .map((l) => ` — ${l.provider} ${l.chipLabel} ${l.value}${l.outdated && l.latest ? ` → ${l.latest}` : ''}`)
+    .join('');
   // Classified failure (vps.agentLastError → 'ssh-auth' | 'ssh-unreachable' |
   // 'daemon-down' | 'error') — refines the error bar + tooltips below.
   const { code: errCode, detail: errDetail } = parseAgentLastError(v);
@@ -741,8 +716,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     : '';
   // 'ahead' = the VPS runs a newer agent than this hub builds — expected on a
   // co-tenant host (§14.70); surfaced in the tooltip only, never as an action.
+  const builtAgentVersion = staleness?.builtAgentVersion ?? null;
   const agentAhead = agentReady && agentBuildRelation(agentVersion, builtAgentVersion) === 'ahead';
-  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${sdkTip}${codexTip}${codexCliTip}`
+  const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${versionTip}`
     + (agentOutOfDate ? ` — agent update available (v${agentVersion} → v${builtAgentVersion})` : '')
     + (agentAhead ? ` — newer than this hub's build (v${builtAgentVersion}), left alone` : '');
   const noAgentReason = agentStatus === 'missing'
@@ -764,29 +740,37 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
       className="cs-icon-btn"
       onClick={(e) => { e.stopPropagation(); onScan(v.id); }}
       disabled={!agentReady}
-      title={agentReady ? 'scan existing Claude sessions (import)' : `history unavailable — ${noAgentReason}`}
+      title={agentReady ? 'scan existing sessions to import' : `history unavailable — ${noAgentReason}`}
       aria-label="history"
     ><IconClockHistory /></button>
   );
   const addBtns = (
     <div className="cs-add">
-      {/* Two backends: Claude + Codex, each greyed by its own availability.
-          A greyed button explains why in the tooltip. cf. CLAUDE.md §14.59.
-          A backend switched OFF in Settings has no button at all — greying it
-          would say "this VPS can't", which is the opposite of the truth; with
-          both off only the shell button below remains. */}
+      {/* One button per enabled backend, and it is the ONLY control for that
+          backend on this row: ready ⇒ new session, signed out ⇒ open the
+          sign-in modal with a corner warning (`backendLauncher`). The separate
+          sign-in bar this replaces meant the button you wanted was dead while
+          the one that helped sat elsewhere. A backend switched OFF in Settings
+          has no button at all — greying it would say "this VPS can't", the
+          opposite of the truth. */}
       {enabledKinds(enabledBackends).map((k) => {
-        const av = k === 'codex' ? codexAv : claudeAv;
-        const label = k === 'codex' ? 'Codex' : 'Claude';
+        const launcher = backendLauncher(v, k);
         return (
           <button
             key={k}
-            className={`cs-add-btn agent${k === 'codex' ? ' codex' : ''}`}
-            onClick={(e) => { e.stopPropagation(); onNew({ vpsId: v.id, agentKind: k }); }}
-            disabled={!av.ok}
-            title={av.reason}
-            aria-label={`new ${label} agent`}
-          ><AgentLogo kind={k} size={14} /></button>
+            className={`cs-add-btn agent ${k}${launcher.warn ? ' needs-fix' : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (launcher.ready) onNew({ vpsId: v.id, agentKind: k });
+              else if (launcher.fix) onProviderLogin?.(v, k);
+            }}
+            disabled={!launcher.enabled}
+            title={launcher.title}
+            aria-label={launcher.title}
+          >
+            <AgentLogo kind={k} size={14} />
+            {launcher.warn && <span className="cs-add-warn" aria-hidden="true">!</span>}
+          </button>
         );
       })}
       <button
@@ -827,24 +811,17 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           {/* Per-backend SDK lines, differentiated by the mini agent logo:
               claude-agent-sdk vs openai-codex, each amber for ITS OWN
               staleness (vs the PyPI latest). */}
-          {sdkVersion && (
-            <span className={`cs-vps-ver sdkline${sdkOutdated ? ' outdated' : ''}`} title={agentTip}>
-              <AgentLogo kind="claude" size={10} title="claude-agent-sdk" />
-              {`claude ${sdkVersion}`}
+          {versionLines.filter((l) => l.value).map((l) => (
+            <span
+              key={`${l.provider}-${l.chipLabel}`}
+              className={`cs-vps-ver sdkline${l.outdated ? ' outdated' : ''}`}
+              title={agentTip}
+            >
+              <AgentLogo kind={l.provider} size={10} title={l.packageLabel} />
+              {`${l.provider === DEFAULT_SESSION_PROVIDER && l.chipLabel === 'sdk'
+                ? l.provider : `${l.provider} ${l.chipLabel}`} ${l.value}`}
             </span>
-          )}
-          {codexSdkVersion && (
-            <span className={`cs-vps-ver sdkline${codexOutdated ? ' outdated' : ''}`} title={agentTip}>
-              <AgentLogo kind="codex" size={10} title="openai-codex" />
-              {`codex ${codexSdkVersion}`}
-            </span>
-          )}
-          {codexCliVersion && (
-            <span className={`cs-vps-ver sdkline${codexCliOutdated ? ' outdated' : ''}`} title={agentTip}>
-              <AgentLogo kind="codex" size={10} title="Codex CLI" />
-              {`cli ${codexCliVersion}`}
-            </span>
-          )}
+          ))}
         </span>
         </button>
         {historyBtn}
@@ -907,17 +884,26 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           ) : outdated ? (
             <div className="cs-agent-bar update">
               <span className="cs-agent-meta">
-                {!agentOutOfDate && sdkOutdated && !codexOutdated
-                  ? `claude sdk ${sdkVersion} → ${sdkLatestVersion}`
-                  : !agentOutOfDate && codexOutdated && !sdkOutdated
-                    ? codexCliOutdated && !codexSdkOutdated
-                      ? `codex cli ${codexCliVersion} → ${codexCliLatestVersion}`
-                      : `codex sdk ${codexSdkVersion} → ${codexLatestVersion}`
-                    : !agentOutOfDate && sdkOutdated && codexOutdated
-                      ? 'sdk updates (claude + codex)'
-                      : (sdkOutdated || codexOutdated)
-                        ? `${agentVersion ? `v${agentVersion} → v${builtAgentVersion} · ` : ''}agent + SDK update`
-                        : `${agentVersion ? `v${agentVersion} → v${builtAgentVersion}` : 'update available'}`}
+                {/* Derived from the stale release lines (§14.102). ONE stale
+                    line names it exactly; several stay generic (the bar is one
+                    short line and the full detail is already in the tooltip);
+                    the agent's own version leads when it is also behind. */}
+                {(() => {
+                  const stale = versionLines.filter((l) => l.outdated);
+                  const agentPart = agentVersion
+                    ? `v${agentVersion} → v${builtAgentVersion}` : 'update available';
+                  if (!agentOutOfDate && stale.length === 1) {
+                    const l = stale[0];
+                    return `${l.provider} ${l.chipLabel} ${l.value} → ${l.latest}`;
+                  }
+                  if (!agentOutOfDate && stale.length > 1) {
+                    return `sdk updates (${[...new Set(stale.map((l) => l.provider))].join(' + ')})`;
+                  }
+                  if (stale.length > 0) {
+                    return `${agentVersion ? `${agentPart} · ` : ''}agent + SDK update`;
+                  }
+                  return agentPart;
+                })()}
               </span>
               {onUpdateAgent && (
                 <button className="cs-agent-btn update" disabled={agentUpdating} onClick={() => onUpdateAgent(v)}>
@@ -925,30 +911,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 </button>
               )}
             </div>
-          ) : (
-            // Sign-in bars — one per backend, INDEPENDENT (a VPS can need
-            // both): Claude → PTY LoginConsole; Codex → device-code modal
-            // (§14.61). Codex bar only when openai-codex is confirmed
-            // installed AND login confirmed absent (0, not null).
-            <>
-              {enabledBackends.claude && (v as any).claudeLoggedIn !== 1 && onLoginAgent && (
-                <div className="cs-agent-bar warn">
-                  <span className="cs-agent-meta">{agentVersion ? `v${agentVersion} · ` : ''}claude not signed in</span>
-                  <button className="cs-agent-btn" onClick={() => onLoginAgent(v)}>
-                    <span className="cs-btn-ico"><IconRobot /></span> claude login
-                  </button>
-                </div>
-              )}
-              {enabledBackends.codex && (v as any).codexAvailable === 1 && (v as any).codexLoggedIn === 0 && onCodexLoginAgent && (
-                <div className="cs-agent-bar warn">
-                  <span className="cs-agent-meta">codex not signed in</span>
-                  <button className="cs-agent-btn" onClick={() => onCodexLoginAgent(v)}>
-                    <span className="cs-btn-ico"><AgentLogo kind="codex" size={12} /></span> codex login
-                  </button>
-                </div>
-              )}
-            </>
-          )}
+          ) : null}
 
           {/* Install session row (running / finished, reopenable). */}
           {vpsInstall && (

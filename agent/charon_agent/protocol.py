@@ -78,6 +78,16 @@ METHODS = {
     "codex_login_api_key",
     "codex_logout",
     "codex_archive_thread",
+    "cursor_login_start",
+    "cursor_login_status",
+    "cursor_login_cancel",
+    "cursor_auth_status",
+    "cursor_logout",
+    "cursor_list_models",
+    "cursor_list_agents",
+    "cursor_agent_messages",
+    "cursor_archive_agent",
+    "cursor_unarchive_agent",
     "codex_unarchive_thread",
     # Filesystem navigation for the hub's path autocomplete - subdirs of a
     # given path over the persistent pipe. Agent >= 0.17.0, fsnav.py.

@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import SettingSourcesPicker from './SettingSourcesPicker';
+import { providerText } from '@/lib/providerText';
 import { parseSettingSources, type ClaudeSettingSource } from '@/lib/settingSources';
 
 export default function SettingScopeModal({
@@ -65,12 +66,9 @@ export default function SettingScopeModal({
 
   const body = (
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="claude-modal scope-modal" role="dialog" aria-modal="true" aria-label="Claude settings scope">
-        <h2 className="scope-title">Claude settings on <b>{vpsName}</b></h2>
-        <p className="scope-lead">
-          Claude sessions running on this machine read the files you tick below.
-          Anything not ticked is ignored, including the rules it contains.
-        </p>
+      <div className="claude-modal scope-modal" role="dialog" aria-modal="true" aria-label={providerText.settingScopeAria()}>
+        <h2 className="scope-title">{providerText.settingScopeHeading()} <b>{vpsName}</b></h2>
+        <p className="scope-lead">{providerText.settingScopeLead()}</p>
         <SettingSourcesPicker value={value} onChange={setValue} inherited={hubDefault} />
         {error && <p className="confirm-err">{error}</p>}
         <div className="confirm-actions">

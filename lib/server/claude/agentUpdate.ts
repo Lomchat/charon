@@ -124,6 +124,8 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
       ...(result.codexCliVersion ? { codexCliVersion: result.codexCliVersion } : {}),
+      ...(result.cursorSdkVersion ? { cursorSdkVersion: result.cursorSdkVersion } : {}),
+      ...(result.cursorAvailable !== undefined ? { cursorAvailable: result.cursorAvailable ? 1 : 0 } : {}),
       ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     }).where(eq(vpsTable.id, vps.id)).run();
     // Mirror the persist onto the live bus — WITHOUT this, an update driven by
@@ -137,6 +139,8 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
       ...(result.sdkVersion ? { sdkVersion: result.sdkVersion } : {}),
       ...(result.codexSdkVersion ? { codexSdkVersion: result.codexSdkVersion } : {}),
       ...(result.codexCliVersion ? { codexCliVersion: result.codexCliVersion } : {}),
+      ...(result.cursorSdkVersion ? { cursorSdkVersion: result.cursorSdkVersion } : {}),
+      ...(result.cursorAvailable !== undefined ? { cursorAvailable: result.cursorAvailable ? 1 : 0 } : {}),
       ...(result.codexAvailable !== undefined ? { codexAvailable: result.codexAvailable ? 1 : 0 } : {}),
     });
   } catch {}

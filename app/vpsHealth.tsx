@@ -1,7 +1,12 @@
 'use client';
 import type { Vps } from '@/lib/db/schema';
-import type { AgentKind } from '@/lib/types/api';
+import type { AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { isVersionOutdated, agentBuildRelation } from '@/lib/version';
+import { providerText } from '@/lib/providerText';
+import {
+  PROVIDERS, SESSION_PROVIDERS, providerBackendState,
+  type ProviderLoginAction, type SessionProvider,
+} from '@/lib/sessionCapabilities';
 
 // ── Per-VPS health diagnosis (single source of truth) ────────────────────────
 // Turns the vps row's health columns (agentStatus + agentLastError +
@@ -17,7 +22,10 @@ import { isVersionOutdated, agentBuildRelation } from '@/lib/version';
 // daemon stopped? claude not signed in? codex not installed?) and gets the
 // right one-click repair NEXT TO the problem it repairs. cf. CLAUDE.md §14.60.
 
-export type VpsFixAction = 'install' | 'refresh' | 'update' | 'claude-login' | 'codex-login';
+// Agent-level repairs plus one sign-in action per provider, DERIVED from the
+// registry: `${SessionProvider}-login` grows with the union, so a new backend
+// can never end up with a login button this type refuses.
+export type VpsFixAction = 'install' | 'refresh' | 'update' | ProviderLoginAction;
 export type VpsAxisState = 'ok' | 'warn' | 'err' | 'unk';
 
 export type VpsFix = {
@@ -28,7 +36,7 @@ export type VpsFix = {
 };
 
 export type VpsHealthAxis = {
-  key: 'ssh' | 'agent' | 'claude' | 'codex';
+  key: 'ssh' | 'agent' | SessionProvider;
   state: VpsAxisState;
   label: string;   // compact chip text ("ssh ✓", "no agent", "claude: login"…)
   detail: string;  // tooltip sentence (may embed the raw ssh error)
@@ -79,18 +87,17 @@ function lastContactSuffix(v: Vps): string {
 
 export function diagnoseVps(
   v: Vps,
-  // codexLatestVersion completes the trio: the sidebar's "⇪ update" ORs agent,
-  // claude-sdk AND codex, so leaving codex out here made the health chip say
-  // "agent ✓" beside a lit update button on the very same VPS.
-  opts?: { builtAgentVersion?: string | null; sdkLatestVersion?: string | null; codexLatestVersion?: string | null; codexCliLatestVersion?: string | null },
+  // One `latest` per DECLARED release line, keyed by the registry's
+  // `latestKey` (`VpsStalenessBaselines`). Enumerating them here is what made
+  // a newly-declared line compare against `undefined` — never stale, chip
+  // never lit — while the sidebar's "⇪ update" ORs every axis.
+  opts?: VpsStalenessBaselines,
 ): VpsHealth {
   const status = ((v as any).agentStatus as string | undefined) ?? 'unknown';
   const { code, detail } = parseAgentLastError(v);
   const agentVersion = (v as any).agentVersion as string | null | undefined;
-  const sdkVersion = (v as any).sdkVersion as string | null | undefined;
-  const claudeLoggedIn = (v as any).claudeLoggedIn as number | null | undefined;
-  const codexAvailable = (v as any).codexAvailable as number | null | undefined;
-  const codexLoggedIn = (v as any).codexLoggedIn as number | null | undefined;
+  /** `latest` version for one registry version axis, by its declared key. */
+  const latestOf = (key: string): string | null => opts?.[key] ?? null;
 
   const axes: VpsHealthAxis[] = [];
   const errSuffix = detail ? ` — ${detail}` : '';
@@ -129,16 +136,20 @@ export function diagnoseVps(
     // a staleness signal at all (bump `__version__` to propagate).
     const rel = agentBuildRelation(agentVersion, opts?.builtAgentVersion ?? null);
     const pyzOutdated = rel === 'outdated';
-    const sdkOutdated = isVersionOutdated(sdkVersion, opts?.sdkLatestVersion ?? null);
-    const codexSdkVersion = (v as any).codexSdkVersion as string | null | undefined;
-    const codexCliVersion = (v as any).codexCliVersion as string | null | undefined;
-    const codexSdkOutdated = isVersionOutdated(codexSdkVersion, opts?.codexLatestVersion ?? null);
-    const codexCliOutdated = isVersionOutdated(codexCliVersion, opts?.codexCliLatestVersion ?? null);
-    const codexOutdated = codexSdkOutdated || codexCliOutdated;
-    if (pyzOutdated || sdkOutdated || codexOutdated) {
+    // Every provider's runtime versions, straight from the registry — the
+    // update chip must carry ALL staleness axes or it says "agent ✓" beside a
+    // lit update button (§14.52). A new backend enrolls by declaring its
+    // version columns; only its `latestKey` needs adding to `opts`.
+    const stale = SESSION_PROVIDERS.flatMap((p) =>
+      providerBackendState(v as any, p).versions
+        .map((x) => ({ ...x, provider: p, latest: latestOf(x.latestKey) }))
+        .filter((x) => isVersionOutdated(x.value, x.latest)));
+    if (pyzOutdated || stale.length > 0) {
+      const pyzNote = pyzOutdated ? ` (agent v${agentVersion} → v${opts?.builtAgentVersion})` : '';
+      const verNotes = stale.map((x) => ` (${x.packageLabel} ${x.value} → ${x.latest})`).join('');
       axes.push({
         key: 'agent', state: 'warn', label: 'agent ⇪',
-        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${pyzOutdated ? ` (agent v${agentVersion} → v${opts?.builtAgentVersion})` : ''}${sdkOutdated && sdkVersion ? ` (sdk ${sdkVersion} → ${opts?.sdkLatestVersion})` : ''}${codexSdkOutdated && codexSdkVersion ? ` (codex sdk ${codexSdkVersion} → ${opts?.codexLatestVersion})` : ''}${codexCliOutdated && codexCliVersion ? ` (codex cli ${codexCliVersion} → ${opts?.codexCliLatestVersion})` : ''}`,
+        detail: `running${agentVersion ? ` v${agentVersion}` : ''} — update available${pyzNote}${verNotes}`,
         fixes: [{ action: 'update', label: '⇪ update', title: 'redeploy the agent + update the SDKs', primary: false }],
       });
     } else if (rel === 'ahead') {
@@ -183,57 +194,57 @@ export function diagnoseVps(
     });
   }
 
-  // ── claude / codex (only meaningful once the agent answers) ────────────────
-  if (status !== 'ok') {
-    const why = status === 'missing' ? 'needs the agent installed first' : 'unknown until the agent answers';
-    axes.push({ key: 'claude', state: 'unk', label: 'claude ?', detail: why });
-    axes.push({ key: 'codex', state: 'unk', label: 'codex ?', detail: why });
-  } else {
-    // claude — TWO distinct broken states: NOT INSTALLED (sdk missing from
-    // the venv) vs INSTALLED BUT NOT SIGNED IN. Same split as codex below.
-    if (sdkVersion == null) {
-      axes.push({
-        key: 'claude', state: 'warn', label: 'claude: not installed',
-        detail: 'claude-agent-sdk not in the venv — update (re)installs it',
-        fixes: [{ action: 'update', label: '⇪ update', title: 'install/upgrade claude-agent-sdk in the venv', primary: false }],
-      });
-    } else if (claudeLoggedIn === 0) {
-      axes.push({
-        key: 'claude', state: 'warn', label: 'claude: login',
-        detail: 'installed but not signed in — run the claude login flow',
-        fixes: [{ action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)', primary: false }],
-      });
-    } else if (claudeLoggedIn == null) {
-      axes.push({
-        key: 'claude', state: 'unk', label: 'claude ?',
-        detail: 'login never checked — open the console to sign in / verify',
-        fixes: [{ action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)', primary: false }],
-      });
-    } else {
-      axes.push({ key: 'claude', state: 'ok', label: 'claude ✓', detail: `signed in${sdkVersion ? ` · sdk ${sdkVersion}` : ''}` });
+  // ── one axis per provider (only meaningful once the agent answers) ─────────
+  // Generated from SESSION_PROVIDERS: a new backend gets its chip, its states
+  // and its repair buttons from its registry entry, with no edit here. Each
+  // provider has THREE distinct broken states — NOT INSTALLED (runtime absent
+  // from the venv), NOT REPORTED (agent too old to probe it) and INSTALLED BUT
+  // NOT SIGNED IN — and they take different repairs, so they never collapse.
+  for (const p of SESSION_PROVIDERS) {
+    const d = PROVIDERS[p];
+    const b = d.backend;
+    if (status !== 'ok') {
+      const why = status === 'missing' ? 'needs the agent installed first' : 'unknown until the agent answers';
+      axes.push({ key: p, state: 'unk', label: `${p} ?`, detail: why });
+      continue;
     }
-    // codex — same two states: openai-codex importable in the venv
-    // (installed) vs `codex login` done (device-code modal, §14.61).
-    if (codexAvailable === 0) {
+    const st = providerBackendState(v as any, p);
+    const installFix: VpsFix = {
+      action: 'update', label: b.install.label, title: b.install.title, primary: false,
+    };
+    const loginFix: VpsFix = {
+      action: b.login.action, label: b.login.label, title: b.login.title, primary: false,
+    };
+    if (st.available === 0) {
       axes.push({
-        key: 'codex', state: 'warn', label: 'codex: not installed',
-        detail: 'openai-codex not in the venv — "install codex" fixes it',
-        fixes: [{ action: 'update', label: '⇩ install codex', title: 'install openai-codex in the venv (runs the agent update)', primary: false }],
+        key: p, state: 'warn', label: `${p}: not installed`,
+        detail: `${b.packageName} not in the venv — update (re)installs it`,
+        fixes: [installFix],
       });
-    } else if (codexAvailable == null) {
+    } else if (st.available == null) {
       axes.push({
-        key: 'codex', state: 'unk', label: 'codex ?',
+        key: p, state: 'unk', label: `${p} ?`,
         detail: 'not reported (old agent) — update to detect/install it',
-        fixes: [{ action: 'update', label: '⇪ update', title: 'update the agent (also installs openai-codex)', primary: false }],
+        fixes: [{ ...installFix, label: '⇪ update', title: `update the agent (also installs ${b.packageName})` }],
       });
-    } else if (codexLoggedIn === 0) {
+    } else if (st.loggedIn === 0) {
       axes.push({
-        key: 'codex', state: 'warn', label: 'codex: login',
-        detail: 'installed but not signed in — sign in with the device code',
-        fixes: [{ action: 'codex-login', label: 'codex login', title: 'sign in to Codex (ChatGPT device code — no VPS shell needed)', primary: false }],
+        key: p, state: 'warn', label: `${p}: login`,
+        detail: `installed but not signed in — ${b.signInHint}`,
+        fixes: [loginFix],
+      });
+    } else if (st.loggedIn == null && !b.loginUnknownIsUsable) {
+      axes.push({
+        key: p, state: 'unk', label: `${p} ?`,
+        detail: 'login never checked — open the console to sign in / verify',
+        fixes: [loginFix],
       });
     } else {
-      axes.push({ key: 'codex', state: 'ok', label: 'codex ✓', detail: codexLoggedIn == null ? 'installed (login not verified yet)' : 'installed & signed in' });
+      const vers = st.versions.filter((x) => x.value).map((x) => ` · ${x.chipLabel} ${x.value}`).join('');
+      axes.push({
+        key: p, state: 'ok', label: `${p} ✓`,
+        detail: st.loggedIn == null ? `installed (login not verified yet)${vers}` : `signed in${vers}`,
+      });
     }
   }
 
@@ -274,43 +285,80 @@ export function agentAvailability(v: Vps): { ok: boolean; reason: string; fix?: 
   return { ok: false, reason, fix };
 }
 
+/**
+ * What ONE backend's launcher button should DO on ONE VPS.
+ *
+ * There used to be two controls for the same fact: a greyed ＋ that said "not
+ * signed in" and could not be pressed, plus a separate sign-in button beside
+ * it. That reads as a dead end — the thing you want to click is disabled, and
+ * the thing that helps is somewhere else. One button instead, whose MEANING
+ * follows the state: ready ⇒ start a session; signed out ⇒ open the sign-in
+ * modal, with a corner warning and a tooltip that says so.
+ *
+ * A missing RUNTIME deliberately stays un-clickable. Its repair is an install —
+ * a long, mutating fleet operation — and a launcher that silently starts one
+ * because someone aimed for "new session" is a different promise than this
+ * button makes. The agent bar keeps offering it, next to the reason.
+ */
+export type BackendLauncher = {
+  /** The click starts a session. */
+  ready: boolean;
+  /** The click opens this sign-in instead. Null when nothing safe can repair. */
+  fix: VpsFix | null;
+  /** Pressable at all. */
+  enabled: boolean;
+  /** Tooltip: the backend, then why it is not ready. */
+  title: string;
+  /** Draw the corner warning. */
+  warn: boolean;
+};
+
+export function backendLauncher(v: Vps, kind: AgentKind): BackendLauncher {
+  const av = backendAvailability(v, kind);
+  if (av.ok) {
+    return { ready: true, fix: null, enabled: true, title: providerText.newAgent(kind), warn: false };
+  }
+  const signIn = av.fix && av.fix.action === PROVIDERS[kind].backend.login.action ? av.fix : null;
+  return {
+    ready: false,
+    fix: signIn,
+    enabled: !!signIn,
+    title: signIn
+      ? providerText.launchBlockedSignIn(kind)
+      : providerText.launchBlocked(kind, av.reason),
+    warn: true,
+  };
+}
+
 export function backendAvailability(
   v: Vps,
   kind: AgentKind,
 ): { ok: boolean; reason: string; fix?: VpsFix } {
   const agent = agentAvailability(v);
   if (!agent.ok) return agent;
-  if (kind === 'codex') {
-    const codexAvailable = (v as any).codexAvailable as number | null | undefined;
-    const codexLoggedIn = (v as any).codexLoggedIn as number | null | undefined;
-    // Reasons stay backend-NEUTRAL ('not installed', 'not signed in') — every
-    // surface already names the backend (wizard "Codex: …" prefix, the codex
-    // logo ＋ button's tooltip), so "not signed in to Codex" read redundant.
-    if (codexAvailable !== 1) {
-      return {
-        ok: false,
-        reason: codexAvailable === 0 ? 'not installed' : 'not detected (update the agent)',
-        fix: { action: 'update', label: '⇩ install codex', title: 'install openai-codex in the venv (runs the agent update)' },
-      };
-    }
-    if (codexLoggedIn === 0) {
-      return {
-        ok: false,
-        reason: 'not signed in',
-        fix: { action: 'codex-login', label: 'codex login', title: 'sign in to Codex (ChatGPT device code)' },
-      };
-    }
-    return { ok: true, reason: 'new Codex agent on this VPS' };
-  }
-  const claudeLoggedIn = (v as any).claudeLoggedIn as number | null | undefined;
-  if (claudeLoggedIn !== 1) {
+  const d = PROVIDERS[kind];
+  const b = d.backend;
+  const st = providerBackendState(v as any, kind);
+  // Reasons stay backend-NEUTRAL ('not installed', 'not signed in') — every
+  // surface already names the backend (wizard "Codex: …" prefix, the provider
+  // logo on the ＋ button), so "not signed in to Codex" read redundant.
+  if (b.availability.blocksLaunch && st.available !== 1) {
     return {
       ok: false,
-      reason: claudeLoggedIn === 0 ? 'not signed in' : 'login not verified',
-      fix: { action: 'claude-login', label: 'claude login', title: 'sign in to Claude (hosted OAuth code — no VPS shell needed)' },
+      reason: st.available === 0 ? 'not installed' : 'not detected (update the agent)',
+      fix: { action: 'update', label: b.install.label, title: b.install.title },
     };
   }
-  return { ok: true, reason: 'new Claude agent on this VPS' };
+  const loginBlocked = st.loggedIn === 0
+    || (st.loggedIn == null && !b.loginUnknownIsUsable);
+  if (loginBlocked) {
+    return {
+      ok: false,
+      reason: st.loggedIn === 0 ? 'not signed in' : 'login not verified',
+      fix: { action: b.login.action, label: b.login.label, title: b.login.title },
+    };
+  }
+  return { ok: true, reason: `new ${d.label} agent on this VPS` };
 }
 
 // ── Chips renderer (shared look between DataModal / wizard) ──────────────────

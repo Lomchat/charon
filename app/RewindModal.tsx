@@ -37,7 +37,8 @@ export function buildRewindChoices(messages: Msg[]): RewindChoice[] {
 
 export default function RewindModal({ messages, provider, busy, error, onConfirm, onClose }: {
   messages: Msg[];
-  provider: 'Claude' | 'Codex';
+  /** Provider DISPLAY name, from `agentKindLabel` (see ReviewModal). */
+  provider: string;
   busy: boolean;
   error: string | null;
   onConfirm: (messageId: string) => void;

@@ -19,7 +19,8 @@ import type {
   AgentSessionDetailResponse, AgentSessionMessageWindow,
 } from '@/lib/types/api';
 import {
-  defaultSessionMode, isSessionMode, type SessionMode,
+  asSessionProvider, defaultSessionMode, isSessionMode,
+  type SessionMode, type SessionProvider,
 } from '@/lib/sessionCapabilities';
 import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
 
@@ -184,10 +185,8 @@ export type ClaudeSessionStreamState = {
   // Independent of the `model` field above which is the user's CONFIGURED
   // value. The two can legitimately differ (alias resolution, fallback).
   effectiveModel: string | null;
-  // Live token usage for the CURRENT turn (§14.50): the growing output-token
-  // counter shown in the ThinkingBar ("↑ 14.2k tokens"). Updated by the
-  // transient `usage` SSE event; reset to null on a new send. `final` carries
-  // the turn totals (durationMs/costUsd) on the ResultMessage.
+  // Current-turn usage (§14.50). Live output drives ThinkingBar; the final
+  // frame carries totals and cost for the post-turn status line.
   liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null } | null;
   toolCalls: ToolCallEntry[];
   edits: Map<string, EditSnapshot>;
@@ -463,7 +462,7 @@ export function useClaudeSessionStream(
     // Mode: Claude sessions use a permission mode; Codex sessions store a
     // sandbox level in the same field — accept both by kind so a codex mode
     // isn't reset to 'normal'.
-    const sessKind = (r.session as { kind?: string })?.kind === 'codex' ? 'codex' : 'claude';
+    const sessKind = asSessionProvider((r.session as { kind?: string })?.kind);
     const pm = r.session?.permissionMode as SessionMode;
     setPermissionMode(
       isSessionMode(sessKind, pm) ? pm : defaultSessionMode(sessKind),
@@ -699,7 +698,7 @@ export function useClaudeSessionStream(
         const sess = r.session as typeof r.session & {
           kind?: string; model?: string | null; fallbackModel?: string | null; effort?: string | null;
         };
-        const kind = sess.kind === 'codex' ? 'codex' : 'claude';
+        const kind = asSessionProvider(sess.kind);
         const nextMode = isSessionMode(kind, sess.permissionMode)
           ? sess.permissionMode as SessionMode
           : defaultSessionMode(kind);
@@ -907,6 +906,7 @@ export function useClaudeSessionStream(
           }
           break;
         case 'user_echo': {
+          setLiveUsage(null);
           // If we already rendered this message optimistically in `send`,
           // suppress the echo (consume its token) to avoid a duplicate.
           // Echoes without a token (e.g. a message sent from another tab or
@@ -1147,7 +1147,7 @@ export function useClaudeSessionStream(
             id: 'ex' + Date.now() + Math.random(), role: 'external',
             content: ev.text, createdAt: Math.floor(Date.now() / 1000),
             from: (ev as { from?: string }).from ?? null,
-            fromProvider: (ev as { fromProvider?: 'claude' | 'codex' }).fromProvider ?? null,
+            fromProvider: (ev as { fromProvider?: SessionProvider }).fromProvider ?? null,
             sourceSessionId: (ev as { sourceSessionId?: string }).sourceSessionId ?? null,
             messageId: (ev as { messageId?: string }).messageId ?? null,
             conversationId: (ev as { conversationId?: string }).conversationId ?? null,
@@ -1210,8 +1210,8 @@ export function useClaudeSessionStream(
           }
           break;
         case 'usage':
-          // Live token counter for the current turn (§14.50). Transient,
-          // throttled agent-side. Drives the ThinkingBar's "↑ N tokens".
+          // Transient current-turn usage (§14.50); `final` also carries the
+          // post-turn duration and cost.
           setLiveUsage({
             output: ev.output_tokens,
             input: ev.input_tokens,

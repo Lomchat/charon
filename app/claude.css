@@ -408,6 +408,18 @@
 }
 .cs-add-btn svg { display: block; width: 15px; height: 15px; }
 .cs-add-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* A launcher whose backend is signed out stays PRESSABLE — it opens the
+   sign-in (`vpsHealth § backendLauncher`) — so it must not be dimmed like a
+   dead control. A corner mark carries the "not ready" instead, and the tooltip
+   says what the click will do. */
+.cs-add-btn.needs-fix:not(:disabled) { opacity: 1; }
+.cs-add-btn.needs-fix { position: relative; }
+.cs-add-warn {
+  position: absolute; top: 2px; right: 3px;
+  min-width: 11px; height: 11px; padding: 0 2px; box-sizing: border-box;
+  border-radius: 999px; background: var(--warning); color: var(--bg);
+  font: 700 8px/11px var(--body); text-align: center; pointer-events: none;
+}
 .cs-add-btn.agent:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); }
 .cs-add-btn.shell:hover:not(:disabled) { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
 /* per-VPS variant: icon-only, tighter, stacked vertically. */
@@ -706,7 +718,9 @@
   text-transform: uppercase;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* Cwd subtitle; repository name/link and branch sit below the context gauge. */
+/* Cwd subtitle; repository name/link and branch sit below the context gauge
+   (≤820px they move to the header's top-right corner instead — see the mobile
+   block at the end of this file). */
 .claude-bar .bar-sub { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .claude-bar .bar-sub .bar-cwd { flex: 1 1 auto; }
 /* cwd subtitle: only .c-head ellipsizes, .c-tail (last segment) is pinned. */
@@ -737,7 +751,10 @@
 .claude-bar .bar-context-fill { display: block; height: 100%; background: var(--info); }
 .claude-bar .bar-context-fill.hot { background: var(--accent-strong); }
 .claude-bar .bar-context-meter b { color: var(--text); font-weight: 600; }
-.claude-bar .bar-context-tokens { white-space: nowrap; opacity: 0.72; }
+/* The token count is the one part of the gauge line that may be cut: the label
+   and the bar are fixed, and `compact` is `flex: none`, so without something
+   shrinkable the row overflows and the button rides over its neighbours. */
+.claude-bar .bar-context-tokens { white-space: nowrap; opacity: 0.72; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Override the generic action-button dimensions: this belongs to the tiny
    gauge line, not to the interrupt/rewind cluster. */
 .claude-bar .bar-context-compact {
@@ -2129,6 +2146,16 @@
 }
 .thinking-bar .sep { color: var(--text-muted); opacity: 0.4; padding: 0 2px; }
 
+.turn-cost {
+  display: flex; justify-content: flex-end; align-items: center; gap: 6px;
+  padding: 5px 26px;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 25%, transparent);
+  background: color-mix(in srgb, var(--bg-raised) 35%, transparent);
+  color: var(--text-muted);
+  font: 10px/1.4 var(--mono);
+}
+.turn-cost strong { color: var(--accent-strong); font-weight: 600; }
+
 .claude-input-bar {
   display: flex; gap: 10px;
   padding: 12px 26px;
@@ -2781,7 +2808,7 @@
 }
 .claude-modal .modal-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-/* ResumeModal backend tabs (claude | codex). Claude is the default tab; both
+/* ResumeModal provider tabs. Claude is the default tab; all
    stay clickable even when the backend is unusable, so the reason is readable
    instead of hidden behind a disabled control. */
 .resume-tabs { display: flex; gap: 6px; margin: 12px 0 4px; }
@@ -2877,6 +2904,14 @@
   -webkit-box-orient: vertical;
 }
 .resume-list li.scan-row > button { align-self: center; }
+.resume-more {
+  display: block; margin: 8px auto 0; padding: 6px 12px;
+  background: var(--bg-inset); border: 1px solid var(--border);
+  color: var(--accent); font-family: var(--display); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer;
+}
+.resume-more:hover { color: var(--accent-strong); border-color: var(--accent); }
+.resume-more:disabled { opacity: 0.4; cursor: not-allowed; }
 .claude-modal .empty { font-style: italic; color: var(--text-muted); padding: 6px 0; font-size: 12px; }
 .claude-modal .err   { color: var(--danger); font-size: 12px; padding: 6px 0; }
 
@@ -4010,6 +4045,7 @@
   .claude-bar .me-badges { margin-left: 0 !important; max-width: 100%; }
   .claude-chat          { padding: 14px 12px; }
   .thinking-bar         { padding: 8px 12px; }
+  .turn-cost            { padding: 5px 12px; }
   .claude-pending-zone  { padding-left: 10px; padding-right: 10px; }
   .claude-disconnect-cta { padding: 16px 12px; }
 
@@ -4080,6 +4116,9 @@
 
 .head-usage-panel { display: none; }              /* desktop: chip in bar is the surface */
 .head-toggles { display: inline-flex; align-items: center; gap: 6px; }
+/* Rules the app-scope gear off from the two drawer toggles beside it. Follows
+   `.head-btn.m-only`: hidden on desktop, revealed by the ≤820px block. */
+.claude-head .head-toggle-sep { display: none; }
 
 .usage-meter { position: relative; display: inline-flex; }
 .usage-chip {
@@ -4157,6 +4196,11 @@
   .claude-root.usage-open .head-right { transform: translateX(0); }
   .head-toggles { margin-left: auto; }
   .claude-head .head-btn.m-only.usage-toggle { display: inline-flex; }
+  .claude-head .head-btn.m-only.settings-toggle { display: inline-flex; }
+  .claude-head .head-toggle-sep {
+    display: block; flex: none; align-self: stretch; width: 1px;
+    margin: 5px 2px; background: var(--border); border-radius: var(--radius-sm);
+  }
 
   /* Drawer content: usage panel on top (divider below it), then the action
      buttons as labeled, touch-friendly menu rows. */
@@ -4229,8 +4273,35 @@
   font-family: var(--body); font-size: 12px; cursor: pointer;
   transition: background .12s, border-color .12s, color .12s;
 }
-.wiz-kind-btn:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-strong); }
 .wiz-kind-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Ready backends carry the accent. Recoverable signed-out backends remain
+   pressable but muted (`vpsHealth § backendLauncher`). */
+.wiz-kind-btn:not(.needs-fix) {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.wiz-kind-btn:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); }
+.wiz-kind-btn.needs-fix {
+  position: relative; opacity: 1;
+  border-color: var(--border); background: transparent; color: var(--text-muted);
+}
+.wiz-kind-btn.needs-fix .agent-logo { opacity: 0.55; }
+.wiz-kind-btn.needs-fix:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  color: var(--text);
+}
+.wiz-kind-btn.needs-fix:hover .agent-logo { opacity: 1; }
+/* A mark, not a badge: inside the button's own box and unfilled. */
+.wiz-kind-warn {
+  position: absolute; top: 1px; right: 4px;
+  color: var(--warning); font: 700 9px/1 var(--body); pointer-events: none;
+}
+/* The fixed-backend row IS the button, so its blocker is a quiet line inside
+   it — an amber border would make the unusable rows the loudest in the list. */
+.wiz-pick.needs-fix:hover { border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.wiz-pick.needs-fix .wiz-pick-name { color: var(--text-muted); }
+.wiz-pick-blocked { color: var(--text-muted); font-size: 10.5px; }
 .wiz-kind-btn .agent-logo { --al-size: 15px; }
 
 /* Codex sandbox-mode selector (reuses the .m-btn mode-switch chrome). */
@@ -5953,6 +6024,38 @@
 .runtime-usage-track { height: 3px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 14%, transparent); overflow: hidden; }
 .runtime-usage-track .um-fill { display: block; height: 100%; }
 .runtime-usage-empty { font: 10px/1.3 var(--body); color: var(--text-muted); }
+/* A provider with no usage API (registry `usageDashboardUrl`): the cell says so
+   and links out, instead of an "Unavailable" gauge that reads as our bug. Same
+   geometry as the button it replaces, so the three-cell header keeps its shape. */
+.runtime-usage-link {
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  text-decoration: none; color: var(--text-muted);
+}
+.claude-bar .runtime-usage-link { border-radius: 0 var(--radius-xl) var(--radius-xl) 0; height: 100%; }
+.runtime-usage-link .um-link-note { font: 9.5px/1.25 var(--body); }
+.runtime-usage-link .um-link-cta { font: 10px/1.25 var(--body); color: var(--accent); }
+.runtime-usage-link:hover .um-link-cta { color: var(--accent-strong); text-decoration: underline; }
+/* Drawer form: the same two lines, at reading size. On a phone this IS where
+   usage lives — the header cell is hidden below 820px — so it must say the
+   whole thing rather than abbreviate. */
+.um-panel.um-link-panel { display: flex; }
+.um-panel .um-link {
+  display: flex; flex-direction: column; gap: 3px; width: 100%;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--bg); text-decoration: none;
+}
+.um-panel .um-link .um-link-note { color: var(--text-muted); font: 11px/1.4 var(--body); }
+.um-panel .um-link .um-link-cta { color: var(--accent); font: 12px/1.4 var(--body); }
+.um-panel .um-link:hover { border-color: var(--accent); }
+/* Settings row for the same link. Account-level, so it belongs on the settings
+   page too — the other two surfaces both require an open session. */
+.set-extlink {
+  display: inline-flex; align-items: center; align-self: flex-start;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-elevated); color: var(--accent);
+  font: 12px/1.4 var(--body); text-decoration: none;
+}
+.set-extlink:hover { border-color: var(--accent); color: var(--accent-strong); }
 .runtime-usage .usage-pop { left: 50%; right: auto; transform: translateX(-50%); width: min(320px, calc(100vw - 24px)); max-width: none; box-sizing: border-box; max-height: 70dvh; overflow-y: auto; }
 @container session-header (max-width: 700px) {
   .session-header-layout { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
@@ -5972,6 +6075,15 @@
 @media (max-width: 820px) {
   .session-header-layout { position: relative; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 6px; }
   .session-header-layout > .bar-ident { grid-column: 1 / -1; grid-row: 1; }
+  /* Only the name shares row 1 with the repo controls. The remaining identity
+     rows span both columns so the chips cannot narrow their content. */
+  .claude-bar .bar-ident { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 0; }
+  .claude-bar .bar-ident > :not(.bar-repo):not(.bar-name) { grid-column: 1 / -1; }
+  .claude-bar .bar-name { grid-column: 1; grid-row: 1; }
+  .claude-bar .bar-repo { grid-column: 2; grid-row: 1; justify-self: end; margin: 0 0 0 8px; }
+  .claude-bar .git-chip-wrap { flex-wrap: nowrap; gap: 4px; }
+  .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 88px; }
+  .claude-bar .git-chip .gc-branch { max-width: 76px; }
   .session-runtime-panel { position: static; grid-column: 1; grid-row: 2; justify-self: start; max-width: 300px; grid-template-columns: minmax(0, 1fr) minmax(0, .6fr); border-radius: var(--radius-lg); box-shadow: none; }
   .session-header-controls { grid-column: 2; grid-row: 2; align-self: center; }
   .session-header-actions { gap: 2px; }
@@ -5986,6 +6098,11 @@
   .runtime-effective { font-size: 8px; line-height: 1; margin-top: 0; }
   .claude-bar .runtime-usage { display: none; }
 }
+/* Narrow phones reduce repo-chip caps to preserve space for the title. */
+@media (max-width: 430px) {
+  .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 62px; }
+  .claude-bar .git-chip .gc-branch { max-width: 56px; }
+}
 
 .runtime-usage-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-choice-popover { position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 50; width: min(350px, calc(100vw - 24px)); padding: 6px; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); border-radius: var(--radius-xl); background: var(--bg); box-shadow: 0 12px 35px color-mix(in srgb, var(--shadow-color) 33.3333%, transparent); max-height: min(65dvh, 520px); overflow-y: auto; }
@@ -5995,6 +6112,13 @@
 .picker-options button:hover:not(:disabled), .picker-options button:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: none; }
 .picker-options button[data-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); }
 
+/* Shared two-line picker row: name followed by one line per fact. */
+.picker-line { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.picker-line small { color: var(--text-muted); font-size: 10.5px; line-height: 1.3; }
+/* Compact price tier beside the model name; hidden in the closed trigger. */
+.picker-tier { margin-left: 6px; color: var(--text-muted); font-size: 10.5px; letter-spacing: 0.5px; }
+.picker-trigger .picker-tier { display: none; }
+
 /* ── Theme picker rows ──────────────────────────────────────────────────────
    Each option carries the palette it would apply. `data-theme` is set on the
    SWATCH itself, so an attribute selector that normally matches <html> matches
@@ -6002,8 +6126,6 @@
    copied into TypeScript, and they follow themes.css for free. The chips take
    that theme's --radius-sm as well, so the corners preview its geometry. */
 .theme-choice { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; }
-.theme-choice-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.theme-choice-text small { color: var(--text-muted); font-size: 10.5px; line-height: 1.3; }
 .theme-swatch {
   display: flex; gap: 2px; flex: none; margin-left: auto; padding: 3px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -6015,7 +6137,19 @@
    label has to stay inline here — a full-width flex row would push the chevron
    onto a second line. */
 .picker-trigger .theme-choice { display: inline-flex; width: auto; max-width: 100%; vertical-align: middle; gap: 9px; }
-.picker-trigger .theme-choice-text small { display: none; }
+/* Closed pickers reserve their single line for the name. */
+.picker-trigger .picker-line { display: inline; }
+.picker-trigger .picker-line small { display: none; }
+/* Keep large-catalog filtering visible while its results scroll. */
+.picker-search { position: sticky; top: 0; z-index: 1; padding: 2px 2px 6px; background: var(--bg); }
+.picker-search input {
+  width: 100%; box-sizing: border-box; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-elevated); color: var(--text);
+  font: 12px/1.4 var(--body);
+}
+.picker-search input:focus { border-color: var(--accent); outline: none; }
+.picker-search input::placeholder { color: var(--text-muted); }
 .picker-check { width: 14px; flex: none; }
 .picker-group-label { padding: 12px 12px 5px; color: var(--text-muted); font: 10px/1.3 var(--body); }
 .runtime-choice-note, .runtime-choice-error { margin: 6px; padding: 10px 6px; border-top: 1px solid color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text-muted); font: 11px/1.5 var(--body); }

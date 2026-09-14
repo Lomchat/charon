@@ -295,6 +295,13 @@
       "when": 1788985524497,
       "tag": "0041_amazing_starfox",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1789061135304,
+      "tag": "0042_salty_archangel",
+      "breakpoints": true
     }
   ]
 }

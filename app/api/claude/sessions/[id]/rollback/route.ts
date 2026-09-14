@@ -7,6 +7,9 @@ import {
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { orderChronologically } from '@/lib/server/claude/messageOrder';
+import {
+  PROVIDERS, asSessionProvider, hasNativeCapability, supportsSessionCapability,
+} from '@/lib/sessionCapabilities';
 
 /** Rewind both providers before one visible user message.
  *
@@ -28,6 +31,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const [session] = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).all();
   if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  // ⚠ Refused on the capability BEFORE anything else. A backend with
+  // `rewind:'none'` used to fall through to Claude's transcript fork, and this
+  // route then persisted `claudeSessionId: null` — for every backend but
+  // Claude that column is the only resume handle, so the conversation was
+  // gone and nothing said so (§14.103).
+  const kind = asSessionProvider(session.kind);
+  if (!supportsSessionCapability(kind, 'rewind')) {
+    return NextResponse.json(
+      { error: `${PROVIDERS[kind].label} sessions cannot be rewound` },
+      { status: 400 },
+    );
+  }
   if (session.archived) {
     return NextResponse.json({ error: 'unarchive the session before rewinding it' }, { status: 409 });
   }
@@ -60,7 +75,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   try {
     native = await getAgentClientForVpsId(session.vpsId).call('rollback_session', {
       session_id: id,
-      ...(session.kind === 'codex'
+      // A NATIVE rewind counts turns; an adapted one branches the transcript
+      // at a CLI anchor. Read from the registry so a fourth backend declaring
+      // `rewind:'native'` does not need an edit here (§14.102).
+      ...(hasNativeCapability(kind, 'rewind')
         ? { num_turns: numTurns }
         : { up_to_message_id: previousCliMessage }),
     }) as typeof native;
@@ -87,7 +105,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (Object.prototype.hasOwnProperty.call(native, 'claude_session_id')) {
       tx.update(claudeSessions).set({
         claudeSessionId: native.claude_session_id ?? null,
-        status: session.kind === 'codex' ? 'active' : 'starting',
+        // A native rewind never stopped the session; the transcript fork
+        // restarts it, so it re-enters 'starting'.
+        status: hasNativeCapability(kind, 'rewind') ? 'active' : 'starting',
         sleepRequested: 0, resumePending: 0,
       }).where(eq(claudeSessions.id, id)).run();
     }

@@ -12,6 +12,16 @@ commit-by-commit — `git log` has the detail.
 
 ### Added
 
+- **Cursor as an optional third backend**, with browser-link sign-in, streamed
+  sessions, account-specific models and reasoning parameters, recorded turn
+  costs, import/resume/archive, peer messaging and adapted detached reviews.
+  Import reads both current and legacy histories and paginates across folders
+  and SDK pages within each folder. Account changes invalidate model caches
+  and prevent older requests from restoring the previous account's catalog.
+- **A shared provider registry** drives backend controls, capabilities, health,
+  settings, SDK installation and update checks for Claude, Codex and Cursor.
+  Cursor is disabled by default; enabling it also enables its installation and
+  automatic-update paths. The bundled agent is updated to **0.95.7**.
 - **Drag a path heading in the sidebar to move the whole project.** Sessions
   already reordered inside their folder; the folder itself was stuck in the
   order its oldest session happened to give it. Grab the heading and the group

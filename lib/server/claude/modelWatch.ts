@@ -1,6 +1,7 @@
 import 'server-only';
 import { listAgentClients } from '@/lib/server/agent/AgentClientPool';
 import { getCodexModelsForVps } from './codexModels';
+import { refreshCursorModelsForVps } from './cursorModels';
 import { getMergedModels, refreshModelsIfStale } from './modelSync';
 import { observeModels } from './modelNotices';
 
@@ -20,8 +21,18 @@ export function armModelWatch(): void {
       refreshModelsIfStale();
       // Sequential and connected-only: do not queue RPCs on offline machines.
       for (const client of listAgentClients()) {
-        if (client.status === 'connected' && client.hello?.codex_available) {
+        if (client.status !== 'connected') continue;
+        if (client.hello?.codex_available) {
           await getCodexModelsForVps(client.vps.id);
+        }
+        // Cursor's catalog costs a bridge launch, so this tick is also what
+        // keeps the picker instant: it refreshes the stored copy in the
+        // background instead of making whoever opens the control wait.
+        if (client.hello?.cursor_available) {
+          const r = await refreshCursorModelsForVps(client.vps.id);
+          if (r.ok && r.models.length) {
+            observeModels('cursor', r.models.map((m) => ({ id: m.id, label: m.label })));
+          }
         }
       }
     } catch (error) {

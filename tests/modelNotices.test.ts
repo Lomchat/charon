@@ -114,3 +114,27 @@ describe('catalog integration', () => {
     expect(getModelNotices().claude).toEqual([{ id: 'claude-test-99', label: 'Test 99' }]);
   });
 });
+
+describe('a provider that is not Claude', () => {
+  beforeEach(() => { settings.clear(); });
+
+  it('keeps ids that do not look like Claude ids', () => {
+    // The normalizer folds Claude's aliases/dated ids and requires a `claude-`
+    // prefix — that is CLAUDE's own id scheme (§14.43). A `kind === 'codex' ?
+    // … : …` sent every OTHER provider through it, so a catalog of
+    // `grok-4.6` / `composer-2.5` / `gpt-5.6-sol` normalized to nothing and the
+    // provider could never gain a single known model (§14.102).
+    const catalog = [model('grok-4.6'), model('composer-2.5'), model('gpt-5.6-sol')];
+    observeModels('cursor', catalog);               // silent baseline
+    observeModels('cursor', [...catalog, model('grok-5')]);
+    expect(getModelNotices().cursor).toEqual([{ id: 'grok-5', label: 'grok-5' }]);
+  });
+
+  it('does not fold ids the way Claude needs', () => {
+    // `-20260101` and `[1m]` are meaningful characters elsewhere; collapsing
+    // them would merge two distinct models into one.
+    observeModels('cursor', [model('a-20260101')]);
+    observeModels('cursor', [model('a-20260101'), model('a-20260202')]);
+    expect(getModelNotices().cursor.map((m) => m.id)).toEqual(['a-20260202']);
+  });
+});
