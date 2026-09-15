@@ -108,6 +108,8 @@ CI runs them on Python 3.10 and 3.13 (the supported range).
 ## Prerequisites on the VPS
 
 - Python ≥ 3.10.
+- Pillow in the SDK venv for oversized fal image histories. It is loaded only
+  when compression is needed; the relay preserves all images and local originals.
 - A dedicated **venv at `~/.charon/venv`** holding `claude-agent-sdk` and
   `openai-codex`, plus the independently updated native npm artifact under
   `~/.charon/venv/codex-cli` — never `pip install --user` (PEP 668). The agent

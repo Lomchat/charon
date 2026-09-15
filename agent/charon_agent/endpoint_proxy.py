@@ -17,6 +17,7 @@ from typing import Callable
 from .custom_endpoints import _NoRedirect
 from .endpoint_responses import response_stream
 from .endpoint_usage import EndpointUsage
+from .endpoint_images import EndpointImages, ImageBudgetError
 
 
 # A model request carries the whole conversation, including base64 screenshots.
@@ -46,6 +47,7 @@ class EndpointProxy:
         self.endpoint = endpoint
         self.engine = engine
         self.token = secrets.token_hex(32)
+        self.images = EndpointImages()
         loop = asyncio.get_running_loop() if on_usage is not None else None
         owner = self
 
@@ -69,7 +71,9 @@ class EndpointProxy:
                         self.send_error(413, "Custom endpoint request exceeds the 256 MiB relay limit"); return
                     endpoint = owner.endpoint()
                     data = self.rfile.read(size) if self.command == "POST" else None
-                    if data: data = json.dumps(request_body(json.loads(data), endpoint, owner.engine)).encode()
+                    if data:
+                        body = request_body(json.loads(data), endpoint, owner.engine)
+                        data = json.dumps(owner.images.prepare(body, endpoint)).encode()
                     headers = {"Content-Type": "application/json"}
                     for key in ("anthropic-version", "anthropic-beta", "Accept"):
                         if self.headers.get(key): headers[key] = self.headers[key]
@@ -100,6 +104,8 @@ class EndpointProxy:
                             self.wfile.write(chunk); self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
+                except ImageBudgetError as exc:
+                    self.send_error(413, str(exc))
                 except Exception:
                     # Never reflect credentials or upstream exception details to a CLI log.
                     try: self.send_error(502, "Custom endpoint request failed")

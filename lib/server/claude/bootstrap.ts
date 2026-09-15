@@ -421,7 +421,7 @@ export async function pingAgent(
 // The SHARED core of the bootstrap `install_sdk` phase and of the unified
 // update flow (updateVpsAgent / auto-update tick). Creates/heals the venv
 // (PEP 668, ensurepip retry — full commentary inline below) then
-// `pip install --upgrade claude-agent-sdk` and import-checks it. The command
+// `pip install --upgrade claude-agent-sdk Pillow` and import-checks both. The command
 // is idempotent and safe on a VPS whose agent is RUNNING (pip swaps
 // site-packages atomically enough; the process keeps its in-memory copy
 // until the restart that follows in every calling flow). On a VPS without a
@@ -536,9 +536,11 @@ const INSTALL_SDK_CMD = [
   // ALREADY installed and prints the OK marker. Exit 0, marker matched, no
   // warning: a refused upgrade reported as a successful one, and the badge
   // relights next tick with nothing saying why.
-  `${VENV_PY} -m pip install --upgrade claude-agent-sdk 2>&1 || exit 13`,
+  // Pillow is a lazy codec for oversized endpoint image histories. Keep it
+  // beside the SDKs; the zipapp and ordinary agent operations stay stdlib-only.
+  `${VENV_PY} -m pip install --upgrade claude-agent-sdk Pillow 2>&1 || exit 13`,
   // Post-import check: the ONLY real proof that it works.
-  `${VENV_PY} -c 'import claude_agent_sdk; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
+  `${VENV_PY} -c 'import claude_agent_sdk; from PIL import Image; print("[install_sdk] OK version=" + str(claude_agent_sdk.__version__))'`,
 ].join('\n');
 
 // 300s: pip alone is usually <1min, but the command can escalate to an
