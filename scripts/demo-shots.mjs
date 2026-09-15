@@ -15,13 +15,15 @@
 //   usage.png       the account-usage gauges (5h / 7d / weekly caps) popover
 //   shell.png       a LIVE terminal, beside that box's sessions
 //   mobile-*.png    the SAME UI reflowed to a phone
+//   theme-*.png     one matching desktop capture per shipped theme
 //
 // Everything on `prod-eu-1` is LIVE against the demo agent (files, git,
 // terminal); the rest of the fleet is fictitious and unreachable on purpose.
 //
 // The sidebar is rendered in its DEFAULT compact mode ("details" OFF — forced
 // here via localStorage so the shot matches the shipped default on any build).
-// Usage gauges are live-only server-side, so we mock GET /api/vps/*/usage.
+// Browser fixtures supply account usage and session/runtime SSE snapshots.
+// Files, Git, editor and terminal remain live against the isolated agent.
 import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
@@ -29,13 +31,15 @@ import { mkdirSync } from 'node:fs';
 const BASE = process.env.DEMO_BASE || 'http://127.0.0.1:10999';
 const OUT = 'docs/img';
 const DB = process.env.DEMO_DB || './data/demo.db';
+if (!/demo/.test(DB)) throw new Error('Capture requires a dedicated demo DB');
+if (!['127.0.0.1', 'localhost'].includes(new URL(BASE).hostname)) throw new Error('Capture requires a local demo hub');
 const LIVE_VPS = 'v_eu1';                 // the real local agent (see demo-seed)
 const REPO = '/srv/checkout-service';     // its project (see demo-agent-setup.sh)
 mkdirSync(OUT, { recursive: true });
 
 const COOKIE = {
   name: 'charon_session', value: 'demo-session-screenshot',
-  domain: '127.0.0.1', path: '/', httpOnly: true, secure: false, sameSite: 'Lax',
+  domain: new URL(BASE).hostname, path: '/', httpOnly: true, secure: false, sameSite: 'Lax',
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const iso = (msFromNow) => new Date(Date.now() + msFromNow).toISOString();
@@ -62,12 +66,8 @@ const codexUsage = {
 };
 
 // ── Keep the demo DB in its seeded, healthy state before every shot ─────────
-// Focusing a session on a (deliberately unreachable) fictitious VPS spins up a
-// background SSH reconnect that would flip it to 'error' after ~34s. Resetting
-// right before each navigation keeps the SSR snapshot green; captures are far
-// under 34s. Session statuses are re-pinned too (the live box answers `hello`
-// but knows none of these seeded session ids, so a failed attach must not
-// leave the hero looking asleep).
+// Reset persisted fixtures before navigation; browser runtime snapshots also
+// prevent background probes of fictitious VPSes from changing the scene.
 const SESSION_STATUS = {
   s_auth: 'active', s_review: 'active', s_tests: 'thinking', s_build: 'active',
   s_mig: 'sleeping', s_docs: 'sleeping', s_pipe: 'sleeping',
@@ -81,7 +81,7 @@ const PENDING = {
 function resetDemoState(keepPending) {
   const db = new Database(DB);
   db.pragma('busy_timeout = 5000');
-  db.prepare(`UPDATE vps SET agent_status='ok', agent_last_error=NULL`).run();
+  db.prepare(`UPDATE vps SET agent_status='ok', agent_last_error=NULL, codex_available=1, claude_logged_in=1, codex_logged_in=1`).run();
   const up = db.prepare(`UPDATE claude_sessions SET status=? WHERE id=?`);
   for (const [id, st] of Object.entries(SESSION_STATUS)) up.run(st, id);
   db.prepare(`DELETE FROM claude_pending_permissions WHERE id=?`).run(PENDING.id);
@@ -101,7 +101,7 @@ function closeFileTabs() {
   db.close();
 }
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ executablePath: process.env.DEMO_CHROMIUM || undefined });
 // SHOTS=editor,git → re-capture just those (names without .png).
 const ONLY = (process.env.SHOTS || '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -120,14 +120,59 @@ async function shot(ctxOpts, fn, file, opts = {}) {
   await context.route('**/api/vps/*/usage', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ usage: claudeUsage, codexUsage }) }));
+  // Demo sessions have no provider process; keep their runtime fixture stable
+  // while the real agent continues to serve files, Git and terminal traffic.
+  const snapshotResponse = await context.request.get(`${BASE}/api/claude/sessions`);
+  if (!snapshotResponse.ok()) throw new Error('Cannot load demo sessions');
+  const snapshot = await snapshotResponse.json();
+  if (!snapshot.sessions.some((s) => s.id === 's_auth') ||
+      snapshot.sessions.some((s) => !(s.id in SESSION_STATUS))) {
+    await context.close();
+    await browser.close();
+    throw new Error('DEMO_BASE does not point to the seeded demo hub');
+  }
+  snapshot.meta = { builtPyzSha: snapshot.meta.builtPyzSha, builtAgentVersion: snapshot.meta.builtAgentVersion };
+  snapshot.vpsRuntime = snapshot.vpsRuntime.map((v) => ({ ...v,
+    agentStatus: 'ok', agentLastError: null, claudeLoggedIn: 1,
+    codexAvailable: 1, codexLoggedIn: 1,
+  }));
+  await context.route(/\/api\/claude\/sessions(?:\?.*)?$/, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: { ...data, meta: snapshot.meta, vpsRuntime: snapshot.vpsRuntime } });
+  });
+  const events = [
+    ...snapshot.vpsRuntime.map((v) => ({ ...v, type: 'vps_status', sessionId: v.id })),
+    ...Object.entries(SESSION_STATUS).map(([sessionId, status]) => ({ type: 'status', sessionId, status })),
+    { type: 'model_notices', notices: [] },
+    ...(opts.keepPending ? [{ type: 'permission_request', sessionId: PENDING.session_id,
+      id: PENDING.id, tool: PENDING.tool_name, input: JSON.parse(PENDING.tool_input) }] : []),
+  ];
+  await context.route('**/api/claude/events?*', (route) => route.fulfill({
+    contentType: 'text/event-stream', body: 'retry: 60000\n\n' + events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''),
+  }));
   const page = await context.newPage();
-  let ok = true;
-  try { await fn(page); } catch (e) { ok = false; console.log('  (step warn)', file, String(e).slice(0, 160)); }
-  try { await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {}); } catch {}
   try {
+    await warmAgent(page);
+    resetDemoState(!!opts.keepPending);
+    const theme = opts.theme || 'nordic';
+    await open(page);
+    const status = await page.evaluate(async (id) => (await fetch('/api/claude/settings', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ 'app.theme': id }),
+    })).status, theme);
+    if (status !== 200) throw new Error(`Theme selection failed: ${status}`);
+    await fn(page);
+    await page.waitForFunction((id) => document.documentElement.dataset.theme === id, theme);
+    await page.mouse.move(0, 0);
+    if (await page.getByText('vps unreachable (ssh)', { exact: true }).isVisible()) throw new Error('Unhealthy demo fixture');
+    await page.evaluate(() => document.fonts.ready);
     await page.screenshot({ path: `${OUT}/${file}`, animations: 'disabled', timeout: 60000 });
-    console.log((ok ? '✓' : '⚠') + ' ' + file);
-  } catch (e) { console.log('✗', file, String(e).slice(0, 160)); }
+    console.log('✓ ' + file);
+  } catch (e) {
+    process.exitCode = 1;
+    console.error('✗', file, String(e).slice(0, 400));
+  }
   await context.close();
 }
 
@@ -186,7 +231,7 @@ await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
   await sleep(1800);
 }, 'claude-chat.png');
 
-// 3) Codex chat close-up — codex logo bubbles, gpt-5-codex, sandbox mode
+// 3) Codex chat close-up — codex logo bubbles, gpt-6, sandbox mode
 await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
   await open(page, '/?session=s_review');
   await page.getByText('Audit the new /checkout endpoint', { exact: false }).first().waitFor({ timeout: 12000 });
@@ -206,10 +251,8 @@ await shot({ viewport: { width: 1920, height: 940 } }, async (page) => {
   await treeRow(page, 'rateLimit\\.ts').dblclick({ timeout: 8000 });
   await page.locator('.cm-content').first().waitFor({ timeout: 12000 });
   await sleep(900);
-  // The tree remounts when the pane swaps to the file tab, so re-open the
-  // folder: the point of the shot is both halves at once.
-  await treeRow(page, 'src').click({ timeout: 6000 }).catch(() => {});
-  await treeRow(page, 'middleware').click({ timeout: 6000 }).catch(() => {});
+  if (!await treeRow(page, 'middleware').isVisible()) await treeRow(page, 'src').click();
+  if (!await treeRow(page, 'rateLimit\\.ts').isVisible()) await treeRow(page, 'middleware').click();
   await page.mouse.move(900, 980);   // no stray hover highlight in the tree
   await sleep(900);
 }, 'editor.png');
@@ -262,7 +305,8 @@ await shot({ viewport: { width: 1440, height: 940 } }, async (page) => {
   await open(page, '/?session=s_auth');
   await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(700);
-  await page.locator('.usage-chip').first().click({ timeout: 6000 }).catch(() => {});
+  await page.getByRole('button', { name: 'Show account usage', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Account usage', exact: true }).waitFor();
   await sleep(1000);
 }, 'usage.png');
 
@@ -293,7 +337,7 @@ await shot({ viewport: { width: 1920, height: 1040 } }, async (page) => {
   const cmds = [
     "export PS1='\\[\\e[38;5;75m\\]deploy@prod-eu-1\\[\\e[0m\\]:\\[\\e[38;5;150m\\]\\w\\[\\e[0m\\]$ '",
     'clear', 'ls', 'git status -sb', 'git log --oneline -4', 'head -n 3 deploy.log',
-    'npm run test --silent 2>/dev/null || true',
+    'git diff --stat',
   ];
   for (const c of cmds) { await page.keyboard.type(c); await page.keyboard.press('Enter'); await sleep(700); }
   // Typing takes long enough for the unreachable fictitious boxes to go red
@@ -308,8 +352,8 @@ await shot({ viewport: { width: 1920, height: 1040 } }, async (page) => {
 // 10) Mobile — the SAME responsive UI at a phone width. The session list is an
 //     off-canvas drawer opened with the ☰ header button.
 await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true }, async (page) => {
-  await open(page, '/');
-  await page.getByLabel('open navigation').click({ timeout: 12000 }).catch(() => {});
+  await open(page, '/?session=s_auth');
+  await page.getByLabel('open navigation').click({ timeout: 12000 });
   await page.getByText('refactor auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(1500);
 }, 'mobile-select.png');
@@ -327,9 +371,20 @@ await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: tr
   await open(page, '/?session=s_auth');
   await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(700);
-  await page.getByLabel('open usage and settings').click({ timeout: 8000 }).catch(() => {});
+  await page.getByLabel('open usage and settings').click({ timeout: 8000 });
   await sleep(1200);
 }, 'mobile-usage.png');
 
+// Same conversation and viewport in each shipped theme, selected through the
+// normal settings API so CSS, editor, terminal and browser chrome stay in sync.
+for (const theme of ['nordic', 'daylight', 'etonc', 'cupertino', 'cupertino-night']) {
+  await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
+    await open(page, '/?session=s_auth');
+    await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor();
+    await treeRow(page, 'src').waitFor();
+    await sleep(1800);
+    await page.locator('.claude-chat').evaluate((el) => { el.scrollTop = 0; });
+  }, `theme-${theme}.png`, { theme });
+}
 await browser.close();
 console.log('done');

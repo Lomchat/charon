@@ -30,7 +30,7 @@ shells all live in one daemon (`charon-agent`) per VPS, so they keep running whe
 your laptop sleeps, your network drops, or you restart the hub. Charon is just
 the control plane.
 
-![Charon desktop dashboard — sidebar of VPS with Claude and Codex sessions, a tab bar, a streaming session with an account-usage gauge, the file explorer and a permission request](./docs/img/dashboard.png)
+![Charon desktop dashboard — sidebar of VPS with Claude and Codex sessions, a tab bar, a demo conversation with model, effort and account-usage controls, the file explorer and a permission request](./docs/img/dashboard.png)
 
 ```
 ┌───────────────┐  HTTPS/SSE   ┌────────────────────────┐  SSH (1 per VPS)  ┌──────────────────────┐
@@ -46,8 +46,8 @@ the control plane.
 
 ## 1 · Coding sessions — Claude, Codex and Cursor, one UI
 
-<img src="./docs/img/claude-chat.png" alt="Claude session: streamed answer, paired tool calls and a captured diff with a revert button" width="49%"></img>
-<img src="./docs/img/codex-chat.png" alt="Codex session: the same UI driving OpenAI Codex, with sandbox modes and a unified diff" width="49%"></img>
+<img src="./docs/img/claude-chat.png" alt="Claude session: model and effort controls, paired tool calls and the live file explorer" width="49%"></img>
+<img src="./docs/img/codex-chat.png" alt="Codex session: model and effort controls, a security audit and permission modes" width="49%"></img>
 
 Each session is an independent agent running **on the VPS**, not on your
 machine — a `ClaudeSDKClient` (Claude), an OpenAI Codex thread (via the Codex
@@ -333,13 +333,22 @@ sidebar and the tool panel become drawers, the tab bar folds away):
 
 ## Themes
 
-**Settings → General → theme.** Three ship today:
+**Settings → General → theme.** Five ship today:
 
 | Theme | |
 | --- | --- |
 | **Nordic Tokyo** | the default — deep blue-grey, low glare |
 | **Daylight** | light, for a bright room or a sunlit screen |
 | **Etonc** | warm greys and coral, and the transcript reads as a document |
+| **Cupertino** | light, with grey chrome, white content and fine borders |
+| **Cupertino Night** | the same Mac-inspired layout in a dark palette |
+
+<img src="./docs/img/theme-daylight.png" alt="Daylight theme: the current demo session in a light palette" width="49%"></img>
+<img src="./docs/img/theme-etonc.png" alt="Etonc theme: warm greys, coral accents and a document-style transcript" width="49%"></img>
+<img src="./docs/img/theme-cupertino.png" alt="Cupertino theme: light grey chrome and white content" width="49%"></img>
+<img src="./docs/img/theme-cupertino-night.png" alt="Cupertino Night theme: dark chrome with blue accents" width="49%"></img>
+
+[View all five themes at full size and the screenshot capture guide](./docs/screenshots.md).
 
 The theme is **hub-wide**: pick it once and every device follows, live — the
 change reaches other open tabs and your phone over the same event stream, with

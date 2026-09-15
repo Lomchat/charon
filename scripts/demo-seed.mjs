@@ -14,6 +14,8 @@
 // cross-session permission popup, and healthy per-VPS health chips.
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import Database from 'better-sqlite3';
 
 // Safety: this script WIPES tables — never let it touch the real DB.
@@ -66,16 +68,18 @@ for (const [id, name, pos] of folders)
 // (codex_available=1, codex_logged_in=1) → the +Codex launch button is enabled
 // and the health chips read "claude ✓ / codex ✓".
 //
-// Keep AGENT_V/PYZ/SDK_V/CODEX_V/CODEX_CLI_V in sync with what the demo agent really
-// answers to `hello` — it OVERWRITES these on connect (§14.53), and a stale
-// value here means the sidebar shows an "update agent" bar mid-capture:
-//   printf '{"id":1,"method":"hello"}\n' | ssh charondemo@127.0.0.1 \
-//     '~/.charon/charon-agent.pyz --connect'
-const PYZ = 'be3f76c851fe';           // first 12 of sha256(agent/dist/charon-agent.pyz)
-const AGENT_V = '0.27.0';
-const SDK_V = '0.2.134';              // claude-agent-sdk in the venv
-const CODEX_V = '0.144.4';            // openai-codex in the venv
-const CODEX_CLI_V = '0.147.0';        // standalone @openai/codex
+// Read the shipped agent identity; captures must not advertise an old release.
+const PYZ = crypto.createHash('sha256').update(readFileSync('agent/dist/charon-agent.pyz')).digest('hex').slice(0, 12);
+const AGENT_V = execFileSync('python3', ['-c',
+  `import ast, zipfile
+source = zipfile.ZipFile('agent/dist/charon-agent.pyz').read('charon_agent/__init__.py').decode()
+for node in ast.parse(source).body:
+    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '__version__' for t in node.targets):
+        print(ast.literal_eval(node.value))`,
+], { encoding: 'utf8' }).trim();
+const SDK_V = '0.2.134';
+const CODEX_V = '0.144.4';
+const CODEX_CLI_V = '0.147.0';
 // [id, name, ip, user, folder, pos, dual]  dual=false → Claude-only / shells-only
 const vpses = [
   // prod-eu-1 → the REAL isolated localhost agent (scripts/demo-agent-setup.sh).
@@ -113,15 +117,15 @@ const sessions = [
   // Production · prod-eu-1 (the LIVE box) — Claude (HERO) + Codex on the SAME
   // checkout-service checkout: their files, git status and shells are real.
   ['s_auth',   'claude', 'v_eu1', REPO,        'refactor auth middleware',   'active',   'acceptEdits',     CO, 'claude-opus-4-8', 'high',   'claude-opus-4-8', 0],
-  ['s_review', 'codex',  'v_eu1', REPO,        'audit /checkout endpoint',   'active',   'workspace-write', TL, 'gpt-5-codex',     'high',   'gpt-5-codex',     0],
+  ['s_review', 'codex',  'v_eu1', REPO,        'audit /checkout endpoint',   'active',   'workspace-write', TL, 'gpt-6',     'high',   'gpt-6',     0],
   // Production · api-gateway — Claude (thinking, pending permission) + Codex
   ['s_tests',  'claude', 'v_api', '/srv/api',  'fix flaky integration tests','thinking', 'normal',          CY, 'claude-opus-4-8', 'high',   'claude-opus-4-8', 0],
-  ['s_build',  'codex',  'v_api', '/srv/api',  'port build to esbuild',      'active',   'workspace-write', VB, 'gpt-5-codex',     'medium', 'gpt-5-codex',     0],
+  ['s_build',  'codex',  'v_api', '/srv/api',  'port build to esbuild',      'active',   'workspace-write', VB, 'gpt-6',     'medium', 'gpt-6',     0],
   // Staging · staging-01 — a sleeping Claude session + a finished-unread one
   ['s_mig',    'claude', 'v_stg', '/srv/web',  'migrate ORM to Drizzle',     'sleeping', 'normal',          GR, 'claude-sonnet-4-6','high',  null,              0],
   ['s_docs',   'claude', 'v_stg', '/srv/web',  'generate API reference',     'sleeping', 'normal',          CO, 'claude-opus-4-8', 'medium', 'claude-opus-4-8', 1],
   // Labs · ml-trainer — a sleeping Codex session (read-only sandbox)
-  ['s_pipe',   'codex',  'v_ml',  '/data/pipeline', 'profile data pipeline', 'sleeping', 'read-only',       PK, 'gpt-5-codex',     'xhigh',  'gpt-5-codex',     0],
+  ['s_pipe',   'codex',  'v_ml',  '/data/pipeline', 'profile data pipeline', 'sleeping', 'read-only',       PK, 'gpt-6',     'xhigh',  'gpt-6',     0],
 ];
 const insSes = db.prepare(`INSERT INTO claude_sessions
   (id,claude_session_id,vps_id,kind,cwd,name,status,permission_mode,created_at,last_used_at,
@@ -154,14 +158,11 @@ const tr = (id, content, isErr = false) =>
 conv('s_auth', 'claude-opus-4-8', [
   ['user', 'Refactor the auth middleware to use the new async session store, then add sliding-window rate limiting on the /login route (5 attempts / 15 min per IP).', 600],
   ['thinking', 'Let me read the current middleware and the session store interface before changing anything — I want to keep the cookie contract identical and only swap the lookup.', 592],
-  ['assistant', "I'll do this in two steps:\n\n1. Swap the synchronous in-memory session lookup for the new async store (keeping the cookie contract identical).\n2. Add a sliding-window rate limiter on `/login`.\n\nLet me start by reading the relevant files.", 590],
+  ['assistant', "I'll preserve the cookie contract, switch to the async session store, and add a sliding-window limiter before the login handler.", 590],
   ['tool_use', tu('t1', 'Read', { file_path: 'src/middleware/auth.ts' }), 588],
   ['tool_result', tr('t1', "1  import { getSessionSync } from \"../lib/sessionStore.js\";\n2\n3  /** Rejects anything without a live session cookie. */\n4  export function auth(req, reply, done) {\n5    const sid = req.cookies.sid;\n6    const session = getSessionSync(sid);\n7    if (!session) return reply.status(401).send({ error: \"unauthorized\" });\n8    req.user = session.user;\n9    done();\n10 }"), 587],
   ['tool_use', tu('t2', 'Read', { file_path: 'src/lib/sessionStore.ts' }), 584],
   ['tool_result', tr('t2', "export async function getSession(id: string) {\n  if (!id) return null;\n  const raw = await redis.get(`sess:${id}`);\n  return raw ? JSON.parse(raw) : null;\n}"), 583],
-  ['assistant', "The middleware reads sessions synchronously from memory. I'll switch it to the async Redis-backed `getSession`, make the handler `async`, and preserve the 401-on-missing behaviour — then add the rate limiter.", 580],
-  ['tool_use', tu('t3', 'Grep', { pattern: 'getSessionSync', path: 'src' }), 578],
-  ['tool_result', tr('t3', 'src/middleware/auth.ts:6:  const session = getSessionSync(sid);'), 577],
   ['tool_use', tu('t4', 'Edit', { file_path: 'src/middleware/auth.ts', old_string: 'const session = getSessionSync(sid);', new_string: 'const session = await getSession(sid);' }), 574],
   ['tool_result', tr('t4', 'Applied edit to src/middleware/auth.ts'), 573],
   ['assistant', "Store swap done. Now the rate limiter — a small sliding-window keyed by IP, wired before the login handler. Let me run the suite to make sure nothing regressed.", 540],
@@ -195,7 +196,7 @@ for (const [phase, body, dt] of [['before', authBefore, 574], ['after', authAfte
   }), null, now - dt);
 
 // ── Codex conversation (s_review) — a security audit with Codex tools ──
-conv('s_review', 'gpt-5-codex', [
+conv('s_review', 'gpt-6', [
   ['user', 'Audit the new /checkout endpoint for injection and authz gaps, then patch anything you find. Keep the diff minimal.', 480],
   ['assistant', "I'll map the request path first, grep for raw query building and missing ownership checks, then patch. Planning it out:", 476],
   ['tool_use', tu('c1', 'update_plan', { plan: [
@@ -234,7 +235,7 @@ conv('s_tests', 'claude-opus-4-8', [
   ['user', 'The integration tests for /login flake ~1 in 5 runs on CI. Find the race and stabilise them.', 300],
   ['assistant', "Likely a shared-state or timing race. Let me reproduce it under a repeat runner and watch which assertion drops first.", 296],
 ]);
-conv('s_build', 'gpt-5-codex', [
+conv('s_build', 'gpt-6', [
   ['user', 'Replace the webpack build with esbuild; keep the same output layout and env-var injection.', 900],
   ['assistant', "Starting from the webpack config so the esbuild setup matches output paths, loaders and defines exactly.", 895],
 ]);
@@ -245,7 +246,7 @@ conv('s_docs', 'claude-opus-4-8', [
   ['user', 'Generate an OpenAPI reference for every route under /api and wire it into the docs site.', 3600],
   ['assistant', "Done — 37 routes documented and the reference is building into docs/api. I left a TODO where three admin routes need example payloads.", 1200],
 ]);
-conv('s_pipe', 'gpt-5-codex', [
+conv('s_pipe', 'gpt-6', [
   ['user', 'Profile the nightly ETL and tell me where the 40 min is going before we optimise anything.', 10800],
 ]);
 
@@ -267,6 +268,8 @@ db.prepare(`INSERT INTO claude_pending_permissions (id,session_id,tool_name,tool
 const nowMs = String(now * 1000);
 for (const [k, v] of [
   ['migration.v2_agent_done', String(now)],
+  ['app.theme', 'nordic'],
+  ['sdk.auto_update', 'false'], ['codex.auto_update', 'false'], ['cursor.auto_update', 'false'],
   ['auth.session_ids_hashed', '1'],
   ['sdk.latest_version', SDK_V],   ['sdk.latest_version_at', nowMs],
   ['codex.latest_version', CODEX_V], ['codex.latest_version_at', nowMs],
