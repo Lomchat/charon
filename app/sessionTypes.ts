@@ -16,6 +16,10 @@ export type Msg = {
   role: string;
   content: string;
   createdAt: number;
+  // Thinking deltas share one bubble until another message or a turn end.
+  // Absent for complete SDK/imported reasoning blocks.
+  thinkingDelta?: boolean;
+  thinkingClosed?: boolean;
   // role='assistant' only: the model id Anthropic ACTUALLY served this message
   // with (claude_session_messages.model, stamped server-side from the agent's
   // effective_model event). Rendered as a small chip in the bubble header —

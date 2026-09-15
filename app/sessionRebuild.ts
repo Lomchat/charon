@@ -18,7 +18,8 @@ import {
 // Narrowed by the registry, never by `=== 'claude' || === 'codex'`: that test
 // nulls a peer provider this build DOES know about, so after a refetch an
 // inbound message from the newest backend lost its logo (§14.102).
-import { isSessionProvider } from '@/lib/sessionCapabilities';
+import { DEFAULT_SESSION_PROVIDER, PROVIDERS, isSessionProvider, type SessionProvider } from '@/lib/sessionCapabilities';
+import { appendThinkingMessage, closeThinkingMessage } from './thinkingMessages';
 
 // Shape of a message as it comes from the `GET /api/claude/sessions/[id]` API.
 // Deliberately permissive (the `role` values in the DB are free-form strings).
@@ -45,6 +46,7 @@ export type RebuiltSessionState = {
 export function rebuildStateFromMessages(
   messages: PersistedMessage[],
   status: WorkerStatus,
+  provider: SessionProvider = DEFAULT_SESSION_PROVIDER,
 ): RebuiltSessionState {
   const out: RebuiltSessionState = {
     messages: [],
@@ -108,11 +110,13 @@ export function rebuildStateFromMessages(
         const ev = JSON.parse(m.content);
         if (ev.type === 'bg_task') applyBgTaskEvent(bgMap, ev, m.createdAt, bgLaunches);
         if (ev.type === 'thinking') {
-          out.messages.push({
+          out.messages = appendThinkingMessage(out.messages, {
             id: 'm' + m.id, role: 'thinking',
             content: String(ev.text ?? ''), createdAt: m.createdAt,
+            ...(PROVIDERS[provider].thinkingDelivery === 'delta' ? { thinkingDelta: true } : {}),
           });
         }
+        if (ev.type === 'turn_usage') out.messages = closeThinkingMessage(out.messages);
         // The CLI summarised everything above this point away. Our rows are
         // all still here — that is the difference worth showing: the history
         // is intact, the MODEL's memory of it is not.

@@ -191,6 +191,8 @@ export type ProviderDescriptor = {
    *  backend with NO snapshots was handed Claude's before/after renderer and
    *  offered a revert button for edits it has no pre-image of. */
   editSnapshot: 'contents' | 'patch' | 'none';
+  /** Shape of the agent's thinking events; independent of the chosen model. */
+  thinkingDelivery: 'block' | 'delta';
   /** WHERE the effort vocabulary comes from — the question every consumer of
    *  `efforts` actually has, and one only the provider can answer.
    *
@@ -277,6 +279,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     efforts: CLAUDE_EFFORTS,
     effortAxis: 'static',
     editSnapshot: 'contents',
+    thinkingDelivery: 'block',
     interactionTimeoutS: { permission: 601, question: 1801 },
     capabilities: {
       fork: 'native', crossProviderFork: 'adapted', compact: 'native', rewind: 'native',
@@ -332,6 +335,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     effortAxis: 'static',
     // Unified diffs with no pre-image, so no split view and no revert (§14.59).
     editSnapshot: 'patch',
+    thinkingDelivery: 'delta',
     interactionTimeoutS: { permission: 1801, question: 1801 },
     capabilities: {
       fork: 'native', crossProviderFork: 'adapted', compact: 'native', rewind: 'native',
@@ -412,6 +416,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // The SDK reports no per-file snapshots, so the diffs tab has nothing of
     // its own to show — the git tab is where a Cursor session's changes are read.
     editSnapshot: 'none',
+    thinkingDelivery: 'delta',
     // No human gate today (see `permissions` below), so these only bound a
     // card the provider cannot currently raise.
     interactionTimeoutS: { permission: 601, question: 1801 },

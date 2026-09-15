@@ -127,6 +127,17 @@ afterEach(() => {
 });
 
 describe('replay exactness under injected faults', () => {
+  it('keeps repeated thinking tokens at different sequence numbers when catching up', () => {
+    const parts = ['0', '.', '154', '.', '0'];
+    const events = parts.map((text, index) => ({ event: 'thinking', text, seq: index + 1 }));
+    const stream = mkStream(null);
+    replayThrough(stream, events);
+    expect(rows('event').map((row: any) => JSON.parse(row.content).text)).toEqual(parts);
+    // Replaying the same identities again must not append another copy.
+    replayThrough(mkStream(null), events);
+    expect(rows('event').map((row: any) => JSON.parse(row.content).text)).toEqual(parts);
+  });
+
   it('S1: persist fails at N, succeeds at N+1 — restart replay repairs N (SET-gate, not MAX)', () => {
     const s1 = mkStream(null);
     failNextInserts = 1; // the tool_use row insert at seq 10 fails
