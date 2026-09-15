@@ -7,6 +7,7 @@ import {
   decodeModelParams, encodeModelParams, modelAxes, paramLabel, paramValueLabel,
   splitModelSpec,
 } from '@/lib/modelParams';
+import { applicableParams } from './cursorEffort';
 
 type Props = {
   presentation?: 'select' | 'list';
@@ -49,7 +50,14 @@ export default function CursorEffortPicker({
   // Parameters in a model-id suffix remain part of the effective selection.
   const spec = splitModelSpec(modelId);
   const model = models.find((m) => m.id === spec.id) ?? null;
-  const current = value ? decodeModelParams(value) : spec.params;
+  // Knobs THIS model does not declare are dropped rather than merged forward:
+  // they cannot be edited here, they are ignored by the provider, and carrying
+  // them into every option meant one model's leftovers rode along for the life
+  // of the session (`cursorEffort.ts`). The reduced set is what the control
+  // matches its active row against, so a stored selection whose applicable part
+  // IS offered stops falling through to the "current" group below.
+  const current = applicableParams(model, value ? decodeModelParams(value) : spec.params);
+  const applicable = encodeModelParams(current);
   const axes = modelAxes(model);
 
   type Row = { key: string; label: string; value: string; title?: string };
@@ -68,15 +76,18 @@ export default function CursorEffortPicker({
     })),
   })).filter((g) => g.rows.length > 0);
 
-  // Faithfully surface a stored selection this model does not offer — a model
-  // switch can leave a parameter behind, and silently dropping it would show a
+  // Faithfully surface a stored selection this model does not offer — a rung it
+  // has since dropped is still what the session runs, and hiding it would show a
   // control that disagrees with the session.
   const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.value)));
-  if (value && !known.has(value)) {
+  if (applicable && !known.has(applicable)) {
     groups.push({
       key: 'current',
       label: 'current',
-      rows: [{ key: 'current', label: value, value, title: 'not offered by this model' }],
+      rows: [{
+        key: 'current', label: applicable, value: applicable,
+        title: 'not offered by this model',
+      }],
     });
   }
 
@@ -87,7 +98,7 @@ export default function CursorEffortPicker({
       id={id}
       className={className}
       style={style}
-      value={value}
+      value={applicable}
       onValueChange={onChange}
     >
       {!noInherit && (

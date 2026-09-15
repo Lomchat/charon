@@ -8,6 +8,8 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import CursorModelPicker from './CursorModelPicker';
 import CursorEffortPicker from './CursorEffortPicker';
+import CursorEffortSummary from './CursorEffortSummary';
+import { pruneCursorEffort } from './cursorEffort';
 import { invalidateModels } from './modelsCache';
 import { invalidateCodexModels } from './codexModelsCache';
 import { invalidateCursorModels } from './cursorModelsCache';
@@ -31,6 +33,10 @@ export type ProviderModelPickerProps = {
   catalogVersion?: string;
 };
 export type ProviderEffortPickerProps = ProviderModelPickerProps & { modelId: string };
+/** Read-only rendering of a stored effort, for the closed header cell. */
+export type ProviderEffortSummaryProps = {
+  vpsId: string; modelId: string; effort: string | null;
+};
 
 export type ProviderCatalog = {
   Model: ComponentType<ProviderModelPickerProps>;
@@ -38,6 +44,13 @@ export type ProviderCatalog = {
   /** Drop the cached catalog after a refresh or a release notice. Takes the VPS
    *  for a per-VPS catalog; a hub-global one ignores it and clears everything. */
   invalidate: (vpsId?: string) => void;
+  /** How the stored effort READS when the control is closed. Absent for a
+   *  provider whose effort is one word — the word is its own summary. */
+  EffortSummary?: ComponentType<ProviderEffortSummaryProps>;
+  /** The effort to keep when the MODEL changes. Absent where the vocabulary is
+   *  the provider's rather than the model's, so nothing can go stale. */
+  pruneEffort?: (vpsId: string, modelId: string, effort: string | null)
+    => Promise<string | null>;
 };
 
 /**
@@ -88,5 +101,7 @@ export const PROVIDER_CATALOGS: Record<SessionProvider, ProviderCatalog> = {
     // than a Codex extra (§14.103).
     Effort: (props) => <CursorEffortPicker {...props} />,
     invalidate: (vpsId) => invalidateCursorModels(vpsId),
+    EffortSummary: (props) => <CursorEffortSummary {...props} />,
+    pruneEffort: pruneCursorEffort,
   },
 };

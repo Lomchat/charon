@@ -1766,6 +1766,14 @@ function SessionRuntimePanel({
         // backend HAS one; the others must not be sent a stale id.
         await onSetModel(value || null,
           supportsSessionCapability(kind, 'fallbackModel') ? fallbackModel : null);
+        // A per-MODEL effort vocabulary does not survive its model: the knobs
+        // the new one does not declare would keep travelling to the provider
+        // and keep showing in a cell whose picker cannot offer them (§14.103).
+        const prune = PROVIDER_CATALOGS[kind].pruneEffort;
+        if (prune && effort) {
+          const kept = await prune(vpsId, value || '', effort);
+          if (kept !== effort) await onSetEffort(kept);
+        }
       } else if (open === 'effort' && (value || null) !== effort) {
         await onSetEffort(value || null);
       }
@@ -1777,6 +1785,20 @@ function SessionRuntimePanel({
 
   const customEfforts = endpointEfforts(endpoint.active, kind, model || '');
   const modelLabel = (model ?? effectiveModel ?? 'Default').replace(/^claude-/, '');
+  // An effort that is a PARAMETER SET (`effort=high&fast=false`, the shape a
+  // per-model reasoning axis stores — §14.103) is a list of knobs, not a word:
+  // on one line the cell ellipsised the whole selection away to "effort…". The
+  // provider owns that rendering (`EffortSummary`), because only its catalog
+  // knows which knobs the selected model actually reads. An endpoint session
+  // picks from plain words, so it keeps the plain word.
+  const EffortSummary = endpoint.active ? undefined : PROVIDER_CATALOGS[kind].EffortSummary;
+  // Ask the header for the wider centre track. The two cells that hold
+  // sentences announce themselves in the DOM (`:has()` in claude.css), but a
+  // long MODEL id cannot: the panel's default 390px leaves the name cell about
+  // sixteen characters, and `deepseek/deepseek-v4.1-flash` is cut while the row
+  // around it is empty. An endpoint always asks, because it adds its own name
+  // under an id that is usually a vendor-prefixed one.
+  const wantsRoom = !!endpoint.active || modelLabel.length > 16;
   // The amber "your model was replaced" warning belongs to the ONE backend
   // that has a fallback model, and the alias allow-list below is that
   // backend's own vocabulary. Gated on `!isCodex`, it lit on every turn of a
@@ -1797,7 +1819,7 @@ function SessionRuntimePanel({
   };
 
   return (
-    <div className={`session-runtime-panel${endpoint.active ? ' has-endpoint' : ''}${endpoint.active && (!hasEffortAxis(kind) || customEfforts.length === 0) ? ' without-effort' : ''}`} role="group" aria-label="Model, effort and usage">
+    <div className={`session-runtime-panel${endpoint.active ? ' has-endpoint' : ''}${endpoint.active && (!hasEffortAxis(kind) || customEfforts.length === 0) ? ' without-effort' : ''}${wantsRoom ? ' wants-room' : ''}`} role="group" aria-label="Model, effort and usage">
       <div className="runtime-config" ref={popRef}>
         <button ref={modelButton} type="button" className={`runtime-cell runtime-model${mismatch ? ' has-mismatch' : ''}${anyPending ? ' has-pending' : ''}`}
           onClick={() => toggle('model')} disabled={saving} title={title} aria-label="Change model" aria-haspopup="menu" aria-expanded={open === 'model'}>
@@ -1813,7 +1835,12 @@ function SessionRuntimePanel({
         {hasEffortAxis(kind) && (!endpoint.active || customEfforts.length > 0) && (
           <button ref={effortButton} type="button" className={`runtime-cell runtime-effort${anyPending ? ' has-pending' : ''}`}
             onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
-            <span className="runtime-value"><span className="runtime-effort-symbol" aria-hidden="true">✦</span><span>{effort ?? 'Default'}</span></span>
+            <span className="runtime-value">
+              <span className="runtime-effort-symbol" aria-hidden="true">✦</span>
+              {EffortSummary
+                ? <EffortSummary vpsId={vpsId} modelId={model || effectiveModel || ''} effort={effort} />
+                : <span>{effort ?? 'Default'}</span>}
+            </span>
           </button>
         )}
         {open && <div className="runtime-choice-popover" aria-busy={saving}>
