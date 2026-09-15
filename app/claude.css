@@ -92,6 +92,118 @@
   color: var(--text-muted);
   border-color: var(--border-strong);
 }
+/* ── Header session navigation ─────────────────────────────────────────────
+   A trigger carrying the two counts that decide whether to look (working, and
+   finished-unread), and a panel: what runs, what just finished, everything
+   else under a search box (app/HeaderSessionNav.tsx). */
+.hnav { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
+
+/* One dot scale for every state, matching the sidebar's so a session never
+   looks "working" here and "finished" three inches to the left. A dot is a
+   CIRCLE — the one shape here a theme does not get to change (§14.99). */
+.hnav-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.working > .hnav-dot, .hnav-dot.working { background: var(--warning); animation: hnav-pulse 1.4s ease-in-out infinite; }
+.needs-you > .hnav-dot { background: var(--danger-strong); animation: hnav-pulse 1.4s ease-in-out infinite; }
+.error > .hnav-dot { background: var(--danger); }
+.ready > .hnav-dot { background: var(--success); }
+/* Green is READY in the sidebar, so it cannot also mean "finished, unread"
+   here — two greens a shade apart is no distinction at all. The unread cue is
+   an edge and a green timestamp, which is the fact you came for. */
+.hnav-dot.unread { background: var(--success); animation: none; }
+.hnav-row.unread { box-shadow: inset 2px 0 0 var(--success); }
+@keyframes hnav-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.hnav-empty { color: var(--text-faint); font: 10px/1.4 var(--mono); padding: 6px 8px; }
+
+.claude-head .hnav-trigger {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px; min-height: 30px;
+  /* The chip's SHAPE belongs to the theme (`--chip-radius`): a pill is the
+     Cupertino themes' native control and a foreign object on the angular
+     ones, which is the difference a theme exists to express. */
+  border: 1px solid var(--border); border-radius: var(--chip-radius);
+  background: var(--bg-inset); color: var(--text-muted);
+  font: 11px/1.2 var(--body); letter-spacing: 0; text-transform: none;
+}
+.claude-head .hnav-trigger:hover, .claude-head .hnav-trigger.is-open {
+  border-color: var(--accent); color: var(--text);
+}
+.hnav-trigger-count { color: var(--text); font: 600 12px/1 var(--mono); }
+.hnav-trigger-unread {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding-left: 7px; border-left: 1px solid var(--border);
+  color: var(--text); font: 600 11px/1 var(--mono);
+}
+.hnav-caret { color: var(--text-faint); font-size: 9px; }
+
+.hnav-panel {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 60;
+  width: min(400px, calc(100vw - 24px));
+  max-height: min(76dvh, 640px); display: flex; flex-direction: column;
+  box-sizing: border-box; padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--radius-xl); background: var(--bg);
+  box-shadow: 0 14px 40px color-mix(in srgb, var(--shadow-color) 35%, transparent);
+}
+.hnav-section + .hnav-section { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+/* The full list is the only part that scrolls: the sections above it are
+   bounded by design (what runs, the last five), so they must never be pushed
+   out of reach by a long list. */
+.hnav-section.is-scroll { min-height: 0; display: flex; flex-direction: column; }
+.hnav-section.is-scroll .hnav-section-rows { overflow-y: auto; min-height: 0; }
+.hnav-section-title {
+  padding: 6px 8px 4px; color: var(--text-faint);
+  font: 9px/1.2 var(--mono); text-transform: uppercase; letter-spacing: 0.08em;
+}
+
+.hnav-search { position: relative; padding: 4px 4px 6px; }
+.hnav-search-input {
+  width: 100%; box-sizing: border-box; padding: 8px 26px 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-inset); color: var(--text);
+  font: 12px/1.4 var(--body); outline: none;
+}
+.hnav-search-input:focus { border-color: var(--accent); }
+.hnav-search-input::placeholder { color: var(--text-faint); }
+.claude-head .hnav-search-clear {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-60%);
+  padding: 0 4px; min-height: 0; border: 0; background: transparent;
+  color: var(--text-faint); font: 14px/1 var(--body);
+}
+.claude-head .hnav-search-clear:hover { color: var(--text); }
+
+/* Row: name, where, when. The path gives up its width first; the timestamp
+   never does — it is the answer to "which one just finished". */
+.hnav-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 8px; border: 0; border-radius: var(--radius-md);
+  background: transparent; color: var(--text);
+  font: 12px/1.35 var(--body); letter-spacing: 0; text-transform: none; text-align: left;
+}
+.hnav-row:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.hnav-row.is-open { color: var(--accent-strong); }
+.hnav-row .agent-logo { flex: none; }
+.hnav-row-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Machine · path: two facts, not one string. The separator is drawn between
+   them rather than typed into either. */
+.hnav-row-where {
+  display: flex; align-items: baseline; gap: 6px;
+  flex: 1 1 auto; min-width: 0; font: 9.5px/1.3 var(--mono);
+}
+.hnav-row-vps { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
+/* The separator hangs off the PATH, not off the machine name: inside the
+   truncating span it was eaten by the ellipsis exactly when it was needed
+   most — "chalco - new…  /srv/charon" reads as one broken string. */
+.hnav-row-cwd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.hnav-row-cwd::before { content: '·'; margin-right: 6px; color: var(--text-faint); }
+.hnav-row-when { flex: none; color: var(--text-faint); font: 9.5px/1.3 var(--mono); }
+.hnav-row.unread .hnav-row-when { color: var(--success); }
+
+/* The header is a fixed row: below 820px the trigger keeps its numbers and
+   loses its word. */
+@media (max-width: 820px) {
+  .hnav-trigger-word { display: none; }
+}
+
 /* `.local-agent-update` (the amber "update local agent" button) and
    `.multi-pill` (the "×N connected clients" counter) are gone with their
    header widgets: the agent's freshness belongs to the sidebar/VPS chips,

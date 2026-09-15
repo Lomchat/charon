@@ -122,6 +122,12 @@
   --radius-lg:       9px;   /* panels, popovers                             */
   --radius-xl:       14px;  /* modals, the big containers                   */
 
+  /* The header's activity chip, like --bubble-radius: one surface whose SHAPE
+     is part of a theme's identity rather than a step on the scale. A pill read
+     as a foreign object on the angular themes and as the native control on the
+     Cupertino ones, which is exactly the kind of choice a theme should own. */
+  --chip-radius:     2px;
+
   /* Type */
   --display: 'Inter', system-ui, -apple-system, sans-serif;
   --body:    'Inter', system-ui, -apple-system, sans-serif;
@@ -197,6 +203,7 @@
   --radius-md:       6px;
   --radius-lg:       9px;
   --radius-xl:       14px;
+  --chip-radius:     6px;
 
   --display: 'Inter', system-ui, -apple-system, sans-serif;
   --body:    'Inter', system-ui, -apple-system, sans-serif;
@@ -283,6 +290,7 @@
   --radius-md:       6px;
   --radius-lg:       9px;
   --radius-xl:       14px;
+  --chip-radius:     3px;
 
   --display: 'Inter', system-ui, -apple-system, sans-serif;
   --body:    'Inter', system-ui, -apple-system, sans-serif;
@@ -377,6 +385,7 @@
   --radius-md:       10px;
   --radius-lg:       14px;
   --radius-xl:       20px;
+  --chip-radius:     999px;
 
   --display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
   --body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
@@ -475,6 +484,7 @@
   --radius-md:       10px;
   --radius-lg:       14px;
   --radius-xl:       20px;
+  --chip-radius:     999px;
 
   --display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
   --body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;

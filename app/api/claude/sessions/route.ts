@@ -78,6 +78,19 @@ export async function GET(req: Request) {
     `) as Array<{ sessionId: string; content: string }>;
     const firstMsgBySession = new Map(firstMsgRows.map((r) => [r.sessionId, r.content] as const));
 
+    // When each session last said anything — what "finished 4 minutes ago"
+    // orders on, and the one fact no other column carries (`unreadStop` is a
+    // flag, `createdAt` is the launch). One indexed seek PER SESSION rather
+    // than `GROUP BY session_id`: the group-by scans the whole message index
+    // (~200ms here), the seeks are a rounding error, and this runs on a 60s
+    // poll in every open tab.
+    const lastActivityBySession = new Map(rows.map((r) => {
+      const hit = db.get(sql`
+        SELECT MAX(ts_ms) AS ts FROM claude_session_messages WHERE session_id = ${r.id}
+      `) as { ts: number | null } | undefined;
+      return [r.id, hit?.ts ?? null] as const;
+    }));
+
     const vpsRuntime = listVpsRuntimeSnapshots();
     const agentVersions = new Map(vpsRuntime.map((v) => [v.id, v.agentVersion] as const));
 
@@ -103,6 +116,7 @@ export async function GET(req: Request) {
         subscribers: focusCountFor(r.id),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
+        lastActivityMs: lastActivityBySession.get(r.id) ?? null,
       };
     });
     return NextResponse.json({
