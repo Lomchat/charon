@@ -928,6 +928,10 @@ export type SessionListItem = ClaudeSession & {
   firstUserMessage: string | null;
   /** True only while the provider-neutral bus can route this stable handle. */
   addressable?: boolean;
+  /** Newest message timestamp (ms), or null for a session that never spoke.
+   *  "Finished 4 minutes ago" orders on this; `createdAt` answers the launch
+   *  and `unreadStop` is only a flag. */
+  lastActivityMs?: number | null;
 };
 
 // Non-sensitive VPS fields that can change while the dashboard stays open.

@@ -38,6 +38,7 @@ import PromptModal from './PromptModal';
 import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
+import HeaderSessionNav from './HeaderSessionNav';
 import { newestAccountUsage } from './accountUsageState';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
 import {
@@ -1688,6 +1689,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <line x1="106" y1="187" x2="154" y2="187" stroke="currentColor" strokeWidth="4.5" opacity="0.7"/>
         </svg>
         <h1>CHARON</h1>
+        {/* Jump to a session without hunting for it in the sidebar: the same
+            data that sidebar holds, read as activity (app/HeaderSessionNav.tsx). */}
+        <HeaderSessionNav
+          sessions={sessions}
+          vpsName={(id) => vpsList.find((v) => v.id === id)?.name ?? id}
+          selectedId={selectedId}
+          onOpen={(id) => selectClaude(id, true)}
+        />
         <div className="head-right">
           {/* Mobile only (CSS ≤820px): head-right becomes the right "usage &
               settings" drawer. The account-usage panel sits at its top; the
