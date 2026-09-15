@@ -1006,18 +1006,25 @@ export class SessionStream {
         this._broadcast(payload);
         break;
       }
-      case 'thinking':
+      case 'thinking': {
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         // Flush failed → STOP: persisting this boundary's row now would put
         // it BEFORE the assistant text that preceded it (Codex 16.3). The
         // holdback pins the cursor at the first delta; the restart replay
         // redoes flush-then-boundary in order.
         if (!this._flushAssistant()) break;
-        if (this.isReplaying && this.replayKnownThinkingContents.has(ev.text)) break;
-        this._persist('event', { type: 'thinking', text: ev.text });
+        // Streamed tokens repeat legitimately (spaces, punctuation, words).
+        // With seq, only that event's identity can prove it is a duplicate.
+        const legacyThinking = this.isReplaying && this.currentEventSeq == null;
+        if (legacyThinking && this.replayKnownThinkingContents.has(ev.text)) break;
+        const saved = this._persist('event', { type: 'thinking', text: ev.text });
         this._broadcast({ type: 'thinking', text: ev.text });
-        if (this.isReplaying) this.replayKnownThinkingContents.add(ev.text);
+        if (saved !== false && this.isReplaying) {
+          if (legacyThinking) this.replayKnownThinkingContents.add(ev.text);
+          else this.replayPersistedSeqs?.add(this.currentEventSeq!);
+        }
         break;
+      }
       case 'tool_use':
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)

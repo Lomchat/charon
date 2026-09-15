@@ -6,6 +6,7 @@ import type {
   PermissionRequest, PendingQuestion, PendingExitPlan,
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
+import { appendThinkingMessage, closeThinkingMessage, prependMessagePage } from './thinkingMessages';
 import {
   applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse,
   markRunningBgTasksStale, reconcileAuthoritativeBgTasks,
@@ -19,7 +20,7 @@ import type {
   AgentSessionDetailResponse, AgentSessionMessageWindow,
 } from '@/lib/types/api';
 import {
-  asSessionProvider, defaultSessionMode, isSessionMode,
+  asSessionProvider, defaultSessionMode, isSessionMode, PROVIDERS,
   type SessionMode, type SessionProvider,
 } from '@/lib/sessionCapabilities';
 import { subscribeSession, setFocus, subscribeReconnect } from './globalEventStream';
@@ -279,6 +280,7 @@ export function useClaudeSessionStream(
   // ── State ──────────────────────────────────────────────────────────────
   const [sessionMeta, setSessionMeta] = useState<AgentSessionDetailResponse['session'] | null>(null);
   const vpsIdRef = useRef('');
+  const providerRef = useRef<SessionProvider>(asSessionProvider(undefined));
   const [messages, setMessages] = useState<Msg[]>([]);
   const [currentAssistant, setCurrentAssistant] = useState('');
   const [status, setStatus] = useState<WorkerStatus | null>(null);
@@ -416,7 +418,8 @@ export function useClaudeSessionStream(
   // Replaces local state entirely.
   const applyApiData = useCallback((r: AgentSessionDetailResponse) => {
     if (!r?.session) return;
-    const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus);
+    providerRef.current = asSessionProvider(r.session.kind);
+    const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus, providerRef.current);
     // Streaming preview reconciliation. applyApiData runs on the initial
     // load AND on every poll-triggered clean reload (which can happen every
     // 5s during active SSE streaming). We must NOT rewind a smoothly-
@@ -699,6 +702,7 @@ export function useClaudeSessionStream(
           kind?: string; model?: string | null; fallbackModel?: string | null; effort?: string | null;
         };
         const kind = asSessionProvider(sess.kind);
+        providerRef.current = kind;
         const nextMode = isSessionMode(kind, sess.permissionMode)
           ? sess.permissionMode as SessionMode
           : defaultSessionMode(kind);
@@ -805,9 +809,10 @@ export function useClaudeSessionStream(
       const olderRebuilt = rebuildStateFromMessages(
         older.messages,
         (status ?? 'sleeping') as WorkerStatus,
+        providerRef.current,
       );
       if (olderRebuilt.messages.length > 0) {
-        setMessages((cur) => [...olderRebuilt.messages, ...cur]);
+        setMessages((cur) => prependMessagePage(olderRebuilt.messages, cur));
         setToolCalls((cur) => [...olderRebuilt.toolCalls, ...cur]);
         setFiles((cur) => {
           const next = new Set(cur);
@@ -1013,6 +1018,7 @@ export function useClaudeSessionStream(
           break;
         case 'stop':
           flushAssistantBuf();
+          setMessages(closeThinkingMessage);
           break;
         case 'bg_task':
           // Background-task lifecycle (started / updated / finished) — patch
@@ -1030,6 +1036,7 @@ export function useClaudeSessionStream(
           }
           break;
         case 'error':
+          setMessages(closeThinkingMessage);
           setError({ msg: ev.msg });
           break;
         case 'blocking_error':
@@ -1116,10 +1123,11 @@ export function useClaudeSessionStream(
         }
         case 'thinking':
           flushAssistantBuf();
-          setMessages((prev) => [...prev, {
+          setMessages((prev) => appendThinkingMessage(prev, {
             id: 'th' + Date.now() + Math.random(), role: 'thinking',
             content: ev.text, createdAt: Math.floor(Date.now() / 1000),
-          }]);
+            ...(PROVIDERS[providerRef.current].thinkingDelivery === 'delta' ? { thinkingDelta: true } : {}),
+          }));
           break;
         case 'compaction':
           // Flush first: the marker must land AFTER the text it follows, or a
@@ -1210,6 +1218,7 @@ export function useClaudeSessionStream(
           }
           break;
         case 'usage':
+          if (ev.final) setMessages(closeThinkingMessage);
           // Transient current-turn usage (§14.50); `final` also carries the
           // post-turn duration and cost.
           setLiveUsage({
