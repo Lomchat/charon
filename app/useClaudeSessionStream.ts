@@ -1,4 +1,5 @@
 'use client';
+import { mergeSessionTokenUsage, type SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionApi } from '@/lib/api';
 import type {
@@ -186,6 +187,7 @@ export type ClaudeSessionStreamState = {
   // Independent of the `model` field above which is the user's CONFIGURED
   // value. The two can legitimately differ (alias resolution, fallback).
   effectiveModel: string | null;
+  tokenUsage: SessionTokenUsage | null;
   // Current-turn usage (§14.50). Live output drives ThinkingBar; the final
   // frame carries totals and cost for the post-turn status line.
   liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null } | null;
@@ -302,6 +304,7 @@ export function useClaudeSessionStream(
   // effective_model SSE on every change. See ClaudeSessionStreamState.
   const [effectiveModel, setEffectiveModel] = useState<string | null>(null);
   const [liveUsage, setLiveUsage] = useState<ClaudeSessionStreamState['liveUsage']>(null);
+  const [tokenUsage, setTokenUsage] = useState<SessionTokenUsage | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallEntry[]>([]);
   const [edits, setEdits] = useState<Map<string, EditSnapshot>>(new Map());
   const [files, setFiles] = useState<Set<string>>(new Set());
@@ -418,6 +421,7 @@ export function useClaudeSessionStream(
   // Replaces local state entirely.
   const applyApiData = useCallback((r: AgentSessionDetailResponse) => {
     if (!r?.session) return;
+    setTokenUsage((prev) => mergeSessionTokenUsage(prev, r.tokenUsage));
     providerRef.current = asSessionProvider(r.session.kind);
     const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus, providerRef.current);
     // Streaming preview reconciliation. applyApiData runs on the initial
@@ -663,6 +667,7 @@ export function useClaudeSessionStream(
     pollAbortRef.current = ac;
     try {
       const r = await sessionApi.pollSince(sessionId, since, ac.signal) as AgentSessionDetailResponse;
+      setTokenUsage((prev) => mergeSessionTokenUsage(prev, r.tokenUsage));
       // ── Reconcile the status pill from the server's authoritative liveStatus
       // on EVERY tick (CLAUDE.md §14.45, RC2). The quiet poll used to read ONLY
       // `r.messages` and ignored `liveStatus`/`session.status`, so a pure
@@ -1217,6 +1222,9 @@ export function useClaudeSessionStream(
             setEffectiveModel(ev.model);
           }
           break;
+        case 'session_token_usage':
+          setTokenUsage((prev) => mergeSessionTokenUsage(prev, ev.usage));
+          break;
         case 'usage':
           if (ev.final) setMessages(closeThinkingMessage);
           // Transient current-turn usage (§14.50); `final` also carries the
@@ -1527,7 +1535,7 @@ export function useClaudeSessionStream(
   return useMemo(() => ({
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel, liveUsage,
+    effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -1539,7 +1547,7 @@ export function useClaudeSessionStream(
   }), [
     sessionMeta, messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel, liveUsage,
+    effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,

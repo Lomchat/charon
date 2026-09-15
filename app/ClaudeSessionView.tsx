@@ -24,6 +24,8 @@ import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
 import { refreshGit, useGitStatus, workspaceAheadBehind, workspaceDirtyCount } from './gitStore';
 import BgTasksBar from './BgTasksBar';
 import UsageMeter from './UsageMeter';
+import SessionTokenMeter from './SessionTokenMeter';
+import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import QuestionCard from './QuestionCard';
 import ExitPlanCard from './ExitPlanCard';
 import ApprovalDeadline from './ApprovalDeadline';
@@ -137,7 +139,7 @@ export default function ClaudeSessionView({
     sessionMeta,
     messages, currentAssistant, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
-    effectiveModel, liveUsage,
+    effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
     prefillInput, error, isLoadingHistory,
@@ -740,7 +742,7 @@ export default function ClaudeSessionView({
             </span>}
           </div>
           <SessionRuntimePanel
-            usage={usage ?? null} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
+            usage={usage ?? null} tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
             kind={sessionKind} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
@@ -1700,12 +1702,13 @@ function fmtTokens(n: number): string {
 
 /** Direct choices use the same provider catalogs as the creation/settings forms. */
 function SessionRuntimePanel({
-  usage, vpsName, onUsageRefresh, kind, vpsId, model, fallbackModel, effort,
+  usage, tokenUsage, vpsName, onUsageRefresh, kind, vpsId, model, fallbackModel, effort,
   modelPendingApply, effortPendingApply, effectiveModel, claudeSessionId,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged,
 }: {
   sessionId: string; endpoint: EndpointState; onEndpointChanged: () => void;
   usage: AccountUsage | null;
+  tokenUsage: SessionTokenUsage | null;
   vpsName?: string | null;
   onUsageRefresh?: () => void;
   kind: AgentKind;
@@ -1794,7 +1797,7 @@ function SessionRuntimePanel({
   };
 
   return (
-    <div className="session-runtime-panel" role="group" aria-label="Model, effort and usage">
+    <div className={`session-runtime-panel${endpoint.active ? ' has-endpoint' : ''}${endpoint.active && (!hasEffortAxis(kind) || customEfforts.length === 0) ? ' without-effort' : ''}`} role="group" aria-label="Model, effort and usage">
       <div className="runtime-config" ref={popRef}>
         <button ref={modelButton} type="button" className={`runtime-cell runtime-model${mismatch ? ' has-mismatch' : ''}${anyPending ? ' has-pending' : ''}`}
           onClick={() => toggle('model')} disabled={saving} title={title} aria-label="Change model" aria-haspopup="menu" aria-expanded={open === 'model'}>
@@ -1854,7 +1857,7 @@ function SessionRuntimePanel({
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>
-      {!endpoint.active && <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />}
+      {endpoint.active ? <SessionTokenMeter usage={tokenUsage} /> : <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />}
       {endpointOpen && supportsCustomEndpoint(kind) && <CustomEndpointModal sessionId={sessionId} engine={kind} vpsId={vpsId} initial={endpoint.active} onClose={() => setEndpointOpen(false)} onApplied={onEndpointChanged} />}
     </div>
   );

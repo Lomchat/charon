@@ -31,7 +31,7 @@ def response_event(event: Any) -> Any:
     return {**event, "response": {**response, "usage": None}}
 
 
-def _frame(frame: bytes) -> bytes:
+def _frame(frame: bytes, observe=None) -> bytes:
     lines = frame.splitlines(keepends=True)
     data = [line[5:].strip() for line in lines if line.startswith(b"data:")]
     if not data:
@@ -40,6 +40,8 @@ def _frame(frame: bytes) -> bytes:
         event = json.loads(b"\n".join(data))
     except (ValueError, UnicodeError):
         return frame
+    if observe is not None:
+        observe(event)
     normalized = response_event(event)
     if normalized is event:
         return frame
@@ -55,7 +57,7 @@ def _frame(frame: bytes) -> bytes:
     return b"".join(output)
 
 
-def response_stream(upstream: Any) -> Iterator[bytes]:
+def response_stream(upstream: Any, observe=None) -> Iterator[bytes]:
     """Bound each SSE event, not the whole stream; preserve framing/heartbeats."""
     pending = b""
     while True:
@@ -68,7 +70,7 @@ def response_stream(upstream: Any) -> Iterator[bytes]:
         while match := _SEPARATOR.search(pending):
             if match.end() > MAX_EVENT_BYTES:
                 raise ValueError("Endpoint stream event is too large")
-            yield _frame(pending[:match.end()])
+            yield _frame(pending[:match.end()], observe)
             pending = pending[match.end():]
         if len(pending) > MAX_EVENT_BYTES:
             raise ValueError("Endpoint stream event is too large")

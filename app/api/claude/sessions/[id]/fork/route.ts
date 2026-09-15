@@ -82,6 +82,7 @@ function copyVisibleTranscript(sourceId: string, newId: string, cutoffId: number
         FROM claude_session_messages
        WHERE session_id = ${sourceId}
          AND role NOT IN (${sql.join(UNCOPIED_ROLES.map((r) => sql`${r}`), sql`, `)})
+         AND NOT (role = 'event' AND (content LIKE '%"type":"endpoint_usage"%' OR content LIKE '%"type":"turn_usage"%'))
          ${cutoffId != null ? sql`AND id <= ${cutoffId}` : sql``}
        ORDER BY id
     `);
