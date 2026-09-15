@@ -242,12 +242,15 @@ export type AgentEvent = (
       event: 'usage'; session_id: string; output_tokens: number;
       input_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
       final?: boolean; duration_ms?: number; cost_usd?: number | null;
+      endpoint_accounted?: boolean;
       tree?: {
         input_tokens: number; output_tokens: number;
         cache_read_tokens: number; cache_write_tokens: number;
         cost_usd: number | null; models: string[];
       };
     }
+  | { event: 'endpoint_usage'; session_id: string; request_id: string;
+      input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; partial?: boolean }
   | { event: 'interrupted'; session_id: string; forced?: boolean }
   // stop (agent >= 0.36.0 adds the typed outcome): `terminal_reason` says WHY
   // the turn ended (completed | max_turns | aborted_streaming | aborted_tools),

@@ -1838,6 +1838,8 @@ class AgentSession:
                 }
                 if tree:
                     usage_ev["tree"] = tree
+                if getattr(self, "_endpoint_proxy", None) is not None:
+                    usage_ev["endpoint_accounted"] = True
                 out.append(usage_ev)
                 structured = getattr(ev, "structured_output", None)
                 if structured is not None:
@@ -2110,7 +2112,8 @@ class AgentSession:
             endpoint = endpoint_of(self.session_config)
             if endpoint:
                 if self._endpoint_proxy is None:
-                    self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.session_config) or {}, "claude")
+                    self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.session_config) or {}, "claude",
+                        lambda usage: self._emit("endpoint_usage", **usage))
                 routed_env = claude_env(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
                 options_kwargs["env"] = {**options_kwargs.get("env", {}), **routed_env}
                 inline = json.loads(options_kwargs.get("settings") or "{}")

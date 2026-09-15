@@ -1033,6 +1033,7 @@ export type SessionBackgroundTask = {
 };
 
 export type ClaudeSessionDetailResponse = {
+  tokenUsage?: import('@/lib/sessionTokenUsage').SessionTokenUsage;
   session: ClaudeSession & { endpoint?: EndpointState };
   liveStatus: WorkerStatus | string;
   subscribers: number;

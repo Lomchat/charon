@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mergeSessionTokenUsage } from '@/lib/sessionTokenUsage';
 
 process.env.DATABASE_URL = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), 'charon-bg-status-test-')),
@@ -17,6 +18,7 @@ const bgMocks = vi.hoisted(() => ({ read: vi.fn(async (..._args: any[]): Promise
 vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: bgMocks.read }));
 
 vi.mock('server-only', () => ({}));
+vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({})) }));
 vi.mock('@/lib/server/claude/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
@@ -41,6 +43,7 @@ let db: any;
 let schema: any;
 let SessionStream: any;
 let recordedSessionUsage: any;
+let sessionTokenUsage: typeof import('@/lib/server/agent/sessionTokenUsage').sessionTokenUsage;
 let runningBgTaskDetailsFromDb: any;
 let setSetting: any;
 
@@ -81,6 +84,7 @@ beforeAll(async () => {
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
   ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
+  ({ sessionTokenUsage } = await import('@/lib/server/agent/sessionTokenUsage'));
   ({ runningBgTaskDetailsFromDb } = await import('@/lib/server/claude/bgTaskState'));
   ({ setSetting } = await import('@/lib/server/claude/settings'));
 });
@@ -137,6 +141,82 @@ describe('provider-neutral durable turn usage', () => {
       cost_usd: 0.2,
       models: ['claude-test'],
     });
+  });
+});
+
+describe('recorded endpoint session tokens', () => {
+  function request(stream: any, seq: number, requestId: string, input: number | null, output: number | null, total: number | null) {
+    stream._onAgentEvent({ event: 'endpoint_usage', session_id: SID, seq, request_id: requestId,
+      input_tokens: input, output_tokens: output, total_tokens: total });
+  }
+
+  it('sums every tool round trip, deduplicates replay and excludes the SDK final copy', () => {
+    const stream = createStream('thinking', 'codex');
+    const broadcast = vi.spyOn(stream, '_broadcast');
+    request(stream, 1, 'first', 100, 20, 120);
+    request(stream, 2, 'second', 150, 30, 180);
+    request(stream, 2, 'second', 150, 30, 180);
+    // Even a duplicate with a new seq must not change totals.
+    request(stream, 3, 'second', 150, 30, 180);
+    stream._onAgentEvent({ event: 'usage', session_id: SID, final: true,
+      input_tokens: 150, output_tokens: 30, endpoint_accounted: true });
+    const usage = sessionTokenUsage(SID);
+    expect(usage).toMatchObject({ inputTokens: 250, outputTokens: 50, totalTokens: 300,
+      requests: 2, legacyTurns: 0, missingInput: 0, missingOutput: 0, missingTotal: 0, partial: false });
+    expect(broadcast.mock.calls.some(([event]: any[]) => event.type === 'session_token_usage' && event.usage.totalTokens === 300)).toBe(true);
+  });
+
+  it('preserves fal total-only counters, distinguishes zero, and identifies missing history', () => {
+    const stream = createStream('thinking', 'codex');
+    stream._onAgentEvent({ event: 'usage', session_id: SID, final: true, input_tokens: 0, output_tokens: 0 });
+    request(stream, 1, 'fal', null, null, 58);
+    expect(sessionTokenUsage(SID)).toMatchObject({ inputTokens: null, outputTokens: null, totalTokens: 58,
+      requests: 1, legacyTurns: 1, missingInput: 2, missingOutput: 2, missingTotal: 1, partial: true });
+    request(stream, 2, 'cached-zero', 0, 0, 0);
+    expect(sessionTokenUsage(SID)).toMatchObject({ inputTokens: 0, outputTokens: 0, totalTokens: 58 });
+    stream._onAgentEvent({ event: 'endpoint_usage', session_id: SID, seq: 3, request_id: 'interrupted',
+      input_tokens: 30, output_tokens: null, total_tokens: null, partial: true });
+    expect(sessionTokenUsage(SID)).toMatchObject({ inputTokens: 30, outputTokens: 0, totalTokens: 58, requests: 3, partial: true });
+  });
+
+  it('includes Claude cached input once and keeps historical totals explicitly partial', () => {
+    const stream = createStream('active', 'claude');
+    stream._onAgentEvent({ event: 'usage', session_id: SID, final: true, input_tokens: 100, output_tokens: 20,
+      tree: { input_tokens: 150, output_tokens: 120, cache_read_tokens: 30, cache_write_tokens: 5 } });
+    request(stream, 1, 'request', 200, 10, 210);
+    expect(sessionTokenUsage(SID)).toMatchObject({ inputTokens: 385, outputTokens: 130, totalTokens: 515, partial: true });
+  });
+
+  it('returns full totals on a small history page and an empty delta, without hydrating the agent', async () => {
+    const stream = createStream('thinking', 'codex');
+    request(stream, 1, 'old-request', 100, 20, 120);
+    db.insert(schema.claudeSessionMessages).values(Array.from({ length: 25 }, (_, i) => ({
+      sessionId: SID, role: 'user', content: `message ${i}`,
+    }))).run();
+    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
+    const root = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?limit=1`), { params: Promise.resolve({ id: SID }) })).json();
+    expect(root.tokenUsage).toMatchObject({ totalTokens: 120, requests: 1 });
+    expect(root.hasMore).toBe(true);
+    const delta = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?since=${root.maxMessageId}`), { params: Promise.resolve({ id: SID }) })).json();
+    expect(delta.messages).toEqual([]);
+    expect(delta.tokenUsage).toEqual(root.tokenUsage);
+    expect(mergeSessionTokenUsage(delta.tokenUsage, { ...root.tokenUsage, revision: 0, totalTokens: 0 })).toBe(delta.tokenUsage);
+    expect(mergeSessionTokenUsage(delta.tokenUsage, { ...delta.tokenUsage })).toBe(delta.tokenUsage);
+  });
+
+  it('keeps already consumed tokens when conversation history is rewound', async () => {
+    const stream = createStream('active', 'codex');
+    db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'user', content: 'rewind me' }).run();
+    const user = db.select().from(schema.claudeSessionMessages).all()[0];
+    request(stream, 1, 'consumed', 100, 20, 120);
+    const before = sessionTokenUsage(SID);
+    const { POST } = await import('@/app/api/claude/sessions/[id]/rollback/route');
+    const response = await POST(new Request(`http://localhost/api/claude/sessions/${SID}/rollback`, {
+      method: 'POST', body: JSON.stringify({ messageId: `m${user.id}` }),
+    }), { params: Promise.resolve({ id: SID }) });
+    expect(response.status).toBe(200);
+    expect(db.select().from(schema.claudeSessionMessages).all().some((m: any) => m.role === 'user')).toBe(false);
+    expect(sessionTokenUsage(SID)).toEqual(before);
   });
 });
 

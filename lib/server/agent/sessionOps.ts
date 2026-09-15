@@ -1,4 +1,5 @@
 import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
+import { sessionTokenUsage } from './sessionTokenUsage';
 import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import 'server-only';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
@@ -1428,6 +1429,16 @@ export class SessionStream {
           this._broadcast({ type: 'effective_model', model: ev.model });
         }
         break;
+      case 'endpoint_usage':
+        if (!this._replayAlreadyPersisted(ev)) {
+          this._persist('event', {
+            type: 'endpoint_usage', requestId: ev.request_id,
+            inputTokens: ev.input_tokens, outputTokens: ev.output_tokens,
+            totalTokens: ev.total_tokens, partial: !!ev.partial,
+          });
+        }
+        this._broadcast({ type: 'session_token_usage', usage: sessionTokenUsage(this.id) });
+        break;
       case 'usage':
         // Intermediate counters stay transient/high-volume. The one final
         // frame is different: persist one provider-neutral turn_usage row so
@@ -1443,6 +1454,7 @@ export class SessionStream {
             cacheWriteTokens: ev.cache_write_tokens ?? 0,
             durationMs: ev.duration_ms ?? 0,
             costUsd: ev.cost_usd ?? null,
+            ...(ev.endpoint_accounted ? { endpointAccounted: true } : {}),
             ...(ev.tree ? { tree: ev.tree } : {}),
           });
         }

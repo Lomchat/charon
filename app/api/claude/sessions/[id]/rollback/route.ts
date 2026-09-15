@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, not, or, like } from 'drizzle-orm';
 import {
   db, claudePendingPermissions, claudePendingQuestions,
   claudeSessionMessages, claudeSessions,
@@ -97,6 +97,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const result = tx.delete(claudeSessionMessages).where(and(
         eq(claudeSessionMessages.sessionId, id),
         inArray(claudeSessionMessages.id, ids.slice(offset, offset + 400)),
+        // Rewinding context does not refund requests already sent.
+        not(and(eq(claudeSessionMessages.role, 'event'), or(
+          like(claudeSessionMessages.content, '%"type":"endpoint_usage"%'),
+          like(claudeSessionMessages.content, '%"type":"turn_usage"%'),
+        ))!),
       )).run();
       removed += result.changes;
     }

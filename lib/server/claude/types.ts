@@ -93,6 +93,7 @@ export type BridgeEvent =
         cost_usd: number | null; models: string[];
       };
     }
+  | { type: 'session_token_usage'; usage: import('@/lib/sessionTokenUsage').SessionTokenUsage }
   | { type: 'stop'; subtype?: string }
   // compaction (agent >= 0.36.0) = the CLI replaced the conversation with a
   // summary. Charon's own rows are untouched, so this marks a boundary rather

@@ -1,4 +1,5 @@
 import { publicConnection } from '@/lib/server/customEndpoints';
+import { sessionTokenUsage } from '@/lib/server/agent/sessionTokenUsage';
 import { NextResponse } from 'next/server';
 import { and, asc, desc, eq, gt, gte, lt, lte, notInArray, sql } from 'drizzle-orm';
 import {
@@ -236,6 +237,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     oldestChatId,
     maxMessageId,
     backgroundTasks,
+    tokenUsage: sessionTokenUsage(id),
     // Assistant text currently being accumulated (not yet persisted). Empty
     // if no active streaming. The client injects it into its assistantBuf
     // to show "where we are" without replaying the deltas.
