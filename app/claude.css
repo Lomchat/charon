@@ -4318,6 +4318,18 @@
   background: color-mix(in srgb, var(--warning-strong) 14%, transparent); border-color: var(--warning-strong); color: var(--warning-strong);
 }
 
+/* Cursor freedom-mode selector. `plan` shares the Claude rule above; the
+   remaining rungs need their own active colours or `.on` looks unselected. */
+.claude-input-bar .mode-switch.cursor .m-btn.on.sandbox {
+  background: color-mix(in srgb, var(--info) 12%, transparent); border-color: var(--info); color: var(--info);
+}
+.claude-input-bar .mode-switch.cursor .m-btn.on.agent {
+  background: color-mix(in srgb, var(--violet-soft) 12%, transparent); border-color: var(--violet-soft); color: var(--violet-soft);
+}
+.claude-input-bar .mode-switch.cursor .m-btn.on.force {
+  background: color-mix(in srgb, var(--warning-strong) 14%, transparent); border-color: var(--warning-strong); color: var(--warning-strong);
+}
+
 /* Codex unified-diff: dimmed file/patch header lines (--- +++ @@ envelopes). */
 .dline.meta { color: var(--text-muted); opacity: 0.5; }
 
