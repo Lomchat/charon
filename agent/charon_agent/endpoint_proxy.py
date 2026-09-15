@@ -17,6 +17,11 @@ from .custom_endpoints import _NoRedirect
 from .endpoint_responses import response_stream
 
 
+# A model request carries the whole conversation, including base64 screenshots.
+# This private HTTP limit is separate from the agent's JSON-RPC frame limit.
+MAX_REQUEST_BYTES = 256 * 1024 * 1024
+
+
 def request_body(body: dict, endpoint: dict, engine: str) -> dict:
     result = dict(body)
     check = (endpoint.get("checks") or {}).get(engine) or {}
@@ -55,8 +60,8 @@ class EndpointProxy:
                     self.send_error(404); return
                 try:
                     size = int(self.headers.get("Content-Length", "0"))
-                    if size < 0 or size > 16 * 1024 * 1024:
-                        self.send_error(413); return
+                    if size < 0 or size > MAX_REQUEST_BYTES:
+                        self.send_error(413, "Custom endpoint request exceeds the 256 MiB relay limit"); return
                     endpoint = owner.endpoint()
                     data = self.rfile.read(size) if self.command == "POST" else None
                     if data: data = json.dumps(request_body(json.loads(data), endpoint, owner.engine)).encode()
