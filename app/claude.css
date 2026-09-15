@@ -6013,10 +6013,27 @@
 
 /* The header owns the size query: adapt to the chat column, not the viewport. */
 .claude-bar { display: block; container: session-header / inline-size; }
-.session-header-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 390px) minmax(0, 1fr); align-items: center; gap: 12px; width: 100%; }
+.session-header-layout { display: grid; grid-template-columns: minmax(0, 1fr) var(--runtime-track, minmax(290px, 390px)) minmax(0, 1fr); align-items: center; gap: 12px; width: 100%; }
+/* The centre block STRETCHES for the content 390px cuts: a usage answer that
+   is a LINK (registry `usageDashboardUrl`), a stacked parameter-set effort
+   (§14.103) — both wrap to three lines — and a long model id, which asks for it
+   with `wants-room` because no selector can measure text.
+   Capped, and taken from the header's own SLACK: `100cqi - 364px` is
+   what is left once the two side tracks keep the width of the action buttons
+   (~170px each, and they do not shrink), so the ident ellipsises earlier but
+   nothing is ever pushed out of the row. A VARIABLE rather than a second
+   `grid-template-columns`: the narrow layouts below redeclare the whole track
+   list and must keep winning without a specificity fight (`:has()` would
+   outrank them). */
+.session-header-layout:has(.runtime-usage-link, .runtime-effort-params, .wants-room) {
+  --runtime-track: minmax(290px, clamp(390px, 100cqi - 364px, 480px));
+}
 .session-runtime-panel { position: relative; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) minmax(0, 1.4fr); width: 100%; min-width: 0; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: var(--radius-xl); background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 8.5%, transparent), color-mix(in srgb, var(--accent) 2.5%, transparent)); box-shadow: inset 0 1px color-mix(in srgb, var(--tint) 3.5%, transparent), 0 4px 14px color-mix(in srgb, var(--shadow-color) 7.0588%, transparent); }
 .runtime-config { display: contents; }
 .session-runtime-panel.without-effort { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+/* A stacked effort (one line per knob) needs a share of the panel closer to the
+   model's; the default .8fr is sized for a single word. */
+.session-runtime-panel:has(.runtime-effort-params) { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.05fr) minmax(0, 1.3fr); }
 .runtime-token-usage { display: flex; min-width: 0; }
 .runtime-token-rows { display: grid; gap: 5px; width: 100%; }
 .runtime-token-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font: 10px/1.2 var(--mono); white-space: nowrap; }
@@ -6039,6 +6056,13 @@
 .runtime-value > span:not(.agent-logo):not(.runtime-effort-symbol):not(.runtime-pending) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-value .agent-logo { flex: none; }
 .runtime-effort-symbol { color: var(--violet); font-size: 14px; flex: none; }
+/* Parameter-set effort: ONE LINE PER KNOB — the knob's NAME is the muted label
+   and its VALUE carries the weight, since the value is the thing being read. A
+   line that does not fit WRAPS rather than ellipsising: the cell's whole point
+   is that the selection stays readable, and "effort…" hid all of it. */
+.runtime-effort-params { display: grid; gap: 1px; min-width: 0; }
+.runtime-effort-param { min-width: 0; white-space: normal; overflow-wrap: anywhere; font: 400 10.5px/1.35 var(--body); color: var(--text-muted); }
+.runtime-effort-param b { color: var(--text); font-weight: 600; }
 .runtime-effective { display: block; font: 9px/1.2 var(--mono); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: -3px; }
 .runtime-pending { color: var(--warning); }
 .has-mismatch .runtime-effective { color: var(--danger-strong); }
@@ -6087,6 +6111,8 @@
   .session-header-layout > .bar-ident { grid-column: 1; grid-row: 1; }
   .session-header-controls { grid-column: 2; grid-row: 1; }
   .session-runtime-panel { grid-column: 1 / -1; grid-row: 2; justify-self: center; max-width: 400px; }
+  /* Own row, nothing beside it: the same stretch costs no one anything here. */
+  .session-runtime-panel:is(.wants-room, :has(.runtime-usage-link, .runtime-effort-params)) { max-width: 480px; }
 }
 @container session-header (max-width: 420px) {
   .session-header-layout > .bar-ident { grid-column: 1 / -1; }
@@ -6110,6 +6136,11 @@
   .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 88px; }
   .claude-bar .git-chip .gc-branch { max-width: 76px; }
   .session-runtime-panel { position: static; grid-column: 1; grid-row: 2; justify-self: start; max-width: 300px; grid-template-columns: minmax(0, 1fr) minmax(0, .6fr); border-radius: var(--radius-lg); box-shadow: none; }
+  /* Usage lives in the drawer here, so the panel is TWO cells — the stacked
+     effort keeps the wider share of them, and the fixed 32px row becomes a
+     floor: a knob list is taller than a word and must not spill the block. */
+  .session-runtime-panel:has(.runtime-effort-params) { max-width: 340px; grid-template-columns: minmax(0, 1fr) minmax(0, .85fr); }
+  .claude-bar .session-runtime-panel:has(.runtime-effort-params) .runtime-cell { height: auto; }
   .session-header-controls { grid-column: 2; grid-row: 2; align-self: center; }
   .session-header-actions { gap: 2px; }
   .claude-bar .session-action { width: 28px; height: 32px; padding: 6px; }
