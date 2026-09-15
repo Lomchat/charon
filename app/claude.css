@@ -743,7 +743,9 @@
   font-family: var(--mono); font-size: 8.5px; line-height: 12px;
   color: var(--text-muted);
 }
-.claude-bar .bar-context-label { opacity: 0.55; text-transform: uppercase; letter-spacing: 0.05em; }
+/* The word names the whole strip, so it reads at the same weight as the
+   percentage it introduces — dimming it left the line starting on nothing. */
+.claude-bar .bar-context-label { color: var(--text); text-transform: uppercase; letter-spacing: 0.05em; }
 .claude-bar .bar-context-track {
   display: block; flex: 0 1 86px; width: 86px; min-width: 34px; height: 4px;
   overflow: hidden; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text-muted) 28%, transparent);
@@ -6064,6 +6066,48 @@
 .runtime-effort-param { min-width: 0; white-space: normal; overflow-wrap: anywhere; font: 400 10.5px/1.35 var(--body); color: var(--text-muted); }
 .runtime-effort-param b { color: var(--text); font-weight: 600; }
 .runtime-effective { display: block; font: 9px/1.2 var(--mono); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: -3px; }
+/* Context occupancy CLOSES the block, full width under the three cells: it is a
+   property of the model above it, not of the session's identity, and it was the
+   ident column's third line. Part of the panel, not a copy of the old row — the
+   cells give up their bottom corners to it, the bar takes the width the panel
+   has, and only the token count may be cut. The gauge renders nothing when it
+   has no reading, so `:has()` is what decides the corners. */
+.claude-bar .session-runtime-panel > .bar-context-row {
+  grid-column: 1 / -1; gap: 8px; min-height: 0;
+  padding: 5px 10px 6px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+}
+.claude-bar .session-runtime-panel > .bar-context-row .bar-context-meter { flex: 1 1 auto; gap: 6px; }
+.claude-bar .session-runtime-panel .bar-context-track { flex: 1 1 auto; width: auto; min-width: 30px; }
+/* `compact` must LOOK pressable — a ghost control that only paints on hover
+   reads as a caption — while still belonging to the strip rather than to the
+   action cluster on the right. So it keeps a real chip (fill + border + accent
+   text), drawn in the panel's own accent tints and the strip's typography, at
+   the scale of the line it sits on. The disabled rule is restated because this
+   selector outranks the generic `.claude-bar button:disabled`, and "must be
+   running and idle" has to stay visible in the control. */
+.claude-bar .session-runtime-panel .bar-context-compact {
+  padding: 2px 7px; min-height: 0; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  font: 8.5px/12px var(--mono); letter-spacing: 0.05em; text-transform: uppercase;
+}
+.claude-bar .session-runtime-panel .bar-context-compact:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--accent); color: var(--accent-strong);
+}
+.claude-bar .session-runtime-panel .bar-context-compact:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.claude-bar .session-runtime-panel .bar-context-compact:focus-visible {
+  outline: 2px solid var(--accent-strong); outline-offset: -2px;
+}
+.claude-bar .session-runtime-panel .bar-context-compact:disabled { opacity: 0.4; cursor: not-allowed; }
+.session-runtime-panel:has(> .bar-context-row) .runtime-model { border-radius: var(--radius-xl) 0 0 0; }
+.claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-usage-button,
+.claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-usage-link { border-radius: 0 var(--radius-xl) 0 0; }
 .runtime-pending { color: var(--warning); }
 .has-mismatch .runtime-effective { color: var(--danger-strong); }
 .claude-bar .runtime-usage { display: flex; position: static; min-width: 0; }
@@ -6147,6 +6191,10 @@
   .claude-bar .runtime-cell { min-height: 32px; height: 32px; padding: 4px 6px; gap: 2px; }
   .claude-bar .runtime-model { border-radius: var(--radius-md) 0 0 var(--radius-md); }
   .claude-bar .runtime-effort { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
+  /* Same corner handover as the desktop panel, at the mobile radius. */
+  .claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-model { border-radius: var(--radius-md) 0 0 0; }
+  .claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-effort { border-radius: 0 var(--radius-md) 0 0; }
+  .claude-bar .session-runtime-panel > .bar-context-row { padding: 4px 6px 5px; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
   .runtime-model::after { top: 8px; bottom: 8px; }
   .runtime-effort::after { display: none; }
   .runtime-value { font-size: 10.5px; line-height: 1.25; gap: 3px; }
@@ -6164,6 +6212,10 @@
 @media (max-width: 430px) {
   .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 62px; }
   .claude-bar .git-chip .gc-branch { max-width: 56px; }
+  /* The strip keeps the bar, the percentage and the button rather than a token
+     count cut to "277k / …": the reading is the percentage, and the full
+     numerator/denominator is one tap away in Tools (and in the title). */
+  .claude-bar .session-runtime-panel .bar-context-tokens { display: none; }
 }
 
 .runtime-usage-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
