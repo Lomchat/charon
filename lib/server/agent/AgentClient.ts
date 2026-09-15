@@ -187,7 +187,7 @@ export class AgentClient {
   private readyResolve: (() => void) | null = null;
   private readyReject: ((e: Error) => void) | null = null;
 
-  constructor(vps: Vps) {
+  constructor(vps: Vps, private readonly connectAfter?: Promise<void>) {
     this.vps = vps;
   }
 
@@ -439,6 +439,10 @@ export class AgentClient {
 
   async close(): Promise<void> {
     this.aborted = true;
+    this.readyReject?.(new Error('client closed'));
+    this.readyResolve = null;
+    this.readyReject = null;
+    this.readyPromise = null;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -469,6 +473,10 @@ export class AgentClient {
     if (this.child) return;
     if (this.aborted) return;
     this._setStatus('connecting');
+    // An update owns the transport until the replacement daemon has been
+    // pinged. Polls may recreate a pooled client meanwhile; keep it parked.
+    if (this.connectAfter) await this.connectAfter;
+    if (this.aborted || this.child) return;
     this.readBuf = '';
     this.stderrBuf = '';
 
@@ -590,6 +598,7 @@ export class AgentClient {
   }
 
   private _dispatchMessage(msg: any): void {
+    if (this.aborted) return; // late stdout from a client dropped for an update
     // Response (id + result/error)
     if (typeof msg.id === 'number') {
       const pending = this.pending.get(msg.id);

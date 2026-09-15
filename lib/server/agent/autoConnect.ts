@@ -122,13 +122,14 @@ export function autoConnectAgentsIfNeeded(): void {
         .from(claudeSessions)
         .where(and(
           eq(claudeSessions.archived, 0),
+          eq(claudeSessions.sleepRequested, 0),
           or(
             inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'background']),
             // Durable POST-UPDATE resume intent (§14.62): an agent update put
             // these to sleep and the fire-and-forget resume died with a hub
             // restart — finish the job at boot. (sleepRequested can't coexist
             // with resumePending: both setters clear the other.)
-            and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),
+            eq(claudeSessions.resumePending, 1),
           ),
         ))
         .all();
