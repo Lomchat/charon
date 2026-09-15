@@ -928,8 +928,9 @@ export class SessionStream {
           // A confirmed 'sleeping' from the agent fulfills any pending sleep
           // intent (sleepRequested) — clear it so a later legitimate 'active'
           // isn't suppressed by reconcileVpsAgentState. cf. CLAUDE.md §14.46.
-          const upd: { status: string; sleepRequested?: number } =
+          const upd: { status: string; sleepRequested?: number; resumePending?: number } =
             ev.status === 'sleeping' ? { status: ev.status, sleepRequested: 0 } : { status: ev.status };
+          if (ev.status === 'active' || ev.status === 'thinking') upd.resumePending = 0;
           db.update(claudeSessions).set(upd)
             .where(eq(claudeSessions.id, this.id)).run();
         } catch (e) {
@@ -3006,7 +3007,10 @@ export async function startNewSession(opts: {
 // fallback) could race on start_session and one would fail with
 // "already exists" → the catch handler would demote the session to 'sleeping'
 // while the other just woke it up. Cf. CLAUDE.md §14 gotcha 24.
-const _resumeInflight = new Map<string, Promise<SessionStream>>();
+// Next builds route and instrumentation copies of this module. They share the
+// pool, so they must also share the lock around one session's resume RPC.
+const resumeGlobal = globalThis as unknown as { _sessionResumes?: Map<string, Promise<SessionStream>> };
+const _resumeInflight = resumeGlobal._sessionResumes ??= new Map<string, Promise<SessionStream>>();
 
 /**
  * Resume: attempts the sequence (resume_session if the session exists on
@@ -3083,6 +3087,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         model: row.model, fallback_model: row.fallbackModel, effort: row.effort,
       });
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
+      if (rpcRes?.ok === false) throw new Error('agent refused to resume session');
+      if (agentStatus && !['active', 'thinking', 'starting'].includes(agentStatus)) {
+        throw new Error(`resume failed: agent status ${agentStatus}`);
+      }
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
         resolvedStatus = agentStatus;
       }
@@ -3137,10 +3145,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // sleepSession's optimistic broadcast pattern. See CLAUDE.md §14 gotcha 36.
     stream.status = resolvedStatus;
     emitGlobalSession({ type: 'status', status: resolvedStatus, sessionId });
-    // Resuming clears any durable sleep intent (the user/reconcile explicitly
-    // wants this session running again, §14.46) AND the post-update resume
-    // intent (mission accomplished, §14.62).
-    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0, resumePending: 0 })
+    // Startup is asynchronous: retain post-update intent until active/thinking
+    // is confirmed. A queued start can still fail or stop (§14.62).
+    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0,
+      ...(resolvedStatus === 'starting' ? {} : { resumePending: 0 }) })
       .where(eq(claudeSessions.id, sessionId)).run();
     return stream;
   })();
@@ -3464,7 +3472,7 @@ export async function reconcileVpsAgentState(
     // resume never completed (hub restarted mid-flow). The agent restored it
     // as 'sleeping' from state.json — bring it back up. resumeSession dedups
     // (_resumeInflight), clears the flag on success and logs.
-    if (row.resumePending && !row.sleepRequested && agentStatus === 'sleeping') {
+    if (row.resumePending && !row.sleepRequested && (agentStatus === 'sleeping' || agentStatus === 'error')) {
       resumeSession(sid)
         .then(() => {
           try {
@@ -3487,7 +3495,7 @@ export async function reconcileVpsAgentState(
     // lingering resumePending (e.g. from a FAILED update that never actually
     // stopped anything) must not resurrect it later. Clear it.
     if (row.resumePending &&
-        (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting')) {
+        (agentStatus === 'active' || agentStatus === 'thinking')) {
       try {
         db.update(claudeSessions).set({ resumePending: 0 })
           .where(eq(claudeSessions.id, sid)).run();
@@ -3544,9 +3552,10 @@ export async function reconcileVpsAgentState(
       .where(and(
         eq(claudeSessions.vpsId, vpsId),
         eq(claudeSessions.archived, 0),
+        eq(claudeSessions.sleepRequested, 0),
         or(
           inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
-          and(eq(claudeSessions.status, 'sleeping'), eq(claudeSessions.resumePending, 1)),
+          eq(claudeSessions.resumePending, 1),
         ),
       ))
       .all() as { id: string; status: string }[];

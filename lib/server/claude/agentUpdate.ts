@@ -1,70 +1,64 @@
 import 'server-only';
-import { and, eq, inArray } from 'drizzle-orm';
-import { db, vps as vpsTable, claudeSessions, claudeSessionLogs } from '@/lib/db';
+import { and, eq, inArray, or } from 'drizzle-orm';
+import { db, vps as vpsTable, claudeSessions } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
 import { updateVpsAgent, type UpdateAgentResult } from './bootstrap';
-import { dropAgentClient, getAgentClient, getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
+import { dropAgentClient, getAgentClient, holdAgentConnection } from '@/lib/server/agent/AgentClientPool';
+import { resumeUpdatedSessions } from './resumeUpdatedSessions';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
-import { resumeSession, emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
+import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 
-/**
- * The COMPLETE agent-update orchestration, shared by the manual route
- * (POST /api/vps/[id]/agent/update) and the SDK auto-update tick
- * (sdkWatch.ts) so the §14.51 subtleties live in exactly one place:
- *
- *   1. snapshot the sessions that should come back up afterwards
- *      (running AND not user-requested-asleep — sleepRequested=0);
- *   2. dropAgentClient BEFORE touching the binary (else the client's retry
- *      loop races the .pyz swap);
- *   3. updateVpsAgent: deploy pyz + ensureSdkLatest (venv pip -U) + unit
- *      rewrite (KillMode=process, §14.44) + restart + ping;
- *   4. recreate the AgentClient + armAgentClientHooks — ALWAYS, even on a
- *      failed update: the drop in (2) left the pool without a hooked client,
- *      and a daemon that survived a failed deploy still has live sessions
- *      that would otherwise go silent (§14.51);
- *   5. persist the new version/sha/sdkVersion (hello would repersist later,
- *      but this closes the stale-badge window);
- *   6. fire-and-forget resumeSession() for the snapshot — the agent's
- *      SIGTERM marked them 'sleeping' in state.json, so without this an
- *      update silently pauses every running chat. NOT awaited: each resume
- *      waits on the fresh client's ready() (up to 30s) and the route/tick
- *      must not block on it. resumeSession is noop-tolerant (dedup
- *      _resumeInflight, adopts the RPC's resolvedStatus, §14.36) and
- *      re-reads model/effort from DB (§14.35).
- */
+/** One update per VPS, including confirmed session recovery. Pool users wait
+ * until the replacement daemon is available; durable intent survives hub exit. */
 export type AgentUpdateFlowResult = UpdateAgentResult & {
-  // Sessions we asked to resume after the restart (fire-and-forget).
+  // Sessions confirmed active/thinking on the replacement daemon.
   resumedSessionIds: string[];
 };
 
-export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResult> {
+const g = globalThis as unknown as {
+  _agentUpdates?: Map<string, Promise<AgentUpdateFlowResult>>;
+};
+const updates = g._agentUpdates ??= new Map<string, Promise<AgentUpdateFlowResult>>();
+
+export function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResult> {
+  const existing = updates.get(vps.id);
+  if (existing) return existing;
+  const pending = Promise.resolve().then(() => updateAndResume(vps));
+  updates.set(vps.id, pending);
+  void pending.finally(() => updates.delete(vps.id)).catch(() => {});
+  return pending;
+}
+
+async function updateAndResume(vps: Vps): Promise<AgentUpdateFlowResult> {
+  const release = holdAgentConnection(vps.id);
+  try {
+    return await performUpdate(vps, release);
+  } finally {
+    // Also release callers if snapshotting or reconnect setup throws.
+    release();
+  }
+}
+
+async function performUpdate(vps: Vps, release: () => void): Promise<AgentUpdateFlowResult> {
   // 1. Snapshot BEFORE the drop/update: these DB statuses are still the
   // pre-update truth. sleepRequested=1 means the user WANTS it asleep —
   // never resurrect those (§14.46).
-  let toResume: string[] = [];
-  try {
-    toResume = db.select({ id: claudeSessions.id })
-      .from(claudeSessions)
-      .where(and(
-        eq(claudeSessions.vpsId, vps.id),
-        eq(claudeSessions.archived, 0),
-        inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
-        eq(claudeSessions.sleepRequested, 0),
-      ))
-      .all()
-      .map((r) => r.id);
-    // DURABLE resume intent (§14.62) — persisted BEFORE the update touches
-    // anything. The fire-and-forget resumes in step 6 die with a hub restart
-    // (deploys happen mid-update on this repo — real incident: WS_MASTER's
-    // sessions stayed asleep forever); with the flag in DB, the recovery
-    // sweeps (autoConnect boot + reconcile-on-connect) finish the job no
-    // matter what happens to THIS process. Cleared on successful resume /
-    // agent-confirmed running / explicit user sleep.
-    if (toResume.length > 0) {
-      db.update(claudeSessions).set({ resumePending: 1 })
-        .where(inArray(claudeSessions.id, toResume)).run();
-    }
-  } catch {}
+  const toResume = db.select({ id: claudeSessions.id })
+    .from(claudeSessions)
+    .where(and(
+      eq(claudeSessions.vpsId, vps.id),
+      eq(claudeSessions.archived, 0),
+      or(inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
+        eq(claudeSessions.resumePending, 1)),
+      eq(claudeSessions.sleepRequested, 0),
+    ))
+    .all().map((r) => r.id);
+  // Persist intent before touching the daemon. Startup acknowledgement does
+  // not satisfy it; a confirmed active/thinking session does (§14.62).
+  if (toResume.length) {
+    db.update(claudeSessions).set({ resumePending: 1 })
+      .where(inArray(claudeSessions.id, toResume)).run();
+  }
 
   // 2. Cut the live connection BEFORE killing the process, otherwise
   // AgentClient triggers its retry-loop on a binary currently being
@@ -104,10 +98,9 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
   try {
     const client = getAgentClient(vps);
     armAgentClientHooks(client, vps.id);
+    release();
     client.ready().catch(() => {});
-  } catch {}
-
-  if (!result.ok) return { ...result, resumedSessionIds: [] };
+  } finally { release(); }
 
   // 5. Persist immediately (don't wait for the next hello). EVERY field is
   // written only when the update actually confirmed it (post-restart hello,
@@ -116,7 +109,7 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
   // make the VPS invisible to the update axis (no badge, no auto-update) until
   // the next hello, whereas keeping the previous value leaves the badge lit —
   // visible, and self-healing on the reconnect this flow triggers anyway.
-  try {
+  if (result.ok) try {
     db.update(vpsTable).set({
       ...(result.newVersion ? { agentVersion: result.newVersion } : {}),
       ...(result.newPyzSha ? { agentPyzSha: result.newPyzSha } : {}),
@@ -145,34 +138,8 @@ export async function runAgentUpdateFlow(vps: Vps): Promise<AgentUpdateFlowResul
     });
   } catch {}
 
-  // 6. Bring the snapshot back up. Mirrors autoConnect's opportunistic boot
-  // resume (incl. the §14.45 RC3 false-sleep guard: only degrade to
-  // 'sleeping' when the agent is genuinely unreachable — a slow reconnect
-  // must not pause a live session).
-  for (const sid of toResume) {
-    resumeSession(sid)
-      .then(() => {
-        try {
-          db.insert(claudeSessionLogs).values({
-            sessionId: sid, level: 'info', event: 'post_update_resume', detail: null,
-          }).run();
-        } catch {}
-      })
-      .catch((e) => {
-        try {
-          db.insert(claudeSessionLogs).values({
-            sessionId: sid, level: 'warn', event: 'post_update_resume',
-            detail: JSON.stringify({ err: e?.message ?? String(e) }),
-          }).run();
-          let connected = false;
-          try { connected = getAgentClientForVpsId(vps.id).status === 'connected'; } catch {}
-          if (!connected) {
-            db.update(claudeSessions).set({ status: 'sleeping' })
-              .where(eq(claudeSessions.id, sid)).run();
-          }
-        } catch {}
-      });
-  }
-
-  return { ...result, resumedSessionIds: toResume };
+  // A failed deployment can still have stopped sessions. Recover them too.
+  const recovery = await resumeUpdatedSessions(vps.id, toResume);
+  return { ...result, resumedSessionIds: recovery.resumedSessionIds,
+    warnings: [...(result.warnings ?? []), ...recovery.warnings] };
 }
