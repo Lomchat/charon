@@ -710,10 +710,10 @@ export default function ClaudeSessionView({
       <main className="claude-main">
         <div className="claude-bar">
           <div className="session-header-layout">
-          {/* Session identity: title, cwd, then the live context gauge. The
-              path is the fastest "where am I?" cue when several sessions
-              share a name (or have none); context is the next thing most
-              likely to change how the user continues the conversation. */}
+          {/* Session identity: title, then cwd. The path is the fastest
+              "where am I?" cue when several sessions share a name (or have
+              none). Context occupancy used to be this block's third line; it
+              belongs to the MODEL, so it now closes the runtime panel. */}
           <div className="bar-ident">
             <span className="bar-name">{selected.name || '(unnamed)'}</span>
             {/* The addressing form of the same identity. Shown next to the
@@ -730,13 +730,6 @@ export default function ClaudeSessionView({
                 <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />
               </span>
             )}
-            <HeaderContextGauge
-              context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
-              onCompact={doCompact}
-              compacting={compacting}
-              compactDisabled={!compactAllowed}
-              compactError={compactError}
-            />
             {selected.cwd && <span className="bar-repo">
               <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
             </span>}
@@ -750,6 +743,15 @@ export default function ClaudeSessionView({
             claudeSessionId={sessionMeta?.claudeSessionId ?? null}
             onSetModel={setModel} onSetEffort={setEffort}
             onApplyNow={doRestart}
+            context={(
+              <HeaderContextGauge
+                context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
+                onCompact={doCompact}
+                compacting={compacting}
+                compactDisabled={!compactAllowed}
+                compactError={compactError}
+              />
+            )}
           />
 
           <div className="session-header-controls">
@@ -1704,9 +1706,13 @@ function fmtTokens(n: number): string {
 function SessionRuntimePanel({
   usage, tokenUsage, vpsName, onUsageRefresh, kind, vpsId, model, fallbackModel, effort,
   modelPendingApply, effortPendingApply, effectiveModel, claudeSessionId,
-  onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged,
+  onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context,
 }: {
   sessionId: string; endpoint: EndpointState; onEndpointChanged: () => void;
+  /** Context occupancy, closing the block as a full-width strip. A node rather
+   *  than the reading itself: the gauge owns when it has nothing to say, and
+   *  renders NOTHING then, so the panel keeps its three-cell height. */
+  context?: React.ReactNode;
   usage: AccountUsage | null;
   tokenUsage: SessionTokenUsage | null;
   vpsName?: string | null;
@@ -1885,6 +1891,7 @@ function SessionRuntimePanel({
         </div>}
       </div>
       {endpoint.active ? <SessionTokenMeter usage={tokenUsage} /> : <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />}
+      {context}
       {endpointOpen && supportsCustomEndpoint(kind) && <CustomEndpointModal sessionId={sessionId} engine={kind} vpsId={vpsId} initial={endpoint.active} onClose={() => setEndpointOpen(false)} onApplied={onEndpointChanged} />}
     </div>
   );
