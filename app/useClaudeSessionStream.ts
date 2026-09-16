@@ -8,6 +8,7 @@ import type {
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
 import { reconcileStreamingPreview } from './streamingPreview';
+import { shouldApplyCachedHistory, shouldApplyFetchedHistory } from './historyRefetch';
 import { appendThinkingMessage, closeThinkingMessage, prependMessagePage } from './thinkingMessages';
 import {
   applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse,
@@ -524,19 +525,25 @@ export function useClaudeSessionStream(
     initialLoadDoneRef.current = true;
   }, []);
 
-  // refetchHistory: used at mount, on every SSE reconnect and on tab
-  // foreground return. Cache strategy:
-  //   1. If a cache entry exists → apply immediately (instant)
-  //   2. Launch a fresh fetch in the background, re-apply
-  // Without cache: a single direct fetch.
+  // refetchHistory: used at mount, on every SSE reconnect, on tab foreground
+  // return and by the safety-net poll. Cache strategy:
+  //   1. First load only: if a cache entry exists → apply immediately (instant)
+  //   2. Launch a fresh fetch in the background, re-apply unless live events
+  //      overtook it
+  // Without cache: a single direct fetch. See ./historyRefetch for why a
+  // cached snapshot must never repaint a view that is already live.
   const refetchHistory = useCallback(async () => {
     if (cache) {
       const cached = cache.get(sessionId);
-      if (cached) applyApiData(cached);
+      if (cached && shouldApplyCachedHistory(initialLoadDoneRef.current)) applyApiData(cached);
       const requestRevision = liveEventRevisionRef.current;
       try {
         const fresh = await cache.fetch(sessionId, true);
-        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
+        if (shouldApplyFetchedHistory({
+          initialLoadDone: initialLoadDoneRef.current,
+          revisionAtRequest: requestRevision,
+          revisionNow: liveEventRevisionRef.current,
+        })) {
           applyApiData(fresh);
         }
       } catch (e) {
@@ -549,7 +556,11 @@ export function useClaudeSessionStream(
       const requestRevision = liveEventRevisionRef.current;
       try {
         const r = (await sessionApi.get(sessionId)) as AgentSessionDetailResponse;
-        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
+        if (shouldApplyFetchedHistory({
+          initialLoadDone: initialLoadDoneRef.current,
+          revisionAtRequest: requestRevision,
+          revisionNow: liveEventRevisionRef.current,
+        })) {
           applyApiData(r);
         }
       } catch (e) {
