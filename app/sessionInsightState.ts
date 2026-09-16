@@ -37,7 +37,9 @@ export type SessionContextUsage = {
     cache_read_tokens: number;
     cache_write_tokens: number;
     duration_ms: number;
-    cost_usd: number;
+    /** null when the provider's cost is not a charge, or behind a custom
+     *  endpoint whose rates Charon does not know (§14.102 `turnCost`). */
+    cost_usd: number | null;
     models?: string[];
   } | null;
   _snapshot?: {

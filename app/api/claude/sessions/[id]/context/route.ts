@@ -2,6 +2,7 @@ import { db, claudeSessions } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 import { connectionConfig } from '@/lib/server/customEndpoints';
 import { supportsCustomEndpoint } from '@/lib/customEndpoints';
+import { asSessionProvider, showsTurnCost } from '@/lib/sessionCapabilities';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
@@ -35,8 +36,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const context = endpoint ? { ...usage, max_tokens: window ?? null,
     percentage: window && Number.isFinite(Number(usage.total_tokens)) ? Number(usage.total_tokens) * 100 / window : null } : usage;
   const recorded = recordedSessionUsage(id);
+  // Token totals always; a PRICE only where one is really charged and Charon
+  // knows the rate — so not for a provider whose `cost_usd` is an API-list
+  // valuation of quota-metered tokens (§14.102 `turnCost`), and not behind a
+  // custom endpoint, whose operator sets its own. The `turn_usage` rows keep
+  // the figure either way; this only decides whether the panel prices it.
+  const priced = !endpoint && !!row && showsTurnCost(asSessionProvider(row.kind));
   return NextResponse.json({
     ...context,
-    recorded_usage: endpoint ? { ...recorded, cost_usd: null } : recorded,
+    recorded_usage: recorded && !priced ? { ...recorded, cost_usd: null } : recorded,
   });
 }

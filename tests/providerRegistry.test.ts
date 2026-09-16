@@ -6,7 +6,7 @@ import {
   asSessionProvider, isSessionProvider, defaultSessionMode, hasEffortAxis,
   isEffortValue, isSessionEffort,
   isSessionMode, providerBackendState, providerLabel, providerLoginPatch,
-  providerSettingKey, sessionCapabilities, sessionModes,
+  providerSettingKey, sessionCapabilities, sessionModes, showsTurnCost,
   supportsSessionCapability, type SessionCapability,
 } from '@/lib/sessionCapabilities';
 import { vps } from '@/lib/db/schema';
@@ -108,6 +108,24 @@ describe('provider registry', () => {
       if (url === null) continue;
       expect(() => new URL(url), `${p}: not a url`).not.toThrow();
       expect(new URL(url).protocol, `${p}: must be https`).toBe('https:');
+    }
+  });
+
+  it('prices a turn only where the turn is billed', () => {
+    // `cost_usd != null` looks like the test to write and is the wrong one: a
+    // provider reporting an API-list VALUATION of quota-metered tokens answers
+    // it exactly like one reporting a charge. `showsTurnCost` is the gate, and
+    // it must agree with the declaration for every provider — including a new
+    // one, which gets silence by default rather than an invented price.
+    for (const p of SESSION_PROVIDERS) {
+      const d = PROVIDERS[p];
+      expect(['billed', 'equivalent', 'none'], `${p}: unknown turnCost`).toContain(d.turnCost);
+      expect(showsTurnCost(p), p).toBe(d.turnCost === 'billed');
+      // A provider that reports no cost cannot be the one we price.
+      if (d.turnCost === 'none') expect(showsTurnCost(p), p).toBe(false);
+      // Money is per-turn; an account-level dashboard is a separate answer and
+      // neither implies nor excludes the other.
+      if (d.turnCost === 'billed') expect(sessionCapabilities(p).turnUsage, p).not.toBe('none');
     }
   });
 
