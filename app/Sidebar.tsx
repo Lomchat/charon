@@ -21,6 +21,7 @@ import {
   DEFAULT_SESSION_PROVIDER, PROVIDERS, SESSION_PROVIDERS, providerBackendState,
 } from '@/lib/sessionCapabilities';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
+import { showsUnreadCue } from './sessionUnread';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -1257,16 +1258,15 @@ function SessionRow({
   const showPreview = !!preview && preview !== headline && !headline.startsWith(preview.slice(0, 30));
   const needsAttention = (s.pendingPermissions ?? 0) > 0;
   // "Finished, unread": the session ended a turn while you weren't looking and
-  // you haven't opened it since (DB: unread_stop). Suppressed on the selected
-  // card (you're reading it), when it already needs attention (a pending
-  // question is the more urgent, orange cue), and while the session is actively
-  // WORKING (thinking/starting) — a turn in progress isn't "finished, unread"
-  // even if the DB marker hasn't been cleared yet. cf. CLAUDE.md §14.47.
-  // …and 'background' counts as working: the turn is over but the tasks it
-  // launched are not, which is the whole point of that state (§14.91).
-  const working = baseStatus === 'thinking' || baseStatus === 'starting'
-    || baseStatus === 'background';
-  const unread = !!s.unreadStop && !selected && !needsAttention && !working;
+  // you haven't opened it since (DB: unread_stop, §14.47). The predicate is
+  // shared with the header nav (app/sessionUnread.ts) so one signal cannot say
+  // two things at once; the durable marker itself is untouched by it.
+  const unread = showsUnreadCue({
+    unreadStop: s.unreadStop,
+    status: baseStatus,
+    pendingPermissions: s.pendingPermissions,
+    selected,
+  });
   const colorToken = (s as any).color as string | null | undefined;
   return (
     <button

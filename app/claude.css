@@ -109,9 +109,11 @@
 /* Green is READY in the sidebar, so it cannot also mean "finished, unread"
    here — two greens a shade apart is no distinction at all. "Finished, unread"
    is the sidebar's own GREEN PULSE (`row-pulse-green`, §14.47), reused frame
-   for frame: the trigger carries it while any session is waiting to be read,
-   and the rows that are waiting carry it inside the panel, so the eye follows
-   the same signal from the header to the card. */
+   for frame: the trigger carries it while a READY session is waiting to be
+   read, and those rows carry it inside the panel, so the eye follows the same
+   signal from the header to the card. Who qualifies is one shared predicate
+   (`sessionUnread.ts`) — a paused or failed session says so in its own
+   colour and does not also pulse green. */
 .hnav-dot.unread { background: var(--success); animation: none; }
 .hnav-row.unread {
   border-color: var(--success);
