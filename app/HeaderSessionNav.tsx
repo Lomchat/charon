@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentKind, SessionListItem } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
+import { isWorkingStatus, showsUnreadCue } from './sessionUnread';
 
 /**
  * Header shortcut to the sessions you are actually using: a trigger carrying
@@ -19,12 +20,13 @@ import AgentLogo from './AgentLogo';
  *  scroll away in the full list, which is the point of having both. */
 const FINISHED_SHOWN = 5;
 
-// The sidebar's own vocabulary (§14.47, §14.91), reused verbatim so a session
-// never reads as "working" here and "finished" three inches to the left.
-const WORKING_STATUSES = new Set(['thinking', 'starting', 'background']);
+/** One reading per row, computed once: the CSS class, the word in the tooltip
+ *  and whether the unread pulse applies all come from it. */
+type NavState = 'needs-you' | 'working' | 'error' | 'idle' | 'ready';
 
 type NavRow = {
   s: SessionListItem;
+  state: NavState;
   working: boolean;
   waiting: boolean;
   unread: boolean;
@@ -32,14 +34,30 @@ type NavRow = {
   when: number;
 };
 
+function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavState {
+  if (waiting) return 'needs-you';
+  if (working) return 'working';
+  const live = String(s.liveStatus);
+  if (live === 'error' || live === 'failed') return 'error';
+  if (live === 'sleeping') return 'idle';
+  return 'ready';
+}
+
 function rowOf(s: SessionListItem): NavRow {
-  const working = WORKING_STATUSES.has(String(s.liveStatus));
+  const working = isWorkingStatus(s.liveStatus);
   const waiting = (s.pendingPermissions ?? 0) > 0;
   return {
     s,
+    state: stateOf(s, working, waiting),
     working,
     waiting,
-    unread: !!s.unreadStop && !working && !waiting,
+    // Same predicate as the sidebar card, so the pulse cannot appear in one
+    // place and not the other (app/sessionUnread.ts).
+    unread: showsUnreadCue({
+      unreadStop: s.unreadStop,
+      status: s.liveStatus,
+      pendingPermissions: s.pendingPermissions,
+    }),
     when: s.lastActivityMs ?? (s.createdAt ? s.createdAt * 1000 : 0),
   };
 }
@@ -59,21 +77,14 @@ function ago(ms: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function stateClass(r: NavRow): string {
-  if (r.waiting) return 'needs-you';
-  if (r.working) return 'working';
-  if (['error', 'failed'].includes(String(r.s.liveStatus))) return 'error';
-  if (String(r.s.liveStatus) === 'sleeping') return 'idle';
-  return 'ready';
-}
-
 function stateWord(r: NavRow): string {
-  if (r.waiting) return 'needs you';
-  if (r.working) return String(r.s.liveStatus) === 'background' ? 'background' : 'working';
-  if (r.unread) return 'finished, unread';
-  if (['error', 'failed'].includes(String(r.s.liveStatus))) return 'error';
-  if (String(r.s.liveStatus) === 'sleeping') return 'paused';
-  return 'ready';
+  switch (r.state) {
+    case 'needs-you': return 'needs you';
+    case 'working': return String(r.s.liveStatus) === 'background' ? 'background' : 'working';
+    case 'error': return 'error';
+    case 'idle': return 'paused';
+    default: return r.unread ? 'finished, unread' : 'ready';
+  }
 }
 
 type Props = {
@@ -214,7 +225,7 @@ function Row({ r, onPick, selectedId, vpsName }: RowProps & { r: NavRow }) {
       type="button"
       role="menuitem"
       data-nav-id={r.s.id}
-      className={`hnav-row ${stateClass(r)}${r.unread ? ' unread' : ''}${r.s.id === selectedId ? ' is-open' : ''}`}
+      className={`hnav-row ${r.state}${r.unread ? ' unread' : ''}${r.s.id === selectedId ? ' is-open' : ''}`}
       onClick={() => onPick(r.s.id)}
       title={`${label(r.s)} — ${stateWord(r)} · ${machine} · ${r.s.cwd}`}
     >
