@@ -28,6 +28,7 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
   const [hasToken, setHasToken] = useState(!!initial?.hasToken);
   const [model, setModel] = useState(initial?.model || '');
   const [models, setModels] = useState(initial?.models || []);
+  const [modelInputMode, setModelInputMode] = useState<'list' | 'manual'>(initial?.models?.length ? 'list' : 'manual');
   const [saveForReuse, setSaveForReuse] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +64,7 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     setBaseUrl(endpoint?.baseUrl || ''); setAuth(endpoint?.auth || 'none'); setName(endpoint?.name || '');
     const choices = endpoint ? endpointModels(endpoint, engine) : [];
     setModel(choices.find((m) => m.id === endpoint?.model)?.id || choices[0]?.id || endpoint?.model || '');
+    setModelInputMode(choices.length ? 'list' : 'manual');
     setModels(endpoint?.models || []); changed();
   }
   function payload(): EndpointInput {
@@ -73,7 +75,11 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     setBusy(action); setError(null); setResult(null);
     try {
       const r = await api.probeCustomEndpoint({ endpoint: payload(), engine, vpsId, sessionId, action });
-      setModels(r.models || []); setResult(r);
+      if (r.models?.length) {
+        setModels(r.models.map((m) => ({ ...m, checks: models.find((previous) => previous.id === m.id)?.checks })));
+        if (action === 'models') setModelInputMode('list');
+      }
+      setResult(r);
       if (!model && r.models?.length) setModel(r.models[0].id);
     } catch (e) { setError(e instanceof Error ? e.message : 'Connection test failed.'); }
     finally { setBusy(null); }
@@ -93,6 +99,8 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     && !token && (auth === 'none' || hasToken);
   const savedCheck = unchanged ? endpointModelCheck(source, engine, model) : undefined;
   const check = result?.check || (!error && savedCheck?.vpsId === vpsId ? savedCheck : undefined);
+  const modelChoices = endpointModels({ name, baseUrl, auth, model, models }, engine);
+  const showModelList = modelInputMode === 'list' && modelChoices.length > 0;
   const title = sessionId ? 'Custom endpoint' : editingId ? 'Edit endpoint' : 'New endpoint';
   const testState = busy === 'test' ? 'Testing…' : check?.ok ? 'API verified' : check ? 'Test failed' : 'Not tested';
   return createPortal(<div className="claude-modal-bg endpoint-modal-bg" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
@@ -107,10 +115,21 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
           <div className="endpoint-section-title">Connection details</div>
           <label><span>Display name <small>(optional)</small></span><input value={name} maxLength={100} placeholder="My inference server" disabled={!!busy} onChange={(e) => setName(e.target.value)} /></label>
           <label>Base URL<input value={baseUrl} placeholder="https://models.example.com" autoComplete="off" disabled={!!busy}
-            onChange={(e) => { setBaseUrl(e.target.value); setHasToken(false); setToken(''); setModels([]); changed(); }} /></label>
-          <div className="endpoint-model-field"><label>Model ID<input value={model} list="endpoint-model-ids" placeholder="Exact model ID" maxLength={256} disabled={!!busy} onChange={(e) => { setModel(e.target.value); changed(); }} /></label>
+            onChange={(e) => { setBaseUrl(e.target.value); setHasToken(false); setToken(''); setModels([]); setModelInputMode('manual'); changed(); }} /></label>
+          <div className="endpoint-model-heading"><label htmlFor="endpoint-model-id">Model ID</label>
+            <div className="endpoint-model-mode" role="group" aria-label="Model input mode">
+              <button type="button" aria-pressed={showModelList} disabled={!!busy || !modelChoices.length} title={modelChoices.length ? 'Choose a model from the list' : 'Load models to enable the list'} onClick={() => setModelInputMode('list')}>List</button>
+              <button type="button" aria-pressed={!showModelList} disabled={!!busy} onClick={() => setModelInputMode('manual')}>Custom ID</button>
+            </div>
+          </div>
+          <div className="endpoint-model-field">{showModelList
+            ? <PickerControl id="endpoint-model-id" aria-label="Model ID" value={model} disabled={!!busy} onValueChange={(value) => { setModel(value); changed(); }}>
+                {!model && <option value="" disabled>Select a model</option>}
+                {model && !modelChoices.some((m) => m.id === model) && <option value={model}>{model} (custom ID)</option>}
+                {modelChoices.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+              </PickerControl>
+            : <input id="endpoint-model-id" value={model} placeholder="Exact model ID" maxLength={256} autoComplete="off" spellCheck={false} disabled={!!busy} onChange={(e) => { setModel(e.target.value); changed(); }} />}
             <button type="button" className="endpoint-btn" disabled={!!busy || !baseUrl || !vpsId || (auth !== 'none' && !token && !hasToken)} onClick={() => probe('models')}>{busy === 'models' ? 'Loading…' : 'Load models'}</button></div>
-          <datalist id="endpoint-model-ids">{models.map((m) => <option key={m.id} value={m.id} />)}</datalist>
           {result && !result.check && <p className="set-meta" role="status">{result.models.length ? `${result.models.length} models found. Choose a model above.` : result.catalogError}</p>}
           <div className="endpoint-auth-fields"><label>Authentication<PickerControl aria-label="Authentication" value={auth} disabled={!!busy} onValueChange={(v) => { setAuth(v as EndpointAuth); setHasToken(false); setToken(''); changed(); }}>
             <option value="none">None</option><option value="api-key">API key (x-api-key)</option><option value="bearer">Bearer token (Authorization)</option>

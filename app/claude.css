@@ -6718,7 +6718,15 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .endpoint-source { display: flex; align-items: end; gap: 10px; margin-bottom: 18px; }
 .endpoint-source label { flex: 1; margin: 0; }
 .endpoint-model-field { display: flex; align-items: end; gap: 10px; margin-bottom: 14px; }
-.endpoint-model-field label { flex: 1; margin: 0; }
+.endpoint-model-field > input, .endpoint-model-field > .picker-trigger { flex: 1; width: 0; min-width: 0; margin: 0; border-radius: var(--radius-sm); }
+.endpoint-model-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.endpoint-model-heading label { margin: 0; }
+.endpoint-model-mode { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.endpoint-model-mode button { margin: 0; padding: 5px 9px; border: 0; border-radius: 0; background: var(--bg-inset); color: var(--text-muted); font: inherit; font-size: 10px; cursor: pointer; }
+.endpoint-model-mode button + button { border-left: 1px solid var(--border); }
+.endpoint-model-mode button[aria-pressed="true"] { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 12%, var(--bg-inset)); }
+.endpoint-model-mode button:disabled { opacity: .45; cursor: not-allowed; }
+.endpoint-model-mode button:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
 .endpoint-auth-fields, .endpoint-test-target { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .endpoint-auth-fields label, .endpoint-test-target label { margin-bottom: 0; }
 .endpoint-token-note { margin-bottom: 0; }
