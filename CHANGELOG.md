@@ -212,6 +212,13 @@ commit-by-commit — `git log` has the detail.
 - Codex context gauges use the latest request footprint instead of lifetime
   thread totals, preventing impossible percentages far above 100%; internal
   Guardian/review/compaction workers no longer appear as user sub-agents.
+- A busy session's transcript no longer flickers while tools run. The
+  safety-net poll's full reload repainted the cached copy from the previous
+  fetch over the live view, removing tool rows and assistant text that had
+  arrived since; the fresh response that should have restored them was then
+  discarded because live events overtook it, so rows vanished and reappeared
+  every few seconds (most visible with tool rows shown). The cached copy now
+  paints only on first load, where it keeps opening a session instant.
 - Charon restarts no longer freeze open tabs: agent connections are armed at
   process start, and the browser self-heals through a reconcile on reconnect
   plus an SSE-independent poll.
