@@ -200,6 +200,10 @@ commit-by-commit — `git log` has the detail.
 
 ### Fixed
 
+- A question that replaces an answered one in the pending zone now opens
+  blank. The card was rendered without a key, so React reused the previous
+  instance and the new question inherited its selected options and any typed
+  free answer, ready to be sent against the wrong question.
 - Missing context telemetry no longer labels a loaded, idle Codex thread as
   “not running”; lifecycle status and context-usage availability are displayed
   independently.
