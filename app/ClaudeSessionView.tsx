@@ -984,7 +984,13 @@ export default function ClaudeSessionView({
           <div className="claude-pending-zone">
             {oldestPending.kind === 'question' && (
               <QuestionCard
+                // One instance per question: without a key, a question that
+                // replaces another in place inherits its selections and drafts.
+                key={oldestPending.q.id}
                 questions={oldestPending.q.questions}
+                sessionId={oldestPending.q.sessionId}
+                questionId={oldestPending.q.id}
+                expiresAt={oldestPending.q.expiresAt}
                 onAnswer={(answers) => respondQuestion(oldestPending.q.id, answers)}
                 onCancel={() => respondQuestion(oldestPending.q.id, null)}
               />

@@ -1,5 +1,7 @@
 'use client';
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
+import ApprovalDeadline from './ApprovalDeadline';
+import { isQuestionCollapsed, setQuestionCollapsed } from './questionCollapse';
 
 export type QuestionItem = {
   question: string;
@@ -10,6 +12,9 @@ export type QuestionItem = {
 
 type Props = {
   questions: QuestionItem[];
+  sessionId: string;
+  questionId: string;
+  expiresAt?: number;
   onAnswer: (answers: Record<string, string>) => void;
   onCancel: () => void;
 };
@@ -18,7 +23,15 @@ type Props = {
 // the user clicks an option (or several if multiSelect), OR types a free
 // answer in the textarea (which overrides the click).
 // The return is { question_text: "label1, label2" } or { question_text: "free text" }.
-export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
+export default function QuestionCard({ questions, sessionId, questionId, expiresAt, onAnswer, onCancel }: Props) {
+  // The call site keys this card by question id, so the initializer runs
+  // once per question and needs no resync.
+  const [collapsed, setCollapsedState] = useState(() => isQuestionCollapsed(sessionId, questionId));
+  const setCollapsed = useCallback((value: boolean) => {
+    setCollapsedState(value);
+    setQuestionCollapsed(sessionId, questionId, value);
+  }, [sessionId, questionId]);
+
   const [selections, setSelections] = useState<Record<number, Set<string>>>(() => {
     const init: Record<number, Set<string>> = {};
     questions.forEach((_, i) => { init[i] = new Set(); });
@@ -60,12 +73,37 @@ export default function QuestionCard({ questions, onAnswer, onCancel }: Props) {
     onAnswer(answers);
   }
 
+  // Enough of the question to recognise it while minimized, without which the
+  // collapsed strip is just an anonymous bar.
+  const peek = (questions[0]?.header ?? questions[0]?.question ?? '').trim();
+
   return (
-    <div className="user-question-card">
-      <header className="uq-card-head">
-        <span className="uq-tag">❓ question{questions.length > 1 ? `s × ${questions.length}` : ''}</span>
-        <span className="uq-sub">choose an option or write your own answer</span>
+    // Click targets mirror the tool-use card: the whole header minimizes, and
+    // a minimized card restores from a click anywhere on it. The button has
+    // no handler of its own; its click (mouse or Enter/Space) bubbles to
+    // whichever of the two handlers is live, so keyboard users get both.
+    <div
+      className={`user-question-card${collapsed ? ' collapsed' : ''}`}
+      onClick={collapsed ? () => setCollapsed(false) : undefined}
+    >
+      <header className="uq-card-head" onClick={collapsed ? undefined : () => setCollapsed(true)}>
+        <button
+          type="button"
+          className="uq-toggle"
+          aria-expanded={!collapsed}
+          aria-label={`${collapsed ? 'expand' : 'minimize'} question`}
+        >
+          <span className="uq-caret" aria-hidden>{collapsed ? '▸' : '▾'}</span>
+          <span className="uq-tag">❓ question{questions.length > 1 ? `s × ${questions.length}` : ''}</span>
+        </button>
+        {collapsed
+          ? <span className="uq-peek" title={peek}>{peek}</span>
+          : <span className="uq-sub">choose an option or write your own answer</span>}
       </header>
+      {/* Deliberately OUTSIDE the collapsed region: a minimized question still
+          auto-denies on the provider's timer, so hiding the countdown is how
+          you lose one without noticing. */}
+      <ApprovalDeadline expiresAt={expiresAt} />
       <div className="uq-body">
         {questions.map((q, qIdx) => {
           const multi = !!q.multiSelect;
