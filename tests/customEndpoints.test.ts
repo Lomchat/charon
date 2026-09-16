@@ -2,13 +2,13 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeEndpointUrl, endpointEfforts } from '@/lib/customEndpoints';
+import { normalizeEndpointUrl, endpointEfforts, endpointModels, endpointModelCheck } from '@/lib/customEndpoints';
 
 process.env.DATABASE_URL = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'charon-endpoints-')), 'test.db');
 process.env.MASTER_PASSWORD = 'endpoint-test-password';
 process.env.MASTER_SALT = '00112233445566778899aabbccddeeff';
 vi.mock('server-only', () => ({}));
-const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[] }));
+const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[], probe: null as any }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalSessionListChanged: vi.fn(),
   peekStream: () => ({ status: runtime.status, hasRunningBgTasks: () => false }),
@@ -18,6 +18,7 @@ vi.mock('@/lib/server/claude/sessionInsightSnapshot', () => ({ invalidateSession
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => ({
   status: 'connected', call: async (method: string, params: any) => {
     runtime.calls.push({ method, params });
+    if (method === 'endpoint_probe' && runtime.probe) return runtime.probe;
     if (method === 'list_sessions') return { sessions: [{ session_id: 'one', status: runtime.status }] };
     if (method === 'sleep_session') return { ok: !runtime.sleepBusy, busy: runtime.sleepBusy };
     return { ok: true };
@@ -66,6 +67,33 @@ describe('custom endpoint isolation', () => {
     expect(endpointEfforts(endpoint, 'claude', input.model)).toEqual([]);
     const verified = { ...endpoint, checks: { claude: { ok: true, engine: 'claude' as const, model: input.model, streaming: true, tools: true, effortLevels: ['high'] } } };
     expect(endpointEfforts(store.parseEndpoint({ ...input, token: 'replacement' }, verified), 'claude', input.model)).toEqual([]);
+  });
+  it('collects model-specific probes for one credential and filters by engine', async () => {
+    const { probeEndpoint, withEndpointChecks } = await import('@/lib/server/endpointProbe');
+    const endpoint = store.parseEndpoint(input);
+    for (const [engine, model] of [['claude', 'messages-model'], ['codex', 'responses-model']] as const) {
+      runtime.probe = { ok: true, models: [{ id: 'messages-model' }, { id: 'responses-model' }, { id: 'chat-only' }],
+        check: { ok: true, engine, model, streaming: true, tools: true, effortLevels: ['high'] } };
+      await probeEndpoint({ ...endpoint, model }, engine, 'test', 'test');
+    }
+    runtime.probe = null;
+    const merged = withEndpointChecks({ ...endpoint, model: 'responses-model' }, 'test');
+    expect(endpointModels(merged, 'claude').map((m) => m.id)).toEqual(['messages-model']);
+    expect(endpointModels(merged, 'codex').map((m) => m.id)).toEqual(['responses-model']);
+    expect(endpointEfforts(merged, 'claude', 'messages-model')).toEqual(['high']);
+    expect(endpointModelCheck(merged, 'claude', 'responses-model')).toBeUndefined();
+    expect(withEndpointChecks({ ...endpoint, model: 'responses-model' }, 'another-vps').models).toEqual([]);
+    const changed = store.parseEndpoint({ ...input, token: 'new-credential' }, merged);
+    expect(withEndpointChecks(changed, 'test').models).toEqual([]);
+    expect(endpointModels({ ...endpoint, models: [{ id: 'unverified' }] }, 'claude')).toEqual([{ id: 'unverified' }]);
+    await ops.queueEndpoint('two', { ...merged, model: 'messages-model' });
+    expect(store.connectionConfig(row('two').codexConfig).customEndpoint?.checks?.claude?.model).toBe('messages-model');
+    runtime.probe = { ok: false, models: [], check: { ok: false, engine: 'codex', model: 'responses-model', streaming: false, tools: false } };
+    await probeEndpoint({ ...endpoint, model: 'responses-model' }, 'codex', 'test', 'test');
+    runtime.probe = null;
+    const failed = withEndpointChecks(merged, 'test');
+    expect(endpointModels(failed, 'claude').map((m) => m.id)).toEqual(['messages-model']);
+    expect(endpointModels(failed, 'codex')).toEqual([]);
   });
   it('saves a session copy and leaves other sessions unchanged', async () => {
     runtime.status = 'active';

@@ -2113,7 +2113,7 @@ class AgentSession:
             if endpoint:
                 if self._endpoint_proxy is None:
                     self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.session_config) or {}, "claude",
-                        lambda usage: self._emit("endpoint_usage", **usage))
+                        lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id)
                 routed_env = claude_env(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
                 options_kwargs["env"] = {**options_kwargs.get("env", {}), **routed_env}
                 inline = json.loads(options_kwargs.get("settings") or "{}")

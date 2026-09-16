@@ -5,6 +5,7 @@ import { db, claudeSessions } from '@/lib/db';
 import { connectionConfig, publicConnection, type StoredEndpoint } from '@/lib/server/customEndpoints';
 import { emitGlobalSessionListChanged, peekStream, resumeSession } from './sessionOps';
 import { getAgentClientForVpsId } from './AgentClientPool';
+import { endpointModelCheck } from '@/lib/customEndpoints';
 
 const inflight = new Map<string, Promise<void>>();
 export async function applyPendingEndpoint(id: string): Promise<void> {
@@ -72,6 +73,10 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
 export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null) {
   const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
   if (!row) throw new Error('Session not found.');
+  if (endpoint) {
+    const check = endpointModelCheck(endpoint, row.kind, endpoint.model);
+    endpoint = { ...endpoint, checks: { ...endpoint.checks, ...(check ? { [row.kind]: check } : {}) } };
+  }
   // Feature discovery before writing anything: old agents must never ignore a route.
   await getAgentClientForVpsId(row.vpsId).call('endpoint_probe', { action: 'capability' });
   if (inflight.has(id)) await inflight.get(id);

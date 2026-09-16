@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 import type { Vps } from '@/lib/types/api';
-import { ENDPOINT_ENGINES, type CustomEndpoint, type EndpointEngine } from '@/lib/customEndpoints';
+import { ENDPOINT_ENGINES, endpointModelCheck, type CustomEndpoint, type EndpointEngine } from '@/lib/customEndpoints';
 import { providerName } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
 import { IconPencil, IconPlug, IconPlusSquare, IconTrash } from './icons';
@@ -39,7 +39,7 @@ export default function CustomEndpointsSettings({ vpsList = [] }: { vpsList?: Vp
         {endpoints.map((e) => <article className="endpoint-card" key={e.id} aria-label={e.name} aria-busy={removing === e.id}>
           <div className="endpoint-card-head">
             <span className="endpoint-card-icon"><IconPlug /></span>
-            <div className="endpoint-card-name"><strong>{e.name}</strong><span>{e.model}</span></div>
+            <div className="endpoint-card-name"><strong>{e.name}</strong><span>{e.models?.some((m) => m.checks) ? `${e.models.filter((m) => ENDPOINT_ENGINES.some((engine) => endpointModelCheck(e, engine, m.id)?.ok)).length} verified models · Default: ${e.model}` : e.model}</span></div>
             <div className="endpoint-card-actions">
               <button type="button" className="endpoint-btn" disabled={!!removing} onClick={() => setEditing({ endpoint: e, engine: 'claude' })} aria-label={`Edit ${e.name}`}><IconPencil />Edit</button>
               <button type="button" className="endpoint-btn is-icon is-danger" disabled={!!removing} onClick={() => remove(e.id!)} title={`Delete ${e.name}`} aria-label={`Delete ${e.name}`}><IconTrash /></button>
@@ -48,11 +48,12 @@ export default function CustomEndpointsSettings({ vpsList = [] }: { vpsList?: Vp
           <dl className="endpoint-card-details"><div><dt>URL</dt><dd>{e.baseUrl}</dd></div><div><dt>Auth</dt><dd>{e.auth === 'none' ? 'No authentication' : e.auth === 'bearer' ? 'Bearer token' : 'API key'}{e.hasToken && <span className="endpoint-credential-state">Credential saved</span>}</dd></div></dl>
           <div className="endpoint-card-checks" aria-label="API compatibility">
             {ENDPOINT_ENGINES.map((engine) => {
-              const check = e.checks?.[engine]?.model === e.model ? e.checks[engine] : undefined;
-              const status = check?.ok ? 'verified' : check ? 'failed' : 'unknown';
+              const verified = e.models?.filter((m) => endpointModelCheck(e, engine, m.id)?.ok) ?? [];
+              const check = endpointModelCheck(e, engine, e.model);
+              const status = verified.length || check?.ok ? 'verified' : check ? 'failed' : 'unknown';
               return <button key={engine} type="button" className={`endpoint-engine-check is-${status}`} disabled={!!removing}
-                onClick={() => setEditing({ endpoint: e, engine, test: true })} aria-label={`Check ${providerName(engine)} compatibility for ${e.name}`}>
-                <AgentLogo kind={engine} size={16} /><span>{providerName(engine)}</span><span className="endpoint-check-label"><i />{check?.ok ? 'API verified' : check ? 'Test failed' : 'Not tested'}</span><span className="endpoint-check-arrow" aria-hidden="true">↗</span>
+                onClick={() => setEditing({ endpoint: { ...e, model: verified[0]?.id || e.model }, engine, test: true })} aria-label={`Check ${providerName(engine)} compatibility for ${e.name}`}>
+                <AgentLogo kind={engine} size={16} /><span>{providerName(engine)}</span><span className="endpoint-check-label"><i />{verified.length ? `${verified.length} ${verified.length === 1 ? 'model' : 'models'} verified` : check?.ok ? 'API verified' : check ? 'Test failed' : 'Not tested'}</span><span className="endpoint-check-arrow" aria-hidden="true">↗</span>
               </button>;
             })}
           </div>

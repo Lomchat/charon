@@ -3,7 +3,7 @@ import { isEffortValue } from './sessionCapabilities';
 /** Public connection metadata. Credentials never belong in session list/detail payloads. */
 export type EndpointEngine = 'claude' | 'codex';
 export type EndpointAuth = 'none' | 'api-key' | 'bearer';
-export type EndpointModel = { id: string; contextWindow?: number; effortLevels?: string[] };
+export type EndpointModel = { id: string; contextWindow?: number; effortLevels?: string[]; checks?: Partial<Record<EndpointEngine, EndpointCheck>> };
 export type EndpointCheck = {
   ok: boolean; engine: EndpointEngine; model: string; vpsId?: string;
   streaming: boolean; tools: boolean; error?: string;
@@ -27,9 +27,20 @@ export const ENDPOINT_ENGINES: readonly EndpointEngine[] = ['claude', 'codex'];
 export function supportsCustomEndpoint(kind: string): kind is EndpointEngine {
   return ENDPOINT_ENGINES.includes(kind as EndpointEngine);
 }
+export function endpointModelCheck(endpoint: CustomEndpoint | null | undefined, kind: string, model: string): EndpointCheck | undefined {
+  if (!endpoint || !supportsCustomEndpoint(kind)) return undefined;
+  const check = endpoint.models?.find((m) => m.id === model)?.checks?.[kind] ?? endpoint.checks?.[kind];
+  return check?.model === model ? check : undefined;
+}
+/** Once models have been tested, offer the verified subset for this engine. */
+export function endpointModels(endpoint: CustomEndpoint, kind: string): EndpointModel[] {
+  const models = endpoint.models ?? [];
+  return models.some((m) => m.checks && Object.keys(m.checks).length)
+    ? models.filter((m) => endpointModelCheck(endpoint, kind, m.id)?.ok) : models;
+}
 export function endpointEfforts(endpoint: CustomEndpoint | null | undefined, kind: string, model: string): string[] {
   if (!endpoint || !supportsCustomEndpoint(kind)) return [];
-  const check = endpoint.checks?.[kind];
+  const check = endpointModelCheck(endpoint, kind, model);
   return check?.ok && check.model === model ? (check.effortLevels ?? []).filter((value) => isEffortValue(kind, value)) : [];
 }
 export function normalizeEndpointUrl(value: string): string {
