@@ -98,12 +98,23 @@
    else under a search box (app/HeaderSessionNav.tsx). */
 .hnav { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; }
 
-/* One dot scale for every state, matching the sidebar's so a session never
-   looks "working" here and "finished" three inches to the left. A dot is a
-   CIRCLE — the one shape here a theme does not get to change (§14.99). */
+/* One dot scale for every state, taking the SAME colours as the tab bar and the
+   sidebar (the vocabulary is spelled out at `.tab.tab-active` below): working =
+   BLUE pulse, needs-you = ORANGE pulse — orange is reserved for "a human is
+   being waited on" and nothing else — error = red, ready = green, paused =
+   neutral. Amber here made a thinking session read as a warning, and red made
+   "needs you" indistinguishable from "errored". The glow matches the tab dots
+   frame for frame. A dot is a CIRCLE — the one shape here a theme does not get
+   to change (§14.99). */
 .hnav-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
-.working > .hnav-dot, .hnav-dot.working { background: var(--warning); animation: hnav-pulse 1.4s ease-in-out infinite; }
-.needs-you > .hnav-dot { background: var(--danger-strong); animation: hnav-pulse 1.4s ease-in-out infinite; }
+.working > .hnav-dot, .hnav-dot.working {
+  background: var(--accent-strong); animation: hnav-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.needs-you > .hnav-dot, .hnav-dot.waiting {
+  background: var(--attention); animation: hnav-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--attention) 70%, transparent);
+}
 .error > .hnav-dot { background: var(--danger); }
 .ready > .hnav-dot { background: var(--success); }
 /* Green is READY in the sidebar, so it cannot also mean "finished, unread"
@@ -118,6 +129,15 @@
 .hnav-row.unread {
   border-color: var(--success);
   animation: row-pulse-green 1.8s infinite ease-in-out;
+}
+/* The same apparatus in orange for the louder half of the pair: a session
+   BLOCKED on your answer. Same frames as the sidebar's own attention card
+   (`row-pulse`), so one glance reads the same in both places — and the two can
+   never land on one row, since a pending gate suppresses the unread cue
+   (`sessionUnread.ts`). */
+.hnav-row.needs-you {
+  border-color: var(--attention);
+  animation: row-pulse 1.6s infinite ease-in-out;
 }
 @keyframes hnav-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .hnav-empty { color: var(--text-faint); font: 10px/1.4 var(--mono); padding: 6px 8px; }
@@ -141,8 +161,16 @@
   border-color: var(--success); color: var(--text);
   animation: row-pulse-green 1.8s infinite ease-in-out;
 }
+/* Last of the three on purpose: a session cannot run until you answer it, so
+   it outranks both the pointer and a finished one waiting to be read. The
+   class itself is exclusive (HeaderSessionNav picks one), this is the
+   belt-and-braces half. */
+.claude-head .hnav-trigger.has-waiting {
+  border-color: var(--attention); color: var(--text);
+  animation: row-pulse 1.3s infinite ease-in-out;
+}
 .hnav-trigger-count { color: var(--text); font: 600 12px/1 var(--mono); }
-.hnav-trigger-unread {
+.hnav-trigger-unread, .hnav-trigger-waiting {
   display: inline-flex; align-items: center; gap: 4px;
   padding-left: 7px; border-left: 1px solid var(--border);
   color: var(--text); font: 600 11px/1 var(--mono);
@@ -799,7 +827,10 @@
   flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--accent-strong);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cs-perm { font-family: var(--mono); font-size: 10px; color: var(--danger); animation: cpulse 1.5s infinite; flex-shrink: 0; }
+/* The 🔒n chip sits on a card whose border already pulses `--attention`: in red
+   it said "error" while the card said "answer me". Orange is the colour of a
+   human being waited on, here as everywhere else. */
+.cs-perm { font-family: var(--mono); font-size: 10px; color: var(--attention); animation: cpulse 1.5s infinite; flex-shrink: 0; }
 .cs-multi { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 .cs-state {
   flex-shrink: 0; font-family: var(--display); font-size: 8px;
