@@ -179,6 +179,22 @@ export type ProviderDescriptor = {
    *  "Unavailable" — which reads as a bug in Charon rather than as a limit of
    *  the provider. */
   usageDashboardUrl: string | null;
+  /** What a turn's reported `cost_usd` MEANS — the question that decides
+   *  whether showing it is information or noise.
+   *
+   *  `'billed'`     money actually charged for that turn. Worth a number: it
+   *                is the only thing that tells the user what a session spent.
+   *  `'equivalent'` a list-price VALUATION of the tokens, computed by the SDK.
+   *                The account is metered in quota, not dollars, so the figure
+   *                bills nobody — it reads as a charge and is not one. Charon
+   *                keeps recording it (the `turn_usage` rows stay complete) and
+   *                simply does not price a turn the user does not pay for.
+   *  `'none'`       the backend reports no cost at all.
+   *
+   *  Declared here rather than tested as `kind === 'cursor'` because it is a
+   *  question every backend owes an answer to, and a new one whose cost IS
+   *  billed must not inherit silence (§14.102). */
+  turnCost: 'billed' | 'equivalent' | 'none';
   /** What an `edit_snapshot` row from this backend CONTAINS.
    *
    *  `'contents'` a before/after pair Charon diffs itself — the only shape a
@@ -276,6 +292,10 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     modes: CLAUDE_PERMISSION_MODES,
     defaultMode: 'normal',
     usageDashboardUrl: null,
+    // `ResultMessage.total_cost_usd` is the tokens priced at the public API
+    // rate. A Charon session signs in with OAuth, so it draws on the plan's
+    // quota — the gauges (§14.58) are what that costs, not this.
+    turnCost: 'equivalent',
     efforts: CLAUDE_EFFORTS,
     effortAxis: 'static',
     editSnapshot: 'contents',
@@ -331,6 +351,8 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     modes: CODEX_SANDBOX_MODES,
     defaultMode: 'workspace-write',
     usageDashboardUrl: null,
+    // The app-server sends token counts and no money at all.
+    turnCost: 'none',
     efforts: CODEX_EFFORTS,
     effortAxis: 'static',
     // Unified diffs with no pre-image, so no split view and no revert (§14.59).
@@ -411,6 +433,9 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // and the dashboard's own endpoint wants a browser session cookie. So the
     // gauges are not coming, and this is where the numbers actually live.
     usageDashboardUrl: 'https://cursor.com/dashboard/spending',
+    // Real spend: `raw_cost_cents` off the SDK's own run record (§14.103), and
+    // the only per-turn figure in the fleet a user is actually charged for.
+    turnCost: 'billed',
     efforts: [],
     effortAxis: 'model',
     // The SDK reports no per-file snapshots, so the diffs tab has nothing of
@@ -563,6 +588,15 @@ export function isSessionEffort(p: SessionProvider, value: unknown): value is Se
  *  ladder is per model — and hiding the control there loses a real setting. */
 export function hasEffortAxis(p: SessionProvider): boolean {
   return PROVIDERS[p].effortAxis !== 'none';
+}
+
+/** May Charon put a PRICE on this provider's turns?
+ *
+ *  THE gate for every dollar figure. Never `cost_usd != null`: a provider that
+ *  reports an API-list VALUATION answers that test exactly like one reporting a
+ *  charge, and the two mean opposite things to someone on a subscription. */
+export function showsTurnCost(p: SessionProvider): boolean {
+  return PROVIDERS[p].turnCost === 'billed';
 }
 
 /**

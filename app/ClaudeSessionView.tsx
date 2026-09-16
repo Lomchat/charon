@@ -13,7 +13,7 @@ import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/
 import type { AccountUsage } from '@/lib/server/claude/types';
 import {
   asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
-  supportsSessionCapability,
+  showsTurnCost, supportsSessionCapability,
   type SessionMode,
 } from '@/lib/sessionCapabilities';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
@@ -944,7 +944,14 @@ export default function ClaudeSessionView({
           />
         )}
 
-        {!endpoint.active && showTools && liveUsage?.final && liveUsage.costUsd != null && liveUsage.costUsd > 0 && (
+        {/* A turn's price, for the providers that actually charge one
+            (`showsTurnCost`). Claude reports a cost too, but it is the tokens
+            valued at API list price while the session spends PLAN QUOTA — a
+            dollar figure for something nobody is billed, when the honest
+            gauge is the usage meter. Hidden on a custom endpoint for the
+            same reason: Charon does not know that operator's rates. */}
+        {!endpoint.active && showTools && showsTurnCost(sessionKind)
+          && liveUsage?.final && liveUsage.costUsd != null && liveUsage.costUsd > 0 && (
           <div className="turn-cost" role="status">
             <span>last turn</span>
             <strong>{fmtCost(liveUsage.costUsd)}</strong>

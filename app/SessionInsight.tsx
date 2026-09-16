@@ -535,8 +535,8 @@ export default function SessionInsight({
             {' · '}↓ {compactNumber(ctx.recorded_usage.input_tokens)} in
             {ctx.recorded_usage.cache_read_tokens > 0
               ? ` · ${compactNumber(ctx.recorded_usage.cache_read_tokens)} cached` : ''}
-            {ctx.recorded_usage.cost_usd > 0
-              ? ` · $${ctx.recorded_usage.cost_usd.toFixed(4)}` : ''}
+            {(ctx.recorded_usage.cost_usd ?? 0) > 0
+              ? ` · $${ctx.recorded_usage.cost_usd!.toFixed(4)}` : ''}
           </div>
         )}
         </>}
