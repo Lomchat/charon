@@ -3402,6 +3402,27 @@
   font-family: var(--body); font-size: 12px;
   color: var(--text-muted); font-style: italic;
 }
+/* ── Minimized question ──
+   The pending zone is allowed 65vh, so an open question hides the exchange
+   that produced it. Collapsing shrinks the card to its header strip and hands
+   the transcript back, without answering or cancelling.
+   The body is HIDDEN, not unmounted, so a half-typed free answer survives a
+   minimize/restore; `display: none` also takes it out of the tab order. */
+.uq-toggle {
+  display: flex; align-items: baseline; gap: 8px;
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; cursor: pointer;
+}
+.uq-caret { font-size: 10px; color: var(--lavender); }
+.uq-peek {
+  font-family: var(--body); font-size: 12px; color: var(--text-muted);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.uq-card-head,
+.user-question-card.collapsed { cursor: pointer; }
+.user-question-card.collapsed .uq-card-head { margin-bottom: 0; }
+.user-question-card.collapsed .uq-body,
+.user-question-card.collapsed .uq-actions { display: none; }
 .uq-multi-hint {
   font-family: var(--mono); font-size: 10px;
   color: var(--lavender); opacity: 0.7;

@@ -12,6 +12,17 @@ commit-by-commit — `git log` has the detail.
 
 ### Added
 
+- **Minimize a pending question to read the conversation behind it.** The
+  question card replaces the input bar and may take up to 65% of the viewport,
+  so it covered the exchange you needed to read before answering, and the only
+  ways out were to answer or cancel. Click anywhere on its header to shrink it
+  to one strip naming the question; click anywhere on the strip to bring it
+  back. Selections and a half-typed free answer survive a minimize, and a
+  minimized question stays minimized across session switches, though a page
+  reload brings it back open.
+  The card now also shows the auto-deny countdown, which it never displayed
+  although the deadline was already delivered — and keeps it visible while
+  minimized, so a question put aside cannot expire unnoticed.
 - **Cursor as an optional third backend**, with browser-link sign-in, streamed
   sessions, account-specific models and reasoning parameters, recorded turn
   costs, import/resume/archive, peer messaging and adapted detached reviews.
