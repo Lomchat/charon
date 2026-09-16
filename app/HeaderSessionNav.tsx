@@ -125,8 +125,20 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
     [sessions],
   );
   const running = rows.filter((r) => r.working || r.waiting);
-  const finished = rows.filter((r) => !r.working && !r.waiting).slice(0, FINISHED_SHOWN);
+  // "Recently finished" is the short list you act on, so it holds sessions you
+  // can still walk into: a PAUSED one finished too, but reading it means waking
+  // it first, and there are enough of them to push every live session out of a
+  // five-row window. They stay one scroll away, under "All sessions". A failed
+  // one is still connected and idle (§14.68) — it just finished badly, which is
+  // the last thing a list of what finished should hide.
+  const finished = rows
+    .filter((r) => r.state === 'ready' || r.state === 'error')
+    .slice(0, FINISHED_SHOWN);
   const unreadCount = rows.filter((r) => r.unread).length;
+  // The other durable "go and look" count, and the louder one: a session is
+  // BLOCKED on you until you answer. Same apparatus as the unread green —
+  // a count on the trigger, a pulse, a row you click to land on the card.
+  const waitingCount = rows.filter((r) => r.waiting).length;
 
   const q = query.trim().toLowerCase();
   const matches = useMemo(() => {
@@ -147,15 +159,31 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
     <div className="hnav" ref={wrap}>
       <button
         type="button"
-        className={`hnav-trigger${open ? ' is-open' : ''}${unreadCount ? ' has-unread' : ''}`}
+        // Orange outranks green: one is a question blocking a session, the
+        // other a page waiting to be read. Same precedence the card applies.
+        className={`hnav-trigger${open ? ' is-open' : ''}${
+          waitingCount ? ' has-waiting' : unreadCount ? ' has-unread' : ''}`}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        title={`${running.length} working · ${unreadCount} finished, unread · ${rows.length} sessions`}
+        title={[
+          `${running.length} working${waitingCount ? `, ${waitingCount} of them waiting on you` : ''}`,
+          `${unreadCount} finished, unread`,
+          `${rows.length} sessions`,
+        ].join(' · ')}
       >
         <span className={`hnav-dot ${running.length ? 'working' : 'idle'}`} aria-hidden />
         <span className="hnav-trigger-count">{running.length}</span>
         <span className="hnav-trigger-word">working</span>
+        {/* A SUBSET of the count on its left, unlike the unread one beside it —
+            a session blocked on your answer is still a session that is running,
+            and inventing a second total would make the panel's own "Working
+            (n)" heading disagree with the trigger that opened it. */}
+        {!!waitingCount && (
+          <span className="hnav-trigger-waiting" title={`${waitingCount} waiting for your answer`}>
+            <span className="hnav-dot waiting" aria-hidden />{waitingCount}
+          </span>
+        )}
         {!!unreadCount && (
           <span className="hnav-trigger-unread" title={`${unreadCount} finished and not opened yet`}>
             <span className="hnav-dot unread" aria-hidden />{unreadCount}
