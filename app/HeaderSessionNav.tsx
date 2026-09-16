@@ -136,7 +136,7 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
     <div className="hnav" ref={wrap}>
       <button
         type="button"
-        className={`hnav-trigger${open ? ' is-open' : ''}`}
+        className={`hnav-trigger${open ? ' is-open' : ''}${unreadCount ? ' has-unread' : ''}`}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
