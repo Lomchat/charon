@@ -1,4 +1,5 @@
 import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
+import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
 import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import 'server-only';
@@ -186,8 +187,8 @@ export function isValidEffort(v: string | null | undefined): v is EffortLevel {
 // the Claude set; a provider whose ladder is per model (Cursor) stores a
 // parameter set, validated by SHAPE since no hub-side vocabulary exists.
 // Invalid values are dropped (persisted as null → default).
-function isValidEffortForKind(v: string | null | undefined, kind: AgentKind): boolean {
-  return isEffortValue(kind, v);
+function isValidEffortForKind(v: string | null | undefined, kind: AgentKind, customEndpoint = false): boolean {
+  return isEffortValue(kind, v) || (customEndpoint && typeof v === 'string' && isModelParamSet(v));
 }
 
 const newId = () => crypto.randomBytes(8).toString('hex');
@@ -442,6 +443,7 @@ export class SessionStream {
   model: string | null = null;
   fallbackModel: string | null = null;
   effort: AnyEffort | null = null;
+  customEndpoint = false;
   // The model Anthropic actually used on the last AssistantMessage. Captured
   // from the `effective_model` event (agent >= 0.6.0), persisted in
   // claude_sessions.effective_model (the agent only re-emits on CHANGE, so a
@@ -620,6 +622,7 @@ export class SessionStream {
     fallbackModel?: string | null;
     effort?: string | null;
     effectiveModel?: string | null;
+    customEndpoint?: boolean;
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
@@ -635,7 +638,8 @@ export class SessionStream {
     this.lastStopNotifiedSeq = opts.lastStopNotifiedSeq ?? null;
     this.model = opts.model ?? null;
     this.fallbackModel = opts.fallbackModel ?? null;
-    this.effort = isValidEffortForKind(opts.effort, this.kind) ? (opts.effort as AnyEffort) : null;
+    this.customEndpoint = !!opts.customEndpoint;
+    this.effort = isValidEffortForKind(opts.effort, this.kind, this.customEndpoint) ? (opts.effort as AnyEffort) : null;
     this.effectiveModel = opts.effectiveModel ?? null;
     // Preserve a durable failed-turn marker across a Charon reconnect. The
     // daemon is still idle/active; only a new turn or explicit lifecycle
@@ -1393,7 +1397,7 @@ export class SessionStream {
         });
         break;
       case 'effort_changed':
-        this.effort = isValidEffortForKind(ev.effort, this.kind) ? (ev.effort as AnyEffort) : null;
+        this.effort = isValidEffortForKind(ev.effort, this.kind, this.customEndpoint) ? (ev.effort as AnyEffort) : null;
         try {
           db.update(claudeSessions).set({ effort: this.effort })
             .where(eq(claudeSessions.id, this.id)).run();
@@ -2791,6 +2795,7 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     model: row.model ?? null,
     fallbackModel: row.fallbackModel ?? null,
     effort: row.effort ?? null,
+    customEndpoint: !!connectionConfig(row.codexConfig).customEndpoint,
     // Last API-confirmed model — needed right after a Charon restart so the
     // very next assistant flush is stamped correctly (the agent won't re-emit
     // `effective_model` unless it changes).
@@ -2925,9 +2930,10 @@ export async function startNewSession(opts: {
   const cfg = _resolveSessionConfig(kind, {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
-  const effortPersist = isValidEffortForKind(cfg.effort, kind) ? cfg.effort : null;
   const requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
   const providerConfig = resolveProviderConfig(kind, requestedConfig, vps);
+  const customEndpoint = !!(providerConfig as any)?.customEndpoint;
+  const effortPersist = isValidEffortForKind(cfg.effort, kind, customEndpoint) ? cfg.effort : null;
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({
@@ -2958,6 +2964,7 @@ export async function startNewSession(opts: {
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
+    customEndpoint,
   });
   streams.set(sessionId, stream);
 
@@ -3058,6 +3065,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         fallbackModel: row.fallbackModel ?? null,
         effectiveModel: row.effectiveModel ?? null,
         effort: row.effort ?? null,
+        customEndpoint: !!connectionConfig(row.codexConfig).customEndpoint,
       });
       stream.hydrateAlwaysAllow(row.alwaysAllowTools);
       streams.set(sessionId, stream);

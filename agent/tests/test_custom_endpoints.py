@@ -123,7 +123,8 @@ class EndpointTests(unittest.TestCase):
         self.assertIn('reasoning', original)
         self.assertEqual(request_body({'model': 'custom', 'output_config': {'effort': 'high'}}, self.endpoint, 'claude'), {'model': 'custom'})
         known = {**self.endpoint, 'checks': {'codex': {'ok': True, 'model': 'custom', 'effortLevels': ['high']}}}
-        self.assertEqual(request_body(original, known, 'codex')['reasoning'], {'effort': 'high'})
+        self.assertNotIn('reasoning', request_body(original, known, 'codex'))
+        self.assertEqual(request_body(original, known, 'codex', 'high')['reasoning'], {'effort': 'high'})
         self.assertNotIn('reasoning', request_body({**original, 'model': 'different'}, known, 'codex'))
 
     def test_missing_agent_key_preserves_unrelated_sessions_and_refuses_custom_auth(self):

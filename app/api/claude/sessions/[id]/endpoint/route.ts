@@ -7,13 +7,17 @@ import { withEndpointChecks } from '@/lib/server/endpointProbe';
 import { queueEndpoint } from '@/lib/server/agent/endpointOps';
 import { emitGlobalSessionListChanged } from '@/lib/server/agent/sessionOps';
 import { supportsCustomEndpoint } from '@/lib/customEndpoints';
+import { enrichEndpoint } from '@/lib/server/opencodeModels';
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;
   const { id } = await params;
   const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
   if (!row) return NextResponse.json({ error: 'Session not found.' }, { status: 404 });
-  return NextResponse.json(publicConnection(row.codexConfig));
+  const state = publicConnection(row.codexConfig);
+  if (state.active) state.active = await enrichEndpoint(state.active);
+  if (state.pending?.endpoint) state.pending.endpoint = await enrichEndpoint(state.pending.endpoint);
+  return NextResponse.json(state);
 }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireApiSession(); if (auth instanceof Response) return auth;

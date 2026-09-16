@@ -10,7 +10,7 @@ export type StoredEndpoint = CustomEndpoint & { secret?: string };
 export type ConnectionConfig = {
   customEndpoint?: StoredEndpoint | null;
   standardConnection?: { model: string | null; fallbackModel: string | null; effort: string | null };
-  pendingConnection?: { endpoint: StoredEndpoint | null; model: string | null } | null;
+  pendingConnection?: { endpoint: StoredEndpoint | null; model: string | null; effort?: string | null } | null;
   endpointError?: string | null;
   [key: string]: any;
 };

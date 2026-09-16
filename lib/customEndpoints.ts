@@ -1,9 +1,18 @@
 import { isEffortValue } from './sessionCapabilities';
+import { decodeModelParams, encodeModelParams, isModelParamSet } from './modelParams';
+import type { CursorModelParameter, ModelPrice } from './types/api';
 
 /** Public connection metadata. Credentials never belong in session list/detail payloads. */
 export type EndpointEngine = 'claude' | 'codex';
 export type EndpointAuth = 'none' | 'api-key' | 'bearer';
-export type EndpointModel = { id: string; contextWindow?: number; effortLevels?: string[]; checks?: Partial<Record<EndpointEngine, EndpointCheck>> };
+export type EndpointModel = {
+  id: string; contextWindow?: number; effortLevels?: string[];
+  checks?: Partial<Record<EndpointEngine, EndpointCheck>>;
+  info?: { name: string; description?: string; input?: string[]; outputTokens?: number;
+    reasoning?: boolean; tools?: boolean; price?: ModelPrice; tieredPrice?: boolean };
+  /** Trusted catalog metadata, independently mapped to each native API. */
+  parameters?: Partial<Record<EndpointEngine, CursorModelParameter[]>>;
+};
 export type EndpointCheck = {
   ok: boolean; engine: EndpointEngine; model: string; vpsId?: string;
   streaming: boolean; tools: boolean; error?: string;
@@ -20,7 +29,7 @@ export type EndpointInput = CustomEndpoint & {
 };
 export type EndpointState = {
   active: CustomEndpoint | null;
-  pending?: { endpoint: CustomEndpoint | null; model: string | null } | null;
+  pending?: { endpoint: CustomEndpoint | null; model: string | null; effort?: string | null } | null;
   error?: string | null;
 };
 export const ENDPOINT_ENGINES: readonly EndpointEngine[] = ['claude', 'codex'];
@@ -42,6 +51,35 @@ export function endpointEfforts(endpoint: CustomEndpoint | null | undefined, kin
   if (!endpoint || !supportsCustomEndpoint(kind)) return [];
   const check = endpointModelCheck(endpoint, kind, model);
   return check?.ok && check.model === model ? (check.effortLevels ?? []).filter((value) => isEffortValue(kind, value)) : [];
+}
+export function endpointParameters(endpoint: CustomEndpoint | null | undefined, kind: string, model: string): CursorModelParameter[] {
+  if (!endpoint || !supportsCustomEndpoint(kind) || !endpointModelCheck(endpoint, kind, model)?.ok) return [];
+  const declared = endpoint.models?.find((m) => m.id === model)?.parameters?.[kind];
+  if (declared) return declared;
+  const levels = endpointEfforts(endpoint, kind, model);
+  return levels.length ? [{ id: 'effort', label: 'Effort', values: levels.map((value) => ({ value })) }] : [];
+}
+export function endpointParamValues(effort: string | null | undefined): Record<string, string> {
+  return effort?.includes('=') ? decodeModelParams(effort) : effort ? { effort } : {};
+}
+export function validEndpointEffort(endpoint: CustomEndpoint, kind: string, model: string, effort: string | null): boolean {
+  if (!effort) return true;
+  if (effort.includes('=') && !isModelParamSet(effort)) return false;
+  const params = endpointParamValues(effort);
+  const axes = endpointParameters(endpoint, kind, model);
+  return Object.keys(params).length > 0 && Object.entries(params).every(([id, value]) =>
+    axes.some((p) => p.id === id && p.values.some((v) => v.value === value)))
+    && !(params.thinking === 'false' && (params.effort || params.budget_tokens));
+}
+/** Turning reasoning off clears its dependent knobs; selecting a knob turns it on. */
+export function changeEndpointParam(effort: string | null, id: string, value: string): string {
+  const params = { ...endpointParamValues(effort), [id]: value };
+  if (id === 'thinking' && value === 'false') { delete params.effort; delete params.budget_tokens; }
+  if (id === 'effort' || id === 'budget_tokens') {
+    if (params.thinking === 'false') params.thinking = 'true';
+    delete params[id === 'effort' ? 'budget_tokens' : 'effort'];
+  }
+  return encodeModelParams(params);
 }
 export function normalizeEndpointUrl(value: string): string {
   let url: URL;

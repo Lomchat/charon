@@ -8,6 +8,7 @@ import { providerName } from '@/lib/providerText';
 import type { Vps } from '@/lib/types/api';
 import type { EndpointProbeResponse } from '@/lib/types/api';
 import PickerControl from './PickerControl';
+import EndpointModelPicker from './EndpointModelPicker';
 import AgentLogo from './AgentLogo';
 import { IconPlug } from './icons';
 
@@ -99,6 +100,10 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     && !token && (auth === 'none' || hasToken);
   const savedCheck = unchanged ? endpointModelCheck(source, engine, model) : undefined;
   const check = result?.check || (!error && savedCheck?.vpsId === vpsId ? savedCheck : undefined);
+  const parameters = models.find((m) => m.id === model)?.parameters?.[engine];
+  const parameterInfo = check?.ok && parameters
+    ? parameters.length ? parameters.map((p) => p.label).join(' · ') : 'No adjustable parameters'
+    : check?.ok && check.effortLevels?.length ? check.effortLevels.join(' · ') : 'Model default · support unknown';
   const modelChoices = endpointModels({ name, baseUrl, auth, model, models }, engine);
   const showModelList = modelInputMode === 'list' && modelChoices.length > 0;
   const title = sessionId ? 'Custom endpoint' : editingId ? 'Edit endpoint' : 'New endpoint';
@@ -123,11 +128,7 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
             </div>
           </div>
           <div className="endpoint-model-field">{showModelList
-            ? <PickerControl id="endpoint-model-id" aria-label="Model ID" value={model} disabled={!!busy} onValueChange={(value) => { setModel(value); changed(); }}>
-                {!model && <option value="" disabled>Select a model</option>}
-                {model && !modelChoices.some((m) => m.id === model) && <option value={model}>{model} (custom ID)</option>}
-                {modelChoices.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-              </PickerControl>
+            ? <EndpointModelPicker id="endpoint-model-id" aria-label="Model ID" endpoint={{ name, baseUrl, auth, model, models }} kind={engine} value={model} disabled={!!busy} onChange={(v) => { setModel(v); changed(); }} />
             : <input id="endpoint-model-id" value={model} placeholder="Exact model ID" maxLength={256} autoComplete="off" spellCheck={false} disabled={!!busy} onChange={(e) => { setModel(e.target.value); changed(); }} />}
             <button type="button" className="endpoint-btn" disabled={!!busy || !baseUrl || !vpsId || (auth !== 'none' && !token && !hasToken)} onClick={() => probe('models')}>{busy === 'models' ? 'Loading…' : 'Load models'}</button></div>
           {result && !result.check && <p className="set-meta" role="status">{result.models.length ? `${result.models.length} models found. Choose a model above.` : result.catalogError}</p>}
@@ -145,7 +146,7 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
           <p className="set-meta endpoint-protocol"><AgentLogo kind={engine} size={14} />{providerName(engine)} requires {engine === 'claude' ? 'Messages' : 'Responses'} API compatibility.</p>
           <dl className="endpoint-test-facts"><div><dt>Streamed replies</dt><dd className={check?.streaming ? 'is-verified' : ''}>{check ? check.streaming ? 'Verified' : 'Not verified' : 'Not tested'}</dd></div>
             <div><dt>Tool call + result</dt><dd className={check?.tools ? 'is-verified' : ''}>{check ? check.tools ? 'Verified' : 'Not verified' : 'Not tested'}</dd></div>
-            <div><dt>Reasoning effort</dt><dd>{check?.ok && check.effortLevels?.length ? check.effortLevels.join(' · ') : 'Model default · support unknown'}</dd></div></dl>
+            <div><dt>Model parameters</dt><dd>{parameterInfo}</dd></div></dl>
           {check?.error && <p className="endpoint-error" role="alert">{check.error}</p>}
           <div className="endpoint-test-actions"><button ref={testButton} type="button" className="endpoint-btn" disabled={!!busy || !valid || !vpsId} onClick={() => probe('test')}>{busy === 'test' ? 'Testing…' : 'Test connection'}</button><span className="set-meta">Checks this model from the selected VPS.</span></div>
           <p className="set-meta endpoint-test-scope">Pause and resume are managed by Charon. This API test does not run a full session or verify every tool.</p>

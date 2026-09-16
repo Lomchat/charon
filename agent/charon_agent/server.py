@@ -988,7 +988,7 @@ class Server:
 
         if method == "endpoint_probe":
             if params.get("action") == "capability":
-                return {"ok": True, "capabilities": ["custom_endpoints"]}
+                return {"ok": True, "capabilities": ["custom_endpoints", "endpoint_parameters"]}
             from .custom_endpoints import probe
             return await probe(params.get("endpoint") or {}, str(params.get("engine") or ""), str(params.get("action") or "test"))
 

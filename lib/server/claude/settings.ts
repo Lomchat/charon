@@ -183,6 +183,9 @@ const DEFAULTS = {
   // cannot keep rendering as a confident stale number.
   'cursor.pricing_cache': '',
   'cursor.pricing_cache_at': '',
+  // Trusted OpenCode model metadata; not writable through the settings API.
+  'opencode.model_metadata': '',
+  'opencode.model_metadata_at': '',
   // Internal cache written by cursorModels (not user-editable): the last good
   // catalog per VPS, so a hub restart does not cost a bridge launch the next
   // time somebody opens the picker. Bounded — see MAX_STORED there.

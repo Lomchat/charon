@@ -1419,7 +1419,8 @@ export function useClaudeSessionStream(
   }, [sessionId, model, fallbackModel]);
 
   const setEffort = useCallback(async (newEffort: string | null) => {
-    if (newEffort === effort) return;
+    // A pending endpoint selection may differ from the persisted effort; even
+    // choosing the persisted value must reach the server to replace that queue.
     const prev = effort;
     setEffortState(newEffort);
     try {
@@ -1427,6 +1428,7 @@ export function useClaudeSessionStream(
     } catch (e) {
       setEffortState(prev);
       setError({ msg: String((e as Error)?.message ?? e) });
+      throw e;
     }
   }, [sessionId, effort]);
 

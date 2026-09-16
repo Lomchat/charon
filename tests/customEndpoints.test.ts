@@ -8,7 +8,7 @@ process.env.DATABASE_URL = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'char
 process.env.MASTER_PASSWORD = 'endpoint-test-password';
 process.env.MASTER_SALT = '00112233445566778899aabbccddeeff';
 vi.mock('server-only', () => ({}));
-const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[], probe: null as any }));
+const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[], probe: null as any, parameters: true }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalSessionListChanged: vi.fn(),
   peekStream: () => ({ status: runtime.status, hasRunningBgTasks: () => false }),
@@ -18,6 +18,7 @@ vi.mock('@/lib/server/claude/sessionInsightSnapshot', () => ({ invalidateSession
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => ({
   status: 'connected', call: async (method: string, params: any) => {
     runtime.calls.push({ method, params });
+    if (method === 'endpoint_probe' && params.action === 'capability') return { capabilities: runtime.parameters ? ['custom_endpoints', 'endpoint_parameters'] : ['custom_endpoints'] };
     if (method === 'endpoint_probe' && runtime.probe) return runtime.probe;
     if (method === 'list_sessions') return { sessions: [{ session_id: 'one', status: runtime.status }] };
     if (method === 'sleep_session') return { ok: !runtime.sleepBusy, busy: runtime.sleepBusy };
@@ -123,5 +124,34 @@ describe('custom endpoint isolation', () => {
     expect(row()).toMatchObject({ model: 'original', effort: 'high' });
     expect(store.publicConnection(row().codexConfig).active).toBeNull();
     expect(store.connectionConfig(row().codexConfig).standardConnection).toBeUndefined();
+  });
+  it('queues parameter changes without interrupting a turn; latest selection wins and defaults clear it', async () => {
+    const endpoint = { ...store.parseEndpoint(input), checks: { claude: {
+      ok: true, engine: 'claude' as const, model: input.model, streaming: true, tools: true, effortLevels: ['low', 'high'],
+    } } };
+    const other = row('two');
+    runtime.status = 'active';
+    await ops.queueEndpoint('one', endpoint);
+    runtime.status = 'thinking'; runtime.calls.length = 0;
+    await ops.queueEndpoint('one', endpoint, 'effort=low');
+    await ops.queueEndpoint('one', endpoint, 'effort=high');
+    expect(row().effort).toBeNull();
+    expect(store.connectionConfig(row().codexConfig).pendingConnection?.effort).toBe('effort=high');
+    expect(runtime.calls.some((c) => c.method === 'sleep_session')).toBe(false);
+    runtime.status = 'active';
+    await ops.applyPendingEndpoint('one');
+    expect(row().effort).toBe('effort=high');
+    await ops.queueEndpoint('one', endpoint, null);
+    expect(row().effort).toBeNull();
+    expect(row('two')).toEqual(other);
+    const before = row(); runtime.parameters = false;
+    await expect(ops.queueEndpoint('one', endpoint, 'effort=high')).rejects.toThrow('Update the agent');
+    runtime.parameters = true;
+    await expect(ops.queueEndpoint('one', endpoint, 'fast=true')).rejects.toThrow('not supported');
+    expect(row()).toEqual(before);
+    await ops.queueEndpoint('one', { ...endpoint, model: 'another-model' });
+    const switched = row();
+    await expect(ops.queueEndpoint('one', endpoint, 'effort=high')).rejects.toThrow('connection changed');
+    expect(row()).toEqual(switched);
   });
 });

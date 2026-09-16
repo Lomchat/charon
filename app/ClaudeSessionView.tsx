@@ -3,7 +3,10 @@ import { api } from '@/lib/api';
 import PickerControl from './PickerControl';
 import dynamic from 'next/dynamic';
 import { useSessionEndpoint } from './useSessionEndpoint';
-import { endpointEfforts, endpointModels, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
+import { endpointParameters, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
+import EndpointModelPicker from './EndpointModelPicker';
+import EndpointEffortPicker, { EndpointEffortSummary } from './EndpointEffortPicker';
+import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
@@ -1787,8 +1790,11 @@ function SessionRuntimePanel({
           const kept = await prune(vpsId, value || '', effort);
           if (kept !== effort) await onSetEffort(kept);
         }
-      } else if (open === 'effort' && (value || null) !== effort) {
-        await onSetEffort(value || null);
+      } else if (open === 'effort' && (value || null) !== (endpoint.active ? customEffort : effort)) {
+        if (endpoint.active) {
+          await onSetEffort(value || null);
+          onEndpointChanged();
+        } else await onSetEffort(value || null);
       }
       close();
     } catch (e) {
@@ -1796,14 +1802,15 @@ function SessionRuntimePanel({
     } finally { setSaving(false); }
   }
 
-  const customEfforts = endpointEfforts(endpoint.active, kind, model || '');
+  const customEfforts = endpointParameters(endpoint.active, kind, model || '');
+  const customEffort = endpoint.pending?.effort !== undefined ? endpoint.pending.effort : effort;
   const modelLabel = (model ?? effectiveModel ?? 'Default').replace(/^claude-/, '');
   // An effort that is a PARAMETER SET (`effort=high&fast=false`, the shape a
   // per-model reasoning axis stores — §14.103) is a list of knobs, not a word:
   // on one line the cell ellipsised the whole selection away to "effort…". The
   // provider owns that rendering (`EffortSummary`), because only its catalog
-  // knows which knobs the selected model actually reads. An endpoint session
-  // picks from plain words, so it keeps the plain word.
+  // knows which knobs the selected model actually reads. Endpoint parameters
+  // use the same stacked layout with their own catalog.
   const EffortSummary = endpoint.active ? undefined : PROVIDER_CATALOGS[kind].EffortSummary;
   // Ask the header for the wider centre track. The two cells that hold
   // sentences announce themselves in the DOM (`:has()` in claude.css), but a
@@ -1850,7 +1857,7 @@ function SessionRuntimePanel({
             onClick={() => toggle('effort')} disabled={saving} title={`Effort: ${effort ?? 'default'}`} aria-label="Change effort" aria-haspopup="menu" aria-expanded={open === 'effort'}>
             <span className="runtime-value">
               <span className="runtime-effort-symbol" aria-hidden="true">✦</span>
-              {EffortSummary
+              {endpoint.active ? <EndpointEffortSummary endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} /> : EffortSummary
                 ? <EffortSummary vpsId={vpsId} modelId={model || effectiveModel || ''} effort={effort} />
                 : <span>{effort ?? 'Default'}</span>}
             </span>
@@ -1875,9 +1882,8 @@ function SessionRuntimePanel({
           {(() => {
             const { Model, Effort } = PROVIDER_CATALOGS[kind];
             if (endpoint.active) {
-              if (open === 'effort') return <PickerControl presentation="list" value={effort || ''} disabled={saving} onValueChange={choose}><option value="">Model default</option>{customEfforts.map((e) => <option key={e} value={e}>{e}</option>)}</PickerControl>;
-              const ids = Array.from(new Set([model || endpoint.active.model, ...endpointModels(endpoint.active, kind).map((m) => m.id)]));
-              return <PickerControl presentation="list" value={model || ''} disabled={saving} onValueChange={choose}>{ids.map((id) => <option key={id} value={id}>{id}</option>)}</PickerControl>;
+              if (open === 'effort') return <EndpointEffortPicker endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} disabled={saving} onChange={choose} />;
+              return <EndpointModelPicker endpoint={endpoint.active} kind={kind} presentation="list" value={model || ''} disabled={saving} onChange={choose} />;
             }
 
             return open === 'model'
@@ -1885,8 +1891,9 @@ function SessionRuntimePanel({
               : <Effort {...pickerProps} vpsId={vpsId} value={effort ?? ''}
                   modelId={model || effectiveModel || ''} />;
           })()}
+          {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
-          {open === 'model' && claudeSessionId && providerText.modelChangeNote(kind) && (
+          {open === 'model' && !endpoint.active && claudeSessionId && providerText.modelChangeNote(kind) && (
             <p className="runtime-choice-note">{providerText.modelChangeNote(kind)}</p>
           )}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {

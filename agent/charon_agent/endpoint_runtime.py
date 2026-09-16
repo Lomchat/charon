@@ -33,7 +33,8 @@ def claude_env(endpoint: dict, model: str, effort: str | None) -> dict[str, str]
         "ANTHROPIC_MODEL": model,
         "ANTHROPIC_SMALL_FAST_MODEL": model,
         "CLAUDE_CODE_SUBAGENT_MODEL": model,
-        "CLAUDE_CODE_EFFORT_LEVEL": effort or "auto",
+        # Endpoint parameters are applied by the relay, not by the native CLI.
+        "CLAUDE_CODE_EFFORT_LEVEL": "auto",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
     }
@@ -72,8 +73,7 @@ def codex_overrides(endpoint: dict, model: str, effort: str | None) -> tuple[lis
         'approvals_reviewer="user"',
         'shell_environment_policy.exclude=["CHARON_ENDPOINT_TOKEN"]',
     ]
-    if effort:
-        overrides.append("model_reasoning_effort=" + json.dumps(effort))
+    overrides.append('model_reasoning_effort="none"')
     check = (endpoint.get("checks") or {}).get("codex") or {}
     if check.get("model") == model and isinstance(check.get("contextWindow"), int):
         overrides.append("model_context_window=" + str(check["contextWindow"]))
