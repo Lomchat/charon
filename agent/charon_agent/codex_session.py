@@ -110,7 +110,8 @@ StateSaveCallback = Callable[[], Awaitable[None] | None]
 # deliberately the one combined escape hatch: danger-full-access plus
 # approvalPolicy=never, matching Claude's total-bypass ``auto`` mode.
 #   read-only     → the agent can read/analyze but not modify or run mutating
-#                   commands (sandbox read-only + deny escalations).
+#                   commands (sandbox read-only + deny escalations), and runs
+#                   in Codex's Plan collaboration mode (see below).
 #   workspace-write→ (DEFAULT) read + write the workspace + run commands,
 #                   escalations auto-reviewed.
 #   full-access   → no sandbox restrictions (danger), escalations auto-reviewed.
@@ -153,6 +154,30 @@ def _approval_policy_wire(mode: str) -> str:
     unrestricted and Codex must never pause for a permission card.
     """
     return "never" if mode in ("read-only", "accept-all") else "on-request"
+
+
+def _collaboration_mode_wire(mode: str, model: str | None, effort: str | None) -> dict[str, Any] | None:
+    """Codex collaboration mode for one Charon mode, or None when unsendable.
+
+    Collaboration mode (Plan vs Default) is independent of sandbox and approval
+    policy, and Codex only offers the blocking ``request_user_input`` tool in
+    Plan. In Default it offers ``request_user_input_async`` instead, which never
+    raises ``item/tool/requestUserInput``, so a Codex session could never show
+    a question card. Read-only is the rung that already cannot act, so it is
+    the one that plans and asks; every other rung sends Default explicitly,
+    because leaving read-only must also leave Plan.
+
+    ``settings.model`` is required by the protocol, and these settings override
+    the turn's own model and effort, so both are carried through. With no model
+    known yet the field is omitted: the turn still runs, sandboxed as before,
+    just without the question tool.
+    """
+    if not model:
+        return None
+    settings: dict[str, Any] = {"model": model}
+    if effort:
+        settings["reasoning_effort"] = effort
+    return {"mode": "plan" if mode == "read-only" else "default", "settings": settings}
 
 
 # These streams are unrelated to Charon's text chat and can be very large.
@@ -667,6 +692,10 @@ class CodexSession:
 
         # Translation state
         self._effective_model: str | None = None
+        # Model the app-server resolved for this thread (thread/start or
+        # thread/resume). Collaboration-mode settings require a model even when
+        # the session runs on the account default and self.model is None.
+        self._thread_model: str | None = None
         self._streamed_items: set[str] = set()   # item ids that got text deltas
         self._last_usage: dict[str, int] | None = None
         self._last_thread_usage: dict[str, Any] | None = None
@@ -2149,6 +2178,9 @@ class CodexSession:
         if resume:
             return AsyncThread(client, await self._thread_resume(client, params))
         result = await client._client.thread_start(params)
+        model = getattr(result, "model", None)
+        if isinstance(model, str) and model:
+            self._thread_model = model
         return AsyncThread(client, result.thread.id)
 
     async def _thread_resume(self, client: Any, params: dict[str, Any]) -> str:
@@ -2165,6 +2197,10 @@ class CodexSession:
             {"threadId": self.claude_session_id, **params},
             response_model=ResumedThread,
         )
+        # Read from the raw payload, keeping ResumedThread's id-only contract.
+        model = result.raw.get("model")
+        if isinstance(model, str) and model:
+            self._thread_model = model
         return result.thread.id
 
     async def _sdk_turn(self, thread: Any, content: Any) -> Any:
@@ -2184,6 +2220,15 @@ class CodexSession:
             params["model"] = self.model
         if self.effort and not endpoint_of(self.codex_config):
             params["effort"] = self.effort
+        # Custom endpoints apply effort in the proxy, never through Codex (hence
+        # the guard on the turn effort above). Collaboration settings override
+        # the turn, so they must withhold it the same way.
+        collaboration = _collaboration_mode_wire(
+            self.permission_mode, self.model or self._thread_model,
+            None if endpoint_of(self.codex_config) else self.effort,
+        )
+        if collaboration is not None:
+            params["collaborationMode"] = collaboration
         for src, dst in (
             ("output_schema", "outputSchema"),
             ("personality", "personality"),

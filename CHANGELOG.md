@@ -233,6 +233,15 @@ commit-by-commit — `git log` has the detail.
   instead of surviving forever on the VPS.
 - An oversized tool result no longer kills the turn (the agent raises the SDK's
   per-message buffer cap).
+- **Codex sessions can ask questions.** Codex only offers its blocking
+  `request_user_input` tool in its Plan collaboration mode, which Charon never
+  selected, so every Codex session ran in Default. There the model falls back
+  to `request_user_input_async`, which returns `{"accepted":true}` without
+  raising `item/tool/requestUserInput`: the model believed it had asked and no
+  question card ever appeared. The Codex **read only** rung now also runs in
+  Plan (shown as **read · plan**) and every other rung selects Default
+  explicitly. Stored modes are unchanged, so no migration is needed. The
+  bundled agent is updated to **0.97.1**.
 
 ### Security
 

@@ -9,8 +9,8 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from charon_agent.codex_session import (  # noqa: E402
-    CodexSession, _approval_policy_wire, _sandbox_mode_wire,
-    _sandbox_policy_wire,
+    CodexSession, _approval_policy_wire, _collaboration_mode_wire,
+    _sandbox_mode_wire, _sandbox_policy_wire,
 )
 
 
@@ -263,6 +263,120 @@ class TestCodexPermissions(unittest.TestCase):
             self.assertEqual(await task, {"action": "accept", "content": {"project": "Charon"}})
 
         asyncio.run(main())
+
+    # ── Read-only runs in Codex's Plan collaboration mode ────────────────────
+    # Codex only offers the blocking request_user_input tool in Plan. Without
+    # it a Codex session can never raise item/tool/requestUserInput, so the
+    # question card is unreachable. Verified against codex 0.154.0: the same
+    # prompt produces the server request in Plan and plain text in Default.
+
+    def test_only_read_only_plans(self):
+        self.assertEqual(
+            _collaboration_mode_wire("read-only", "gpt-x", None),
+            {"mode": "plan", "settings": {"model": "gpt-x"}},
+        )
+        # Every other rung sends Default EXPLICITLY: leaving read-only must also
+        # leave Plan, and the thread would otherwise keep the last mode it saw.
+        for mode in ("workspace-write", "full-access", "accept-all"):
+            self.assertEqual(_collaboration_mode_wire(mode, "gpt-x", None)["mode"], "default")
+
+    def test_collaboration_settings_carry_effort(self):
+        # The settings override the turn's own effort; dropping it would
+        # silently reset the user's choice whenever the mode is sent.
+        self.assertEqual(
+            _collaboration_mode_wire("read-only", "gpt-x", "high")["settings"],
+            {"model": "gpt-x", "reasoning_effort": "high"},
+        )
+
+    def test_no_model_omits_collaboration_mode(self):
+        # settings.model is required on the wire; an unsendable mode must not
+        # fail the turn.
+        self.assertIsNone(_collaboration_mode_wire("read-only", None, "high"))
+
+    def _turn_params(self, mode, *, model=None, resume=False, codex_config=None, effort=None):
+        """Run thread start/resume then one turn; return the turn params."""
+        async def main():
+            calls = {}
+
+            class Raw:
+                async def thread_start(self, params):
+                    return types.SimpleNamespace(
+                        thread=types.SimpleNamespace(id="thread-new"), model="gpt-started")
+
+                async def request(self, method, params, response_model):
+                    return response_model({"thread": {"id": "thread-1"}, "model": "gpt-resumed"})
+
+                async def turn_start(self, thread_id, content, params):
+                    calls["turn"] = params
+                    return types.SimpleNamespace(turn=types.SimpleNamespace(id="turn-new"))
+
+            class AsyncThread:
+                def __init__(self, _client, thread_id):
+                    self.id = thread_id
+
+            class AsyncTurnHandle:
+                def __init__(self, _client, thread_id, turn_id):
+                    pass
+
+            package = types.ModuleType("openai_codex"); package.__path__ = []
+            api = types.ModuleType("openai_codex.api")
+            api.AsyncThread = AsyncThread
+            api.AsyncTurnHandle = AsyncTurnHandle
+            client = types.SimpleNamespace(_client=Raw())
+            s = CodexSession(
+                "codex-plan", cwd="/tmp", name="test", permission_mode=mode,
+                claude_session_id="thread-1", emit=lambda _event: None,
+                on_state_change=lambda: None, model=model, codex_config=codex_config,
+            )
+            # Set after construction: an endpoint session validates effort
+            # against the endpoint's parameters in __init__.
+            s.effort = effort
+            s._client = client
+            with mock.patch.dict(sys.modules, {"openai_codex": package, "openai_codex.api": api}):
+                thread = await s._sdk_thread_start(client, resume=resume)
+                await s._sdk_turn(thread, "go")
+            return calls["turn"]
+
+        return asyncio.run(main())
+
+    def test_read_only_turn_plans_with_the_started_thread_model(self):
+        # The common case: no explicit model, so the only source for the
+        # required settings.model is what thread/start resolved.
+        params = self._turn_params("read-only")
+        self.assertEqual(params["collaborationMode"],
+                         {"mode": "plan", "settings": {"model": "gpt-started"}})
+        self.assertEqual(params["sandboxPolicy"], {"type": "readOnly"})
+
+    def test_read_only_turn_plans_after_resume(self):
+        # A session resumed after an agent restart has no thread/start response;
+        # the model must come from thread/resume or Plan silently turns off.
+        params = self._turn_params("read-only", resume=True)
+        self.assertEqual(params["collaborationMode"]["mode"], "plan")
+        self.assertEqual(params["collaborationMode"]["settings"]["model"], "gpt-resumed")
+
+    def test_explicit_model_wins_over_thread_model(self):
+        params = self._turn_params("read-only", model="gpt-picked")
+        self.assertEqual(params["collaborationMode"]["settings"]["model"], "gpt-picked")
+
+    def test_plan_settings_carry_effort_on_the_turn(self):
+        params = self._turn_params("read-only", effort="high")
+        self.assertEqual(params["collaborationMode"]["settings"]["reasoning_effort"], "high")
+
+    def test_custom_endpoint_plan_settings_withhold_effort(self):
+        # A custom endpoint applies effort in its proxy and deliberately sends
+        # none to Codex. The collaboration settings override the turn, so
+        # carrying effort there would re-inject what the turn withholds.
+        params = self._turn_params(
+            "read-only", effort="high",
+            codex_config={"customEndpoint": {"baseUrl": "http://127.0.0.1:9", "model": "m", "auth": "none"}},
+        )
+        self.assertNotIn("effort", params)
+        self.assertEqual(params["collaborationMode"]["mode"], "plan")
+        self.assertNotIn("reasoning_effort", params["collaborationMode"]["settings"])
+
+    def test_writable_turn_sends_default(self):
+        params = self._turn_params("workspace-write")
+        self.assertEqual(params["collaborationMode"]["mode"], "default")
 
 if __name__ == "__main__":
     unittest.main()

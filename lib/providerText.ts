@@ -159,7 +159,7 @@ export const MODE_LABELS: Record<string, string> = {
   auto: 'accept all — never ask',
   plan: 'plan mode — read and plan',
   // Codex
-  'read-only': 'read only — no writes',
+  'read-only': 'read only + plan — no writes, can ask questions',
   'workspace-write': 'workspace — write inside the project',
   'full-access': 'full access — unrestricted sandbox, approvals remain',
   'accept-all': 'accept all — unrestricted and never ask',
@@ -187,7 +187,9 @@ export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; ti
   auto: { glyph: '▶▶', label: 'accept all', title: 'accept all — accepts everything without asking (DANGER)' },
   plan: { glyph: '⏸', label: 'plan mode', title: 'plan mode — proposes a plan without running tools' },
   // Codex
-  'read-only': { glyph: '⊘', label: 'read only', title: 'read-only — can read files & run read-only commands; no writes' },
+  // One rung, two settings: the read-only sandbox plus Codex's Plan
+  // collaboration mode, the only mode where Codex can ask a blocking question.
+  'read-only': { glyph: '⊘', label: 'read · plan', title: 'read only + plan — no writes; Codex plans first and can ask you questions' },
   'workspace-write': { glyph: '✎', label: 'workspace', title: 'workspace write — can edit files in the workspace; network off by default' },
   'full-access': { glyph: '⚡', label: 'full access', title: 'full access — no sandbox, but sensitive actions can still request approval (DANGER)' },
   'accept-all': { glyph: '▶▶', label: 'accept all', title: 'accept all — no sandbox and no approval prompts (DANGER)' },
