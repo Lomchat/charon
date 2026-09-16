@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import PickerControl from './PickerControl';
 import dynamic from 'next/dynamic';
 import { useSessionEndpoint } from './useSessionEndpoint';
-import { endpointEfforts, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
+import { endpointEfforts, endpointModels, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
 
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
@@ -1876,7 +1876,7 @@ function SessionRuntimePanel({
             const { Model, Effort } = PROVIDER_CATALOGS[kind];
             if (endpoint.active) {
               if (open === 'effort') return <PickerControl presentation="list" value={effort || ''} disabled={saving} onValueChange={choose}><option value="">Model default</option>{customEfforts.map((e) => <option key={e} value={e}>{e}</option>)}</PickerControl>;
-              const ids = Array.from(new Set([model || endpoint.active.model, ...(endpoint.active.models || []).map((m) => m.id)]));
+              const ids = Array.from(new Set([model || endpoint.active.model, ...endpointModels(endpoint.active, kind).map((m) => m.id)]));
               return <PickerControl presentation="list" value={model || ''} disabled={saving} onValueChange={choose}>{ids.map((id) => <option key={id} value={id}>{id}</option>)}</PickerControl>;
             }
 

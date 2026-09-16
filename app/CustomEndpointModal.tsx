@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '@/lib/api';
-import { ENDPOINT_ENGINES, type CustomEndpoint, type EndpointAuth, type EndpointEngine, type EndpointInput } from '@/lib/customEndpoints';
+import { ENDPOINT_ENGINES, endpointModelCheck, endpointModels, type CustomEndpoint, type EndpointAuth, type EndpointEngine, type EndpointInput } from '@/lib/customEndpoints';
 import { providerName } from '@/lib/providerText';
 import type { Vps } from '@/lib/types/api';
 import type { EndpointProbeResponse } from '@/lib/types/api';
@@ -61,7 +61,9 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     const endpoint = saved.find((v) => v.id === id);
     setSavedId(id); setUseSessionCredential(false); setToken(''); setHasToken(!!endpoint?.hasToken);
     setBaseUrl(endpoint?.baseUrl || ''); setAuth(endpoint?.auth || 'none'); setName(endpoint?.name || '');
-    setModel(endpoint?.model || ''); setModels(endpoint?.models || []); changed();
+    const choices = endpoint ? endpointModels(endpoint, engine) : [];
+    setModel(choices.find((m) => m.id === endpoint?.model)?.id || choices[0]?.id || endpoint?.model || '');
+    setModels(endpoint?.models || []); changed();
   }
   function payload(): EndpointInput {
     return { name, baseUrl, auth, model, ...(savedId ? { savedId } : {}),
@@ -87,9 +89,9 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
   }
   const valid = !!baseUrl.trim() && !!model.trim() && (auth === 'none' || !!token || hasToken);
   const source = saved.find((e) => e.id === savedId) || initial;
-  const unchanged = source && baseUrl === source.baseUrl && model === source.model && auth === source.auth
+  const unchanged = source && baseUrl === source.baseUrl && auth === source.auth
     && !token && (auth === 'none' || hasToken);
-  const savedCheck = unchanged && source.checks?.[engine]?.model === model ? source.checks[engine] : undefined;
+  const savedCheck = unchanged ? endpointModelCheck(source, engine, model) : undefined;
   const check = result?.check || (!error && savedCheck?.vpsId === vpsId ? savedCheck : undefined);
   const title = sessionId ? 'Custom endpoint' : editingId ? 'Edit endpoint' : 'New endpoint';
   const testState = busy === 'test' ? 'Testing…' : check?.ok ? 'API verified' : check ? 'Test failed' : 'Not tested';

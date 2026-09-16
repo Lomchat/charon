@@ -1185,7 +1185,7 @@ class CodexSession:
         if endpoint:
             if self._endpoint_proxy is None:
                 self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.codex_config) or {}, "codex",
-                    lambda usage: self._emit("endpoint_usage", **usage))
+                    lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id)
             custom, custom_env = codex_overrides(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
             overrides.extend(custom)
             env.update(custom_env)

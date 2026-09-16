@@ -11,12 +11,22 @@ function fingerprint(endpoint: StoredEndpoint, engine: EndpointEngine, vpsId: st
 }
 export function withEndpointChecks(endpoint: StoredEndpoint, vpsId: string): StoredEndpoint {
   const copy = { ...endpoint, checks: { ...endpoint.checks } };
+  const previous = new Map(endpoint.models?.map((m) => [m.id, m]));
   for (const engine of ['claude', 'codex'] as const) {
     const hit = cache.get(fingerprint(endpoint, engine, vpsId));
     if (!hit || Date.now() - hit.at > 30 * 60_000) continue;
-    copy.models = hit.result.models;
+    // A failed probe often has no catalog; keep the other models' verified checks.
+    if (hit.result.models.length) copy.models = hit.result.models;
     if (hit.result.check) copy.checks[engine] = hit.result.check;
   }
+  copy.models = (copy.models ?? []).map((model) => {
+    const checks = { ...previous.get(model.id)?.checks };
+    for (const engine of ['claude', 'codex'] as const) {
+      const hit = cache.get(fingerprint({ ...endpoint, model: model.id }, engine, vpsId));
+      if (hit?.result.check && Date.now() - hit.at <= 30 * 60_000) checks[engine] = hit.result.check;
+    }
+    return { ...model, ...(Object.keys(checks).length ? { checks } : {}) };
+  });
   return copy;
 }
 export async function probeEndpoint(endpoint: StoredEndpoint, engine: EndpointEngine, vpsId: string, action: 'models' | 'test'): Promise<ProbeResult> {

@@ -18,6 +18,7 @@ from .custom_endpoints import _NoRedirect
 from .endpoint_responses import response_stream
 from .endpoint_usage import EndpointUsage
 from .endpoint_images import EndpointImages, ImageBudgetError
+from .endpoint_headers import endpoint_headers
 
 
 # A model request carries the whole conversation, including base64 screenshots.
@@ -43,10 +44,11 @@ def request_body(body: dict, endpoint: dict, engine: str) -> dict:
 
 
 class EndpointProxy:
-    def __init__(self, endpoint: Callable[[], dict], engine: str, on_usage=None):
+    def __init__(self, endpoint: Callable[[], dict], engine: str, on_usage=None, *, session_id: str = ""):
         self.endpoint = endpoint
         self.engine = engine
         self.token = secrets.token_hex(32)
+        self.session_id = session_id or secrets.token_hex(16)
         self.images = EndpointImages()
         loop = asyncio.get_running_loop() if on_usage is not None else None
         owner = self
@@ -74,12 +76,10 @@ class EndpointProxy:
                     if data:
                         body = request_body(json.loads(data), endpoint, owner.engine)
                         data = json.dumps(owner.images.prepare(body, endpoint)).encode()
-                    headers = {"Content-Type": "application/json"}
+                    headers = endpoint_headers(endpoint, self.path, owner.session_id)
                     for key in ("anthropic-version", "anthropic-beta", "Accept"):
                         if self.headers.get(key): headers[key] = self.headers[key]
                     # No ambient SDK auth or provider-account headers cross this boundary.
-                    if endpoint.get("auth") == "bearer": headers["Authorization"] = "Bearer " + endpoint["token"]
-                    elif endpoint.get("auth") == "api-key": headers["x-api-key"] = endpoint["token"]
                     req = urllib.request.Request(endpoint["baseUrl"].rstrip("/") + self.path, data=data, headers=headers, method=self.command)
                     if self.command == "POST" and self.path.split("?", 1)[0] in ("/v1/responses", "/v1/messages"):
                         usage = EndpointUsage(owner.engine)

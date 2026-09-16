@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 import urllib.error
 import urllib.parse
@@ -10,6 +11,7 @@ import urllib.request
 from typing import Any
 
 from .endpoint_responses import response_event
+from .endpoint_headers import endpoint_headers
 
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -24,12 +26,8 @@ def _request(endpoint: dict, path: str, body: dict | None = None) -> Any:
     url = urllib.parse.urlsplit(base)
     if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise ValueError("Invalid endpoint URL")
-    headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
-    token = str(endpoint.get("token") or "")
-    auth = endpoint.get("auth", "none")
-    if auth == "bearer": headers["Authorization"] = "Bearer " + token
-    elif auth == "api-key": headers["x-api-key"] = token
-    elif auth != "none": raise ValueError("Invalid endpoint authentication")
+    headers = endpoint_headers(endpoint, path, endpoint.get("_probe_session") or secrets.token_hex(16))
+    headers["anthropic-version"] = "2023-06-01"
     req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
     with urllib.request.build_opener(_NoRedirect()).open(req, timeout=20) as response:
         if body is None:
@@ -70,6 +68,7 @@ def catalog(endpoint: dict) -> list[dict]:
 
 
 def _probe(endpoint: dict, engine: str, action: str) -> dict:
+    endpoint = {**endpoint, "_probe_session": "probe-" + secrets.token_hex(16)}
     models = []
     catalog_error = None
     try: models = catalog(endpoint)
