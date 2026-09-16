@@ -48,9 +48,9 @@ class EndpointHeaderTests(unittest.TestCase):
         def request(endpoint, path, body=None):
             seen.append(endpoint['_probe_session'])
             if body is None: return {'data': []}
-            if body['tool_choice']['type'] == 'tool':
-                return [{'type': 'message_start'}, {'type': 'content_block_start',
-                    'content_block': {'type': 'tool_use', 'id': 'call', 'name': 'endpoint_check', 'input': {}}},
+            if len(body['messages']) == 1:
+                return [{'type': 'message_start'}, {'type': 'content_block_start', 'index': 0,
+                    'content_block': {'type': 'tool_use', 'id': 'call', 'name': 'endpoint_check', 'input': {'value': 'connection-test'}}},
                     {'type': 'message_stop'}]
             return [{'type': 'content_block_delta', 'delta': {'text': 'OK'}}, {'type': 'message_stop'}]
         with patch('charon_agent.custom_endpoints._request', side_effect=request):

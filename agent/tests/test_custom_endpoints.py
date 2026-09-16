@@ -1,9 +1,11 @@
 import asyncio
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,6 +63,59 @@ class EndpointTests(unittest.TestCase):
             result = asyncio.run(probe(self.endpoint, 'claude'))
             self.assertFalse(result['ok'])
             self.assertIn('tool call', result['check']['error'])
+
+    def test_claude_probe_uses_auto_tools_and_replays_thinking_and_signature(self):
+        events = [
+            {'type': 'message_start'},
+            {'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'thinking', 'thinking': '', 'signature': ''}},
+            {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'thinking_delta', 'thinking': 'Use the tool.'}},
+            {'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'signature_delta', 'signature': 'signed-thinking'}},
+            {'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'text', 'text': ''}},
+            {'type': 'content_block_delta', 'index': 1, 'delta': {'type': 'text_delta', 'text': 'Checking.'}},
+            {'type': 'content_block_start', 'index': 2, 'content_block': {'type': 'tool_use', 'id': 'call-1', 'name': 'endpoint_check', 'input': {}}},
+            {'type': 'content_block_delta', 'index': 2, 'delta': {'type': 'input_json_delta', 'partial_json': '{"value":'}},
+            {'type': 'content_block_delta', 'index': 2, 'delta': {'type': 'input_json_delta', 'partial_json': '"connection-test"}'}},
+            {'type': 'message_stop'},
+        ]
+        def request(endpoint, path, body):
+            self.assertEqual(body['tool_choice'], {'type': 'auto'})
+            if len(body['messages']) == 1:
+                return events
+            content = body['messages'][1]['content']
+            self.assertEqual(content[0], {'type': 'thinking', 'thinking': 'Use the tool.', 'signature': 'signed-thinking'})
+            self.assertEqual(content[1], {'type': 'text', 'text': 'Checking.'})
+            self.assertEqual(content[2]['input'], {'value': 'connection-test'})
+            self.assertEqual(body['messages'][2]['content'][0]['tool_use_id'], 'call-1')
+            return [{'type': 'content_block_delta', 'delta': {'text': 'OK'}}, {'type': 'message_stop'}]
+        with patch('charon_agent.custom_endpoints.catalog', return_value=[]), patch('charon_agent.custom_endpoints._request', side_effect=request):
+            self.assertTrue(asyncio.run(probe(self.endpoint, 'claude'))['ok'])
+        self.assertEqual(events[1]['content_block']['thinking'], '')
+
+    def test_responses_probe_replays_reasoning_and_rejects_incomplete_tool_result(self):
+        output = [{'type': 'reasoning', 'id': 'reason-1', 'summary': [], 'encrypted_content': 'opaque-reasoning'},
+                  {'type': 'function_call', 'call_id': 'call-1', 'name': 'endpoint_check', 'arguments': '{"value":"connection-test"}'}]
+        for complete in (True, False):
+            with self.subTest(complete=complete):
+                def request(endpoint, path, body):
+                    self.assertEqual(body['tool_choice'], 'auto')
+                    if len(body['input']) == 1:
+                        return [{'type': 'response.created'}, {'type': 'response.completed', 'response': {'output': output}}]
+                    self.assertEqual(body['input'][1:3], output)
+                    self.assertEqual(body['input'][3]['call_id'], 'call-1')
+                    return [{'type': 'response.output_text.delta', 'delta': 'OK'}] + ([{'type': 'response.completed'}] if complete else [])
+                with patch('charon_agent.custom_endpoints.catalog', return_value=[]), patch('charon_agent.custom_endpoints._request', side_effect=request):
+                    result = asyncio.run(probe(self.endpoint, 'codex'))
+                    self.assertEqual(result['ok'], complete)
+
+    def test_probe_reports_bounded_provider_error_without_credential(self):
+        error = {'error': {'message': 'Thinking mode rejects tool_choice secret-for-test ' + 'x' * 1000}}
+        with patch('charon_agent.custom_endpoints.catalog', return_value=[]), patch('charon_agent.custom_endpoints._request',
+                side_effect=urllib.error.HTTPError('https://example.test', 400, 'Bad request', {}, io.BytesIO(json.dumps(error).encode()))):
+            message = asyncio.run(probe(self.endpoint, 'codex'))['check']['error']
+        self.assertIn('Thinking mode rejects tool_choice', message)
+        self.assertNotIn('secret-for-test', message)
+        self.assertIn('[redacted]', message)
+        self.assertLess(len(message), 600)
 
     def test_unverified_reasoning_is_omitted_even_when_the_cli_supplies_defaults(self):
         original = {'model': 'custom', 'reasoning': {'effort': 'high'}, 'service_tier': 'priority'}

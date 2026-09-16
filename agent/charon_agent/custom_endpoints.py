@@ -67,6 +67,27 @@ def catalog(endpoint: dict) -> list[dict]:
     return models
 
 
+def _message_blocks(events: list[dict]) -> list[dict]:
+    """Replay the complete assistant message, including signed thinking blocks."""
+    blocks: dict[int, dict] = {}
+    arguments: dict[int, str] = {}
+    for event in events:
+        index = event.get("index")
+        if event.get("type") == "content_block_start":
+            blocks[index] = dict(event["content_block"])
+        elif event.get("type") == "content_block_delta" and index in blocks:
+            delta = event.get("delta", {})
+            if delta.get("type") == "input_json_delta":
+                arguments[index] = arguments.get(index, "") + delta.get("partial_json", "")
+            else:
+                field = {"text_delta": "text", "thinking_delta": "thinking", "signature_delta": "signature"}.get(delta.get("type"))
+                if field:
+                    blocks[index][field] = blocks[index].get(field, "") + delta.get(field, "")
+    for index, value in arguments.items():
+        blocks[index]["input"] = json.loads(value)
+    return list(blocks.values())
+
+
 def _probe(endpoint: dict, engine: str, action: str) -> dict:
     endpoint = {**endpoint, "_probe_session": "probe-" + secrets.token_hex(16)}
     models = []
@@ -77,29 +98,30 @@ def _probe(endpoint: dict, engine: str, action: str) -> dict:
     model = str(endpoint.get("model") or "")
     check: dict = {"ok": False, "engine": engine, "model": model, "streaming": False, "tools": False}
     schema = {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False}
-    prompt = 'Call endpoint_check with value "connection-test". This is a harmless connection test.'
+    # Forced tool_choice is rejected by some thinking models. Ask naturally,
+    # then require a real streamed call + result round trip before passing.
+    prompt = 'Call endpoint_check with value "connection-test". This is a harmless connection test. Do not reply before calling the tool.'
     if engine == "claude":
         body = {"model": model, "max_tokens": 1024, "stream": True,
                 "messages": [{"role": "user", "content": prompt}],
                 "tools": [{"name": "endpoint_check", "description": "Check connection", "input_schema": schema}],
-                "tool_choice": {"type": "tool", "name": "endpoint_check"}}
+                "tool_choice": {"type": "auto"}}
         events = _request(endpoint, "/v1/messages", body)
         check["streaming"] = any(e.get("type") == "message_start" for e in events) and any(e.get("type") == "message_stop" for e in events)
-        calls = [e["content_block"] for e in events if e.get("type") == "content_block_start" and e.get("content_block", {}).get("type") == "tool_use"]
+        content = _message_blocks(events)
+        calls = [block for block in content if block.get("type") == "tool_use"]
         if not calls: raise ValueError("Streaming response did not include the requested tool call")
         call = calls[0]
         if call.get("name") != "endpoint_check": raise ValueError("Unexpected tool in test response")
-        args = ''.join(e.get("delta", {}).get("partial_json", "") for e in events if e.get("type") == "content_block_delta")
-        call["input"] = json.loads(args) if args else call.get("input", {})
-        body["messages"] += [{"role": "assistant", "content": [call]}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call["id"], "content": "Connection verified. Reply OK."}]}]
-        body["tool_choice"] = {"type": "auto"}
+        if call.get("input") != {"value": "connection-test"}: raise ValueError("Unexpected tool arguments in test response")
+        body["messages"] += [{"role": "assistant", "content": content}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call["id"], "content": "Connection verified. Reply OK."}]}]
         second = _request(endpoint, "/v1/messages", body)
         check["tools"] = any(e.get("delta", {}).get("text") for e in second) and any(e.get("type") == "message_stop" for e in second)
     elif engine == "codex":
         body = {"model": model, "max_output_tokens": 1024, "stream": True,
                 "input": [{"role": "user", "content": prompt}],
                 "tools": [{"type": "function", "name": "endpoint_check", "description": "Check connection", "parameters": schema}],
-                "tool_choice": {"type": "function", "name": "endpoint_check"}}
+                "tool_choice": "auto"}
         events = _request(endpoint, "/v1/responses", body)
         completed = next((e.get("response", {}) for e in events if e.get("type") == "response.completed"), {})
         check["streaming"] = bool(completed) and any(e.get("type") == "response.created" for e in events)
@@ -107,8 +129,8 @@ def _probe(endpoint: dict, engine: str, action: str) -> dict:
         if not calls: raise ValueError("Responses API did not include the requested function call")
         call = calls[0]
         if call.get("name") != "endpoint_check": raise ValueError("Unexpected tool in test response")
+        if json.loads(call.get("arguments", "{}")) != {"value": "connection-test"}: raise ValueError("Unexpected tool arguments in test response")
         body["input"] += completed.get("output", []) + [{"type": "function_call_output", "call_id": call["call_id"], "output": "Connection verified. Reply OK."}]
-        body["tool_choice"] = "auto"
         second = _request(endpoint, "/v1/responses", body)
         check["tools"] = any(e.get("type") == "response.output_text.delta" and e.get("delta") for e in second) and any(e.get("type") == "response.completed" for e in second)
     else: raise ValueError("Unsupported endpoint engine")
@@ -126,6 +148,14 @@ async def probe(endpoint: dict, engine: str, action: str = "test") -> dict:
     except Exception as exc:
         if isinstance(exc, urllib.error.HTTPError):
             message = f"Endpoint returned HTTP {exc.code}. Check the URL, authentication and API compatibility."
+            try:
+                raw = await asyncio.wait_for(asyncio.to_thread(exc.read, 8192), 2)
+                detail = json.loads(raw).get("error", {})
+                if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+                    safe = detail["message"].replace(str(endpoint.get("token") or "\0"), "[redacted]")
+                    message = f"Endpoint returned HTTP {exc.code}: {safe[:500]}"
+            except (ValueError, OSError, AttributeError):
+                pass
         elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
             message = "Endpoint test timed out."
         else:
