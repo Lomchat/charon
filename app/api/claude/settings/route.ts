@@ -58,6 +58,8 @@ function sanitizeForResponse(all: Record<string, string>): Record<string, string
   // routes, not on settings.
   delete all['cursor.pricing_cache'];
   delete all['cursor.models_cache'];
+  delete all['opencode.model_metadata'];
+  delete all['opencode.model_metadata_at'];
   // Same deal for the persisted account-usage snapshots (§14.72): several KB of
   // JSON the UI gets live over SSE / GET /api/vps/[id]/usage instead.
   delete all['usage.snapshots'];

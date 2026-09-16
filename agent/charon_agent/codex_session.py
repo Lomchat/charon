@@ -37,6 +37,7 @@ from __future__ import annotations
 from .endpoint_credentials import public_config
 from .endpoint_proxy import EndpointProxy
 from .endpoint_runtime import endpoint_of, codex_overrides, redact
+from .endpoint_parameters import selected_params
 
 import asyncio
 import concurrent.futures
@@ -635,6 +636,9 @@ class CodexSession:
         self.fallback_model = None
         self.effort = effort if effort in self.VALID_EFFORTS else None
         self._configure(codex_config)
+        if endpoint_of(self.codex_config) and effort:
+            selected_params(endpoint_of(self.codex_config), "codex", self.model or "", effort)
+            self.effort = effort
         self._endpoint_proxy = None
         self._emit_to_server = lambda event: emit(redact(event, endpoint_of(self.codex_config)))
         self._on_state_change = on_state_change
@@ -1062,7 +1066,9 @@ class CodexSession:
         await self._save_state()
 
     async def set_effort(self, effort: str | None) -> None:
-        if effort is not None and effort not in self.VALID_EFFORTS:
+        if endpoint_of(self.codex_config):
+            selected_params(endpoint_of(self.codex_config), "codex", self.model or "", effort)
+        elif effort is not None and effort not in self.VALID_EFFORTS:
             self._emit("error", msg=f"invalid effort {effort!r} (valid: {self.VALID_EFFORTS})")
             return
         self.effort = effort or None
@@ -1185,7 +1191,7 @@ class CodexSession:
         if endpoint:
             if self._endpoint_proxy is None:
                 self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.codex_config) or {}, "codex",
-                    lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id)
+                    lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id, effort=lambda: self.effort)
             custom, custom_env = codex_overrides(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
             overrides.extend(custom)
             env.update(custom_env)
@@ -2125,7 +2131,7 @@ class CodexSession:
             if value is not None:
                 params[dst] = _enum_val(value)
         if endpoint_of(self.codex_config):
-            params["config"] = {"model_reasoning_effort": self.effort or "none"}
+            params["config"] = {"model_reasoning_effort": "none"}
         if not resume and self.codex_config.get("ephemeral"):
             params["ephemeral"] = True
         # Lightweight test doubles and older SDKs retain the high-level path;
@@ -2176,7 +2182,7 @@ class CodexSession:
             params["sandboxPolicy"] = _sandbox_policy_wire(self.permission_mode)
         if self.model:
             params["model"] = self.model
-        if self.effort:
+        if self.effort and not endpoint_of(self.codex_config):
             params["effort"] = self.effort
         for src, dst in (
             ("output_schema", "outputSchema"),
@@ -2289,7 +2295,7 @@ class CodexSession:
         kw: dict[str, Any] = {"sandbox": sandbox, "approval_mode": approval}
         if self.model:
             kw["model"] = self.model
-        eff = _coerce_effort(self.effort)
+        eff = _coerce_effort(self.effort) if not endpoint_of(self.codex_config) else None
         if eff is not None:
             kw["effort"] = eff
         for key in ("output_schema", "personality", "service_tier", "summary"):

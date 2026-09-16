@@ -5,7 +5,8 @@ import { db, claudeSessions } from '@/lib/db';
 import { connectionConfig, publicConnection, type StoredEndpoint } from '@/lib/server/customEndpoints';
 import { emitGlobalSessionListChanged, peekStream, resumeSession } from './sessionOps';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { endpointModelCheck } from '@/lib/customEndpoints';
+import { endpointModelCheck, validEndpointEffort } from '@/lib/customEndpoints';
+import { enrichEndpoint } from '@/lib/server/opencodeModels';
 
 const inflight = new Map<string, Promise<void>>();
 export async function applyPendingEndpoint(id: string): Promise<void> {
@@ -43,7 +44,7 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
     const restored = current.standardConnection;
     const model = pending.endpoint ? pending.model : restored?.model ?? null;
     const fallbackModel = pending.endpoint ? null : restored?.fallbackModel ?? null;
-    const effort = pending.endpoint ? null : restored?.effort ?? null;
+    const effort = pending.endpoint ? pending.effort ?? null : restored?.effort ?? null;
     current.customEndpoint = pending.endpoint;
     if (!pending.endpoint) delete current.standardConnection;
     current.pendingConnection = null;
@@ -53,6 +54,7 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
     if (stream) {
       stream.model = model; stream.fallbackModel = fallbackModel;
       stream.effort = effort as any; stream.effectiveModel = null;
+      stream.customEndpoint = !!pending.endpoint;
     }
     invalidateSessionInsightSnapshot(id);
     emitGlobalSessionListChanged(id);
@@ -70,18 +72,28 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
   inflight.set(id, promise);
   return promise;
 }
-export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null) {
+export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null, effort?: string | null) {
   const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
   if (!row) throw new Error('Session not found.');
   if (endpoint) {
+    endpoint = await enrichEndpoint(endpoint);
     const check = endpointModelCheck(endpoint, row.kind, endpoint.model);
     endpoint = { ...endpoint, checks: { ...endpoint.checks, ...(check ? { [row.kind]: check } : {}) } };
   }
   // Feature discovery before writing anything: old agents must never ignore a route.
-  await getAgentClientForVpsId(row.vpsId).call('endpoint_probe', { action: 'capability' });
+  const capability = await getAgentClientForVpsId(row.vpsId).call<{ capabilities?: string[] }>('endpoint_probe', { action: 'capability' });
+  if (effort !== undefined) {
+    if (!capability.capabilities?.includes('endpoint_parameters')) throw new Error('Update the agent on this VPS to configure endpoint parameters.');
+    if (!endpoint || !validEndpointEffort(endpoint, row.kind, endpoint.model, effort)) throw new Error('These parameters are not supported by this endpoint model.');
+  }
   if (inflight.has(id)) await inflight.get(id);
   const cfg = connectionConfig(db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get()!.codexConfig);
-  cfg.pendingConnection = { endpoint, model: endpoint?.model ?? null };
+  if (effort !== undefined && (cfg.customEndpoint?.model !== endpoint?.model
+    || cfg.customEndpoint?.baseUrl !== endpoint?.baseUrl || cfg.customEndpoint?.secret !== endpoint?.secret)) {
+    throw new Error('The session connection changed. Refresh before changing parameters.');
+  }
+  if (effort !== undefined && cfg.pendingConnection && cfg.pendingConnection.effort === undefined) throw new Error('Apply or cancel the pending connection change before changing parameters.');
+  cfg.pendingConnection = { endpoint, model: endpoint?.model ?? null, ...(effort !== undefined ? { effort } : {}) };
   cfg.endpointError = null;
   db.update(claudeSessions).set({ codexConfig: JSON.stringify(cfg) }).where(eq(claudeSessions.id, id)).run();
   emitGlobalSessionListChanged(id);

@@ -6821,5 +6821,9 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 }
 .endpoint-picker-actions { position: sticky; top: 0; z-index: 2; background: var(--bg-elevated); display: flex; flex-direction: column; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border); }
 .endpoint-picker-actions button { text-align: left; padding: 8px 10px; }
+/* Keep endpoint actions above the catalog's own scrolling/search surface. */
+.runtime-choice-popover:has(> .endpoint-picker-actions) { display: flex; flex-direction: column; overflow: hidden; }
+.runtime-choice-popover:has(> .endpoint-picker-actions) > .picker-options { min-height: 0; overflow-y: auto; flex: 1 1 auto; }
+.runtime-choice-popover:has(> .endpoint-picker-actions) > :not(.picker-options) { flex-shrink: 0; }
 .agent-logo.has-endpoint { position: relative; overflow: visible; }
 .endpoint-logo-badge { position: absolute; width: 10px; height: 10px; right: -5px; bottom: -4px; padding: 1px; background: var(--bg-elevated); border-radius: var(--radius-sm); color: var(--text); }

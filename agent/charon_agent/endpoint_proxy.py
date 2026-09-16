@@ -19,6 +19,7 @@ from .endpoint_responses import response_stream
 from .endpoint_usage import EndpointUsage
 from .endpoint_images import EndpointImages, ImageBudgetError
 from .endpoint_headers import endpoint_headers
+from .endpoint_parameters import apply_parameters
 
 
 # A model request carries the whole conversation, including base64 screenshots.
@@ -26,25 +27,12 @@ from .endpoint_headers import endpoint_headers
 MAX_REQUEST_BYTES = 256 * 1024 * 1024
 
 
-def request_body(body: dict, endpoint: dict, engine: str) -> dict:
-    result = dict(body)
-    check = (endpoint.get("checks") or {}).get(engine) or {}
-    levels = check.get("effortLevels") if check.get("model") == body.get("model") and check.get("ok") else []
-    if engine == "codex":
-        reasoning = result.get("reasoning")
-        if not isinstance(reasoning, dict) or reasoning.get("effort") not in (levels or []):
-            result.pop("reasoning", None)
-        result.pop("service_tier", None)
-    elif engine == "claude":
-        config = dict(result.get("output_config") or {})
-        if config.get("effort") not in (levels or []): config.pop("effort", None)
-        if config: result["output_config"] = config
-        else: result.pop("output_config", None)
-    return result
+def request_body(body: dict, endpoint: dict, engine: str, effort: str | None = None) -> dict:
+    return apply_parameters(body, endpoint, engine, effort)
 
 
 class EndpointProxy:
-    def __init__(self, endpoint: Callable[[], dict], engine: str, on_usage=None, *, session_id: str = ""):
+    def __init__(self, endpoint: Callable[[], dict], engine: str, on_usage=None, *, session_id: str = "", effort: Callable[[], str | None] = lambda: None):
         self.endpoint = endpoint
         self.engine = engine
         self.token = secrets.token_hex(32)
@@ -74,7 +62,7 @@ class EndpointProxy:
                     endpoint = owner.endpoint()
                     data = self.rfile.read(size) if self.command == "POST" else None
                     if data:
-                        body = request_body(json.loads(data), endpoint, owner.engine)
+                        body = request_body(json.loads(data), endpoint, owner.engine, effort())
                         data = json.dumps(owner.images.prepare(body, endpoint)).encode()
                     headers = endpoint_headers(endpoint, self.path, owner.session_id)
                     for key in ("anthropic-version", "anthropic-beta", "Accept"):

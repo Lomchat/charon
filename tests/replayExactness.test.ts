@@ -80,6 +80,21 @@ function persistedCursor(): number | null {
   return r?.lastSeenSeq ?? null;
 }
 
+it('preserves endpoint parameter sets on hydration and replay without widening native efforts', () => {
+  const opts = { id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    model: 'deepseek', effort: 'effort=max', customEndpoint: true };
+  for (const kind of ['claude', 'codex']) {
+    const stream = new SessionStream({ ...opts, kind });
+    expect(stream.effort).toBe('effort=max');
+    stream._onAgentEvent({ event: 'effort_changed', session_id: SID, effort: 'thinking=false', applied_at_next_start: false });
+    expect(stream.effort).toBe('thinking=false');
+    expect(db.select().from(schema.claudeSessions).all().find((r: any) => r.id === SID).effort).toBe('thinking=false');
+    const native = new SessionStream({ ...opts, kind, customEndpoint: false });
+    expect(native.effort).toBeNull();
+  }
+});
+
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
   db = dbMod.db;

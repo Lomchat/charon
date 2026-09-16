@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { endpointToken, type StoredEndpoint } from './customEndpoints';
 import type { EndpointEngine, EndpointCheck, EndpointModel } from '@/lib/customEndpoints';
+import { enrichEndpoint } from './opencodeModels';
 
 export type ProbeResult = { ok: boolean; models: EndpointModel[]; check?: EndpointCheck; catalogError?: string };
 const cache = new Map<string, { at: number; result: ProbeResult }>();
@@ -33,6 +34,7 @@ export async function probeEndpoint(endpoint: StoredEndpoint, engine: EndpointEn
   const result = await getAgentClientForVpsId(vpsId).call<ProbeResult>('endpoint_probe', {
     engine, action, endpoint: { ...endpoint, secret: undefined, token: endpointToken(endpoint) },
   });
+  result.models = (await enrichEndpoint({ ...endpoint, models: result.models })).models ?? result.models;
   if (result.check) result.check.vpsId = vpsId;
   if (cache.size >= 128) cache.delete(cache.keys().next().value!);
   const key = fingerprint(endpoint, engine, vpsId);

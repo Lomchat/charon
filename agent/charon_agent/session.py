@@ -15,6 +15,7 @@ from __future__ import annotations
 from .endpoint_credentials import public_config
 from .endpoint_proxy import EndpointProxy
 from .endpoint_runtime import endpoint_of, claude_env, redact
+from .endpoint_parameters import selected_params
 
 import asyncio
 import json
@@ -501,7 +502,11 @@ class AgentSession:
         # of VALID_EFFORTS or it's silently dropped.
         self.model = model or None
         self.fallback_model = fallback_model or None
-        self.effort = effort if effort in self.VALID_EFFORTS else None
+        if endpoint_of(self.session_config) and effort:
+            selected_params(endpoint_of(self.session_config), "claude", self.model or "", effort)
+            self.effort = effort
+        else:
+            self.effort = effort if effort in self.VALID_EFFORTS else None
         self._endpoint_proxy = None
         self._emit_to_server = lambda event: emit(redact(event, endpoint_of(self.session_config)))
         self._on_state_change = on_state_change
@@ -727,7 +732,9 @@ class AgentSession:
         ClaudeAgentOptions, which the SDK reads at client construction —
         there is no SDK-side runtime setter.
         """
-        if effort is not None and effort not in self.VALID_EFFORTS:
+        if endpoint_of(self.session_config):
+            selected_params(endpoint_of(self.session_config), "claude", self.model or "", effort)
+        elif effort is not None and effort not in self.VALID_EFFORTS:
             self._emit("error", msg=f"invalid effort {effort!r} (valid: {self.VALID_EFFORTS})")
             return
         self.effort = effort or None
@@ -2113,13 +2120,14 @@ class AgentSession:
             if endpoint:
                 if self._endpoint_proxy is None:
                     self._endpoint_proxy = EndpointProxy(lambda: endpoint_of(self.session_config) or {}, "claude",
-                        lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id)
+                        lambda usage: self._emit("endpoint_usage", **usage), session_id=self.session_id, effort=lambda: self.effort)
                 routed_env = claude_env(self._endpoint_proxy.connection(), self.model or endpoint["model"], self.effort)
                 options_kwargs["env"] = {**options_kwargs.get("env", {}), **routed_env}
                 inline = json.loads(options_kwargs.get("settings") or "{}")
                 inline.update({"env": routed_env, "apiKeyHelper": "", "enableAllProjectMcpServers": False})
                 options_kwargs["settings"] = json.dumps(inline)
                 options_kwargs.pop("fallback_model", None)
+                options_kwargs.pop("effort", None)
             # Live token usage (§14.50): receive the raw Anthropic stream events
             # (StreamEvent) so we can surface a growing token counter. Dropped by
             # _build_options_with_fallback on an SDK too old to know the kwarg →

@@ -1291,7 +1291,8 @@ export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
 
 // POST /api/claude/sessions/[id]/effort (effort validity depends on the
 // session's kind — Codex efforts are CodexEffortLevel).
-export type SetClaudeSessionEffortBody = { effort: ClaudeEffortLevel | CodexEffortLevel | null };
+/** Native effort level or a validated per-model parameter set (Cursor/endpoints). */
+export type SetClaudeSessionEffortBody = { effort: string | null };
 export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
 
 // GET /api/claude/models — curated picker source. Source of truth lives in

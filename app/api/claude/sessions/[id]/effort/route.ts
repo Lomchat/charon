@@ -1,7 +1,7 @@
 import { db, claudeSessions } from '@/lib/db';
 import { eq } from 'drizzle-orm';
 import { connectionConfig } from '@/lib/server/customEndpoints';
-import { endpointEfforts } from '@/lib/customEndpoints';
+import { queueEndpoint } from '@/lib/server/agent/endpointOps';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { getOrCreateStream } from '@/lib/server/agent/sessionOps';
@@ -39,6 +39,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const body = await req.json().catch(() => ({}));
   const raw = body?.effort;
   const kind = asSessionProvider(stream.kind);
+  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+  const endpoint = connectionConfig(row?.codexConfig).customEndpoint;
+  if (endpoint) {
+    if (row?.archived) return NextResponse.json({ error: 'Unarchive this session before changing parameters.' }, { status: 400 });
+    if (raw != null && typeof raw !== 'string') return NextResponse.json({ error: 'Invalid endpoint parameters.' }, { status: 400 });
+    try {
+      await queueEndpoint(id, endpoint, raw || null);
+      return NextResponse.json({ ok: true });
+    } catch (e) { return NextResponse.json({ error: e instanceof Error ? e.message : 'Could not configure parameters.' }, { status: 400 }); }
+  }
   // Codex efforts are a different set (none/minimal/low/medium/high/xhigh/max/
   // ultra), catalog-gated per model; Claude uses isKnownEffort. The agent is
   // the final gate for both (drops a level its SDK/model doesn't know).
@@ -52,11 +62,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       { error: `invalid effort '${raw}'; expected a ${PROVIDERS[kind].label} effort level or null` },
       { status: 400 },
     );
-  }
-  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
-  const endpoint = connectionConfig(row?.codexConfig).customEndpoint;
-  if (endpoint && effort && !endpointEfforts(endpoint, kind, row?.model || '').includes(effort)) {
-    return NextResponse.json({ error: 'This endpoint has not declared support for that effort level.' }, { status: 400 });
   }
   try {
     await stream.setEffort(effort as any);
