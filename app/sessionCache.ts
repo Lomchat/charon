@@ -36,8 +36,18 @@ function estimateBytes(data: ClaudeSessionDetailResponse): number {
   for (const m of data.messages ?? []) {
     n += 256 + (typeof m.content === 'string' ? m.content.length * 2 : 0);
   }
-  n += String(data.streamingText ?? '').length * 2;
   return n;
+}
+
+// What we STORE, as opposed to what we return to the caller. `streamingText` is
+// the hub's unflushed assistant accumulation — live state, not history: the
+// moment the turn moves on it describes nothing. Cached, it outlived its turn
+// and got replayed into the preview bubble at the next mount, pinning half a
+// sentence under a transcript that had long since finished
+// (app/streamingPreview.ts, CLAUDE.md §14.105). The fresh response the caller
+// receives keeps it, so opening a session that IS streaming still previews it.
+function withoutLiveState(data: ClaudeSessionDetailResponse): ClaudeSessionDetailResponse {
+  return data.streamingText ? { ...data, streamingText: '' } : data;
 }
 
 function touch(id: string, entry: CacheEntry): void {
@@ -82,7 +92,9 @@ export async function fetchAndCache(id: string, force = false): Promise<ClaudeSe
   const p = (async () => {
     try {
       const data = await api.getClaudeSession(id);
-      const entry = { data, fetchedAt: Date.now(), approxBytes: estimateBytes(data) };
+      const entry = {
+        data: withoutLiveState(data), fetchedAt: Date.now(), approxBytes: estimateBytes(data),
+      };
       touch(id, entry);
       prune();
       return data;

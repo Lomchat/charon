@@ -7,6 +7,7 @@ import type {
   PermissionRequest, PendingQuestion, PendingExitPlan,
 } from './sessionTypes';
 import { rebuildStateFromMessages } from './sessionRebuild';
+import { reconcileStreamingPreview } from './streamingPreview';
 import { appendThinkingMessage, closeThinkingMessage, prependMessagePage } from './thinkingMessages';
 import {
   applyBgTaskEvent, applyBgTaskProgress, bgTasksToArray, isBgLaunchToolUse,
@@ -423,32 +424,22 @@ export function useClaudeSessionStream(
     if (!r?.session) return;
     setTokenUsage((prev) => mergeSessionTokenUsage(prev, r.tokenUsage));
     providerRef.current = asSessionProvider(r.session.kind);
-    const rebuilt = rebuildStateFromMessages(r.messages, (r.liveStatus ?? r.session.status) as WorkerStatus, providerRef.current);
-    // Streaming preview reconciliation. applyApiData runs on the initial
-    // load AND on every poll-triggered clean reload (which can happen every
-    // 5s during active SSE streaming). We must NOT rewind a smoothly-
-    // streaming preview to an older server snapshot:
-    //   - server text >= local buffer → adopt (caught up / ahead; the
-    //     common case since the server processes deltas before forwarding
-    //     them to us).
-    //   - server text shorter (flushed to a persisted message, or briefly
-    //     behind) → if the latest reloaded assistant message already
-    //     contains our buffered text, the buffer was flushed: clear it to
-    //     avoid showing the preview twice. Otherwise keep our buffer (SSE
-    //     is mid-stream, server hasn't persisted yet) — don't rewind.
-    const streamingText = String(r.streamingText ?? '');
-    if (streamingText.length >= assistantBufRef.current.length) {
-      assistantBufRef.current = streamingText;
-      setCurrentAssistant(streamingText);
-    } else {
-      const buf = assistantBufRef.current;
-      const lastAsst = [...rebuilt.messages].reverse().find((m) => m.role === 'assistant');
-      if (lastAsst && (lastAsst.content === buf || lastAsst.content.startsWith(buf))) {
-        assistantBufRef.current = '';
-        setCurrentAssistant('');
-      }
-      // else: keep the local buffer, don't rewind.
-    }
+    const liveStatus = (r.liveStatus ?? r.session.status) as WorkerStatus;
+    const rebuilt = rebuildStateFromMessages(r.messages, liveStatus, providerRef.current);
+    // Streaming preview reconciliation (app/streamingPreview.ts). applyApiData
+    // runs on the initial load AND on every poll-triggered clean reload (which
+    // can happen every 5s during active SSE streaming), so it must not rewind a
+    // smoothly-streaming preview — nor keep one alive after the turn that
+    // produced it ended.
+    const nextPreview = reconcileStreamingPreview({
+      serverText: String(r.streamingText ?? ''),
+      localText: assistantBufRef.current,
+      status: liveStatus,
+      lastAssistant: [...rebuilt.messages].reverse()
+        .find((m) => m.role === 'assistant')?.content ?? null,
+    });
+    assistantBufRef.current = nextPreview;
+    setCurrentAssistant(nextPreview);
     setMessages(rebuilt.messages);
     setStatus(rebuilt.status);
     setToolCalls(rebuilt.toolCalls);
@@ -686,11 +677,17 @@ export function useClaudeSessionStream(
       // envelope. Reconcile it even when no DB message was inserted: a long
       // assistant stream, a permission resolution, or a model change can all
       // happen without advancing the message cursor.
-      const streamingText = String(r?.streamingText ?? '');
-      if (streamingText.length >= assistantBufRef.current.length) {
-        assistantBufRef.current = streamingText;
-        setCurrentAssistant((prev) => prev === streamingText ? prev : streamingText);
-      }
+      // Same reconciliation as the full reload, minus the window (the delta
+      // poll carries no message history, so the prefix proof isn't available
+      // here — the settled rule is, and it is the one that matters for a
+      // session whose turn is over). cf. app/streamingPreview.ts.
+      const nextPreview = reconcileStreamingPreview({
+        serverText: String(r?.streamingText ?? ''),
+        localText: assistantBufRef.current,
+        status: live,
+      });
+      assistantBufRef.current = nextPreview;
+      setCurrentAssistant((prev) => prev === nextPreview ? prev : nextPreview);
       const sid = r?.session?.id ?? sessionId;
       const nextPerms = ((r?.pendingPermissions ?? []) as Omit<PermissionRequest, 'sessionId'>[])
         .map((p) => ({ ...p, sessionId: sid }));
