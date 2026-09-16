@@ -107,10 +107,16 @@
 .error > .hnav-dot { background: var(--danger); }
 .ready > .hnav-dot { background: var(--success); }
 /* Green is READY in the sidebar, so it cannot also mean "finished, unread"
-   here — two greens a shade apart is no distinction at all. The unread cue is
-   an edge and a green timestamp, which is the fact you came for. */
+   here — two greens a shade apart is no distinction at all. "Finished, unread"
+   is the sidebar's own GREEN PULSE (`row-pulse-green`, §14.47), reused frame
+   for frame: the trigger carries it while any session is waiting to be read,
+   and the rows that are waiting carry it inside the panel, so the eye follows
+   the same signal from the header to the card. */
 .hnav-dot.unread { background: var(--success); animation: none; }
-.hnav-row.unread { box-shadow: inset 2px 0 0 var(--success); }
+.hnav-row.unread {
+  border-color: var(--success);
+  animation: row-pulse-green 1.8s infinite ease-in-out;
+}
 @keyframes hnav-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .hnav-empty { color: var(--text-faint); font: 10px/1.4 var(--mono); padding: 6px 8px; }
 
@@ -126,6 +132,12 @@
 }
 .claude-head .hnav-trigger:hover, .claude-head .hnav-trigger.is-open {
   border-color: var(--accent); color: var(--text);
+}
+/* After the hover rule on purpose: a session waiting to be read outranks the
+   pointer being nearby. */
+.claude-head .hnav-trigger.has-unread {
+  border-color: var(--success); color: var(--text);
+  animation: row-pulse-green 1.8s infinite ease-in-out;
 }
 .hnav-trigger-count { color: var(--text); font: 600 12px/1 var(--mono); }
 .hnav-trigger-unread {
@@ -175,7 +187,9 @@
    never does — it is the answer to "which one just finished". */
 .hnav-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 7px 8px; border: 0; border-radius: var(--radius-md);
+  /* A transparent border, not none: the unread row only changes its COLOUR,
+     so the list never shifts by a pixel when a session finishes. */
+  padding: 7px 8px; border: 1px solid transparent; border-radius: var(--radius-md);
   background: transparent; color: var(--text);
   font: 12px/1.35 var(--body); letter-spacing: 0; text-transform: none; text-align: left;
 }
