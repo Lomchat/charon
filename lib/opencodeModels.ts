@@ -1,5 +1,6 @@
 import type { EndpointModel, CustomEndpoint } from './customEndpoints';
 import type { CursorModelParameter } from './types/api';
+import { modelReleaseDate } from './endpointModelCatalog';
 
 export function isOpenCodeGo(baseUrl: string): boolean {
   try {
@@ -50,7 +51,8 @@ export function parseOpenCodeModels(raw: unknown): Record<string, EndpointModel>
       input: money(m.cost.input)!, output: money(m.cost.output)!, cacheRead: money(m.cost.cache_read), cacheWrite: money(m.cost.cache_write), provider: 'OpenCode Go',
     } : undefined;
     table[id] = { id, contextWindow: count(m.limit?.context), info: {
-      name: text(m.name, 120)!, description: text(m.description, 400), input, outputTokens,
+      name: text(m.name, 120)!, description: text(m.description, 400),
+      family: text(m.family, 80), releaseDate: modelReleaseDate(m.release_date), input, outputTokens,
       reasoning: typeof m.reasoning === 'boolean' ? m.reasoning : undefined,
       tools: typeof m.tool_call === 'boolean' ? m.tool_call : undefined,
       price, tieredPrice: Array.isArray(m.cost?.tiers) && m.cost.tiers.length > 0,

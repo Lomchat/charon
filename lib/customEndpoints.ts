@@ -8,7 +8,7 @@ export type EndpointAuth = 'none' | 'api-key' | 'bearer';
 export type EndpointModel = {
   id: string; contextWindow?: number; effortLevels?: string[];
   checks?: Partial<Record<EndpointEngine, EndpointCheck>>;
-  info?: { name: string; description?: string; input?: string[]; outputTokens?: number;
+  info?: { name: string; description?: string; family?: string; releaseDate?: string; input?: string[]; outputTokens?: number;
     reasoning?: boolean; tools?: boolean; price?: ModelPrice; tieredPrice?: boolean };
   /** Trusted catalog metadata, independently mapped to each native API. */
   parameters?: Partial<Record<EndpointEngine, CursorModelParameter[]>>;

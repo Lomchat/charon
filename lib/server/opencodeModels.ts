@@ -5,10 +5,15 @@ import type { CustomEndpoint, EndpointModel } from '@/lib/customEndpoints';
 
 const CACHE = 'opencode.model_metadata';
 const TTL = 6 * 60 * 60_000;
+const CACHE_VERSION = 2;
 let inflight: Promise<Record<string, EndpointModel>> | null = null;
 let retryAt = 0;
-function cached(): Record<string, EndpointModel> {
-  try { return JSON.parse(getSetting(CACHE) || '{}'); } catch { return {}; }
+function cached(): { table: Record<string, EndpointModel>; current: boolean } {
+  try {
+    const value = JSON.parse(getSetting(CACHE) || '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid cache');
+    return { table: value.models || (value.version ? {} : value), current: value.version === CACHE_VERSION };
+  } catch { return { table: {}, current: false }; }
 }
 async function refresh() {
   try {
@@ -27,16 +32,16 @@ async function refresh() {
     } finally { await reader.cancel(); }
     const table = parseOpenCodeModels(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     if (!Object.keys(table).length) throw new Error('Empty catalog');
-    setSetting(CACHE, JSON.stringify(table)); setSetting(`${CACHE}_at`, String(Date.now()));
+    setSetting(CACHE, JSON.stringify({ version: CACHE_VERSION, models: table })); setSetting(`${CACHE}_at`, String(Date.now()));
     return table;
-  } catch { retryAt = Date.now() + 60_000; return cached(); }
+  } catch { retryAt = Date.now() + 60_000; return cached().table; }
 }
 export async function enrichEndpoint<T extends CustomEndpoint>(endpoint: T): Promise<T> {
   if (!isOpenCodeGo(endpoint.baseUrl)) return endpoint;
-  let table = cached();
-  if (Date.now() > Number(getSetting(`${CACHE}_at`) || 0) + TTL && Date.now() >= retryAt) {
+  let { table, current } = cached();
+  if ((!current || !Object.keys(table).length || Date.now() > Number(getSetting(`${CACHE}_at`) || 0) + TTL) && Date.now() >= retryAt) {
     inflight ??= refresh().finally(() => { inflight = null; });
-    if (!Object.keys(table).length) table = await inflight;
+    if (!current || !Object.keys(table).length) table = await inflight;
   }
   return mergeOpenCodeModels(endpoint, table);
 }
