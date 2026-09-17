@@ -22,6 +22,7 @@ import {
 } from '@/lib/sessionCapabilities';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 import { showsUnreadCue } from './sessionUnread';
+import { useShowPaused } from './showPaused';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -32,7 +33,6 @@ export type { SessionListItem };
 // Re-export for consumers (ClaudePanel) that pass installs.
 export type { InstallInfo };
 
-const PAUSED_KEY = 'hub.claude.showPaused.v1';
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed', 'background']);
 
@@ -233,7 +233,10 @@ export default function Sidebar({
   const [collapsedPaths, setPathCollapsed] = useCollapsedGroups('hub.claude.collapsedPaths.v1');
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
-  const [showPaused, setShowPaused] = useState(true);
+  // Shared with the workspace strip, which filters on the same switch
+  // (app/showPaused.ts) — one list hiding a session while the other keeps its
+  // tab is the same session answering two ways.
+  const [showPaused, toggleShowPaused] = useShowPaused();
   // Show / hide per-card details (first-message preview, cwd, age). Default OFF
   // (= compact one-line cards — the full info stays in the card tooltip); the
   // denser default keeps a many-VPS fleet scannable. Opt back IN via the
@@ -274,17 +277,9 @@ export default function Sidebar({
   }, [sessions]);
   useEffect(() => {
     try {
-      if (localStorage.getItem(PAUSED_KEY) === '0') setShowPaused(false);
       if (localStorage.getItem(DETAILS_KEY) === '1') setShowDetails(true);
     } catch {}
   }, []);
-  function toggleShowPaused() {
-    setShowPaused((v) => {
-      const next = !v;
-      try { localStorage.setItem(PAUSED_KEY, next ? '1' : '0'); } catch {}
-      return next;
-    });
-  }
   function toggleShowDetails() {
     setShowDetails((v) => {
       const next = !v;

@@ -9,6 +9,7 @@ import { IconForKind, fileKind } from './fileIcons';
 import AgentLogo from './AgentLogo';
 import { providerName } from '@/lib/providerText';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
+import { groupShown, mergeVisibleOrder, visibleTabs } from './pausedTabs';
 
 // TabBar — the workspace strip above the main column. §14.78
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +184,10 @@ type Props = {
    *  here exactly as it does in the sidebar — two launchers disagreeing about
    *  which backends exist is worse than no launcher. */
   enabledBackends?: EnabledBackends;
+  /** The sidebar's own switch (app/showPaused.ts). OFF hides every tab whose
+   *  session is asleep, and with them any folder or machine that held nothing
+   *  else — the strip and the sidebar answer "what is paused" together. */
+  showPaused?: boolean;
   onReorderVps: (vpsIds: string[]) => void;
   onReorderPaths: (vpsId: string, paths: string[]) => void;
   onReorderTabs: (vpsId: string, path: string, ids: string[]) => void;
@@ -193,10 +198,10 @@ export default function TabBar({
   onVpsClick, onPathClick, onTabClick, onTabDoubleClick, onTabClose, onTabContext,
   onVpsClose, onPathClose,
   onNewSession, onNewShell, newSessionDisabledReason,
-  enabledBackends = ALL_BACKENDS_ENABLED,
+  enabledBackends = ALL_BACKENDS_ENABLED, showPaused = true,
   onReorderVps, onReorderPaths, onReorderTabs,
 }: Props) {
-  const { vpsRows, pathRows, tabRows } = useMemo(() => {
+  const { vpsRows, pathRows, tabRows, fullOrder } = useMemo(() => {
     // The strip has its OWN order now (`vpsPos` / `groupPos`, dragged by the
     // user). The sidebar's folder/vps positions are only the tiebreak for
     // machines that have never been dragged — every row starts at 0.
@@ -207,8 +212,20 @@ export default function TabBar({
         || (a.position ?? 0) - (b.position ?? 0)).map((v, i) => [v.id, i]),
     );
 
+    // Everything below is built from the SHOWN tabs, so a folder or a machine
+    // with nothing left to show simply has no row. `fullOrder` keeps the
+    // unfiltered sequences: a drop commits the whole order (§14.80).
+    const shown = visibleTabs(resolved, showPaused, activeTabId);
+    const fullOrder = {
+      vps: [...new Set(resolved.map((t) => t.vpsId))],
+      paths: [...new Set(resolved.filter((t) => t.vpsId === activeVpsId).map((t) => t.path))],
+      tabs: resolved
+        .filter((t) => t.vpsId === activeVpsId && t.path === (activePath ?? ''))
+        .slice().sort((a, b) => a.position - b.position).map((t) => t.id),
+    };
+
     const byVps = new Map<string, ResolvedTab[]>();
-    for (const t of resolved) {
+    for (const t of shown) {
       const arr = byVps.get(t.vpsId) ?? [];
       arr.push(t);
       byVps.set(t.vpsId, arr);
@@ -219,7 +236,7 @@ export default function TabBar({
         vpsId, tabs: list, count: list.length, state: rollUp(list),
         pos: Math.min(...list.map((t) => t.vpsPos)),
       }))
-      .filter((r) => r.vps)
+      .filter((r) => r.vps && groupShown(r.tabs, showPaused, activeTabId))
       .sort((a, b) => a.pos - b.pos
         || (sidebarOrder.get(a.vpsId) ?? 99) - (sidebarOrder.get(b.vpsId) ?? 99));
 
@@ -231,6 +248,7 @@ export default function TabBar({
       byPath.set(t.path, arr);
     }
     const pathRows: PathGroup[] = [...byPath.entries()]
+      .filter(([, list]) => groupShown(list, showPaused, activeTabId))
       .map(([path, list]) => ({
         vpsId: activeVpsId!, path, tabs: list, state: rollUp(list),
         pos: Math.min(...list.map((t) => t.groupPos)),
@@ -239,15 +257,19 @@ export default function TabBar({
 
     const tabRows = (byPath.get(activePath ?? '') ?? [])
       .slice().sort((a, b) => a.position - b.position);
-    return { vpsRows, pathRows, tabRows };
-  }, [resolved, vpsList, vpsFolders, activeVpsId, activePath]);
+    return { vpsRows, pathRows, tabRows, fullOrder };
+  }, [resolved, vpsList, vpsFolders, activeVpsId, activePath, showPaused, activeTabId]);
 
-  // One hook per row. Each commits the FULL new order for that row.
-  const vpsDnd = useReorder(vpsRows.map((r) => r.vpsId), onReorderVps);
+  // One hook per row. Each commits the FULL new order for that row — the
+  // dragged subsequence is slotted back into the hidden rows' own order, or
+  // turning the switch back on would show everything paused pushed to the end.
+  const vpsDnd = useReorder(vpsRows.map((r) => r.vpsId),
+    (vpsIds) => onReorderVps(mergeVisibleOrder(fullOrder.vps, vpsIds)));
   const pathDnd = useReorder(pathRows.map((g) => g.path),
-    (paths) => activeVpsId && onReorderPaths(activeVpsId, paths));
+    (paths) => activeVpsId && onReorderPaths(activeVpsId, mergeVisibleOrder(fullOrder.paths, paths)));
   const tabDnd = useReorder(tabRows.map((t) => t.id),
-    (ids) => activeVpsId && onReorderTabs(activeVpsId, activePath ?? '', ids));
+    (ids) => activeVpsId && onReorderTabs(
+      activeVpsId, activePath ?? '', mergeVisibleOrder(fullOrder.tabs, ids)));
 
   if (vpsRows.length === 0) return <div className="claude-tabbar" />;
 

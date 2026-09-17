@@ -39,6 +39,7 @@ import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
 import UsageMeter from './UsageMeter';
 import HeaderSessionNav from './HeaderSessionNav';
+import { useShowPaused } from './showPaused';
 import { newestAccountUsage } from './accountUsageState';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
 import {
@@ -999,6 +1000,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     refreshUsage(selectedVps?.id);
   }, [selectedVps?.id, refreshUsage]);
 
+  // The sidebar's "show paused" switch, read from the shared store: the strip
+  // filters on the same value the list does (app/showPaused.ts).
+  const [showPaused] = useShowPaused();
+
   // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
   // change to sessions/shells/installs/pendings — cheap, ~O(n).
   // `ShellListItem` is structurally identical to `ShellInfo` (same fields).
@@ -1892,6 +1897,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
       <TabBar
         resolved={resolvedTabs}
+        showPaused={showPaused}
         vpsList={vpsList}
         vpsFolders={vpsFolders}
         activeVpsId={activeVpsId}
