@@ -12,6 +12,7 @@ import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/ve
 import { backendAvailability, backendLauncher, parseAgentLastError } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
+import { badgeState } from './sessionBadge';
 import {
   mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
   sidebarPathOrderedIds,
@@ -1233,7 +1234,14 @@ function SessionRow({
   const pressedSelection = useRef<TreeSelectionModifiers | null>(null);
   const lastClickWasSelectionOnly = useRef(false);
   const baseStatus = s.liveStatus ?? s.status;
-  const effective = (s.pendingPermissions ?? 0) > 0 && baseStatus === 'active' ? 'waiting' : baseStatus;
+  // `pendingPermissions` arrives already resolved against the live SSE queues
+  // (ClaudePanel § sessionRows), so the lock appears and clears with the tab
+  // strip instead of at the next list poll. The promotion rule moved into
+  // app/sessionBadge.ts: it used to fire only from 'active', which made the
+  // word NEEDS YOU unreachable for a prompt raised mid-turn — i.e. every one.
+  const effective = badgeState({
+    status: s.status, liveStatus: s.liveStatus, waiting: s.pendingPermissions ?? 0,
+  });
   const dotClass = DOT_CLASS[effective] ?? 'dot-gray';
   if (editing) {
     return (
