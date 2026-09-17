@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import type {
   PermissionRequest, PendingQuestion, PendingExitPlan,
 } from './sessionTypes';
-import { subscribeAll } from './globalEventStream';
+import { subscribeAll, subscribeReconnect } from './globalEventStream';
+import { pruneUnconfirmed } from './interactionResync';
 
 // useCrossSessionInteractionFeed
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,22 +24,84 @@ export type CrossSessionInteractions = {
   perms: PermissionRequest[];
   questions: PendingQuestion[];
   exitPlans: PendingExitPlan[];
+  /**
+   * Whether the queues can be read as the COMPLETE set of pending
+   * interactions. False until the connect snapshot has landed — see below.
+   * Consumers that must not miss a pending prompt fall back to the session
+   * row's polled count while this is false (app/sessionBadge.ts).
+   */
+  synced: boolean;
 };
+
+// The server replays every pending interaction when the stream (re)connects,
+// so a settled connection holds the whole picture rather than a delta — which
+// is what lets the badge trust it over the 60s list poll. But the replay
+// arrives as a BURST of separate messages, each its own task, and the browser
+// can paint between them. Reading the queues as complete the instant the first
+// one lands would blink the lock off and back on at every reconnect. Wait a
+// short grace for the burst to drain instead; the queues are still applied
+// live throughout, only their COMPLETENESS is delayed.
+const SNAPSHOT_GRACE_MS = 400;
 
 export function useCrossSessionInteractionFeed(): CrossSessionInteractions {
   const [perms, setPerms] = useState<PermissionRequest[]>([]);
   const [questions, setQuestions] = useState<PendingQuestion[]>([]);
   const [exitPlans, setExitPlans] = useState<PendingExitPlan[]>([]);
+  const [synced, setSynced] = useState(false);
 
   useEffect(() => {
     setPerms([]); setQuestions([]); setExitPlans([]);
     const now = () => Math.floor(Date.now() / 1000);
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Interaction ids seen since the current snapshot began arriving. This is
+    // the evidence `pruneUnconfirmed` reconciles against; it is only collected
+    // while a resync is in flight, so it cannot grow without bound.
+    const confirmed = new Set<string>();
+    let resyncing = true;
+
+    const armGrace = () => {
+      if (graceTimer) return;
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        if (resyncing) {
+          resyncing = false;
+          // Now — and only now — is absence from the snapshot meaningful.
+          setPerms((q) => pruneUnconfirmed(q, confirmed));
+          setQuestions((q) => pruneUnconfirmed(q, confirmed));
+          setExitPlans((q) => pruneUnconfirmed(q, confirmed));
+        }
+        setSynced(true);
+      }, SNAPSHOT_GRACE_MS);
+    };
+
+    // A drop is the one thing that can leave a resolved interaction sitting in
+    // a queue: `interaction_resolved` is live-only, so a prompt answered on
+    // another device while this tab was disconnected is never retracted here.
+    //
+    // The queues are NOT emptied to deal with that. Nothing but a live event or
+    // a remount ever refills them, so clearing and waiting for the replay left
+    // them permanently empty whenever the replay was missed — the popup and the
+    // badge dying until F5. Keep showing what we have, record the incoming
+    // snapshot, and reconcile once it has drained (app/interactionResync.ts).
+    const unsubReconnect = subscribeReconnect(() => {
+      if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
+      confirmed.clear();
+      resyncing = true;
+      setSynced(false);
+    });
 
     const unsubscribe = subscribeAll((ev) => {
+      // Any event at all means the stream is live and the connect snapshot is
+      // arriving — the burst opens with a status frame per session, not with
+      // the pendings, so this must not be gated on the interaction types.
+      armGrace();
       // `subscribeAll` also receives install events which have no
       // sessionId — we filter them via the discriminant `'sessionId' in ev`.
       const sid = 'sessionId' in ev ? ev.sessionId : null;
       if (!sid) return;
+      // Record every pending interaction the snapshot carries, plus anything
+      // that fires while it drains, so neither is mistaken for resolved.
+      if (resyncing && 'id' in ev && typeof ev.id === 'string') confirmed.add(ev.id);
       if (ev.type === 'permission_request') {
         setPerms((q) => q.some((p) => p.id === ev.id) ? q : [...q, {
           id: ev.id, sessionId: sid, tool: ev.tool, input: ev.input,
@@ -64,8 +127,12 @@ export function useCrossSessionInteractionFeed(): CrossSessionInteractions {
       }
     });
 
-    return () => { unsubscribe(); };
+    return () => {
+      if (graceTimer) clearTimeout(graceTimer);
+      unsubReconnect();
+      unsubscribe();
+    };
   }, []);
 
-  return { perms, questions, exitPlans };
+  return { perms, questions, exitPlans, synced };
 }
