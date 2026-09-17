@@ -30,6 +30,7 @@ import ConfirmModal from './ConfirmModal';
 import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
+import { liveWaitingCounts, waitingCount } from './sessionBadge';
 import { useInstallNotifications } from './useInstallNotifications';
 import { setFocus, subscribeAll, subscribeReconnect } from './globalEventStream';
 import { applyTheme } from './themeClient';
@@ -935,8 +936,33 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // sessions). Before: N SSEs (one per session), which saturated the
   // HTTP/1.1 limit (6 connections/origin) as soon as we had 6+ sessions and
   // blocked all POSTs.
-  const { perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue } =
-    useCrossSessionInteractionFeed();
+  const {
+    perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue,
+    synced: interactionsSynced,
+  } = useCrossSessionInteractionFeed();
+
+  // `pendingPermissions` as the list endpoint returns it is a COUNT that only
+  // moves when the list is refetched — and nothing about a prompt firing or
+  // being answered refetches the list. The sidebar card and the header nav
+  // both read that field, so both sat on a stale lock for up to a poll
+  // interval in either direction while the tab strip (which reads these
+  // queues) flipped instantly. Resolve the field ONCE here, against the live
+  // queues, so every surface downstream reads the same live answer without
+  // needing to know the queues exist. cf. app/sessionBadge.ts.
+  const waitingBySession = useMemo(
+    () => liveWaitingCounts(permQueue, questionQueue, exitPlanQueue),
+    [permQueue, questionQueue, exitPlanQueue],
+  );
+  const sessionRows = useMemo(() => sessions.map((s) => {
+    const waiting = waitingCount({
+      pendingPermissions: s.pendingPermissions,
+      liveWaitingCount: waitingBySession.get(s.id),
+      liveSynced: interactionsSynced,
+    });
+    // Identity is preserved when nothing changed: these rows feed memoised
+    // consumers (resolveTabs) and a fresh object every render would defeat them.
+    return waiting === (s.pendingPermissions ?? 0) ? s : { ...s, pendingPermissions: waiting };
+  }), [sessions, waitingBySession, interactionsSynced]);
 
   // How many hidden sessions are actually waiting on the user. Exit plans
   // count too: `pendingPermissions` covers permissions and questions only,
@@ -1007,9 +1033,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // persisted, shared list. This resolves those rows against the live entity
   // lists once, and both the strip and the main pane read the same answer.
   const resolvedTabs = useMemo(() => resolveTabs({
-    tabs: workspaceTabs, sessions, shells, installs,
+    tabs: workspaceTabs, sessions: sessionRows, shells, installs,
     permQueue, questionQueue, exitPlanQueue, dirtyIds,
-  }), [workspaceTabs, sessions, shells, installs, permQueue, questionQueue, exitPlanQueue, dirtyIds]);
+  }), [workspaceTabs, sessionRows, shells, installs, permQueue, questionQueue, exitPlanQueue, dirtyIds]);
 
   const activeTab = useMemo(() => resolvedTabs.find((t) => t.active) ?? null, [resolvedTabs]);
   // Row 1 / row 2 follow the active tab, but stay independently steerable so
@@ -1692,7 +1718,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         {/* Jump to a session without hunting for it in the sidebar: the same
             data that sidebar holds, read as activity (app/HeaderSessionNav.tsx). */}
         <HeaderSessionNav
-          sessions={sessions}
+          sessions={sessionRows}
           vpsName={(id) => vpsList.find((v) => v.id === id)?.name ?? id}
           selectedId={selectedId}
           onOpen={(id) => selectClaude(id, true)}
@@ -1835,7 +1861,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         vpsList={vpsList}
         vpsFolders={vpsFolders}
         vpsPaths={vpsPaths}
-        sessions={sessions}
+        sessions={sessionRows}
         deletingSessionIds={deletingSessionIds}
         shells={shells}
         installs={installs}

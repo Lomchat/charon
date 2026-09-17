@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentKind, SessionListItem } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { isWorkingStatus, showsUnreadCue } from './sessionUnread';
+import { badgeState } from './sessionBadge';
 
 /**
  * Header shortcut to the sessions you are actually using: a trigger carrying
@@ -45,7 +46,14 @@ function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavSta
 
 function rowOf(s: SessionListItem): NavRow {
   const working = isWorkingStatus(s.liveStatus);
-  const waiting = (s.pendingPermissions ?? 0) > 0;
+  // Same predicate as the sidebar card and the tab strip (app/sessionBadge.ts),
+  // over a `pendingPermissions` ClaudePanel has already resolved against the
+  // live SSE queues. Before, this read the polled count directly and promoted
+  // over any status at all — so the panel could lag the strip by a poll, and
+  // could ask you to answer a session that was asleep.
+  const waiting = badgeState({
+    status: s.status, liveStatus: s.liveStatus, waiting: s.pendingPermissions ?? 0,
+  }) === 'waiting';
   return {
     s,
     state: stateOf(s, working, waiting),
