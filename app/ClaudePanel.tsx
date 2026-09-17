@@ -27,7 +27,8 @@ import {
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import ConfirmModal from './ConfirmModal';
-import PermissionPopup from './PermissionPopup';
+import InteractionPopup from './InteractionPopup';
+import { sessionDisplayName } from './interactionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
 import { useInstallNotifications } from './useInstallNotifications';
@@ -937,6 +938,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // blocked all POSTs.
   const { perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue } =
     useCrossSessionInteractionFeed();
+
+  // Who is asking, in words. The popup can only show what it is given, and a
+  // truncated session id identifies the row to the database and to nobody
+  // else — you cannot tell which machine wants your answer from a hash.
+  const describeSessionForPopup = useCallback((sessionId: string) => {
+    const row = sessions.find((s) => s.id === sessionId);
+    return {
+      name: sessionDisplayName(sessionId, row),
+      vps: row ? (vpsList.find((v) => v.id === row.vpsId)?.name ?? row.vpsId.slice(0, 6)) : '—',
+    };
+  }, [sessions, vpsList]);
 
   // How many hidden sessions are actually waiting on the user. Exit plans
   // count too: `pendingPermissions` covers permissions and questions only,
@@ -2102,9 +2114,12 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         </main>
       )}
 
-      <PermissionPopup
-        queue={permQueue}
+      <InteractionPopup
+        perms={permQueue}
+        questions={questionQueue}
+        exitPlans={exitPlanQueue}
         currentSessionId={selectedId}
+        describeSession={describeSessionForPopup}
         onRespond={respondPermissionCrossSession}
         onSwitchSession={(id) => openSessionById(id, false)}
       />

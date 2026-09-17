@@ -3291,12 +3291,29 @@
   color: var(--danger);
 }
 .perm-card .switch {
-  margin-left: auto;
   background: var(--bg-inset); border: 1px solid var(--border);
   color: var(--accent-strong); font-family: var(--display);
   font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
   padding: 3px 8px; cursor: pointer;
 }
+/* "Not now". Hides the card; the interaction stays pending and the sidebar
+   lock stays lit, so this is never mistaken for answering. */
+.perm-card .dismiss {
+  margin-left: auto;
+  background: none; border: none;
+  color: var(--text-muted); font-size: 15px; line-height: 1;
+  padding: 0 2px; cursor: pointer;
+}
+.perm-card .dismiss:hover { color: var(--text); }
+/* Which machine and which session is asking — a truncated id named the row to
+   the database and to nobody else. */
+.perm-card .perm-origin {
+  font-family: var(--display); font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.perm-card .perm-origin .o-session { color: var(--text); }
 .perm-card .tool-name {
   font-family: var(--mono); font-size: 14px;
   color: var(--accent-strong); margin-bottom: 6px;
