@@ -27,7 +27,7 @@ import {
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
 import ConfirmModal from './ConfirmModal';
-import PermissionPopup from './PermissionPopup';
+import InteractionPopup from './InteractionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
 import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed';
 import { useInstallNotifications } from './useInstallNotifications';
@@ -2102,8 +2102,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         </main>
       )}
 
-      <PermissionPopup
-        queue={permQueue}
+      <InteractionPopup
+        perms={permQueue}
+        questions={questionQueue}
+        exitPlans={exitPlanQueue}
         currentSessionId={selectedId}
         onRespond={respondPermissionCrossSession}
         onSwitchSession={(id) => openSessionById(id, false)}
