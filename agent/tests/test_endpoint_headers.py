@@ -43,11 +43,12 @@ class EndpointHeaderTests(unittest.TestCase):
             finally:
                 relay.stop()
 
-    def test_probe_shares_identity_across_catalog_tool_and_result(self):
+    def test_probe_shares_identity_across_tool_and_result_without_discovery(self):
         seen = []
         def request(endpoint, path, body=None):
             seen.append(endpoint['_probe_session'])
-            if body is None: return {'data': []}
+            self.assertIsNotNone(body)
+            self.assertEqual(path, '/v1/messages')
             if len(body['messages']) == 1:
                 return [{'type': 'message_start'}, {'type': 'content_block_start', 'index': 0,
                     'content_block': {'type': 'tool_use', 'id': 'call', 'name': 'endpoint_check', 'input': {'value': 'connection-test'}}},
@@ -55,7 +56,7 @@ class EndpointHeaderTests(unittest.TestCase):
             return [{'type': 'content_block_delta', 'delta': {'text': 'OK'}}, {'type': 'message_stop'}]
         with patch('charon_agent.custom_endpoints._request', side_effect=request):
             self.assertTrue(_probe(self.endpoint, 'claude', 'test')['ok'])
-        self.assertEqual(len(seen), 3)
+        self.assertEqual(len(seen), 2)
         self.assertEqual(len(set(seen)), 1)
         self.assertNotIn('_probe_session', self.endpoint)
 

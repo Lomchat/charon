@@ -1,0 +1,20 @@
+[
+  {
+    "name": "OpenRouter",
+    "baseUrl": "https://openrouter.ai/api",
+    "modelsPath": "/v1/models",
+    "docs": "https://openrouter.ai/docs/api/api-reference/models/get-models"
+  },
+  {
+    "name": "OpenCode Go",
+    "baseUrl": "https://opencode.ai/zen/go",
+    "modelsPath": "/v1/models",
+    "docs": "https://opencode.ai/docs/go/#models"
+  },
+  {
+    "name": "OpenCode Zen",
+    "baseUrl": "https://opencode.ai/zen",
+    "modelsPath": "/v1/models",
+    "docs": "https://opencode.ai/docs/zen/#models"
+  }
+]

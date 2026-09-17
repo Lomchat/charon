@@ -7,6 +7,7 @@ import sys
 import threading
 import unittest
 import urllib.request
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -93,6 +94,23 @@ class EndpointProxyBodyTests(unittest.TestCase):
             self.assertEqual(self.received, [])
         finally:
             connection.close()
+
+    def test_sdk_model_listing_for_unknown_providers_is_local_only(self):
+        for base in ('https://fal.run/openrouter/router/openai', 'http://localhost:8000'):
+            endpoint = {'baseUrl': base, 'auth': 'bearer', 'token': 'never-forward-this', 'model': 'configured-model'}
+            relay = EndpointProxy(lambda: endpoint, 'codex')
+            self.relays.append(relay)
+            conn = http.client.HTTPConnection('127.0.0.1', relay.server.server_port, timeout=3)
+            try:
+                with patch('charon_agent.endpoint_proxy.urllib.request.build_opener') as upstream:
+                    conn.request('GET', '/v1/models?client_version=test', headers={'Authorization': 'Bearer ' + relay.token})
+                    response = conn.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.loads(response.read()), {'object': 'list', 'data': [
+                        {'id': 'configured-model', 'object': 'model', 'owned_by': 'custom'}]})
+                    upstream.assert_not_called()
+            finally:
+                conn.close()
 
 
 if __name__ == '__main__': unittest.main()

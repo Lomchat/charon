@@ -1,4 +1,5 @@
 import type { EndpointModel } from './customEndpoints';
+import { providerName } from './providerText';
 
 const DAY = 86_400_000;
 /** Catalog release dates, never the provider's catalog-entry creation timestamp. */
@@ -15,7 +16,7 @@ export function isNewEndpointModel(model: EndpointModel, now = Date.now()): bool
 }
 const FAMILIES: Record<string, string> = {
   deepseek: 'DeepSeek', qwen: 'Qwen', minimax: 'MiniMax', kimi: 'Kimi', gpt: 'GPT',
-  claude: 'Claude', gemini: 'Gemini', glm: 'GLM', grok: 'Grok', mimo: 'MiMo',
+  claude: providerName('claude'), gemini: 'Gemini', glm: 'GLM', grok: 'Grok', mimo: 'MiMo',
   longcat: 'LongCat', hy: 'Hunyuan', muse: 'Muse', llama: 'Llama', mistral: 'Mistral',
 };
 /** Display grouping only: a name must never grant API compatibility or controls. */
