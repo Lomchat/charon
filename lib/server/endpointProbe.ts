@@ -4,6 +4,7 @@ import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { endpointToken, type StoredEndpoint } from './customEndpoints';
 import type { EndpointEngine, EndpointCheck, EndpointModel } from '@/lib/customEndpoints';
 import { enrichEndpoint } from './opencodeModels';
+import { endpointCatalog, NO_ENDPOINT_CATALOG } from '@/lib/endpointDiscovery';
 
 export type ProbeResult = { ok: boolean; models: EndpointModel[]; check?: EndpointCheck; catalogError?: string };
 const cache = new Map<string, { at: number; result: ProbeResult }>();
@@ -31,7 +32,16 @@ export function withEndpointChecks(endpoint: StoredEndpoint, vpsId: string): Sto
   return copy;
 }
 export async function probeEndpoint(endpoint: StoredEndpoint, engine: EndpointEngine, vpsId: string, action: 'models' | 'test'): Promise<ProbeResult> {
-  const result = await getAgentClientForVpsId(vpsId).call<ProbeResult>('endpoint_probe', {
+  if (action === 'models' && !endpointCatalog(endpoint.baseUrl)) {
+    return { ok: false, models: [], catalogError: NO_ENDPOINT_CATALOG };
+  }
+  const client = getAgentClientForVpsId(vpsId);
+  // Older probes always guessed /v1/models, even for a tools-only test.
+  const capability = await client.call<{ capabilities?: string[] }>('endpoint_probe', { action: 'capability' });
+  if (!capability.capabilities?.includes('endpoint_discovery')) {
+    throw new Error('Update the agent on this VPS to test endpoints or load models without automatic discovery requests.');
+  }
+  const result = await client.call<ProbeResult>('endpoint_probe', {
     engine, action, endpoint: { ...endpoint, secret: undefined, token: endpointToken(endpoint) },
   });
   result.models = (await enrichEndpoint({ ...endpoint, models: result.models })).models ?? result.models;

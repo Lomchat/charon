@@ -8,7 +8,7 @@ process.env.DATABASE_URL = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'char
 process.env.MASTER_PASSWORD = 'endpoint-test-password';
 process.env.MASTER_SALT = '00112233445566778899aabbccddeeff';
 vi.mock('server-only', () => ({}));
-const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[], probe: null as any, parameters: true }));
+const runtime = vi.hoisted(() => ({ status: 'active', sleepBusy: false, calls: [] as any[], resumes: [] as string[], probe: null as any, parameters: true, discovery: true }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalSessionListChanged: vi.fn(),
   peekStream: () => ({ status: runtime.status, hasRunningBgTasks: () => false }),
@@ -18,7 +18,7 @@ vi.mock('@/lib/server/claude/sessionInsightSnapshot', () => ({ invalidateSession
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => ({
   status: 'connected', call: async (method: string, params: any) => {
     runtime.calls.push({ method, params });
-    if (method === 'endpoint_probe' && params.action === 'capability') return { capabilities: runtime.parameters ? ['custom_endpoints', 'endpoint_parameters'] : ['custom_endpoints'] };
+    if (method === 'endpoint_probe' && params.action === 'capability') return { capabilities: ['custom_endpoints', ...(runtime.parameters ? ['endpoint_parameters'] : []), ...(runtime.discovery ? ['endpoint_discovery'] : [])] };
     if (method === 'endpoint_probe' && runtime.probe) return runtime.probe;
     if (method === 'list_sessions') return { sessions: [{ session_id: 'one', status: runtime.status }] };
     if (method === 'sleep_session') return { ok: !runtime.sleepBusy, busy: runtime.sleepBusy };
@@ -41,6 +41,24 @@ beforeAll(async () => {
 const input = { name: 'Local', baseUrl: 'http://localhost:8000/v1/messages', auth: 'bearer' as const, token: 'test-secret-token', model: 'custom-model' };
 function row(id = 'one') { return database.db.select().from(database.claudeSessions).all().find((r) => r.id === id)!; }
 describe('custom endpoint isolation', () => {
+  it('does not dispatch discovery for unknown providers or unsafe probes to old agents', async () => {
+    const { probeEndpoint } = await import('@/lib/server/endpointProbe');
+    for (const baseUrl of ['http://localhost:8000', 'https://fal.run/openrouter/router/openai', 'https://openrouter.ai/other']) {
+      runtime.calls = [];
+      const result = await probeEndpoint(store.parseEndpoint({ ...input, baseUrl }), 'codex', 'test', 'models');
+      expect(result.ok).toBe(false);
+      expect(result.catalogError).toContain('not available');
+      expect(runtime.calls).toEqual([]);
+    }
+    runtime.discovery = false;
+    try {
+      for (const action of ['test', 'models'] as const) {
+        runtime.calls = [];
+        await expect(probeEndpoint(store.parseEndpoint({ ...input, baseUrl: 'https://openrouter.ai/api' }), 'codex', 'test', action)).rejects.toThrow('Update the agent');
+        expect(runtime.calls).toEqual([{ method: 'endpoint_probe', params: { action: 'capability' } }]);
+      }
+    } finally { runtime.discovery = true; }
+  });
   it('normalizes roots and copied API paths; rejects credential-bearing URLs', () => {
     expect(normalizeEndpointUrl(input.baseUrl)).toBe('http://localhost:8000');
     expect(normalizeEndpointUrl('https://gateway.example/api/v1/responses')).toBe('https://gateway.example/api');

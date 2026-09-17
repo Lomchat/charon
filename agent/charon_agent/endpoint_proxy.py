@@ -20,6 +20,7 @@ from .endpoint_usage import EndpointUsage
 from .endpoint_images import EndpointImages, ImageBudgetError
 from .endpoint_headers import endpoint_headers
 from .endpoint_parameters import apply_parameters
+from .endpoint_catalogs import endpoint_catalog
 
 
 # A model request carries the whole conversation, including base64 screenshots.
@@ -60,15 +61,34 @@ class EndpointProxy:
                     if size < 0 or size > MAX_REQUEST_BYTES:
                         self.send_error(413, "Custom endpoint request exceeds the 256 MiB relay limit"); return
                     endpoint = owner.endpoint()
+                    # Native clients can request /models themselves. Unknown providers
+                    # get the configured model locally; no guessed request reaches them.
+                    path = self.path
+                    if self.command == "GET" and self.path.split("?", 1)[0].rstrip("/") == "/v1/models":
+                        route = endpoint_catalog(endpoint.get("baseUrl", ""))
+                        if route is None:
+                            model = endpoint.get("model")
+                            payload = json.dumps({"object": "list", "data": [
+                                {"id": model, "object": "model", "owned_by": "custom"}
+                            ] if model else []}).encode()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(payload)))
+                            self.end_headers()
+                            self.wfile.write(payload)
+                            return
+                        path = route["modelsPath"]
+                        if "?" in self.path:
+                            path += "?" + self.path.split("?", 1)[1]
                     data = self.rfile.read(size) if self.command == "POST" else None
                     if data:
                         body = request_body(json.loads(data), endpoint, owner.engine, effort())
                         data = json.dumps(owner.images.prepare(body, endpoint)).encode()
-                    headers = endpoint_headers(endpoint, self.path, owner.session_id)
+                    headers = endpoint_headers(endpoint, path, owner.session_id)
                     for key in ("anthropic-version", "anthropic-beta", "Accept"):
                         if self.headers.get(key): headers[key] = self.headers[key]
                     # No ambient SDK auth or provider-account headers cross this boundary.
-                    req = urllib.request.Request(endpoint["baseUrl"].rstrip("/") + self.path, data=data, headers=headers, method=self.command)
+                    req = urllib.request.Request(endpoint["baseUrl"].rstrip("/") + path, data=data, headers=headers, method=self.command)
                     if self.command == "POST" and self.path.split("?", 1)[0] in ("/v1/responses", "/v1/messages"):
                         usage = EndpointUsage(owner.engine)
                     try:

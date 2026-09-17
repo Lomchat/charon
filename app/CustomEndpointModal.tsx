@@ -11,6 +11,7 @@ import PickerControl, { PickerOption } from './PickerControl';
 import EndpointModelPicker from './EndpointModelPicker';
 import AgentLogo from './AgentLogo';
 import { IconPlug } from './icons';
+import { endpointCatalog, NO_ENDPOINT_CATALOG } from '@/lib/endpointDiscovery';
 
 export default function CustomEndpointModal({ sessionId, engine: initialEngine, vpsId: initialVpsId, vpsList = [], initial, editingId, focusTest, onClose, onApplied }: {
   sessionId?: string; engine: EndpointEngine; vpsId?: string; vpsList?: Vps[];
@@ -48,6 +49,7 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
     && !token && (auth === 'none' || hasToken);
   const showSave = !!sessionId && (!sameConnection || name.trim() !== source?.name);
   const showAuth = authOpen || !source || (auth !== 'none' && !hasToken);
+  const catalog = endpointCatalog(baseUrl);
   useEffect(() => {
     api.listCustomEndpoints().then((r) => setSaved(r.endpoints)).catch((e) => setError(e.message));
     const previous = document.activeElement as HTMLElement | null;
@@ -151,14 +153,15 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
           </div>
           <div className="endpoint-model-heading"><label htmlFor="endpoint-model-id">Model ID</label>
             <div className="endpoint-model-mode" role="group" aria-label="Model input mode">
-              <button type="button" aria-pressed={showModelList} disabled={!!busy || !modelChoices.length} title={modelChoices.length ? 'Choose a model from the list' : 'Load models to enable the list'} onClick={() => setModelInputMode('list')}>List</button>
+              <button type="button" aria-pressed={showModelList} disabled={!!busy || !modelChoices.length} title={modelChoices.length ? 'Choose a model from the list' : catalog ? 'Load models to enable the list' : 'No saved model list'} onClick={() => setModelInputMode('list')}>List</button>
               <button type="button" aria-pressed={!showModelList} disabled={!!busy} onClick={() => setModelInputMode('manual')}>Custom ID</button>
             </div>
           </div>
           <div className="endpoint-model-field">{showModelList
             ? <EndpointModelPicker id="endpoint-model-id" aria-label="Model ID" endpoint={{ name, baseUrl, auth, model, models }} kind={engine} value={model} disabled={!!busy} onChange={(v) => { setModel(v); changed(); }} />
             : <input id="endpoint-model-id" value={model} placeholder="Exact model ID" maxLength={256} autoComplete="off" spellCheck={false} disabled={!!busy} onChange={(e) => { setModel(e.target.value); changed(); }} />}
-            <button type="button" className="endpoint-btn" disabled={!!busy || !baseUrl || !vpsId || (auth !== 'none' && !token && !hasToken)} onClick={() => probe('models')}>{busy === 'models' ? 'Loading…' : 'Load models'}</button></div>
+            {catalog && <button type="button" className="endpoint-btn" title={`Load the ${catalog.name} model catalog`} disabled={!!busy || !vpsId || (auth !== 'none' && !token && !hasToken)} onClick={() => probe('models')}>{busy === 'models' ? 'Loading…' : 'Load models'}</button>}</div>
+          {baseUrl.trim() && !catalog && <p className="set-meta">{NO_ENDPOINT_CATALOG}</p>}
           {result && !result.check && <p className="set-meta" role="status">{result.models.length ? `${result.models.length} models found. Choose a model above.` : result.catalogError}</p>}
         </section>
         <section className="endpoint-form-section endpoint-compatibility" aria-label="Compatibility">

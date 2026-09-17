@@ -12,6 +12,7 @@ from typing import Any
 
 from .endpoint_responses import response_event
 from .endpoint_headers import endpoint_headers
+from .endpoint_catalogs import endpoint_catalog, NO_CATALOG
 
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -52,12 +53,15 @@ def _request(endpoint: dict, path: str, body: dict | None = None) -> Any:
 
 
 def catalog(endpoint: dict) -> list[dict]:
-    result = _request(endpoint, "/v1/models")
+    route = endpoint_catalog(endpoint.get("baseUrl", ""))
+    if route is None:
+        raise ValueError(NO_CATALOG)
+    result = _request({**endpoint, "baseUrl": route["baseUrl"]}, route["modelsPath"])
     models = []
     for item in result.get("data", [])[:500]:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str): continue
         model: dict = {"id": item["id"][:256]}
-        context = item.get("max_model_len") or item.get("context_window")
+        context = item.get("max_model_len") or item.get("context_window") or item.get("context_length")
         if isinstance(context, int) and 0 < context <= 100_000_000: model["contextWindow"] = context
         # A generic /models list usually cannot advertise reasoning support.
         levels = item.get("supported_reasoning_efforts")
@@ -90,11 +94,17 @@ def _message_blocks(events: list[dict]) -> list[dict]:
 
 def _probe(endpoint: dict, engine: str, action: str) -> dict:
     endpoint = {**endpoint, "_probe_session": "probe-" + secrets.token_hex(16)}
-    models = []
-    catalog_error = None
-    try: models = catalog(endpoint)
-    except Exception: catalog_error = "Model discovery unavailable; enter a model ID manually."
-    if action == "models": return {"ok": True, "models": models, "catalogError": catalog_error}
+    # Discovery is an explicit action, never a side effect of testing inference.
+    if action == "models":
+        if not endpoint_catalog(endpoint.get("baseUrl", "")):
+            return {"ok": False, "models": [], "catalogError": NO_CATALOG}
+        try:
+            return {"ok": True, "models": catalog(endpoint)}
+        except Exception:
+            return {"ok": False, "models": [], "catalogError": "Model discovery unavailable; enter a model ID manually."}
+    if action != "test":
+        raise ValueError("Unsupported endpoint probe action")
+    models = endpoint.get("models") or []
     model = str(endpoint.get("model") or "")
     check: dict = {"ok": False, "engine": engine, "model": model, "streaming": False, "tools": False}
     schema = {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"], "additionalProperties": False}
@@ -139,7 +149,7 @@ def _probe(endpoint: dict, engine: str, action: str) -> dict:
     for key in ("effortLevels", "contextWindow"):
         if key in metadata: check[key] = metadata[key]
     if not check["ok"]: check["error"] = "The endpoint did not complete the streaming tool round trip."
-    return {"ok": check["ok"], "models": models, "check": check, "catalogError": catalog_error}
+    return {"ok": check["ok"], "models": models, "check": check}
 
 
 async def probe(endpoint: dict, engine: str, action: str = "test") -> dict:
