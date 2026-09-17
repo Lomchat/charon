@@ -3270,6 +3270,20 @@
   -webkit-user-select: text;
 }
 .perm-card *::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--text); }
+/* What kind of interaction this is, said in colour before it is said in words.
+   The popup borrows the hue of the inline card it points at — `--danger` for a
+   permission (the default above), `--lavender` for a question or a plan, as
+   `.user-question-card` and `.exit-plan-card` use — so glancing at the corner
+   is enough to know whether you are being asked to approve or to answer. */
+.perm-card.kind-question,
+.perm-card.kind-exit_plan { border-color: var(--lavender); }
+/* `--bg` rather than the inherited light `--text`: lavender is the light token
+   in the dark themes and the dark one in the light themes, so the ground
+   inverts with it and the count stays legible either way. */
+.perm-card.kind-question .badge,
+.perm-card.kind-exit_plan .badge { background: var(--lavender); color: var(--bg); }
+.perm-card.kind-question .title,
+.perm-card.kind-exit_plan .title { color: var(--lavender); }
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(20px); }
   to   { opacity: 1; transform: translateX(0); }
@@ -3291,11 +3305,35 @@
   color: var(--danger);
 }
 .perm-card .switch {
-  margin-left: auto;
   background: var(--bg-inset); border: 1px solid var(--border);
   color: var(--accent-strong); font-family: var(--display);
   font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
   padding: 3px 8px; cursor: pointer;
+}
+/* "Not now". Hides the card; the interaction stays pending and the sidebar
+   lock stays lit, so this is never mistaken for answering. */
+.perm-card .dismiss {
+  margin-left: auto;
+  background: none; border: none;
+  color: var(--text-muted); font-size: 15px; line-height: 1;
+  padding: 0 2px; cursor: pointer;
+}
+.perm-card .dismiss:hover { color: var(--text); }
+/* Which machine and which session is asking — a truncated id named the row to
+   the database and to nobody else. */
+.perm-card .perm-origin {
+  font-family: var(--display); font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.perm-card .perm-origin .o-session { color: var(--text); }
+/* Upstream's original identifier, kept under the names: useless for telling
+   sessions apart at a glance, but it is the handle logs and URLs use. */
+.perm-card .perm-origin-id {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--text-muted); opacity: 0.7;
+  margin-bottom: 8px;
 }
 .perm-card .tool-name {
   font-family: var(--mono); font-size: 14px;
