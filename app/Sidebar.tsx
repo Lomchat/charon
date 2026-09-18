@@ -133,11 +133,6 @@ type Props = {
   // recently finished (max 1 per VPS, cf. installSession.ts).
   installs: InstallInfo[];
   selectedId: string | null;
-  /** Explicitly replace the bulk selection with this session. Used when a
-   *  newly-created row becomes active without a sidebar click gesture. */
-  resetSessionSelectionTo?: string | null;
-  /** Clears the one-shot reset request after Sidebar has applied it. */
-  onSessionSelectionReset?: (sessionId: string) => void;
   selectedShellId: string | null;
   selectedInstallId: string | null;
   /** The active tab-row group. Every session/shell at this exact VPS + path
@@ -214,7 +209,7 @@ export const AGENT_BADGE: Record<string, { glyph: string; label: string }> = {
 export default function Sidebar({
   vpsList, vpsFolders, sessions, shells, installs,
   deletingSessionIds = new Set(),
-  selectedId, resetSessionSelectionTo, onSessionSelectionReset,
+  selectedId,
   selectedShellId, selectedInstallId,
   activeWorkspace = null,
   toolbarSlot, isEntityShown,
@@ -246,25 +241,21 @@ export default function Sidebar({
   // workspace tab; this set is only what a bulk context action targets.
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const sessionSelectionAnchor = useRef<string | null>(null);
+  // Opening a session collapses the selection onto it, whatever opened it — a
+  // plain click here, the header nav, a notification, a tab, a new row. Kept
+  // on `selectedId` rather than plumbed through every caller: the tab bridge
+  // is the ONE place they all pass through, and a leftover highlight on the
+  // session you just left reads as two selected cards (it is even louder,
+  // cf. `.cs-card.multi-selected`). Ctrl/Shift build a multi-selection without
+  // navigating, so this cannot erase one.
   useEffect(() => {
     if (!selectedId) return;
     setSelectedSessionIds((current) => {
-      const next = reconcileSidebarSessionSelection(current, selectedId, false);
+      const next = reconcileSidebarSessionSelection(current, selectedId);
       if (next !== current) sessionSelectionAnchor.current = selectedId;
       return next;
     });
   }, [selectedId]);
-  useEffect(() => {
-    if (!resetSessionSelectionTo) return;
-    setSelectedSessionIds((current) => reconcileSidebarSessionSelection(
-      current, resetSessionSelectionTo, true,
-    ));
-    sessionSelectionAnchor.current = resetSessionSelectionTo;
-    onSessionSelectionReset?.(resetSessionSelectionTo);
-    // The acknowledgement callback is deliberately omitted: this effect is a
-    // one-shot request keyed only by the requested session id.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetSessionSelectionTo]);
   useEffect(() => {
     const live = new Set(sessions.map((session) => session.id));
     setSelectedSessionIds((current) => {
