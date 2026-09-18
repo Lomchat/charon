@@ -168,9 +168,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // a notification tap lands on the shell, not the first chat.
   const queryParamShell = searchParams?.get('shell') ?? null;
   const [sessions, setSessions] = useState<SessionListItem[]>(initialSessions as SessionListItem[]);
-  // Creating/importing a session bypasses Sidebar's normal plain-click
-  // gesture. Tell it which row must replace the previous bulk selection.
-  const [sidebarSelectionTarget, setSidebarSelectionTarget] = useState<string | null>(null);
 
   // Stable Charon addresses are persisted independently from display names.
   // Keep sleeping targets visible in identity surfaces; `addressable` below
@@ -620,7 +617,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
    * finds nothing and the session the user just created opens nowhere.
    */
   function applyCreatedSession(c: { id: string; vpsId: string; cwd: string }) {
-    setSidebarSelectionTarget(c.id);
     openEntityTab('session', c.id, c.vpsId, c.cwd, true);
     refreshSessions();
     closeDrawers();
@@ -1845,10 +1841,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         shells={shells}
         installs={installs}
         selectedId={selectedId}
-        resetSessionSelectionTo={sidebarSelectionTarget}
-        onSessionSelectionReset={(id) => setSidebarSelectionTarget((current) => (
-          current === id ? null : current
-        ))}
         selectedShellId={selectedShellId}
         selectedInstallId={selectedInstallId}
         activeWorkspace={activeTab ? { vpsId: activeTab.vpsId, path: activeTab.path } : null}
