@@ -45,7 +45,7 @@ export function isBgTaskDone(
 
 /** taskId → startedAt (unix seconds), rebuilt from the persisted event rows.
  *  Full-history scan: cheap enough at the call rate (stream hydration once per
- *  session, and one auto-update tick every 30 min), and the alternative is a
+ *  session, and one auto-update tick every 15 min), and the alternative is a
  *  column that can silently disagree with the rows it is derived from. */
 type BgTaskRow = { content: string; createdAt: number; seq: number | null; tsMs: number | null };
 

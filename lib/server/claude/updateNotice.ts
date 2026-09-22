@@ -8,7 +8,7 @@
 //     summary repeated the same 4-version tuple after each of 9 VPS names, on
 //     a single line — the only varying token was the name.
 //  2. Only report what the reader can act on. A VPS that fails the same way
-//     every 30min (the transient-failure retry, sdkWatch.ts) is ONE piece of
+//     every tick (the transient-failure retry, sdkWatch.ts) is ONE piece of
 //     news, not one per tick — hence the ledger below.
 
 /** A VPS row in the "✓ updated" list. `detail` is set only when the result

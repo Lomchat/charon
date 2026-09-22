@@ -60,11 +60,26 @@ import { runningBgTasksFromDb, pruneStaleBgTasks } from './bgTaskState';
 // that no longer happens.
 const AGENT_LAST_NOTIFIED_KEY: SettingKey = 'agent.last_notified_agent_version';
 
-const TICK_MS = 30 * 60 * 1000; // 30min — cheap probes (SQLite + one PyPI CDN hit)
+// 15min, ON THE QUARTER HOUR (:00/:15/:30/:45) rather than 15min after
+// whenever this process happened to boot — a fleet whose update time is a
+// property of the last Charon restart is one nobody can reason about. The
+// probes are cheap (SQLite + one CDN hit per declared line), so the cadence is
+// set by how fast a new release should reach the fleet, not by their cost.
+const TICK_MS = 15 * 60 * 1000;
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000; // ~2min after boot (let agents hello first)
 
+/** ms until the next wall-clock slot. Epoch ms is aligned to the hour and
+ *  TICK_MS divides an hour, so flooring the epoch IS the slot boundary — no
+ *  Date arithmetic, and no drift accumulating over a long-lived process. */
+function msToNextSlot(): number {
+  return TICK_MS - (Date.now() % TICK_MS);
+}
+
 type SdkWatchState = {
-  timer: ReturnType<typeof setInterval> | null;
+  // A self-rescheduling TIMEOUT, not an interval: a tick can run for minutes
+  // (serial pip installs across the fleet), and the next slot is computed when
+  // it FINISHES — so a long tick skips its slot instead of queueing a second.
+  timer: ReturnType<typeof setTimeout> | null;
   firstRun: ReturnType<typeof setTimeout> | null;
   ticking: boolean;
   // `${vpsId}@${version}` → ts of the auto-update ATTEMPT (busy skips are
@@ -111,9 +126,18 @@ export function armSdkAutoUpdate(): void {
   g._sdkWatch = state;
   state.firstRun = setTimeout(() => { void tick(); }, FIRST_RUN_DELAY_MS);
   state.firstRun.unref?.();
-  state.timer = setInterval(() => { void tick(); }, TICK_MS);
-  state.timer.unref?.();
-  console.log(`[sdkWatch] armed (first check in ~2min, then every ${Math.round(TICK_MS / 60000)}min)`);
+  scheduleNextSlot(state);
+  console.log(`[sdkWatch] armed (first check in ~2min, then every ${Math.round(TICK_MS / 60000)}min on the quarter hour)`);
+}
+
+/** Arm the next quarter-hour slot, and re-arm from the tick's own completion.
+ *  Guarded on identity: a state replaced by a re-arm must not keep a timer. */
+function scheduleNextSlot(state: SdkWatchState): void {
+  const t = setTimeout(() => {
+    void tick().finally(() => { if (g._sdkWatch === state) scheduleNextSlot(state); });
+  }, msToNextSlot());
+  t.unref?.();
+  state.timer = t;
 }
 
 // A VPS whose sessions merely EXIST must still auto-update: the update flow
@@ -425,7 +449,7 @@ async function tick(): Promise<void> {
       } else {
         // ok:false = deploy/restart/ping failed (the pyz did NOT swap).
         // Reported on a CHANGE of state only: the transient retry below fires
-        // this same failure every 30min, and nine identical Telegram lines for
+        // this same failure every tick, and nine identical Telegram lines for
         // one broken VPS is exactly the noise this ledger exists to stop.
         failed.push({
           name: v.name,
@@ -448,7 +472,7 @@ async function tick(): Promise<void> {
 
     // Batch summary — only when there is NEWS: something updated, or a failure
     // not already reported for this exact target. A busy-only tick, or one
-    // that merely re-fails the same way as 30min ago, stays silent; those
+    // that merely re-fails the same way as the last one, stays silent; those
     // VPSes remain badge-lit in the sidebar either way.
     if (updated.length > 0 || failed.some((f) => !f.repeated)) {
       const text = formatUpdateSummary({
