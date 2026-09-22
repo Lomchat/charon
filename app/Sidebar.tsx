@@ -135,6 +135,11 @@ type Props = {
   selectedId: string | null;
   selectedShellId: string | null;
   selectedInstallId: string | null;
+  /** The OPEN tab's entity id, whatever its kind. ⚠ Not derivable from the
+   *  three above: a FILE tab has no sidebar row, so they are all null exactly
+   *  as when nothing is open — and the two answers differ for the selection
+   *  (`sidebarSessionSelection.ts`). */
+  openTabRef?: string | null;
   /** The active tab-row group. Every session/shell at this exact VPS + path
    *  receives the workspace ring, independently of which entity is open. */
   activeWorkspace?: WorkspaceScope | null;
@@ -211,6 +216,7 @@ export default function Sidebar({
   deletingSessionIds = new Set(),
   selectedId,
   selectedShellId, selectedInstallId,
+  openTabRef = null,
   activeWorkspace = null,
   toolbarSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
@@ -242,20 +248,20 @@ export default function Sidebar({
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const sessionSelectionAnchor = useRef<string | null>(null);
   // Opening a session collapses the selection onto it, whatever opened it — a
-  // plain click here, the header nav, a notification, a tab, a new row. Kept
-  // on `selectedId` rather than plumbed through every caller: the tab bridge
-  // is the ONE place they all pass through, and a leftover highlight on the
-  // session you just left reads as two selected cards (it is even louder,
-  // cf. `.cs-card.multi-selected`). Ctrl/Shift build a multi-selection without
-  // navigating, so this cannot erase one.
+  // plain click here, the header nav, a notification, a tab, a new row — and
+  // opening anything ELSE (shell, install, file) empties it: the open tab is
+  // the only selected row. Kept on the tab ids rather than plumbed through
+  // every caller: the tab bridge is the ONE place they all pass through, and a
+  // leftover highlight on the session you just left reads as two selected
+  // cards (it is even louder, cf. `.cs-card.multi-selected`). Ctrl/Shift build
+  // a multi-selection without navigating, so this cannot erase one.
   useEffect(() => {
-    if (!selectedId) return;
     setSelectedSessionIds((current) => {
-      const next = reconcileSidebarSessionSelection(current, selectedId);
+      const next = reconcileSidebarSessionSelection(current, selectedId, openTabRef);
       if (next !== current) sessionSelectionAnchor.current = selectedId;
       return next;
     });
-  }, [selectedId]);
+  }, [selectedId, openTabRef]);
   useEffect(() => {
     const live = new Set(sessions.map((session) => session.id));
     setSelectedSessionIds((current) => {

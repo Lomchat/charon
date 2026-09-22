@@ -1843,6 +1843,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         selectedId={selectedId}
         selectedShellId={selectedShellId}
         selectedInstallId={selectedInstallId}
+        openTabRef={activeTab?.ref ?? null}
         activeWorkspace={activeTab ? { vpsId: activeTab.vpsId, path: activeTab.path } : null}
         onSelect={selectClaude}
         onSelectShell={selectShell}
