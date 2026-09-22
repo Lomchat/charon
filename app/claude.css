@@ -186,6 +186,14 @@
   border-radius: var(--radius-xl); background: var(--bg);
   box-shadow: 0 14px 40px color-mix(in srgb, var(--shadow-color) 35%, transparent);
 }
+/* The panel opens on HOVER, and the 8px between it and the trigger is a hole
+   the pointer would fall through on the way down — an invisible bridge over
+   exactly that gap keeps the trip inside the menu. It sits on the WRAPPER, so
+   it is the trigger's own width and never wider, and only while the panel is
+   open: a permanent one would eat clicks on the header strip below. */
+.hnav.is-open::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 9px;
+}
 .hnav-section + .hnav-section { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
 /* The full list is the only part that scrolls: the sections above it are
    bounded by design (what runs, the last five), so they must never be pushed

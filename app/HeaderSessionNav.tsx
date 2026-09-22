@@ -20,6 +20,11 @@ import { isWorkingStatus, showsUnreadCue } from './sessionUnread';
  *  scroll away in the full list, which is the point of having both. */
 const FINISHED_SHOWN = 5;
 
+/** The pointer leaving the trigger AND the panel closes it — after a grace long
+ *  enough to walk the gap between the two. The CSS bridge (`.hnav-panel::before`)
+ *  covers that gap geometrically; this covers the pointer that cuts a corner. */
+const HOVER_CLOSE_MS = 160;
+
 /** One reading per row, computed once: the CSS class, the word in the tooltip
  *  and whether the unread pulse applies all come from it. */
 type NavState = 'needs-you' | 'working' | 'error' | 'idle' | 'ready';
@@ -99,6 +104,36 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
   const [query, setQuery] = useState('');
   const wrap = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // How the panel opened decides whether the keyboard follows it: a hover is not
+  // a request for focus (see the focus effect below).
+  const opened = useRef<'hover' | 'click'>('click');
+
+  function cancelClose() {
+    if (closeTimer.current === null) return;
+    clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }
+  // A coarse pointer synthesizes `mouseenter` on TAP, so hover-to-open would
+  // open the panel and let the tap's own click close it again. Hovering is a
+  // fine-pointer gesture; touch keeps the click toggle it always had.
+  function hoverOpens() {
+    return !window.matchMedia?.('(pointer: coarse)').matches;
+  }
+  function onPointerEnter() {
+    if (!hoverOpens()) return;
+    cancelClose();
+    if (!open) { opened.current = 'hover'; setOpen(true); }
+  }
+  function onPointerLeave() {
+    if (!hoverOpens()) return;
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setOpen(false);
+    }, HOVER_CLOSE_MS);
+  }
+  useEffect(() => cancelClose, []);
 
   useEffect(() => {
     if (!open) return;
@@ -113,11 +148,14 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
       document.removeEventListener('mousedown', onDown);
     };
   }, [open]);
-  // Opening lands on the search box; closing forgets the query, so the panel
-  // always reopens on the live picture rather than on an old filter.
+  // Opening ON PURPOSE lands on the search box; closing forgets the query, so
+  // the panel always reopens on the live picture rather than on an old filter.
+  // A hover opens nothing the keyboard asked for — the pointer can cross the
+  // trigger while you are typing in the chat box, and pulling focus out of it
+  // would eat the next keystrokes.
   useEffect(() => {
-    if (open) search.current?.focus({ preventScroll: true });
-    else setQuery('');
+    if (!open) { setQuery(''); return; }
+    if (opened.current === 'click') search.current?.focus({ preventScroll: true });
   }, [open]);
 
   const rows = useMemo(
@@ -156,14 +194,17 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
   const rowProps = { onPick: pick, selectedId, vpsName };
 
   return (
-    <div className="hnav" ref={wrap}>
+    // The panel is a CHILD of the wrapper, so walking from the trigger into the
+    // list never leaves this element: one enter/leave pair drives both.
+    <div className={`hnav${open ? ' is-open' : ''}`} ref={wrap}
+      onMouseEnter={onPointerEnter} onMouseLeave={onPointerLeave}>
       <button
         type="button"
         // Orange outranks green: one is a question blocking a session, the
         // other a page waiting to be read. Same precedence the card applies.
         className={`hnav-trigger${open ? ' is-open' : ''}${
           waitingCount ? ' has-waiting' : unreadCount ? ' has-unread' : ''}`}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => { cancelClose(); opened.current = 'click'; setOpen((v) => !v); }}
         aria-expanded={open}
         aria-haspopup="menu"
         title={[
