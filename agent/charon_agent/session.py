@@ -173,6 +173,39 @@ def _num(v: Any) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
+_USAGE_WINDOWS = ("five_hour", "seven_day", "seven_day_overage_included")
+
+
+def _unified_windows(info: Any) -> dict[str, dict[str, float]] | None:
+    """Per-window subscription usage off a RateLimitEvent → {name: {utilization,
+    resets_at}}, or None.
+
+    The CLI reads it from the anthropic-ratelimit-unified-* headers of every
+    API response and re-emits the event whenever a window's rounded percentage
+    or reset moves (`rate_limit_info.unifiedWindows`, seen on CLI 2.1.280; the
+    Python SDK only exposes it through `raw`). `utilization` is the CLI's
+    FRACTION (0-1, may exceed 1), `resets_at` unix seconds. Absent on API-key
+    accounts and older CLIs — the hub then keeps polling. §14.72.
+    """
+    windows = _field(info, "unifiedWindows", "unified_windows")
+    if windows is None:
+        raw = _field(info, "raw")
+        if isinstance(raw, dict):
+            windows = raw.get("unifiedWindows")
+    if not isinstance(windows, dict):
+        return None
+    out: dict[str, dict[str, float]] = {}
+    for name in _USAGE_WINDOWS:
+        w = windows.get(name)
+        if not isinstance(w, dict):
+            continue
+        util, reset = w.get("utilization"), w.get("resetsAt")
+        if (isinstance(util, (int, float)) and not isinstance(util, bool) and util == util
+                and isinstance(reset, (int, float)) and not isinstance(reset, bool)):
+            out[name] = {"utilization": float(util), "resets_at": int(reset)}
+    return out or None
+
+
 def _nested_cache_creation(usage: dict[str, Any]) -> int:
     """Cache-write tokens when the API reports them ONLY under a nested
     `cache_creation` breakdown ({ephemeral_5m_input_tokens, …}) instead of the
@@ -1905,13 +1938,12 @@ class AgentSession:
             elif ev_type == "RateLimitEvent":
                 # Rate-limit state, free and out-of-band-free.
                 #
-                # ⚠ It does NOT carry `utilization` on a subscription account
-                # (measured: None) — §14.58's note still holds, so this can NOT
-                # replace the /api/oauth/usage poll that feeds the percentage
-                # gauges, and §14.72's pacing machinery stays. What it DOES give
-                # is the part that machinery pays the most for: whether we are
-                # limited right now and when the window resets, at zero network
-                # cost and with no 429 to escalate against.
+                # ⚠ The top-level `utilization` is None on a subscription
+                # account (measured). The per-window percentages ride
+                # `unifiedWindows` instead → `windows`, which the hub folds into
+                # the 5h/7d gauges live; the /api/oauth/usage poll remains for
+                # per-model caps (§14.72). Never forwarded from a custom
+                # endpoint: those headers would not describe this account.
                 info = getattr(ev, "rate_limit_info", None) or ev
                 payload: dict[str, Any] = {"event": "rate_limit"}
                 for attr, wire in (
@@ -1924,6 +1956,9 @@ class AgentSession:
                     v = _field(info, attr)
                     if isinstance(v, (str, int, float)):
                         payload[wire] = v
+                windows = _unified_windows(info)
+                if windows and not endpoint_of(getattr(self, "session_config", None) or {}):
+                    payload["windows"] = windows
                 if len(payload) > 1:
                     out.append(payload)
             elif ev_type == "SystemMessage":

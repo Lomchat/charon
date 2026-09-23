@@ -393,6 +393,13 @@ export function setCodexUsagePushHandler(fn: (vpsId: string, detail: unknown) =>
   codexUsagePushHandler = fn;
 }
 
+// A Claude `rate_limit` event's live 5h/7d windows (agent >= 0.98.0) feed the
+// same account gauges the poll does. Same injection pattern. §14.72.
+let usageWindowsHandler: ((vpsId: string, windows: unknown, atMs: number) => void) | null = null;
+export function setUsageWindowsHandler(fn: (vpsId: string, windows: unknown, atMs: number) => void): void {
+  usageWindowsHandler = fn;
+}
+
 let usageResetResolver: ((vpsId: string, kind: AgentKind) => number | null) | null = null;
 export function setUsageResetResolver(fn: (vpsId: string, kind: AgentKind) => number | null): void {
   usageResetResolver = fn;
@@ -1596,12 +1603,16 @@ export class SessionStream {
         break;
       }
       case 'rate_limit':
-        // Free rate-limit state off the stream (agent >= 0.37.0). ⚠ It does NOT
-        // carry `utilization` on a subscription account (measured), so it does
-        // NOT replace the /api/oauth/usage poll behind the percentage gauges —
-        // §14.72's pacing stays. What it adds is the "am I limited right now,
-        // and when does the window reset" half, at zero network cost.
+        // Free rate-limit state off the stream (agent >= 0.37.0): "am I limited
+        // right now, and when does the window reset". The top-level
+        // `utilization` is null on a subscription account; `windows` (agent >=
+        // 0.98.0) carries the 5h/7d percentages and goes straight to the
+        // account gauges — replayed events included, the ingest drops any
+        // reading older than what it shows. §14.72.
         this.latestLimitResetAtMs = normalizeResetAtMs(ev.resets_at) ?? this.latestLimitResetAtMs;
+        if (ev.windows && this.kind === 'claude') {
+          try { usageWindowsHandler?.(this.vpsId, ev.windows, this.currentEventTs ?? Date.now()); } catch {}
+        }
         this._broadcast({
           type: 'rate_limit',
           status: ev.status, window: ev.window,

@@ -253,10 +253,9 @@ class AssistantMessageError(unittest.TestCase):
 
 
 class RateLimitTranslation(unittest.TestCase):
-    """§14.72 hinges on this: the event does NOT carry `utilization` on a
-    subscription account (measured on the fleet, 2026-08), so it can never
-    replace the /api/oauth/usage poll behind the percentage gauges. What it
-    does carry — limited-now + window reset — must survive translation."""
+    """§14.72 hinges on this: the TOP-LEVEL `utilization` is null on a
+    subscription account (measured), so the 5h/7d percentages come from
+    `unifiedWindows` instead. Limited-now + window reset must survive too."""
 
     def test_reads_the_nested_rate_limit_info(self):
         info = types.SimpleNamespace(status="allowed", rate_limit_type="five_hour",
@@ -276,6 +275,29 @@ class RateLimitTranslation(unittest.TestCase):
 
     def test_emits_nothing_when_there_is_nothing_to_say(self):
         self.assertEqual(translate(_ev("RateLimitEvent", rate_limit_info=None)), [])
+
+    def test_forwards_the_per_window_usage_from_raw(self):
+        # The live 5h/7d gauges: the SDK keeps `unifiedWindows` in `raw` only.
+        # Measured shape (CLI 2.1.280); a malformed window is dropped alone.
+        raw = {"status": "allowed", "unifiedWindows": {
+            "five_hour": {"utilization": 0.33, "resetsAt": 1790166600},
+            "seven_day": {"utilization": 0.22, "resetsAt": 1790733600},
+            "seven_day_overage_included": {"utilization": "0.5", "resetsAt": 1},
+        }}
+        info = types.SimpleNamespace(status="allowed", utilization=None, raw=raw)
+        ev = one(translate(_ev("RateLimitEvent", rate_limit_info=info)), "rate_limit")
+        self.assertEqual(ev["windows"], {
+            "five_hour": {"utilization": 0.33, "resets_at": 1790166600},
+            "seven_day": {"utilization": 0.22, "resets_at": 1790733600},
+        })
+
+    def test_never_forwards_windows_from_a_custom_endpoint(self):
+        raw = {"unifiedWindows": {"five_hour": {"utilization": 0.5, "resetsAt": 1790166600}}}
+        info = types.SimpleNamespace(status="allowed", raw=raw)
+        me = _fake_self()
+        me.session_config = {"customEndpoint": {"baseUrl": "https://relay.example"}}
+        ev = one(AgentSession._translate(me, _ev("RateLimitEvent", rate_limit_info=info)), "rate_limit")
+        self.assertNotIn("windows", ev)
 
 
 class CrossSessionMessage(unittest.TestCase):
