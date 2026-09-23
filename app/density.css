@@ -14,7 +14,7 @@ html[data-density='small'] .claude-root { font-size: 14px; }
 html[data-density='small'] .claude-head { gap: 10px; padding: 8px 18px; }
 html[data-density='small'] .claude-head .brand-logo { width: 32px; height: 32px; }
 html[data-density='small'] .claude-head h1 { font-size: 18px; }
-html[data-density='small'] .claude-head .hnav-trigger { padding: 4px 9px; min-height: 27px; }
+html[data-density='small'] .claude-head .hnav-trigger { padding: 0 9px; }
 html[data-density='small'] .hnav-row { padding: 5px 7px; }
 
 html[data-density='small'] .cs-top { gap: 7px; padding: 8px 9px; }
