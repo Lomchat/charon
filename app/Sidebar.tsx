@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
-import { IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
+import { IconArrowClockwise, IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
 import AgentLogo from './AgentLogo';
 import { providerText } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
@@ -467,7 +467,7 @@ export default function Sidebar({
               onClick={() => window.location.reload()}
               title="reload the page"
               aria-label="reload the page"
-            >↻</button>
+            ><IconArrowClockwise /></button>
             {toolbarSlot}
             <button
               type="button"

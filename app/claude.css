@@ -256,6 +256,13 @@
    loses its word. */
 @media (max-width: 820px) {
   .hnav-trigger-word { display: none; }
+  /* The trigger sits a third of the way across a phone, so a panel hung off
+     its left edge ran off the right one. The HEADER becomes the containing
+     block instead and the panel centres under it; the hover bridge follows
+     (full width now), and the close grace covers the header's padding. */
+  .claude-head { position: relative; }
+  .hnav { position: static; }
+  .hnav-panel { left: 0; right: 0; margin-inline: auto; top: calc(100% + 6px); }
 }
 
 /* `.local-agent-update` (the amber "update local agent" button) and
@@ -552,9 +559,10 @@
   color: var(--accent); width: 24px; height: 24px; cursor: pointer; border-radius: var(--radius-md);
   display: inline-flex; align-items: center; justify-content: center; padding: 0;
 }
-.cs-mobile-refresh {
-  display: none; font-size: 18px; line-height: 1;
-}
+.cs-mobile-refresh { display: none; }
+/* An SVG, not the "↻" glyph: a character sits on the font's baseline, so the
+   flex centring centred its line box and the arrow rode high. */
+.cs-mobile-refresh svg { width: 16px; height: 16px; display: block; }
 .cs-manage svg,
 .cs-filter svg { width: 14px; height: 14px; display: block; }
 .cs-manage:hover,
@@ -755,7 +763,9 @@
 /* session / shell cards */
 .cs-card {
   position: relative; overflow: hidden;
-  display: flex; flex-direction: column; gap: 6px;
+  /* Centred: a touch-size min-height (density.css, phones) must split its
+     slack above and below the text, not pile it underneath. */
+  display: flex; flex-direction: column; justify-content: center; gap: 6px;
   width: calc(100% - 16px); margin: 6px 8px 0;
   padding: 8px 11px 7px 13px; border-radius: var(--radius-lg); cursor: pointer; text-align: left;
   background: color-mix(in srgb, var(--bg-raised) 55%, transparent); border: 1px solid var(--border);
@@ -4125,7 +4135,7 @@
   /* Backdrop: this block also matches at ≤820px (covers both drawers). */
   .claude-root.tools-open .drawer-backdrop,
   .claude-root.nav-open .drawer-backdrop,
-  .claude-root.usage-open .drawer-backdrop {
+  .claude-root.menu-open .drawer-backdrop {
     display: block;
     position: fixed; inset: 0;
     z-index: 50;
@@ -4160,7 +4170,6 @@
     display: inline-flex;
     width: 34px; height: 34px;
     border-radius: var(--radius-md);
-    font-size: 22px;
   }
   .cs-top-row .cs-manage,
   .cs-top-row .cs-filter {
@@ -4280,12 +4289,11 @@
 }
 
 /* ── Account-usage widget (the `/usage` gauges, §14.58) ─────────────────────
-   Desktop: a compact chip in the chat header (.claude-bar) between the session
-   title and the action buttons; click opens a detail popover. Mobile: the full
-   detail panel lives in the right "usage & settings" drawer (see ≤820px below).
+   Desktop: the runtime panel's third cell (5h / 7d mini-bars); click opens a
+   detail popover. Mobile: rings beside the session title (`.usage-rings`, the
+   mobile session-header block), same popover.
    Colors: ok = soft green, warn = amber, crit = crimson (by severity/percent). */
 
-.head-usage-panel { display: none; }              /* desktop: chip in bar is the surface */
 .head-toggles { display: inline-flex; align-items: center; gap: 6px; }
 /* Rules the app-scope gear off from the two drawer toggles beside it. Follows
    `.head-btn.m-only`: hidden on desktop, revealed by the ≤820px block. */
@@ -4315,7 +4323,6 @@
 }
 
 .um-detail { display: flex; flex-direction: column; gap: 10px; }
-.um-panel { width: 100%; }
 .um-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .um-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--text); }
 .um-plan { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: var(--radius-md); background: var(--border); color: var(--accent-strong); }
@@ -4343,9 +4350,9 @@
 .um-fill.um-warn { background: var(--warning); }
 .um-fill.um-crit { background: var(--danger); }
 
-/* ── ≤820px : usage widget → the right "usage & settings" drawer (§14.58) ──── */
+/* ── ≤820px : header buttons → the right menu drawer ───────────────────────── */
 @media (max-width: 820px) {
-  /* The in-bar chip is redundant on phones — the full panel is in the drawer. */
+  /* The in-bar cell gives way to the rings beside the title. */
   .claude-bar .usage-meter { display: none; }
 
   /* head-right becomes the right drawer; its toggle lives outside it (in
@@ -4364,22 +4371,16 @@
     transition: transform 0.22s ease;
     overflow-y: auto;
   }
-  .claude-root.usage-open .head-right { transform: translateX(0); }
+  .claude-root.menu-open .head-right { transform: translateX(0); }
   .head-toggles { margin-left: auto; }
-  .claude-head .head-btn.m-only.usage-toggle { display: inline-flex; }
+  .claude-head .head-btn.m-only.menu-toggle { display: inline-flex; }
   .claude-head .head-btn.m-only.settings-toggle { display: inline-flex; }
   .claude-head .head-toggle-sep {
     display: block; flex: none; align-self: stretch; width: 1px;
     margin: 5px 2px; background: var(--border); border-radius: var(--radius-sm);
   }
 
-  /* Drawer content: usage panel on top (divider below it), then the action
-     buttons as labeled, touch-friendly menu rows. */
-  .head-usage-panel {
-    display: block;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 12px;
-  }
+  /* Drawer content: the action buttons as labeled, touch-friendly menu rows. */
   .claude-head .head-right .head-btn {
     width: 100%; height: auto; min-height: 42px;
     justify-content: flex-start; gap: 10px; padding: 10px 12px;
@@ -6312,18 +6313,38 @@
 .runtime-usage-link .um-link-note { font: 9.5px/1.25 var(--body); }
 .runtime-usage-link .um-link-cta { font: 10px/1.25 var(--body); color: var(--accent); }
 .runtime-usage-link:hover .um-link-cta { color: var(--accent-strong); text-decoration: underline; }
-/* Drawer form: the same two lines, at reading size. On a phone this IS where
-   usage lives — the header cell is hidden below 820px — so it must say the
-   whole thing rather than abbreviate. */
-.um-panel.um-link-panel { display: flex; }
-.um-panel .um-link {
-  display: flex; flex-direction: column; gap: 3px; width: 100%;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg);
-  background: var(--bg); text-decoration: none;
+/* ── Usage rings (≤820px, `UsageRings`) ─────────────────────────────────────
+   One ring per window, FILLING with what has been used — the desktop cell's
+   reading, drawn round. The SVG strokes in currentColor and the meter's own
+   `.um-ok/warn/crit` set it, so the thresholds stay the meter's; the track is
+   the same hue, faint, so a fresh window reads as a green circle. A ring is a
+   CIRCLE — the one shape a theme does not get to change (§14.99). Hidden
+   above 820px: the runtime cell is the surface there. */
+.usage-rings { display: none; position: relative; align-items: center; }
+.claude-bar .usage-rings-button {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px; border: 0; background: none; border-radius: var(--radius-md);
+  text-transform: none; letter-spacing: 0;
 }
-.um-panel .um-link .um-link-note { color: var(--text-muted); font: 11px/1.4 var(--body); }
-.um-panel .um-link .um-link-cta { color: var(--accent); font: 12px/1.4 var(--body); }
-.um-panel .um-link:hover { border-color: var(--accent); }
+.ur-ring { flex: none; width: 28px; height: 28px; }
+.ur-track { fill: none; stroke: color-mix(in srgb, currentColor 24%, transparent); stroke-width: 3; }
+.ur-arc { fill: none; stroke: currentColor; stroke-width: 3; }
+/* No reading (yet): a dashed outline, never a green "0%". */
+.ur-ring.um-none { color: var(--text-faint); }
+.ur-ring.um-none .ur-track { stroke: currentColor; stroke-width: 1.2; stroke-dasharray: 2 2.4; }
+.ur-label { fill: var(--text); font: 600 7.5px var(--mono); letter-spacing: 0; }
+.ur-ring.um-none .ur-label { fill: var(--text-muted); }
+/* Older than the cadence (a failing poll, §14.72): still the real numbers. */
+.ur-ring.is-stale { opacity: 0.45; }
+/* A provider with no usage API: its dashboard, in the rings' place. */
+.usage-rings-link {
+  height: 26px; padding: 0 9px; gap: 4px;
+  border: 1px solid var(--border); border-radius: var(--chip-radius);
+  color: var(--accent); font: 10px/1 var(--body); text-decoration: none; white-space: nowrap;
+}
+.usage-rings-link:hover { color: var(--accent-strong); border-color: var(--accent); }
+.usage-rings .usage-pop { width: min(320px, calc(100vw - 24px)); max-width: none; box-sizing: border-box; max-height: 70dvh; overflow-y: auto; }
+
 /* Settings row for the same link. Account-level, so it belongs on the settings
    page too — the other two surfaces both require an open session. */
 .set-extlink {
@@ -6354,32 +6375,38 @@
 @media (max-width: 820px) {
   .session-header-layout { position: relative; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 6px; }
   .session-header-layout > .bar-ident { grid-column: 1 / -1; grid-row: 1; }
-  /* Only the name shares row 1 with the repo controls. The remaining identity
-     rows span both columns so the chips cannot narrow their content. */
-  .claude-bar .bar-ident { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 0; }
-  .claude-bar .bar-ident > :not(.bar-repo):not(.bar-name) { grid-column: 1 / -1; }
+  /* Right column: the repo controls beside the name, the usage rings under
+     them across the handle and cwd rows. The rings alone size the last track
+     and the chips reach into the middle one, so each narrows only its own
+     neighbours: the chips the name, the rings the handle and the path. */
+  .claude-bar .bar-ident { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 0; row-gap: 2px; }
   .claude-bar .bar-name { grid-column: 1; grid-row: 1; }
-  .claude-bar .bar-repo { grid-column: 2; grid-row: 1; justify-self: end; margin: 0 0 0 8px; }
+  .claude-bar .bar-repo { grid-column: 2 / 4; grid-row: 1; justify-self: end; margin: 0 0 0 8px; }
+  .claude-bar .bar-handle { grid-column: 1 / 3; grid-row: 2; justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .claude-bar .bar-sub { grid-column: 1 / 3; grid-row: 3; }
+  .claude-bar .bar-ident > .usage-rings { display: inline-flex; grid-column: 3; grid-row: 2 / 4; justify-self: end; margin-left: 8px; }
   .claude-bar .git-chip-wrap { flex-wrap: nowrap; gap: 4px; }
   .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 88px; }
   .claude-bar .git-chip .gc-branch { max-width: 76px; }
   .session-runtime-panel { position: static; grid-column: 1; grid-row: 2; justify-self: start; max-width: 300px; grid-template-columns: minmax(0, 1fr) minmax(0, .6fr); border-radius: var(--radius-lg); box-shadow: none; }
-  /* Usage lives in the drawer here, so the panel is TWO cells — the stacked
-     effort keeps the wider share of them, and the fixed 32px row becomes a
-     floor: a knob list is taller than a word and must not spill the block. */
+  /* Usage moves to the rings here, so the panel is TWO cells — the stacked
+     effort keeps the wider share of them. */
   .session-runtime-panel:has(.runtime-effort-params) { max-width: 340px; grid-template-columns: minmax(0, 1fr) minmax(0, .85fr); }
-  .claude-bar .session-runtime-panel:has(.runtime-effort-params) .runtime-cell { height: auto; }
   .session-header-controls { grid-column: 2; grid-row: 2; align-self: center; }
   .session-header-actions { gap: 2px; }
   .claude-bar .session-action { width: 28px; height: 32px; padding: 6px; }
-  .claude-bar .runtime-cell { min-height: 32px; height: 32px; padding: 4px 6px; gap: 2px; }
+  /* Tight on purpose — every pixel here is one less line of chat. The height
+     follows the content (a 10.5px value, plus at most the 8px effective-model
+     line or a knob list) and the grid row keeps both cells level. */
+  .claude-bar .runtime-cell { min-height: 26px; padding: 3px 6px; gap: 2px; }
   .claude-bar .runtime-model { border-radius: var(--radius-md) 0 0 var(--radius-md); }
   .claude-bar .runtime-effort { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
   /* Same corner handover as the desktop panel, at the mobile radius. */
   .claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-model { border-radius: var(--radius-md) 0 0 0; }
   .claude-bar .session-runtime-panel:has(> .bar-context-row) .runtime-effort { border-radius: 0 var(--radius-md) 0 0; }
-  .claude-bar .session-runtime-panel > .bar-context-row { padding: 4px 6px 5px; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
-  .runtime-model::after { top: 8px; bottom: 8px; }
+  .claude-bar .session-runtime-panel > .bar-context-row { padding: 2px 6px 3px; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+  .claude-bar .session-runtime-panel .bar-context-compact { padding: 0 6px; }
+  .runtime-model::after { top: 6px; bottom: 6px; }
   .runtime-effort::after { display: none; }
   .runtime-value { font-size: 10.5px; line-height: 1.25; gap: 3px; }
   .runtime-value .agent-logo, .runtime-effort-symbol { display: none; }

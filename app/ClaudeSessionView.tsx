@@ -26,7 +26,7 @@ import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel, { type Tab as ToolTab } from './ToolPanel';
 import { refreshGit, useGitStatus, workspaceAheadBehind, workspaceDirtyCount } from './gitStore';
 import BgTasksBar from './BgTasksBar';
-import UsageMeter from './UsageMeter';
+import UsageMeter, { UsageRings } from './UsageMeter';
 import SessionTokenMeter from './SessionTokenMeter';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import QuestionCard from './QuestionCard';
@@ -736,6 +736,11 @@ export default function ClaudeSessionView({
             {selected.cwd && <span className="bar-repo">
               <GitChip vpsId={vpsId} cwd={selected.cwd} onOpen={openGitTab} />
             </span>}
+            {/* The phone's account usage (CSS-gated ≤820px, where the runtime
+                panel drops its usage cell). A custom endpoint bills per token
+                instead, and the runtime panel already shows those. */}
+            {!endpoint.active && <UsageRings usage={usage ?? null} vpsName={selectedVps?.name}
+              onRefresh={onUsageRefresh} kind={sessionKind} />}
           </div>
           <SessionRuntimePanel
             usage={usage ?? null} tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
@@ -1904,7 +1909,7 @@ function SessionRuntimePanel({
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>
-      {endpoint.active ? <SessionTokenMeter usage={tokenUsage} /> : <UsageMeter usage={usage} vpsName={vpsName} compact runtime onRefresh={onUsageRefresh} kind={kind} />}
+      {endpoint.active ? <SessionTokenMeter usage={tokenUsage} /> : <UsageMeter usage={usage} vpsName={vpsName} runtime onRefresh={onUsageRefresh} kind={kind} />}
       {context}
       {endpointOpen && supportsCustomEndpoint(kind) && <CustomEndpointModal sessionId={sessionId} engine={kind} vpsId={vpsId} initial={endpoint.active} onClose={() => setEndpointOpen(false)} onApplied={onEndpointChanged} />}
     </div>
