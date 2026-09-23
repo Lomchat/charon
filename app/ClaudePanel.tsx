@@ -54,7 +54,7 @@ import { useBrowserNotifications, saveBrowserNotifications, readBrowserNotificat
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
-  IconMenu, IconPanelRight,
+  IconMenu, IconPanelRight, IconRobot,
 } from './icons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
@@ -1694,6 +1694,25 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           <line x1="106" y1="187" x2="154" y2="187" stroke="currentColor" strokeWidth="4.5" opacity="0.7"/>
         </svg>
         <h1>CHARON</h1>
+        {/* The desk: the same sessions, the same engines, read as a machine
+            room in three.js. It is a PLACE, not a panel — it has its own route
+            and its own tab, so it renders on its own while you keep reading a
+            session here (app/desk, served at /desk).
+            A new tab is the whole point: the room takes the screen and the
+            keyboard (WASD floats through it), which is not something a drawer
+            can share with the chat box.
+            This anchor is the ONLY reference to /desk outside app/desk/ — delete
+            that folder and this line is the single one left pointing nowhere. */}
+        <a
+          className="head-btn"
+          href="/desk"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="the desk — Charon's machine room"
+          aria-label="open the desk, the machine room, in a new tab"
+        >
+          <IconRobot />
+        </a>
         {/* Jump to a session without hunting for it in the sidebar: the same
             data that sidebar holds, read as activity (app/HeaderSessionNav.tsx). */}
         <HeaderSessionNav
