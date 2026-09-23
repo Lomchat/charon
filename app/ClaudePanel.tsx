@@ -38,7 +38,6 @@ import SessionContextMenu from './SessionContextMenu';
 import PromptModal from './PromptModal';
 import { useModelNotices } from './useModelNotices';
 import ClaudeSessionView from './ClaudeSessionView';
-import UsageMeter from './UsageMeter';
 import HeaderSessionNav from './HeaderSessionNav';
 import { useShowPaused } from './showPaused';
 import { newestAccountUsage } from './accountUsageState';
@@ -54,7 +53,7 @@ import { useBrowserNotifications, saveBrowserNotifications, readBrowserNotificat
 import {
   IconBellFill, IconBellSlash, IconGear, IconSearch,
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
-  IconMenu, IconPanelRight, IconRobot,
+  IconMenu, IconPanelRight, IconRobot, IconThreeDotsVertical,
 } from './icons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
@@ -349,10 +348,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // (the toggle buttons + drawer positioning are CSS-gated by media query).
   const [navOpen, setNavOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
-  // Right "usage & settings" drawer (mobile only, CSS-gated ≤820px): holds the
-  // account-usage panel + the header action buttons. Left drawer = sessions.
-  const [usageOpen, setUsageOpen] = useState(false);
-  const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); setUsageOpen(false); }, []);
+  // Right menu drawer (mobile only, CSS-gated ≤820px): the header action
+  // buttons. Left drawer = sessions. Account usage is not in it — on a phone
+  // it is the rings beside the session title (`UsageRings`).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeDrawers = useCallback(() => { setNavOpen(false); setToolsOpen(false); setMenuOpen(false); }, []);
   // Account-usage gauges per VPS AND per provider (the `/usage` widget). A VPS
   // can run BOTH Claude and Codex, each with its own account/quota — the header
   // shows the one matching the CURRENT session's kind. Fed by the LOW_VOLUME
@@ -1668,14 +1668,14 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const selectedShellExists = !!selectedShell;
 
   return (
-    <div className={`claude-root has-tools${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${usageOpen ? ' usage-open' : ''}`}>
+    <div className={`claude-root has-tools${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${menuOpen ? ' menu-open' : ''}`}>
       {/* Backdrop behind any open drawer (mobile only; CSS-gated). Tap to close. */}
       <div className="drawer-backdrop" onClick={closeDrawers} aria-hidden />
       <header className="claude-head">
         {/* ☰ opens the sidebar drawer; CSS reveals it only ≤820px (.m-only). */}
         <button
           className="head-btn m-only nav-toggle"
-          onClick={() => { setNavOpen(true); setToolsOpen(false); setUsageOpen(false); }}
+          onClick={() => { setNavOpen(true); setToolsOpen(false); setMenuOpen(false); }}
           title="menu" aria-label="open navigation"
         >
           <IconMenu />
@@ -1722,20 +1722,9 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onOpen={(id) => selectClaude(id, true)}
         />
         <div className="head-right">
-          {/* Mobile only (CSS ≤820px): head-right becomes the right "usage &
-              settings" drawer. The account-usage panel sits at its top; the
-              toggle buttons that open it live OUTSIDE head-right (below) so they
-              stay visible. Hidden on desktop — the buttons flow inline as
-              before. cf. CLAUDE.md §14.58. */}
-          {!selected?.endpoint?.active && <div className="head-usage-panel">
-            <UsageMeter
-              usage={usageFor(selectedVps?.id, selected?.kind as AgentKind | undefined)}
-              kind={selected?.kind as AgentKind | undefined}
-              vpsName={selectedVps?.name}
-              compact={false}
-              onRefresh={() => refreshUsage(selectedVps?.id)}
-            />
-          </div>}
+          {/* Mobile only (CSS ≤820px): head-right becomes the right menu
+              drawer; the toggle that opens it lives OUTSIDE head-right (below)
+              so it stays visible. Desktop: the buttons flow inline. */}
           {/* No "<vps>:<cwd>" context string and no status pill here: the
               session bar (`ClaudeSessionView`) already carries the name, the
               cwd and the live state (ThinkingBar/status), and the sidebar card
@@ -1804,8 +1793,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             phone — head-right IS the drawer there — so the settings need
             their own always-visible entry, and it carries the new-models dot
             for the same reason (the drawer one would be invisible until
-            opened). Left of the two drawer toggles and ruled off from them:
-            those open a panel of THIS session, this one leaves for app scope. */}
+            opened). Left of the drawer toggles and ruled off from them: the
+            tool panel belongs to THIS session, this one leaves for app scope. */}
         <button
           className="head-btn m-only settings-toggle model-notice-anchor"
           onClick={() => setSettingsOpen(true)}
@@ -1819,22 +1808,18 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         {(selectedId || selectedShellExists || selectedFile) && (
           <button
             className="head-btn m-only tools-toggle"
-            onClick={() => { setToolsOpen(true); setNavOpen(false); setUsageOpen(false); }}
+            onClick={() => { setToolsOpen(true); setNavOpen(false); setMenuOpen(false); }}
             title="diffs, tool calls & files" aria-label="open tool panel"
           >
             <IconPanelRight />
           </button>
         )}
         <button
-          className="head-btn m-only usage-toggle"
-          onClick={() => { setUsageOpen(true); setNavOpen(false); setToolsOpen(false); }}
-          title="usage & settings" aria-label="open usage and settings"
+          className="head-btn m-only menu-toggle"
+          onClick={() => { setMenuOpen(true); setNavOpen(false); setToolsOpen(false); }}
+          title="menu" aria-label="open menu"
         >
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
-            <path d="M12 12l4-3" />
-            <path d="M5 18a8 8 0 1 1 14 0" />
-          </svg>
+          <IconThreeDotsVertical />
         </button>
         </div>
       </header>

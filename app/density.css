@@ -99,8 +99,12 @@ html[data-density='small'] .files-list .f-actions { margin-top: 5px; }
   html[data-density='small'] .claude-input-bar .ci-attach,
   html[data-density='small'] .claude-input-bar .send { min-height: 40px; }
 }
-@container session-header (max-width: 420px) {
-  html[data-density='small'] .claude-bar .runtime-cell { padding: 8px; min-height: 44px; }
+/* Desktop only: on a phone the runtime panel is the compact toolbar of the
+   claude.css mobile block, and this rule outranked it (44px cells). */
+@media (min-width: 821px) {
+  @container session-header (max-width: 420px) {
+    html[data-density='small'] .claude-bar .runtime-cell { padding: 8px; min-height: 44px; }
+  }
 }
 
 /* Two actual size samples in Settings. Their dimensions come from each choice,

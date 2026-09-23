@@ -365,14 +365,15 @@ await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: tr
   await sleep(2200);
 }, 'mobile-chat.png');
 
-// 12) Mobile — the account-usage drawer (the gauges live in the right drawer on
-//     phones). Opens via the ☉ "usage & settings" header button.
+// 12) Mobile — the account-usage rings beside the session title (one per
+//     window, filling with what was used), tapped open to their detail.
 await shot({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true }, async (page) => {
   await open(page, '/?session=s_auth');
   await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(700);
-  await page.getByLabel('open usage and settings').click({ timeout: 8000 });
-  await sleep(1200);
+  await page.locator('.usage-rings-button').click({ timeout: 8000 });
+  await page.getByRole('dialog', { name: 'Account usage', exact: true }).waitFor();
+  await sleep(600);
 }, 'mobile-usage.png');
 
 // Same conversation and viewport in each shipped theme, selected through the

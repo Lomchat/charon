@@ -1,11 +1,13 @@
 'use client';
-// Account-usage widget — the `/usage` gauges (Claude Pro/Max quota) for the
-// current session's VPS account. Data comes from the `account_usage` SSE event
-// (usagePoll.ts → get_usage RPC → api.anthropic.com/api/oauth/usage). Two forms:
-//   - compact: a header chip (5h / 7d mini-bars) that opens a detail popover.
-//   - panel (compact=false): the full detail inline, for the mobile drawer.
+// Account-usage widgets — the `/usage` gauges (Claude Pro/Max quota, Codex
+// rate-limit windows) for the current session's VPS account. Data comes from
+// the `account_usage` SSE event (usagePoll.ts → get_usage RPC). Two surfaces,
+// one set of windows (`usageCells`) and one detail popover:
+//   - UsageMeter: the session header's runtime cell (5h / 7d mini-bars).
+//   - UsageRings: one ring per window under the repo controls, ≤820px, where
+//     the runtime cell is hidden.
 // cf. CLAUDE.md §14.58.
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type RefObject } from 'react';
 import type { AgentKind } from '@/lib/types/api';
 import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
 import { providerText } from '@/lib/providerText';
@@ -68,6 +70,43 @@ function degradedNote(d: NonNullable<AccountUsage['degraded']>): string {
   return `refresh failed — retrying ${fmtIn(d.retryAt)}`;
 }
 
+/** One headline gauge: a rate-limit window. */
+type UsageCell = {
+  k: string;
+  pct: number | null;
+  /** The endpoint's own verdict; absent on the plain 5h/7d windows. */
+  sev?: string;
+  /** A model-specific cap. It only ever comes from the POLL, never from a
+   *  turn's live `rate_limit`, so it goes stale on its own (§14.72). */
+  scoped: boolean;
+};
+
+/** Both headline windows and every model-specific cap the endpoint currently
+ *  reports (e.g. Fable) — it only returns the relevant scoped limits, so a
+ *  truthy scopeModel is enough, no extra filtering. */
+function usageCells(usage: AccountUsage | null): UsageCell[] {
+  const scoped = (usage?.limits ?? []).filter((l) => l.scopeModel);
+  return [
+    { k: '5h', pct: usage?.fiveHour?.utilization ?? null, scoped: false },
+    { k: '7d', pct: usage?.sevenDay?.utilization ?? null, scoped: false },
+    ...scoped.map((l) => ({ k: l.scopeModel as string, pct: l.percent, sev: l.severity, scoped: true })),
+  ];
+}
+
+/** Close a popover on a press outside `ref` or on Escape. */
+function useDismiss(open: boolean, setOpen: (open: boolean) => void, ref: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
+  }, [open, setOpen, ref]);
+}
+
 function Bar({ label, sub, pct, severity, reset }: {
   label: string; sub?: string | null; pct: number | null; severity?: string; reset?: string | null;
 }) {
@@ -84,7 +123,7 @@ function Bar({ label, sub, pct, severity, reset }: {
   );
 }
 
-/** The full detail body — reused in the header popover and the mobile drawer. */
+/** The full detail body of the popover both surfaces open. */
 function UsageDetail({ usage, vpsName, onRefresh }: {
   usage: AccountUsage; vpsName?: string | null; onRefresh?: () => void;
 }) {
@@ -149,10 +188,19 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
   );
 }
 
-export default function UsageMeter({ usage, vpsName, compact = true, runtime = false, onRefresh, kind }: {
+function UsagePopover({ usage, vpsName, onRefresh }: {
+  usage: AccountUsage | null; vpsName?: string | null; onRefresh?: () => void;
+}) {
+  return (
+    <div className="usage-pop" role="dialog" aria-label="Account usage">
+      {usage ? <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} /> : <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>}
+    </div>
+  );
+}
+
+export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh, kind }: {
   usage: AccountUsage | null;
   vpsName?: string | null;
-  compact?: boolean;
   /** Three-cell session header; keeps an explicit placeholder when usage is absent. */
   runtime?: boolean;
   onRefresh?: () => void;
@@ -165,17 +213,7 @@ export default function UsageMeter({ usage, vpsName, compact = true, runtime = f
   const dashboard = PROVIDERS[provider].usageDashboardUrl;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', onDoc);
-    window.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey); };
-  }, [open]);
+  useDismiss(open, setOpen, ref);
 
   // ── No usage API, and none coming: a LINK, not an empty gauge ──
   //
@@ -183,43 +221,33 @@ export default function UsageMeter({ usage, vpsName, compact = true, runtime = f
   // fewer hooks than expected" crash: the condition reads `usage`, which flips
   // from null to a snapshot on any provider that later grows an endpoint.
   //
-  // The runtime form keeps the meter's own wrapper classes rather than
-  // inventing a parallel one, so every rule already written for the cell
-  // applies to it — including the ≤820px `.claude-bar .runtime-usage {
-  // display:none }` that moves usage into the drawer on a phone. A new element
-  // that must obey the same rules carries the same hooks; a private class means
-  // remembering to update each rule, which is how this shipped visible in the
-  // mobile header while the real gauges were hidden.
-  if (!usage && dashboard) {
-    const link = (
-      <a
-        className={runtime ? 'runtime-cell runtime-usage-link' : 'um-link'}
-        href={dashboard}
-        target="_blank"
-        rel="noopener noreferrer"
-        title={providerText.usageOpenDashboard(provider)}
-      >
-        <span className="um-link-note">{providerText.usageOnWebOnly(provider)}</span>
-        <span className="um-link-cta">{providerText.usageOpenDashboard(provider)} ↗</span>
-      </a>
+  // It keeps the meter's own wrapper classes rather than inventing a parallel
+  // one, so every rule already written for the cell applies to it — including
+  // the ≤820px `.claude-bar .runtime-usage { display:none }` that hands usage
+  // to the rings on a phone. A new element that must obey the same rules
+  // carries the same hooks; a private class means remembering to update each
+  // rule, which is how this once shipped visible in the mobile header while
+  // the real gauges were hidden.
+  if (!usage && dashboard && runtime) {
+    return (
+      <div className="usage-meter runtime-usage">
+        <a
+          className="runtime-cell runtime-usage-link"
+          href={dashboard}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={providerText.usageOpenDashboard(provider)}
+        >
+          <span className="um-link-note">{providerText.usageOnWebOnly(provider)}</span>
+          <span className="um-link-cta">{providerText.usageOpenDashboard(provider)} ↗</span>
+        </a>
+      </div>
     );
-    return runtime
-      ? <div className="usage-meter runtime-usage">{link}</div>
-      : <div className="um-panel um-link-panel">{link}</div>;
   }
 
-  // ── Panel form (mobile drawer): full detail, no popover ──
-  if (!compact) {
-    if (!usage) return <div className="um-panel um-empty">No usage data yet.</div>;
-    return <div className="um-panel"><UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} /></div>;
-  }
-
-  // ── Compact form (header chip) ──
   // The runtime panel keeps its third cell even before a first reading.
   if (!usage && !runtime) return null;
-  // Show both headline windows and every reported model-specific weekly cap.
-  const fh = usage?.fiveHour?.utilization ?? null;
-  const sd = usage?.sevenDay?.utilization ?? null;
+  const cells = usageCells(usage);
   // Worst severity across all limits → chip accent.
   let worst = 'ok';
   for (const l of usage?.limits ?? []) {
@@ -227,17 +255,6 @@ export default function UsageMeter({ usage, vpsName, compact = true, runtime = f
     if (c === 'crit') { worst = 'crit'; break; }
     if (c === 'warn') worst = 'warn';
   }
-
-  // Per-model weekly caps the endpoint currently reports (e.g. Fable) become
-  // extra chip cells beside 5h / 7d, colored by their own severity so a
-  // near-limit model (Fable 97%) pops. The endpoint only returns the relevant
-  // scoped limits, so a truthy scopeModel is enough — no extra filtering.
-  const scoped = (usage?.limits ?? []).filter((l) => l.scopeModel);
-  const cells: Array<{ k: string; pct: number | null; sev?: string }> = [
-    { k: '5h', pct: fh },
-    { k: '7d', pct: sd },
-    ...scoped.map((l) => ({ k: l.scopeModel as string, pct: l.percent, sev: l.severity })),
-  ];
 
   return (
     <div className={`usage-meter${runtime ? ' runtime-usage' : ''}`} ref={ref}>
@@ -258,11 +275,82 @@ export default function UsageMeter({ usage, vpsName, compact = true, runtime = f
           </Fragment>
         ))}
       </button>)}
-      {open ? (
-        <div className="usage-pop" role="dialog" aria-label="Account usage">
-          {usage ? <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} /> : <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>}
-        </div>
-      ) : null}
+      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} /> : null}
+    </div>
+  );
+}
+
+// ── Rings (≤820px) ───────────────────────────────────────────────────────────
+
+const RING_R = 9.5;
+const RING_C = 2 * Math.PI * RING_R;
+
+/** What fits inside a ring: the window, or the model's initial — two
+ *  letters when another model cap shares it. */
+function ringLabels(cells: UsageCell[]): string[] {
+  const initial = (c: UsageCell, n: number) => c.k.slice(0, n).toUpperCase();
+  return cells.map((c) => {
+    if (!c.scoped) return c.k;
+    const clash = cells.some((o) => o !== c && o.scoped && initial(o, 1) === initial(c, 1));
+    return clash ? c.k.slice(0, 1).toUpperCase() + c.k.slice(1, 2).toLowerCase() : initial(c, 1);
+  });
+}
+
+function Ring({ cell, label, stale }: { cell: UsageCell; label: string; stale: boolean }) {
+  const known = cell.pct != null;
+  const used = Math.min(100, Math.max(0, cell.pct ?? 0)) / 100;
+  return (
+    <svg className={`ur-ring um-${known ? sevClass(cell.sev, cell.pct) : 'none'}${stale ? ' is-stale' : ''}`} viewBox="0 0 24 24" aria-hidden="true">
+      <circle className="ur-track" cx="12" cy="12" r={RING_R} />
+      {used > 0 && <circle className="ur-arc" cx="12" cy="12" r={RING_R}
+        strokeDasharray={`${RING_C * used} ${RING_C}`} transform="rotate(-90 12 12)" />}
+      <text className="ur-label" x="12" y="12" textAnchor="middle" dominantBaseline="central">{label}</text>
+    </svg>
+  );
+}
+
+/** One ring per usage window, FILLING with what has been used (the desktop
+ *  cell's reading, drawn round) and coloured by the same thresholds. A tap
+ *  opens the same detail as the desktop cell. A provider with no usage API
+ *  gets its dashboard link. */
+export function UsageRings({ usage, vpsName, onRefresh, kind }: {
+  usage: AccountUsage | null;
+  vpsName?: string | null;
+  onRefresh?: () => void;
+  kind?: AgentKind | null;
+}) {
+  const provider = asSessionProvider(kind);
+  const dashboard = PROVIDERS[provider].usageDashboardUrl;
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useDismiss(open, setOpen, ref);
+
+  if (!usage && dashboard) {
+    return (
+      <a className="usage-rings usage-rings-link" href={dashboard} target="_blank" rel="noopener noreferrer"
+         title={providerText.usageOpenDashboard(provider)} aria-label={providerText.usageOpenDashboard(provider)}>
+        usage ↗
+      </a>
+    );
+  }
+
+  // No good reading yet (or none at all): the two headline windows, dashed.
+  const cells = usageCells(usage?.ok ? usage : null);
+  const labels = ringLabels(cells);
+  // Live 5h/7d windows outdate a failing poll; the model caps ride the poll
+  // alone, so they are what a degraded snapshot leaves stale. §14.72
+  const live = (usage?.windowsAt ?? 0) > (usage?.fetchedAt ?? 0);
+  const summary = cells.map((c) => `${c.k} ${fmtPct(c.pct)}`).join(', ');
+  return (
+    <div className="usage-rings" ref={ref}>
+      <button type="button" className="usage-rings-button" onClick={() => setOpen((o) => !o)}
+              title={`Account usage — ${summary}`} aria-label={`Account usage: ${summary}`} aria-expanded={open}>
+        {cells.map((c, i) => (
+          <Ring key={c.k} cell={c} label={labels[i]}
+                stale={!!usage?.degraded && (c.scoped || !live)} />
+        ))}
+      </button>
+      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} /> : null}
     </div>
   );
 }
