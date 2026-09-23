@@ -33,6 +33,7 @@ import { useCrossSessionInteractionFeed } from './useCrossSessionInteractionFeed
 import { useInstallNotifications } from './useInstallNotifications';
 import { setFocus, subscribeAll, subscribeReconnect } from './globalEventStream';
 import { applyTheme } from './themeClient';
+import { applyDensity } from './density';
 import SessionContextMenu from './SessionContextMenu';
 import PromptModal from './PromptModal';
 import { useModelNotices } from './useModelNotices';
@@ -1458,7 +1459,10 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         // a change. Held while the settings modal is open — it is previewing a
         // theme that is deliberately not saved yet, and this same refresh runs
         // on window focus (§11).
-        if (!settingsOpen) applyTheme(s['app.theme']);
+        if (!settingsOpen) {
+          applyTheme(s['app.theme']);
+          applyDensity(s['app.density']);
+        }
       }).catch(() => {});
     };
     refresh();

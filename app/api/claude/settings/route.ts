@@ -8,6 +8,7 @@ import {
 } from '@/lib/sessionCapabilities';
 import { formatSettingSources, parseSettingSources } from '@/lib/settingSources';
 import { isThemeId } from '@/app/themes';
+import { isDensity } from '@/app/density';
 import { SETTINGS_WRITE_ALLOWLIST } from '@/lib/server/claude/settingsKeys';
 
 
@@ -116,6 +117,10 @@ export async function POST(req: Request) {
     // An unknown theme id would render every page against tokens nothing
     // defines — refuse it here rather than degrade at paint time.
     if (k === 'app.theme' && !isThemeId(val)) {
+      rejected.push(k);
+      continue;
+    }
+    if (k === 'app.density' && !isDensity(val)) {
       rejected.push(k);
       continue;
     }

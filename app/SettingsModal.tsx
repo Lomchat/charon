@@ -33,6 +33,7 @@ import {
 } from '@/lib/settingSources';
 import { THEMES, DEFAULT_THEME_ID, type Theme } from './themes';
 import { applyTheme, currentThemeId } from './themeClient';
+import { applyDensity, currentDensity, DEFAULT_DENSITY, resolveDensity } from './density';
 
 
 type Props = {
@@ -52,6 +53,10 @@ type Props = {
 // Its PANEL BODY stays bespoke — an empty one is visible, so it cannot be
 // silently forgotten the way a missing list entry could.
 type Cat = 'general' | SessionProvider | 'notifications' | 'updates' | 'endpoints';
+const DENSITY_CHOICES = [
+  { id: 'default', label: 'Default', hint: 'Comfortable spacing · 16px chat' },
+  { id: 'small', label: 'Small', hint: 'More on screen · 14px chat' },
+] as const;
 /** Deep-link target for `initialCat` (the wizard sends the user here when both
  *  backends are off). Exported so callers don't restate the union. */
 export type SettingsCategory = Cat;
@@ -117,11 +122,15 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 export default function SettingsModal({ onClose, vpsList, initialCat, modelNotices, onModelsSeen }: Props) {
-  // The theme picker previews LIVE (a swatch cannot tell you whether a theme is
-  // comfortable), so the modal owns an undo: everything that closes without
-  // saving restores the theme in effect when it opened.
+  // Both display choices preview live. Closing without saving restores what
+  // the server had rendered when the modal opened.
   const openedWith = useRef(currentThemeId());
-  const close = useCallback(() => { applyTheme(openedWith.current); onClose(); }, [onClose]);
+  const openedDensity = useRef(currentDensity());
+  const close = useCallback(() => {
+    applyTheme(openedWith.current);
+    applyDensity(openedDensity.current);
+    onClose();
+  }, [onClose]);
   const [sessionSettings, setSessionSettings] = useState<NotificationSession | null>(null);
   const browserNotifications = useBrowserNotifications();
   const [browserBusy, setBrowserBusy] = useState(false);
@@ -163,6 +172,13 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     setDirty((prev) => ({ ...prev, [k]: v }));
   }
 
+  function acceptSavedDisplaySettings(resp: Record<string, string>) {
+    openedWith.current = resp['app.theme'] ?? DEFAULT_THEME_ID;
+    openedDensity.current = resolveDensity(resp['app.density']);
+    applyTheme(openedWith.current);
+    applyDensity(openedDensity.current);
+  }
+
   async function save() {
     if (!s) return;
     setBusy(true);
@@ -180,8 +196,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
       setS(resp);
       // The server's value, not the preview: it also covers a theme the route
       // refused, which must not stay on screen.
-      openedWith.current = resp['app.theme'] ?? DEFAULT_THEME_ID;
-      applyTheme(openedWith.current);
+      acceptSavedDisplaySettings(resp);
       onClose();
     } catch (e: any) {
       alert('save: ' + (e?.message ?? e));
@@ -194,6 +209,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     setSyncMsg(null);
     try {
       const saved: any = await api.updateClaudeSettings(dirty); // persist the key first
+      acceptSavedDisplaySettings(saved);
       if (saved?.rejected?.includes('claude.api_key')) {
         setSyncMsg({ ok: false, msg: 'key rejected — it must start with "sk-ant-". A browser autofill likely replaced it with your login password; retype the real Anthropic key.' });
         return;
@@ -216,7 +232,8 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     setTesting(true);
     setTestResult(null);
     try {
-      await api.updateClaudeSettings(dirty); // persist first, then test
+      const saved = await api.updateClaudeSettings(dirty); // persist first, then test
+      acceptSavedDisplaySettings(saved);
       await api.testTelegram();
       setTestResult({ ok: true, msg: 'test message sent ✓ — check Telegram' });
     } catch (e: any) {
@@ -324,6 +341,54 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       Applies to the whole hub, on every device. Previewed as you
                       pick; cancel puts the previous one back.
                     </p>
+                    <fieldset className="density-choices">
+                      <legend>display size</legend>
+                      <div className="density-choice-grid">
+                        {DENSITY_CHOICES.map((choice) => (
+                          <label
+                            key={choice.id}
+                            className="density-choice"
+                            data-size={choice.id}
+                            data-selected={(s['app.density'] ?? DEFAULT_DENSITY) === choice.id}
+                          >
+                            <input
+                              type="radio"
+                              name="app.density"
+                              value={choice.id}
+                              checked={(s['app.density'] ?? DEFAULT_DENSITY) === choice.id}
+                              onChange={() => { set('app.density', choice.id); applyDensity(choice.id); }}
+                            />
+                            <span className="density-preview" aria-hidden="true">
+                              <span className="density-preview-side">
+                                <span className="density-preview-kicker">sessions</span>
+                                {['Build', 'Review', 'Notes', 'Shell'].map((name, index) => (
+                                  <span key={name} className={`density-preview-row${index === 0 ? ' selected' : ''}`}>
+                                    <span className="density-preview-dot" />{name}
+                                  </span>
+                                ))}
+                              </span>
+                              <span className="density-preview-main">
+                                <span className="density-preview-title">Build session</span>
+                                <span className="density-preview-bubble">
+                                  <span className="density-preview-speaker">Assistant</span>
+                                  <span>The update is ready. Review the changes here.</span>
+                                </span>
+                                <span className="density-preview-bubble user">
+                                  <span className="density-preview-speaker">You</span>
+                                  <span>Show me the result.</span>
+                                </span>
+                              </span>
+                            </span>
+                            <span className="density-choice-title">
+                              <span>{choice.label}</span>
+                              <span className="density-choice-check" aria-hidden="true">✓</span>
+                            </span>
+                            <span className="density-choice-hint">{choice.hint}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <p className="set-meta">Previewed live. Save to use this size on every device.</p>
                     <label>SSH key (path on the hub server)
                       <input value={s['ssh.private_key_path'] ?? ''} onChange={(e) => set('ssh.private_key_path', e.target.value)} placeholder="/root/.ssh/id_rsa" />
                     </label>
