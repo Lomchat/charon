@@ -297,14 +297,16 @@ export type AgentEvent = (
       background_tasks?: string[]; session_crons?: number;
       last_assistant_message?: string;
     }
-  // rate_limit (agent >= 0.37.0): from the SDK's RateLimitEvent. ⚠ `utilization`
-  // is NULL on subscription accounts (measured, still true) — this does NOT
-  // replace the /api/oauth/usage poll behind the percentage gauges (§14.72). It
-  // carries the "limited right now / resets at" half for free.
+  // rate_limit (agent >= 0.37.0): from the SDK's RateLimitEvent. ⚠ The
+  // top-level `utilization` is NULL on subscription accounts (measured); the
+  // percentages ride `windows` (agent >= 0.98.0, the CLI's `unifiedWindows`):
+  // utilization is a FRACTION (0-1, may exceed 1), resets_at unix seconds.
+  // Absent on old agents/CLIs and custom endpoints — the poll covers those.
   | {
       event: 'rate_limit'; session_id: string;
       status?: string; window?: string; resets_at?: number;
       utilization?: number; overage_status?: string;
+      windows?: Record<string, { utilization: number; resets_at: number }>;
     }
   // external_message (agent >= 0.36.0): a user turn that did NOT come from the
   // human — currently only the agent-to-agent kinds (`peer`, `coordinator`).

@@ -5,7 +5,7 @@ import { getAgentClientForVpsId } from './AgentClientPool';
 import {
   emitGlobalAccountUsage, setUsagePollTrigger, setCodexUsagePollTrigger,
   setCodexUsagePushHandler,
-  setUsageResetResolver,
+  setUsageResetResolver, setUsageWindowsHandler,
 } from './sessionOps';
 import type { AgentUsageResult, AgentCodexUsageResult, CodexRateWindow } from './types';
 import { getSetting, setSetting } from '@/lib/server/claude/settings';
@@ -37,6 +37,11 @@ import { asSessionProvider, type SessionProvider } from '@/lib/sessionCapabiliti
 //  3. Backoff follows the server's own `Retry-After` EXACTLY. The old flat
 //     5-minute guess retried ~10x into a 51-minute lockout, and every one of
 //     those failures re-cached the error as the widget's state.
+//  4. The 5h/7d windows do not need the endpoint at all: every Claude turn's
+//     rate_limit event carries them live (`ingestUsageWindows`, agent >=
+//     0.98.0), so once an account has delivered them the post-turn poll is
+//     dropped and only the steady tick remains — for the per-model caps and
+//     extra usage, which only the endpoint knows.
 //
 // Snapshots survive a Charon restart (settings key `usage.snapshots`): an
 // in-memory-only cache meant every restart started blank, so the first 429 of
@@ -92,7 +97,11 @@ type AccountState = {
   softRetryAt: number;  // our own guess — `force` may bypass it
   failStreak: number;
   rotate: number;       // round-robin cursor over the account's VPSes
+  live: LiveWindows | null; // latest windows off a rate_limit event (in memory)
 };
+
+/** 5h/7d windows as a session's CLI last read them off its API responses. */
+type LiveWindows = { at: number; fiveHour: AccountUsageWindow | null; sevenDay: AccountUsageWindow | null };
 
 const g = globalThis as unknown as {
   _usageAccounts?: Map<string, AccountState>;
@@ -113,7 +122,7 @@ const stopDebounce: Map<string, ReturnType<typeof setTimeout>> = g._usageStopDeb
 function accountState(key: string): AccountState {
   let st = accounts.get(key);
   if (!st) {
-    st = { last: null, lastPollAt: 0, inflight: null, slotReadyAt: 0, hardRetryAt: 0, softRetryAt: 0, failStreak: 0, rotate: 0 };
+    st = { last: null, lastPollAt: 0, inflight: null, slotReadyAt: 0, hardRetryAt: 0, softRetryAt: 0, failStreak: 0, rotate: 0, live: null };
     accounts.set(key, st);
   }
   return st;
@@ -192,6 +201,7 @@ function adoptOrg(vpsId: string, orgId: string | null | undefined, from: Account
   // Carry the pacing forward so the merge can't hand out a free extra call.
   dst.lastPollAt = Math.max(dst.lastPollAt, from.lastPollAt);
   dst.hardRetryAt = Math.max(dst.hardRetryAt, from.hardRetryAt);
+  if (from.live && (!dst.live || from.live.at > dst.live.at)) dst.live = from.live;
   if (fromKey.startsWith('vps:')) accounts.delete(fromKey);
   return dst;
 }
@@ -290,7 +300,8 @@ export function pollUsageForVps(vpsId: string, opts?: { force?: boolean; steady?
     let client;
     try { client = getAgentClientForVpsId(target); } catch { return st.last; }
     if (client.status !== 'connected') return st.last; // dropped while queued
-    st.lastPollAt = Date.now();
+    const startedAt = Date.now();
+    st.lastPollAt = startedAt;
     let raw: AgentUsageResult;
     try {
       raw = await client.call<AgentUsageResult>('get_usage');
@@ -340,15 +351,18 @@ export function pollUsageForVps(vpsId: string, opts?: { force?: boolean; steady?
     // First success for this VPS teaches us its account; its private bucket is
     // folded into the shared one and every sibling VPS is served from here on.
     const dst = adoptOrg(target, usage.orgId, st, key);
-    dst.last = usage;
+    // A live reading that landed while the RPC was in flight is newer than
+    // the endpoint's answer: keep it on top.
+    const fresh = dst.live && dst.live.at > startedAt ? withLiveWindows(usage, dst.live) : usage;
+    dst.last = fresh;
     dst.lastPollAt = Date.now();
     dst.failStreak = 0;
     dst.hardRetryAt = 0;
     dst.softRetryAt = 0;
     const dstKey = usage.orgId ?? key;
-    fanOut(dstKey, usage);
+    fanOut(dstKey, fresh);
     persistSnapshots();
-    return usage;
+    return fresh;
   })();
 
   st.inflight = run.finally(() => { st.inflight = null; });
@@ -393,6 +407,10 @@ export function usageSnapshotAge(vpsId: string): number {
  */
 export function triggerUsagePoll(vpsId: string): void {
   const key = accountKeyFor(vpsId);
+  // This account's turns report their 5h/7d windows live; what the poll adds
+  // (per-model caps) is the steady tick's job — every extra call feeds the
+  // escalating 429 lockouts.
+  if (accounts.get(key)?.live) return;
   if (stopDebounce.has(key)) return;
   const t = setTimeout(() => {
     stopDebounce.delete(key);
@@ -402,10 +420,79 @@ export function triggerUsagePoll(vpsId: string): void {
   stopDebounce.set(key, t);
 }
 
+/** One `windows` entry (fraction + unix seconds) → a gauge window, or null.
+ *  An expired window describes a past period, never the current one. */
+function liveWindow(w: unknown, now: number): AccountUsageWindow | null {
+  if (!w || typeof w !== 'object') return null;
+  const { utilization: u, resets_at: r } = w as { utilization?: unknown; resets_at?: unknown };
+  if (typeof u !== 'number' || !Number.isFinite(u) || typeof r !== 'number' || !Number.isFinite(r)) return null;
+  if (r * 1000 <= now) return null;
+  return { utilization: Math.round(u * 1000) / 10, resetsAt: new Date(r * 1000).toISOString() };
+}
+
+/** Lay live windows over a snapshot: the headline 5h/7d AND their limits[]
+ *  rows, which the popover prefers. Per-model rows are left as polled. */
+function withLiveWindows(base: AccountUsage, live: LiveWindows): AccountUsage {
+  const byKind: Record<string, AccountUsageWindow | null> = { session: live.fiveHour, weekly_all: live.sevenDay };
+  return {
+    ...base,
+    windowsAt: live.at,
+    fiveHour: live.fiveHour ?? base.fiveHour,
+    sevenDay: live.sevenDay ?? base.sevenDay,
+    limits: base.limits?.map((l) => {
+      const w = byKind[l.kind];
+      if (!w || w.utilization == null) return l;
+      // The endpoint's severity judged the OLD percent; let the widget's
+      // thresholds judge a new one.
+      return { ...l, percent: w.utilization, resetsAt: w.resetsAt, severity: w.utilization === l.percent ? l.severity : 'normal' };
+    }) ?? null,
+  };
+}
+
+/**
+ * Fold a Claude session's live 5h/7d windows (its `rate_limit` event) into
+ * the gauges of the account its VPS belongs to. Free and unthrottled: the CLI
+ * reads them off its own API responses. Replay feeds old events through here
+ * too, so only a reading newer than the one on screen wins. Before any
+ * successful poll it builds a windows-only snapshot (fetchedAt 0, no limits).
+ */
+export function ingestUsageWindows(vpsId: string, windows: unknown, observedAt: number): AccountUsage | null {
+  if (!windows || typeof windows !== 'object') return null;
+  const now = Date.now();
+  const w = windows as Record<string, unknown>;
+  const fiveHour = liveWindow(w.five_hour, now);
+  const sevenDay = liveWindow(w.seven_day, now);
+  if (!fiveHour && !sevenDay) return null;
+  const key = accountKeyFor(vpsId);
+  const st = accountState(key);
+  const at = Math.min(observedAt, now);
+  const prev = st.last?.ok ? st.last : null;
+  if (prev && at <= Math.max(prev.fetchedAt, prev.windowsAt ?? 0)) return null;
+  st.live = { at, fiveHour, sevenDay };
+  const failed = st.last && !st.last.ok ? st.last : null;
+  const base: AccountUsage = prev ?? {
+    ok: true, fetchedAt: 0, subscriptionType: null, orgId: null,
+    degraded: failed ? {
+      reason: failed.error ?? 'unknown', statusCode: failed.statusCode ?? null,
+      retryAt: st.hardRetryAt || st.softRetryAt || null,
+    } : null,
+    fiveHour: null, sevenDay: null, limits: null, extraUsage: null,
+  };
+  const next = withLiveWindows(base, st.live);
+  st.last = next;
+  fanOut(key, next);
+  const same = (a?: AccountUsageWindow | null, b?: AccountUsageWindow | null) =>
+    a?.utilization === b?.utilization && a?.resetsAt === b?.resetsAt;
+  // N sessions report the same move; one write per actual change.
+  if (!prev || !same(prev.fiveHour, next.fiveHour) || !same(prev.sevenDay, next.sevenDay)) persistSnapshots();
+  return next;
+}
+
 // Wire the post-stop trigger into sessionOps (one-directional: sessionOps owns
 // the bus + the stop handler, this module owns the poll). Runs at import time;
 // autoConnect imports armUsageWatch, so this module is loaded at boot.
 setUsagePollTrigger(triggerUsagePoll);
+setUsageWindowsHandler((vpsId, windows, atMs) => { ingestUsageWindows(vpsId, windows, atMs); });
 
 // ── Codex account-usage poller (the Codex `/usage` gauges) — §14.58 ──────────
 //

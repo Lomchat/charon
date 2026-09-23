@@ -13,7 +13,7 @@ vi.mock('@/lib/server/claude/settings', () => ({ getSetting: () => '', setSettin
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalAccountUsage: fake.emit,
   setUsagePollTrigger: vi.fn(), setCodexUsagePollTrigger: vi.fn(),
-  setCodexUsagePushHandler: vi.fn(), setUsageResetResolver: vi.fn(),
+  setCodexUsagePushHandler: vi.fn(), setUsageResetResolver: vi.fn(), setUsageWindowsHandler: vi.fn(),
 }));
 
 import { getCodexUsageSnapshot, ingestCodexUsagePush, pollCodexUsageForVps } from '@/lib/server/agent/usagePoll';

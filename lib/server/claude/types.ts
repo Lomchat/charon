@@ -114,8 +114,9 @@ export type BridgeEvent =
       }>;
     }
   // rate_limit (agent >= 0.37.0) — "am I limited right now / when does the
-  // window reset", free off the stream. NOT a replacement for the usage poll:
-  // `utilization` is null on subscription accounts (§14.72 stays).
+  // window reset", free off the stream. `utilization` is null on subscription
+  // accounts; the live 5h/7d percentages reach the browser as `account_usage`
+  // instead (§14.72).
   | {
       type: 'rate_limit'; status?: string; window?: string;
       resets_at?: number; utilization?: number; overage_status?: string;
@@ -183,6 +184,11 @@ export type AccountUsage = {
   // the "updated Nm ago" age) and mentions the reason — blanking working
   // numbers on a transient 429 is what read as "usage is broken". §14.72.
   degraded?: { reason: string; statusCode?: number | null; retryAt?: number | null } | null;
+  // When a session's rate_limit event last refreshed the 5h/7d windows (and
+  // their limits[] rows) — newer than `fetchedAt` while the poll lags or is
+  // throttled; the per-model caps stay as of `fetchedAt`. 0-poll snapshots
+  // built from live windows alone carry fetchedAt 0. §14.72.
+  windowsAt?: number | null;
   fiveHour?: AccountUsageWindow | null;
   sevenDay?: AccountUsageWindow | null;
   limits?: AccountUsageLimit[] | null;

@@ -11,6 +11,7 @@ import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
 import { providerText } from '@/lib/providerText';
 import type { AccountUsage, AccountUsageLimit } from '@/lib/server/claude/types';
 import AgentLogo from './AgentLogo';
+import { accountUsageReadAt } from './accountUsageState';
 
 function sevClass(severity: string | undefined, percent: number | null): string {
   if (severity === 'critical') return 'crit';
@@ -115,6 +116,7 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
         ...(usage.fiveHour ? [{ kind: 'session', percent: usage.fiveHour.utilization, severity: 'normal', resetsAt: usage.fiveHour.resetsAt }] : []),
         ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization, severity: 'normal', resetsAt: usage.sevenDay.resetsAt }] : []),
       ];
+  const live = (usage.windowsAt ?? 0) > usage.fetchedAt;
   const kindLabel = (l: Omit<AccountUsageLimit, 'percent'>): string =>
     l.kind === 'session' || l.group === 'session' ? '5-hour session'
     : l.kind === 'weekly_all' ? 'Weekly (all)'
@@ -137,9 +139,11 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
       {usage.extraUsage?.isEnabled ? (
         <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
       ) : null}
-      <div className={`um-foot${usage.degraded ? ' um-foot-stale' : ''}`}>
-        {fmtAgo(usage.fetchedAt)}
-        {usage.degraded ? <> · {degradedNote(usage.degraded)}</> : null}
+      {/* Live 5h/7d windows outdate the poll; a failing poll then only
+          stales the per-model caps. §14.72 */}
+      <div className={`um-foot${usage.degraded && !live ? ' um-foot-stale' : ''}`}>
+        {fmtAgo(accountUsageReadAt(usage))}
+        {usage.degraded ? <> · {live ? 'model caps: ' : ''}{degradedNote(usage.degraded)}</> : null}
       </div>
     </div>
   );
