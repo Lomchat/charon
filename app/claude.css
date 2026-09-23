@@ -6080,7 +6080,7 @@
   opacity: 0.45; font-style: italic;
 }
 
-/* Hub-wide model discoveries: header → provider section → model select. */
+/* Hub-wide model discoveries: header dot → provider badge → notice banner. */
 .model-notice-anchor { position: relative; }
 .model-notice-dot {
   position: absolute; top: 3px; right: 3px; width: 8px; height: 8px;
@@ -6093,10 +6093,25 @@
   background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong);
   font-size: 10px; line-height: 1.5;
 }
+.model-release-notices { display: grid; gap: 8px; margin-bottom: 16px; }
 .model-release-notice {
-  display: block; margin-top: 5px; color: var(--accent-strong);
-  font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 10px 12px; border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+  color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
 }
+.model-release-notice > span:first-child { flex: 1 1 180px; }
+.model-release-notice strong { color: var(--accent-strong); }
+.model-release-notice button {
+  flex: none; margin-left: auto; padding: 5px 12px;
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--bg-inset); color: var(--accent-strong);
+  font: 600 11px var(--display); cursor: pointer;
+}
+.model-release-notice button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, var(--bg-inset)); }
+.model-release-notice button:disabled { opacity: .5; cursor: wait; }
+.model-release-error { flex-basis: 100%; color: var(--danger); }
 
 /* Notification matrix: shared event rows, independent delivery columns. */
 .notification-settings { padding-bottom: 6px; }

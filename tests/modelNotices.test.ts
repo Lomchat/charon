@@ -130,6 +130,15 @@ describe('a provider that is not Claude', () => {
     expect(getModelNotices().cursor).toEqual([{ id: 'grok-5', label: 'grok-5' }]);
   });
 
+  it('acknowledges one Cursor model without clearing another release', () => {
+    observeModels('cursor', [model('grok-4.6')]);
+    observeModels('cursor', [model('grok-5'), model('composer-3')]);
+    markModelsSeen('cursor', ['grok-5']);
+    expect(getModelNotices().cursor).toEqual([model('composer-3')]);
+    observeModels('cursor', [model('grok-5'), model('composer-3')]);
+    expect(getModelNotices().cursor).toEqual([model('composer-3')]);
+  });
+
   it('does not fold ids the way Claude needs', () => {
     // `-20260101` and `[1m]` are meaningful characters elsewhere; collapsing
     // them would merge two distinct models into one.

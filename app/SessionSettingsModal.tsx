@@ -6,6 +6,10 @@ import { readBrowserNotifications, saveBrowserNotifications, useBrowserNotificat
 import { NotificationTable } from './NotificationSettings';
 import { subscribeAll, subscribeReconnect } from './globalEventStream';
 
+function sessionOverride(value: ChannelNotificationPreferences): ChannelNotificationPreferences {
+  return { ...value, events: { ...value.events, session_background: false } };
+}
+
 export default function SessionSettingsModal({ session, onClose }: {
   session: { id: string; name: string | null; cwd: string }; onClose: () => void;
 }) {
@@ -62,10 +66,10 @@ export default function SessionSettingsModal({ session, onClose }: {
         <p className="notification-intro">Changes are saved automatically.</p>
         <NotificationTable session
           browser={{ value: local ?? browser, busy, inherit: !local,
-            onInherit: (inherit) => void save('browser', inherit ? null : normalizeChannelNotifications(browser)),
+            onInherit: (inherit) => void save('browser', inherit ? null : sessionOverride(normalizeChannelNotifications(browser))),
             onChange: (value) => void save('browser', value) }}
           telegram={settings ? { value: settings.telegram ?? settings.defaults, busy, inherit: settings.telegram === null,
-            onInherit: (inherit) => void save('telegram', inherit ? null : settings.defaults),
+            onInherit: (inherit) => void save('telegram', inherit ? null : sessionOverride(settings.defaults)),
             onChange: (value) => void save('telegram', value) } : null} />
         {!settings && <p role="status">Loading Telegram settings…</p>}
         {error && <p className="notification-error" role="alert">{error}</p>}
