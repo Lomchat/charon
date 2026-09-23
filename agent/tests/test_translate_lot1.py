@@ -28,6 +28,7 @@ from charon_agent.session import (  # noqa: E402
     AgentSession,
     _extract_effort_support,
     _nested_cache_creation,
+    _starts_turn,
     _sum_model_usage,
 )
 
@@ -298,6 +299,24 @@ class RateLimitTranslation(unittest.TestCase):
         me.session_config = {"customEndpoint": {"baseUrl": "https://relay.example"}}
         ev = one(AgentSession._translate(me, _ev("RateLimitEvent", rate_limit_info=info)), "rate_limit")
         self.assertNotIn("windows", ev)
+
+
+class TurnOpeners(unittest.TestCase):
+    """The continuous reader flips an idle session to 'thinking' on the first
+    message of a turn the CLI started by itself (§14.54). Only a ResultMessage
+    flips it back, so anything that is NOT a real turn must not open one."""
+
+    def test_spontaneous_turns_open(self):
+        self.assertTrue(_starts_turn(_ev("TaskNotificationMessage")))
+        self.assertTrue(_starts_turn(_ev("AssistantMessage", content=[])))
+        self.assertTrue(_starts_turn(_ev("UserMessage", content="<task-notification>done</task-notification>")))
+
+    def test_model_switch_breadcrumb_does_not(self):
+        # Measured: a live set_model on an idle session replays this echo and
+        # nothing else — the session stayed 'thinking' forever.
+        echo = "<local-command-stdout>Set model to Opus 5.5</local-command-stdout>"
+        self.assertFalse(_starts_turn(_ev("UserMessage", content=echo)))
+        self.assertFalse(_starts_turn(_ev("SystemMessage", subtype="init")))
 
 
 class CrossSessionMessage(unittest.TestCase):

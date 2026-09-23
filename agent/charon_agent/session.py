@@ -173,6 +173,26 @@ def _num(v: Any) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
+_TURN_OPENERS = ("AssistantMessage", "StreamEvent", "UserMessage", "TaskNotificationMessage")
+_LOCAL_COMMAND_ECHO = re.compile(r"\s*<local-command-(?:stdout|stderr)>")
+
+
+def _starts_turn(ev: Any) -> bool:
+    """Whether a message read while idle means the CLI began a turn by itself.
+
+    ⚠ A live `set_model` on an idle conversation makes the CLI replay a
+    `<local-command-stdout>Set model to …` UserMessage (its model-switch
+    breadcrumb, `isReplay`, which the SDK drops). No model call and no
+    ResultMessage follow, so treating it as a turn start pinned the session on
+    'thinking' with nothing for interrupt to stop. (SystemMessage never opens
+    one either: the init frame at connect must not fake a turn start.)
+    """
+    if type(ev).__name__ not in _TURN_OPENERS:
+        return False
+    content = getattr(ev, "content", None)
+    return not (isinstance(content, str) and _LOCAL_COMMAND_ECHO.match(content))
+
+
 _USAGE_WINDOWS = ("five_hour", "seven_day", "seven_day_overage_included")
 
 
@@ -2229,11 +2249,8 @@ class AgentSession:
                     try:
                         async for ev in client.receive_messages():
                             ev_type = type(ev).__name__
-                            if ev_type in ("AssistantMessage", "StreamEvent",
-                                           "UserMessage", "TaskNotificationMessage"):
-                                # (SystemMessage excluded: the init frame at
-                                # connect must not fake a turn start.
-                                # TaskNotificationMessage included: a finished
+                            if _starts_turn(ev):
+                                # (TaskNotificationMessage included: a finished
                                 # background task re-invokes the model — flip
                                 # to 'thinking' as early as possible.)
                                 self._begin_turn()
