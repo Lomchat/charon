@@ -96,6 +96,8 @@ const DEFAULTS = {
   // an id dropped from the code degrades to the default rather than rendering
   // a page against tokens nothing defines.
   'app.theme': DEFAULT_THEME_ID,
+  // Optional hub-wide display density; absence keeps the original layout.
+  'app.density': 'default',
   // Per-backend availability in the UI, hub-wide. 'false' HIDES every launcher
   // for that backend (sidebar ＋, tab-bar ＋, the new-session wizard); existing
   // sessions of that kind keep running and stay visible. Default ON — a fresh

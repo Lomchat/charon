@@ -1,5 +1,6 @@
 import { publicConnection } from '@/lib/server/customEndpoints';
 import './claude.css';
+import './density.css';
 import { db, vps as vpsTable, vpsFolders as vpsFoldersTable, vpsPaths as vpsPathsTable, claudeSessions } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';

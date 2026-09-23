@@ -9,6 +9,7 @@ import NotificationClickHandler from './NotificationClickHandler';
 import ChunkReloadGuard from './ChunkReloadGuard';
 import { getSetting } from '@/lib/server/claude/settings';
 import { resolveTheme } from './themes';
+import { resolveDensity } from './density';
 
 // The active theme is read from the DB and rendered onto <html data-theme>.
 // Server-side is what makes it flash-free — a localStorage read in an inline
@@ -44,8 +45,10 @@ export function generateViewport(): Viewport {
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  let density: ReturnType<typeof resolveDensity> = 'default';
+  try { density = resolveDensity(getSetting('app.density')); } catch { /* use the default */ }
   return (
-    <html lang="en" data-theme={activeTheme().id}>
+    <html lang="en" data-theme={activeTheme().id} data-density={density}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
