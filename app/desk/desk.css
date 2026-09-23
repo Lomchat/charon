@@ -1,0 +1,802 @@
+/* Le desk — salle des machines de Charon.
+   ─────────────────────────────────────────────────────────────────────────
+   Tout est préfixé `dsk-` ou scopé sous `.desk` : cette feuille vit à côté de
+   `claude.css` et des thèmes de Charon, et elle n'a pas le droit d'aller
+   toucher un `.label`, un `.chip` ou un `.card` qui appartiennent à Charon.
+   Le modal, lui, réutilise VOLONTAIREMENT les variables de thème de Charon
+   (`--bg-elevated`, `--text`, `--body`) : la session qu'on ouvre dedans doit
+   avoir exactement le visage qu'elle a dans Charon, y compris en thème clair. */
+
+.desk {
+  --dsk-ink: #dce6f2;
+  --dsk-dim: #8b9bb0;
+  --dsk-faint: #5c6b80;
+  --dsk-panel: rgba(10, 14, 21, 0.82);
+  --dsk-line: rgba(140, 170, 210, 0.16);
+  --dsk-accent: #3ce3cd;
+  --dsk-work: #4da3ff;
+  --dsk-ask: #ff9f43;
+  --dsk-done: #35d07f;
+
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #06080c;
+  color: var(--dsk-ink);
+  font-family: var(--body, "Inter", system-ui, -apple-system, "DejaVu Sans", sans-serif);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.desk * { box-sizing: border-box; }
+
+/* La toile occupe tout, l'habillage se pose dessus. */
+.desk-stage { position: absolute; inset: 0; overflow: hidden; }
+.desk-canvas { display: block; width: 100%; height: 100%; }
+
+/* Les titres de file et les bulles sont posés DANS `.desk-stage`, à côté de la
+   toile — c'est la salle qui les y accroche (`new Overlay(canvas.parentNode)`).
+   Ils flottent au-dessus de la scène, et ils ne reçoivent aucun clic : sans ça,
+   viser un robot dont un titre passe sous le curseur deviendrait impossible, et
+   la caméra ne verrait plus le geste. Le NOM d'un robot, lui, n'est plus ici :
+   c'est une plaque dans la scène (`hall/plates.js`), et elle se clique. */
+.desk-stage .dsk-path,
+.desk-stage .dsk-bubble,
+.desk-stage .dsk-envelope,
+.desk-stage .dsk-hover {
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* L'habillage passe AU-DESSUS des titres : un titre de file ne doit pas
+   traverser la légende ni les compteurs. La salle range ses titres dans une
+   bande plus basse (1 à 20, voir `overlay.js`) ; le modal, lui, est bien
+   au-dessus de tout (200). */
+.desk-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+.desk-hud > * { pointer-events: auto; }
+
+/* ---------------------------------------------------------------- le battement */
+
+/* La cadence du battement, définie une fois pour tout l'habillage. La durée est
+   posée en ligne par le desk, à partir de la vitesse de l'état (`palette.js`) :
+   une pause de sécurité entre deux battements rend la pulsation lisible plutôt
+   que stroboscopique. La légende, le voyant du modal et la pastille d'onglet la
+   reprennent telle quelle — c'est la même information que la plaque de nom. */
+@keyframes dsk-beat {
+  0%, 100% { opacity: 0.42; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1.18); }
+}
+
+/* Le titre d'un chemin : le nom de la file, devant son premier poste.
+   Il emprunte le vocabulaire de la barre latérale de Charon (`.cs-path-head`) —
+   mono, un tiret pour marque, le compte à la fin — parce que c'est le même
+   objet : les deux rangent les mêmes robots sous le même titre. Mais il n'est
+   pas discret comme dans la barre latérale : ici il n'y a pas de liste à
+   parcourir, il y a une salle à lire, et le nom d'un chemin est la seule chose
+   qui dise OÙ l'on travaille. Il est donc clair, plus gros que les autres
+   textes de la salle, et posé sur une plaque sombre qui le décolle du sol. */
+.dsk-path {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 420px;
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 17, 0.78);
+  border-left: 2px solid var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.015em;
+  white-space: nowrap;
+  color: var(--dsk-ink);
+  will-change: transform;
+  backdrop-filter: blur(4px);
+}
+/* La marque de la barre latérale : le même petit trait que `.cs-path-mark`,
+   ici à la couleur de l'accent — c'est lui qui dit « ceci est un chemin »,
+   jamais un état de robot. */
+.dsk-path i {
+  flex: none;
+  width: 12px;
+  height: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-strong, var(--accent));
+}
+.dsk-path span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Le compte des robots de la file : présent, jamais criard — c'est le chemin
+   qu'on lit, le nombre n'est qu'un ordre de grandeur. */
+.dsk-path b {
+  flex: none;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Le nom du robot survolé : au-dessus de sa tête, dans la bande des titres.
+   C'est la même écriture que sur sa plaque, mais à taille d'écran — de loin,
+   la plaque ne fait plus quelques pixels, et c'est ici qu'on lit qui l'on
+   désigne. Le cadre prend la couleur de l'état : la boîte entière est un
+   voyant, et le nom à l'intérieur est le sien. */
+.dsk-hover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 420px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 11, 17, 0.88);
+  border: 1px solid currentColor;
+  font-family: var(--mono);
+  white-space: nowrap;
+  will-change: transform;
+  backdrop-filter: blur(4px);
+}
+.dsk-hover b {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--dsk-ink);
+}
+.dsk-hover span {
+  font-size: 11.5px;
+  opacity: 0.82;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------- bulles */
+
+.dsk-bubble, .dsk-envelope {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+.dsk-envelope {
+  font-size: 15px;
+  color: #e8dcff;
+  text-shadow: 0 0 10px rgba(180, 140, 255, 0.9);
+}
+.dsk-bubble {
+  max-width: 340px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(16, 12, 26, 0.94);
+  border: 1px solid rgba(180, 140, 255, 0.45);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+  font-size: 12.5px;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dsk-bubble::after {
+  content: "";
+  position: absolute;
+  left: 22px;
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  background: inherit;
+  border-right: 1px solid rgba(180, 140, 255, 0.45);
+  border-bottom: 1px solid rgba(180, 140, 255, 0.45);
+  transform: rotate(45deg);
+}
+.dsk-bubble .from { font-size: 11px; font-weight: 600; color: #c9a6ff; }
+.dsk-bubble .text { color: var(--dsk-ink); }
+.dsk-bubble .tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #63e6a8;
+}
+.dsk-bubble.reply { border-color: rgba(99, 230, 168, 0.45); }
+
+/* ------------------------------------------------------------- habillage */
+
+.dsk-card {
+  background: var(--dsk-panel);
+  border: 1px solid var(--dsk-line);
+  border-radius: 14px;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.dsk-top {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  right: 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.dsk-brand h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.dsk-brand h1 span { color: var(--dsk-accent); }
+.dsk-brand h1 em {
+  font-style: normal;
+  font-weight: 400;
+  color: var(--dsk-dim);
+  font-size: 14px;
+  margin-left: 6px;
+}
+.dsk-brand p {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--dsk-dim);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.dsk-brand p b { color: var(--dsk-text); font-weight: 600; }
+.dsk-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsk-accent);
+  animation: dsk-live 2.6s infinite;
+}
+.dsk-live.off { background: #ff6b6b; animation: none; }
+@keyframes dsk-live {
+  0% { box-shadow: 0 0 0 0 rgba(60, 227, 205, 0.55); }
+  70% { box-shadow: 0 0 0 9px rgba(60, 227, 205, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(60, 227, 205, 0); }
+}
+
+.dsk-actions { display: flex; gap: 8px; }
+.dsk-actions button {
+  background: var(--dsk-panel);
+  border: 1px solid var(--dsk-line);
+  color: var(--dsk-ink);
+  border-radius: 10px;
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+  transition: border-color 0.18s, color 0.18s, transform 0.18s;
+}
+.dsk-actions button:hover {
+  border-color: rgba(160, 200, 240, 0.45);
+  transform: translateY(-1px);
+}
+.dsk-actions button[aria-pressed="true"] {
+  border-color: rgba(60, 227, 205, 0.55);
+  color: var(--dsk-accent);
+}
+
+/* ------------------------------------------------------------- compteurs */
+
+.dsk-stats {
+  position: absolute;
+  top: 88px;
+  left: 18px;
+  display: flex;
+  gap: 20px;
+  padding: 11px 18px;
+}
+.dsk-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.15;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+/* Un compteur sur lequel on peut cliquer pour filtrer la salle. */
+.dsk-stat[data-clickable="1"] { cursor: pointer; }
+.dsk-stat[data-clickable="1"]:hover b { text-decoration: underline; text-underline-offset: 3px; }
+.dsk-stat[aria-pressed="true"] b { color: var(--dsk-accent); }
+.dsk-stat b {
+  font-size: 20px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsk-ink);
+}
+.dsk-stat span {
+  font-size: 11px;
+  color: var(--dsk-faint);
+  letter-spacing: 0.02em;
+}
+
+/* -------------------------------------------------------------- légende */
+
+.dsk-legend {
+  position: absolute;
+  top: 172px;
+  left: 18px;
+  padding: 12px 16px 14px;
+  max-width: 330px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.dsk-legend h2 {
+  margin: 0;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--dsk-faint);
+  font-weight: 500;
+}
+/* Le titre de la légende est un bouton : la carte se replie sur lui. Repliée,
+   elle ne garde que cette ligne — 33 cm de large sur 43 de haut en moins, et
+   c'est le tiers gauche de la salle qui réapparaît, avec ses files, leurs titres
+   et leurs noms. Le caret dit dans quel sens ça bascule. */
+.dsk-legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.dsk-legend-head:hover h2 { color: var(--dsk-ink); }
+.dsk-caret {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--dsk-faint);
+}
+.dsk-legend.closed { padding: 9px 14px; gap: 0; }
+.dsk-legend.closed .dsk-legend-body { display: none; }
+.dsk-legend ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dsk-legend li {
+  display: grid;
+  grid-template-columns: 9px 96px 1fr;
+  gap: 9px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
+.dsk-legend li i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  align-self: center;
+  background: currentColor;
+  animation-name: dsk-beat;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+}
+.dsk-legend li b { font-weight: 600; color: var(--dsk-dim); }
+.dsk-legend li span { color: var(--dsk-faint); font-size: 10.5px; line-height: 1.35; }
+.dsk-legend li.steady i { animation: none; opacity: 0.85; }
+
+.dsk-families { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.dsk-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsk-dim); }
+/* Le logo du moteur, là où Charon le publie : le carré de couleur reste à côté
+   parce qu'il porte l'information quand l'image n'est pas encore décodée (et
+   c'est lui que la salle peint au sol sur les écrans). */
+.dsk-chip img {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  object-fit: contain;
+  flex: none;
+}
+.dsk-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+  flex: none;
+  box-shadow: 0 0 0 1px rgba(6, 9, 14, 0.65);
+}
+.dsk-legend .dsk-note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--dsk-faint);
+  line-height: 1.45;
+  border-top: 1px solid var(--dsk-line);
+  padding-top: 8px;
+}
+
+/* ------------------------------------------------------- fiche du robot */
+
+.dsk-panel {
+  position: absolute;
+  right: 18px;
+  bottom: 74px;
+  width: 330px;
+  max-height: 56vh;
+  overflow: auto;
+  padding: 16px 18px 14px;
+}
+.dsk-panel h2 { margin: 0 0 8px; font-size: 18px; letter-spacing: -0.01em; }
+.dsk-panel .dsk-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: 0;
+  color: var(--dsk-faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dsk-panel .dsk-close:hover { color: var(--dsk-ink); }
+.dsk-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.dsk-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+}
+.dsk-now {
+  background: rgba(140, 190, 240, 0.06);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.dsk-now .kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dsk-accent);
+}
+.dsk-now p { margin: 5px 0 0; font-size: 13px; line-height: 1.4; }
+.dsk-rows { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.dsk-rows div { display: flex; gap: 10px; font-size: 12.5px; }
+.dsk-rows dt { color: var(--dsk-faint); min-width: 108px; }
+.dsk-rows dd {
+  margin: 0;
+  color: var(--dsk-dim);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.dsk-open {
+  margin-top: 14px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(60, 227, 205, 0.45);
+  background: rgba(60, 227, 205, 0.1);
+  color: var(--dsk-accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dsk-open:hover { background: rgba(60, 227, 205, 0.18); }
+
+/* ------------------------------------------------------- bas de l'écran */
+
+.dsk-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 18px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--dsk-faint);
+  line-height: 1.5;
+  max-width: 62vw;
+}
+.dsk-hint b { color: var(--dsk-dim); font-weight: 600; }
+.dsk-perf {
+  position: absolute;
+  bottom: 16px;
+  right: 18px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--dsk-faint);
+  font-variant-numeric: tabular-nums;
+}
+.dsk-banner {
+  position: absolute;
+  bottom: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 90, 90, 0.14);
+  border: 1px solid rgba(255, 120, 120, 0.4);
+  color: #ffc9c9;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+
+/* ------------------------------------------------------------- le modal */
+
+/* Le modal reprend `claude-root`, le conteneur de Charon — mais sa grille
+   n'est pas celle de la page : pas de barre latérale, pas d'en-tête, pas
+   d'onglets. Deux colonnes, la session et ses outils, c'est tout. */
+.dsk-modal {
+  position: fixed;
+  inset: 0;
+  /* Au-dessus de tout ce que la salle pose : les étiquettes descendent d'une
+     bande de z-index (1 à 20, voir `overlay.js`), l'habillage tient à 3. Une
+     session ouverte ne doit jamais avoir un nom de robot par-dessus. */
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+}
+.dsk-veil {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.72);
+  backdrop-filter: blur(3px);
+  animation: dsk-fade 0.18s ease-out;
+}
+@keyframes dsk-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.dsk-frame {
+  position: relative;
+  margin: 2.2vh 1.6vw;
+  height: 95.6vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(140, 170, 210, 0.22);
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.65);
+  background: var(--bg-elevated, #0d1119);
+  animation: dsk-rise 0.2s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+@keyframes dsk-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.995); }
+  to { opacity: 1; transform: none; }
+}
+
+.dsk-frame-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(140, 170, 210, 0.16);
+  background: linear-gradient(rgba(255, 255, 255, 0.03), transparent);
+}
+.dsk-frame-head .who {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dsk-frame-head .where {
+  font-size: 12px;
+  color: var(--text-dim, #8b9bb0);
+}
+.dsk-frame-head .state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.dsk-frame-head .state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation-name: dsk-beat;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1);
+}
+.dsk-frame-head .spacer { flex: 1; }
+.dsk-frame-head a,
+.dsk-frame-head button {
+  background: none;
+  border: 1px solid rgba(140, 170, 210, 0.24);
+  color: var(--text-dim, #8b9bb0);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.dsk-frame-head a:hover,
+.dsk-frame-head button:hover { color: var(--text); border-color: rgba(140, 170, 210, 0.5); }
+
+.dsk-embed {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+/* `claude-root` est `position: fixed; inset: 0` dans claude.css : ici il doit
+   se plier à la boîte du modal, sinon la session déborderait sur tout l'écran.
+   Le sélecteur porte trois classes parce que `claude.css` en aligne deux
+   (`.claude-root:not(.has-tools)`) : à spécificité égale, c'est l'ordre du
+   bundle qui déciderait, et il ne dépend pas de nous.
+
+   `relative` et non `absolute` : la boîte reste dans le flux du modal, donc
+   SOUS la barre d'en-tête du desk. En `absolute`, elle remontait jusqu'aux
+   bords du cadre et recouvrait cette barre — le nom du robot, la machine,
+   l'état et le bouton de fermeture disparaissaient sous la session. */
+.desk .dsk-embed.claude-root {
+  position: relative;
+  inset: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "main tools";
+}
+
+/* Sous 1100 px, Charon range lui-même son panneau d'outils derrière un
+   tiroir. Le modal suit : on garde la session, on masque les outils. */
+@media (max-width: 1100px) {
+  .desk .dsk-embed.claude-root {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
+  }
+  .dsk-embed .tool-panel { display: none; }
+  .dsk-frame { margin: 0; height: 100vh; border-radius: 0; border: 0; }
+}
+
+/* -------------------------------------------------- le placard d'un quai */
+
+/* L'armoire au fond du quai n'ouvre pas une session : elle ouvre une liste.
+   Une liste n'a pas besoin de 95 vh de haut ni de toute la largeur — le cadre
+   se rétrécit donc sur son contenu, et c'est la seule différence avec le modal
+   de session. Le reste (`dsk-frame`, `dsk-frame-head`, `dsk-veil`) est partagé,
+   pour que les deux se ressemblent sans qu'on tienne deux feuilles de style. */
+.dsk-frame.dsk-store {
+  margin: 6vh auto;
+  width: min(1080px, 94vw);
+  height: auto;
+  max-height: 86vh;
+}
+
+.dsk-store .dsk-frame-head .where {
+  max-width: 24vw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dsk-store-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+}
+
+.dsk-store-note {
+  margin: 2px 0 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--dsk-faint);
+  max-width: 70ch;
+}
+
+/* La liste n'est plus une suite de lignes, mais une suite de CHEMINS : le
+   titre de chaque groupe est un `.cs-path-group`, la classe de la barre
+   latérale de Charon, et la mise en page du groupe appartient donc à
+   `claude.css`. Ici on ne dit que deux choses : comment le placard se pose
+   dedans, et la TAILLE des titres — là-bas ils sont écrits pour une colonne de
+   260 px, ici la boîte fait quatre fois cette largeur. Le style reste le sien,
+   seule l'échelle change. */
+.dsk-store-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dsk-store-list .cs-path-group { margin-top: 9px; }
+.dsk-store-list .cs-path-group:first-child { margin-top: 0; }
+.dsk-store-list .cs-path-head { font-size: 11px; }
+
+/* Les lignes d'un chemin, sous son titre. */
+.dsk-store-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* Une ligne = une session endormie. Quatre colonnes, toujours les mêmes, pour
+   que l'œil descende la liste sans la relire : le moteur, le robot, un éventuel
+   détour, et depuis quand. Le dossier, lui, n'est plus dans la ligne — c'est le
+   titre du groupe au-dessus. */
+.dsk-store-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 6px 11px;
+  border: 1px solid rgba(140, 170, 210, 0.14);
+  border-radius: 10px;
+  background: rgba(140, 170, 210, 0.045);
+  color: var(--dsk-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dsk-store-row:hover {
+  border-color: rgba(60, 227, 205, 0.45);
+  background: rgba(60, 227, 205, 0.09);
+}
+.dsk-store-row:focus-visible {
+  outline: 2px solid var(--dsk-accent);
+  outline-offset: 1px;
+}
+
+.dsk-store-row .logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  object-fit: contain;
+  display: block;
+}
+
+.dsk-store-row .who {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dsk-store-row .who em {
+  margin-left: 8px;
+  font-style: normal;
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--dsk-faint);
+}
+
+.dsk-store-row .tag {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.dsk-store-row .when {
+  font-size: 11px;
+  color: var(--dsk-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------- petits écrans */
+
+@media (max-width: 1080px) {
+  .dsk-legend, .dsk-panel { display: none; }
+  .dsk-hint { display: none; }
+  /* Sur un écran étroit, la liste prend la place qu'elle peut. */
+  .dsk-frame.dsk-store {
+    margin: 0;
+    width: 100%;
+    max-height: none;
+    height: 100vh;
+    border-radius: 0;
+    border: 0;
+  }
+  .dsk-store-row { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  .dsk-store-row .tag { display: none; }
+}
