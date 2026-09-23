@@ -144,7 +144,9 @@
 
 .claude-head .hnav-trigger {
   display: inline-flex; align-items: center; gap: 7px;
-  padding: 5px 11px; min-height: 30px;
+  /* Exactly the `.head-btn` square's height: the two sit side by side in the
+     header, and a 2px step between neighbours reads as a misalignment. */
+  padding: 0 11px; height: 32px;
   /* The chip's SHAPE belongs to the theme (`--chip-radius`): a pill is the
      Cupertino themes' native control and a foreign object on the angular
      ones, which is the difference a theme exists to express. */
