@@ -298,6 +298,9 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
               </nav>
 
               <div className="settings-pane">
+                {isSessionProvider(cat) && (
+                  <ModelReleaseNotice key={cat} provider={cat} unread={modelNotices[cat]} onSeen={onModelsSeen} />
+                )}
                 {cat === 'endpoints' && <CustomEndpointsSettings vpsList={vpsList} />}
                 {cat === 'general' && (
                   <>
@@ -342,7 +345,6 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                         onChange={(v) => set('claude.default_model', v)}
                         inheritPlaceholder="SDK default"
                       />
-                      <ModelReleaseNotice key="claude" provider="claude" unread={modelNotices.claude} onSeen={onModelsSeen} />
                     </label>
                     <label>default fallback model (when the primary is rate-limited)
                       <ModelPicker
@@ -446,7 +448,6 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                             onChange={(v) => set('codex.default_model', v)}
                             inheritPlaceholder={`${providerText.agentLabel('codex')} default`}
                           />
-                          <ModelReleaseNotice key="codex" provider="codex" unread={modelNotices.codex} onSeen={onModelsSeen} />
                         </label>
                         <label>default effort
                           <CodexEffortPicker
@@ -462,7 +463,6 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       <>
                         <label>default model
                           <input value={s['codex.default_model'] ?? ''} onChange={(e) => set('codex.default_model', e.target.value)} placeholder="gpt-5.6-sol" autoComplete="off" spellCheck={false} />
-                          <ModelReleaseNotice key="codex" provider="codex" unread={modelNotices.codex} onSeen={onModelsSeen} />
                         </label>
                         <label>default effort
                           <input value={s['codex.default_effort'] ?? ''} onChange={(e) => set('codex.default_effort', e.target.value)} placeholder="medium" autoComplete="off" spellCheck={false} />
@@ -508,6 +508,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                     {cursorVps ? (
                       <label>default model
                         <CursorModelPicker
+                          catalogVersion={modelNotices.cursor.map((m) => m.id).join(',')}
                           vpsId={cursorVps.id}
                           value={s['cursor.default_model'] ?? ''}
                           onChange={(v) => set('cursor.default_model', v)}
