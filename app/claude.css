@@ -1811,7 +1811,7 @@
 .bubble .bubble-f time {
   font-family: var(--mono); font-size: 10px;
   color: var(--text-muted); opacity: 0.55;
-  margin-left: auto;
+  margin-left: auto; white-space: nowrap;
 }
 /* Header date/time + copy live together at the far right of `.bubble-h`; the
    wrapper (not `time` itself) owns the push-right so the copy button sits
