@@ -35,6 +35,7 @@ const _scale = new THREE.Vector3();
 const _color = new THREE.Color();
 const _white = new THREE.Color(0xffffff);
 const _shell = new THREE.Color();
+const _desk = new THREE.Color();
 
 /** Palier : les mouvements du robot sont mécaniques, pas organiques. */
 const step = (value) => Math.round(value * 3) / 3;
@@ -375,6 +376,18 @@ export class Fleet {
 				// d'un tiers : c'est le robot qui pulse, la plaque qui le dit.
 				const gain = state.pulse ? 0.72 + 0.58 * pulse : 0.86;
 				const plateGain = state.pulse ? 0.55 + 0.45 * pulse : 1;
+				// Le POSTE bat avec le robot. Le mobilier est sombre à dessein —
+				// c'est cet écart qui détache la silhouette —, et la couleur
+				// d'instance le MULTIPLIE au lieu de le remplacer : le bureau
+				// prend la teinte de l'état sans jamais rattraper la carrure.
+				// D'où un gain au-dessus de 1, là où le robot et la plaque
+				// restent en dessous : la base du mobilier est cinq fois plus
+				// sombre que celle du carénage, et à 1 le poste ne ferait que
+				// s'éteindre vers la couleur de l'état. Le plateau et la selle
+				// ensemble, parce que c'est UN poste : c'est la surface qui
+				// manquait pour voir travailler un robot du fond de l'allée,
+				// quand son voyant n'est plus qu'un point.
+				const deskGain = state.pulse ? 1.05 + 1.8 * pulse : 1.5;
 				const family = familyOf(session.kind);
 				const detour = detourOf(session);
 
@@ -458,8 +471,22 @@ export class Fleet {
 
 				// Le poste, la selle, l'écran. La marque est posée sur le dos du
 				// moniteur : de l'allée, c'est la seule face qu'on voit du robot.
-				emit('desk', base.clone());
-				emit('chair', base.clone());
+				// Le plateau et la selle reçoivent la MÊME couleur, composée une
+				// fois : deux `emit` qui la recalculeraient chacun de leur côté
+				// finiraient par diverger d'un arrondi, et le poste battrait en
+				// deux temps.
+				//
+				// Un `THREE.Color`, pas un entier : `emit` accepte les deux, mais
+				// l'entier passe par `getHex()`, qui RAMÈNE chaque canal dans
+				// [0,1]. Un gain de 2,85 y perdrait tout ce qui dépasse 1 — soit,
+				// pour un voyant bleu, le canal bleu entier, celui qui bat le
+				// plus fort. La couleur telle quelle traverse le nuanceur sans
+				// être écrêtée (le carénage, lui, monte déjà à 1,30), et le
+				// battement garde sa teinte d'un bout à l'autre au lieu de
+				// blanchir vers son sommet.
+				const deskColor = _desk.setHex(beacon.hex).multiplyScalar(deskGain);
+				emit('desk', base.clone(), deskColor);
+				emit('chair', base.clone(), deskColor);
 				emit(`tag:${family.id}`, base.clone());
 				if (detour) {
 					emit('deskBadge', base.clone(), engineTint(detour.label).hex);

@@ -55,6 +55,7 @@ export const STATES: Record<DeskState['id'], DeskState>;
 export const STATUS_TEXT: Record<string, string>;
 
 export function robotName(session: DeskSession | null | undefined): string;
+export function roomName(session: DeskSession | null | undefined): string;
 export function familyOf(kind: string | null | undefined): Family;
 export function hexOf(css: string): number;
 export function engineTint(vendor: string | null | undefined): Tint;
