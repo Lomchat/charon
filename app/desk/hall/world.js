@@ -50,7 +50,7 @@ function layoutSignature(fleet) {
 }
 
 export class World {
-	constructor(container, { onOpen, onHover, onStore } = {}) {
+	constructor(container, { onOpen, onHover, onStore, onMenu } = {}) {
 		this.container = container;
 		this.onOpen = onOpen;
 		this.onHover = onHover;
@@ -58,6 +58,12 @@ export class World {
 		 *  cette machine. La salle ne la connaît pas — elle dit seulement quel
 		 *  quai on a visé. */
 		this.onStore = onStore;
+		/** Le menu contextuel d'un robot : ce que le clic droit demande. La
+		 *  salle dit QUEL robot et À QUEL ENDROIT de l'écran — pas ce qu'on peut
+		 *  lui faire. Les actions sont celles de Charon, et c'est Charon qui les
+		 *  propose ; la salle n'en connaît aucune. `null` = le clic droit n'a
+		 *  touché personne : le menu ouvert, s'il y en a un, se referme. */
+		this.onMenu = onMenu;
 
 		this.renderer = new THREE.WebGLRenderer({
 			antialias: true,
@@ -427,6 +433,19 @@ export class World {
 	}
 
 	_click(event) {
+		// Le clic droit n'ouvre pas une session : il demande son menu. La caméra
+		// rend le même `onClick` pour tous les boutons — c'est ici, une fois,
+		// qu'on sépare. Un bouton droit relâché sans avoir fait glisser la vue
+		// est un clic droit ; le même bouton qui a glissé a piloté la caméra, et
+		// la caméra appelle déjà `_click` au-delà de six pixels de course.
+		if (event.button === 2) {
+			this._menu(event);
+			return;
+		}
+		// Ni bouton du milieu, ni fin d'un glissement annulé (`pointercancel`
+		// arrive avec `button: -1`).
+		if (event.button !== 0) return;
+
 		const entry = this.pick(event);
 		if (entry) {
 			// On sélectionne et on ouvre — rien d'autre. La caméra ne bouge pas :
@@ -448,6 +467,28 @@ export class World {
 		// une LISTE. La salle dit seulement quel quai on a visé.
 		this.select(null);
 		this.onStore?.(store.quai.id);
+	}
+
+	/** Le clic droit : le menu du robot visé, à l'endroit du clic. On ne l'ouvre
+	 *  pas — c'est Charon qui le tient, et lui seul sait ce qu'une session peut
+	 *  recevoir. La caméra ne bouge pas non plus : on DÉSIGNE un robot, on ne se
+	 *  poste pas devant lui.
+	 *
+	 *  Le robot visé devient le robot sélectionné : l'anneau se pose à ses pieds
+	 *  et y reste, même si la souris s'en va vers le menu — sans lui, un menu
+	 *  ouvert au milieu de vingt robots identiques ne dirait plus de qui il
+	 *  parle.
+	 *
+	 *  Un clic droit dans le vide ne fait pas semblant : il le dit (`null`), et
+	 *  l'écran referme le menu qu'il avait ouvert. */
+	_menu(event) {
+		const entry = this.pick(event);
+		if (!entry) {
+			this.onMenu?.(null, event.clientX, event.clientY);
+			return;
+		}
+		this.select(entry.session.id);
+		this.onMenu?.(entry.session, event.clientX, event.clientY);
 	}
 
 	hover(event) {

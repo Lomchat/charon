@@ -26,9 +26,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { setFocus, subscribeAll, subscribeReconnect } from '@/app/globalEventStream';
+import ConfirmModal from '@/app/ConfirmModal';
+import PromptModal from '@/app/PromptModal';
+import SessionContextMenu from '@/app/SessionContextMenu';
+import { canResumeSession, canSleepSession } from '@/app/sessionBulkActions';
+import { api } from '@/lib/api';
 import type { Vps, VpsFolder, VpsRuntimeSnapshot } from '@/lib/types/api';
 import { World, type DeskModel } from './hall/world';
-import { stateOf, type DeskAction, type DeskSession } from './hall/palette';
+import { roomName, stateOf, type DeskAction, type DeskSession } from './hall/palette';
 import Hud, { type Counts } from './ui/Hud';
 import SessionModal from './ui/SessionModal';
 import StoreModal from './ui/StoreModal';
@@ -80,6 +85,14 @@ export default function Desk({ vpsList, folders }: Props) {
   const [help, setHelp] = useState(false);
   const [onFloor, setOnFloor] = useState<number | null>(null);
 
+  // Le menu du clic droit, et les deux dialogues qu'il ouvre (renommer,
+  // supprimer). On n'y garde que des IDENTIFIANTS : à chaque rendu, la ligne
+  // vivante est relue dans `sessions`, sinon le menu parlerait d'un robot tel
+  // qu'il était au moment du clic — nom, état et permissions compris.
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   /* --------------------------------------------------------------- la salle */
 
   useEffect(() => {
@@ -89,6 +102,9 @@ export default function Desk({ vpsList, folders }: Props) {
       onOpen: (id) => { setStoreId(null); setOpenId(id); },
       // Un placard de stockage ouvert : la liste, pas une session.
       onStore: (vpsId) => setStoreId(vpsId),
+      // Le clic droit : le menu du robot visé, à l'endroit du clic. Dans le
+      // vide, il n'ouvre rien — il referme celui qui était ouvert.
+      onMenu: (session, x, y) => setMenu(session ? { id: session.id, x, y } : null),
     });
     world.onStats = setFps;
     // Ce que la salle a réellement posé au sol : les machines sans agent éveillé
@@ -405,6 +421,14 @@ export default function Desk({ vpsList, folders }: Props) {
     [storeId, sessions]
   );
 
+  // La ligne vivante d'un identifiant : c'est ce que le menu du clic droit, le
+  // dialogue de renommage et celui de suppression regardent. Une session
+  // supprimée ailleurs disparaît donc d'elle-même de ces trois-là.
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s] as const)), [sessions]);
+  const menuSession = menu ? byId.get(menu.id) ?? null : null;
+  const renamingSession = renaming ? byId.get(renaming) ?? null : null;
+  const deletingSession = deleting ? byId.get(deleting) ?? null : null;
+
   /* ------------------------------------------------------------------ effets */
 
   // Ouvrir une session, c'est la regarder : on le dit au serveur, qui efface
@@ -448,6 +472,57 @@ export default function Desk({ vpsList, folders }: Props) {
     world.recenter();
   }, []);
 
+  /* ------------------------------------------------- le menu du clic droit */
+
+  // Endormir ou réveiller : la MÊME route que la barre latérale de Charon. La
+  // salle ne dort personne elle-même — elle demande, Charon exécute, et elle se
+  // recolle au résultat. Ce qu'une session peut recevoir n'est pas non plus
+  // décidé ici : `canSleepSession` / `canResumeSession` sont les règles de
+  // Charon, et la salle ne fait que leur poser la question.
+  const lifecycle = useCallback((action: 'sleep' | 'resume', id: string) => {
+    const call = action === 'sleep' ? api.sleepClaudeSession : api.resumeClaudeSession;
+    void call(id).then(() => refresh()).catch((e: unknown) => {
+      setError(`${action}: ${e instanceof Error ? e.message : String(e)}`);
+      void refresh();
+    });
+  }, [refresh]);
+
+  // Supprimer. L'erreur n'est pas attrapée ici : elle remonte à `<ConfirmModal>`,
+  // qui la montre sous la question à laquelle elle répond — au lieu d'une bande
+  // en haut de la salle, loin du bouton qu'on vient de presser.
+  const deleteOne = useCallback(async (id: string) => {
+    try {
+      await api.deleteClaudeSession(id);
+    } catch (error) {
+      void refresh();
+      throw error;
+    }
+    // Le robot sort de la salle à l'instant : l'événement SSE peut se perdre, et
+    // on ne veut pas d'un fantôme jusqu'au sondage de la minute.
+    setSessions((previous) => previous.filter((session) => session.id !== id));
+    setOpenId((current) => (current === id ? null : current));
+    void refresh();
+  }, [refresh]);
+
+  // Renommer : le nom de Charon (`name`), pas l'adresse. Voir l'avertissement du
+  // dialogue — une plaque écrit l'adresse tant que le robot en a une.
+  const applyRename = useCallback(async (id: string, name: string) => {
+    await api.renameClaudeSession(id, name || null);
+    setRenaming(null);
+    void refresh();
+  }, [refresh]);
+
+  // Refermer le menu. Cette fonction doit être STABLE, et c'est une contrainte
+  // de `SessionContextMenu`, pas une coquetterie : son garde-fou de 350 ms — celui
+  // qui empêche l'appui long d'un écran tactile de refermer le menu qu'il vient
+  // d'ouvrir — vit dans un effet dont `onClose` est la dépendance, si bien qu'un
+  // `onClose` recréé à chaque rendu REJOUE l'effet et repousse le garde-fou. Or
+  // la salle se rend au moins une fois par seconde (le pouls, les images par
+  // seconde, chaque événement du flux), et bien plus souvent quand la flotte
+  // parle : le menu ne se refermait alors plus au clic, ou seulement par chance,
+  // dans l'accalmie. `useCallback` le fixe une fois pour toutes.
+  const closeMenu = useCallback(() => setMenu(null), []);
+
   /* ------------------------------------------------------------------ rendu */
 
   return (
@@ -472,6 +547,72 @@ export default function Desk({ vpsList, folders }: Props) {
       />
 
       {error && <div className="dsk-banner">Charon ne répond pas — {error}</div>}
+
+      {/* Le menu d'un robot : celui de Charon, monté tel quel. Le desk ne
+          redessine pas ses entrées et n'en invente aucune — ce qu'une session
+          peut recevoir, c'est Charon qui le sait. Trois seulement, et elles
+          sont posées : renommer, endormir (ou réveiller), supprimer.
+
+          Ce que la salle ne propose PAS, et pourquoi : la couleur d'une ligne
+          (dans la salle, la teinte d'un robot est son ÉTAT — une couleur de
+          ligne viendrait la contredire), et l'adresse / le dossier de travail
+          (ce sont les vocabulaires de Charon, on les édite là-bas). */}
+      {menuSession && menu && (
+        <SessionContextMenu
+          title={roomName(menuSession)}
+          subtitle={menuSession.cwd || undefined}
+          x={menu.x}
+          y={menu.y}
+          showColor={false}
+          onRename={() => setRenaming(menuSession.id)}
+          // Un robot endormi n'est plus dans la salle — il est dans l'armoire —,
+          // donc « Resume » ne se présente ici que pour un robot en erreur, le
+          // seul cas où la salle montre un robot que Charon sait réveiller.
+          onSleep={canSleepSession(menuSession) ? () => lifecycle('sleep', menuSession.id) : undefined}
+          onResume={canResumeSession(menuSession) ? () => lifecycle('resume', menuSession.id) : undefined}
+          onDelete={() => setDeleting(menuSession.id)}
+          onClose={closeMenu}
+        />
+      )}
+
+      {renamingSession && (
+        <PromptModal
+          title="Rename session"
+          // Dit où ce nom se lit VRAIMENT. La plaque d'un robot écrit son
+          // adresse tant qu'il en a une : renommer un robot qui a un handle ne
+          // change donc rien dans la salle, et il faut le dire avant, pas après.
+          hint={renamingSession.handle
+            ? <>Charon’s list, and this session’s header, show this name. Its plate in the room keeps writing <b>@{renamingSession.handle}</b> — that is its address, and an address is not renamed.</>
+            : <>This name is what Charon’s list, the header, and the robot’s plate in the room all show.</>}
+          initial={renamingSession.name ?? ''}
+          placeholder={renamingSession.cwd.split('/').filter(Boolean).pop() ?? undefined}
+          confirmLabel="rename"
+          busyLabel="renaming…"
+          icon="✎"
+          onSubmit={(value) => applyRename(renamingSession.id, value)}
+          onClose={() => setRenaming(null)}
+        />
+      )}
+
+      {deletingSession && (
+        <ConfirmModal
+          title="Delete session"
+          confirmLabel="delete permanently"
+          busyLabel="deleting…"
+          onConfirm={() => deleteOne(deletingSession.id).then(() => setDeleting(null))}
+          onClose={() => setDeleting(null)}
+        >
+          <div className="confirm-target">
+            <span className="ct-name">{roomName(deletingSession)}</span>
+            <span className="ct-sub">{deletingSession.cwd}</span>
+          </div>
+          <p className="confirm-text">
+            The session and its whole history (messages, permissions, logs) will be
+            permanently deleted. This cannot be undone — to keep it, put the robot to
+            sleep instead.
+          </p>
+        </ConfirmModal>
+      )}
 
       {/* Le placard est monté AVANT le modal de session : à z-index égal, c'est
           le dernier du DOM qui passe devant. La liste reste donc derrière la

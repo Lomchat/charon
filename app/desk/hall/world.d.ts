@@ -137,6 +137,11 @@ export type WorldOptions = {
   /** Un placard de stockage ouvert : l'identifiant du VPS dont il faut montrer
    *  les robots endormis. */
   onStore?: (vpsId: string) => void;
+  /** Le clic droit sur un robot : la session visée — `null` quand il n'a
+   *  touché personne — et l'endroit du clic, en coordonnées de page. La salle
+   *  ne propose rien elle-même : l'écran ouvre le menu de Charon, qui sait
+   *  seul ce qu'une session peut recevoir. */
+  onMenu?: (session: DeskSession | null, x: number, y: number) => void;
 };
 
 export declare class World {
