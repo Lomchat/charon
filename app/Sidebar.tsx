@@ -498,8 +498,8 @@ export default function Sidebar({
           </button>
         </div>
         <div className="cs-switch-row">
-          {/* The cleanup rides with its switch: one group, so a wrapping row
-              never strands the trash on the next line. */}
+          {/* The cleanup rides with its switch: one group, on a line of its
+              own (`.cs-switch-pair`); details + show tools share the next. */}
           <span className="cs-switch-pair">
             <label className="cs-switch" title="show or hide paused (sleeping) sessions">
               <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} />
