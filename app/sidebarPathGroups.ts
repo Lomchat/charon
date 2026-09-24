@@ -31,6 +31,45 @@ export function sidebarPathOrder(items: SidebarPathItem[]): string[] {
   return seen;
 }
 
+/** Keep the path order anchored to all sessions when some rows are hidden. */
+export function sidebarVisiblePathItems<T extends SidebarPathItem>(
+  orderedAll: T[], visible: (item: T) => boolean,
+): T[] {
+  const groups = new Map<string, T[]>();
+  for (const item of orderedAll) {
+    const path = sidebarPathKey(item.cwd);
+    if (!groups.has(path)) groups.set(path, []);
+    if (visible(item)) groups.get(path)!.push(item);
+  }
+  return [...groups.values()].flat();
+}
+
+export type PositionedSidebarPathItem = SidebarPathItem & { position: number; createdAt: number };
+
+/**
+ * A path has no position of its own: its first session determines its place.
+ * When that session is deleted, later sessions of the same path may sit after
+ * other paths in the flat order. Preserve the path order from BEFORE deletion
+ * and pack each surviving group into consecutive positions only if deleting
+ * the row would move a path. Null means existing positions already work.
+ */
+export function sidebarOrderAfterDelete(items: PositionedSidebarPathItem[], deletedId: string): string[] | null {
+  const sorted = [...items].sort((a, b) => a.position - b.position
+    || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  const surviving = sorted.filter((item) => item.id !== deletedId);
+  const survivingPaths = new Set(surviving.map((item) => sidebarPathKey(item.cwd)));
+  const before = sidebarPathOrder(sorted).filter((path) => survivingPaths.has(path));
+  const after = sidebarPathOrder(surviving);
+  if (before.every((path, i) => path === after[i])) return null;
+  const groups = new Map<string, string[]>();
+  for (const item of sorted) {
+    const path = sidebarPathKey(item.cwd);
+    if (!groups.has(path)) groups.set(path, []);
+    if (item.id !== deletedId) groups.get(path)!.push(item.id);
+  }
+  return [...groups.values()].flat();
+}
+
 /**
  * Expand a reorder of the path HEADINGS back into the VPS's complete order:
  * every session follows its path, keeping its rank inside it. Path order is
@@ -63,18 +102,22 @@ export function mergeSidebarPathGroupOrder(
 
 /**
  * Expand a reorder from one path group back into the VPS's complete order.
- * The API deliberately receives the full VPS list; sending only the subgroup
- * would move that whole path to the front because omitted ids are appended.
+ * Hidden cards keep their slots when visiblePathIds is supplied. The API
+ * receives the full VPS list; omitted ids would otherwise move to the end.
  */
 export function mergeSidebarPathOrder(
   all: SidebarPathItem[],
   path: string,
   orderedPathIds: string[],
+  visiblePathIds?: string[],
 ): string[] | null {
   const current = all.filter((item) => sidebarPathKey(item.cwd) === path).map((item) => item.id);
-  if (current.length !== orderedPathIds.length) return null;
-  const expected = new Set(current);
+  const visible = visiblePathIds ?? current;
+  const expected = new Set(visible);
+  if (visible.length !== orderedPathIds.length || expected.size !== visible.length) return null;
+  if (visible.some((id) => !current.includes(id))) return null;
   if (new Set(orderedPathIds).size !== expected.size || orderedPathIds.some((id) => !expected.has(id))) return null;
   let cursor = 0;
-  return all.map((item) => sidebarPathKey(item.cwd) === path ? orderedPathIds[cursor++] : item.id);
+  return all.map((item) => sidebarPathKey(item.cwd) === path && expected.has(item.id)
+    ? orderedPathIds[cursor++] : item.id);
 }

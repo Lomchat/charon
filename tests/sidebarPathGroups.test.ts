@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
-  sidebarPathOrderedIds,
+  sidebarPathOrderedIds, sidebarOrderAfterDelete, sidebarVisiblePathItems,
 } from '@/app/sidebarPathGroups';
 
 describe('sidebar path groups', () => {
@@ -50,5 +50,40 @@ describe('sidebar path groups', () => {
   it('rejects a heading list that would drop or duplicate a group', () => {
     expect(mergeSidebarPathGroupOrder(sessions, ['/srv/a', '/srv/a'])).toBeNull();
     expect(mergeSidebarPathGroupOrder(sessions, ['/srv/a', '/srv/zzz'])).toBeNull();
+  });
+
+  it('keeps a path in place when its first session is deleted', () => {
+    const rows = [
+      { id: 'a1', cwd: '/srv/a', position: 0, createdAt: 1 },
+      { id: 'b1', cwd: '/srv/b', position: 1, createdAt: 2 },
+      { id: 'a2', cwd: '/srv/a/', position: 2, createdAt: 3 },
+      { id: 'c1', cwd: '/srv/c', position: 3, createdAt: 4 },
+      { id: 'a3', cwd: '/srv/a', position: 4, createdAt: 5 },
+    ];
+    expect(sidebarOrderAfterDelete(rows, 'a1')).toEqual(['a2', 'a3', 'b1', 'c1']);
+    expect(sidebarOrderAfterDelete(rows, 'b1')).toBeNull();
+    expect(sidebarOrderAfterDelete(rows, 'a3')).toBeNull();
+  });
+
+  it('preserves legacy equal-position path order using creation time', () => {
+    const rows = [
+      { id: 'a1', cwd: '/srv/a', position: 0, createdAt: 1 },
+      { id: 'b1', cwd: '/srv/b', position: 0, createdAt: 2 },
+      { id: 'a2', cwd: '/srv/a', position: 0, createdAt: 3 },
+    ];
+    expect(sidebarOrderAfterDelete(rows, 'a1')).toEqual(['a2', 'b1']);
+  });
+
+  it('keeps path order when its first session is hidden', () => {
+    const all = [
+      { id: 'a-paused', cwd: '/srv/a' },
+      { id: 'b1', cwd: '/srv/b' },
+      { id: 'a1', cwd: '/srv/a' },
+      { id: 'a2', cwd: '/srv/a' },
+    ];
+    const visible = sidebarVisiblePathItems(all, (item) => item.id !== 'a-paused');
+    expect(visible.map((item) => item.id)).toEqual(['a1', 'a2', 'b1']);
+    expect(mergeSidebarPathOrder(all, '/srv/a', ['a2', 'a1'], ['a1', 'a2']))
+      .toEqual(['a-paused', 'b1', 'a2', 'a1']);
   });
 });
