@@ -151,6 +151,7 @@ export function applyBgTaskEvent(
 ): boolean {
   if (!ev || !ev.taskId) return false;
   let t = map.get(ev.taskId);
+  const launchedBy = t?.toolUseId ?? null;
   if (!t) {
     // 'updated'/'finished' for a task whose 'started' we never saw (history
     // truncated by pagination) still materializes an entry — better a
@@ -174,7 +175,9 @@ export function applyBgTaskEvent(
     map.set(ev.taskId, t);
   }
   if (ev.description) t.description = ev.description;
-  if (ev.toolUseId) t.toolUseId = ev.toolUseId;
+  // The launcher is the tool_use of the latest `started`; later events only
+  // fill it in, so the relaunch test below compares against the right run.
+  if (ev.toolUseId && (ev.kind === 'started' || !t.toolUseId)) t.toolUseId = ev.toolUseId;
   if (ev.taskType) t.taskType = ev.taskType;
   if (ev.workflowName) t.workflowName = ev.workflowName;
   if (ev.outputFile) t.outputFile = ev.outputFile;
@@ -206,7 +209,19 @@ export function applyBgTaskEvent(
     }
     t.status = next;
   } else if (ev.kind === 'started') {
-    if (!TERMINAL.has(t.status)) t.status = 'running';
+    // A Claude sub-agent resumed by SendMessage re-announces the SAME taskId,
+    // launched by a NEW tool_use: that is a new run. The same launcher again is
+    // a duplicate or late `started`, which must not resurrect a finished task.
+    const relaunched = TERMINAL.has(t.status) && !!ev.toolUseId
+      && launchedBy != null && ev.toolUseId !== launchedBy;
+    if (relaunched) {
+      t.status = 'running';
+      t.endedAt = null;
+      t.summary = null;
+      t.usage = null;
+      t.lastToolName = null;
+      t.agents = null;
+    } else if (!TERMINAL.has(t.status)) t.status = 'running';
     t.startedAt = at;
   }
   return true;

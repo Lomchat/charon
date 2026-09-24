@@ -126,6 +126,43 @@ describe('applyBgTaskEvent — a killed task actually ends', () => {
   });
 });
 
+describe('applyBgTaskEvent — a sub-agent resumed under the same taskId', () => {
+  // Real sequence: Agent launch → finished → SendMessage resumes the SAME
+  // agent id, and the SDK re-announces it with the ORIGINAL description.
+  const run = () => {
+    const m = new Map<string, BgTask>();
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1', toolUseId: 'tu-agent', description: 'Build v3' }, 1000);
+    applyBgTaskEvent(m, { kind: 'updated', taskId: 'a1', status: 'completed', terminal: true }, 2000);
+    applyBgTaskEvent(m, { kind: 'finished', taskId: 'a1', toolUseId: 'tu-agent', status: 'completed', summary: 'v3 built' }, 2000);
+    return m;
+  };
+
+  it('a `started` from a NEW tool_use is a new run', () => {
+    const m = run();
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1', toolUseId: 'tu-send', description: 'Build v3' }, 3000);
+    expect(m.get('a1')).toMatchObject({
+      status: 'running', startedAt: 3000, endedAt: null, summary: null, toolUseId: 'tu-send',
+    });
+  });
+
+  it('a duplicate `started` from the same launcher does not resurrect it', () => {
+    const m = run();
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1', toolUseId: 'tu-agent' }, 3000);
+    expect(m.get('a1')!.status).toBe('completed');
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1' }, 3100);
+    expect(m.get('a1')!.status).toBe('completed');
+  });
+
+  it('the relaunch keeps its launcher when its terminal event names another', () => {
+    const m = run();
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1', toolUseId: 'tu-send' }, 3000);
+    applyBgTaskEvent(m, { kind: 'finished', taskId: 'a1', toolUseId: 'tu-agent', status: 'completed' }, 4000);
+    expect(m.get('a1')!.status).toBe('completed');
+    applyBgTaskEvent(m, { kind: 'started', taskId: 'a1', toolUseId: 'tu-send' }, 4100);
+    expect(m.get('a1')!.status).toBe('completed');
+  });
+});
+
 describe('effectiveBgStatus — the age cap is honest on BOTH sides', () => {
   const task = (startedAt: number): BgTask => ({
     taskId: 't', description: null, command: null, toolUseId: null, taskType: null,
