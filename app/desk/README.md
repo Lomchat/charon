@@ -242,8 +242,17 @@ Ajouter un élément à la salle :
    attend ; vert, un tour fini que personne n'a lu ; gris, rien à signaler ;
    rouge, en panne ; bleu sombre, en veille. Ce n'est pas l'étiquette qui bat,
    c'est **le robot entier** : sa carrure prend la couleur de son état et
-   s'allume avec elle. Une session en veille est éteinte et fixe : dans une
-   salle sombre, ce qui bouge est ce qui vous veut ;
+   s'allume avec elle. Le **poste bat avec lui** — plateau et selle, même
+   couleur, même cadence : la couleur d'instance *multiplie* le mobilier au lieu
+   de le remplacer, donc le bureau prend la teinte de l'état sans jamais
+   rattraper le robot, et la silhouette tient. C'est la surface qui manquait
+   pour voir travailler un robot du fond de l'allée, quand son voyant n'est plus
+   qu'un point. Le gain du poste dépasse 1 (le mobilier est cinq fois plus
+   sombre que le carénage) et passe par un `THREE.Color` et non par un entier :
+   `getHex()` ramène chaque canal dans [0,1] et écrêterait le canal dominant du
+   voyant, celui qui bat le plus fort. Un état sans pulsation ne bat pas : son
+   poste reste teinté, fixe. Une session en veille est éteinte et fixe : dans
+   une salle sombre, ce qui bouge est ce qui vous veut ;
 2. **le nom du robot**, sur son bureau — une carte inclinée à 45° posée derrière
    le moniteur (`plates.js`), tournée vers l'allée : c'est de là qu'elle se lit,
    et du dessus. Le nom y prend **toute la carte** : `nameSize` mesure le mot à
@@ -260,7 +269,12 @@ Ajouter un élément à la salle :
    teint exactement de la couleur de l'état — de loin, chaque poste porte la
    pastille de couleur de la barre latérale, et le nom se relit sur l'écran du
    robot, qui, lui, garde sa taille. Les endormis n'ont **pas** de nom : ils
-   n'ont plus de robot ;
+   n'ont plus de robot.
+   La salle écrit ce nom **sans l'arobase** (`roomName`, sur la plaque, l'écran
+   et l'étiquette de survol) : `@repos` est une adresse — la façon d'appeler un
+   agent dans le réseau de Charon —, et une adresse se lit dans les panneaux, où
+   l'on écrit pour de bon. Le modal garde donc `@repos`. Sur une plaque, elle ne
+   dit rien et mange la largeur qui fait la taille des lettres ;
    Et pour le robot qu'on **désigne** — le geste le plus direct, et celui qui
    porte le plus loin —, il y a une troisième écriture, en DOM par-dessus la
    scène (`overlay.js:drawHover`) : la souris s'arrête sur un robot, son nom et
@@ -341,6 +355,31 @@ Un clic sur un robot **n'ouvre que sa session** : la caméra ne bouge pas.
 Vouloir lire une session n'est pas vouloir se coller au robot, et la salle doit
 être exactement là où on l'avait laissée quand le modal se referme.
 
+**Le clic droit ouvre le menu d'un robot** — celui de Charon, monté tel quel
+(`SessionContextMenu`, `ConfirmModal`, `PromptModal`). La salle ne propose rien
+elle-même : elle dit *quel* robot et *où*, et c'est Charon qui sait ce qu'une
+session peut recevoir. Trois entrées seulement : renommer, endormir (ou
+réveiller), supprimer. La couleur d'une ligne n'y est pas : dans la salle, la
+teinte d'un robot **est** son état, et une couleur de ligne viendrait la
+contredire. La plaque d'un robot écrit son **adresse** tant qu'il en a une, donc
+renommer un robot qui a un handle ne change rien dans la salle — le dialogue le
+dit avant, pas après.
+
+Le bouton droit est séparé **dans `_click`**, pas dans la caméra : celle-ci rend
+le même `onClick` pour tous les boutons, et un bouton droit relâché sans avoir
+fait glisser la vue (`dragging.moved < 6`) est un clic droit. Le même bouton qui
+a glissé a piloté la caméra, et n'ouvre donc rien. La salle ne décide pas non
+plus qui peut dormir : `canSleepSession` / `canResumeSession` de Charon
+(`app/sessionBulkActions.ts`) répondent. Et comme un robot endormi n'est plus
+dans la salle mais dans l'armoire, « Resume » ne se présente que pour un robot en
+erreur — le seul cas où la salle montre un robot que Charon sait réveiller.
+
+Le clic droit **sélectionne** le robot visé sans rien ouvrir : l'anneau se pose à
+ses pieds et y reste quand la souris part vers le menu — sans lui, un menu ouvert
+au milieu de vingt robots identiques ne dirait plus de qui il parle. Dans le
+vide, il ne fait pas semblant : il le dit (`onMenu(null, x, y)`), et le menu
+ouvert se referme.
+
 Les textes peints au sol se retournent face au visiteur (`hall.faceCamera`) :
 peints, ils ne se liraient que d'un côté, et la caméra est libre.
 
@@ -385,8 +424,21 @@ chaque point est classé « armoire », « robot devant » ou « rien »),
 la salle doit la passer en `unread` — voyant vert qui bat —, et tant la couleur
 d'instance de son torse que celle de sa plaque de nom, relevées sur un cycle
 entier, doivent rester vertes).
+`desk-postebat.cjs` (**le poste bat-il avec son robot ?** : trente prises sur
+quatre secondes, et pour chaque robot on relève la couleur d'instance du poste,
+de la selle, du carénage et de la plaque — le poste et la selle doivent battre
+d'un même mouvement, dans la teinte de l'état, et un robot dont l'état ne pulse
+pas doit avoir une amplitude de zéro partout ; la sonde lit aussi le nom
+réellement peint dans la toile de la plaque, `plates.bySession.get(id).drawn`,
+ce qui donne le texte de la plaque sans OCR).
+`desk-menu.cjs` (**le clic droit** : sur un robot il ouvre le menu de Charon à
+l'endroit du clic, et il en nomme le robot ; sur le vide il n'ouvre rien et
+referme ce qui était ouvert ; un clic GAUCHE au même endroit, lui, ouvre la
+session — c'est ce qui prouve que les deux boutons ont été séparés. La sonde
+passe ensuite par le menu pour endormir un robot témoin, et vérifie sa disparition
+dans `fleet.bySession` — pas seulement dans la réponse du serveur).
 `window.desk` (le monde) et `window.desk.controller` (la caméra) sont exposés
-pour ça.
+pour ça — la caméra de rendu est `window.desk.camera3`, pas `camera`.
 
 Trois pièges à connaître en écrivant une sonde. `focusOn` force la cible à
 1,10 m au-dessus du plancher (`camera.js:127`) : pour viser autre chose, piloter
