@@ -14,7 +14,7 @@ import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from 
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
 import {
   mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
-  sidebarPathOrderedIds,
+  sidebarPathOrderedIds, sidebarVisiblePathItems,
 } from './sidebarPathGroups';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import {
@@ -384,16 +384,21 @@ export default function Sidebar({
   // The selected entity is never dropped: a filter that excluded it would
   // leave the main pane blank with no explanation.
   const showEntity = isEntityShown ?? (() => true);
-  function sessionsFor(vpsId: string): SessionListItem[] {
-    return sessions
-      .filter((s) => s.vpsId === vpsId)
-      .filter((s) => showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      .filter((s) => s.id === selectedId || showEntity(s.vpsId, s.cwd, 'session'))
+  function allSessionsFor(vpsId: string): SessionListItem[] {
+    return sessions.filter((s) => s.vpsId === vpsId)
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
       // is position 0, so an untouched sidebar sorts exactly as it did before
       // and only a list that was actually dragged looks different.
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0)
         || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+  function visibleSessionsFor(all: SessionListItem[]): SessionListItem[] {
+    return sidebarVisiblePathItems(all, (s) =>
+      (showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
+      && (s.id === selectedId || showEntity(s.vpsId, s.cwd, 'session')));
+  }
+  function sessionsFor(vpsId: string): SessionListItem[] {
+    return visibleSessionsFor(allSessionsFor(vpsId));
   }
   function shellsFor(vpsId: string): ShellListItem[] {
     return shells
@@ -546,9 +551,11 @@ export default function Sidebar({
           const visibleVps = folderVps
             .map((v) => {
               const install = installs.find((i) => i.vpsId === v.id) ?? null;
+              const allVpsSessions = allSessionsFor(v.id);
               return {
                 vps: v,
-                vpsSessions: sessionsFor(v.id),
+                allVpsSessions,
+                vpsSessions: visibleSessionsFor(allVpsSessions),
                 vpsShells: shellsFor(v.id),
                 install,
               };
@@ -597,6 +604,7 @@ export default function Sidebar({
                     onToggleCollapsed: () => setVpsCollapsed(x.vps.id),
                     collapsedPaths, onTogglePath: setPathCollapsed,
                     vpsSessions: x.vpsSessions,
+                    allVpsSessions: x.allVpsSessions,
                     vpsShells: x.vpsShells,
                     vpsInstall: x.install,
                     showDetails,
@@ -632,6 +640,7 @@ type VpsRenderOpts = {
   onTogglePath: (key: string) => void;
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   vpsSessions: SessionListItem[];
+  allVpsSessions: SessionListItem[];
   vpsShells: ShellListItem[];
   vpsInstall: InstallInfo | null;
   // "details" switch — false = compact cards (no preview/cwd/age).
@@ -674,7 +683,7 @@ type VpsRenderOpts = {
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
     sessionHandles, collapsed, onToggleCollapsed, collapsedPaths, onTogglePath,
-    vpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
+    vpsSessions, allVpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
     staleness,
     selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
@@ -943,6 +952,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             collapsedPaths={collapsedPaths}
             onTogglePath={onTogglePath}
             sessions={vpsSessions}
+            allSessions={allVpsSessions}
             shells={vpsShells}
             selectedId={selectedId}
             selectedShellId={selectedShellId}
@@ -1026,8 +1036,8 @@ const STATUS_TEXT: Record<string, string> = {
 /**
  * Sessions and shells of ONE VPS, split by normalized cwd.
  *
- * Path-group order follows the first entity currently present in each path,
- * preserving the existing VPS order. A group component owns its own reorder
+ * Path-group order follows the full VPS session list, even if paused/filter
+ * settings hide its first card. A group component owns its own reorder
  * hook, which structurally prevents cross-path drops.
  *
  * TWO nested drags, and they never meet: a card moves inside its own group
@@ -1038,7 +1048,7 @@ const STATUS_TEXT: Record<string, string> = {
  * and its midpoint decides before/after just as a row's does.
  */
 function WorkspacePathGroups({
-  vpsId, sessions, selectedId, selectedSessionIds, deletingSessionIds,
+  vpsId, sessions, allSessions, selectedId, selectedSessionIds, deletingSessionIds,
   showDetails, sessionHandles, onSelect, onSelectionGesture, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
   activeWorkspace, shells, selectedShellId, onSelectShell, onContextShell,
@@ -1048,6 +1058,7 @@ function WorkspacePathGroups({
   onTogglePath: (key: string) => void;
   vpsId: string;
   sessions: SessionListItem[];
+  allSessions: SessionListItem[];
   shells: ShellListItem[];
   selectedId: string | null;
   selectedShellId: string | null;
@@ -1084,11 +1095,11 @@ function WorkspacePathGroups({
   // Only a path holding sessions can move: order lives in `position` on the
   // session rows, so a shell-only group has nothing to carry it — and since
   // the map above is filled from the sessions first, those groups already sit
-  // at the end, which is where they would land anyway. Read off the SAME list
-  // the commit expands, so the drag list and the merge cannot drift apart.
+  // at the end, which is where they would land anyway. Expand the drag against
+  // the full list so hidden sessions keep their positions.
   const movablePaths = useMemo(() => sidebarPathOrder(sessions), [sessions]);
   const pathDnd = useReorder(movablePaths, (orderedPaths) => {
-    const fullOrder = mergeSidebarPathGroupOrder(sessions, orderedPaths);
+    const fullOrder = mergeSidebarPathGroupOrder(allSessions, orderedPaths);
     if (fullOrder) onReorder?.(vpsId, fullOrder);
   }, { axis: 'y' });
   const pathsMovable = !!onReorder && movablePaths.length > 1;
@@ -1105,7 +1116,7 @@ function WorkspacePathGroups({
           onToggleCollapsed={() => onTogglePath(pathCollapseKey(vpsId, group.path))}
           sessions={group.sessions}
           shells={group.shells}
-          allSessions={sessions}
+          allSessions={allSessions}
           selectedId={selectedId}
           selectedShellId={selectedShellId}
           selectedSessionIds={selectedSessionIds}
@@ -1162,7 +1173,8 @@ function SessionPathGroup({
   onReorder?: (vpsId: string, ids: string[]) => void;
 }) {
   const dnd = useReorder(sessions.map((session) => session.id), (orderedPathIds) => {
-    const fullOrder = mergeSidebarPathOrder(allSessions, path, orderedPathIds);
+    const fullOrder = mergeSidebarPathOrder(allSessions, path, orderedPathIds,
+      sessions.map((session) => session.id));
     if (fullOrder) onReorder?.(vpsId, fullOrder);
   }, { axis: 'y' });
   const current = path !== '~' && isSameWorkspace(activeWorkspace, vpsId, path);

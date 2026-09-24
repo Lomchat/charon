@@ -49,6 +49,7 @@ import { readCodexBgState } from '@/lib/server/claude/codexBgState';
 import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
 import { providerText } from '@/lib/providerText';
+import { sidebarOrderAfterDelete } from '@/app/sidebarPathGroups';
 import {
   PROVIDERS, asSessionProvider, defaultSessionMode, isEffortValue, isSessionEffort, isSessionMode,
   providerBackendState, providerLabel as providerDisplayName, providerLoginPatch,
@@ -3385,8 +3386,29 @@ export async function deleteSession(
     stream.detach();
     streams.delete(sessionId);
   }
-  db.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
-  db.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
+  db.transaction((tx) => {
+    const siblings = tx.select({
+      id: claudeSessions.id, cwd: claudeSessions.cwd,
+      position: claudeSessions.position, createdAt: claudeSessions.createdAt,
+      archived: claudeSessions.archived,
+    }).from(claudeSessions).where(eq(claudeSessions.vpsId, row.vpsId)).all();
+    // Archived rows are absent from the sidebar and cannot anchor a path.
+    const visibleSiblings = siblings.filter((sibling) => sibling.archived === 0);
+    const order = sidebarOrderAfterDelete(visibleSiblings, sessionId);
+    tx.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
+    tx.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
+    if (order) {
+      const previousPositions = new Map(siblings.map((sibling) => [sibling.id, sibling.position]));
+      const archivedOrder = siblings.filter((sibling) => sibling.archived !== 0 && sibling.id !== sessionId)
+        .sort((a, b) => a.position - b.position || a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+        .map((sibling) => sibling.id);
+      [...order, ...archivedOrder].forEach((id, position) => {
+        if (previousPositions.get(id) !== position) {
+          tx.update(claudeSessions).set({ position }).where(eq(claudeSessions.id, id)).run();
+        }
+      });
+    }
+  });
   // Attachment ROWS go with the FK cascade, but the hub-side blobs under
   // data/uploads/<sessionId>/ are plain files nothing else would ever collect —
   // without this they leak for the lifetime of the install. Fire-and-forget:
