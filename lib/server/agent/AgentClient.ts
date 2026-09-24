@@ -303,6 +303,11 @@ export class AgentClient {
     // Prefer the explicit opts, else fall back to the cached cursor
     // (updated by SessionStream as events are persisted).
     const afterSeq = opts?.afterSeq ?? this._pendingAfterSeq.get(sessionId) ?? null;
+    // Remember an explicit cursor: a subscribe fired while CONNECTED never
+    // went through _pendingAfterSeq, so the next reconnect fell back to
+    // `replay:300` — a ring tail that can exceed the agent's 32MiB send
+    // queue and get dropped on every reconnect, forever.
+    if (typeof opts?.afterSeq === 'number') this._pendingAfterSeq.set(sessionId, opts.afterSeq);
     const params: Record<string, unknown> = { session_id: sessionId };
     if (typeof afterSeq === 'number') {
       params.after_seq = afterSeq;
