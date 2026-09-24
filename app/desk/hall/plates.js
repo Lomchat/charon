@@ -27,7 +27,7 @@
 import * as THREE from '../vendor/three.module.js';
 import { namePlateGeometry } from './geom.js';
 import { makeCanvas, toTexture, fit } from './canvas.js';
-import { robotName } from './palette.js';
+import { roomName } from './palette.js';
 
 const W = 640;
 const H = 160;
@@ -123,7 +123,7 @@ class Plate {
 		ctx.lineWidth = 7;
 		ctx.strokeRect(3.5, 3.5, W - 7, H - 7);
 
-		const name = robotName(session);
+		const name = roomName(session);
 		ctx.textAlign = 'center';
 		ctx.textBaseline = 'alphabetic';
 
@@ -211,7 +211,7 @@ export class Plates {
 			plate.stamp = this.frame;
 			// Le nom seul décide d'un repeint : la couleur, elle, change à chaque
 			// image sans qu'on retouche la toile.
-			const name = robotName(session);
+			const name = roomName(session);
 			if (plate.drawn !== name) {
 				plate.drawn = name;
 				plate.draw(session);

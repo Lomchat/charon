@@ -15,7 +15,7 @@ import * as THREE from '../vendor/three.module.js';
 import { sidebarPathKey } from '@/app/sidebarPathGroups';
 import { toScreen } from './project.js';
 import { escapeHtml, preview, shortPath } from './text.js';
-import { robotName } from './palette.js';
+import { roomName } from './palette.js';
 
 const _v = new THREE.Vector3();
 
@@ -87,7 +87,7 @@ export class Overlay {
 			this.container.appendChild(element);
 			box = this.hoverBox = { element, drawn: null };
 		}
-		const name = robotName(entry.session);
+		const name = roomName(entry.session);
 		const path = shortPath(sidebarPathKey(entry.session?.cwd), 30);
 		const colour = `#${(entry.beacon?.hex ?? 0x9fb4d0).toString(16).padStart(6, '0')}`;
 		const signature = `${name}|${path}|${colour}`;

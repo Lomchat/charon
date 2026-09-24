@@ -15,7 +15,7 @@
 
 import * as THREE from '../vendor/three.module.js';
 import { makeCanvas, toTexture, roundRect, fit, ago, logoImage } from './canvas.js';
-import { actionWord, beaconOf, familyOf, robotName, statusWord } from './palette.js';
+import { actionWord, beaconOf, familyOf, roomName, statusWord } from './palette.js';
 import { preview } from './text.js';
 
 const W = 320;
@@ -89,7 +89,7 @@ class Screen {
 
 		ctx.font = 'bold 16px "DejaVu Sans Mono", monospace';
 		ctx.fillStyle = '#dce8f5';
-		ctx.fillText(fit(ctx, robotName(session), room), x, 27);
+		ctx.fillText(fit(ctx, roomName(session), room), x, 27);
 
 		ctx.font = '13px "DejaVu Sans Mono", monospace';
 		ctx.fillStyle = beacon.css;

@@ -218,14 +218,30 @@ export function vpsStatusOf(status) {
  *  quelqu'un lui a donné dans la barre latérale — c'est ce que l'œil cherche
  *  quand il balaie la salle. À défaut seulement, l'identifiant tronqué.
  *
- *  Une seule fonction pour les trois endroits qui nomment un robot (l'étiquette
- *  au-dessus de la tête, le bandeau de l'écran, l'en-tête du modal) : autrement
- *  le même robot finirait par s'appeler trois choses différentes. */
+ *  Une seule fonction pour tous les endroits qui nomment un robot (l'étiquette
+ *  au-dessus de la tête, le bandeau de l'écran, la plaque du bureau, l'en-tête
+ *  du modal) : autrement le même robot finirait par s'appeler plusieurs choses
+ *  différentes. La salle s'en sert à travers `roomName`, qui n'en retire qu'un
+ *  signe. */
 export function robotName(session) {
 	if (session?.handle) return `@${session.handle}`;
 	const name = String(session?.name ?? '').trim();
 	if (name) return name;
 	return String(session?.id ?? '?').slice(0, 6);
+}
+
+/** Le même nom, écrit comme la SALLE l'écrit : sans l'arobase.
+ *
+ *  `@api` est une adresse — la façon d'appeler un agent dans le réseau de
+ *  Charon —, et c'est à ce titre qu'elle reste dans les panneaux, où l'on
+ *  écrit pour de bon. Sur une plaque de bureau, l'arobase ne dit rien : elle
+ *  mange la largeur de la carte, donc la taille des lettres, qui se règle sur
+ *  la place disponible (`plates.js`), et elle fait ressembler un nom de robot
+ *  à une adresse e-mail. La salle nomme, les panneaux adressent : c'est la
+ *  même fonction qui décide, moins ce signe. */
+export function roomName(session) {
+	const name = robotName(session);
+	return name.charCodeAt(0) === 64 ? name.slice(1) : name;
 }
 
 /** Ce qui est demandé, quand quelque chose est demandé. `pendingPermissions`
