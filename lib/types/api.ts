@@ -1350,6 +1350,21 @@ export type SearchClaudeResponse = { results: SearchClaudeResult[] };
 // longer exists — DELETE is always destructive.
 export type DeleteClaudeSessionResponse = { ok: true };
 
+// POST /api/claude/sessions/bulk-delete — the paused-sessions cleanup. Same
+// destruction as the DELETE above, N at a time, announced ONCE. `onlyPaused`
+// re-checks each row at deletion time: the list the user picked from can be a
+// poll old, and a session that woke up since is kept, not deleted.
+export type BulkDeleteSessionsBody = { ids: string[]; onlyPaused?: boolean };
+export type BulkDeleteSessionsResponse = {
+  ok: true;
+  deleted: string[];
+  /** Already gone (another tab deleted it): nothing to do, drop the row too. */
+  missing: string[];
+  /** Kept by `onlyPaused`: running again since the list was drawn. */
+  notPaused: string[];
+  failed: { id: string; error: string }[];
+};
+
 export type ResumeClaudeSessionResponse = {
   ok: true;
   status: WorkerStatus | string;

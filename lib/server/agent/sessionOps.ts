@@ -3364,10 +3364,21 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
  *   4. Fire-and-forget `kill_session` on the agent so slow remote shutdown
  *      never holds the HTTP DELETE/modal open. If the agent is down, the next
  *      reconcile ignores the orphan (cf. `reconcileVpsAgentState`).
+ *
+ * `announce: false` is for a caller deleting MANY (the bulk route): it skips
+ * the two list-level broadcasts — each one makes every open tab refetch the
+ * whole session list — and announces once itself from the returned facts.
+ * The per-session `killed` status still goes out: a view open on that session
+ * must hear it whatever deleted it. Synchronous up to the agent call, so a
+ * caller's check-then-delete cannot interleave with another request.
  */
-export async function deleteSession(sessionId: string): Promise<void> {
+export async function deleteSession(
+  sessionId: string,
+  opts: { announce?: boolean } = {},
+): Promise<{ deleted: boolean; tabsDropped: boolean }> {
+  const announce = opts.announce ?? true;
   const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
-  if (!row) return;
+  if (!row) return { deleted: false, tabsDropped: false };
   emitGlobalSession({ type: 'status', sessionId, status: 'killed' } as GlobalSessionEvent);
   const stream = streams.get(sessionId);
   if (stream) {
@@ -3387,11 +3398,13 @@ export async function deleteSession(sessionId: string): Promise<void> {
   // The tab is a view of the session, so it goes with it — but only the tab:
   // closing a tab never deletes a session, and this is the one direction that
   // does propagate. §14.78
+  let tabsDropped = false;
   try {
-    if (dropTabsForRef('session', sessionId)) emitGlobalTabsChanged();
+    tabsDropped = dropTabsForRef('session', sessionId);
+    if (tabsDropped && announce) emitGlobalTabsChanged();
   } catch { /* the layout is not worth failing a delete over */ }
   // Live-announce the removal so every other tab/device drops the card. §14.52.
-  emitGlobalSessionListChanged(sessionId);
+  if (announce) emitGlobalSessionListChanged(sessionId);
   void (async () => {
     try {
       const client = getAgentClientForVpsId(row.vpsId);
@@ -3401,6 +3414,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
       // orphan (no DB row), then the next daemon restart cleans state.json.
     }
   })();
+  return { deleted: true, tabsDropped };
 }
 
 // ── Charon ↔ agent reconciliation (self-healing after restart) ─────────────
