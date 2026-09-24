@@ -70,12 +70,51 @@ function degradedNote(d: NonNullable<AccountUsage['degraded']>): string {
   return `refresh failed — retrying ${fmtIn(d.retryAt)}`;
 }
 
+const HOUR_MS = 3_600_000;
+
+/** A limit's window length. The payload does not carry it; the kind says it. */
+function windowMsOf(kind: string | null | undefined, group?: string | null): number | null {
+  if (kind === 'session' || group === 'session') return 5 * HOUR_MS;
+  if (group === 'weekly' || kind?.startsWith('weekly')) return 168 * HOUR_MS;
+  return null;
+}
+
+/** THE PACE MARK: how far through its window the clock stands (0–1), or null
+ *  when that is unknown (no reset time: an idle window). A gauge filled past
+ *  it is spending faster than a pace that lasts until the reset. */
+function paceFraction(resetsAt: string | null | undefined, windowMs: number | null, now: number): number | null {
+  if (!now || !resetsAt || !windowMs) return null;
+  const t = Date.parse(resetsAt);
+  if (!Number.isFinite(t)) return null;
+  const left = t - now;
+  if (left <= 0 || left > windowMs) return null;
+  return 1 - left / windowMs;
+}
+
+const PACE_LEGEND = 'The mark is how much of the window has elapsed: a bar past it is using the quota faster than a pace that lasts until the reset.';
+
+/** Wall clock for the pace marks that stay on screen, ticking each minute. 0
+ *  until mounted, so the server render and the first client one agree. */
+function useMinuteClock(): number {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return now;
+}
+
 /** One headline gauge: a rate-limit window. */
 type UsageCell = {
   k: string;
+  /** What the window is, in a sentence. */
+  name: string;
   pct: number | null;
   /** The endpoint's own verdict; absent on the plain 5h/7d windows. */
   sev?: string;
+  resetsAt: string | null;
+  windowMs: number | null;
   /** A model-specific cap. It only ever comes from the POLL, never from a
    *  turn's live `rate_limit`, so it goes stale on its own (§14.72). */
   scoped: boolean;
@@ -87,10 +126,29 @@ type UsageCell = {
 function usageCells(usage: AccountUsage | null): UsageCell[] {
   const scoped = (usage?.limits ?? []).filter((l) => l.scopeModel);
   return [
-    { k: '5h', pct: usage?.fiveHour?.utilization ?? null, scoped: false },
-    { k: '7d', pct: usage?.sevenDay?.utilization ?? null, scoped: false },
-    ...scoped.map((l) => ({ k: l.scopeModel as string, pct: l.percent, sev: l.severity, scoped: true })),
+    { k: '5h', name: '5-hour window', pct: usage?.fiveHour?.utilization ?? null,
+      resetsAt: usage?.fiveHour?.resetsAt ?? null, windowMs: 5 * HOUR_MS, scoped: false },
+    { k: '7d', name: 'Weekly window (all models)', pct: usage?.sevenDay?.utilization ?? null,
+      resetsAt: usage?.sevenDay?.resetsAt ?? null, windowMs: 168 * HOUR_MS, scoped: false },
+    ...scoped.map((l) => ({
+      k: l.scopeModel as string, name: `${l.scopeModel} weekly cap`, pct: l.percent, sev: l.severity,
+      resetsAt: l.resetsAt ?? null, windowMs: windowMsOf(l.kind, l.group), scoped: true,
+    })),
   ];
+}
+
+/** The desktop gauge's hover text: the numbers, nothing else. */
+function cellTitle(c: UsageCell, pace: number | null): string {
+  const facts = [`${fmtPct(c.pct)} used`];
+  if (pace != null) facts.push(`${Math.round(pace * 100)}% of the time elapsed`);
+  const reset = fmtReset(c.resetsAt);
+  if (reset) facts.push(reset);
+  return `${c.name}: ${facts.join(' · ')}`;
+}
+
+/** The pace mark on a horizontal gauge. */
+function PaceMark({ pace }: { pace: number | null }) {
+  return pace == null ? null : <span className="um-pace" style={{ left: `${pace * 100}%` }} />;
 }
 
 /** Close a popover on a press outside `ref` or on Escape. */
@@ -107,8 +165,9 @@ function useDismiss(open: boolean, setOpen: (open: boolean) => void, ref: RefObj
   }, [open, setOpen, ref]);
 }
 
-function Bar({ label, sub, pct, severity, reset }: {
+function Bar({ label, sub, pct, severity, reset, pace = null }: {
   label: string; sub?: string | null; pct: number | null; severity?: string; reset?: string | null;
+  pace?: number | null;
 }) {
   const cls = sevClass(severity, pct);
   return (
@@ -117,7 +176,7 @@ function Bar({ label, sub, pct, severity, reset }: {
         <span className="um-label">{label}{sub ? <em className="um-scope"> {sub}</em> : null}</span>
         <span className={`um-pct um-${cls}`}>{fmtPct(pct)}</span>
       </div>
-      <div className="um-track"><div className={`um-fill um-${cls}`} style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }} /></div>
+      <div className="um-track"><div className={`um-fill um-${cls}`} style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }} /><PaceMark pace={pace} /></div>
       {reset ? <div className="um-reset">{fmtReset(reset)}</div> : null}
     </div>
   );
@@ -156,6 +215,10 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
         ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization, severity: 'normal', resetsAt: usage.sevenDay.resetsAt }] : []),
       ];
   const live = (usage.windowsAt ?? 0) > usage.fetchedAt;
+  // Read at render, like the reset countdowns beside them: the popover is
+  // short-lived, and every reopen is a fresh render.
+  const now = Date.now();
+  const paces = limits.map((l) => paceFraction(l.resetsAt, windowMsOf(l.kind, l.group), now));
   const kindLabel = (l: Omit<AccountUsageLimit, 'percent'>): string =>
     l.kind === 'session' || l.group === 'session' ? '5-hour session'
     : l.kind === 'weekly_all' ? 'Weekly (all)'
@@ -173,11 +236,13 @@ function UsageDetail({ usage, vpsName, onRefresh }: {
       </div>
       {limits.map((l, i) => (
         <Bar key={i} label={kindLabel(l)} sub={l.scopeModel} pct={l.percent}
-             severity={l.severity} reset={l.resetsAt} />
+             severity={l.severity} reset={l.resetsAt} pace={paces[i]} />
       ))}
       {usage.extraUsage?.isEnabled ? (
         <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
       ) : null}
+      {/* The only place a phone can read what the mark means — no hover. */}
+      {paces.some((p) => p != null) ? <div className="um-legend"><span className="um-legend-mark" aria-hidden="true" />{PACE_LEGEND}</div> : null}
       {/* Live 5h/7d windows outdate the poll; a failing poll then only
           stales the per-model caps. §14.72 */}
       <div className={`um-foot${usage.degraded && !live ? ' um-foot-stale' : ''}`}>
@@ -214,6 +279,7 @@ export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh,
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   useDismiss(open, setOpen, ref);
+  const now = useMinuteClock();
 
   // ── No usage API, and none coming: a LINK, not an empty gauge ──
   //
@@ -259,9 +325,12 @@ export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh,
   return (
     <div className={`usage-meter${runtime ? ' runtime-usage' : ''}`} ref={ref}>
       {runtime ? <button type="button" className={`runtime-cell runtime-usage-button um-${worst}`} onClick={() => setOpen((o) => !o)} title="Account usage" aria-label="Show account usage" aria-expanded={open}>
-        {usage?.ok ? <span className="runtime-usage-gauges">{cells.map((c) => <span className="runtime-usage-row" key={c.k}>
-          <span title={c.k}>{c.k}</span><span className="runtime-usage-track" aria-hidden="true"><span className={`um-fill um-${sevClass(c.sev, c.pct)}`} style={{ width: `${Math.min(100, Math.max(0, c.pct ?? 0))}%` }} /></span><b>{fmtPct(c.pct)}</b>
-        </span>)}</span> : <span className="runtime-usage-empty">Unavailable</span>}
+        {usage?.ok ? <span className="runtime-usage-gauges">{cells.map((c) => {
+          const pace = paceFraction(c.resetsAt, c.windowMs, now);
+          return <span className="runtime-usage-row" key={c.k} title={cellTitle(c, pace)}>
+            <span>{c.k}</span><span className="runtime-usage-track" aria-hidden="true"><span className={`um-fill um-${sevClass(c.sev, c.pct)}`} style={{ width: `${Math.min(100, Math.max(0, c.pct ?? 0))}%` }} /><PaceMark pace={pace} /></span><b>{fmtPct(c.pct)}</b>
+          </span>;
+        })}</span> : <span className="runtime-usage-empty">Unavailable</span>}
       </button> : (
       <button className={`usage-chip um-${worst}`} onClick={() => setOpen((o) => !o)}
               title="Account usage" aria-expanded={open}>
@@ -296,23 +365,28 @@ function ringLabels(cells: UsageCell[]): string[] {
   });
 }
 
-function Ring({ cell, label, stale }: { cell: UsageCell; label: string; stale: boolean }) {
+function Ring({ cell, label, stale, now }: { cell: UsageCell; label: string; stale: boolean; now: number }) {
   const known = cell.pct != null;
   const used = Math.min(100, Math.max(0, cell.pct ?? 0)) / 100;
+  const pace = known ? paceFraction(cell.resetsAt, cell.windowMs, now) : null;
   return (
     <svg className={`ur-ring um-${known ? sevClass(cell.sev, cell.pct) : 'none'}${stale ? ' is-stale' : ''}`} viewBox="0 0 24 24" aria-hidden="true">
       <circle className="ur-track" cx="12" cy="12" r={RING_R} />
       {used > 0 && <circle className="ur-arc" cx="12" cy="12" r={RING_R}
         strokeDasharray={`${RING_C * used} ${RING_C}`} transform="rotate(-90 12 12)" />}
+      {/* The pace mark, across the stroke and a hair outside it — never
+          inward: pointing at the label, it read as a minus sign before "5h". */}
+      {pace != null && <line className="ur-pace" x1="12" y1={12 - RING_R - 2} x2="12" y2={12 - RING_R + 1.5}
+        transform={`rotate(${pace * 360} 12 12)`} />}
       <text className="ur-label" x="12" y="12" textAnchor="middle" dominantBaseline="central">{label}</text>
     </svg>
   );
 }
 
 /** One ring per usage window, FILLING with what has been used (the desktop
- *  cell's reading, drawn round) and coloured by the same thresholds. A tap
- *  opens the same detail as the desktop cell. A provider with no usage API
- *  gets its dashboard link. */
+ *  cell's reading, drawn round) and coloured by the same thresholds, with the
+ *  same pace mark. A tap opens the same detail as the desktop cell. A provider
+ *  with no usage API gets its dashboard link. */
 export function UsageRings({ usage, vpsName, onRefresh, kind }: {
   usage: AccountUsage | null;
   vpsName?: string | null;
@@ -324,6 +398,7 @@ export function UsageRings({ usage, vpsName, onRefresh, kind }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   useDismiss(open, setOpen, ref);
+  const now = useMinuteClock();
 
   if (!usage && dashboard) {
     return (
@@ -346,7 +421,7 @@ export function UsageRings({ usage, vpsName, onRefresh, kind }: {
       <button type="button" className="usage-rings-button" onClick={() => setOpen((o) => !o)}
               title={`Account usage — ${summary}`} aria-label={`Account usage: ${summary}`} aria-expanded={open}>
         {cells.map((c, i) => (
-          <Ring key={c.k} cell={c} label={labels[i]}
+          <Ring key={c.k} cell={c} label={labels[i]} now={now}
                 stale={!!usage?.degraded && (c.scoped || !live)} />
         ))}
       </button>
