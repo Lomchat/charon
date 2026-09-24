@@ -13,6 +13,7 @@ import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError';
 import { parseScheduledResume } from '@/lib/scheduledResume';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
+import { formatMessageTime, useTodayStart } from './messageTime';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -153,7 +154,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
         )}
         {m.createdAt > 0 && (
           <span className="bubble-h-meta">
-            <time>{fmtTime(m.createdAt)}</time>
+            <MessageTime ts={m.createdAt} />
             <CopyMessageButton content={m.content} />
           </span>
         )}
@@ -186,7 +187,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
           up to see when it was sent or to copy it. */}
       {m.createdAt > 0 && (
         <footer className="bubble-f">
-          <time>{fmtTime(m.createdAt)}</time>
+          <MessageTime ts={m.createdAt} />
           <CopyMessageButton content={m.content} />
         </footer>
       )}
@@ -224,7 +225,7 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume 
         <span className="tag">error</span>
         <AgentLogo kind={error.provider} size={12} className="bubble-agent-logo" />
         <span className="error-kind">{kindLabel}</span>
-        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+        {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       <div className="content error-message">{firstLine}</div>
       {hasDetails && (
@@ -284,7 +285,7 @@ function ScheduledResumeMessage({ m, scheduled, onCancel }: {
     <div className="bubble role-scheduled-resume" data-msg-role="scheduled_resume">
       <header className="bubble-h">
         <span className="tag">scheduled</span>
-        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+        {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       <div className="content">
         <strong>{label}</strong>
@@ -406,7 +407,7 @@ function ThinkingBubble({ m }: { m: Msg }) {
       <header className="bubble-h" onClick={() => setOpen((v) => !v)} style={{ cursor: hasMore ? 'pointer' : 'default' }}>
         {hasMore && <span className="caret">{open ? '▾' : '▸'}</span>}
         <span className="tag">thinking</span>
-        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+        {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       {!open ? (
         <div className="thinking-preview">{first}{hasMore ? '…' : ''}</div>
@@ -458,7 +459,7 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
         {!resultObj && (orphaned
           ? <span className="tu-orphan" title="the session ended before this tool returned — its result can never arrive">⚠ interrupted</span>
           : <span className="tu-running"><span className="dot" /> running</span>)}
-        {m.createdAt > 0 && <time>{fmtTime(m.createdAt)}</time>}
+        {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       {openInput && <DetailPre className="tu-detail" text={JSON.stringify(input, null, 2)} />}
       {resultObj && (
@@ -573,11 +574,11 @@ function extractPatchFiles(patch: string): string[] {
   return out.slice(0, 4);
 }
 
-function fmtTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  // hour12: false — every bubble timestamp (header + footer, all roles) reads
-  // in 24h time, no AM/PM.
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+// Every bubble timestamp (header + footer, all roles). Its own component so
+// the midnight tick re-renders these few nodes, not the memoized bubbles.
+function MessageTime({ ts }: { ts: number }) {
+  const todayStart = useTodayStart();
+  return <time dateTime={new Date(ts * 1000).toISOString()}>{formatMessageTime(ts, todayStart)}</time>;
 }
 
 // THE clipboard action, shared by every copy affordance in a bubble (whole
