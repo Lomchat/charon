@@ -73,6 +73,7 @@ const InstallSessionView = dynamic(() => import('./InstallSessionView'));
 const NewSessionWizard = dynamic(() => import('./NewSessionWizard'), { ssr: false });
 const DataModal = dynamic(() => import('./DataModal'), { ssr: false });
 const ResumeModal = dynamic(() => import('./ResumeModal'), { ssr: false });
+const PausedSessionsModal = dynamic(() => import('./PausedSessionsModal'), { ssr: false });
 const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
 const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
 const SettingScopeModal = dynamic(() => import('./SettingScopeModal'), { ssr: false });
@@ -208,6 +209,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // Confirmation closes immediately; the card stays visible and red until
   // the DELETE request settles. Shared by Claude and Codex rows.
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(() => new Set());
+  // The trash beside "show paused" (PausedSessionsModal).
+  const [pausedCleanupOpen, setPausedCleanupOpen] = useState(false);
   // "You are about to discard an unsaved buffer" — the ONLY close that asks.
   // `run` is the close that was requested (one tab, a folder, a machine), held
   // until the answer comes back so the dialog can't do a different thing than
@@ -1575,6 +1578,32 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     });
   }
 
+  // The paused cleanup: the same deletion, N sessions in one request, and only
+  // those still paused when the server gets to them (bulk-delete route). The
+  // cards go red for the duration exactly as with `deleteSessionOne`.
+  async function deletePausedSessions(ids: string[]) {
+    setDeletingSessionIds((current) => {
+      const next = new Set(current);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+    try {
+      const r = await api.bulkDeleteSessions({ ids, onlyPaused: true });
+      const gone = new Set([...r.deleted, ...r.missing]);
+      setSessions((current) => current.filter((session) => !gone.has(session.id)));
+      // Functional: the user may have navigated while the request ran.
+      setSelectedId((current) => (current && gone.has(current) ? null : current));
+      return r;
+    } finally {
+      setDeletingSessionIds((current) => {
+        const next = new Set(current);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      refreshSessions();
+    }
+  }
+
   async function patchSession(id: string, body: { name?: string | null; color?: string | null; cwd?: string }) {
     try {
       const res = await fetch(`/api/claude/sessions/${id}`, {
@@ -1868,6 +1897,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
+        onOpenPausedCleanup={() => setPausedCleanupOpen(true)}
         onContext={(targets, x, y) => {
           const available = targets.filter((session) => !deletingSessionIds.has(session.id));
           if (available.length) setCtxMenu({ kind: 'session', sessions: available, x, y });
@@ -2349,6 +2379,17 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               && ' The other tabs just close: sessions and shells keep running and stay in the sidebar.'}
           </p>
         </ConfirmModal>
+      )}
+
+      {pausedCleanupOpen && (
+        <PausedSessionsModal
+          sessions={sessions}
+          vpsList={vpsList}
+          vpsFolders={vpsFolders}
+          deletingSessionIds={deletingSessionIds}
+          onDelete={deletePausedSessions}
+          onClose={() => setPausedCleanupOpen(false)}
+        />
       )}
 
       {confirmDelete && (

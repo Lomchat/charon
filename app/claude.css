@@ -622,6 +622,21 @@
   font-family: var(--mono); font-size: 9px; color: var(--text-muted);
   border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 5px; line-height: 14px;
 }
+/* "show paused" + its cleanup trash (PausedSessionsModal) wrap as ONE item. */
+.cs-switch-pair { display: inline-flex; align-items: center; gap: 4px; }
+.cs-paused-trash {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 20px; padding: 0; flex-shrink: 0; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-md);
+  color: var(--text-muted); transition: color .12s, border-color .12s, background .12s;
+}
+.cs-paused-trash svg { width: 12px; height: 12px; display: block; }
+.cs-paused-trash:hover:not(:disabled) {
+  color: var(--danger); border-color: var(--danger-deep);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.cs-paused-trash:focus-visible { outline: 1px solid var(--danger); outline-offset: 1px; }
+.cs-paused-trash:disabled { opacity: 0.35; cursor: default; }
 
 /* folders (well-marked banded headers) */
 .cs-folder { margin-top: 6px; }
@@ -2647,6 +2662,159 @@
   background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid var(--danger-deep);
   color: var(--danger); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* Paused-sessions cleanup (PausedSessionsModal): fixed head/tools/foot, the
+   tree scrolls between them. Rows are role=checkbox; the <input> inside is
+   only the visual, so it takes no pointer events. */
+.claude-modal.paused-cleanup {
+  max-width: 780px; border-radius: var(--radius-xl);
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  height: min(86dvh, 860px);
+  animation: confirm-pop .16s ease-out;
+}
+.pc-head { display: flex; align-items: center; gap: 13px; padding: 20px 22px 12px; }
+.pc-title { flex: 1; min-width: 0; }
+/* Two classes: `.claude-modal h2` comes later in this file. */
+.paused-cleanup .pc-title h2 { margin: 0; font-size: 17px; }
+.pc-title p { margin: 3px 0 0; font-family: var(--body); font-size: 12px; color: var(--text-muted); }
+.pc-close {
+  align-self: flex-start; width: 28px; height: 28px; flex-shrink: 0; cursor: pointer;
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-md);
+  color: var(--text-muted);
+}
+.pc-close:hover:not(:disabled) { color: var(--accent-strong); border-color: var(--accent); }
+.pc-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 0 22px 10px; }
+.pc-search {
+  flex: 1 1 260px; display: flex; align-items: center; gap: 8px;
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 0 10px; color: var(--text-muted);
+}
+.pc-search:focus-within { border-color: var(--accent); }
+.pc-search svg { width: 13px; height: 13px; flex-shrink: 0; }
+.pc-search input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-family: var(--body); font-size: 13px; padding: 8px 0;
+}
+.pc-age { display: inline-flex; align-items: center; gap: 3px; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.pc-age > span { margin-right: 4px; }
+.pc-age button {
+  background: transparent; border: 1px solid var(--border); border-radius: var(--chip-radius);
+  color: var(--text-muted); font-family: var(--mono); font-size: 11px; padding: 3px 8px; cursor: pointer;
+}
+.pc-age button:hover { border-color: var(--accent); color: var(--accent-strong); }
+.pc-age button.on {
+  border-color: var(--accent); color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.pc-check { pointer-events: none; margin: 0; width: 14px; height: 14px; flex-shrink: 0; accent-color: var(--danger); }
+.pc-count {
+  margin-left: auto; flex-shrink: 0;
+  font-family: var(--mono); font-size: 10px; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 6px; line-height: 16px;
+}
+.pc-all, .pc-folder-head, .pc-vps-head, .pc-path-head, .pc-row {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  cursor: pointer; user-select: none; outline: none;
+}
+.pc-all:focus-visible, .pc-folder-head:focus-visible, .pc-vps-head:focus-visible,
+.pc-path-head:focus-visible, .pc-row:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.pc-all[aria-disabled], .pc-folder-head[aria-disabled], .pc-vps-head[aria-disabled],
+.pc-path-head[aria-disabled], .pc-row[aria-disabled] { cursor: default; }
+.pc-all {
+  margin: 0 22px; padding: 8px 10px;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  font-family: var(--body); font-size: 12.5px; color: var(--text);
+}
+.pc-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 22px 12px; }
+.pc-empty { text-align: center; color: var(--text-muted); font-family: var(--body); font-size: 13px; font-style: italic; margin: 40px 0; }
+.pc-folder { margin-top: 8px; }
+.pc-folder-head {
+  padding: 7px 10px; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.pc-folder-name {
+  font-family: var(--display); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--accent-strong);
+}
+.pc-vps { margin: 6px 0 10px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+/* Sticky: a long VPS keeps its name (and its checkbox) while scrolling. */
+.pc-vps-head {
+  position: sticky; top: 0; z-index: 1;
+  padding: 8px 10px; background: var(--bg-raised);
+  border-bottom: 1px solid var(--border); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.pc-vps-name { font-family: var(--body); font-size: 13.5px; font-weight: 600; color: var(--text-strong); }
+.pc-vps-host {
+  font-family: var(--mono); font-size: 11px; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pc-path + .pc-path { border-top: 1px dashed var(--border); }
+.pc-path-head { padding: 6px 10px 4px 22px; }
+.pc-path-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 11px; color: var(--accent);
+}
+.pc-row { padding: 6px 10px 6px 34px; border-left: 2px solid transparent; }
+.pc-row:hover { background: color-mix(in srgb, var(--shade) 30%, transparent); }
+.pc-row.checked { background: color-mix(in srgb, var(--danger) 9%, transparent); border-left-color: var(--danger); }
+.pc-row.deleting { opacity: 0.5; }
+.pc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.pc-name {
+  font-family: var(--body); font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pc-sub {
+  display: flex; gap: 8px; min-width: 0;
+  font-family: var(--body); font-size: 11.5px; color: var(--text-muted);
+}
+.pc-handle { font-family: var(--mono); font-size: 10.5px; flex-shrink: 0; }
+.pc-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-when { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; text-align: right; }
+.pc-stamp { font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap; }
+.pc-stamp.muted { color: var(--text-muted); font-style: italic; }
+.pc-ago { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); white-space: nowrap; }
+.pc-messages { padding: 0 22px; }
+.pc-messages .confirm-err { margin: 0 0 8px; }
+.pc-notice {
+  margin: 0 0 8px; padding: 8px 11px; border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--success) 10%, transparent); border: 1px solid var(--success-deep);
+  color: var(--success); font-family: var(--body); font-size: 12px; line-height: 1.5;
+}
+.pc-foot {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px;
+  padding: 12px 22px 16px; border-top: 1px solid var(--border);
+}
+.pc-foot.confirming { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+.pc-selected { font-family: var(--body); font-size: 12.5px; color: var(--text); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pc-hidden { color: var(--warning); }
+.pc-clear {
+  margin-left: 6px; background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--accent); font-family: var(--body); font-size: 12px; text-decoration: underline;
+}
+.pc-warn { flex: 1 1 280px; margin: 0; font-family: var(--body); font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.pc-warn b { color: var(--danger); }
+.pc-actions { display: flex; gap: 10px; margin-left: auto; }
+.pc-actions .confirm-btn { display: inline-flex; align-items: center; gap: 7px; }
+.pc-actions .confirm-btn svg { width: 12px; height: 12px; }
+@media (max-width: 820px) {
+  .claude-modal.paused-cleanup {
+    width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;
+    padding: 0; border-radius: 0;
+  }
+  .pc-head, .pc-tools, .pc-messages { padding-left: 14px; padding-right: 14px; }
+  .pc-foot { padding: 12px 14px calc(14px + env(safe-area-inset-bottom)); }
+  .pc-all { margin: 0 14px; padding: 10px; }
+  .pc-body { padding: 4px 10px 12px; }
+  .pc-vps-host { display: none; }
+  .pc-path-head { padding: 9px 10px 6px 14px; }
+  .pc-row { padding: 10px 8px 10px 20px; }
+  /* 16px: iOS zooms the page into any smaller focused field. */
+  .pc-search input { font-size: 16px; }
+  .pc-age button { padding: 6px 9px; }
+  .cs-paused-trash { width: 32px; height: 28px; }
+  .cs-paused-trash svg { width: 14px; height: 14px; }
 }
 
 /* single-input dialog (PromptModal — new file / new folder / rename) */

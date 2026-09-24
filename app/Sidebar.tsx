@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
-import { IconArrowClockwise, IconClockHistory, IconRobot, IconServers, IconTerminal } from './icons';
+import { IconArrowClockwise, IconClockHistory, IconRobot, IconServers, IconTerminal, IconTrash } from './icons';
 import AgentLogo from './AgentLogo';
 import { providerText } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
@@ -23,6 +23,7 @@ import {
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 import { showsUnreadCue } from './sessionUnread';
 import { useShowPaused } from './showPaused';
+import { isPausedSession } from './pausedCleanup';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
 // aligned with the GET /api/claude/sessions response). We re-export it
@@ -164,6 +165,8 @@ type Props = {
   onScan: (vpsId: string) => void;
   // "Manage VPS & folders" button in the sidebar toolbar.
   onOpenData: () => void;
+  /** The trash beside "show paused": the paused-sessions cleanup modal. */
+  onOpenPausedCleanup?: () => void;
   onContext?: (sessions: SessionListItem[], x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
   onContextInstall?: (install: InstallInfo, x: number, y: number) => void;
@@ -221,7 +224,7 @@ export default function Sidebar({
   toolbarSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
-  onNew, onNewShell, onScan, onOpenData,
+  onNew, onNewShell, onScan, onOpenData, onOpenPausedCleanup,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onProviderLogin, onUpdateAgent, onRefreshAgent, onToggleFolderCollapsed,
@@ -450,8 +453,10 @@ export default function Sidebar({
   }
 
   const totalSleeping = sessions.filter(
-    (s) => (s.liveStatus ?? s.status) === 'sleeping' && showEntity(s.vpsId, s.cwd, 'session'),
+    (s) => isPausedSession(s) && showEntity(s.vpsId, s.cwd, 'session'),
   ).length;
+  // The cleanup lists the whole fleet, whatever the path filter hides.
+  const fleetPaused = sessions.filter(isPausedSession).length;
 
   return (
     <aside className="claude-sidebar" ref={asideRef}>
@@ -493,13 +498,27 @@ export default function Sidebar({
           </button>
         </div>
         <div className="cs-switch-row">
-          <label className="cs-switch" title="show or hide paused (sleeping) sessions">
-            <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} />
-            <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
-            <span className="cs-switch-label">
-              show paused{totalSleeping > 0 ? <span className="cs-switch-count">{totalSleeping}</span> : null}
-            </span>
-          </label>
+          {/* The cleanup rides with its switch: one group, so a wrapping row
+              never strands the trash on the next line. */}
+          <span className="cs-switch-pair">
+            <label className="cs-switch" title="show or hide paused (sleeping) sessions">
+              <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} />
+              <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>
+              <span className="cs-switch-label">
+                show paused{totalSleeping > 0 ? <span className="cs-switch-count">{totalSleeping}</span> : null}
+              </span>
+            </label>
+            {onOpenPausedCleanup && (
+              <button
+                type="button"
+                className="cs-paused-trash"
+                onClick={onOpenPausedCleanup}
+                disabled={fleetPaused === 0}
+                title={fleetPaused === 0 ? 'no paused session to delete' : `delete paused sessions… (${fleetPaused} paused)`}
+                aria-label="delete paused sessions"
+              ><IconTrash /></button>
+            )}
+          </span>
           <label className="cs-switch" title="show or hide card details (first message, path, age) — off = compact cards">
             <input type="checkbox" checked={showDetails} onChange={toggleShowDetails} />
             <span className="cs-switch-track"><span className="cs-switch-thumb" /></span>

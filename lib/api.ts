@@ -35,6 +35,7 @@ import type {
   ImportClaudeSessionBody, ImportClaudeSessionResponse,
   RenameClaudeSessionBody,
   DeleteClaudeSessionResponse, ResumeClaudeSessionResponse,
+  BulkDeleteSessionsBody, BulkDeleteSessionsResponse,
   RespondPermissionBody, RespondQuestionBody, RespondExitPlanBody,
   SetClaudeModeResponse,
   SetClaudeSessionModelBody, SetClaudeSessionModelResponse,
@@ -256,6 +257,9 @@ export const api = {
   /** Sidebar order of the sessions inside ONE vps (§14.80). */
   reorderSessions: (vpsId: string, ids: string[]) =>
     send<OkResponse>('POST', '/api/claude/sessions/reorder', { vpsId, ids }),
+  /** Permanent deletion of MANY sessions in one request (paused cleanup). */
+  bulkDeleteSessions: (body: BulkDeleteSessionsBody) =>
+    send<BulkDeleteSessionsResponse>('POST', '/api/claude/sessions/bulk-delete', body, { timeoutMs: 120_000 }),
 
   // ── Tabs: the shared workspace layout (§14.78) ────────────────────────────
   listTabs: () => send<TabsResponse>('GET', '/api/tabs'),
