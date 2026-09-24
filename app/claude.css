@@ -601,8 +601,8 @@
 .cs-vps-head .cs-add-btn { padding: 4px 7px; }
 .cs-vps-head .cs-add-btn svg { width: 13px; height: 13px; }
 
-/* sidebar toggle switches ("show paused" + "details" + "show tools"), wrap
-   when the labels don't fit on one line */
+/* sidebar toggle switches: "show paused" (+ its trash) on a line of its own,
+   "details" + "show tools" below, wrapping if the labels don't fit */
 .cs-switch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .cs-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .cs-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -622,8 +622,9 @@
   font-family: var(--mono); font-size: 9px; color: var(--text-muted);
   border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 5px; line-height: 14px;
 }
-/* "show paused" + its cleanup trash (PausedSessionsModal) wrap as ONE item. */
-.cs-switch-pair { display: inline-flex; align-items: center; gap: 4px; }
+/* "show paused" + its cleanup trash (PausedSessionsModal): ONE item, a full
+   line, so the two other switches always start the next one. */
+.cs-switch-pair { display: flex; flex-basis: 100%; align-items: center; gap: 4px; }
 .cs-paused-trash {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 20px; padding: 0; flex-shrink: 0; cursor: pointer;
