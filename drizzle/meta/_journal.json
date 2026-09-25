@@ -316,6 +316,13 @@
       "when": 1790332301930,
       "tag": "0044_mighty_tyrannus",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1790334021089,
+      "tag": "0045_backfill_assistant_finality",
+      "breakpoints": true
     }
   ]
 }
