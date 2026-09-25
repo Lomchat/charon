@@ -26,6 +26,9 @@ export type Msg = {
   // API truth, immune to the model's own (unreliable) self-identification.
   // Null/undefined on other roles and on rows persisted before the feature.
   model?: string | null;
+  // 0 = intermediate assistant text, 1 = this turn's final answer;
+  // null/absent = legacy or imported message with unknown classification.
+  assistantFinal?: number | null;
   // role='external' only: the addressable name of the session that sent this
   // message. Rendered as a chip beside the role, the same way an assistant
   // bubble shows the model that produced it.

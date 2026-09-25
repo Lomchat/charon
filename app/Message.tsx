@@ -110,7 +110,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
-      className={`bubble role-${m.role}${streaming ? ' streaming' : ''}`}
+      className={`bubble role-${m.role}${m.role === 'assistant' && m.assistantFinal === 0 ? ' intermediate' : ''}${streaming ? ' streaming' : ''}`}
       data-msg-role={m.role}
     >
       <header className="bubble-h">

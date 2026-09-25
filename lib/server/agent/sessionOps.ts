@@ -1630,7 +1630,8 @@ export class SessionStream {
         this._broadcast({ type: 'turn_error', kind: ev.kind });
         break;
       case 'stop': {
-        this._flushAssistant();
+        const assistantFlushed = this._flushAssistant();
+        const finalAssistantId = assistantFlushed ? this._finalizeAssistantTurn() : null;
         // The typed outcome (agent >= 0.36.0) OUTRANKS the prose classifier.
         // Measured on the fleet: a failed turn still reports
         // subtype='success' while is_error is true and terminal_reason is
@@ -1714,7 +1715,7 @@ export class SessionStream {
           })
             .where(eq(claudeSessions.id, this.id)).run();
         } catch {}
-        this._broadcast({ type: 'stop', subtype: ev.subtype });
+        this._broadcast({ type: 'stop', subtype: ev.subtype, finalAssistantId });
         if (stopStatus) {
           this._broadcast({ type: 'status', status: stopStatus });
         }
@@ -2635,6 +2636,41 @@ export class SessionStream {
     } catch {}
   }
 
+  private _finalizeAssistantTurn(): number | null {
+    try {
+      return db.transaction((tx) => {
+        const session = tx.select({ id: claudeSessions.pendingAssistantMessageId })
+          .from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+        const id = session?.id;
+        if (id == null) return null;
+        const candidate = tx.select({ tsMs: claudeSessionMessages.tsMs })
+          .from(claudeSessionMessages).where(eq(claudeSessionMessages.id, id)).get();
+        // A replayed stop from an earlier turn must not promote text written
+        // by a later turn while the hub was disconnected.
+        if (this.currentEventTs != null && candidate?.tsMs != null && candidate.tsMs > this.currentEventTs) {
+          return null;
+        }
+        const changed = tx.update(claudeSessionMessages).set({ assistantFinal: 1 })
+          .where(and(
+            eq(claudeSessionMessages.id, id),
+            eq(claudeSessionMessages.sessionId, this.id),
+            eq(claudeSessionMessages.role, 'assistant'),
+            eq(claudeSessionMessages.assistantFinal, 0),
+          )).run().changes;
+        tx.update(claudeSessions).set({ pendingAssistantMessageId: null })
+          .where(eq(claudeSessions.id, this.id)).run();
+        return changed ? id : null;
+      });
+    } catch (e: any) {
+      if (this.currentEventSeq != null &&
+          (this.persistHoldbackSeq == null || this.currentEventSeq < this.persistHoldbackSeq)) {
+        this.persistHoldbackSeq = this.currentEventSeq;
+      }
+      this._log('warn', 'sdk_error', { msg: 'assistant finalization failed', err: e?.message ?? String(e) });
+      return null;
+    }
+  }
+
   private _persist(role: string, content: any, extra?: { model?: string | null; seq?: number | null; tsMs?: number | null; cliUuid?: string | null }): number | false {
     // Stamp the row with the seq of the event being dispatched (null for
     // hub-originated rows like 'user' — sendUserMessage runs outside
@@ -2653,18 +2689,44 @@ export class SessionStream {
     try {
       const rawContent = typeof content === 'string' ? content : JSON.stringify(content);
       const storage = deriveMessageStorage(role, rawContent);
-      const result = db.insert(claudeSessionMessages).values({
+      const turnDriver = role === 'user' || (role === 'event' && content?.type === 'external_message');
+      const values = {
         sessionId: this.id, role,
         content: rawContent,
         ...storage,
-        // Only assistant rows carry a model stamp (see _flushAssistant).
+        // Each newly flushed assistant row starts as intermediate; stop
+        // promotes only the final row of this turn.
+        ...(role === 'assistant' ? { assistantFinal: 0 } : {}),
         ...(extra?.model ? { model: extra.model } : {}),
         ...(seq != null ? { seq } : {}),
-        // Fork anchor: the CLI transcript entry this row corresponds to.
         ...(extra?.cliUuid ? { cliUuid: extra.cliUuid } : {}),
         tsMs,
-      }).run();
-      return Number(result.lastInsertRowid);
+      };
+      if (role !== 'assistant' && !turnDriver) {
+        return Number(db.insert(claudeSessionMessages).values(values).run().lastInsertRowid);
+      }
+      return db.transaction((tx) => {
+        const pendingId = tx.select({ id: claudeSessions.pendingAssistantMessageId })
+          .from(claudeSessions).where(eq(claudeSessions.id, this.id)).get()?.id;
+        const pendingTs = pendingId == null ? null : tx.select({ tsMs: claudeSessionMessages.tsMs })
+          .from(claudeSessionMessages).where(eq(claudeSessionMessages.id, pendingId)).get()?.tsMs;
+        const isNewest = pendingTs == null || tsMs >= pendingTs;
+        // This uses the same synchronous SQLite connection as tx and still
+        // participates in its transaction. Keep the shared insert path so
+        // injected DB failures exercise the flush holdback invariant.
+        const result = db.insert(claudeSessionMessages).values(values).run();
+        const id = Number(result.lastInsertRowid);
+        if (role === 'assistant' && isNewest) {
+          tx.update(claudeSessions).set({ pendingAssistantMessageId: id })
+            .where(eq(claudeSessions.id, this.id)).run();
+        } else if (isNewest && turnDriver) {
+          // A fresh prompt cannot finalize a provisional answer from an
+          // interrupted earlier turn.
+          tx.update(claudeSessions).set({ pendingAssistantMessageId: null })
+            .where(eq(claudeSessions.id, this.id)).run();
+        }
+        return id;
+      });
     } catch (e: any) {
       // Hold the durable cursor back to (seq - 1): the next restart will
       // replay this event and the insert gets a second chance — without

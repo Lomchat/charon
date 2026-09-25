@@ -349,6 +349,9 @@ export function useClaudeSessionStream(
   const [streamKey, setStreamKey] = useState(0);
 
   const assistantBufRef = useRef('');
+  // Stop can update a row while an older GET is in flight. Keep the durable
+  // finalization receipts so a stale response cannot repaint its border.
+  const finalizedAssistantIdsRef = useRef<Set<number>>(new Set());
   // Rendering Markdown at display refresh rate is unnecessary even after the
   // live-tail renderer was made lightweight. A short timer caps React commits
   // around 12Hz while keeping typing/streaming perceptually immediate.
@@ -425,7 +428,11 @@ export function useClaudeSessionStream(
     setTokenUsage((prev) => mergeSessionTokenUsage(prev, r.tokenUsage));
     providerRef.current = asSessionProvider(r.session.kind);
     const liveStatus = (r.liveStatus ?? r.session.status) as WorkerStatus;
-    const rebuilt = rebuildStateFromMessages(r.messages, liveStatus, providerRef.current);
+    const finalizedIds = finalizedAssistantIdsRef.current;
+    const rows = finalizedIds.size
+      ? r.messages.map((m) => finalizedIds.has(m.id) ? { ...m, assistantFinal: 1 } : m)
+      : r.messages;
+    const rebuilt = rebuildStateFromMessages(rows, liveStatus, providerRef.current);
     // Streaming preview reconciliation (app/streamingPreview.ts). applyApiData
     // runs on the initial load AND on every poll-triggered clean reload (which
     // can happen every 5s during active SSE streaming), so it must not rewind a
@@ -877,6 +884,7 @@ export function useClaudeSessionStream(
         // sessionOps._flushAssistant — the next refetch replaces this bubble
         // with the DB row carrying the authoritative value).
         model: effectiveModelRef.current,
+        assistantFinal: 0,
       }]);
       setCurrentAssistant('');
     };
@@ -1021,6 +1029,22 @@ export function useClaudeSessionStream(
         case 'stop':
           flushAssistantBuf();
           setMessages(closeThinkingMessage);
+          if (ev.finalAssistantId != null) {
+            finalizedAssistantIdsRef.current.add(ev.finalAssistantId);
+            setMessages((prev) => {
+              const persistedId = `m${ev.finalAssistantId}`;
+              let index = prev.findIndex((m) => m.id === persistedId);
+              // SSE may have flushed an optimistic bubble before the next
+              // GET supplies its database id.
+              if (index < 0) index = prev.findLastIndex((m) => m.role === 'assistant' && m.id.startsWith('a'));
+              if (index < 0) return prev;
+              return prev.map((m, i) => i === index ? { ...m, assistantFinal: 1 } : m);
+            });
+            // Finalization updates an existing row: the ?since=id poll only
+            // notices inserts, so fetch the authoritative stored flag now.
+            cache?.invalidate?.(sessionId);
+            void refetchHistory();
+          }
           break;
         case 'bg_task':
           // Background-task lifecycle (started / updated / finished) — patch

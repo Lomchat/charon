@@ -20,6 +20,7 @@ export const publicMessageColumns = {
   role: claudeSessionMessages.role,
   content: sql<string>`coalesce(${claudeSessionMessages.wireContent}, ${claudeSessionMessages.content})`,
   model: claudeSessionMessages.model,
+  assistantFinal: claudeSessionMessages.assistantFinal,
   seq: claudeSessionMessages.seq,
   tsMs: claudeSessionMessages.tsMs,
   // The CLI transcript entry this row came from — the anchor "fork from here"

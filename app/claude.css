@@ -2009,6 +2009,7 @@
 .bubble.role-user { border-color: var(--info-deep); background: color-mix(in srgb, var(--info) calc(7% * var(--bubble-tint)), transparent); }
 .bubble.role-user .tag { color: var(--info); }
 .bubble.role-assistant { border-color: var(--accent); background: color-mix(in srgb, var(--accent) calc(5% * var(--bubble-tint)), transparent); }
+.bubble.role-assistant.intermediate { border: 0; }
 .bubble.role-error { border-color: color-mix(in srgb, var(--danger-strong) 72%, transparent); background: color-mix(in srgb, var(--danger-deep) calc(10% * var(--bubble-tint)), transparent); }
 .bubble.role-error .tag { color: var(--danger-strong); }
 .bubble.role-error .error-kind {

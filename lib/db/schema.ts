@@ -202,6 +202,9 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // lastStopNotifiedSeq (which dedups PUSH notifications) — this one is a
   // passive in-app cue, only for Claude sessions. cf. CLAUDE.md §14.47.
   unreadStop: integer('unread_stop').notNull().default(0),
+  // The newest assistant row in the current turn. A durable pointer lets a
+  // replayed stop finalize the right row after a hub restart.
+  pendingAssistantMessageId: integer('pending_assistant_message_id'),
   // Per-session Claude model / fallback / effort. All three NULL by default
   // → use the global default from claude_settings; if the global default is
   // also NULL, the agent passes nothing to ClaudeAgentOptions and the SDK
@@ -299,6 +302,9 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // rows persisted before this column existed, and until the agent (>= 0.6.0)
   // has reported an effective model.
   model: text('model'),
+  // NULL = legacy/imported message (keep its historical appearance), 0 =
+  // intermediate text, 1 = the assistant answer finalized by this turn's stop.
+  assistantFinal: integer('assistant_final'),
   // Durable-log seq of the agent event that produced this row (the flush
   // trigger for accumulated assistant text). THE replay-idempotence anchor
   // (P0.2/P0.3): on replay_begin the stream loads MAX(seq) and skips any

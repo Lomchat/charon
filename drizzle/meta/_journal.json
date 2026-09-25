@@ -309,6 +309,13 @@
       "when": 1789390754312,
       "tag": "0043_romantic_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1790332301930,
+      "tag": "0044_mighty_tyrannus",
+      "breakpoints": true
     }
   ]
 }
