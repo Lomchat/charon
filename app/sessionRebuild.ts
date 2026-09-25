@@ -30,6 +30,7 @@ export type PersistedMessage = {
   createdAt: number;
   // Assistant rows: API-confirmed model that produced the message (nullable).
   model?: string | null;
+  assistantFinal?: number | null;
 };
 
 export type RebuiltSessionState = {
@@ -250,6 +251,7 @@ export function rebuildStateFromMessages(
       // Carry the per-message model stamp through (assistant rows; null
       // elsewhere) so the bubble header chip survives every refetch.
       model: m.model ?? null,
+      assistantFinal: m.assistantFinal ?? null,
     });
   }
   // A non-running session cannot notify anymore: its CLI process (and the

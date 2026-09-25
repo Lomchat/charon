@@ -50,6 +50,16 @@ describe('rebuildStateFromMessages', () => {
     ]);
   });
 
+  it('retains each assistant row\'s stored finality across a history reload', () => {
+    const rows = [
+      row('assistant', 'working', { id: 31, assistantFinal: 0 }),
+      row('assistant', 'answer', { id: 32, assistantFinal: 1 }),
+      row('assistant', 'older imported', { id: 33, assistantFinal: null }),
+    ];
+    expect(rebuildStateFromMessages(rows, 'active').messages.map((m) => m.assistantFinal))
+      .toEqual([0, 1, null]);
+  });
+
   it('rebuilds a thinking row directly from its content', () => {
     const s = rebuildStateFromMessages([row('thinking', 'pondering', { id: 5 })], 'thinking');
     expect(s.messages).toHaveLength(1);
