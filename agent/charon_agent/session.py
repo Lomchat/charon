@@ -173,12 +173,17 @@ def _num(v: Any) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
-_TURN_OPENERS = ("AssistantMessage", "StreamEvent", "UserMessage", "TaskNotificationMessage")
+_TURN_OPENERS = ("AssistantMessage", "StreamEvent", "UserMessage")
 _LOCAL_COMMAND_ECHO = re.compile(r"\s*<local-command-(?:stdout|stderr)>")
+INTERRUPT_TIMEOUT_SECONDS = 5.0
 
 
 def _starts_turn(ev: Any) -> bool:
     """Whether a message read while idle means the CLI began a turn by itself.
+
+    A TaskNotificationMessage only reports a background task's terminal state;
+    it may be the last message, especially after stop_task(). The following
+    User/Assistant/Stream message, if any, is the actual turn opener.
 
     ⚠ A live `set_model` on an idle conversation makes the CLI replay a
     `<local-command-stdout>Set model to …` UserMessage (its model-switch
@@ -620,6 +625,10 @@ class AgentSession:
         self._active_peer_request_id: str | None = None
         self._peer_turn_done = asyncio.Event()
         self._peer_turn_done.set()
+        # A fresh Event per turn lets interrupt wait for exactly the turn it
+        # interrupted, even if a new prompt starts immediately after its result.
+        self._turn_done = asyncio.Event()
+        self._turn_done.set()
 
     # ── Public API ───────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -641,6 +650,7 @@ class AgentSession:
             self._endpoint_proxy = None
         """Cleanly stops the session (mark: 'sleeping' or 'killed')."""
         self.status = mark
+        self._turn_done.set()
         self._emit("status", status=mark)
         # Cancel in-flight promises so the main loop doesn't hang
         for fut in self._pending_perms.values():
@@ -669,6 +679,7 @@ class AgentSession:
         we may have restarted in the meantime.
         """
         self.status = "sleeping"
+        self._turn_done.set()
         self._emit("status", status="sleeping")
         self._emit("interrupted", forced=True)
         for fut in self._pending_perms.values():
@@ -693,13 +704,26 @@ class AgentSession:
         })
 
     async def interrupt(self) -> None:
-        if self._client is None:
+        client = self._client
+        if client is None:
+            if self.status == "thinking":
+                await self.force_stop()
             return
+        turn_done = self._turn_done if self.status == "thinking" else None
         try:
-            await self._client.interrupt()
+            await asyncio.wait_for(client.interrupt(), timeout=INTERRUPT_TIMEOUT_SECONDS)
             self._emit("interrupted")
         except Exception as e:
             self._emit("error", msg=f"interrupt: {e}")
+            if turn_done is not None and self._turn_done is turn_done and self.status == "thinking":
+                await self.force_stop()
+            return
+        if turn_done is not None:
+            try:
+                await asyncio.wait_for(turn_done.wait(), timeout=INTERRUPT_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                if self._turn_done is turn_done and self.status == "thinking":
+                    await self.force_stop()
 
     async def stop_bg_task(self, task_id: str) -> None:
         """Stop ONE background task, leaving the session itself alone.
@@ -1675,8 +1699,8 @@ class AgentSession:
                 # Workflow-tool run — task_type 'local_workflow'), updated
                 # (status change; a workflow completes HERE as status
                 # 'completed' with NO accompanying notification), notification
-                # (finished — the CLI re-invokes the model right after; the
-                # continuous reader streams that turn live). Forward a
+                # (finished — the CLI may re-invoke the model afterward; the
+                # continuous reader streams that turn if it exists). Forward a
                 # normalized `bg_task` event keyed by task_id; the hub persists
                 # it and the UI keeps a per-session registry (BgTasks bar).
                 kind = {
@@ -2061,6 +2085,7 @@ class AgentSession:
         steering input sent mid-turn must not reset the counters or re-emit."""
         if self.status == "thinking":
             return
+        self._turn_done = asyncio.Event()
         self._usage_in = self._usage_cache = 0
         self._usage_committed_out = self._usage_cur_out = 0
         self._usage_last_emit = 0.0
@@ -2073,6 +2098,7 @@ class AgentSession:
         if self.status != "thinking":
             return
         self.status = "active"
+        self._turn_done.set()
         self._emit("status", status="active")
 
     def _advanced_option_kwargs(self) -> dict[str, Any]:
@@ -2234,7 +2260,7 @@ class AgentSession:
                 # ── Continuous stream reader ─────────────────────────────────
                 # The CLI can start a turn WITHOUT user input: when a
                 # background task (Bash run_in_background / subagent) finishes,
-                # the harness re-invokes the model with a <task-notification>.
+                # the harness may re-invoke the model with a <task-notification>.
                 # The old loop only read the stream inside receive_response()
                 # during a user query, so those spontaneous messages sat
                 # UNREAD in the transport until the next user input flushed
@@ -2243,6 +2269,8 @@ class AgentSession:
                 # of the time; query() only ever SENDS. Turn boundaries:
                 #   - any Assistant/Stream/User message while 'active'
                 #     → _begin_turn (spontaneous turn starts)
+                #   - TaskNotificationMessage alone is only task bookkeeping;
+                #     a stopped task may have no model turn after it
                 #   - ResultMessage → _translate emits usage-final + stop,
                 #     then _end_turn flips back to 'active'
                 async def _read_stream() -> None:
@@ -2250,9 +2278,8 @@ class AgentSession:
                         async for ev in client.receive_messages():
                             ev_type = type(ev).__name__
                             if _starts_turn(ev):
-                                # (TaskNotificationMessage included: a finished
-                                # background task re-invokes the model — flip
-                                # to 'thinking' as early as possible.)
+                                # The first actual turn message flips to
+                                # thinking; task bookkeeping alone cannot.
                                 self._begin_turn()
                             for out in self._translate(ev):
                                 self._emit_to_server(self._wire_event(out))

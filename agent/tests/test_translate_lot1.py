@@ -17,10 +17,12 @@ stdlib unittest only. Run with:
     python3 agent/tests/test_translate_lot1.py
 """
 import inspect
+import asyncio
 import os
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -304,10 +306,10 @@ class RateLimitTranslation(unittest.TestCase):
 class TurnOpeners(unittest.TestCase):
     """The continuous reader flips an idle session to 'thinking' on the first
     message of a turn the CLI started by itself (§14.54). Only a ResultMessage
-    flips it back, so anything that is NOT a real turn must not open one."""
+    flips it back, so task bookkeeping must not open one."""
 
     def test_spontaneous_turns_open(self):
-        self.assertTrue(_starts_turn(_ev("TaskNotificationMessage")))
+        self.assertFalse(_starts_turn(_ev("TaskNotificationMessage", status="stopped")))
         self.assertTrue(_starts_turn(_ev("AssistantMessage", content=[])))
         self.assertTrue(_starts_turn(_ev("UserMessage", content="<task-notification>done</task-notification>")))
 
@@ -317,6 +319,80 @@ class TurnOpeners(unittest.TestCase):
         echo = "<local-command-stdout>Set model to Opus 5.5</local-command-stdout>"
         self.assertFalse(_starts_turn(_ev("UserMessage", content=echo)))
         self.assertFalse(_starts_turn(_ev("SystemMessage", subtype="init")))
+
+
+class InterruptRecovery(unittest.IsolatedAsyncioTestCase):
+    def make_session(self):
+        events = []
+        session = AgentSession(
+            "test-session", cwd="/tmp", name=None, permission_mode="auto",
+            claude_session_id=None, emit=events.append,
+            on_state_change=lambda: None,
+        )
+        session.status = "active"
+        session._begin_turn()
+        return session, events
+
+    async def test_soft_interrupt_without_result_forces_sleep(self):
+        session, events = self.make_session()
+
+        class Client:
+            async def interrupt(self):
+                return None
+
+        session._client = Client()
+        with patch("charon_agent.session.INTERRUPT_TIMEOUT_SECONDS", 0.01):
+            await session.interrupt()
+        self.assertEqual(session.status, "sleeping")
+        self.assertEqual([e["event"] for e in events[-3:]],
+                         ["interrupted", "status", "interrupted"])
+        self.assertTrue(events[-1]["forced"])
+
+    async def test_result_after_interrupt_keeps_session_ready(self):
+        session, events = self.make_session()
+
+        class Client:
+            async def interrupt(self):
+                session._end_turn()
+
+        session._client = Client()
+        with patch("charon_agent.session.INTERRUPT_TIMEOUT_SECONDS", 0.01):
+            await session.interrupt()
+        self.assertEqual(session.status, "active")
+        self.assertFalse(any(e.get("forced") for e in events))
+
+    async def test_next_turn_is_not_stopped_with_the_interrupted_one(self):
+        session, events = self.make_session()
+
+        class Client:
+            async def interrupt(self):
+                session._end_turn()
+                session._begin_turn()
+
+        session._client = Client()
+        with patch("charon_agent.session.INTERRUPT_TIMEOUT_SECONDS", 0.01):
+            await session.interrupt()
+        self.assertEqual(session.status, "thinking")
+        self.assertFalse(any(e.get("forced") for e in events))
+
+    async def test_unanswered_control_request_forces_sleep(self):
+        session, events = self.make_session()
+
+        class Client:
+            async def interrupt(self):
+                await asyncio.Future()
+
+        session._client = Client()
+        with patch("charon_agent.session.INTERRUPT_TIMEOUT_SECONDS", 0.01):
+            await session.interrupt()
+        self.assertEqual(session.status, "sleeping")
+        self.assertTrue(any(e.get("forced") for e in events))
+
+    async def test_missing_client_cannot_leave_a_thinking_session(self):
+        session, events = self.make_session()
+        await session.interrupt()
+        self.assertEqual(session.status, "sleeping")
+        self.assertTrue(events[-1]["forced"])
 
 
 class CrossSessionMessage(unittest.TestCase):
