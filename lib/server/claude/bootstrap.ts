@@ -648,7 +648,9 @@ try:
             if not relative.parts or relative.is_absolute() or ".." in relative.parts:
                 raise RuntimeError("unsafe path in Codex CLI npm artifact")
             total_size += member.size
-            if member.size < 0 or total_size > 400 * 1024 * 1024 or len(installed) >= 64:
+            # The native CLI ships optional runtimes alongside the executable;
+            # keep a finite unpacked-size bound with room for the full package.
+            if member.size < 0 or total_size > 1024 * 1024 * 1024 or len(installed) >= 64:
                 raise RuntimeError("invalid Codex CLI platform payload")
             source = bundle.extractfile(member)
             if source is None:
@@ -731,6 +733,7 @@ export async function ensureCursorLatest(
 
 const INSTALL_CODEX_CMD = [
   `set -o pipefail`,
+  `set -e`,
   // Venv must exist AND have a working pip (ensureSdkLatest guarantees this
   // in every flow that calls us). If not, bail non-fatally.
   `if [ ! -x ${VENV_PY} ] || ! ${VENV_PY} -m pip --version >/dev/null 2>&1; then`,
@@ -742,11 +745,9 @@ const INSTALL_CODEX_CMD = [
   // bundled codex CLI) transitively — no extra step.
   // No `| tail`: it would hold the whole install until EOF and the console
   // could not tail it live (same reason as INSTALL_SDK_CMD).
-  // ⚠ `|| exit 13`: there is no `set -e` here, so a FAILING pip used to fall
-  // through to the import check below — which happily validates the version
-  // ALREADY installed and prints the OK marker. Exit 0, marker matched, no
-  // warning: a refused upgrade reported as a successful one, and the badge
-  // relights next tick with nothing saying why.
+  // Keep the explicit failure code for pip. `set -e` also covers the native
+  // CLI installer and probes below: otherwise they can fail, the old binary
+  // passes the final import check, and an outdated CLI looks like a success.
   `${VENV_PY} -m pip install --upgrade openai-codex 2>&1 || exit 13`,
   // The standalone CLI is an independent release line (e.g. CLI 0.147 while
   // the public Python SDK remains 0.144.4). Download the platform's native
