@@ -928,6 +928,9 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .claude-bar .bar-cwd .c-tail { flex: none; white-space: nowrap; color: var(--text-muted); }
+/* Phone-only "＋ agent" after the cwd (revealed ≤820px, where the TabBar and
+   its ＋ buttons are gone). */
+.claude-bar .bar-new-agent { display: none; }
 /* Third identity line: current model-context occupancy. It reuses the exact
    snapshot rendered in Tools, so there is no second request or disagreement. */
 .claude-bar .bar-context-row {
@@ -4654,6 +4657,43 @@
 .wiz-pick-blocked { color: var(--text-muted); font-size: 10.5px; }
 .wiz-kind-btn .agent-logo { --al-size: 15px; }
 
+/* Wizard backend step (VPS + path already known): where, then one row per
+   enabled backend. */
+.wiz-where {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px;
+  margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--shade) 25%, transparent); border-left: 3px solid var(--accent);
+  font-family: var(--body); font-size: 12.5px; color: var(--text);
+}
+.wiz-where b { font-weight: 500; }
+.wiz-where .mono { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
+.wiz-issue.wiz-where-issue { display: flex; margin: 0 0 10px 2px; }
+.wiz-backend-row { gap: 12px; padding: 12px 14px; }
+.wiz-backend-row .wiz-pick-name { font-size: 14px; }
+.wiz-backend-row .agent-logo { --al-size: 20px; }
+.wiz-backend-row.needs-fix .agent-logo,
+.wiz-backend-row.disabled .agent-logo { opacity: 0.5; }
+
+/* Phones. The backend buttons cannot share a line with the VPS name — three of
+   them left it a letter wide, drawn UNDER them — so they take their own row,
+   aligned with the name (dot 8px + gap 10px). Every field is 16px: iOS zooms
+   the page into any focused input below that. */
+@media (max-width: 820px) {
+  .claude-modal.wizard {
+    width: calc(100vw - 16px); max-width: none;
+    max-height: calc(100dvh - 16px); padding: 20px 14px 16px;
+  }
+  .wiz-head { margin-bottom: 12px; padding-right: 36px; }
+  .wiz-crumbs { margin-bottom: 12px; }
+  .wiz-crumb-label { max-width: 96px; }
+  .wiz-body { max-height: calc(100dvh - 170px); }
+  .wiz-pick.static { flex-wrap: wrap; row-gap: 9px; }
+  .wiz-kind-btns { flex: 1 1 100%; display: flex; flex-wrap: wrap; padding-left: 18px; }
+  .wiz-kind-btn { flex: 1 1 0; min-width: 88px; min-height: 38px; justify-content: center; }
+  .wiz-search input, .wiz-custom input, .wiz-name-input,
+  .wiz-adv-field > input, .wiz-adv-field > textarea { font-size: 16px; }
+}
+
 /* Codex sandbox-mode selector (reuses the .m-btn mode-switch chrome). */
 .claude-input-bar .mode-switch .m-btn.on.read-only {
   background: color-mix(in srgb, var(--info) 12%, transparent); border-color: var(--info); color: var(--info);
@@ -6563,7 +6603,19 @@
   .claude-bar .bar-name { grid-column: 1; grid-row: 1; }
   .claude-bar .bar-repo { grid-column: 2 / 4; grid-row: 1; justify-self: end; margin: 0 0 0 8px; }
   .claude-bar .bar-handle { grid-column: 1 / 3; grid-row: 2; justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-  .claude-bar .bar-sub { grid-column: 1 / 3; grid-row: 3; }
+  .claude-bar .bar-sub { grid-column: 1 / 3; grid-row: 3; flex-wrap: nowrap; gap: 6px; }
+  /* "＋ agent" follows the path, which ellipsizes its head to make room. */
+  .claude-bar .bar-sub .bar-cwd { flex: 0 1 auto; }
+  .claude-bar .bar-new-agent {
+    display: inline-flex; align-items: center; flex: none; position: relative;
+    padding: 0 6px; border-radius: var(--chip-radius);
+    border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+    background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--accent-strong);
+    font-family: var(--body); font-size: 10px; line-height: 16px;
+    letter-spacing: 0; text-transform: none; white-space: nowrap;
+  }
+  /* A finger-sized hit area without a taller header row. */
+  .claude-bar .bar-new-agent::before { content: ''; position: absolute; inset: -8px -4px; }
   .claude-bar .bar-ident > .usage-rings { display: inline-flex; grid-column: 3; grid-row: 2 / 4; justify-self: end; margin-left: 8px; }
   .claude-bar .git-chip-wrap { flex-wrap: nowrap; gap: 4px; }
   .claude-bar .gr-name, .claude-bar .git-repo-name { max-width: 88px; }

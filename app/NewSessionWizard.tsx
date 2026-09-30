@@ -32,7 +32,10 @@ import {
 //      row exposes two buttons Claude/Codex; skipped when a VPS is passed in)
 //   2. pick a path  (known paths + a custom one; "home" for shells)
 //   3. name it (+ optional model/effort/mode for agents) and launch
-type Step = 'vps' | 'path' | 'name';
+// An agent launch whose VPS AND path are both given but whose backend is not
+// (the session header's "＋ agent here") swaps steps 1-2 for ONE backend step
+// on that VPS: backend → name.
+type Step = 'vps' | 'backend' | 'path' | 'name';
 const DEFAULT_FOLDER_ID = 'default';
 
 type Props = {
@@ -91,6 +94,8 @@ export default function NewSessionWizard({
     : allowedKinds.length === 1 ? allowedKinds[0]
     : null;
   const backendFixed = kind !== 'agent' || fixedKind != null;
+  // Where the agent runs is already decided; only WHICH agent is left.
+  const showBackendStep = kind === 'agent' && !!initialVpsId && hasInitialCwd && !backendFixed;
   const [selKind, setSelKind] = useState<AgentKind>(fixedKind ?? allowedKinds[0] ?? 'claude');
   // A backend switched off in another tab while this wizard is open must not
   // leave the selection pointing at it (the settings bus is live, §9).
@@ -125,7 +130,13 @@ export default function NewSessionWizard({
   const dirCacheRef = useRef(new Map<string, string[]>());  // `${vpsId}:${dir}` → subdirs
   const prefetchingRef = useRef(new Set<string>());
   const fetchSeqRef = useRef(0);
-  const [step, setStep] = useState<Step>(initialVpsId ? (hasInitialCwd ? 'name' : 'path') : 'vps');
+  const [step, setStep] = useState<Step>(
+    !initialVpsId ? 'vps' : !hasInitialCwd ? 'path' : showBackendStep ? 'backend' : 'name');
+  // The enabled set arrives after mount (the panel starts from "all on"): once
+  // it leaves a single backend, there is nothing left to choose.
+  useEffect(() => {
+    if (step === 'backend' && backendFixed) setStep('name');
+  }, [step, backendFixed]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // ── Step 1 filter (name / ip / project path — cf. app/vpsSearch.ts) ──
@@ -182,6 +193,7 @@ export default function NewSessionWizard({
     enterActionRef.current = () => {
       if (step === 'name') { void launch(); return; }
       if (step === 'path' && custom.trim()) { void submitCustom(); return; }
+      if (step === 'backend') { pickObviousBackend(); return; }
       if (step === 'vps') pickObviousVps();
     };
   });
@@ -235,11 +247,15 @@ export default function NewSessionWizard({
     safeParseSettingSources(vps?.claudeSettingSources),
     globalDefaults?.settingSources,
   );
-  const agentLabel = providerText.agentNoun(selKind);
+  // Until a backend is picked the title must not name one: `selKind` is only a
+  // placeholder there, and "New Claude agent" above a Claude/Codex/Cursor
+  // choice reads as if the choice were already made.
+  const backendChosen = backendFixed || (step !== 'vps' && step !== 'backend');
+  const agentLabel = backendChosen ? providerText.agentNoun(selKind) : 'agent';
   const kindLabel = kind === 'agent' ? agentLabel : 'SSH shell';
-  const KindIcon = kind === 'agent'
-    ? () => <AgentLogo kind={selKind} size={15} />
-    : () => <IconTerminal />;
+  const KindIcon = kind !== 'agent'
+    ? () => <IconTerminal />
+    : backendChosen ? () => <AgentLogo kind={selKind} size={15} /> : () => <IconRobot />;
 
   // VPSes grouped by folder ("default" folder last), only non-empty folders.
   const buckets = useMemo(() => {
@@ -348,6 +364,18 @@ export default function NewSessionWizard({
     }
     const usable = allowedKinds.filter((k) => availFor(v, k).ok);
     if (usable.length === 1) pickVps(v, usable[0]);
+  }
+  function pickBackend(k: AgentKind) {
+    if (!vps || !availFor(vps, k).ok) return;
+    setSelKind(k);
+    setStep('name');
+  }
+  // Same rule as step 1: Enter only takes a backend when it is the ONLY one
+  // that can start here.
+  function pickObviousBackend() {
+    if (!vps) return;
+    const usable = allowedKinds.filter((k) => availFor(vps, k).ok);
+    if (usable.length === 1) pickBackend(usable[0]);
   }
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape' && vpsQuery) {
@@ -695,17 +723,102 @@ export default function NewSessionWizard({
           <span className="wiz-kind"><KindIcon /> New {kindLabel}</span>
         </div>
 
-        <div className="wiz-crumbs">
-          <Crumb n={1} label={vps ? vps.name : 'VPS'} active={step === 'vps'}
-            done={!!vps && step !== 'vps'} onClick={() => setStep('vps')} />
-          <span className="wiz-crumb-sep">▸</span>
-          <Crumb n={2} label={pathLabel} active={step === 'path'}
-            done={pathChosen && step !== 'path'} disabled={!vps}
-            onClick={() => vps && setStep('path')} />
-          <span className="wiz-crumb-sep">▸</span>
-          <Crumb n={3} label="Name" active={step === 'name'} done={false}
-            disabled={!pathChosen} onClick={() => pathChosen && setStep('name')} />
-        </div>
+        {showBackendStep ? (
+          <div className="wiz-crumbs">
+            <Crumb n={1} label={backendChosen ? providerName(selKind) : 'Agent'} active={step === 'backend'}
+              done={backendChosen} onClick={() => setStep('backend')} />
+            <span className="wiz-crumb-sep">▸</span>
+            <Crumb n={2} label="Name" active={step === 'name'} done={false}
+              disabled={!backendChosen} onClick={() => backendChosen && setStep('name')} />
+          </div>
+        ) : (
+          <div className="wiz-crumbs">
+            <Crumb n={1} label={vps ? vps.name : 'VPS'} active={step === 'vps'}
+              done={!!vps && step !== 'vps'} onClick={() => setStep('vps')} />
+            <span className="wiz-crumb-sep">▸</span>
+            <Crumb n={2} label={pathLabel} active={step === 'path'}
+              done={pathChosen && step !== 'path'} disabled={!vps}
+              onClick={() => vps && setStep('path')} />
+            <span className="wiz-crumb-sep">▸</span>
+            <Crumb n={3} label="Name" active={step === 'name'} done={false}
+              disabled={!pathChosen} onClick={() => pathChosen && setStep('name')} />
+          </div>
+        )}
+
+        {/* ── Backend on a known VPS + path (header "＋ agent here") ── */}
+        {step === 'backend' && vps && (() => {
+          const agentUp = agentAvailability(vps);
+          return (
+            <div className="wiz-body">
+              <div className="wiz-label">Choose an agent</div>
+              <div className="wiz-where">
+                <span className={`wiz-pick-dot agent-${(vps as any).agentStatus ?? 'unknown'}`} />
+                <b>{vps.name}</b>
+                <span className="mono">{path}</span>
+              </div>
+              {/* The agent layer is common to every backend: ONE "reason [fix]"
+                  line, not the same one repeated under each row. */}
+              {!agentUp.ok && (
+                <div className="wiz-issue wiz-where-issue">
+                  <span className="wiz-issue-text">⚠ {agentUp.reason}</span>
+                  {onFix && agentUp.fix && (
+                    <button type="button" className="wiz-fix-btn"
+                      disabled={fixBusy(vps, agentUp.fix.action)} title={agentUp.fix.title}
+                      onClick={() => onFix(vps, agentUp.fix!.action)}
+                    >{fixBusy(vps, agentUp.fix.action) ? '⟳ …' : agentUp.fix.label}</button>
+                  )}
+                </div>
+              )}
+              <div className="wiz-pick-list">
+                {allowedKinds.map((k) => {
+                  // Same launcher rule as the step-1 buttons (`vpsHealth §
+                  // backendLauncher`): signed out ⇒ the row signs in; a missing
+                  // runtime stays unpressable, its reason + repair inline.
+                  const launcher = backendLauncher(vps, k);
+                  if (!launcher.enabled) {
+                    const av = backendAvailability(vps, k);
+                    return (
+                      <div key={k} className="wiz-pick static disabled wiz-backend-row">
+                        <AgentLogo kind={k} size={20} />
+                        <span className="wiz-pick-main">
+                          <span className="wiz-pick-name">{providerName(k)}</span>
+                          {agentUp.ok && (
+                            <span className="wiz-issue">
+                              <span className="wiz-issue-text">⚠ {av.reason}</span>
+                              {onFix && av.fix && (
+                                <button type="button" className="wiz-fix-btn"
+                                  disabled={fixBusy(vps, av.fix.action)} title={av.fix.title}
+                                  onClick={() => onFix(vps, av.fix!.action)}
+                                >{fixBusy(vps, av.fix.action) ? '⟳ …' : av.fix.label}</button>
+                              )}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button key={k} type="button"
+                      className={`wiz-pick wiz-backend-row${launcher.ready ? '' : ' needs-fix'}`}
+                      title={launcher.title}
+                      onClick={() => {
+                        if (launcher.ready) pickBackend(k);
+                        else if (launcher.fix) onFix?.(vps, launcher.fix.action);
+                      }}
+                    >
+                      <AgentLogo kind={k} size={20} />
+                      <span className="wiz-pick-main">
+                        <span className="wiz-pick-name">{providerName(k)}</span>
+                        {!launcher.ready && <span className="wiz-pick-sub wiz-pick-blocked">⚠ {launcher.title}</span>}
+                      </span>
+                      <span className="wiz-pick-go">›</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── Step 1: VPS (+ backend, when the agent backend isn't fixed) ── */}
         {step === 'vps' && (
@@ -1109,7 +1222,7 @@ export default function NewSessionWizard({
             </div>
             {err && <div className="wiz-error">⚠ {err}</div>}
             <div className="wiz-actions">
-              <button className="wiz-btn ghost" onClick={() => setStep('path')} disabled={busy}>Back</button>
+              <button className="wiz-btn ghost" onClick={() => setStep(showBackendStep ? 'backend' : 'path')} disabled={busy}>Back</button>
               <button className="wiz-btn primary big" onClick={launch} disabled={busy}>
                 {busy ? 'launching…' : `▸ Launch ${kind === 'agent' ? 'agent' : 'shell'}`}
               </button>
