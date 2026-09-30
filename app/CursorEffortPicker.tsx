@@ -51,9 +51,8 @@ export default function CursorEffortPicker({
   const spec = splitModelSpec(modelId);
   const model = models.find((m) => m.id === spec.id) ?? null;
   // Knobs THIS model does not declare are dropped rather than merged forward:
-  // they cannot be edited here, they are ignored by the provider, and carrying
-  // them into every option meant one model's leftovers rode along for the life
-  // of the session (`cursorEffort.ts`). The reduced set is what the control
+  // they cannot be edited here, and the provider REFUSES the whole run over
+  // one (§14.103), so any pick here also cures a leftover (`cursorEffort.ts`). The reduced set is what the control
   // matches its active row against, so a stored selection whose applicable part
   // IS offered stops falling through to the "current" group below.
   const current = applicableParams(model, value ? decodeModelParams(value) : spec.params);

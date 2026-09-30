@@ -343,6 +343,23 @@ class TurnErrorTest(unittest.TestCase):
         )
 
 
+    def test_a_refused_run_reports_its_status_message_and_what_was_sent(self):
+        # Live shape: an undeclared model parameter ends the run with an EMPTY
+        # `result`; the reason is only in the stream's ERROR status message.
+        events = []
+        s = _session(emit=events.append, model="grok-4.7", effort="effort=high&fast=false")
+        s._on_message(types.SimpleNamespace(
+            type="status", status="ERROR",
+            message='AI Model Not Found Invalid parameters for registry model: "grok-4.7"',
+        ))
+        s._on_result(types.SimpleNamespace(status="error", result="", model=None))
+        errors = [e for e in events if e["event"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn('Invalid parameters for registry model: "grok-4.7"', errors[0]["msg"])
+        self.assertIn("sent effort=high&fast=false", errors[0]["msg"])
+        self.assertIn({"event": "turn_error", "session_id": "sid", "kind": "turn_failed"}, events)
+
+
 class ConstructionSignatureTest(unittest.TestCase):
     """Construction changes rebuild before the next turn."""
 

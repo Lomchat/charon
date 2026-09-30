@@ -8,6 +8,7 @@ vi.mock('@/lib/api', () => ({
 
 import { invalidateCursorModels } from '@/app/cursorModelsCache';
 import { applicableParams, effectiveParams, pruneCursorEffort } from '@/app/cursorEffort';
+import { adaptEffortForModel, adaptModelParams } from '@/lib/modelParams';
 
 // Two shapes from the live catalog: one model whose only knob is `reasoning`,
 // one that has `effort` + `fast`. Switching between them is exactly how a
@@ -29,6 +30,19 @@ const GROK = {
     { id: 'fast', label: 'Fast', values: [{ value: 'false', label: '' }] },
   ],
   variants: [{ params: { effort: 'high', fast: 'true' }, isDefault: true }],
+} as any;
+// Same family, renamed ladder: `effort=high` here FAILS the run (§14.103).
+const GROK47 = {
+  id: 'grok-4.7',
+  label: 'Grok 4.7',
+  parameters: [
+    { id: 'context', label: 'Context', values: [{ value: '256k', label: '256K' }, { value: '500k', label: '500K' }] },
+    { id: 'reasoning_effort', label: 'Effort', values: [
+      { value: 'low', label: 'Low' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'Extra High' },
+    ] },
+    { id: 'fast', label: 'Fast', values: [{ value: 'false', label: '' }, { value: 'true', label: 'Fast' }] },
+  ],
+  variants: [{ params: { context: '500k', reasoning_effort: 'high', fast: 'true' }, isDefault: true }],
 } as any;
 
 describe('Cursor per-model effort', () => {
@@ -57,12 +71,35 @@ describe('Cursor per-model effort', () => {
       .toEqual({ reasoning: 'max' });
   });
 
-  it('prunes foreign knobs when the model changes', async () => {
-    mocks.getCursorModels.mockResolvedValue({ ok: true, models: [KIMI, GROK] });
+  it('adapts the set when the model changes', async () => {
+    mocks.getCursorModels.mockResolvedValue({ ok: true, models: [KIMI, GROK, GROK47] });
     expect(await pruneCursorEffort('v1', 'kimi-k3', 'effort=high&fast=false&reasoning=max'))
       .toBe('reasoning=max');
+    // The rung follows the ladder across ids; the foreign switch is dropped.
+    expect(await pruneCursorEffort('v1', 'kimi-k3', 'effort=high&fast=false')).toBe('reasoning=high');
+    // The live failure: a grok-4.6 default under grok-4.7.
+    expect(await pruneCursorEffort('v1', 'grok-4.7', 'effort=high&fast=false'))
+      .toBe('fast=false&reasoning_effort=high');
     // Nothing survives ⇒ the model's own defaults, not an empty string.
-    expect(await pruneCursorEffort('v1', 'kimi-k3', 'effort=high&fast=false')).toBeNull();
+    expect(await pruneCursorEffort('v1', 'kimi-k3', 'effort=medium&fast=false')).toBeNull();
+  });
+
+  it('drops a rung the ladder does not offer, never a declared valid one', () => {
+    expect(adaptModelParams(GROK47, { reasoning_effort: 'max', fast: 'true', context: '256k' }))
+      .toEqual({ fast: 'true', context: '256k' });
+    // A declared rung wins over a translated one.
+    expect(adaptModelParams(GROK47, { effort: 'low', reasoning_effort: 'xhigh' }))
+      .toEqual({ reasoning_effort: 'xhigh' });
+    expect(adaptModelParams(null, { effort: 'high' })).toEqual({ effort: 'high' });
+  });
+
+  it('adapts from a plain catalog, unchanged for an unlisted model', () => {
+    expect(adaptEffortForModel([GROK47], 'grok-4.7', 'effort=high&fast=false'))
+      .toBe('fast=false&reasoning_effort=high');
+    expect(adaptEffortForModel([GROK47], 'grok-4.7?context=256k', 'effort=high'))
+      .toBe('reasoning_effort=high');
+    expect(adaptEffortForModel([GROK47], 'unknown', 'effort=high')).toBe('effort=high');
+    expect(adaptEffortForModel([GROK47], 'grok-4.7', null)).toBeNull();
   });
 
   it('never drops a selection the catalog cannot vouch for', async () => {

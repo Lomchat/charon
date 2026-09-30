@@ -2,6 +2,7 @@ import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoint
 import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
 import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
+import { adaptCursorEffortForVps } from '@/lib/server/claude/cursorModels';
 import 'server-only';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
 import crypto from 'node:crypto';
@@ -3018,9 +3019,6 @@ export async function startNewSession(opts: {
   const defaultMode = resolveConfiguredSessionMode(kind);
   const permissionMode: SessionMode = opts.permissionMode ?? defaultMode;
   const sessionId = opts.sessionId ?? newId();
-  const handle = allocateSessionHandle(opts.vpsId, {
-    id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
-  });
   // Resolve effective config: per-session opts first, then global defaults.
   // We persist the RESOLVED values to the DB row so they survive a Charon
   // restart even if the global default changes later. (If we stored null
@@ -3032,7 +3030,18 @@ export async function startNewSession(opts: {
   const requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
   const providerConfig = resolveProviderConfig(kind, requestedConfig, vps);
   const customEndpoint = !!(providerConfig as any)?.customEndpoint;
+  // Cursor's parameter set must match the model it runs with: an undeclared
+  // knob fails every turn, and the Settings default may predate its model
+  // (§14.103).
+  if (kind === 'cursor' && !customEndpoint && cfg.effort) {
+    cfg.effort = await adaptCursorEffortForVps(opts.vpsId, cfg.model, cfg.effort);
+  }
   const effortPersist = isValidEffortForKind(cfg.effort, kind, customEndpoint) ? cfg.effort : null;
+  // Allocated after the last await: nothing may yield between reading the
+  // taken handles and the INSERT that claims this one (UNIQUE per VPS, §14.93).
+  const handle = allocateSessionHandle(opts.vpsId, {
+    id: sessionId, name: opts.name ?? null, cwd: opts.cwd,
+  });
 
   // Insert in DB first (status 'starting' until agent confirms)
   db.insert(claudeSessions).values({

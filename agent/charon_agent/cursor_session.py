@@ -139,6 +139,10 @@ class CursorSession:
         self._cli_title_value: Optional[str] = None
         self._effective_model: Optional[str] = None
         self._saw_text_delta = False
+        # The run's own ERROR status text. A run the backend refuses (a model
+        # parameter it does not declare, §14.103) ends with an EMPTY
+        # `RunResult.result`; the reason rides only this stream message.
+        self._run_status_error: Optional[str] = None
         self._active_peer_request_id: Optional[str] = None
         # Construction inputs the LIVE agent object was built with, so the turn
         # loop can tell a per-send change (model, mode) from one that needs the
@@ -507,6 +511,7 @@ class CursorSession:
             raise RuntimeError("session not running")
         self._active_peer_request_id = item.get("peer_request_id")
         self._saw_text_delta = False
+        self._run_status_error = None
         self._set_status("thinking")
         await self._rebuild_agent_if_stale()
 
@@ -563,6 +568,11 @@ class CursorSession:
             elif mtype == "usage":
                 usage = self._json_safe(getattr(msg, "usage", None)) or {}
                 self._emit_usage(usage, final=False)
+            elif mtype == "status":
+                if str(getattr(msg, "status", "") or "").upper() == "ERROR":
+                    text = getattr(msg, "message", None)
+                    if isinstance(text, str) and text.strip():
+                        self._run_status_error = text.strip()
             elif mtype == "system":
                 model = getattr(msg, "model", None)
                 model_id = getattr(model, "id", None) if model is not None else None
@@ -665,8 +675,14 @@ class CursorSession:
             # A failed TURN is not a broken SESSION (§14.68): report it as an
             # error stop and stay connected so the next prompt can recover.
             # RunResult exposes failed-run detail in `result`; cursor-sdk 1.x
-            # has no `error` field on that type.
-            detail = _error_text(self._json_safe(getattr(result, "result", None)))
+            # has no `error` field on that type. A refused run leaves it empty
+            # and says why in its ERROR status message instead.
+            detail = _error_text(
+                self._json_safe(getattr(result, "result", None)) or self._run_status_error)
+            if "invalid parameters" in detail.lower():
+                sent = _sent_parameters(self.model, self.effort)
+                if sent:
+                    detail += f" — sent {sent}; choose the effort again for this model"
             # A non-fatal `error` carries the human half: the hub reads it as
             # `pendingAgentError` and puts it in the durable blocking-error row,
             # instead of the generic "the turn ended with an API error".
@@ -837,6 +853,13 @@ def _error_text(detail: Any) -> str:
     if detail:
         return str(detail)[:2000]
     return "the run failed"
+
+
+def _sent_parameters(spec: str | None, effort: str | None) -> str:
+    """The parameter set `parse_model` sends, as the hub stores it."""
+    params = _decode_params((spec or "").partition("?")[2])
+    params.update(_decode_params(effort))
+    return "&".join(f"{k}={v}" for k, v in sorted(params.items()))
 
 
 def _turn_error_kind(text: str) -> str:
