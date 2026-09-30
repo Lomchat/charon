@@ -532,6 +532,17 @@ class GitWorkspaceTest(unittest.TestCase):
         found, _ = G._discover_repos(self.dir, 6)
         self.assertEqual(sorted(found), sorted(self.roots))
 
+    def test_agent_worktrees_are_not_projects(self):
+        # `.claude/worktrees/wf_*` are linked worktrees of a repo the panel
+        # already lists; Codex/Cursor park theirs under `.codex`/`.cursor`.
+        for rel in (".claude/worktrees/wf_1", ".codex/worktrees/a1/proj",
+                    ".cursor/worktrees/proj/b2"):
+            p = os.path.join(self.dir, rel)
+            os.makedirs(p, exist_ok=True)
+            sh(p, "init", "-q", "-b", "main")
+        found, _ = G._discover_repos(self.dir, 6)
+        self.assertEqual(sorted(found), sorted(self.roots))
+
     def test_a_symlink_loop_cannot_hang_the_scan(self):
         try:
             os.symlink(self.dir, os.path.join(self.dir, "loop"))
