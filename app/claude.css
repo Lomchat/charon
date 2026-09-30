@@ -111,6 +111,12 @@
   background: var(--accent-strong); animation: hnav-pulse 1.4s ease-in-out infinite;
   box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
 }
+/* Background = the sidebar's violet (`dot-violet-pulse`): the turn ended, the
+   tasks it launched still run (§14.91). */
+.background > .hnav-dot, .hnav-dot.background {
+  background: var(--violet); animation: hnav-pulse 1.6s ease-in-out infinite;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--violet) 70%, transparent);
+}
 .needs-you > .hnav-dot, .hnav-dot.waiting {
   background: var(--attention); animation: hnav-pulse 1.4s ease-in-out infinite;
   box-shadow: 0 0 6px color-mix(in srgb, var(--attention) 70%, transparent);
