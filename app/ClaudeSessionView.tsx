@@ -112,6 +112,10 @@ type Props = {
     hint?: { vpsId: string; cwd: string },
     pin?: boolean,
   ) => void;
+  /** The phone's "＋ agent" beside the cwd: the new-session wizard on this
+   *  session's VPS and path, asking only which backend and a name (the TabBar
+   *  carries the desktop equivalent, and is hidden ≤820px). */
+  onNewAgentHere?: () => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -130,6 +134,7 @@ export default function ClaudeSessionView({
   onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, onReauth,
   onOpenTools,
   onOpenSession,
+  onNewAgentHere,
 }: Props) {
   const [endpoint, refreshEndpoint] = useSessionEndpoint(sessionId, selected.endpoint);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
@@ -731,6 +736,12 @@ export default function ClaudeSessionView({
             {selected.cwd && (
               <span className="bar-sub">
                 <CwdSubtitle cwd={selected.cwd} vpsName={selectedVps?.name} />
+                {onNewAgentHere && (
+                  <button type="button" className="bar-new-agent" onClick={onNewAgentHere}
+                    aria-label="New agent in this folder" title="New agent in this folder">
+                    ＋ agent
+                  </button>
+                )}
               </span>
             )}
             {selected.cwd && <span className="bar-repo">

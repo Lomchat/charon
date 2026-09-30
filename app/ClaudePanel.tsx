@@ -2081,6 +2081,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           // which is a drawer <=1100px — it has to be able to reveal it.
           onOpenTools={() => setToolsOpen(true)}
           onOpenSession={(id, hint, pin) => openSessionById(id, pin ?? false, hint)}
+          // No agentKind: the wizard asks which backend, then the name — the
+          // VPS and path are this session's (NewSessionWizard § 'backend').
+          onNewAgentHere={selected.cwd
+            ? () => setWizard({ kind: 'agent', vpsId: selected.vpsId, cwd: selected.cwd })
+            : undefined}
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the
