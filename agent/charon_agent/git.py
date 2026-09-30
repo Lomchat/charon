@@ -66,6 +66,10 @@ SCAN_SKIP_DIRS = frozenset({
     ".next", ".nuxt", "dist", "build", "target", "vendor", "bower_components",
     ".cache", ".terraform", ".gradle", ".tox", ".mypy_cache", ".pytest_cache",
     "site-packages", ".svn", ".hg",
+    # Coding agents park their worktrees here (`.claude/worktrees/*`, and
+    # `~/.codex`/`~/.cursor` when the cwd is home): copies of a repo the
+    # panel already shows, not projects of their own.
+    ".claude", ".codex", ".cursor",
 })
 
 # cwd -> (deadline, [roots], truncated)
