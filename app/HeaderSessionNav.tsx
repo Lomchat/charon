@@ -27,7 +27,7 @@ const HOVER_CLOSE_MS = 160;
 
 /** One reading per row, computed once: the CSS class, the word in the tooltip
  *  and whether the unread pulse applies all come from it. */
-type NavState = 'needs-you' | 'working' | 'error' | 'idle' | 'ready';
+type NavState = 'needs-you' | 'working' | 'background' | 'error' | 'idle' | 'ready';
 
 type NavRow = {
   s: SessionListItem;
@@ -41,8 +41,11 @@ type NavRow = {
 
 function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavState {
   if (waiting) return 'needs-you';
-  if (working) return 'working';
   const live = String(s.liveStatus);
+  // Still counted as working (its tasks are), but in the sidebar's violet: the
+  // turn is over, only what it launched runs on (§14.91).
+  if (live === 'background') return 'background';
+  if (working) return 'working';
   if (live === 'error' || live === 'failed') return 'error';
   if (live === 'sleeping') return 'idle';
   return 'ready';
@@ -85,7 +88,8 @@ function ago(ms: number): string {
 function stateWord(r: NavRow): string {
   switch (r.state) {
     case 'needs-you': return 'needs you';
-    case 'working': return String(r.s.liveStatus) === 'background' ? 'background' : 'working';
+    case 'working': return 'working';
+    case 'background': return 'background';
     case 'error': return 'error';
     case 'idle': return 'paused';
     default: return r.unread ? 'finished, unread' : 'ready';
@@ -213,7 +217,10 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
           `${rows.length} sessions`,
         ].join(' · ')}
       >
-        <span className={`hnav-dot ${running.length ? 'working' : 'idle'}`} aria-hidden />
+        {/* Violet only when background work is ALL that runs; a live turn or a
+            waiting gate is the louder fact. */}
+        <span className={`hnav-dot ${!running.length ? 'idle'
+          : running.every((r) => r.state === 'background') ? 'background' : 'working'}`} aria-hidden />
         <span className="hnav-trigger-count">{running.length}</span>
         <span className="hnav-trigger-word">working</span>
         {/* A SUBSET of the count on its left, unlike the unread one beside it —
