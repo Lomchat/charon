@@ -1280,6 +1280,11 @@ function SessionRow({
   ].filter((line): line is string => line !== null).join('\n');
   const showPreview = !!preview && preview !== headline && !headline.startsWith(preview.slice(0, 30));
   const needsAttention = (s.pendingPermissions ?? 0) > 0;
+  // Background tasks still running once the turn is over (§14.91). Hidden
+  // while the session works: turns start and reap short tasks constantly, and
+  // the count only matters when the card would otherwise read "done".
+  const bgRunning = !deleting && effective !== 'thinking' && effective !== 'starting'
+    ? (s.runningBgTasks ?? 0) : 0;
   // "Finished, unread": the session ended a turn while you weren't looking and
   // you haven't opened it since (DB: unread_stop, §14.47). The predicate is
   // shared with the header nav (app/sessionUnread.ts) so one signal cannot say
@@ -1348,8 +1353,10 @@ function SessionRow({
         {!!s.pendingPermissions && (
           <span className="cs-perm" title={`${s.pendingPermissions} pending permission(s)`}>🔒{s.pendingPermissions}</span>
         )}
-        {!!s.subscribers && s.subscribers > 1 && (
-          <span className="cs-multi" title={`${s.subscribers} connected clients`}>×{s.subscribers}</span>
+        {bgRunning > 0 && (
+          <span className="cs-bg" title={`${bgRunning} background task${bgRunning > 1 ? 's' : ''} still running`}>
+            ◐{bgRunning}
+          </span>
         )}
         <span className={`cs-state ${deleting ? 'deleting' : effective}`}>
           {deleting ? 'deleting…' : (STATUS_TEXT[effective] ?? effective)}

@@ -1720,6 +1720,11 @@ class AgentSession:
                 _data = getattr(ev, "data", None)
                 if isinstance(_data, dict) and _data.get("workflow_name"):
                     payload["workflow_name"] = _data["workflow_name"]
+                # A command a SUB-AGENT runs in its own foreground (§14.91): the
+                # Stop hook's `background_tasks` never lists it, so the hub must
+                # not read its absence there as "finished". Raw `data` only.
+                if isinstance(_data, dict) and _data.get("owned_by_subagent") is True:
+                    payload["owned_by_subagent"] = True
                 if payload.get("task_id"):
                     # Stamp the SDK's own verdict on terminal-ness. A kill emits
                     # BOTH vocabularies (updated:killed AND finished:stopped),

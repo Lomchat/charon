@@ -61,6 +61,8 @@ export type BridgeEvent =
       description?: string; toolUseId?: string; taskType?: string;
       status?: string; outputFile?: string; summary?: string;
       workflowName?: string;
+      // A sub-agent's own command (agent >= 0.98.3): invisible to the Stop hook.
+      ownedBySubagent?: boolean;
       // agent >= 0.36.0: the SDK's own terminal verdict for this status word,
       // read from its exported TERMINAL_TASK_STATUSES. Outranks the hub's
       // word-list normaliser when present (§14.91).
@@ -241,6 +243,11 @@ export type SyntheticEvent =
   // Classed LOW_VOLUME in eventConnections so it reaches every tab regardless
   // of SSE focus. cf. CLAUDE.md §14.47.
   | { type: 'session_unread'; unread: boolean }
+  // How many background tasks (§14.91) this session still has running — the
+  // sidebar card's count, live on EVERY tab (LOW_VOLUME), while the `bg_task`
+  // lifecycle itself stays focused-only. Emitted on change; the list GET
+  // (`runningBgTasks`) is the truth this mirrors.
+  | { type: 'session_bg_tasks'; running: number }
   // The set of Claude sessions changed (one was created, imported or deleted).
   // A pure "refetch the list" signal so the sidebar/tab bar update live across
   // tabs AND devices — e.g. a session started on a phone appears on the desktop

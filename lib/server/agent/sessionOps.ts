@@ -44,7 +44,7 @@ import {
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/claude/messageWire';
-import { bgTaskIdsBeforeEventFromDb, isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb, runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
+import { bgTaskIdsBeforeEventFromDb, bgTasksHiddenFromStopHook, isBgTaskDone, pruneStaleBgTasks, runningBgTasksFromDb, runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
 import { readCodexBgState } from '@/lib/server/claude/codexBgState';
 import { codexTerminalProcessId } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
@@ -610,6 +610,8 @@ export class SessionStream {
   // (§14.91), so it must survive a hub restart — hence derived from the rows,
   // not from the events this process happened to witness.
   private bgRunning: Map<string, number> | null = null;
+  // Last `session_bg_tasks` count sent, so the sidebar hears only CHANGES.
+  private bgRunningAnnounced: number | null = null;
   // Pending "the background work is now really finished" notification. Delayed,
   // because a finishing task usually re-invokes the model (§14.54) — firing
   // "done" a beat before a new turn starts would be a lie.
@@ -1321,6 +1323,7 @@ export class SessionStream {
           ...(ev.output_file !== undefined ? { outputFile: ev.output_file } : {}),
           ...(ev.summary !== undefined ? { summary: ev.summary } : {}),
           ...(ev.workflow_name !== undefined ? { workflowName: ev.workflow_name } : {}),
+          ...(ev.owned_by_subagent === true ? { ownedBySubagent: true } : {}),
           // The SDK's own terminal verdict (agent >= 0.36.0). Persisted with
           // the row so a rebuild-from-history gets the same answer the live
           // path did — the whole point of §14.91's "one oracle".
@@ -1582,9 +1585,14 @@ export class SessionStream {
           const alive = new Set(ev.background_tasks);
           const running = this.bgRunning!;
           const eligible = running.size ? this._bgTasksBeforeCurrentEvent() : null;
+          let hidden: Set<string> | null = null;      // read only if needed
           let changed = false;
           for (const taskId of [...running.keys()]) {
             if (!alive.has(taskId) && (eligible == null || eligible.has(taskId))) {
+              // A sub-agent's own command is outside the hook's view: its
+              // absence is not an ending while its owner may still run.
+              hidden ??= bgTasksHiddenFromStopHook(this.id, alive);
+              if (hidden.has(taskId)) continue;
               const payload = { type: 'bg_task' as const, kind: 'finished' as const,
                 taskId, status: 'completed', terminal: true };
               // Persist the receipt and send it to the bar too. An in-memory
@@ -1599,6 +1607,7 @@ export class SessionStream {
           // Order between the hook and the ResultMessage is not guaranteed. If
           // `stop` already ran and parked us in `background`, correct it now;
           // if it has not, it will simply read a registry that is already right.
+          if (changed) this._announceBgCount();
           if (changed && running.size === 0) this._onLastBgTaskEnded();
         }
         break;
@@ -2417,6 +2426,20 @@ export class SessionStream {
     return pruneStaleBgTasks(this.bgRunning, Math.floor(Date.now() / 1000));
   }
 
+  /** How many — the sidebar card's count. Same registry, same age cap. */
+  runningBgTaskCount(): number {
+    return this.hasRunningBgTasks() ? this.bgRunning!.size : 0;
+  }
+
+  /** Mirror the count onto every tab (LOW_VOLUME `session_bg_tasks`): the
+   *  `bg_task` lifecycle only reaches the focused connection. */
+  private _announceBgCount(): void {
+    const n = this.runningBgTaskCount();
+    if (n === this.bgRunningAnnounced) return;
+    this.bgRunningAnnounced = n;
+    this._broadcast({ type: 'session_bg_tasks', running: n });
+  }
+
   /** null means an undated LIVE snapshot; undated replay authorizes nothing.
    * Identity dedup alone misses old hooks that originally closed zero tasks. */
   private _bgTasksBeforeCurrentEvent(): Set<string> | null {
@@ -2444,6 +2467,7 @@ export class SessionStream {
         : ev.status != null || ev.terminal === false)) {
       running.set(taskId, Math.floor(Date.now() / 1000));
     }
+    this._announceBgCount();
     if (running.size > 0) {
       // More work started — whatever "it's done" we had queued is void.
       this._cancelBgFinish();
@@ -2505,6 +2529,7 @@ export class SessionStream {
       this._broadcast(payload);
       running.delete(taskId);
     }
+    this._announceBgCount();
   }
 
   private _cancelBgFinish(): void {
@@ -3158,6 +3183,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // the /resume route would keep reporting 'sleeping'. See CLAUDE.md §14
     // gotcha 36.
     let resolvedStatus: WorkerStatus = 'starting';
+    let resumedNoop = false;
     try {
       // Reassert the stable handle on every resume. Claude's native --name is
       // start-time only; Charon's common bus changes immediately.
@@ -3176,6 +3202,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
       if (agentStatus === 'active' || agentStatus === 'thinking' || agentStatus === 'starting') {
         resolvedStatus = agentStatus;
       }
+      resumedNoop = (rpcRes as { noop?: unknown } | undefined)?.noop === true;
     } catch (e: any) {
       const isNotFound = /not found/i.test(e?.message ?? '') || e?.code === -32000;
       if (!isNotFound) throw e;
@@ -3213,6 +3240,13 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // connected failed-turn marker. Clear the local latch before resubscribing so
     // the daemon's authoritative active frame is accepted again.
     stream.clearTerminalErrorLatch();
+    // A noop left the CLI, and every task it runs, alive: its idle `active` is
+    // not "done" while that work runs (§14.91). Every hub restart resumes the
+    // live sessions, so adopting it verbatim repainted them all green. A real
+    // restart is different — its `ready` buries the dead CLI's tasks.
+    if (resumedNoop && resolvedStatus === 'active' && stream.hasRunningBgTasks()) {
+      resolvedStatus = 'background';
+    }
     stream.attach();
     // If the user had already opened the SSE before the resume, attach() has
     // already tried a subscribe on the agent side that failed (session not yet

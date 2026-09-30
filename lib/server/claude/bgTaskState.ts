@@ -94,6 +94,29 @@ export function bgTaskIdsBeforeEventFromDb(
   return eligible;
 }
 
+/** Task kinds that run tools of their own, hence can own a sub-agent command. */
+const BG_OWNER_TASK_TYPES = new Set(['local_agent', 'local_workflow', 'in_process_teammate']);
+
+/** The Stop hook's `background_tasks` skips foreground commands, i.e. those a
+ * SUB-AGENT runs itself (agent >= 0.98.3 flags them `ownedBySubagent`). Its
+ * silence about one proves nothing while a task that could own it is listed
+ * alive; once none is, silence means gone again. Returns the tasks a hook
+ * listing `alive` must NOT close. Unflagged rows (older agents) stay closable. */
+export function bgTasksHiddenFromStopHook(sessionId: string, alive: ReadonlySet<string>): Set<string> {
+  const owned = new Set<string>();
+  const types = new Map<string, string>();
+  for (const row of bgTaskRowsFromDb(sessionId)) {
+    try {
+      const ev = JSON.parse(row.content);
+      if (ev?.type !== 'bg_task' || typeof ev.taskId !== 'string') continue;
+      if (typeof ev.taskType === 'string') types.set(ev.taskId, ev.taskType);
+      if (ev.ownedBySubagent === true) owned.add(ev.taskId);
+    } catch { /* a corrupt row flags nothing */ }
+  }
+  const ownerAlive = [...alive].some((id) => BG_OWNER_TASK_TYPES.has(types.get(id) ?? ''));
+  return ownerAlive ? owned : new Set();
+}
+
 function reduceBgTasksFromDb(sessionId: string): {
   running: Map<string, number>;
   details: Map<string, BgTask>;

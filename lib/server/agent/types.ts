@@ -208,6 +208,9 @@ export type AgentEvent = (
       status?: string; output_file?: string; summary?: string;
       // Workflow-tool runs (task_type 'local_workflow') carry the script name.
       workflow_name?: string;
+      // agent >= 0.98.3, on `started`: a sub-agent's own command, which the
+      // Stop hook's `background_tasks` never lists (§14.91).
+      owned_by_subagent?: boolean;
       // agent >= 0.36.0: the SDK's OWN verdict (TERMINAL_TASK_STATUSES) on
       // whether this status ends the task. Absent on older agents, where the
       // hub falls back to its word-list normaliser. Prefer this when present:

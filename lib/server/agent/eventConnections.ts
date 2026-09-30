@@ -46,6 +46,9 @@ const LOW_VOLUME_EVENTS = new Set<string>([
   // BACKGROUND (non-focused) session's sidebar card the moment it finishes.
   // See sessionOps.ts § markSessionRead / stop handler (CLAUDE.md §14.47).
   'session_unread',
+  // Running background-task count (sessionId = session id): the sidebar card
+  // shows it for EVERY session, not just the focused one (§14.91).
+  'session_bg_tasks',
   // The Claude session SET changed (created / imported / deleted). A pure
   // "refetch the list" ping → must reach EVERY tab so the sidebar updates live
   // across tabs AND devices (a session started on a phone shows on the desktop

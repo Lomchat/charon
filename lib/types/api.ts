@@ -923,7 +923,9 @@ export type ClaudeSessionListQuery = { vpsId?: string; status?: string; includeA
 export type SessionListItem = ClaudeSession & {
   endpoint?: EndpointState;
   liveStatus: WorkerStatus | string;
-  subscribers: number;
+  /** Background tasks still running (§14.91) — the sidebar card's count.
+   *  Absent on the SSR seed; `session_bg_tasks` keeps it live between polls. */
+  runningBgTasks?: number;
   pendingPermissions: number;
   firstUserMessage: string | null;
   /** True only while the provider-neutral bus can route this stable handle. */
