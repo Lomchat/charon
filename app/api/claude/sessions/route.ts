@@ -5,7 +5,7 @@ import { db, claudeSessions, vps as vpsTable, claudePendingPermissions, claudePe
 import { requireApiSession } from '@/lib/server/session';
 import { startNewSession, listStreams } from '@/lib/server/agent/sessionOps';
 import { checkSessionPath } from '@/lib/server/claude/sessionPath';
-import { focusCountFor } from '@/lib/server/agent/eventConnections';
+import { pruneStaleBgTasks, runningBgTasksFromDb } from '@/lib/server/claude/bgTaskState';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { latestVersionsByKey } from '@/lib/server/claude/sdkSync';
 import type {
@@ -23,6 +23,21 @@ import {
 import { parseSettingSources } from '@/lib/settingSources';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
+
+/** The sidebar's background-task count (§14.91). A live stream's registry is
+ *  the truth and is cached after its first read. Without a stream, only a row
+ *  parked `background` can have any, so only that one pays for a history scan;
+ *  a paused session's children died with its CLI. */
+function runningBgTasksFor(
+  id: string, liveStatus: string, stream: ReturnType<typeof listStreams>[number] | undefined,
+): number {
+  if (liveStatus === 'sleeping' || liveStatus === 'error' || liveStatus === 'killed') return 0;
+  if (stream) return stream.runningBgTaskCount();
+  if (liveStatus !== 'background') return 0;
+  const running = runningBgTasksFromDb(id);
+  pruneStaleBgTasks(running, Math.floor(Date.now() / 1000));
+  return running.size;
+}
 
 // GET /api/claude/sessions
 // Query: ?vpsId= ?status=
@@ -113,7 +128,7 @@ export async function GET(req: Request) {
         // composer menu without hiding their identity in the sidebar.
         addressable: !!r.handle && peerAgentReady
           && ['starting', 'active', 'thinking', 'background', 'failed'].includes(liveStatus),
-        subscribers: focusCountFor(r.id),
+        runningBgTasks: runningBgTasksFor(r.id, liveStatus, stream),
         pendingPermissions: perms + qs,
         firstUserMessage: firstMsg ? firstMsg.slice(0, 180) : null,
         lastActivityMs: lastActivityBySession.get(r.id) ?? null,

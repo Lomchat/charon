@@ -25,12 +25,16 @@ vi.mock('@/lib/server/claude/telegram', () => ({
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
   sendPlainToTelegram: telegramMocks.sendPlainToTelegram,
 }));
+const clientMocks = vi.hoisted(() => ({
+  call: vi.fn(async (..._args: any[]): Promise<any> => ({ status: 'active' })),
+}));
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({
     setAfterSeq: () => {},
     subscribe: () => {},
     unsubscribe: () => {},
-    call: async () => ({ status: 'active' }),
+    resubscribe: () => {},
+    call: clientMocks.call,
   }),
   getAgentClient: () => ({}),
   dropAgentClient: async () => {},
@@ -287,6 +291,28 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
   });
 
+  it("keeps a sub-agent's own command the Stop hook cannot see, while its owner runs", () => {
+    const stream = createStream();
+    const started = (seq: number, taskId: string, extra: Record<string, unknown>) => ({
+      ...bgTask(seq, 'started', taskId), ...extra,
+    });
+    stream._onAgentEvent(started(1, 'wf', { task_type: 'local_workflow' }));
+    stream._onAgentEvent(started(2, 'fuzz', { task_type: 'local_bash', owned_by_subagent: true }));
+    stream._onAgentEvent(started(3, 'legacy', { task_type: 'local_bash' }));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 4, subtype: 'end_turn' });
+    // The hook lists the workflow, never the command one of its agents runs.
+    stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 5, background_tasks: ['wf'] });
+    expect(runningBgTaskDetailsFromDb(SID).map((t: any) => t.taskId).sort()).toEqual(['fuzz', 'wf']);
+    expect(stream.runningBgTaskCount()).toBe(2);
+
+    // Owner gone: the next hook's silence means what it says again.
+    stream._onAgentEvent(bgTask(6, 'finished', 'wf'));
+    expect(stream.status).toBe('background');
+    stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 7, background_tasks: [] });
+    expect(runningBgTaskDetailsFromDb(SID)).toEqual([]);
+    expect(stream.status).toBe('active');
+  });
+
   it.each(['turn_end', 'ready'])('replaying %s without a prior receipt preserves newer persisted tasks', (event) => {
     const stream = createStream();
     const old = { event, session_id: SID, seq: 2, background_tasks: [] };
@@ -490,6 +516,27 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(stream.status).toBe('active');
   });
 
+  it('mirrors the running count to every tab on change only (sidebar card)', () => {
+    const stream = createStream();
+    const broadcast = vi.spyOn(stream, '_broadcast');
+    const counts = () => broadcast.mock.calls
+      .map(([ev]: any[]) => ev)
+      .filter((ev: any) => ev.type === 'session_bg_tasks')
+      .map((ev: any) => ev.running);
+    stream._onAgentEvent(bgTask(1, 'started', 'task-a'));
+    stream._onAgentEvent(bgTask(2, 'started', 'task-b'));
+    stream._onAgentEvent(bgTask(3, 'updated', 'task-b', 'running'));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 4 });
+    expect(stream.runningBgTaskCount()).toBe(2);
+    stream._onAgentEvent(bgTask(5, 'finished', 'task-a'));
+    // The Stop hook's list and a pause both close tasks outside `bg_task`.
+    stream._onAgentEvent(bgTask(6, 'started', 'task-c'));
+    stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 7, background_tasks: ['task-c'] });
+    stream._onAgentEvent({ event: 'status', session_id: SID, status: 'sleeping', seq: 8 });
+    expect(counts()).toEqual([1, 2, 1, 2, 1, 0]);
+    expect(stream.runningBgTaskCount()).toBe(0);
+  });
+
   it('a normal turn with no background work is unaffected', () => {
     const stream = createStream();
     stream._onAgentEvent({ event: 'assistant_text', session_id: SID, delta: 'done', seq: 1 });
@@ -603,5 +650,23 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
         status: 'running',
       }),
     ]);
+  });
+
+  // Last on purpose: resumeSession registers its stream in the module map.
+  it("a noop resume (every hub restart) does not repaint running work as done", async () => {
+    const { resumeSession } = await import('@/lib/server/agent/sessionOps');
+    const stream = createStream();
+    stream._onAgentEvent(bgTask(1, 'started', 'watcher'));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 2 });
+    // Even a row an older hub already repainted green heals on the next one.
+    db.update(schema.claudeSessions).set({ status: 'active' }).run();
+    clientMocks.call.mockResolvedValueOnce({ ok: true, status: 'active', noop: true });
+    const resumed = await resumeSession(SID);
+    expect(resumed.status).toBe('background');
+    expect(sessionRow().status).toBe('background');
+
+    // A real restart killed the old CLI's tasks: its answer is adopted.
+    clientMocks.call.mockResolvedValueOnce({ ok: true, status: 'starting' });
+    expect((await resumeSession(SID)).status).toBe('starting');
   });
 });

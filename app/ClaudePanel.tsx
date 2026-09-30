@@ -551,6 +551,28 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     return () => unsub();
   }, []);
 
+  // Live background-task count per card (§14.91). The `bg_task` lifecycle only
+  // reaches the focused connection; this LOW_VOLUME mirror reaches every tab,
+  // and the 60s list poll stays the backstop.
+  useEffect(() => {
+    const unsub = subscribeAll((ev) => {
+      if (ev.type !== 'session_bg_tasks') return;
+      const id = ev.sessionId;
+      const running = (ev as { running?: unknown }).running;
+      if (!id || typeof running !== 'number') return;
+      setSessions((prev) => {
+        let changed = false;
+        const out = prev.map((s) => {
+          if (s.id !== id || (s.runningBgTasks ?? 0) === running) return s;
+          changed = true;
+          return { ...s, runningBgTasks: running };
+        });
+        return changed ? out : prev;
+      });
+    });
+    return () => unsub();
+  }, []);
+
   // Live "finished, unread" marker (CLAUDE.md §14.47). When a BACKGROUND
   // session finishes its turn, sessionOps flips claudeSessions.unreadStop and
   // fans a `session_unread` event on the bus (LOW_VOLUME → every tab, even ones
@@ -1759,8 +1781,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               cwd and the live state (ThinkingBar/status), and the sidebar card
               carries it too — a third, 4s-stale copy in the app header was
               pure duplication. */}
-          {/* No "×N connected clients" pill either: the sidebar card already
-              carries that count (`cs-multi`) for the sessions that have it. */}
+          {/* No "×N connected clients" pill either: nobody acted on it. */}
           <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search" data-label="search">
             <IconSearch />
           </button>

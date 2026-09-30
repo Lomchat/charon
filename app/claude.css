@@ -268,7 +268,7 @@
 /* `.local-agent-update` (the amber "update local agent" button) and
    `.multi-pill` (the "×N connected clients" counter) are gone with their
    header widgets: the agent's freshness belongs to the sidebar/VPS chips,
-   and the client count to the sidebar card (`cs-multi`).
+   and the client count is gone entirely (the card's slot shows `cs-bg`).
    `.status-pill` and its `.status-<colour>` modifiers are gone with the app
    header's context/state zone: the session bar and the sidebar cards own
    liveness now. `cpulse` stays — install steps and banners animate with it. */
@@ -867,7 +867,9 @@
    it said "error" while the card said "answer me". Orange is the colour of a
    human being waited on, here as everywhere else. */
 .cs-perm { font-family: var(--mono); font-size: 10px; color: var(--attention); animation: cpulse 1.5s infinite; flex-shrink: 0; }
-.cs-multi { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+/* ◐n = background tasks still running after the turn (§14.91): violet like the
+   `background` state it explains. */
+.cs-bg { font-family: var(--mono); font-size: 10px; color: var(--violet); flex-shrink: 0; }
 .cs-state {
   flex-shrink: 0; font-family: var(--display); font-size: 8px;
   letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted);

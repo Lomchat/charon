@@ -186,6 +186,16 @@ class SystemMessageTranslation(unittest.TestCase):
         self.assertEqual(translate(_ev("SystemMessage", subtype="informational",
                                        data={"x": 1})), [])
 
+    def test_subagent_owned_task_is_flagged_for_the_hub(self):
+        # The Stop hook never lists a sub-agent's foreground command (§14.91).
+        ev = one(translate(_ev("TaskStartedMessage", task_id="b1", task_type="local_bash",
+                               description="run tests",
+                               data={"owned_by_subagent": True})), "bg_task")
+        self.assertIs(ev["owned_by_subagent"], True)
+        ev = one(translate(_ev("TaskStartedMessage", task_id="b2", task_type="local_bash",
+                               description="main thread", data={})), "bg_task")
+        self.assertNotIn("owned_by_subagent", ev)
+
     def test_blocking_hook_warning_makes_the_following_stop_an_error(self):
         fake = _fake_self()
         warning = AgentSession._translate(fake, _ev(
