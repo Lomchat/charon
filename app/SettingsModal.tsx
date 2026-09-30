@@ -18,6 +18,7 @@ import CodexModelPicker from './CodexModelPicker';
 import CodexEffortPicker from './CodexEffortPicker';
 import CursorModelPicker from './CursorModelPicker';
 import CursorEffortPicker from './CursorEffortPicker';
+import { pruneCursorEffort } from './cursorEffort';
 import { catalogVpsFor } from './modelPickers';
 import { MODE_LABELS, providerText } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
@@ -170,6 +171,22 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   function set(k: string, v: string) {
     setS((prev) => ({ ...(prev ?? {}), [k]: v }));
     setDirty((prev) => ({ ...prev, [k]: v }));
+  }
+
+  // A Cursor parameter set belongs to its model: a knob the new default does
+  // not declare would fail every run of every session created from it
+  // (§14.103), so the default effort follows the model, as in the header.
+  const cursorModelPick = useRef(0);
+  function setCursorDefaultModel(v: string) {
+    set('cursor.default_model', v);
+    const effort = s?.['cursor.default_effort'] ?? '';
+    if (!cursorVps || !effort) return;
+    const pick = ++cursorModelPick.current;
+    void pruneCursorEffort(cursorVps.id, v, effort).then((kept) => {
+      if (pick === cursorModelPick.current && (kept ?? '') !== effort) {
+        set('cursor.default_effort', kept ?? '');
+      }
+    });
   }
 
   function acceptSavedDisplaySettings(resp: Record<string, string>) {
@@ -576,7 +593,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                           catalogVersion={modelNotices.cursor.map((m) => m.id).join(',')}
                           vpsId={cursorVps.id}
                           value={s['cursor.default_model'] ?? ''}
-                          onChange={(v) => set('cursor.default_model', v)}
+                          onChange={setCursorDefaultModel}
                           inheritPlaceholder={`${providerText.agentLabel('cursor')} default`}
                         />
                       </label>

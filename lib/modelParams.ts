@@ -186,3 +186,61 @@ export function modelAxes(model: CursorModel | null | undefined): ModelAxes {
   }
   return { reasoning, extra, all: reasoning ? [reasoning, ...extra] : extra, defaults, facts };
 }
+
+// ── Carrying a selection to another model ───────────────────────────────────
+
+/** Does `model` offer `value` for `param`? A knob with no listed values
+ *  cannot be checked, so it accepts anything. */
+function offers(param: CursorModelParameter, value: string): boolean {
+  return !param.values?.length || param.values.some((v) => v.value === value);
+}
+
+/**
+ * A stored parameter set rewritten for `model`.
+ *
+ * NOT cosmetic: a knob the model does not declare, or a rung its ladder does
+ * not offer, FAILS the run ("Invalid parameters for registry model") rather
+ * than being ignored (§14.103). So every such key is dropped — the provider
+ * fills anything missing from the model's default variant — except the
+ * reasoning rung, which follows the ladder across ids (`effort=high` →
+ * `reasoning_effort=high`) when the new ladder offers that value.
+ *
+ * `model` unknown ⇒ the set unchanged: without a catalog nothing is dropped on
+ * a guess.
+ */
+export function adaptModelParams(
+  model: CursorModel | null | undefined, params: ModelParamSet,
+): ModelParamSet {
+  if (!model) return params;
+  const axes = modelAxes(model);
+  const out: ModelParamSet = {};
+  for (const param of axes.all) {
+    const value = params[param.id];
+    if (value !== undefined && offers(param, value)) out[param.id] = value;
+  }
+  const ladder = axes.reasoning;
+  if (ladder && !(ladder.id in out)) {
+    const rung = REASONING_PARAM_IDS
+      .map((id) => params[id])
+      .find((v) => v !== undefined && offers(ladder, v));
+    if (rung !== undefined) out[ladder.id] = rung;
+  }
+  return out;
+}
+
+/**
+ * The effort column to persist beside `modelId`, adapted out of a catalog.
+ * Unchanged when the catalog does not list that model; `null` when nothing
+ * survives (= the model's own default variant).
+ */
+export function adaptEffortForModel(
+  models: readonly CursorModel[], modelId: string | null | undefined,
+  effort: string | null | undefined,
+): string | null {
+  const params = decodeModelParams(effort);
+  if (!Object.keys(params).length) return effort || null;
+  const id = splitModelSpec(modelId).id;
+  const model = id ? models.find((m) => m.id === id) : undefined;
+  if (!model) return effort || null;
+  return encodeModelParams(adaptModelParams(model, params)) || null;
+}

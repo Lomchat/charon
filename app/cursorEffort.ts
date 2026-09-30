@@ -2,19 +2,19 @@
 import type { CursorModel } from '@/lib/types/api';
 import { getCursorModels } from './cursorModelsCache';
 import {
-  decodeModelParams, encodeModelParams, modelAxes, splitModelSpec,
+  adaptEffortForModel, decodeModelParams, modelAxes, splitModelSpec,
   type ModelParamSet,
 } from '@/lib/modelParams';
 
 /**
  * Which stored parameters the SELECTED model actually reads (§14.103).
  *
- * A parameter set is merged forward as the model changes, so a session can
+ * A row stored before model changes were adapted (`pruneCursorEffort`) can
  * carry knobs its current model never declared — `effort=high&fast=false`
- * survives a switch from a model that has those to `kimi-k3`, which declares
- * `reasoning` alone. Those keys reach the provider and are ignored, but every
- * surface that showed them claimed a setting the effort control cannot even
- * offer: the header listed three knobs while the picker had one.
+ * beside `kimi-k3`, which declares `reasoning` alone. Such a key FAILS the
+ * run (§14.103); showing it here would still claim a setting the effort
+ * control cannot even offer, so these surfaces show the declared part, the
+ * agent's turn error names the rest, and a new pick drops it.
  *
  * `null` means "cannot tell" — the catalog has not loaded, or the model is not
  * in it. Nothing is hidden on a guess; an unclassifiable set is shown whole.
@@ -43,26 +43,22 @@ export function effectiveParams(
 }
 
 /**
- * The effort column to persist alongside a NEW model, foreign knobs dropped.
+ * The effort column to persist alongside a NEW model (`adaptEffortForModel`):
+ * foreign knobs dropped, the reasoning rung carried across ladder ids.
  *
- * Runs on a model change so that what the header shows, what the picker
- * offers and what the provider is sent stay the same three things. Falls back
- * to the value it was given whenever the catalog cannot answer: silently
- * clearing a selection because a fetch failed would be worse than keeping a
- * key the model ignores.
+ * Runs on every model change — the session header AND the Settings default —
+ * so that what the header shows, what the picker offers and what the provider
+ * is sent stay the same three things. Falls back to the value it was given
+ * whenever the catalog cannot answer: silently clearing a selection because a
+ * fetch failed would be worse than a guess.
  */
 export async function pruneCursorEffort(
   vpsId: string, modelId: string, effort: string | null,
 ): Promise<string | null> {
-  const params = decodeModelParams(effort);
-  if (!Object.keys(params).length) return effort || null;
-  let models: CursorModel[] = [];
+  if (!Object.keys(decodeModelParams(effort)).length) return effort || null;
   try {
     const r = await getCursorModels(vpsId);
     if (!r.ok) return effort || null;
-    models = r.models ?? [];
+    return adaptEffortForModel(r.models ?? [], modelId, effort);
   } catch { return effort || null; }
-  const model = models.find((m) => m.id === splitModelSpec(modelId).id);
-  if (!model) return effort || null;
-  return encodeModelParams(applicableParams(model, params)) || null;
 }

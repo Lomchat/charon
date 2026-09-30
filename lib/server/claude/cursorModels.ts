@@ -6,6 +6,7 @@ import type { CursorModel, CursorModelsResponse } from '@/lib/types/api';
 import { getCursorPricing } from './cursorPricing';
 import { getSetting, setSetting } from './settings';
 import { priceFor } from '@/lib/modelPricing';
+import { adaptEffortForModel } from '@/lib/modelParams';
 
 // Cursor's model catalog for one VPS.
 //
@@ -156,6 +157,33 @@ export async function getCursorModelsForVps(vpsId: string): Promise<CursorModels
     return hit.data;
   }
   return refreshCursorModelsForVps(vpsId);
+}
+
+// How long a session CREATE may wait on a catalog this hub has never seen.
+const ADAPT_WAIT_MS = 5_000;
+
+/**
+ * The effort column a new session persists beside `modelId`, adapted to that
+ * model (`adaptEffortForModel`): an undeclared knob fails every run (§14.103),
+ * and a Settings default can pair a model with another model's knobs.
+ * Never throws; a catalog that cannot answer in time keeps the value as given.
+ */
+export async function adaptCursorEffortForVps(
+  vpsId: string, modelId: string | null, effort: string | null,
+): Promise<string | null> {
+  if (!effort || !modelId) return effort || null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const r = await Promise.race([
+      getCursorModelsForVps(vpsId),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ADAPT_WAIT_MS); }),
+    ]);
+    return r?.ok ? adaptEffortForModel(r.models, modelId, effort) : effort;
+  } catch {
+    return effort;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Ask the box itself. Single-flight per VPS: the watcher and a picker opening
