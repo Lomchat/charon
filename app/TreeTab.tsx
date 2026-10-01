@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 import type { FsEntry, GitFileEntry } from '@/lib/types/api';
 import { buildGitDecorations, fileStatusLabel, repoForPath, useGitStatus } from './gitStore';
 import HistoryModal from './HistoryModal';
-import { IconClockHistory, IconDownload, IconEye } from './icons';
+import { IconClockHistory, IconDownload, IconEye, IconUpload } from './icons';
 import { activityLabel, useFileActivity } from './fileActivityStore';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import {
@@ -23,6 +23,14 @@ import {
 } from './treeSelection';
 import { missingInstructionSymlink } from './instructionSymlink';
 import { positionContextMenu } from './contextMenuPosition';
+import {
+  UPLOAD_ZONE_ATTR, captureDrop, isOsFileDrag, planDrop, useOsFileDrag,
+  type DroppedRoot, type UploadPlan,
+} from './fileDropZones';
+import {
+  cancelUploadJob, dismissUploadJob, enqueueUpload, useUploadJobs, type UploadJob,
+} from './fsUploadStore';
+import { joinRel } from '@/lib/fsUpload';
 
 type Props = {
   vpsId: string | null;
@@ -41,6 +49,13 @@ type Props = {
 type Menu = { x: number; y: number; row: Row | null; rows: Row[] };
 
 type Row = { path: string; name: string; dir: boolean; depth: number; entry: FsEntry };
+
+/** Hovering a collapsed folder with a dragged file opens it after this long —
+ *  VS Code's spring-loading, so a drop can reach any depth. */
+const SPRING_OPEN_MS = 500;
+/** Uploads whose landed items were already selected — module-level so a
+ *  remount (opening a file) does not re-select them over the user's choice. */
+const revealedUploads = new Set<string>();
 
 type ListingMemory = { children: Map<string, FsEntry[]>; errors: Map<string, string> };
 const listingMemory = new Map<string, ListingMemory>();
@@ -71,7 +86,18 @@ type Dialog =
   | { kind: 'create'; dir: string; folder: boolean }
   | { kind: 'rename'; row: Row; dir: string }
   | { kind: 'delete'; rows: Row[] }
-  | { kind: 'copy'; text: string };
+  | { kind: 'copy'; text: string }
+  | { kind: 'upload-conflict'; upload: PendingUpload; conflicts: string[] };
+
+/** A drop that has been checked against the destination, not yet queued.
+ *  Paths are relative to `targetDir`, except `errors` (root-relative). */
+type PendingUpload = {
+  targetDir: string;
+  plan: UploadPlan;
+  mkdirs: string[];
+  skip: Set<string>;
+  errors: { path: string; error: string }[];
+};
 
 /**
  * Read-only project explorer, rooted at the session's cwd.
@@ -154,6 +180,18 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   // batch settles and the affected directories are re-listed.
   const [deletingPaths, setDeletingPaths] = useState<Set<string>>(() => new Set());
   const [opError, setOpError] = useState<string | null>(null);
+  // ── OS files dropped onto the tree (app/fileDropZones.ts) ──
+  // `osDrag` says a file is being dragged over the WINDOW, which is when the
+  // tree announces itself as the server-side target; `overZone` narrows it to
+  // the pointer being in THIS tree. `dropDir` is the folder a drop would land
+  // in, `springPath` the collapsed folder about to open under the pointer.
+  const osDrag = useOsFileDrag();
+  const zoneRef = useRef<HTMLDivElement | null>(null);
+  const overZone = osDrag.zone != null && osDrag.zone === zoneRef.current;
+  const [dropDir, setDropDir] = useState<string | null>(null);
+  const [springPath, setSpringPath] = useState<string | null>(null);
+  const springTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploads = useUploadJobs(vpsId, cwd);
 
   useLayoutEffect(() => {
     if (!menu) return;
@@ -544,6 +582,141 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
     catch { openDialog({ kind: 'copy', text }); }
   }
 
+  // ── Dropping OS files onto the tree ───────────────────────────────────────
+  // VS Code's gesture: the folder under the pointer is the destination (a
+  // file row means ITS folder, the blank space the root), a collapsed folder
+  // held under the pointer springs open, and the file keeps its own name.
+  // Nothing reaches the chat: that is the other drop target (§14.73).
+  const clearSpring = () => {
+    if (springTimer.current) clearTimeout(springTimer.current);
+    springTimer.current = null;
+    setSpringPath(null);
+  };
+  /** Updater form: this runs from a timer, where `expanded` is stale. */
+  const openFolder = (path: string) => {
+    setExpanded((current) => {
+      if (current.has(path)) return current;
+      const next = new Set(current).add(path);
+      writeExpanded(scope, next);
+      return next;
+    });
+    void load(path);
+  };
+  // The pointer left this tree (or the drag ended): forget the target.
+  useEffect(() => {
+    if (overZone) return;
+    setDropDir(null);
+    if (springTimer.current) clearTimeout(springTimer.current);
+    springTimer.current = null;
+    setSpringPath(null);
+  }, [overZone]);
+  useEffect(() => () => { if (springTimer.current) clearTimeout(springTimer.current); }, []);
+
+  const dropTargetOf = (target: EventTarget | null): { dir: string; spring: string | null } => {
+    const el = target instanceof Element ? target.closest<HTMLElement>('[data-drop-dir]') : null;
+    const row = el?.dataset.dropFolder === '1' ? el.dataset.dropRow ?? null : null;
+    return { dir: el?.dataset.dropDir ?? '', spring: row && !expanded.has(row) ? row : null };
+  };
+  const onZoneDragOver = (e: React.DragEvent) => {
+    if (!isOsFileDrag(e.dataTransfer)) return;
+    // Mandatory for the drop to fire at all, as in the chat.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const { dir, spring } = dropTargetOf(e.target);
+    if (dir !== dropDir) setDropDir(dir);
+    if (spring === springPath) return;
+    if (springTimer.current) clearTimeout(springTimer.current);
+    springTimer.current = null;
+    setSpringPath(spring);
+    if (spring) {
+      springTimer.current = setTimeout(() => {
+        springTimer.current = null;
+        setSpringPath(null);
+        openFolder(spring);
+      }, SPRING_OPEN_MS);
+    }
+  };
+  const onZoneDrop = (e: React.DragEvent) => {
+    if (!isOsFileDrag(e.dataTransfer)) return;
+    // No stopPropagation: the chat's window listener must still see the drop
+    // to close its overlay — it ignores anything released over the panel.
+    e.preventDefault();
+    const { dir } = dropTargetOf(e.target);
+    // Synchronously: the DataTransfer is emptied once this handler returns.
+    const roots = captureDrop(e.dataTransfer);
+    clearSpring();
+    setDropDir(null);
+    void prepareUpload(dir, roots);
+  };
+
+  /** Queue it, or — when nothing is left to send — just say why. */
+  const queueUpload = (u: PendingUpload, overwrite?: Set<string>) => {
+    if (!vpsId || !cwd) return;
+    const sending = u.plan.files.filter((f) => !u.skip.has(f.rel)).length;
+    if (!sending && !u.mkdirs.length) {
+      if (u.errors.length) setOpError(`${u.errors[0].path}: ${u.errors[0].error}`);
+      return;
+    }
+    enqueueUpload({ vpsId, root: cwd, ...u, overwrite });
+  };
+
+  /**
+   * Walk the drop, then ask the VPS which names are taken — ONCE, before a
+   * byte moves, so a conflict is a question and not a failure halfway through.
+   * The agent re-checks atomically when each file commits, so a file created
+   * in the meantime is still refused rather than clobbered.
+   */
+  async function prepareUpload(targetDir: string, roots: DroppedRoot[]) {
+    if (!vpsId || !cwd || !roots.length) return;
+    setOpError(null);
+    // Show where it lands: the files appear inside as they arrive.
+    if (targetDir) openFolder(targetDir);
+    try {
+      const plan = await planDrop(roots);
+      if (!plan.files.length && !plan.dirs.length) return;
+      const at = (rel: string) => joinRel(targetDir, rel);
+      const check = await api.fsUpload(vpsId, {
+        op: 'check', root: cwd, paths: [...plan.dirs, ...plan.files.map((f) => f.rel)].map(at),
+      });
+      if (!check.ok) { setOpError(check.error ?? 'could not check the destination'); return; }
+      const existing = new Map((check.existing ?? []).map((x) => [x.path, x.dir]));
+      const under = (rel: string, dir: string) => rel === dir || rel.startsWith(`${dir}/`);
+      // A FILE sits where a dropped folder must go: that subtree cannot land.
+      const blocked = plan.dirs.filter((d) => existing.get(at(d)) === false);
+      const isBlocked = (rel: string) => blocked.some((d) => under(rel, d));
+      const errors = blocked
+        .filter((d) => !blocked.some((o) => o !== d && under(d, o)))
+        .map((d) => ({ path: at(d), error: 'a file already has this name, so the folder was not uploaded' }));
+      const skip = new Set<string>();
+      const conflicts: string[] = [];
+      for (const f of plan.files) {
+        const ex = existing.get(at(f.rel));
+        if (isBlocked(f.rel)) skip.add(f.rel);
+        else if (ex === true) {
+          skip.add(f.rel);
+          errors.push({ path: at(f.rel), error: 'a folder already has this name' });
+        } else if (ex === false) conflicts.push(f.rel);
+      }
+      const pending: PendingUpload = {
+        targetDir, plan, skip, errors,
+        mkdirs: plan.dirs.filter((d) => !existing.has(at(d)) && !isBlocked(d)),
+      };
+      if (conflicts.length) setDialog({ kind: 'upload-conflict', upload: pending, conflicts });
+      else queueUpload(pending);
+    } catch (e: unknown) {
+      setOpError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // Select what landed, once per upload, like a paste in VS Code.
+  useEffect(() => {
+    for (const job of uploads) {
+      if (job.status !== 'done' || revealedUploads.has(job.id)) continue;
+      revealedUploads.add(job.id);
+      if (job.landed.length) replaceSelection(new Set(job.landed), job.landed[job.landed.length - 1]);
+    }
+  }, [uploads, replaceSelection]);
+
   /** Keep it a NAME, not a path: the create/rename routes would happily take
    *  `../x`, and the agent would refuse it one round trip later. */
   const validName = (v: string): string | null => {
@@ -576,15 +749,25 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   }
   if (rows.length === 0 && loading.has('')) return <div className="tp-empty">reading {cwd}…</div>;
 
+  const rootName = cwd.split('/').filter(Boolean).pop() ?? cwd;
   return (
-    <div className="tree-tab"
+    <div ref={zoneRef}
+         {...{ [UPLOAD_ZONE_ATTR]: '' }}
+         className={`tree-tab${osDrag.active ? ' fs-drop-armed' : ''}${overZone ? ' fs-drop-over' : ''}`}
+         onDragEnter={(e) => { if (isOsFileDrag(e.dataTransfer)) e.preventDefault(); }}
+         onDragOver={onZoneDragOver}
+         onDrop={onZoneDrop}
          onContextMenu={(e) => {
            e.preventDefault();
            replaceSelection(new Set(), null);
            setMenu({ x: e.clientX, y: e.clientY, row: null, rows: [] });
          }}>
-      <div className="tt-head">
-        <span className="tt-root" title={cwd}>{cwd.split('/').filter(Boolean).pop() ?? cwd}</span>
+      {/* While a file is dragged over the window the header becomes the
+          legend of this drop target: laid OVER its usual content, which
+          stays in the flow so no row moves under the pointer, and pinned
+          while the tree scrolls. */}
+      <div className="tt-head" data-drop-dir="">
+        <span className="tt-root" title={cwd}>{rootName}</span>
         <span className="gt-spacer" />
         <button className="gt-mini" onClick={() => {
           const empty = new Map<string, FsEntry[]>();
@@ -594,6 +777,22 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
           void load('', true);
         }}
           title="reload the tree">↻</button>
+        {osDrag.active && (
+          <span className="tt-drop-legend">
+            <IconUpload className="tt-drop-ico" />
+            {overZone && dropDir != null ? (
+              <>
+                <span className="tt-drop-title">upload to <b>{dropDir || rootName}/</b></span>
+                <span className="tt-drop-sub">{springPath ? 'opening…' : 'keeps its name'}</span>
+              </>
+            ) : (
+              <>
+                <span className="tt-drop-title">upload to the server</span>
+                <span className="tt-drop-sub">drop on a folder</span>
+              </>
+            )}
+          </span>
+        )}
       </div>
       {opError && (
         <div className="tt-op-error" role="alert">
@@ -751,6 +950,45 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
           </p>
         </ConfirmModal>
       )}
+      {dialog?.kind === 'upload-conflict' && (() => {
+        const { upload, conflicts } = dialog;
+        const at = (rel: string) => joinRel(upload.targetDir, rel);
+        const sendable = upload.plan.files.filter((f) => !upload.skip.has(f.rel)).length;
+        return (
+          <ConfirmModal
+            title={conflicts.length > 1 ? `${conflicts.length} files already exist` : 'file already exists'}
+            icon={<IconUpload />}
+            confirmLabel={conflicts.length > 1 ? `replace ${conflicts.length}` : 'replace'}
+            // Only a real choice when something else would still go up.
+            secondary={sendable > conflicts.length || upload.mkdirs.length
+              ? {
+                label: 'skip existing',
+                onClick: () => {
+                  queueUpload({ ...upload, skip: new Set([...upload.skip, ...conflicts]) });
+                  setDialog(null);
+                },
+              }
+              : undefined}
+            onConfirm={() => { queueUpload(upload, new Set(conflicts)); setDialog(null); }}
+            onClose={() => setDialog(null)}
+          >
+            {conflicts.length === 1 ? (
+              <div className="confirm-target">
+                <span className="ct-name">{conflicts[0].split('/').pop()}</span>
+                <span className="ct-sub">{cwd}/{at(conflicts[0])}</span>
+              </div>
+            ) : (
+              <ul className="confirm-list">
+                {conflicts.map((rel) => <li key={rel} title={`${cwd}/${at(rel)}`}>{at(rel)}</li>)}
+              </ul>
+            )}
+            <p className="confirm-text">
+              Replacing overwrites {conflicts.length > 1 ? 'these files' : 'it'} on the server.
+              It is not undoable from here, and an agent may be working in this tree.
+            </p>
+          </ConfirmModal>
+        );
+      })()}
       {dialog?.kind === 'copy' && (
         <PromptModal
           title="copy path"
@@ -765,9 +1003,9 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
       )}
 
       {rows.length === 0 ? (
-        <div className="tp-empty">this folder is empty</div>
+        <div className={`tp-empty${overZone && dropDir === '' ? ' drop-root' : ''}`}>this folder is empty</div>
       ) : (
-        <ul className="tt-rows">
+        <ul className={`tt-rows${overZone && dropDir === '' ? ' drop-root' : ''}`}>
           {rows.map((r) => {
             const deco = decorations.get(r.path);
             const st = deco ? fileStatusLabel(deco) : null;
@@ -782,6 +1020,11 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             const isDeleting = [...deletingPaths].some((path) =>
               r.path === path || r.path.startsWith(`${path}/`),
             );
+            // The destination folder and everything shown inside it, as one
+            // block — the "it goes in HERE" of VS Code's explorer.
+            const inDrop = overZone && !!dropDir
+              && (r.path === dropDir || r.path.startsWith(`${dropDir}/`));
+            const dropCls = inDrop ? (r.path === dropDir ? ' drop-target' : ' drop-in') : '';
             return (
               <li key={r.path}>
                 <button
@@ -790,8 +1033,13 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
                   aria-pressed={isSelected}
                   aria-busy={isDeleting || undefined}
                   disabled={isDeleting}
-                  className={`tt-row ${r.dir ? 'is-dir' : 'is-file'}${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${isDeleting ? ' deleting' : ''}${r.entry.ignored ? ' ignored' : ''}${st ? ' g-' + st.cls : ''}`}
+                  className={`tt-row ${r.dir ? 'is-dir' : 'is-file'}${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}${isDeleting ? ' deleting' : ''}${r.entry.ignored ? ' ignored' : ''}${st ? ' g-' + st.cls : ''}${dropCls}${springPath === r.path ? ' drop-spring' : ''}`}
                   style={{ paddingLeft: 4 + r.depth * 11 }}
+                  // Where a file dropped on this row lands: the folder
+                  // itself, or the folder a file row lives in.
+                  data-drop-dir={r.dir ? r.path : parentOf(r)}
+                  data-drop-row={r.path}
+                  data-drop-folder={r.dir ? '1' : undefined}
                   // Drag a row into the chat to put its path in the message.
                   // Only when there IS a chat to drop on: beside the file
                   // editor the same panel renders without `onInsertPath`, and
@@ -908,6 +1156,14 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
         </ul>
       )}
 
+      {/* Progress lives UNDER the rows: a line appearing or expiring above
+          them would shift every row under a pointer that is mid-drag. */}
+      {uploads.length > 0 && (
+        <div className="tt-uploads">
+          {uploads.map((job) => <UploadLine key={job.id} job={job} rootName={rootName} />)}
+        </div>
+      )}
+
       {history && (
         <HistoryModal
           vpsId={vpsId!}
@@ -918,6 +1174,41 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
           onClose={() => setHistory(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** One drop's progress, pinned at the foot of the tree until it settles. */
+function UploadLine({ job, rootName }: { job: UploadJob; rootName: string }) {
+  const live = job.status === 'running' || job.status === 'queued';
+  const pct = job.totalBytes > 0
+    ? Math.min(100, Math.floor((job.sentBytes / job.totalBytes) * 100))
+    : job.fileCount ? Math.floor((job.filesDone / job.fileCount) * 100) : 0;
+  const dest = `${job.targetDir || rootName}/`;
+  const first = job.errors[0];
+  let text: string;
+  if (job.status === 'queued') text = `waiting — ${job.label} → ${dest}`;
+  else if (job.status === 'running') {
+    const name = job.current?.split('/').pop() ?? job.label;
+    text = `${name} → ${dest}${job.fileCount > 1 ? ` · ${Math.min(job.filesDone + 1, job.fileCount)}/${job.fileCount}` : ''}`;
+  } else if (job.status === 'cancelled') text = `upload of ${job.label} cancelled`;
+  else if (first) {
+    text = job.errors.length === 1
+      ? `${first.path}: ${first.error}`
+      : `${job.errors.length} items failed — ${first.path}: ${first.error}`;
+  } else text = `uploaded ${job.label} to ${dest}${job.skipped ? ` · ${job.skipped} existing file${job.skipped > 1 ? 's' : ''} kept` : ''}`;
+  return (
+    <div className={`tt-upload is-${job.status}${first ? ' has-errors' : ''}`} role="status" title={text}>
+      <IconUpload className="tt-upload-ico" />
+      <span className="tt-upload-text">{text}</span>
+      {live && <span className="tt-upload-pct">{pct}%</span>}
+      <button
+        type="button"
+        onClick={() => (live ? cancelUploadJob(job.id) : dismissUploadJob(job.id))}
+        title={live ? 'cancel the upload' : 'dismiss'}
+        aria-label={live ? 'cancel the upload' : 'dismiss'}
+      >×</button>
+      {live && <span className="tt-upload-bar" style={{ width: `${pct}%` }} />}
     </div>
   );
 }

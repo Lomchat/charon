@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -642,6 +643,144 @@ class DirectoryZipStreamTest(unittest.TestCase):
             code, _ = F.stream_directory_zip_to(self.root, path, output)
             self.assertEqual(code, expected)
             self.assertEqual(output.getvalue(), b"")
+
+
+class ReceiveFileTest(unittest.TestCase):
+    """The explorer's drop: exact length, atomic commit, never a silent clobber."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-receive-")
+        os.makedirs(os.path.join(self.root, "assets"))
+        with open(os.path.join(self.root, "assets", "logo.png"), "wb") as f:
+            f.write(b"old")
+        os.chmod(os.path.join(self.root, "assets", "logo.png"), 0o640)
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _receive(self, path, data, length=None, **kw):
+        calls = []
+        code, error = F.receive_file_from(
+            self.root, path, io.BytesIO(data), len(data) if length is None else length,
+            ready=lambda: calls.append(True), **kw)
+        return code, error, bool(calls)
+
+    def _parts(self, rel="assets"):
+        return [n for n in os.listdir(os.path.join(self.root, rel))
+                if n.startswith(F.RECEIVE_TMP_PREFIX)]
+
+    def test_writes_the_exact_bytes_under_the_original_name(self):
+        payload = bytes(range(256)) * 5000
+        code, error, ready = self._receive("assets/photo.bin", payload)
+        self.assertEqual((code, error, ready), (0, None, True))
+        with open(os.path.join(self.root, "assets", "photo.bin"), "rb") as f:
+            self.assertEqual(f.read(), payload)
+        self.assertEqual(self._parts(), [])
+
+    def test_a_new_file_follows_the_umask_not_mkstemp(self):
+        old = os.umask(0o022)
+        try:
+            self._receive("assets/page.html", b"<p>")
+        finally:
+            os.umask(old)
+        mode = stat.S_IMODE(os.stat(os.path.join(self.root, "assets", "page.html")).st_mode)
+        self.assertEqual(mode, 0o644)
+
+    def test_refuses_an_existing_file_before_ready(self):
+        code, _, ready = self._receive("assets/logo.png", b"new")
+        self.assertEqual(code, F.STREAM_EXISTS)
+        self.assertFalse(ready)
+        with open(os.path.join(self.root, "assets", "logo.png"), "rb") as f:
+            self.assertEqual(f.read(), b"old")
+
+    def test_overwrite_replaces_and_keeps_the_mode(self):
+        code, error, _ = self._receive("assets/logo.png", b"new", overwrite=True)
+        self.assertEqual((code, error), (0, None))
+        target = os.path.join(self.root, "assets", "logo.png")
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), b"new")
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o640)
+
+    def test_overwrite_writes_through_a_symlink(self):
+        os.symlink("logo.png", os.path.join(self.root, "assets", "alias.png"))
+        code, _, _ = self._receive("assets/alias.png", b"through", overwrite=True)
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.islink(os.path.join(self.root, "assets", "alias.png")))
+        with open(os.path.join(self.root, "assets", "logo.png"), "rb") as f:
+            self.assertEqual(f.read(), b"through")
+
+    def test_a_short_stream_commits_nothing(self):
+        code, error, ready = self._receive("assets/cut.bin", b"12345", length=10)
+        self.assertEqual(code, F.STREAM_IO_ERROR)
+        self.assertTrue(ready)
+        self.assertIn("5 of 10", error)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "assets", "cut.bin")))
+        self.assertEqual(self._parts(), [])
+
+    def test_a_folder_is_never_replaced(self):
+        code, _, ready = self._receive("assets", b"x", overwrite=True)
+        self.assertEqual(code, F.STREAM_NOT_FILE)
+        self.assertFalse(ready)
+
+    def test_missing_folder_and_escapes_are_refused_before_ready(self):
+        for path, expected in [
+            ("nope/file.txt", F.STREAM_MISSING),
+            ("assets/logo.png/inner.txt", F.STREAM_NOT_DIRECTORY),
+            ("../escape.txt", F.STREAM_BAD_PATH),
+            ("", F.STREAM_BAD_PATH),
+        ]:
+            code, _, ready = self._receive(path, b"x")
+            self.assertEqual(code, expected, path)
+            self.assertFalse(ready, path)
+
+    def test_an_empty_file_is_a_file(self):
+        code, _, _ = self._receive("assets/.keep", b"")
+        self.assertEqual(code, 0)
+        self.assertEqual(os.path.getsize(os.path.join(self.root, "assets", ".keep")), 0)
+
+    def test_sweeps_only_stale_upload_temps(self):
+        stale = os.path.join(self.root, "assets", F.RECEIVE_TMP_PREFIX + "old" + F.RECEIVE_TMP_SUFFIX)
+        fresh = os.path.join(self.root, "assets", F.RECEIVE_TMP_PREFIX + "live" + F.RECEIVE_TMP_SUFFIX)
+        for p in (stale, fresh):
+            with open(p, "wb") as f:
+                f.write(b"x")
+        past = time.time() - F.RECEIVE_STALE_S - 60
+        os.utime(stale, (past, past))
+        self._receive("assets/new.txt", b"y")
+        self.assertFalse(os.path.exists(stale))
+        self.assertTrue(os.path.exists(fresh))
+
+
+class ReceiveFileCliTest(unittest.TestCase):
+    """The hub's side of the contract: `ready` first, exit codes after."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-receive-cli-")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _run(self, path, data, *extra):
+        import base64
+        enc = lambda s: base64.urlsafe_b64encode(s.encode()).decode().rstrip("=")  # noqa: E731
+        return subprocess.run(
+            [sys.executable, "-m", "charon_agent", "--receive-file", enc(self.root), enc(path),
+             "--length", str(len(data)), *extra],
+            input=data, capture_output=True, timeout=30,
+            cwd=os.path.join(os.path.dirname(__file__), ".."),
+        )
+
+    def test_ready_then_commit_then_refuse_then_overwrite(self):
+        first = self._run("a b.txt", b"one")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(first.stdout, b"ready\n")
+        again = self._run("a b.txt", b"two")
+        self.assertEqual(again.returncode, F.STREAM_EXISTS)
+        self.assertEqual(again.stdout, b"")
+        forced = self._run("a b.txt", b"two", "--overwrite")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        with open(os.path.join(self.root, "a b.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"two")
 
 
 if __name__ == "__main__":

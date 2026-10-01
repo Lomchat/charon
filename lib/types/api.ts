@@ -270,6 +270,26 @@ export type FsOpResponse = {
   target?: string;
 };
 
+// Explorer drop: OS files uploaded into a chosen folder (agent >= 0.99.0).
+// Paths are relative to `root`, like every explorer route.
+export type FsUploadBody =
+  | { op: 'check'; root: string; paths: string[] }
+  | { op: 'begin'; root: string; path: string; size: number; overwrite?: boolean };
+
+export type FsUploadResponse = {
+  ok: boolean;
+  error?: string;
+  reason?: import('@/lib/fsUpload').FsUploadReason;
+  /** check — the paths that already exist, and whether each is a folder. */
+  existing?: { path: string; dir: boolean }[];
+  /** begin — the id every chunk is sent to. Absent when `done` already. */
+  uploadId?: string;
+  /** chunk — bytes the hub has accepted so far. */
+  received?: number;
+  /** begin (empty file) / last chunk — committed on the VPS. */
+  done?: boolean;
+};
+
 // ── Search across the tree (agent >= 0.29.0, §14.84) ───────────────────────
 // Two searches behind one shape: `text` greps inside files, `file` matches
 // path names. They share every parameter that makes a search precise, so

@@ -27,6 +27,10 @@ import {
 } from './icons';
 import { PROVIDERS } from '@/lib/sessionCapabilities';
 import { providerText } from '@/lib/providerText';
+import { isOsFileDrag, useOsFileDrag } from './fileDropZones';
+
+/** A file dragged over the "files" tab switches to the explorer after this. */
+const TAB_SPRING_MS = 500;
 
 // Shared desktop/mobile types defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { ToolCallEntry, EditSnapshot }
@@ -188,6 +192,18 @@ function ToolPanel({
   const { workspace } = useGitStatus(vpsId, cwd);
   const gitDirty = workspaceDirtyCount(workspace);
 
+  // The explorer is where a dragged OS file can be uploaded into a folder
+  // (app/fileDropZones.ts). When another tab is showing, its button says so
+  // and, held under the pointer, opens it — the drop can then go on.
+  const osDrag = useOsFileDrag();
+  const tabSpring = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTabSpring = () => {
+    if (tabSpring.current) clearTimeout(tabSpring.current);
+    tabSpring.current = null;
+  };
+  useEffect(() => { if (!osDrag.active) clearTabSpring(); }, [osDrag.active]);
+  useEffect(() => clearTabSpring, []);
+
   const counts: Record<Tab, number> = {
     edits: editArr.length,
     // The working tree's dirty count, same badge as the others — the chip in
@@ -209,8 +225,17 @@ function ToolPanel({
           return (
             <button
               key={id}
-              className={`${on ? 'on' : ''}${n > 0 ? ' has-badge' : ''}`}
+              className={`${on ? 'on' : ''}${n > 0 ? ' has-badge' : ''}${id === 'tree' && !on && osDrag.active ? ' drop-armed' : ''}`}
               onClick={() => setTab(id)}
+              onDragOver={id === 'tree' ? (e) => {
+                if (on || tabSpring.current || !isOsFileDrag(e.dataTransfer)) return;
+                tabSpring.current = setTimeout(() => { tabSpring.current = null; setTab('tree'); }, TAB_SPRING_MS);
+              } : undefined}
+              onDragLeave={id === 'tree' ? (e) => {
+                // Moving onto the icon inside the button is not leaving it.
+                if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+                clearTabSpring();
+              } : undefined}
               title={label}
               aria-label={label}
               aria-current={on ? 'page' : undefined}
