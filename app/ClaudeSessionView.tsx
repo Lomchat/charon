@@ -51,11 +51,12 @@ import {
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
 import { isPathDrag, readPathDrag } from './pathDrag';
+import { toolPanelLeft, uploadZoneOf } from './fileDropZones';
 import { IconInsert } from './fileIcons';
 import {
   useSessionAttachments, type PendingUpload,
 } from './sessionAttachments';
-import { IconPaperclip } from './icons';
+import { IconPaperclip, IconUpload } from './icons';
 import { IconExternal } from './fileIcons';
 import { shouldShowChatRole } from './chatVisibility';
 import { canCompactSession } from './sessionInsightState';
@@ -1176,6 +1177,12 @@ const ChatInputBar = memo(function ChatInputBar({
   // place (the caret) but do very different things on the way: 'files' uploads
   // to the VPS first, 'path' is already there and only needs splicing.
   const [dragKind, setDragKind] = useState<'files' | 'path' | null>(null);
+  // An OS file has a SECOND destination: the explorer on the right uploads it
+  // into a folder under its own name (app/fileDropZones.ts). The overlay stops
+  // at that panel's edge so both targets are visible at once, and dims while
+  // the pointer is over the panel — releasing there never attaches.
+  const [overPanel, setOverPanel] = useState(false);
+  const [panelRight, setPanelRight] = useState<number | null>(null);
 
   // Drain prefill_input: copy into the textarea then clear. If this bar is
   // unmounted when a prefill arrives (pending interaction / sleeping session),
@@ -1306,6 +1313,9 @@ const ChatInputBar = memo(function ChatInputBar({
     // Depth counter, because dragenter/dragleave fire for every child element
     // the pointer crosses; a naive boolean flickers the overlay constantly.
     let depth = 0;
+    let inPanel = false;
+    const setInPanel = (v: boolean) => { if (v !== inPanel) { inPanel = v; setOverPanel(v); } };
+    const panelOf = (t: EventTarget | null) => t instanceof Element && !!t.closest('.tool-panel');
     // Which of the app's three HTML5 drags this is — see app/pathDrag.ts. A
     // tab or sidebar REORDER carries only 'text/plain' and matches neither, so
     // dragging a tab must never light up the chat's drop overlay.
@@ -1319,19 +1329,34 @@ const ChatInputBar = memo(function ChatInputBar({
       const kind = kindOf(e);
       if (!kind) return;
       depth++;
+      // Measured once per drag: where the panel starts is where the chat's
+      // side of the screen ends.
+      if (depth === 1) {
+        const left = kind === 'files' ? toolPanelLeft() : null;
+        setPanelRight(left == null ? null : Math.max(0, window.innerWidth - left));
+      }
       setDragKind(kind);
     };
     const onOver = (e: DragEvent) => {
-      if (!kindOf(e)) return;
+      const kind = kindOf(e);
+      if (!kind) return;
       // MANDATORY: without preventDefault the drop event never fires and the
       // browser navigates away to the dropped file instead.
       e.preventDefault();
+      if (kind === 'files' && panelOf(e.target)) {
+        // The panel is the server side: only the explorer's zone accepts, so
+        // the cursor itself says "not here" over the tabs or the git view.
+        setInPanel(true);
+        if (e.dataTransfer) e.dataTransfer.dropEffect = uploadZoneOf(e.target) ? 'copy' : 'none';
+        return;
+      }
+      setInPanel(false);
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     };
     const onLeave = (e: DragEvent) => {
       if (!kindOf(e)) return;
       depth = Math.max(0, depth - 1);
-      if (depth === 0) setDragKind(null);
+      if (depth === 0) { setDragKind(null); setInPanel(false); }
     };
     const onDrop = (e: DragEvent) => {
       const kind = kindOf(e);
@@ -1339,6 +1364,7 @@ const ChatInputBar = memo(function ChatInputBar({
       e.preventDefault();
       depth = 0;
       setDragKind(null);
+      setInPanel(false);
       if (kind === 'path') {
         // Dropping back onto the explorer is how a drag gets CANCELLED — the
         // panel is both the source and, being fixed on the right, the easiest
@@ -1350,6 +1376,9 @@ const ChatInputBar = memo(function ChatInputBar({
         if (p) insertAtCaret(p);
         return;
       }
+      // Released over the right panel: its explorer uploads into a folder
+      // (TreeTab), and anywhere else there is deliberately a no-op.
+      if (panelOf(e.target)) return;
       const files = Array.from(e.dataTransfer?.files ?? []);
       handleFiles(files);
     };
@@ -1518,16 +1547,27 @@ const ChatInputBar = memo(function ChatInputBar({
         </div>
       )}
       {dragKind && (
-        <div className="ci-drop-overlay">
+        <div
+          className={`ci-drop-overlay${dragKind === 'files' && overPanel ? ' is-elsewhere' : ''}`}
+          style={dragKind === 'files' && panelRight != null ? { right: panelRight } : undefined}
+        >
           <div className="ci-drop-card">
             {dragKind === 'path' ? <IconInsert /> : <IconPaperclip />}
-            <span>
-              {dragKind === 'path'
-                // Saying "the path" and not "the file" is the whole point:
-                // nothing is copied anywhere, the agent is simply told where
-                // to look on its own disk.
-                ? 'drop to put this path in the message'
-                : 'drop to attach — the file lands in the session workspace'}
+            <span className="ci-drop-text">
+              <span className="ci-drop-title">{dragKind === 'path' ? 'insert path' : 'attach to message'}</span>
+              <span className="ci-drop-sub">
+                {dragKind === 'path'
+                  // Saying "the path" and not "the file" is the whole point:
+                  // nothing is copied anywhere, the agent is simply told where
+                  // to look on its own disk.
+                  ? 'drop to put this path in the message'
+                  : 'uploaded to .charon-uploads/ — its path goes into your message'}
+              </span>
+              {dragKind === 'files' && panelRight != null && (
+                <span className="ci-drop-alt">
+                  <IconUpload />or drop it on a folder in the explorer to upload it there
+                </span>
+              )}
             </span>
           </div>
         </div>

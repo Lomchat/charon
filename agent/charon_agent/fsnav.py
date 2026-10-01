@@ -36,7 +36,7 @@ import subprocess
 import tempfile
 import time
 import zipfile
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 MAX_ENTRIES = 400
 # One directory at a time, so this is a per-directory cap, not a repo cap.
@@ -351,6 +351,7 @@ STREAM_STALE = 23
 STREAM_BAD_RANGE = 24
 STREAM_IO_ERROR = 25
 STREAM_NOT_DIRECTORY = 26
+STREAM_EXISTS = 27
 
 
 def stream_file_to(
@@ -529,6 +530,147 @@ def stream_directory_zip_to(root: str, path: str, output: BinaryIO) -> tuple[int
         return STREAM_IO_ERROR, "permission denied"
     except OSError as e:
         return STREAM_IO_ERROR, str(e)
+
+
+# Upload temp names. Hidden, and recognisable enough for the sweep below to
+# remove only what a killed receiver left behind.
+RECEIVE_TMP_PREFIX = ".charon-up-"
+RECEIVE_TMP_SUFFIX = ".part"
+RECEIVE_STALE_S = 24 * 3600
+
+
+def _sweep_stale_parts(directory: str) -> None:
+    """Drop upload temps older than a day in `directory`.
+
+    A receiver cleans up after itself on EOF, a signal or an error; only a
+    SIGKILL or a power cut leaves one behind, and the next upload into the same
+    folder is the cheapest moment to notice it.
+    """
+    now = time.time()
+    try:
+        with os.scandir(directory) as scan:
+            for entry in scan:
+                if not (entry.name.startswith(RECEIVE_TMP_PREFIX)
+                        and entry.name.endswith(RECEIVE_TMP_SUFFIX)):
+                    continue
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                    if stat.S_ISREG(st.st_mode) and now - st.st_mtime > RECEIVE_STALE_S:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+
+def _new_file_mode() -> int:
+    """What `open(…, 'w')` would have created. `mkstemp` makes 0600, and an
+    image dropped into a web root must stay readable by the web server."""
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
+def receive_file_from(
+    root: str,
+    path: str,
+    source: BinaryIO,
+    length: int,
+    *,
+    overwrite: bool = False,
+    ready: Callable[[], None] | None = None,
+) -> tuple[int, str | None]:
+    """Write exactly `length` bytes from `source` into ONE contained file.
+
+    The upload twin of ``stream_file_to``, used only by ``charon-agent
+    --receive-file`` over a dedicated SSH channel (the explorer's drop).
+
+    * Everything that can refuse is checked BEFORE `ready()` fires, so the hub
+      learns "already exists" without a byte having crossed the wire.
+    * The length is EXACT: stdin reaching EOF early is a cancelled or broken
+      transfer, never a smaller file. Nothing is committed in that case.
+    * The commit is atomic (temp in the same folder, fsync, then link/rename)
+      and refuses to clobber unless `overwrite` — ``os.link`` fails on an
+      existing name, which closes the race with an agent creating that very
+      file while the bytes were in flight.
+    * `overwrite` writes THROUGH a symlink and keeps the replaced file's mode,
+      exactly as ``fs_write`` does.
+    """
+    if length < 0:
+        return STREAM_BAD_RANGE, "invalid length"
+    dest = contained_entry(root, path)
+    if dest is None:
+        return STREAM_BAD_PATH, "path outside the root"
+    if dest == os.path.realpath(os.path.expanduser(root)):
+        return STREAM_BAD_PATH, "refusing to replace the root folder"
+    parent = os.path.dirname(dest)
+    if not os.path.exists(parent):
+        return STREAM_MISSING, "destination folder not found"
+    if not os.path.isdir(parent):
+        return STREAM_NOT_DIRECTORY, "destination is not a folder"
+
+    final = dest
+    mode = None
+    if os.path.lexists(dest):
+        if os.path.isdir(dest):
+            return STREAM_NOT_FILE, "a folder with that name already exists"
+        if not overwrite:
+            return STREAM_EXISTS, "a file with that name already exists"
+        if os.path.islink(dest):
+            final = os.path.realpath(dest)
+            if os.path.isdir(final):
+                return STREAM_NOT_FILE, "a folder with that name already exists"
+        try:
+            mode = os.stat(final).st_mode & 0o7777
+        except OSError:
+            mode = None  # a dangling link: its target is created fresh
+
+    directory = os.path.dirname(final) or "."
+    _sweep_stale_parts(directory)
+    tmp: str | None = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            prefix=RECEIVE_TMP_PREFIX, suffix=RECEIVE_TMP_SUFFIX, dir=directory)
+        with os.fdopen(fd, "wb") as out:
+            os.fchmod(out.fileno(), mode if mode is not None else _new_file_mode())
+            if ready is not None:
+                ready()
+            remaining = length
+            while remaining:
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    return STREAM_IO_ERROR, (
+                        f"upload interrupted after {length - remaining} of {length} bytes")
+                out.write(chunk)
+                remaining -= len(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+
+        if overwrite:
+            os.replace(tmp, final)
+            tmp = None
+            return 0, None
+        try:
+            os.link(tmp, final)
+        except FileExistsError:
+            return STREAM_EXISTS, "a file with that name appeared during the upload"
+        except OSError:
+            # A filesystem without hard links: same rule, minus atomicity.
+            if os.path.lexists(final):
+                return STREAM_EXISTS, "a file with that name appeared during the upload"
+            os.rename(tmp, final)
+            tmp = None
+        return 0, None
+    except PermissionError:
+        return STREAM_IO_ERROR, "permission denied"
+    except OSError as e:
+        return STREAM_IO_ERROR, str(e)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _file_sha(path: str) -> str | None:

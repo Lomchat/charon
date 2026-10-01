@@ -2521,6 +2521,24 @@
   text-align: center;
 }
 .claude-input-bar .ci-drop-card svg { width: 20px; height: 20px; flex-shrink: 0; }
+/* What the drop does, then — for an OS file — the OTHER target. The overlay
+   stops at the right panel's edge (inline `right`), whose explorer uploads
+   into a folder instead; see app/fileDropZones.ts. */
+.claude-input-bar .ci-drop-text { display: flex; flex-direction: column; gap: 7px; text-align: left; }
+.claude-input-bar .ci-drop-sub,
+.claude-input-bar .ci-drop-alt {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0; text-transform: none;
+}
+.claude-input-bar .ci-drop-sub { color: var(--text-muted); }
+.claude-input-bar .ci-drop-alt { display: flex; align-items: center; gap: 6px; color: var(--success); }
+.claude-input-bar .ci-drop-alt svg { width: 12px; height: 12px; }
+/* The pointer is over the panel: this card is not where the file will go.
+   Its CONTENT fades, never the card — a translucent card lets the blurred
+   chat bleed through the text. */
+.claude-input-bar .ci-drop-overlay.is-elsewhere .ci-drop-card {
+  border-color: var(--border); color: var(--text-faint);
+}
+.claude-input-bar .ci-drop-overlay.is-elsewhere .ci-drop-card > * { opacity: 0.45; }
 
 /* ── Upload gate ────────────────────────────────────────────────────────────
    Same card as the drop overlay, but this one deliberately does NOT set
@@ -3308,6 +3326,13 @@
 .tp-tabs button:last-child { border-right: 0; }
 .tp-tabs button:hover { color: var(--accent-strong); }
 .tp-tabs button.on { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* A file is being dragged and the explorer is not showing: this is the way
+   to it (held under the pointer, it opens). */
+.tp-tabs button.drop-armed {
+  color: var(--success);
+  box-shadow: inset 0 -2px 0 var(--success);
+  animation: cpulse 1.2s ease-in-out infinite;
+}
 .tp-tabs .tp-ico { width: 14px; height: 14px; flex: none; }
 /* The label is the only legend on touch, so it never wraps — it ellipsizes,
    which still reads, where a wrap would change the height of the whole strip. */
@@ -5564,6 +5589,94 @@
    the row is the drag's origin and seeing where it came from is what makes the
    gesture legible while the cursor is somewhere over the messages. */
 .tt-row[data-dragging] { opacity: 0.4; }
+
+/* ── Explorer as an upload target (app/fileDropZones.ts) ─────────────────── */
+/* Upload-to-server speaks --success — green, the colour a new file wears in
+   this tree — where attach-to-message speaks --accent, so the two drop
+   targets never read as one. Armed = a file is being dragged somewhere over
+   the window; over = the pointer is in this tree. */
+.tree-tab.fs-drop-armed {
+  outline: 1px dashed color-mix(in srgb, var(--success) 55%, transparent);
+  outline-offset: -1px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--success) 4%, transparent);
+}
+.tree-tab.fs-drop-over {
+  outline: 1px solid var(--success);
+  background: color-mix(in srgb, var(--success) 7%, transparent);
+}
+/* The header turns into the legend: its own content stays in the flow
+   (hidden) so the rows below keep their exact place under the pointer. */
+.tree-tab.fs-drop-armed .tt-head {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg-raised);
+  border-bottom-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.tree-tab.fs-drop-armed .tt-head > :not(.tt-drop-legend) { visibility: hidden; }
+.tt-drop-legend {
+  position: absolute; inset: 0 2px 5px;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  color: var(--success);
+}
+.tt-drop-ico { flex: none; width: 12px; height: 12px; }
+.tt-drop-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-drop-title b { color: var(--text-strong); font-weight: 600; }
+.tt-drop-sub { flex: none; color: var(--text-muted); font-size: 9.5px; }
+/* The destination folder and what is shown inside it, as one block. */
+.tt-row.drop-in { background: color-mix(in srgb, var(--success) 10%, transparent); }
+.tt-row.drop-target {
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--success);
+}
+.tt-rows.drop-root, .tp-empty.drop-root {
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  border-radius: var(--radius-sm);
+}
+/* Spring-loading: the bar fills while a collapsed folder is held, then it
+   opens (SPRING_OPEN_MS in TreeTab — keep the two durations equal). */
+.tt-row.drop-spring { position: relative; overflow: hidden; }
+.tt-row.drop-spring::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--success); transform-origin: left;
+  animation: tt-spring 0.5s linear forwards;
+}
+@keyframes tt-spring { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .tt-row.drop-spring::after { animation: none; opacity: 0.6; }
+}
+/* Drop progress: a footer pinned to the bottom of the panel, so nothing
+   above the rows ever moves while a pointer is aiming at one. */
+.tt-uploads {
+  position: sticky; bottom: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 4px;
+  padding-top: 6px; background: var(--bg-raised);
+}
+.tt-upload {
+  position: relative; overflow: hidden;
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 3px; padding: 5px 8px; border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--success); font: 10px/1.35 var(--mono);
+}
+.tt-upload-ico { flex: none; width: 11px; height: 11px; }
+.tt-upload-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.tt-upload-pct { flex: none; font-variant-numeric: tabular-nums; }
+.tt-upload button {
+  flex: none; padding: 0 2px; border: 0; background: none; color: inherit;
+  cursor: pointer; font: inherit;
+}
+.tt-upload-bar {
+  position: absolute; left: 0; bottom: 0; height: 2px;
+  background: var(--success); transition: width 0.2s ease;
+}
+.tt-upload.has-errors {
+  border-color: var(--danger-deep); background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.tt-upload.has-errors .tt-upload-text { white-space: normal; overflow-wrap: anywhere; color: var(--danger); }
+.tt-upload.is-cancelled { border-color: var(--border); background: none; color: var(--text-muted); }
+.tt-upload.is-cancelled .tt-upload-text { color: var(--text-muted); }
 
 /* ── Search tab (§14.84) ─────────────────────────────────────────────────── */
 .search-tab { display: flex; flex-direction: column; gap: 7px; }

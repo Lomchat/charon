@@ -17,6 +17,7 @@ import type {
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
   ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
+  FsUploadBody, FsUploadResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
   ShellsListResponse, StartShellBody, UpdateShellBody,
@@ -233,6 +234,45 @@ export const api = {
     send<FsWriteResponse>('POST', `/api/vps/${id}/fs/write`, body, { timeoutMs: 60_000 }),
   fsOp: (id: string, body: FsOpBody) =>
     send<FsOpResponse>('POST', `/api/vps/${id}/fs/op`, body, { timeoutMs: 60_000 }),
+  // ── Explorer drop: upload into a folder (lib/fsUpload.ts) ──────────────
+  fsUpload: (id: string, body: FsUploadBody) =>
+    send<FsUploadResponse>('POST', `/api/vps/${id}/fs/upload`, body, { timeoutMs: 60_000 }),
+  /** One raw chunk. Bespoke like the attachment upload: `send()` is JSON-only.
+   *  The last chunk waits for the VPS to fsync and commit, hence the margin. */
+  fsUploadChunk: async (
+    id: string, uploadId: string, offset: number, chunk: Blob, opts?: { signal?: AbortSignal },
+  ): Promise<FsUploadResponse> => {
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    if (opts?.signal) {
+      if (opts.signal.aborted) ac.abort();
+      else opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+    const timer = setTimeout(() => ac.abort(), 180_000);
+    let res: Response;
+    try {
+      res = await fetch(`/api/vps/${id}/fs/upload/${encodeURIComponent(uploadId)}?offset=${offset}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: chunk,
+        signal: ac.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+      if (opts?.signal) opts.signal.removeEventListener('abort', onAbort);
+    }
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const txt = await res.text();
+        try { detail = JSON.parse(txt)?.error || txt; } catch { detail = txt; }
+      } catch { /* unreadable body */ }
+      throw new Error(detail || `upload failed → ${res.status}`);
+    }
+    return res.json() as Promise<FsUploadResponse>;
+  },
+  fsUploadCancel: (id: string, uploadId: string) =>
+    send<OkResponse>('DELETE', `/api/vps/${id}/fs/upload/${encodeURIComponent(uploadId)}`, undefined, { timeoutMs: 15_000 }),
   readFsFile: (id: string, root: string, path: string) =>
     send<FsReadResponse>('GET', `/api/vps/${id}/fs/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`, undefined, { timeoutMs: 40_000 }),
   statFsFile: (id: string, root: string, path: string) =>

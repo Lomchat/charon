@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -52,10 +53,14 @@ def main(argv: list[str] | None = None) -> int:
                              help="internal: stream one contained file over stdout")
     stream_mode.add_argument("--stream-zip", nargs=2, metavar=("ROOT_B64", "PATH_B64"), default=None,
                              help="internal: stream one contained directory as ZIP over stdout")
+    stream_mode.add_argument("--receive-file", nargs=2, metavar=("ROOT_B64", "PATH_B64"), default=None,
+                             help="internal: write --length bytes of stdin into one contained file")
     p.add_argument("--offset", type=int, default=0,
                    help="stream-file: first byte offset")
     p.add_argument("--length", type=int, default=None,
-                   help="stream-file: exact byte count")
+                   help="stream-file / receive-file: exact byte count")
+    p.add_argument("--overwrite", action="store_true",
+                   help="receive-file: replace an existing file instead of refusing")
     p.add_argument("--expected-version", default=None,
                    help="stream-file: base64url fs_stat version precondition")
     # ── Shell holder mode (>= 0.10.0) ──
@@ -99,6 +104,40 @@ def main(argv: list[str] | None = None) -> int:
             print(str(e), file=sys.stderr, flush=True)
             return STREAM_BAD_PATH
         code, error = stream_directory_zip_to(root, path, sys.stdout.buffer)
+        if error:
+            print(error, file=sys.stderr, flush=True)
+        return code
+
+    if args.receive_file:
+        from .fsnav import (
+            STREAM_BAD_PATH, STREAM_BAD_RANGE, STREAM_IO_ERROR, receive_file_from,
+        )
+        try:
+            root, path = (_decode_stream_arg(v) for v in args.receive_file)
+        except ValueError as e:
+            print(str(e), file=sys.stderr, flush=True)
+            return STREAM_BAD_PATH
+        if args.length is None:
+            print("--length is required", file=sys.stderr, flush=True)
+            return STREAM_BAD_RANGE
+
+        # A signal must still run the temp cleanup: SystemExit unwinds through
+        # receive_file_from's `finally`, where the default action would not.
+        def _interrupted(_signum, _frame):
+            raise SystemExit(STREAM_IO_ERROR)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, _interrupted)
+
+        def _ready() -> None:
+            # The hub waits for this line before sending a byte: every refusal
+            # (exists, missing folder, outside the root) is decided by then.
+            sys.stdout.write("ready\n")
+            sys.stdout.flush()
+
+        code, error = receive_file_from(
+            root, path, sys.stdin.buffer, args.length,
+            overwrite=args.overwrite, ready=_ready,
+        )
         if error:
             print(error, file=sys.stderr, flush=True)
         return code

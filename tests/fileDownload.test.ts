@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseByteRange } from '../lib/fileRange';
 import {
-  buildAgentFileStreamSshArgs, buildAgentZipStreamSshArgs,
+  buildAgentFileReceiveSshArgs, buildAgentFileStreamSshArgs, buildAgentZipStreamSshArgs,
 } from '../lib/server/agent/sshShared.js';
 
 describe('large file byte ranges', () => {
@@ -64,5 +64,21 @@ describe('dedicated SSH file stream command', () => {
     expect(command).not.toContain(hostileRoot);
     expect(command).not.toContain(hostilePath);
     expect(command).not.toContain('touch nope');
+  });
+
+  it('builds an injection-safe upload receiver with an exact length', () => {
+    const hostileRoot = "/srv/a'$(touch nope)";
+    const hostilePath = 'up/a b\n--overwrite.png';
+    const args = buildAgentFileReceiveSshArgs(vps, { root: hostileRoot, path: hostilePath, length: 42 });
+    const command = args.at(-1)!;
+    expect(command).toContain('--receive-file ');
+    expect(command).toContain('--length 42');
+    expect(command).not.toContain('--overwrite');
+    expect(command).not.toContain(hostileRoot);
+    expect(command).not.toContain('touch nope');
+    const forced = buildAgentFileReceiveSshArgs(vps, { root: '/srv', path: 'x', length: 0, overwrite: true });
+    expect(forced.at(-1)).toMatch(/--length 0 --overwrite$/);
+    expect(() => buildAgentFileReceiveSshArgs(vps, { root: '/srv', path: 'x', length: -1 }))
+      .toThrow(/non-negative safe integer/);
   });
 });
