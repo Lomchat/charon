@@ -7,7 +7,7 @@ export const config = {
   // `new Audio()`. Excluded so the fetch isn't 307-redirected to /login
   // (which would return HTML and break audio decoding). If you rename the
   // sound file (see NOTIF_SOUND_URL in ClaudePanel.tsx), update this too.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|sw.js|notif.wav).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|sw.js|notif.wav).*)'],
   runtime: 'nodejs'
 };
 
@@ -23,7 +23,7 @@ const SESSION_TTL_SECS = 24 * 60 * 60;
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (pathname.startsWith('/_next') || pathname === '/favicon.ico') {
+  if (pathname.startsWith('/_next') || pathname === '/favicon.ico' || pathname === '/icon.svg') {
     return NextResponse.next();
   }
   if (PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))) {

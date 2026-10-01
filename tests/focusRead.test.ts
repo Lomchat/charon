@@ -18,7 +18,7 @@ vi.mock('@/lib/server/agent/sessionOps', () => ({
 
 import { POST } from '@/app/api/claude/focus/route';
 
-function focusRequest(sessionId: string | null) {
+function focusRequest(sessionId: string | null, visible = true) {
   return new Request('http://localhost/api/claude/focus', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -26,6 +26,7 @@ function focusRequest(sessionId: string | null) {
       conn: 'connection-id',
       sessionId,
       focusSeq: 7,
+      visible,
     }),
   });
 }
@@ -52,17 +53,17 @@ describe('POST /api/claude/focus read acknowledgement', () => {
     expect(mocks.markSessionRead).toHaveBeenCalledWith('session-1');
   });
 
-  it('persists read even when a newer focus sequence already won', async () => {
+  it('does not let a stale visible POST clear a newer hidden focus', async () => {
     mocks.setConnectionFocus.mockReturnValue({
       ok: true,
       applied: false,
-      focus: 'session-2',
+      focus: 'session-1',
       focusSeq: 8,
     });
 
     await POST(focusRequest('session-1'));
 
-    expect(mocks.markSessionRead).toHaveBeenCalledWith('session-1');
+    expect(mocks.markSessionRead).not.toHaveBeenCalled();
   });
 
   it('does not acknowledge a null focus', async () => {
@@ -75,6 +76,15 @@ describe('POST /api/claude/focus read acknowledgement', () => {
 
     await POST(focusRequest(null));
 
+    expect(mocks.markSessionRead).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge a session in a hidden tab', async () => {
+    mocks.setConnectionFocus.mockReturnValue({ ok: true, applied: true, focus: 'session-1', focusSeq: 7 });
+
+    await POST(focusRequest('session-1', false));
+
+    expect(mocks.setConnectionFocus).toHaveBeenCalledWith('connection-id', 'session-1', 7, false);
     expect(mocks.markSessionRead).not.toHaveBeenCalled();
   });
 });

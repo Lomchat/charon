@@ -40,16 +40,14 @@ export async function POST(req: Request) {
   if (!Number.isSafeInteger(focusSeq) || focusSeq < 1) {
     return NextResponse.json({ error: 'focusSeq must be a positive integer' }, { status: 400 });
   }
-  const result = setConnectionFocus(conn, sessionId ?? null, focusSeq);
+  const visible = body?.visible !== false;
+  const result = setConnectionFocus(conn, sessionId ?? null, focusSeq, visible);
 
-  // Opening/focusing a session counts as "reading" it: clear the durable
-  // "finished, unread" marker (CLAUDE.md §14.47) and mirror it live to every
-  // tab/device. Done regardless of `ok` (the focus filter and the unread flag
-  // are independent) and no-op when the session wasn't unread. In particular,
-  // a focus POST is allowed to race the SSE registration: `result.ok=false`
-  // must not leave SQLite unread while the browser has already cleared the
-  // green marker optimistically.
-  if (typeof sessionId === 'string' && sessionId.length > 0) {
+  // A visible, current focus is a read acknowledgement. An older visible POST
+  // arriving after a hide must not clear a finish that occurred while hidden.
+  // A POST racing SSE registration still acknowledges the user's view.
+  if (visible && typeof sessionId === 'string' && sessionId.length > 0
+    && (!result.ok || (result.focusSeq === focusSeq && result.focus === sessionId))) {
     try { markSessionRead(sessionId); } catch {}
   }
 
