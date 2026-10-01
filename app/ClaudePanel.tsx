@@ -589,7 +589,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
       // focus (typically during SSE reconnect) may briefly classify its stop
       // as background; acknowledge it immediately and never paint a false
       // green marker locally.
-      const visibleHere = id === selectedId;
+      const visibleHere = id === selectedId && document.visibilityState === 'visible';
       const next = ev.unread && !visibleHere ? 1 : 0;
       if (ev.unread && visibleHere) void setFocus(id);
       setSessions((prev) => {
@@ -614,7 +614,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // selectedId so it covers EVERY open path (sidebar, tab bar, deep link,
   // push-notification click).
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId || document.visibilityState !== 'visible') return;
     void setFocus(selectedId);
     setSessions((prev) => {
       const s = prev.find((x) => x.id === selectedId);
@@ -960,20 +960,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // blocked all POSTs.
   const { perms: permQueue, questions: questionQueue, exitPlans: exitPlanQueue } =
     useCrossSessionInteractionFeed();
+  const waitingSessionIds = useMemo(() => new Set([
+    ...permQueue.map((p) => p.sessionId),
+    ...questionQueue.map((q) => q.sessionId),
+    ...exitPlanQueue.map((e) => e.sessionId),
+  ]), [permQueue, questionQueue, exitPlanQueue]);
 
-  // How many hidden sessions are actually waiting on the user. Exit plans
-  // count too: `pendingPermissions` covers permissions and questions only,
-  // so a session stopped on a plan would otherwise report nothing.
+  // How many hidden sessions are waiting on the user. Live interaction queues
+  // cover the time before the next `pendingPermissions` list snapshot.
   const hiddenWaitingCount = useMemo(() => {
-    const blocked = new Set<string>([
-      ...permQueue.map((p) => p.sessionId),
-      ...questionQueue.map((q) => q.sessionId),
-      ...exitPlanQueue.map((e) => e.sessionId),
-    ]);
     return hiddenSessions.filter(
-      (s) => blocked.has(s.id) || s.pendingPermissions > 0,
+      (s) => waitingSessionIds.has(s.id) || s.pendingPermissions > 0,
     ).length;
-  }, [hiddenSessions, permQueue, questionQueue, exitPlanQueue]);
+  }, [hiddenSessions, waitingSessionIds]);
 
   // [esRef, chatBodyRef, assistantBufRef, scroll mechanics (isAtBottomRef,
   //  newCount, lastMessageCountRef, handleChatScroll, onPillClick) — all of
@@ -1326,7 +1325,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // re-rendered the Sidebar + main panel → CPU + flicker. Intra-session
   // status changes already arrive via the per-session SSE; the poll only
   // serves to refresh the count badges + detect sessions created on
-  // another client. 60s is sufficient as a convergence backstop.
+  // another client. Hidden tabs also poll: their SSE may be suspended while
+  // a session finishes, and the favicon must catch up before the tab is opened.
   const refreshSessions = useCallback(async () => {
     try {
       const r = await api.listClaudeSessions();
@@ -1390,13 +1390,19 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   }, []);
   useEffect(() => {
     refreshSessions();
-    const tick = () => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') refreshSessions();
-    };
-    const t = setInterval(tick, 60_000);
+    const visiblePoll = setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshSessions();
+    }, 60_000);
+    const hiddenPoll = setInterval(() => {
+      if (document.visibilityState !== 'visible') void refreshSessions();
+    }, 15_000);
     const onVisible = () => { if (document.visibilityState === 'visible') refreshSessions(); };
     document.addEventListener('visibilitychange', onVisible);
-    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
+    return () => {
+      clearInterval(visiblePoll);
+      clearInterval(hiddenPoll);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [refreshSessions]);
 
   // Live "the session list changed" signal (CLAUDE.md §14.52). When a session
@@ -1409,8 +1415,11 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   useEffect(() => {
     const unsub = subscribeAll((ev) => {
       if (ev.type === 'tabs_changed') { void refreshTabs(); return; }
-      if (ev.type !== 'session_list_changed') return;
-      refreshSessions();
+      if (ev.type === 'session_list_changed' || ev.type === 'permission_request'
+        || ev.type === 'user_question' || ev.type === 'exit_plan_request'
+        || ev.type === 'interaction_resolved') {
+        void refreshSessions();
+      }
     });
     return () => unsub();
   }, [refreshSessions]);
@@ -1421,13 +1430,6 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
     catch (e) { alert('Notification settings: ' + (e instanceof Error ? e.message : String(e))); }
     finally { setPushBusy(false); }
   }
-
-  // Tab title: (N) hub claude when N sessions are waiting
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    const total = sessions.reduce((acc, s) => acc + (s.pendingPermissions ?? 0), 0);
-    document.title = total > 0 ? `(${total}) hub claude` : 'hub claude';
-  }, [sessions]);
 
   useEffect(() => { void ensureFreshServiceWorker(); }, []);
 
@@ -1768,6 +1770,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
             data that sidebar holds, read as activity (app/HeaderSessionNav.tsx). */}
         <HeaderSessionNav
           sessions={sessions}
+          waitingSessionIds={waitingSessionIds}
           vpsName={(id) => vpsList.find((v) => v.id === id)?.name ?? id}
           selectedId={selectedId}
           onOpen={(id) => selectClaude(id, true)}

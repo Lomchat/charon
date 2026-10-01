@@ -207,7 +207,8 @@ async function postFocus(sessionId: string | null, focusSeq: number, attempt = 0
     const r = await fetch('/api/claude/focus', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ conn: id, sessionId, focusSeq }),
+      body: JSON.stringify({ conn: id, sessionId, focusSeq, visible: document.visibilityState === 'visible' }),
+      keepalive: document.visibilityState !== 'visible',
     });
     const j = await r.json().catch(() => ({ ok: false }));
     if (!(j?.ok && j.focusSeq === focusSeq && j.focus === sessionId)) retry();
@@ -225,7 +226,8 @@ function buildUrl(): string {
   const id = getConnId();
   return `/api/claude/events?conn=${encodeURIComponent(id)}`
     + (currentFocus ? `&focus=${encodeURIComponent(currentFocus)}` : '')
-    + `&focusSeq=${currentFocusSeq}`;
+    + `&focusSeq=${currentFocusSeq}`
+    + `&visible=${document.visibilityState === 'visible' ? '1' : '0'}`;
 }
 
 function clearReconnectTimer(): void {
@@ -332,6 +334,7 @@ function attachWindowListeners(): void {
   // suspended the page (battery saver, laptop sleep), the EventSource may
   // be silently dead.
   document.addEventListener('visibilitychange', () => {
+    if (es) void postFocus(currentFocus, ++currentFocusSeq);
     if (document.visibilityState !== 'visible') return;
     if (!es || es.readyState === 2 /* CLOSED */) {
       reconnectNow('tab visible & ES closed');

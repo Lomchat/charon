@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentKind, SessionListItem } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { isWorkingStatus, showsUnreadCue } from './sessionUnread';
+import TabNotificationBadge from './TabNotificationBadge';
 
 /**
  * Header shortcut to the sessions you are actually using: a trigger carrying
@@ -51,9 +52,9 @@ function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavSta
   return 'ready';
 }
 
-function rowOf(s: SessionListItem): NavRow {
+function rowOf(s: SessionListItem, waitingSessionIds: ReadonlySet<string>): NavRow {
   const working = isWorkingStatus(s.liveStatus);
-  const waiting = (s.pendingPermissions ?? 0) > 0;
+  const waiting = (s.pendingPermissions ?? 0) > 0 || waitingSessionIds.has(s.id);
   return {
     s,
     state: stateOf(s, working, waiting),
@@ -64,7 +65,7 @@ function rowOf(s: SessionListItem): NavRow {
     unread: showsUnreadCue({
       unreadStop: s.unreadStop,
       status: s.liveStatus,
-      pendingPermissions: s.pendingPermissions,
+      pendingPermissions: waiting ? 1 : 0,
     }),
     when: s.lastActivityMs ?? (s.createdAt ? s.createdAt * 1000 : 0),
   };
@@ -98,12 +99,13 @@ function stateWord(r: NavRow): string {
 
 type Props = {
   sessions: SessionListItem[];
+  waitingSessionIds: ReadonlySet<string>;
   vpsName: (vpsId: string) => string;
   selectedId: string | null;
   onOpen: (id: string) => void;
 };
 
-export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen }: Props) {
+export default function HeaderSessionNav({ sessions, waitingSessionIds, vpsName, selectedId, onOpen }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const wrap = useRef<HTMLDivElement>(null);
@@ -163,8 +165,8 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
   }, [open]);
 
   const rows = useMemo(
-    () => sessions.map(rowOf).sort((a, b) => b.when - a.when),
-    [sessions],
+    () => sessions.map((session) => rowOf(session, waitingSessionIds)).sort((a, b) => b.when - a.when),
+    [sessions, waitingSessionIds],
   );
   const running = rows.filter((r) => r.working || r.waiting);
   // "Recently finished" is the short list you act on, so it holds sessions you
@@ -202,6 +204,7 @@ export default function HeaderSessionNav({ sessions, vpsName, selectedId, onOpen
     // list never leaves this element: one enter/leave pair drives both.
     <div className={`hnav${open ? ' is-open' : ''}`} ref={wrap}
       onMouseEnter={onPointerEnter} onMouseLeave={onPointerLeave}>
+      <TabNotificationBadge count={unreadCount + waitingCount} />
       <button
         type="button"
         // Orange outranks green: one is a question blocking a session, the

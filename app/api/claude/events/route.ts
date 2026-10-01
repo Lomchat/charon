@@ -46,6 +46,7 @@ export async function GET(req: Request) {
     return new Response('missing or invalid conn id', { status: 400 });
   }
   const initialFocus = url.searchParams.get('focus');
+  const initialVisible = url.searchParams.get('visible') !== '0';
   const initialFocusSeqRaw = Number(url.searchParams.get('focusSeq') ?? 0);
   const initialFocusSeq = Number.isSafeInteger(initialFocusSeqRaw) && initialFocusSeqRaw >= 0
     ? initialFocusSeqRaw : 0;
@@ -120,7 +121,7 @@ export async function GET(req: Request) {
       // snapshot→register loss window. Duplicate status/pending events are
       // harmless because client queues are id-keyed.
       unregister = registerConnection({
-        connId, send: sendLive, initialFocus, initialFocusSeq,
+        connId, send: sendLive, initialFocus, initialFocusSeq, initialVisible,
       });
       unsubInstall = subscribeInstallBus(sendInstallLive);
       const sendModels = (notices: ReturnType<typeof getModelNotices>) => {

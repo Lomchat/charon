@@ -87,6 +87,7 @@ type ConnState = {
   send: (ev: GlobalSessionEvent) => void;
   focus: string | null;
   focusSeq: number;
+  visible: boolean;
   unsubBus: (() => void) | null;
 };
 
@@ -116,7 +117,9 @@ function touchView(sessionId: string | null | undefined): void {
  * by the stop handler to decide whether to light the finished-unread marker.
  */
 export function wasRecentlyViewed(sessionId: string): boolean {
-  if (focusCountFor(sessionId) > 0) return true;
+  for (const conn of connections.values()) {
+    if (conn.visible && conn.focus === sessionId) return true;
+  }
   const t = lastViewAt.get(sessionId);
   return t != null && Date.now() - t < RECENT_VIEW_GRACE_MS;
 }
@@ -131,6 +134,7 @@ export function registerConnection(opts: {
   send: (ev: GlobalSessionEvent) => void;
   initialFocus?: string | null;
   initialFocusSeq?: number;
+  initialVisible?: boolean;
 }): () => void {
   // If a connId already exists (e.g. client reconnected before we detected
   // the close), replace it cleanly.
@@ -141,6 +145,7 @@ export function registerConnection(opts: {
     send: opts.send,
     focus: opts.initialFocus ?? null,
     focusSeq: Math.max(0, Math.floor(opts.initialFocusSeq ?? 0)),
+    visible: opts.initialVisible ?? true,
     unsubBus: null,
   };
   conn.unsubBus = subscribeGlobalSessionEvents((ev) => {
@@ -155,7 +160,7 @@ export function registerConnection(opts: {
     if (!c) return;
     // Tab closed / SSE dropped while focused → remember we were just viewing it,
     // so a finish during the gap doesn't immediately mark it unread (§14.47).
-    touchView(c.focus);
+    if (c.visible) touchView(c.focus);
     if (c.unsubBus) c.unsubBus();
     connections.delete(opts.connId);
   };
@@ -170,6 +175,7 @@ export function setConnectionFocus(
   connId: string,
   sessionId: string | null,
   focusSeq: number,
+  visible = true,
 ): { ok: boolean; applied: boolean; focus: string | null; focusSeq: number } {
   const conn = connections.get(connId);
   if (!conn) return { ok: false, applied: false, focus: null, focusSeq: 0 };
@@ -181,10 +187,12 @@ export function setConnectionFocus(
   // Stamp BOTH the session being left and the one being entered as "viewed just
   // now", so the recently-viewed grace covers a turn that finishes immediately
   // after a switch (the user was reading it a moment ago). cf. CLAUDE.md §14.47.
-  touchView(conn.focus);
+  if (conn.visible && conn.focus !== sessionId) touchView(conn.focus);
   conn.focus = sessionId;
   conn.focusSeq = focusSeq;
-  touchView(sessionId);
+  conn.visible = visible;
+  if (visible) touchView(sessionId);
+  else if (sessionId) lastViewAt.delete(sessionId);
   return { ok: true, applied: true, focus: conn.focus, focusSeq: conn.focusSeq };
 }
 
