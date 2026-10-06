@@ -1067,7 +1067,7 @@ export type ClaudeSessionDetailResponse = {
   // tool_result/user_question/exit_plan_request/thinking) + all the
   // edit_snapshot and event entries in the same ID range (cf. backend
   // loadMessageWindow). Sorted asc by id.
-  messages: ClaudeSessionMessage[];
+  messages: Array<ClaudeSessionMessage & { peerReplyTo?: string }>;
   // True if there are CHAT messages even older than `oldestChatId`.
   // Used by the client to decide whether to enable scroll-up loadMore.
   hasMore: boolean;
@@ -1100,7 +1100,7 @@ export type ClaudeSessionDetailResponse = {
 // history on the client side. (The other fields are still populated by the
 // route to stay typed; the client ignores them.)
 export type ClaudeSessionMessageWindow = {
-  messages: ClaudeSessionMessage[];
+  messages: Array<ClaudeSessionMessage & { peerReplyTo?: string }>;
   hasMore: boolean;
   oldestChatId: number | null;
 };

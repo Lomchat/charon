@@ -65,7 +65,7 @@ import { shouldShowChatRole } from './chatVisibility';
 import { canCompactSession } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
-import { peerSessionTarget } from './peerMessageLinks';
+import { peerAssistantReplies, peerSessionTarget } from './peerMessageLinks';
 import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 
 // Renders one active session. Stream state lives in useClaudeSessionStream;
@@ -329,6 +329,7 @@ export default function ClaudeSessionView({
   }, [isSyncing]);
 
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  const peerReplies = useMemo(() => peerAssistantReplies(messages), [messages]);
   const { hoverRequest, jumpToRequest, isJumping: isPeerJumping } = usePeerMessageNavigation(chatBodyRef, {
     messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, setHistoryHold,
   });
@@ -891,11 +892,13 @@ export default function ClaudeSessionView({
                   </div>
                 )}
                 {currentAssistant && (
-                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth} />
+                  <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth}
+                    peerReplyTo={peerReplies.streamingReplyTo} onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest} />
                 )}
                 <MessageHistory
                   siblings={siblings} onOpenPeerSession={onOpenSession}
                   onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
+                  peerReplyToById={peerReplies.replyToById}
                   renderable={visibleRenderable}
                   kind={sessionKind}
                   vpsId={selected.vpsId}
@@ -1133,7 +1136,7 @@ export default function ClaudeSessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump,
+  siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
   kind: AgentKind;
@@ -1155,6 +1158,7 @@ const MessageHistory = memo(function MessageHistory({
   onOpenPeerSession?: (sessionId: string) => void;
   onPeerRequestHover: (messageId: string | null) => void;
   onPeerRequestJump: (messageId: string) => void;
+  peerReplyToById: ReadonlyMap<string, string>;
 }) {
   return [...renderable].reverse().map(({ msg, attached }) => (
     <Message
@@ -1167,6 +1171,7 @@ const MessageHistory = memo(function MessageHistory({
       orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
       peerSessionId={peerSessionTarget(msg, siblings)} onOpenPeerSession={onOpenPeerSession}
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
+      peerReplyTo={peerReplyToById.get(msg.id)}
     />
   ));
 });

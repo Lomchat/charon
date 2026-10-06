@@ -298,6 +298,37 @@ describe('internal peer completion notices', () => {
   });
 });
 
+describe('assistant peer anchors across message pages', () => {
+  it('returns the original peer input on an assistant-only root window and delta', async () => {
+    const stream = createStream('thinking');
+    stream._persist('user', 'Earlier human task');
+    stream._onAgentEvent({ event: 'external_message', session_id: SID, seq: 1,
+      origin: 'charon_peer', text: 'Peer request', message_id: 'request-anchor', from: 'requester' });
+    stream._onAgentEvent({ event: 'assistant_text', session_id: SID, seq: 2, delta: 'Peer answer' });
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 3, peer_request_id: 'request-anchor' });
+    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
+    const get = async (query: string) => (await GET(new Request(`http://localhost/api/claude/sessions/${SID}${query}`),
+      { params: Promise.resolve({ id: SID }) })).json();
+    const root = await get('?limit=1');
+    expect(root.hasMore).toBe(true);
+    expect(root.messages.some((m: any) => m.role === 'event' && JSON.parse(m.content).type === 'external_message')).toBe(false);
+    const answer = root.messages.find((m: any) => m.role === 'assistant');
+    expect(answer.peerReplyTo).toBe('request-anchor');
+    const delta = await get(`?since=${answer.id - 1}`);
+    expect(delta.messages.find((m: any) => m.id === answer.id).peerReplyTo).toBe('request-anchor');
+    const { rebuildStateFromMessages } = await import('@/app/sessionRebuild');
+    expect(rebuildStateFromMessages(root.messages, 'active').messages.find((m: any) => m.role === 'assistant')?.replyTo)
+      .toBe('request-anchor');
+
+    // A later human turn must not inherit the old peer classification.
+    stream._persist('user', 'Human follow-up');
+    stream._onAgentEvent({ event: 'assistant_text', session_id: SID, seq: 4, delta: 'Human answer' });
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 5, peer_request_id: null });
+    const human = await get('?limit=1');
+    expect(human.messages.find((m: any) => m.role === 'assistant').peerReplyTo).toBeUndefined();
+  });
+});
+
 describe('a turn that ends with background tasks still running (§14.91)', () => {
   it.each(['claude', 'codex'] as const)('counts only live tasks and deduplicates %s notices across replay/restart', (kind) => {
     setSetting('notif.global_enabled', 'true');

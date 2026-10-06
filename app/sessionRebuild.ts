@@ -31,6 +31,7 @@ export type PersistedMessage = {
   // Assistant rows: API-confirmed model that produced the message (nullable).
   model?: string | null;
   assistantFinal?: number | null;
+  peerReplyTo?: string;
 };
 
 export type RebuiltSessionState = {
@@ -253,6 +254,7 @@ export function rebuildStateFromMessages(
       // elsewhere) so the bubble header chip survives every refetch.
       model: m.model ?? null,
       assistantFinal: m.assistantFinal ?? null,
+      ...(m.role === 'assistant' && m.peerReplyTo ? { replyTo: m.peerReplyTo } : {}),
     });
   }
   // A non-running session cannot notify anymore: its CLI process (and the

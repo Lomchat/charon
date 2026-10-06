@@ -2086,7 +2086,7 @@
 }
 /* Internal MCP requests/replies and sent-message receipts share a left marker
    in every theme, while retaining their original role colours. */
-.bubble.role-external, .bubble.role-peer_status {
+.bubble.role-external, .bubble.role-peer_status, .bubble.role-assistant.peer-reply {
   border: 0;
   border-left: 3px solid var(--violet);
 }

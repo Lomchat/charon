@@ -17,6 +17,7 @@ import { loadMessageWindow, publicMessageColumns } from '@/lib/server/claude/mes
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
 import { runningBgTaskDetailsFromDb } from '@/lib/server/claude/bgTaskState';
 import { expireStalePendingInteractions } from '@/lib/server/agent/pendingInteractions';
+import { attachPeerAssistantReplies } from '@/lib/server/claude/peerReplyContext';
 
 /**
  * The Claude SDK stores each session in
@@ -189,7 +190,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // before-cursor) — this is the looping endpoint and the bandwidth fix. The
   // client refills diff content lazily via the dedicated /edits endpoint.
   // cf. CLAUDE.md §14 gotcha 41.
-  messages = stripEditSnapshotContent(messages);
+  messages = attachPeerAssistantReplies(id, stripEditSnapshotContent(messages));
   const windowMs = performance.now() - windowStarted;
   const stream = peekStream(id);
 

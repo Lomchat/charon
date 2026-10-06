@@ -80,9 +80,10 @@ type Props = {
   onOpenPeerSession?: (sessionId: string) => void;
   onPeerRequestHover?: (messageId: string | null) => void;
   onPeerRequestJump?: (messageId: string) => void;
+  peerReplyTo?: string | null;
 };
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -117,7 +118,8 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   // way an assistant bubble carries the model that produced it.
   const isExternal = m.role === 'external';
   const isPeerStatus = m.role === 'peer_status';
-  const requestId = peerRequestTarget(m);
+  const requestId = peerRequestTarget(m) ?? (isAssistant ? peerReplyTo : null);
+  const isPeerReply = isAssistant && !!requestId;
   const peerStatusLabel = m.peerStatus === 'accepted' ? 'accepted'
     : m.peerStatus === 'processing' ? 'processing'
     : m.peerStatus === 'replied' ? 'replied'
@@ -125,9 +127,9 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
-      className={`bubble role-${m.role}${m.role === 'assistant' && m.assistantFinal === 0 ? ' intermediate' : ''}${streaming ? ' streaming' : ''}`}
+      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${m.role === 'assistant' && m.assistantFinal === 0 ? ' intermediate' : ''}${streaming ? ' streaming' : ''}`}
       data-msg-role={m.role}
-      data-peer-message-id={m.messageId ?? undefined}
+      data-peer-message-id={m.messageId ?? (isExternal ? m.id : undefined)}
     >
       <header className="bubble-h">
         <span className="tag">{isExternal ? 'user' : isPeerStatus ? 'sent' : m.role}</span>
@@ -157,8 +159,8 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             ? <PeerRequestLink requestId={requestId} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
             : <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
         )}
-        {isExternal && m.replyTo && (
-          <PeerRequestLink requestId={m.replyTo} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
+        {(isExternal || isAssistant) && requestId && (
+          <PeerRequestLink requestId={requestId} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
         )}
         {/* Per-message agent attribution (assistant only): a small Claude/Codex
             logo so it's always clear which backend is speaking, next to the
