@@ -2470,11 +2470,57 @@
   color: var(--text);
   font-family: var(--body); font-size: 14px;
   padding: 10px 12px;
-  resize: vertical; min-height: 76px;
+  /* No native corner handle: the grip on the bar's top edge owns the height
+     (and remembers it — the corner forgot it on every session switch). */
+  resize: none; min-height: 76px;
   outline: none;
 }
 .claude-input-bar textarea:focus { border-color: var(--accent); }
 .claude-input-bar textarea:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Size grip (ComposerGrip.tsx, states in composerSize.ts) ───────────────
+   Lives in the bar's top padding, so it costs no height. Drag up: taller;
+   down: back to the default, which HOLDS (a detent), then hidden. */
+.claude-input-bar .ci-grip {
+  position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%);
+  /* content-box: coarse pointers grow the hit area UPWARD with padding. */
+  box-sizing: content-box;
+  width: 96px; height: 12px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+  z-index: 2;
+  outline: none;
+}
+.claude-input-bar .ci-grip-pill {
+  width: 36px; height: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--border);
+  transition: background-color 0.12s, width 0.12s;
+}
+.claude-input-bar .ci-grip:hover .ci-grip-pill { background: var(--text-muted); width: 48px; }
+.claude-input-bar .ci-grip:focus-visible .ci-grip-pill,
+.claude-input-bar.is-resizing .ci-grip-pill { background: var(--accent); width: 48px; }
+/* Held at the default size mid-drag: the top edge lights up — that is where
+   the bar locks if released. */
+.claude-input-bar.at-detent { border-top-color: var(--accent); }
+.claude-input-bar.at-detent .ci-grip-pill { background: var(--accent-strong); }
+@media (pointer: coarse) {
+  .claude-input-bar:not(.is-collapsed) .ci-grip { top: -10px; padding-top: 10px; width: 120px; }
+}
+/* Taller than the default: only the textarea grows. The mode and send columns
+   keep their own size, at the bottom where the hand already is. */
+.claude-input-bar.is-sized .mode-switch,
+.claude-input-bar.is-sized .ci-send-col { align-self: flex-end; }
+/* Hidden: the bar keeps its paddings (so density and the phone safe area stay
+   right) and shows only the grip, stretched over the whole strip. The overlays
+   stay — a drop still lands, and brings the composer back (revealComposer). */
+.claude-input-bar.is-collapsed > :not(.ci-grip, .ci-drop-overlay, .ci-upload-overlay) { display: none; }
+.claude-input-bar.is-collapsed .ci-grip {
+  inset: 0; width: auto; height: auto;
+  transform: none;
+}
 
 /* ── Send column: 📎 stacked above SEND ─────────────────────────────────── */
 .claude-input-bar .ci-send-col {
@@ -4499,6 +4545,7 @@
      ⚠ This comment was once left unterminated and swallowed the four rules
      below for weeks — a mobile composer silently styled as a desktop one. */
   .claude-input-bar textarea { flex: 1 1 auto; min-height: 54px; }
+  .claude-input-bar .ci-grip { height: 10px; }   /* = the top padding above */
   .claude-input-bar .ci-send-col { flex: 0 0 auto; }
   .claude-input-bar .send { padding: 0 18px; }
   .claude-input-bar .ci-attach { padding: 0 18px; }

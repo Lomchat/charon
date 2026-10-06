@@ -50,6 +50,8 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
+import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
+import ComposerGrip from './ComposerGrip';
 import { isPathDrag, readPathDrag } from './pathDrag';
 import { toolPanelLeft, uploadZoneOf } from './fileDropZones';
 import { IconInsert } from './fileIcons';
@@ -1182,6 +1184,14 @@ const ChatInputBar = memo(function ChatInputBar({
   const [input, setInput] = useInputDraft(sessionId);
   const [touchInput, setTouchInput] = useState(false);
 
+  // Shared by every session of this browser (composerSize.ts); `sizePreview`
+  // is a grip drag in progress, committed on release.
+  const [composerSize, setComposerSize] = useComposerSize();
+  const [sizePreview, setSizePreview] = useState<ComposerSize | null>(null);
+  const shownSize = sizePreview ?? composerSize;
+  const sized = !shownSize.hidden && shownSize.height != null;
+
+  const footerRef = useRef<HTMLElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Last known caret offset. A drop lands on the WINDOW, not the textarea, so
@@ -1213,6 +1223,7 @@ const ChatInputBar = memo(function ChatInputBar({
   // it self-applies the moment the bar remounts.
   useEffect(() => {
     if (prefillInput !== null) {
+      revealComposer();
       setInput(prefillInput);
       clearPrefillInput();
     }
@@ -1254,6 +1265,7 @@ const ChatInputBar = memo(function ChatInputBar({
     const chunk = lead + text + trail;
     const next = before + chunk + after;
     inputRef.current = next;
+    revealComposer();
     setInput(next);
     const caret = before.length + chunk.length;
     caretRef.current = caret;
@@ -1443,7 +1455,13 @@ const ChatInputBar = memo(function ChatInputBar({
   }, [input, onSend, setInput]);
 
   return (
-    <footer className="claude-input-bar">
+    <footer
+      ref={footerRef}
+      className={`claude-input-bar${shownSize.hidden ? ' is-collapsed' : ''}${sized ? ' is-sized' : ''}${
+        sizePreview ? ` is-resizing${!sizePreview.hidden && sizePreview.height == null ? ' at-detent' : ''}` : ''}`}
+    >
+      <ComposerGrip footerRef={footerRef} textRef={taRef} size={composerSize}
+        onPreview={setSizePreview} onCommit={setComposerSize} />
       {/* The provider registry owns the mode ladder; providerText owns labels
           and glyphs (§14.102). */}
       <div className={`mode-switch ${kind}`} role="radiogroup" aria-label={providerText.modeSwitchAria(kind)}>
@@ -1530,6 +1548,11 @@ const ChatInputBar = memo(function ChatInputBar({
           send();
         }}
         rows={3}
+        // Inline: a user-chosen value must outrank every density/breakpoint
+        // min-height. Clamped to the same viewport share the grip allows.
+        style={sized
+          ? { minHeight: `min(${shownSize.height}px, ${COMPOSER_MAX_VIEWPORT_SHARE * 100}dvh)` }
+          : undefined}
       />
       <div className="ci-send-col">
         <button

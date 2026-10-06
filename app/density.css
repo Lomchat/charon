@@ -72,6 +72,7 @@ html[data-density='small'] .claude-input-bar { gap: 8px; padding: 8px 18px; }
 html[data-density='small'] .claude-input-bar .mode-switch .m-btn { padding: 5px 8px; }
 html[data-density='small'] .claude-input-bar textarea { font-size: 13px; padding: 8px 10px; min-height: 64px; }
 html[data-density='small'] .claude-input-bar .ci-send-col { gap: 4px; }
+html[data-density='small'] .claude-input-bar:not(.is-collapsed) .ci-grip { height: 8px; }
 html[data-density='small'] .claude-input-bar .ci-attach,
 html[data-density='small'] .claude-input-bar .send { min-height: 34px; }
 
