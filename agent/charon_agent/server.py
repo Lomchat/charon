@@ -580,9 +580,9 @@ class Server:
         """
         # Session implementations tag provider events belonging to a peer
         # request with an internal correlation id. Consume it here before the
-        # event is persisted/broadcast: the public protocol carries the stable
-        # message/conversation ids on dedicated peer events, not this runtime
-        # implementation detail.
+        # event is persisted/broadcast. Stops expose the stable request id
+        # (null for human/source turns) so completion notices do not depend on
+        # the external_message arriving before a fast target's stop.
         peer_request_id = payload.pop("_peer_request_id", None)
         if isinstance(peer_request_id, str) and peer_request_id:
             self._observe_peer_event(peer_request_id, payload)
@@ -595,8 +595,11 @@ class Server:
             # persisted one-target reservation makes that stream unambiguous.
             resumed_peer_id = self.peer_target_active.get(sid)
             if resumed_peer_id:
+                peer_request_id = resumed_peer_id
                 self._observe_peer_event(resumed_peer_id, payload)
         event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
+        if event_name == "stop":
+            payload["peer_request_id"] = peer_request_id or None
         is_shell = event_name.startswith("shell_")
         # TRANSIENT shell events are broadcast live (+ fanned to watchers) but
         # NEVER logged or ringed, so a replay (full-log after_seq:0 OR the

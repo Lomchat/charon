@@ -617,6 +617,7 @@ export class SessionStream {
   // because a finishing task usually re-invokes the model (§14.54) — firing
   // "done" a beat before a new turn starts would be a lie.
   private bgFinishTimer: ReturnType<typeof setTimeout> | null = null;
+  private peerDrivenFinish: boolean | null = null;
   private codexBgChecks = new Map<string, { revision: number; since: number }>();
   private codexBgTimer: ReturnType<typeof setTimeout> | null = null;
   private codexBgChecking = false;
@@ -1640,6 +1641,8 @@ export class SessionStream {
         this._broadcast({ type: 'turn_error', kind: ev.kind });
         break;
       case 'stop': {
+        this.peerDrivenFinish = ev.peer_request_id !== undefined
+          ? !!ev.peer_request_id : this._peerTurnFromHistory();
         const assistantFlushed = this._flushAssistant();
         const finalAssistantId = assistantFlushed ? this._finalizeAssistantTurn() : null;
         // The typed outcome (agent >= 0.36.0) OUTRANKS the prose classifier.
@@ -1756,7 +1759,8 @@ export class SessionStream {
           // Announce the response even while tasks remain, with their count.
           // The green unread marker and final background-work notice still
           // wait for the last task (§14.91).
-          if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified) {
+          if (!this.isReplaying && isNewFinish && !this.fatalErrorNotified
+            && (terminalError || !this.peerDrivenFinish)) {
             const terminalError = this.terminalErrorLatched;
             const providerLabel = providerDisplayName(this.kind);
             const bgCount = bgPending ? this.bgRunning!.size : 0;
@@ -1795,7 +1799,7 @@ export class SessionStream {
           // agent finished) is a real unread finish, and a silent DB flag has
           // no notification-storm concern. The seq dedup in `isNewFinish` + the
           // advance below keep later reconnect-replays from re-marking it.
-          if (isNewFinish && !bgPending) {
+          if (isNewFinish && !bgPending && (terminalError || !this.peerDrivenFinish)) {
             const beingViewed = sessionFocusChecker?.(this.id) ?? false;
             if (!beingViewed) {
               try {
@@ -2553,6 +2557,7 @@ export class SessionStream {
       this.bgFinishTimer = null;
       if (this.status !== 'active') return;         // a new turn / sleep took over
       if (this.hasRunningBgTasks()) return;         // more work showed up
+      if (this.peerDrivenFinish ?? this._peerTurnFromHistory()) return;
       this._maybePush({
         event: 'session_finished',
         title: `✓ ${this.vpsName} · ${this._label()}`,
@@ -2575,6 +2580,26 @@ export class SessionStream {
     // Never hold the process open for a notification.
     (t as unknown as { unref?: () => void }).unref?.();
     this.bgFinishTimer = t;
+  }
+
+  /** Compatibility with older agents and background completion after restart.
+   * Replies received by the requester still belong to its user-facing work.
+   * Bound the lookup by event time so replay cannot borrow a newer input. */
+  private _peerTurnFromHistory(): boolean {
+    const row = db.select({ role: claudeSessionMessages.role, content: claudeSessionMessages.content })
+      .from(claudeSessionMessages).where(and(
+        eq(claudeSessionMessages.sessionId, this.id),
+        or(eq(claudeSessionMessages.role, 'user'), and(
+          eq(claudeSessionMessages.role, 'event'),
+          sql`CASE WHEN json_valid(${claudeSessionMessages.content}) THEN json_extract(${claudeSessionMessages.content}, '$.type') END = 'external_message'`,
+        )),
+        ...(this.currentEventTs == null ? [] : [sql`${claudeSessionMessages.tsMs} <= ${this.currentEventTs}`]),
+      )).orderBy(desc(claudeSessionMessages.tsMs), desc(claudeSessionMessages.id)).limit(1).get();
+    if (row?.role !== 'event') return false;
+    try {
+      const input = JSON.parse(row.content);
+      return input.origin === 'charon_peer' && input.expectsReply !== false;
+    } catch { return false; }
   }
 
   /** Explicit user/lifecycle recovery permits the daemon's active status again. */
@@ -2716,6 +2741,7 @@ export class SessionStream {
       const rawContent = typeof content === 'string' ? content : JSON.stringify(content);
       const storage = deriveMessageStorage(role, rawContent);
       const turnDriver = role === 'user' || (role === 'event' && content?.type === 'external_message');
+      if (role === 'user') this.peerDrivenFinish = false;
       const values = {
         sessionId: this.id, role,
         content: rawContent,

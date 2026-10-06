@@ -93,6 +93,10 @@ class TestPeerBus(unittest.IsolatedAsyncioTestCase):
             "event": "stop", "session_id": "target", "subtype": "",
             "_peer_request_id": mid,
         })
+        stop = self.server.rings["target"][-1]
+        self.assertEqual(stop["peer_request_id"], mid)
+        self.assertNotIn("_peer_request_id", stop)
+        self.assertEqual(list(self.server._event_log("target").read_since(0))[-1]["peer_request_id"], mid)
         await asyncio.sleep(0.05)
         row = self.server.peer_messages[mid]
         self.assertEqual(row["status"], "replied")
@@ -103,6 +107,7 @@ class TestPeerBus(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replies[0]["reply_to"], mid)
         self.assertEqual(replies[0]["conversation_id"], result["conversation_id"])
         self.assertEqual(len(self.source.inputs), 1)
+
         self.assertIn("<charon-peer-reply", self.source.inputs[0])
         self.assertIsNone(self.source.input_peer_ids[0])
 
@@ -113,6 +118,17 @@ class TestPeerBus(unittest.IsolatedAsyncioTestCase):
         })
         await asyncio.sleep(0.01)
         self.assertEqual(len(self.source.inputs), 1)
+
+    async def test_restored_peer_stop_is_tagged_but_source_completion_is_normal(self):
+        result = await self.server._handle_meta_rpc("peer_send", {
+            "source_session_id": "source", "handle": "api", "message": "work",
+        }, None)
+        # A restored provider object has lost its private runtime marker.
+        self.server._emit({"event": "stop", "session_id": "target"})
+        self.assertEqual(self.server.rings["target"][-1]["peer_request_id"], result["message_id"])
+        self.server._emit({"event": "stop", "session_id": "source"})
+        self.assertIsNone(self.server.rings["source"][-1]["peer_request_id"])
+        await asyncio.sleep(0.01)
 
     async def test_status_conversation_and_inbox_are_participant_scoped(self):
         result = await self.server._handle_meta_rpc("peer_send", {

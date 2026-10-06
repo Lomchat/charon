@@ -51,7 +51,7 @@ let sessionTokenUsage: typeof import('@/lib/server/agent/sessionTokenUsage').ses
 let runningBgTaskDetailsFromDb: any;
 let setSetting: any;
 
-function createStream(status: string = 'active', kind: 'claude' | 'codex' = 'claude') {
+function createStream(status: string = 'active', kind: 'claude' | 'codex' | 'cursor' = 'claude') {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build',
     status, permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
@@ -221,6 +221,80 @@ describe('recorded endpoint session tokens', () => {
     expect(response.status).toBe(200);
     expect(db.select().from(schema.claudeSessionMessages).all().some((m: any) => m.role === 'user')).toBe(false);
     expect(sessionTokenUsage(SID)).toEqual(before);
+  });
+});
+
+describe('internal peer completion notices', () => {
+  function peerInput(stream: any, seq = 1, reply = false) {
+    stream._onAgentEvent({ event: 'external_message', session_id: SID, seq,
+      origin: reply ? 'charon_peer_reply' : 'charon_peer', text: 'Run the tests',
+      from: 'requester', message_id: 'request', expects_reply: !reply });
+  }
+
+  it.each(['claude', 'codex', 'cursor'] as const)('keeps %s target stops silent, even before the input event arrives', (kind) => {
+    const stream = createStream('thinking', kind);
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 1, peer_request_id: 'request' });
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(sessionRow().unreadStop).toBe(0);
+    expect(sessionRow().lastStopNotifiedSeq).toBe(1);
+  });
+
+  it('recognizes older-agent peer turns from durable input after hub restart', () => {
+    peerInput(createStream());
+    const revived = createStream('thinking');
+    revived._onAgentEvent({ event: 'stop', session_id: SID, seq: 2 });
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(sessionRow().unreadStop).toBe(0);
+    revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
+    revived._onAgentEvent({ event: 'stop', session_id: SID, seq: 2 });
+    revived._onAgentEvent({ event: 'replay_end', session_id: SID });
+    expect(sessionRow().unreadStop).toBe(0);
+  });
+
+  it('still notifies the requester after it receives the correlated reply', () => {
+    const stream = createStream('thinking');
+    peerInput(stream, 1, true);
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2 });
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledWith(expect.objectContaining({ event: 'session_finished' }));
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
+    expect(sessionRow().unreadStop).toBe(1);
+  });
+
+  it.each(['user', 'explicit normal stop'])('restores normal notices for a later %s', (next) => {
+    const stream = createStream('thinking');
+    peerInput(stream);
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2 });
+    if (next === 'user') stream._persist('user', 'My next task');
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 3,
+      ...(next === 'explicit normal stop' ? { peer_request_id: null } : {}) });
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledTimes(1);
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps internal background completion silent across restart', () => {
+    const stream = createStream('thinking');
+    peerInput(stream);
+    stream._onAgentEvent(bgTask(2, 'started', 'child'));
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 3, peer_request_id: 'request' });
+    const revived = createStream('background');
+    expect(revived.hasRunningBgTasks()).toBe(true);
+    revived._onAgentEvent(bgTask(4, 'finished', 'child'));
+    vi.advanceTimersByTime(6_000);
+    expect(revived.status).toBe('active');
+    expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
+    expect(telegramMocks.sendPlainToTelegram).not.toHaveBeenCalled();
+    expect(sessionRow().unreadStop).toBe(0);
+  });
+
+  it('still reports errors from a peer-driven turn', () => {
+    const stream = createStream('thinking');
+    peerInput(stream);
+    stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2,
+      peer_request_id: 'request', subtype: 'error' });
+    expect(pushMocks.sendPushToAll).toHaveBeenCalledWith(expect.objectContaining({ event: 'session_error' }));
+    expect(telegramMocks.sendPlainToTelegram).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -262,6 +262,9 @@ export type AgentEvent = (
   // them, because an older CLI reports failures only as prose.
   | {
       event: 'stop'; session_id: string; subtype?: string;
+      // Target of an internal peer request; null explicitly means a normal
+      // completion. Older agents omit it (hub falls back to durable input).
+      peer_request_id?: string | null;
       terminal_reason?: string; stop_reason?: string;
       api_error_status?: number | string; is_error?: boolean;
     }

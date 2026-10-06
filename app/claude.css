@@ -2084,15 +2084,13 @@
 .bubble.role-assistant.streaming::after {
   content: '▍'; color: var(--accent-strong); animation: cpulse 1s infinite ease-in-out;
 }
-/* A turn driven by ANOTHER session. It drives the turn exactly like something
-   the user typed, so it wears the user's shape — same border, same tag. Only
-   the sender chip distinguishes it, which is the one thing that actually
-   differs. Reading it as a user message is CORRECT: that is what it is, from
-   this session's point of view. */
-.bubble.role-external { border-color: var(--info-deep); background: color-mix(in srgb, var(--info) calc(7% * var(--bubble-tint)), transparent); }
-.bubble.role-external .tag { color: var(--info); }
-.bubble.role-peer_status { border-color: var(--info-deep); background: color-mix(in srgb, var(--info) calc(4.5% * var(--bubble-tint)), transparent); }
-.bubble.role-peer_status .tag { color: var(--info); }
+/* Internal MCP requests/replies and sent-message receipts share a visible
+   frame in every theme, including themes that omit ordinary bubble borders. */
+.bubble.role-external, .bubble.role-peer_status {
+  border: 1px dashed var(--violet);
+  background: color-mix(in srgb, var(--violet) calc(7% * var(--bubble-tint)), transparent);
+}
+.bubble.role-external .tag, .bubble.role-peer_status .tag { color: var(--violet); }
 .peer-state { margin-left: .2rem; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
 .peer-state.replied { color: var(--success); }
 .peer-state.failed, .peer-state.timed_out { color: var(--danger-strong); }
