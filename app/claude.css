@@ -2087,7 +2087,22 @@
 /* Internal MCP requests/replies and sent-message receipts share a visible
    frame in every theme, including themes that omit ordinary bubble borders. */
 .bubble.role-external, .bubble.role-peer_status {
-  border: 1px dashed var(--violet);
+  position: relative;
+  border: 1px solid transparent;
+}
+/* Native dashed borders tie spacing to their thickness. Draw the frame
+   separately: 4px strokes with 8px gaps, without tinting the message body. */
+.bubble.role-external::before, .bubble.role-peer_status::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: var(--bubble-radius);
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(to right, var(--violet) 0 4px, transparent 4px 12px) top / 100% 1px no-repeat,
+    repeating-linear-gradient(to right, var(--violet) 0 4px, transparent 4px 12px) bottom / 100% 1px no-repeat,
+    repeating-linear-gradient(to bottom, var(--violet) 0 4px, transparent 4px 12px) left / 1px 100% no-repeat,
+    repeating-linear-gradient(to bottom, var(--violet) 0 4px, transparent 4px 12px) right / 1px 100% no-repeat;
 }
 .bubble.role-external { background: color-mix(in srgb, var(--info) calc(7% * var(--bubble-tint)), transparent); }
 .bubble.role-peer_status { background: color-mix(in srgb, var(--info) calc(4.5% * var(--bubble-tint)), transparent); }
