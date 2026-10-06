@@ -891,6 +891,8 @@ export default function ClaudeSessionView({
                 <MessageHistory
                   renderable={visibleRenderable}
                   kind={sessionKind}
+                  vpsId={selected.vpsId}
+                  cwd={selected.cwd}
                   onReauth={endpoint.active ? undefined : onReauth}
                   continuableMsgId={continuableMsgId}
                   onContinue={sendContinue}
@@ -1123,10 +1125,12 @@ export default function ClaudeSessionView({
 // inside a memoized child means a delta no longer creates/reconciles hundreds
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
-  renderable, kind, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
+  renderable, kind, vpsId, cwd, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
   kind: AgentKind;
+  vpsId: string;
+  cwd: string | null;
   onReauth?: () => void;
   continuableMsgId: string | null;
   schedulableMsgId: string | null;
@@ -1143,6 +1147,7 @@ const MessageHistory = memo(function MessageHistory({
   return [...renderable].reverse().map(({ msg, attached }) => (
     <Message
       key={msg.id} m={msg} attachedResult={attached} kind={kind}
+      vpsId={vpsId} cwd={cwd}
       onReauth={onReauth}
       onContinue={msg.id === continuableMsgId ? onContinue : undefined}
       onScheduleResume={msg.id === schedulableMsgId ? () => onScheduleResume(msg.id) : undefined}

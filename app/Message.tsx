@@ -1,7 +1,7 @@
 'use client';
-import { memo, useState } from 'react';
+import React, { memo, useCallback, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
@@ -15,6 +15,9 @@ import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError'
 import { parseScheduledResume } from '@/lib/scheduledResume';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import { formatMessageTime, useTodayStart } from './messageTime';
+import { messageFileTarget } from './messageLinks';
+import { openTab as openWorkspaceTab } from './tabStore';
+import { revealLine } from './revealLine';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -33,7 +36,6 @@ const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMark
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
 const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']> = {
-  a: (props) => <a {...props} target="_blank" rel="noopener noreferrer" />,
   pre: CodeBlock,
   table: ({ node: _node, ...props }) => (
     <div className="md-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
@@ -44,6 +46,8 @@ const MARKDOWN_COMPONENTS: NonNullable<React.ComponentProps<typeof ReactMarkdown
 
 type Props = {
   m: Msg;
+  vpsId?: string;
+  cwd?: string | null;
   streaming?: boolean;
   // If provided, the tool_result linked to this tool_use is rendered inline below (⎿ style)
   attachedResult?: Msg;
@@ -73,7 +77,7 @@ type Props = {
   onCancelScheduledResume?: (scheduleId: string) => Promise<void>;
 };
 
-function Message({ m, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -172,13 +176,7 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
             // full Markdown renderer; the live tail stays deliberately cheap.
             <span className="streaming-plain">{m.content}</span>
           ) : (
-            <ReactMarkdown
-              remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-              rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-              components={MARKDOWN_COMPONENTS}
-            >
-              {m.content}
-            </ReactMarkdown>
+            <MessageMarkdown content={m.content} vpsId={vpsId} cwd={cwd} />
           )
         ) : (
           <span>{m.content}</span>
@@ -209,6 +207,39 @@ function Message({ m, streaming = false, attachedResult, kind = 'claude', onReau
       )}
     </div>
   );
+}
+
+export function MessageMarkdown({ content, vpsId, cwd }: {
+  content: string; vpsId?: string; cwd?: string | null;
+}) {
+  const urlTransform = useCallback<NonNullable<React.ComponentProps<typeof ReactMarkdown>['urlTransform']>>(
+    (url, key) => key === 'href' && messageFileTarget(url, vpsId, cwd) ? url : defaultUrlTransform(url),
+    [vpsId, cwd],
+  );
+  const components = useMemo(() => ({
+    ...MARKDOWN_COMPONENTS,
+    a: ({ node: _node, ...props }: React.ComponentProps<'a'> & { node?: unknown }) => (
+      <MessageLink {...props} vpsId={vpsId} cwd={cwd} />
+    ),
+  }), [vpsId, cwd]);
+  return (
+    <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+      components={components} urlTransform={urlTransform}>
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+export function MessageLink({ href, vpsId, cwd, ...props }: React.ComponentProps<'a'> & {
+  vpsId?: string; cwd?: string | null;
+}) {
+  const file = messageFileTarget(href ?? '', vpsId, cwd);
+  if (!file) return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
+  return <a {...props} href={href} onClick={(event) => {
+    event.preventDefault();
+    if (file.line) revealLine(file.vpsId, file.root, file.path, file.line);
+    void openWorkspaceTab({ vpsId: file.vpsId, path: file.root, kind: 'file', ref: file.path, pin: false });
+  }} />;
 }
 
 function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume }: {
