@@ -123,12 +123,14 @@ type Props = {
 // The StreamCache instance is created once, not per-render.
 const sharedCacheRef: StreamCache = {
   get: (id) => getCached(id),
-  fetch: (id, force) => fetchAndCache(id, force),
+  fetch: (id, force, signal) => fetchAndCache(id, force, signal),
   invalidate: (id) => invalidateCache(id),
   extendWithOlder: (id, older) => extendCacheWithOlder(id, older),
 };
 
 const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr: false });
+
+const SYNC_CUE_DELAY_MS = 400;
 
 export default function ClaudeSessionView({
   sessionId, selected, showTools, selectedVps, handle, handleConfirmed, siblings,
@@ -151,7 +153,7 @@ export default function ClaudeSessionView({
     effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error, isLoadingHistory,
+    prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore,
     send: streamSend, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart,
@@ -310,6 +312,16 @@ export default function ClaudeSessionView({
 
   const [errorOpen, setErrorOpen] = useState(false);
   const [errorCopied, setErrorCopied] = useState(false);
+
+  // Shown only once a sync has lasted a beat: on a good link the fresh answer
+  // lands first and the cue never flashes. Mounted late rather than faded in
+  // late — an invisible row would still nudge the transcript twice.
+  const [showSyncing, setShowSyncing] = useState(false);
+  useEffect(() => {
+    if (!isSyncing) { setShowSyncing(false); return; }
+    const timer = setTimeout(() => setShowSyncing(true), SYNC_CUE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [isSyncing]);
 
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
   const isAtBottomRef = useRef(true);
@@ -860,6 +872,16 @@ export default function ClaudeSessionView({
               </div>
             ) : (
               <>
+                {/* First DOM child = visual BOTTOM (column-reverse): the cue
+                    sits exactly where the missing messages will land, so a
+                    cached transcript never reads as a finished one. */}
+                {showSyncing && (
+                  <div className="claude-sync-indicator" role="status" aria-live="polite"
+                    title="What you see may be out of date — fetching the latest from the server">
+                    <span className="claude-history-loading-spinner" aria-hidden />
+                    <span>checking for new messages…</span>
+                  </div>
+                )}
                 {currentAssistant && (
                   <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth} />
                 )}
@@ -1064,6 +1086,7 @@ export default function ClaudeSessionView({
         compacting={compacting}
         compactDisabled={!compactAllowed}
         compactError={compactError}
+        deferInsight={!historyReady}
       />
       {forkModalOpen && (
         <ForkModal

@@ -94,7 +94,11 @@ function compactNumber(value: number): string {
 export default function SessionInsight({
   sessionId, kind, context: ctx, contextLoaded, contextLoading,
   onRefreshContext, onCompact, compacting, compactDisabled, compactError,
+  deferLoad = false,
 }: {
+  /** Hold the first load (the transcript is still downloading). One-way:
+   *  once started, flipping back never cancels it. */
+  deferLoad?: boolean;
   sessionId: string;
   kind: AgentKind;
   context: SessionContextUsage | null;
@@ -256,10 +260,14 @@ export default function SessionInsight({
   }, [sessionId, hasSecurity]);
   loadRef.current = load;
 
+  const [started, setStarted] = useState(!deferLoad);
+  useEffect(() => { if (!deferLoad) setStarted(true); }, [deferLoad]);
+
   // The retry is completion-driven, not a poll: it only consumes a background
   // snapshot that the server has already started. Once all sections settle,
   // there are no timers.
   useEffect(() => {
+    if (!started) return;
     loadRetryAttempt.current = 0;
     forceAfterInflight.current = false;
     void load(false);
@@ -274,8 +282,9 @@ export default function SessionInsight({
       loadController.current = null;
       loadInflight.current = null;
     };
-  }, [load]);
+  }, [load, started]);
   useEffect(() => {
+    if (!started) return;
     const refreshOnReturn = () => {
       if (document.visibilityState !== 'visible') return;
       if (loadInflight.current || loadRetryTimer.current) return;
@@ -284,7 +293,7 @@ export default function SessionInsight({
     };
     window.addEventListener('focus', refreshOnReturn);
     return () => window.removeEventListener('focus', refreshOnReturn);
-  }, [load]);
+  }, [load, started]);
 
   const refreshAll = useCallback(async () => {
     await Promise.allSettled([load(true), onRefreshContext()]);

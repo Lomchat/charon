@@ -8,6 +8,7 @@ import {
   readSessionInsightSnapshot,
 } from '@/lib/server/claude/sessionInsightSnapshot';
 import { parseProviderConfig, restartSession } from '@/lib/server/agent/sessionOps';
+import { browserSessionResources } from '@/lib/server/claude/sessionResourcesWire';
 import type { ClaudeSessionConfig } from '@/lib/types/api';
 
 async function rowFor(id: string) {
@@ -38,7 +39,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json(readSessionInsightSnapshot(
       id,
       'resources',
-      () => listResources(id, row.kind, force),
+      async () => browserSessionResources(await listResources(id, row.kind, force)),
       { force, maxAgeMs: 60_000 },
     ));
   } catch (error: any) {

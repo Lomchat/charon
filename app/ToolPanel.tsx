@@ -81,6 +81,10 @@ type Props = {
   compacting?: boolean;
   compactDisabled?: boolean;
   compactError?: string | null;
+  /** The conversation is still downloading: hold the inspector's requests
+   *  (one inventory can weigh a megabyte) until it lands, unless the user
+   *  opens the Tools tab meanwhile. */
+  deferInsight?: boolean;
 };
 
 const SessionInsight = dynamic(() => import('./SessionInsight'), {
@@ -117,7 +121,7 @@ function ToolPanel({
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal, context = null, contextLoaded = false, contextLoading = false,
   onRefreshContext, onCompact, compacting = false, compactDisabled = true,
-  compactError = null,
+  compactError = null, deferInsight = false,
 }: Props) {
   // The right sidebar belongs to the tab-row GROUP `(vpsId, cwd)`, not to the
   // entity currently filling the main pane. ClaudeSessionView is keyed by
@@ -257,8 +261,9 @@ function ToolPanel({
         {activeTab === 'tree' && <TreeTab key={`tree:${panelScope}`} vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
         {activeTab === 'search' && <SearchTab key={`search:${panelScope}`} vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
         {/* Keep the inspector mounted while another tab is visible. Its four
-            panel-only requests therefore start with the session, not on the
-            first Tools click; context is the header's shared request.
+            panel-only requests therefore start with the session (right after
+            its transcript, `deferInsight`), not on the first Tools click;
+            context is the header's shared request.
             `hidden` avoids layout/paint cost, and the key prevents one
             session's last-known data flashing in the next. */}
         {!workspaceOnly && <div className="tp-calls-pane" hidden={activeTab !== 'calls'}>
@@ -274,6 +279,7 @@ function ToolPanel({
             compacting={compacting}
             compactDisabled={compactDisabled}
             compactError={compactError}
+            deferLoad={deferInsight && activeTab !== 'calls'}
           />}
           <InsightSection
             title="tool calls"

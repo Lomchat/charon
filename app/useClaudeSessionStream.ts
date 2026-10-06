@@ -135,7 +135,8 @@ function reloadForExpiredSession(): void {
 
 export type StreamCache = {
   get(id: string): AgentSessionDetailResponse | undefined;
-  fetch(id: string, force?: boolean): Promise<AgentSessionDetailResponse>;
+  /** `signal`: the caller no longer needs the answer (view unmounted). */
+  fetch(id: string, force?: boolean, signal?: AbortSignal): Promise<AgentSessionDetailResponse>;
   invalidate?(id: string): void;
   /**
    * Extends the cache entry with a window of older messages (loadMore).
@@ -211,6 +212,17 @@ export type ClaudeSessionStreamState = {
   // (neither from the cache, nor from the fetch). Lets the UI differentiate
   // "empty session" from "history loading".
   isLoadingHistory: boolean;
+  // true while what is on screen has not been confirmed current by the
+  // server: from mount (the cache paints instantly, possibly minutes old)
+  // until the first fresh answer, and again during a wake-up catch-up (tab
+  // back to the foreground, network back, SSE reconnected). Stays true while
+  // that confirmation keeps failing — the view IS out of date then.
+  isSyncing: boolean;
+  // Latches true once the first full history request has settled. Side
+  // requests that are not the conversation (diff contents, the Tools
+  // inspector) wait for it so they do not split a slow link with the
+  // transcript the user is waiting for.
+  historyReady: boolean;
   // Scroll-up pagination: true if there are chat messages older than
   // `oldestChatId` on the server side. False when we've reached the start.
   hasMore: boolean;
@@ -316,6 +328,27 @@ export function useClaudeSessionStream(
   const [prefillInput, setPrefillInput] = useState<string | null>(null);
   const [error, setError] = useState<{ msg: string } | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(true);
+  const [historyReady, setHistoryReady] = useState(false);
+  // A NETWORK response (not the cache) has been applied since mount.
+  const freshAppliedRef = useRef(false);
+  // Full history requests in flight; the delta probe stands down meanwhile.
+  const fullFetchInflightRef = useRef(0);
+  // Aborted on unmount: this view's requests stop using the link the moment
+  // the user moves to another session.
+  const lifetimeRef = useRef<AbortController | null>(null);
+  const lifetimeSignal = useCallback(
+    () => (lifetimeRef.current ??= new AbortController()).signal,
+    [],
+  );
+  useEffect(() => () => {
+    lifetimeRef.current?.abort(new DOMException('session view closed', 'AbortError'));
+    lifetimeRef.current = null;
+  }, []);
+  const markSynced = useCallback(() => {
+    setIsSyncing(false);
+    setHistoryReady(true);
+  }, []);
   // Pagination state. `oldestChatIdRef` is also kept as a ref so it can
   // be read without re-render in the scroll handler (which may spam) and in
   // loadMoreHistory (which must read the latest value before sending the POST).
@@ -531,40 +564,50 @@ export function useClaudeSessionStream(
     initialLoadDoneRef.current = true;
   }, []);
 
-  // refetchHistory: used at mount, on every SSE reconnect and on tab
-  // foreground return. Cache strategy:
-  //   1. If a cache entry exists → apply immediately (instant)
-  //   2. Launch a fresh fetch in the background, re-apply
+  // refetchHistory: used at mount, by the poll's clean reload, on `stop` and
+  // when a held reload is released. Cache strategy:
+  //   1. Until a fresh answer has landed, a cache entry paints immediately.
+  //      After that it is only ever OLDER than the screen: re-applying it on
+  //      every reload rewound the chat to the previous snapshot, wiping what
+  //      the SSE had appended since.
+  //   2. The fresh fetch replaces it.
   // Without cache: a single direct fetch.
+  //
+  // A response that started before a live event is normally dropped (it would
+  // overwrite newer state). Not the FIRST one: the screen then still shows
+  // the cache, older than anything the server can answer — dropping it kept a
+  // stale transcript up for as long as events streamed (a whole turn).
   const refetchHistory = useCallback(async () => {
-    if (cache) {
-      const cached = cache.get(sessionId);
-      if (cached) applyApiData(cached);
-      const requestRevision = liveEventRevisionRef.current;
-      try {
-        const fresh = await cache.fetch(sessionId, true);
-        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
-          applyApiData(fresh);
-        }
-      } catch (e) {
-        if (!cached) {
-          setError({ msg: String((e as Error)?.message ?? e) });
-          setIsLoadingHistory(false); // we drop the loader, the error is displayed
-        }
+    const signal = lifetimeSignal();
+    const cached = cache?.get(sessionId);
+    if (cached && !freshAppliedRef.current) applyApiData(cached);
+    const requestRevision = liveEventRevisionRef.current;
+    fullFetchInflightRef.current += 1;
+    try {
+      const fresh = cache
+        ? await cache.fetch(sessionId, true, signal)
+        : (await sessionApi.get(sessionId, signal)) as AgentSessionDetailResponse;
+      if (signal.aborted) return;
+      if (!freshAppliedRef.current || liveEventRevisionRef.current === requestRevision) {
+        applyApiData(fresh);
+        freshAppliedRef.current = true;
       }
-    } else {
-      const requestRevision = liveEventRevisionRef.current;
-      try {
-        const r = (await sessionApi.get(sessionId)) as AgentSessionDetailResponse;
-        if (!initialLoadDoneRef.current || liveEventRevisionRef.current === requestRevision) {
-          applyApiData(r);
-        }
-      } catch (e) {
+      // Dropped or applied, the catch-up has its answer: a drop means live
+      // events are flowing, and a cue held for the rest of the turn would be
+      // a false alarm.
+      markSynced();
+    } catch (e) {
+      if (signal.aborted) return;
+      if (!cached) {
         setError({ msg: String((e as Error)?.message ?? e) });
-        setIsLoadingHistory(false);
+        setIsLoadingHistory(false); // we drop the loader, the error is displayed
       }
+    } finally {
+      fullFetchInflightRef.current -= 1;
+      // Failed or not, the transcript no longer occupies the link.
+      if (!signal.aborted) setHistoryReady(true);
     }
-  }, [sessionId, cache, applyApiData]);
+  }, [sessionId, cache, applyApiData, lifetimeSignal, markSynced]);
 
   // Declare/release the "reading history" hold described above. Called by the
   // view's scroll handler with `!isAtBottom`. Releasing runs a held reload
@@ -590,7 +633,7 @@ export function useClaudeSessionStream(
     if (targetPaths.length === 0) return;
     editsLoadInflightRef.current = true;
     try {
-      const r = await sessionApi.getEdits(sessionId);
+      const r = await sessionApi.getEdits(sessionId, lifetimeSignal());
       const byPath = new Map(r.edits.map((e) => [e.filePath, e] as const));
       setEdits((prev) => {
         const next = new Map(prev);
@@ -627,7 +670,7 @@ export function useClaudeSessionStream(
     } finally {
       editsLoadInflightRef.current = false;
     }
-  }, [sessionId]);
+  }, [sessionId, lifetimeSignal]);
 
   // ── Delta poll (safety-net loop) ───────────────────────────────────────
   // Independent of the SSE: fetches `GET ?since=<lastSeenServerId>` and
@@ -645,7 +688,7 @@ export function useClaudeSessionStream(
   // Polling makes ALL of these failure modes self-healing: even if every
   // SSE-related fix breaks tomorrow, the user still sees new messages
   // within 5s. cf. CLAUDE.md §14 gotcha 24.
-  const pollDelta = useCallback(async () => {
+  const pollDelta = useCallback(async (force = false) => {
     if (inflightPollRef.current) return;
     // Skip background tabs to save battery — visibilitychange handler
     // will trigger an immediate catch-up poll when the tab returns.
@@ -659,6 +702,12 @@ export function useClaudeSessionStream(
     // (since=0) or miss the window. safetyTick does the full refetch in
     // that state; once it's done we switch to cheap deltas.
     if (!initialLoadDoneRef.current) return;
+    // A full reload in flight answers the same question with more. At mount
+    // the probe's cursor comes from the cache, so it would download every
+    // row since — tens of KB racing the transcript itself on a slow link.
+    // Wake-ups (`force`) still probe: that reload may be a socket the device
+    // left hanging when it slept.
+    if (!force && fullFetchInflightRef.current > 0) return;
     const since = lastSeenServerIdRef.current;
     inflightPollRef.current = true;
     const ac = new AbortController();
@@ -747,6 +796,10 @@ export function useClaudeSessionStream(
           }
           await refetchHistory();
         }
+      } else {
+        // Nothing persisted that the screen lacks, and the live envelope
+        // above is current: the view is up to date.
+        markSynced();
       }
     } catch (e) {
       // Network errors are silent — the next tick will retry. We don't
@@ -766,7 +819,7 @@ export function useClaudeSessionStream(
       if (pollAbortRef.current === ac) pollAbortRef.current = null;
       inflightPollRef.current = false;
     }
-  }, [sessionId, refetchHistory]);
+  }, [sessionId, refetchHistory, markSynced]);
 
   // safetyTick: the unit of work the 5s loop runs. SELF-SUFFICIENT — it
   // does NOT depend on the SSE or on the mount-time refetch ever
@@ -778,11 +831,13 @@ export function useClaudeSessionStream(
   //     (pollDelta bails on since===0), so the chat stayed frozen until
   //     F5 even though the loop was "running".
   //   - cursor set: cheap delta poll.
-  const safetyTick = useCallback(() => {
+  // A full load already in flight is not duplicated (at mount the effect's
+  // own refetch is still running when the loop's first tick fires).
+  const safetyTick = useCallback((force = false) => {
     if (!initialLoadDoneRef.current) {
-      refetchHistory();
+      if (fullFetchInflightRef.current === 0) void refetchHistory();
     } else {
-      pollDelta();
+      void pollDelta(force);
     }
   }, [refetchHistory, pollDelta]);
 
@@ -792,13 +847,16 @@ export function useClaudeSessionStream(
   // would block the inflight guard. We abort it and start clean so the
   // user sees fresh data within ~1s of waking, not after the hung
   // request's 12s timeout.
-  const forcePoll = useCallback(() => {
+  // `stale`: the screen may have missed a stretch (tab hidden, network or
+  // SSE back) — show the syncing cue until the probe confirms or reloads.
+  const forcePoll = useCallback((stale = false) => {
+    if (stale) setIsSyncing(true);
     if (pollAbortRef.current) {
       try { pollAbortRef.current.abort(); } catch {}
       pollAbortRef.current = null;
     }
     inflightPollRef.current = false;
-    safetyTick();
+    safetyTick(true);
   }, [safetyTick]);
 
   // loadMoreHistory: loads a page of older history, prepends to local
@@ -1287,7 +1345,7 @@ export function useClaudeSessionStream(
       // One coalesced catch-up path. forcePoll aborts a stale request; the
       // delta response carries the live envelope and escalates to one clean
       // reload only when persisted rows actually changed.
-      forcePoll();
+      forcePoll(true);
     });
     return () => unsub();
   }, [forcePoll]);
@@ -1306,8 +1364,11 @@ export function useClaudeSessionStream(
     // first interval. safetyTick is self-sufficient (full refetch when the
     // cursor isn't set yet, delta otherwise).
     safetyTick();
-    const id = setInterval(safetyTick, 5_000);
-    return () => clearInterval(id);
+    const id = setInterval(() => safetyTick(), 5_000);
+    return () => {
+      clearInterval(id);
+      pollAbortRef.current?.abort();
+    };
   }, [safetyTick]);
 
   // ── Auto-load stripped diff content (CLAUDE.md §14 gotcha 41) ────────────
@@ -1317,7 +1378,10 @@ export function useClaudeSessionStream(
   // `attempted` set bounds this to one fetch per file (no infinite retry on
   // budget-dropped / empty snapshots). Live edit_snapshot SSE events already
   // carry content, so they never enter this path.
+  // Waits for `historyReady`: diff contents can weigh hundreds of KB, and on a
+  // slow link they would share it with the transcript the user opened.
   useEffect(() => {
+    if (!historyReady) return;
     const unloaded: string[] = [];
     for (const [k, v] of edits) {
       if (v.before == null && v.after == null && !editsLoadAttemptedRef.current.has(k)) {
@@ -1326,7 +1390,7 @@ export function useClaudeSessionStream(
     }
     if (unloaded.length === 0) return;
     loadEdits(unloaded);
-  }, [edits, loadEdits]);
+  }, [edits, loadEdits, historyReady]);
 
   // Immediate catch-up poll on tab focus / network online — don't wait
   // 5s after the user obviously expects the latest state. Use forcePoll
@@ -1345,10 +1409,12 @@ export function useClaudeSessionStream(
   // in that case and force-polls, pulling the pending interaction from the DB.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Back from hidden / offline is a real gap → syncing cue. A bare window
+    // focus is not (the page stayed visible and live), so it probes quietly.
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') forcePoll();
+      if (document.visibilityState === 'visible') forcePoll(true);
     };
-    const onOnline = () => forcePoll();
+    const onOnline = () => forcePoll(true);
     const onFocus = () => forcePoll();
     // Explicit signal: a notification was clicked targeting a session.
     // ClaudePanel dispatches this on the SW `open-session` message. If it's
@@ -1358,7 +1424,7 @@ export function useClaudeSessionStream(
     // nor 'visibilitychange' fired).
     const onNotifOpen = (e: Event) => {
       const sid = (e as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
-      if (!sid || sid === sessionId) forcePoll();
+      if (!sid || sid === sessionId) forcePoll(true);
     };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('online', onOnline);
@@ -1561,7 +1627,7 @@ export function useClaudeSessionStream(
     effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error, isLoadingHistory,
+    prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart, doDelete,
@@ -1573,7 +1639,7 @@ export function useClaudeSessionStream(
     effectiveModel, liveUsage, tokenUsage,
     toolCalls, edits, files, bgTasks,
     permQueue, questionQueue, exitPlanQueue,
-    prefillInput, error, isLoadingHistory,
+    prefillInput, error, isLoadingHistory, isSyncing, historyReady,
     hasMore, isLoadingMore,
     send, interrupt, forceStop, setMode, setModel, setEffort,
     doSleep, doResume, doRestart, doDelete,

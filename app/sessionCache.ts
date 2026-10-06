@@ -16,8 +16,19 @@ type CacheEntry = {
   approxBytes: number;
 };
 
+// One shared request per session. `holders` counts the callers that passed an
+// AbortSignal and have not aborted; a caller without one pins the request.
+// The request is cancelled only when its LAST holder leaves — a view that
+// unmounts stops competing for bandwidth with the session opened next.
+type Inflight = {
+  promise: Promise<ClaudeSessionDetailResponse>;
+  controller: AbortController;
+  holders: number;
+  pinned: boolean;
+};
+
 const cache = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<ClaudeSessionDetailResponse>>();
+const inflight = new Map<string, Inflight>();
 
 // A cached detail response contains parsed message objects and strings, whose
 // actual JS heap cost is several times their wire size. Keep the hot working
@@ -78,20 +89,53 @@ export function isCacheFresh(id: string): boolean {
   return !!e && (Date.now() - e.fetchedAt < STALE_MS);
 }
 
+function hold(id: string, req: Inflight, signal?: AbortSignal): void {
+  if (!signal) { req.pinned = true; return; }
+  if (signal.aborted) return;
+  req.holders += 1;
+  const onAbort = () => {
+    req.holders -= 1;
+    if (req.pinned || req.holders > 0) return;
+    // Forget it NOW, not in the settle handler: a remount in the same tick
+    // must start a fresh request instead of joining the cancelled one.
+    if (inflight.get(id) === req) inflight.delete(id);
+    req.controller.abort(new DOMException('session view closed', 'AbortError'));
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  // The signal outlives the request (it is the VIEW's lifetime): a listener
+  // left behind would pin every response of every reload in memory.
+  const release = () => signal.removeEventListener('abort', onAbort);
+  req.promise.then(release, release);
+}
+
 /**
  * Fetch + cache a session. Dedups concurrent calls.
  * If a fresh entry exists and `force=false` → return cached without fetch.
+ * `signal`: this caller no longer needs the answer (see `Inflight`).
  */
-export async function fetchAndCache(id: string, force = false): Promise<ClaudeSessionDetailResponse> {
+export async function fetchAndCache(
+  id: string,
+  force = false,
+  signal?: AbortSignal,
+): Promise<ClaudeSessionDetailResponse> {
+  if (signal?.aborted) throw new DOMException('session view closed', 'AbortError');
   if (!force) {
     const e = cache.get(id);
     if (e && Date.now() - e.fetchedAt < STALE_MS) return e.data;
   }
   const existing = inflight.get(id);
-  if (existing) return existing;
-  const p = (async () => {
+  if (existing) {
+    hold(id, existing, signal);
+    return existing.promise;
+  }
+  const controller = new AbortController();
+  const req: Inflight = {
+    promise: undefined as unknown as Promise<ClaudeSessionDetailResponse>,
+    controller, holders: 0, pinned: false,
+  };
+  req.promise = (async () => {
     try {
-      const data = await api.getClaudeSession(id);
+      const data = await api.getClaudeSession(id, controller.signal);
       const entry = {
         data: withoutLiveState(data), fetchedAt: Date.now(), approxBytes: estimateBytes(data),
       };
@@ -99,11 +143,12 @@ export async function fetchAndCache(id: string, force = false): Promise<ClaudeSe
       prune();
       return data;
     } finally {
-      inflight.delete(id);
+      if (inflight.get(id) === req) inflight.delete(id);
     }
   })();
-  inflight.set(id, p);
-  return p;
+  inflight.set(id, req);
+  hold(id, req, signal);
+  return req.promise;
 }
 
 export function invalidate(id: string): void {

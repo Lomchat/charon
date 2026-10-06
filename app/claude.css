@@ -1761,6 +1761,28 @@
 @keyframes claude-history-spin {
   to { transform: rotate(360deg); }
 }
+/* "Not up to date yet" cue — the FIRST DOM child, so in column-reverse it
+   sits at the visual bottom, where the messages still loading will land. */
+.claude-sync-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  align-self: center;
+  padding: 5px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: var(--radius-xl);
+  color: color-mix(in srgb, var(--text-strong) 70%, transparent);
+  font-size: 12px;
+  font-style: italic;
+  user-select: none;
+  animation: claude-sync-in 0.2s ease;
+}
+.claude-sync-indicator .claude-history-loading-spinner { width: 12px; height: 12px; }
+@keyframes claude-sync-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
 /* "Load older" / "loading in progress" indicator — in column-reverse,
    it's the last DOM child, so visually at the top of the chat. */
 .claude-loadmore-indicator {

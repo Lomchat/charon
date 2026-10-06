@@ -464,8 +464,11 @@ export const api = {
     const qs = p.toString();
     return send<ClaudeSessionsListResponse>('GET', `/api/claude/sessions${qs ? '?' + qs : ''}`);
   },
-  getClaudeSession: (id: string) =>
-    send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}`),
+  // `signal` lets a view that unmounts give its bandwidth back: on a slow link
+  // the previous session's 100-300KB transcript otherwise keeps downloading
+  // alongside the one the user just opened (sessionCache.fetchAndCache).
+  getClaudeSession: (id: string, signal?: AbortSignal) =>
+    send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}`, undefined, { signal }),
   // Loads a window of older chat messages (scroll-up pagination).
   // The cursor is the `oldestChatId` returned by the previous response.
   // Reuses the same endpoint as getClaudeSession with `?before=<id>` — the
@@ -500,8 +503,8 @@ export const api = {
   // loop — cf. CLAUDE.md §14 gotcha 41); this serves the diff content on
   // demand, once per session view. Called by useClaudeSessionStream's
   // auto-load effect when the edits Map has files with stripped content.
-  getClaudeSessionEdits: (id: string) =>
-    send<ClaudeSessionEditsResponse>('GET', `/api/claude/sessions/${id}/edits`),
+  getClaudeSessionEdits: (id: string, signal?: AbortSignal) =>
+    send<ClaudeSessionEditsResponse>('GET', `/api/claude/sessions/${id}/edits`, undefined, { signal }),
   createClaudeSession: (data: CreateClaudeSessionBody) =>
     send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
   importClaudeSession: (data: ImportClaudeSessionBody) =>
