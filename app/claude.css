@@ -1855,6 +1855,23 @@
    not hover-only: the same UI runs on phones (§11), where there is no hover;
    the opaque chip is what keeps it readable over the code underneath. */
 .code-block { position: relative; }
+.mermaid-block {
+  margin: 8px 0; padding: 30px 12px 10px;
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.mermaid-output { overflow-x: auto; text-align: center; }
+/* Overview fits the bubble; actual size keeps labels readable and scrolls. */
+.mermaid-output > svg { display: block; max-width: 100% !important; height: auto; margin: 0 auto; }
+.mermaid-output.actual-size > svg { max-width: none !important; }
+.mermaid-size-btn {
+  margin-top: 8px; padding: 3px 6px; cursor: pointer; font: inherit; font-size: 12px;
+  color: var(--text-muted); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.mermaid-size-btn:hover { color: var(--text); border-color: var(--accent); }
+.mermaid-status, .mermaid-source > summary { color: var(--text-muted); font-size: 12px; }
+.mermaid-status { margin: 0 0 8px; }
+.mermaid-source { margin-top: 8px; }
+.mermaid-source > summary { cursor: pointer; }
 /* The tool panes scroll VERTICALLY (max-height + auto), so their scrollbar
    runs down the right edge — exactly where the button is anchored. Thin, like
    `.claude-tabbar`'s, so the two don't fight over the corner. */

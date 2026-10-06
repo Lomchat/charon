@@ -14,3 +14,18 @@ export function hastText(node: unknown): string {
   if (n.type === 'text') return typeof n.value === 'string' ? n.value : '';
   return Array.isArray(n.children) ? n.children.map(hastText).join('') : '';
 }
+
+// Only explicitly labelled fenced code is a diagram; ordinary code and
+// unlabelled snippets must never be guessed from their contents.
+export function hastCodeLanguage(node: unknown): string | undefined {
+  const pre = node as { type?: string; tagName?: string; children?: unknown[] } | null | undefined;
+  if (pre?.type !== 'element' || pre.tagName !== 'pre' || !Array.isArray(pre.children)) return;
+  const code = pre.children[0] as {
+    type?: string; tagName?: string; properties?: { className?: unknown };
+  } | undefined;
+  if (code?.type !== 'element' || code.tagName !== 'code') return;
+  const classes = code.properties?.className;
+  if (!Array.isArray(classes)) return;
+  const language = classes.find((value: unknown) => typeof value === 'string' && value.startsWith('language-'));
+  return typeof language === 'string' ? language.slice('language-'.length).toLowerCase() : undefined;
+}

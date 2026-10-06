@@ -1,5 +1,6 @@
 'use client';
 import { memo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -7,7 +8,7 @@ import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { providerName, providerText } from '@/lib/providerText';
 import { IconClipboard } from './icons';
-import { hastText } from './hastText';
+import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError, type SessionErrorPayload } from '@/lib/sessionError';
@@ -24,6 +25,10 @@ export type { Msg };
 // every bubble render, this lets react-markdown reuse more of its processing
 // setup for completed messages.
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const MermaidDiagram = dynamic(() => import('./MermaidDiagram'), {
+  ssr: false,
+  loading: () => <p className="mermaid-status" role="status">Rendering diagram…</p>,
+});
 const MARKDOWN_REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [
   [rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
@@ -629,9 +634,10 @@ function CopyMessageButton({ content }: { content: string }) {
 // long line.
 function CodeBlock({ node, children, ...props }: React.ComponentPropsWithoutRef<'pre'> & { node?: unknown }) {
   const text = hastText(node);
+  const mermaid = hastCodeLanguage(node) === 'mermaid';
   return (
-    <div className="code-block">
-      <pre {...props}>{children}</pre>
+    <div className={`code-block${mermaid ? ' mermaid-block' : ''}`}>
+      {mermaid ? <MermaidDiagram source={text} /> : <pre {...props}>{children}</pre>}
       {text.trim() !== '' && (
         <CopyButton text={text} className="code-copy-btn" title="copy this code block" />
       )}
