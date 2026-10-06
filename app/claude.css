@@ -2493,7 +2493,9 @@
   z-index: 2;
   outline: none;
 }
-.claude-input-bar .ci-grip-pill {
+/* The pill is shared with the pending zone's fold button (PendingZone.tsx). */
+.ci-grip-pill {
+  flex: none;
   width: 36px; height: 4px;
   border-radius: var(--radius-sm);
   background: var(--border);
@@ -3807,6 +3809,65 @@
   background: color-mix(in srgb, var(--lavender) 4%, transparent);
   max-height: 65vh;
   overflow-y: auto;
+}
+
+/* ── Folding the pending zone (PendingZone.tsx) ─────────────────────────────
+   Same pill as the composer grip, in the zone's top padding. The button sits
+   OUTSIDE the scrolling zone so it stays put while a long plan scrolls. */
+.pz-wrap { position: relative; }
+.pz-toggle {
+  position: absolute; top: 1px; left: 50%;
+  transform: translateX(-50%);
+  box-sizing: content-box;
+  width: 96px; height: 12px;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 0; border: 0; background: none;
+  color: inherit; font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  z-index: 2;
+  outline: none;
+}
+.pz-toggle:hover .ci-grip-pill { background: var(--text-muted); width: 48px; }
+.pz-toggle:focus-visible .ci-grip-pill { background: var(--accent); width: 48px; }
+@media (pointer: coarse) {
+  .pz-wrap:not(.is-collapsed) .pz-toggle { top: -9px; padding-top: 10px; width: 120px; }
+}
+/* Folded: a reminder strip in the zone's own colours — the agent is blocked
+   until this is answered, so it never folds down to nothing. */
+.pz-wrap.is-collapsed .pz-toggle {
+  position: static; transform: none;
+  box-sizing: border-box;
+  width: 100%; height: auto; min-height: 32px;
+  padding: 6px 12px;
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--lavender) 4%, transparent);
+}
+.pz-reminder {
+  --pz-tone: var(--lavender);
+  display: inline-flex; align-items: center; gap: 8px;
+  min-width: 0;
+  color: var(--pz-tone);
+  font-family: var(--display); font-size: 10px;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.pz-wrap.permission .pz-reminder { --pz-tone: var(--danger); }
+.pz-reminder .pz-dot {
+  width: 7px; height: 7px; flex: none;
+  border-radius: 50%;
+  background: var(--pz-tone);
+  animation: pz-pulse 1.6s ease-in-out infinite;
+}
+.pz-reminder .pz-hint {
+  color: var(--text-muted);
+  font-family: var(--mono); letter-spacing: 0; text-transform: none;
+}
+.pz-toggle:hover .pz-hint { color: var(--text); }
+@keyframes pz-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .pz-reminder .pz-dot { animation: none; }
 }
 
 /* Inline permission card (replace input zone) */

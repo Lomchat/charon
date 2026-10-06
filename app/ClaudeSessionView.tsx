@@ -52,6 +52,7 @@ import {
 import { useInputDraft } from './inputDraftStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
 import ComposerGrip from './ComposerGrip';
+import PendingZone from './PendingZone';
 import { isPathDrag, readPathDrag } from './pathDrag';
 import { toolPanelLeft, uploadZoneOf } from './fileDropZones';
 import { IconInsert } from './fileIcons';
@@ -1022,7 +1023,12 @@ export default function ClaudeSessionView({
             <button onClick={() => doResume()}>↺ RESUME THIS SESSION</button>
           </div>
         ) : oldestPending ? (
-          <div className="claude-pending-zone">
+          <PendingZone
+            kind={oldestPending.kind}
+            id={oldestPending.kind === 'permission' ? oldestPending.perm.id
+              : oldestPending.kind === 'question' ? oldestPending.q.id
+              : oldestPending.ep.id}
+          >
             {oldestPending.kind === 'question' && (
               <QuestionCard
                 questions={oldestPending.q.questions}
@@ -1044,7 +1050,7 @@ export default function ClaudeSessionView({
                 onRespond={(allow, always) => respondPermission(oldestPending.perm.id, allow, always)}
               />
             )}
-          </div>
+          </PendingZone>
         ) : (
           <ChatInputBar
             sessionId={sessionId}
