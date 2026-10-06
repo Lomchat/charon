@@ -2088,9 +2088,10 @@
    frame in every theme, including themes that omit ordinary bubble borders. */
 .bubble.role-external, .bubble.role-peer_status {
   border: 1px dashed var(--violet);
-  background: color-mix(in srgb, var(--violet) calc(7% * var(--bubble-tint)), transparent);
 }
-.bubble.role-external .tag, .bubble.role-peer_status .tag { color: var(--violet); }
+.bubble.role-external { background: color-mix(in srgb, var(--info) calc(7% * var(--bubble-tint)), transparent); }
+.bubble.role-peer_status { background: color-mix(in srgb, var(--info) calc(4.5% * var(--bubble-tint)), transparent); }
+.bubble.role-external .tag, .bubble.role-peer_status .tag { color: var(--info); }
 .peer-state { margin-left: .2rem; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
 .peer-state.replied { color: var(--success); }
 .peer-state.failed, .peer-state.timed_out { color: var(--danger-strong); }
