@@ -1256,6 +1256,7 @@ export function useClaudeSessionStream(
               conversationId: ev.conversationId,
               peerStatus: ev.status,
               peerTarget: ev.target ?? null,
+              peerTargetSessionId: ev.targetSessionId ?? null,
               peerError: ev.error ?? null,
               fromProvider: ev.targetProvider ?? null,
             };

@@ -206,10 +206,12 @@ describe('rebuildStateFromMessages', () => {
       row('event', JSON.stringify({
         type: 'peer_message_status', messageId: 'm-peer', conversationId: 'conv',
         target: 'b', targetProvider: 'codex', text: 'bonjour', status: 'accepted',
+        targetSessionId: 'target-session',
       })),
       row('event', JSON.stringify({
         type: 'peer_message_status', messageId: 'm-peer', conversationId: 'conv',
         target: 'b', targetProvider: 'codex', text: 'bonjour', status: 'replied',
+        targetSessionId: 'target-session',
       })),
       row('event', JSON.stringify({
         type: 'external_message', origin: 'charon_peer_reply', text: 'salut',
@@ -222,6 +224,7 @@ describe('rebuildStateFromMessages', () => {
     expect(s.messages[0]).toMatchObject({
       id: 'peer:m-peer', role: 'peer_status', content: 'bonjour',
       peerStatus: 'replied', peerTarget: 'b', conversationId: 'conv',
+      peerTargetSessionId: 'target-session',
       peerError: null,
     });
     expect(s.messages[1]).toMatchObject({

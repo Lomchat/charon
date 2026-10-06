@@ -178,6 +178,7 @@ export function rebuildStateFromMessages(
             conversationId: typeof ev.conversationId === 'string' ? ev.conversationId : null,
             peerStatus,
             peerTarget: typeof ev.target === 'string' ? ev.target : null,
+            peerTargetSessionId: typeof ev.targetSessionId === 'string' ? ev.targetSessionId : null,
             peerError: typeof ev.error === 'string' ? ev.error : null,
             fromProvider: isSessionProvider(ev.targetProvider) ? ev.targetProvider : null,
           });

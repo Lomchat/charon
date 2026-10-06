@@ -65,6 +65,8 @@ import { shouldShowChatRole } from './chatVisibility';
 import { canCompactSession } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
+import { peerSessionTarget } from './peerMessageLinks';
+import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 
 // Renders one active session. Stream state lives in useClaudeSessionStream;
 // global navigation, modals and polling stay in ClaudePanel.
@@ -327,6 +329,9 @@ export default function ClaudeSessionView({
   }, [isSyncing]);
 
   const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  const { hoverRequest, jumpToRequest, isJumping: isPeerJumping } = usePeerMessageNavigation(chatBodyRef, {
+    messages, hasMore, isLoadingMore, historyReady, loadMoreHistory, setHistoryHold,
+  });
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [newCount, setNewCount] = useState(0);
@@ -548,7 +553,7 @@ export default function ClaudeSessionView({
     // Scrolled away from the bottom = the user is reading back through the
     // transcript. Hold the poll's clean full reload until they return, or it
     // discards the paginated pages mid-read (CLAUDE.md §14 gotcha 24).
-    setHistoryHold(!atBottom);
+    setHistoryHold(!atBottom || isPeerJumping);
     // Near-top detect → loadMore. The hook guards against concurrent calls
     // and hasMore=false. The browser does scroll anchoring natively when
     // we append to the end of the DOM (= visual top in column-reverse),
@@ -577,7 +582,7 @@ export default function ClaudeSessionView({
       jumpable = gap > 4;
     }
     setShowJumpToMsgStart(jumpable);
-  }, [hasMore, isLoadingMore, loadMoreHistory, setHistoryHold]);
+  }, [hasMore, isLoadingMore, loadMoreHistory, setHistoryHold, isPeerJumping]);
   // rAF-coalesced scroll handler. The measurement above reads scrollHeight /
   // clientHeight and two getBoundingClientRect — each one forces a synchronous
   // layout, and with `content-visibility: auto` on every bubble that layout has
@@ -889,6 +894,8 @@ export default function ClaudeSessionView({
                   <Message m={{ id: '__streaming', role: 'assistant', content: currentAssistant, createdAt: 0, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth} />
                 )}
                 <MessageHistory
+                  siblings={siblings} onOpenPeerSession={onOpenSession}
+                  onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest}
                   renderable={visibleRenderable}
                   kind={sessionKind}
                   vpsId={selected.vpsId}
@@ -1126,6 +1133,7 @@ export default function ClaudeSessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
+  siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump,
 }: {
   renderable: { msg: Msg; attached?: Msg }[];
   kind: AgentKind;
@@ -1143,6 +1151,10 @@ const MessageHistory = memo(function MessageHistory({
   // derived `orphaned`, so a turn boundary re-runs this map but re-renders
   // at most those few messages (memo, §14.38).
   turnInFlight: boolean;
+  siblings?: Array<{ id: string; handle: string }>;
+  onOpenPeerSession?: (sessionId: string) => void;
+  onPeerRequestHover: (messageId: string | null) => void;
+  onPeerRequestJump: (messageId: string) => void;
 }) {
   return [...renderable].reverse().map(({ msg, attached }) => (
     <Message
@@ -1153,6 +1165,8 @@ const MessageHistory = memo(function MessageHistory({
       onScheduleResume={msg.id === schedulableMsgId ? () => onScheduleResume(msg.id) : undefined}
       onCancelScheduledResume={onCancelScheduledResume}
       orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
+      peerSessionId={peerSessionTarget(msg, siblings)} onOpenPeerSession={onOpenPeerSession}
+      onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
     />
   ));
 });

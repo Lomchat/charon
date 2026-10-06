@@ -18,6 +18,7 @@ import { formatMessageTime, useTodayStart } from './messageTime';
 import { messageFileTarget } from './messageLinks';
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine } from './revealLine';
+import { peerRequestTarget } from './peerMessageLinks';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -75,9 +76,13 @@ type Props = {
   onContinue?: () => void;
   onScheduleResume?: () => Promise<void>;
   onCancelScheduledResume?: (scheduleId: string) => Promise<void>;
+  peerSessionId?: string | null;
+  onOpenPeerSession?: (sessionId: string) => void;
+  onPeerRequestHover?: (messageId: string | null) => void;
+  onPeerRequestJump?: (messageId: string) => void;
 };
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, onScheduleResume, onCancelScheduledResume, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -112,6 +117,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
   // way an assistant bubble carries the model that produced it.
   const isExternal = m.role === 'external';
   const isPeerStatus = m.role === 'peer_status';
+  const requestId = peerRequestTarget(m);
   const peerStatusLabel = m.peerStatus === 'accepted' ? 'accepted'
     : m.peerStatus === 'processing' ? 'processing'
     : m.peerStatus === 'replied' ? 'replied'
@@ -121,32 +127,38 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
     <div
       className={`bubble role-${m.role}${m.role === 'assistant' && m.assistantFinal === 0 ? ' intermediate' : ''}${streaming ? ' streaming' : ''}`}
       data-msg-role={m.role}
+      data-peer-message-id={m.messageId ?? undefined}
     >
       <header className="bubble-h">
         <span className="tag">{isExternal ? 'user' : isPeerStatus ? 'sent' : m.role}</span>
         {isExternal && (
-          <span
-            className="from-chip"
+          <PeerSessionLink
+            sessionId={peerSessionId} onOpen={onOpenPeerSession}
             title={m.from
               ? `Sent by the session @${m.from} on this machine — not typed by you`
               : 'Sent by another session on this machine — not typed by you'}
           >
             {m.from ? `via @${m.from}` : 'via another session'}
-          </span>
+          </PeerSessionLink>
         )}
         {isExternal && m.fromProvider && (
           <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
         )}
         {isPeerStatus && (
-          <span className="from-chip" title="Charon peer request destination">
+          <PeerSessionLink sessionId={peerSessionId} onOpen={onOpenPeerSession} title="Open recipient session">
             {m.peerTarget ? `to @${m.peerTarget}` : 'to peer session'}
-          </span>
+          </PeerSessionLink>
         )}
         {isPeerStatus && m.fromProvider && (
           <AgentLogo kind={m.fromProvider} size={12} className="bubble-agent-logo" />
         )}
         {isPeerStatus && peerStatusLabel && (
-          <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
+          requestId
+            ? <PeerRequestLink requestId={requestId} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
+            : <span className={`peer-state ${m.peerStatus}`}>{peerStatusLabel}</span>
+        )}
+        {isExternal && m.replyTo && (
+          <PeerRequestLink requestId={m.replyTo} onHover={onPeerRequestHover} onJump={onPeerRequestJump} />
         )}
         {/* Per-message agent attribution (assistant only): a small Claude/Codex
             logo so it's always clear which backend is speaking, next to the
@@ -207,6 +219,28 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
       )}
     </div>
   );
+}
+
+function PeerSessionLink({ sessionId, onOpen, title, children }: {
+  sessionId?: string | null; onOpen?: (id: string) => void;
+  title: string; children: React.ReactNode;
+}) {
+  if (!sessionId) return <span className="from-chip" title={title}>{children}</span>;
+  return <a className="from-chip peer-session-link" href={`/?session=${encodeURIComponent(sessionId)}`}
+    title={title} onClick={(event) => {
+      if (!onOpen || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      onOpen(sessionId);
+    }}>{children}</a>;
+}
+
+function PeerRequestLink({ requestId, onHover, onJump }: {
+  requestId: string; onHover?: (id: string | null) => void; onJump?: (id: string) => void;
+}) {
+  return <button type="button" className="peer-state replied peer-request-link"
+    title="Show the original message" onMouseEnter={() => onHover?.(requestId)}
+    onMouseLeave={() => onHover?.(null)} onFocus={() => onHover?.(requestId)}
+    onBlur={() => onHover?.(null)} onClick={() => onJump?.(requestId)}>replied</button>;
 }
 
 export function MessageMarkdown({ content, vpsId, cwd }: {

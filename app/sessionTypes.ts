@@ -40,6 +40,7 @@ export type Msg = {
   replyTo?: string | null;
   peerStatus?: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out' | null;
   peerTarget?: string | null;
+  peerTargetSessionId?: string | null;
   peerError?: string | null;
 };
 
