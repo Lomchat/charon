@@ -1317,9 +1317,7 @@ export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
 export type SetClaudeSessionEffortBody = { effort: string | null };
 export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
 
-// GET /api/claude/models — curated picker source. Source of truth lives in
-// lib/server/claude/knownModels.ts (single hand-curated list, see header
-// there for why no autodiscovery).
+// GET /api/claude/models — short aliases plus API-discovered concrete models.
 export type ClaudeModelGroup = 'aliases' | 'current' | 'previous';
 export type KnownClaudeModel = {
   id: string;

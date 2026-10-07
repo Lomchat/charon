@@ -173,8 +173,8 @@ const DEFAULTS = {
   // Optional hub-side Anthropic API key (x-api-key). ONLY used to auto-sync
   // the model list from GET /v1/models — NOT for inference (sessions run via
   // the per-VPS Claude Code OAuth, untouched). Empty = no auto-sync; the
-  // picker falls back to the curated seed in knownModels.ts + the custom-id
-  // escape hatch. See lib/server/claude/modelSync.ts.
+  // picker uses cached API models, short aliases and manual ids.
+  // See lib/server/claude/modelSync.ts.
   'claude.api_key': '',
   // Internal cache written by modelSync (not user-editable via settings POST):
   // JSON array of the live model list, + the unix-ms timestamp of the last
@@ -193,8 +193,7 @@ const DEFAULTS = {
   // time somebody opens the picker. Bounded — see MAX_STORED there.
   'cursor.models_cache': '',
   'claude.models_cache': '',
-  // Internal catalog discoveries + globally acknowledged release notices.
-  'claude.cli_models_cache': '',
+  // Globally acknowledged release notices.
   'models.notices': '',
   'claude.models_cache_at': '',
   // Auto-update the `claude-agent-sdk` python package on fleet VPSes when a

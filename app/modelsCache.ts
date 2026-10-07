@@ -38,7 +38,7 @@ export function getEfforts(): Promise<string[]> {
 }
 
 // Optimistic synchronous accessors for first render (return null on first ever
-// read of a tab; the caller falls back to a hardcoded baseline).
+// read of a tab; the model picker shows a loading state).
 export function peekModels(): KnownClaudeModel[] | null {
   return cached?.models ?? null;
 }

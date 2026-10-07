@@ -627,9 +627,7 @@ export const api = {
   // getClaudeModels but sourced from the agent's list_codex_models RPC.
   getCodexModels: (vpsId: string) =>
     send<import('@/lib/types/api').CodexModelsResponse>('GET', `/api/codex/models?vpsId=${encodeURIComponent(vpsId)}`),
-  // Curated list of model IDs (server-side source of truth in
-  // lib/server/claude/knownModels.ts). Cached aggressively client-side via
-  // the module-level cache in app/modelsCache.ts.
+  // Short aliases + API catalog, cached per tab in app/modelsCache.ts.
   getClaudeModels: () =>
     send<ClaudeModelsResponse>('GET', '/api/claude/models'),
   refreshClaudeModels: () =>

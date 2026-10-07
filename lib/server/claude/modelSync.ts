@@ -1,7 +1,7 @@
 import 'server-only';
 import { observeModels } from './modelNotices';
 import { getSetting, setSetting } from './settings';
-import { KNOWN_MODELS, type KnownModel } from './knownModels';
+import { CLAUDE_MODEL_ALIASES, type KnownModel } from './knownModels';
 import { CANONICAL_EFFORTS } from '@/lib/types/api';
 
 /**
@@ -14,8 +14,8 @@ import { CANONICAL_EFFORTS } from '@/lib/types/api';
  *   real `x-api-key`. So auto-sync is OPT-IN: set `claude.api_key` in
  *   Settings and the hub refreshes the list every 24h (and on demand). With
  *   no key, nothing breaks — `GET /api/claude/models` still serves the
- *   curated seed (knownModels.ts) and the picker keeps its custom-id escape
- *   hatch, so a brand-new model is usable the moment you type its id.
+ *   cached API catalog plus short aliases. With no successful sync there are
+ *   no suggested versioned models; the picker retains a custom-id escape hatch.
  *
  * The key is used SOLELY for this read-only catalog call. Sessions still run
  * through each VPS's Claude Code OAuth — we never route inference through it.
@@ -68,15 +68,14 @@ function extractEfforts(eff: EffortCap | undefined): string[] {
   return out;
 }
 
-/** Map a `/v1/models` row to our KnownModel. The API only returns concrete
- *  versioned ids (never the `opus`/`sonnet`/`haiku` aliases), so anything not
- *  already curated lands in the 'current' group. A curated seed entry keeps
- *  its nicer label/group/hint but is enriched with the live effort list. */
-function mapLive(m: LiveModel, seedById: Map<string, KnownModel>): KnownModel {
-  const efforts = extractEfforts(m.capabilities?.effort);
-  const seed = seedById.get(m.id);
-  if (seed) return { ...seed, efforts };
-  return { id: m.id, label: m.display_name || m.id, group: 'current', efforts };
+/** Preserve the API's labels, capabilities and newest-release-first order.
+ * Every returned concrete model belongs to the API catalog, without a local
+ * current/previous classification that could override the provider. */
+function mapLive(m: LiveModel): KnownModel {
+  return {
+    id: m.id, label: m.display_name || m.id, group: 'current',
+    efforts: extractEfforts(m.capabilities?.effort),
+  };
 }
 
 /** One catalog page fetch with bounded retries. Retries on NETWORK throws
@@ -115,7 +114,6 @@ async function fetchModelsPage(url: string, apiKey: string): Promise<Response> {
 
 /** Fetch + paginate the live catalog. Throws on non-2xx (caller swallows). */
 export async function fetchLiveModels(apiKey: string): Promise<KnownModel[]> {
-  const seedById = new Map(KNOWN_MODELS.map((m) => [m.id, m]));
   const out: KnownModel[] = [];
   let url = `${MODELS_API}?limit=100`;
   for (let i = 0; i < MAX_PAGES; i++) {
@@ -128,28 +126,12 @@ export async function fetchLiveModels(apiKey: string): Promise<KnownModel[]> {
       data?: LiveModel[]; has_more?: boolean; last_id?: string | null;
     };
     for (const m of json.data ?? []) {
-      if (m?.id && MODEL_ID.test(m.id)) out.push(mapLive(m, seedById));
+      if (m?.id && MODEL_ID.test(m.id)) out.push(mapLive(m));
     }
     if (!json.has_more || !json.last_id) break;
     url = `${MODELS_API}?limit=100&after_id=${encodeURIComponent(json.last_id)}`;
   }
   return out;
-}
-
-/** Curated seed first (keeps aliases + the curated order + pins), then any
- *  live model not already in the seed appended under its group. The seed is
- *  authoritative for an id's label/group/hint; the dynamic list ADDS new ids
- *  AND enriches a seed id with its live `efforts` (so e.g. `claude-sonnet-4-6`
- *  keeps its curated label but gains the catalog's effort list). */
-export function mergeModels(seed: KnownModel[], dynamic: KnownModel[]): KnownModel[] {
-  const dynById = new Map(dynamic.map((m) => [m.id, m]));
-  const merged = seed.map((s) => {
-    const d = dynById.get(s.id);
-    return d?.efforts ? { ...s, efforts: d.efforts } : s;
-  });
-  const seedIds = new Set(seed.map((m) => m.id));
-  const extras = dynamic.filter((m) => !seedIds.has(m.id));
-  return [...merged, ...extras];
 }
 
 /** Global union of every model's effort levels, canonical order first then any
@@ -163,7 +145,7 @@ export function getCatalogEffortUnion(models: KnownModel[]): string[] {
   return ordered;
 }
 
-/** Payload for GET /api/claude/models: merged models + the global effort union
+/** Payload for GET /api/claude/models: aliases + API models + the global effort union
  *  (falls back to the canonical list so the picker is never empty). */
 export function getModelsAndEfforts(): { models: KnownModel[]; efforts: string[] } {
   const models = getMergedModels();
@@ -183,23 +165,26 @@ export function isKnownEffort(v: string): boolean {
   return getCatalogEffortUnion(getMergedModels()).includes(v);
 }
 
-function cachedModels(key: 'claude.models_cache' | 'claude.cli_models_cache'): KnownModel[] {
-  const raw = getSetting(key);
+/** Short aliases followed by the last successful API catalog in its own
+ * release order. Ignore legacy CLI discoveries and local group assignments. */
+export function getMergedModels(): KnownModel[] {
+  let catalog: KnownModel[] = [];
+  const raw = getSetting('claude.models_cache');
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed.filter(
-        (m): m is KnownModel => m && typeof m.id === 'string' && typeof m.label === 'string',
-      );
-    } catch { /* Corrupt cache: retain the seed and other working sources. */ }
+      if (Array.isArray(parsed)) {
+        const seen = new Set<string>();
+        catalog = parsed.filter((m): m is KnownModel => {
+          if (!m || typeof m.id !== 'string' || !MODEL_ID.test(m.id)
+              || typeof m.label !== 'string' || seen.has(m.id)) return false;
+          seen.add(m.id);
+          return true;
+        }).map((m) => ({ ...m, group: 'current' }));
+      }
+    } catch { /* Retain aliases when the API cache is corrupt. */ }
   }
-  return [];
-}
-
-/** Seed ∪ CLI discoveries ∪ API catalog (API effort data wins). */
-export function getMergedModels(): KnownModel[] {
-  const dynamic = [...cachedModels('claude.cli_models_cache'), ...cachedModels('claude.models_cache')];
-  return mergeModels(KNOWN_MODELS, [...new Map(dynamic.map((m) => [m.id, m])).values()]);
+  return [...CLAUDE_MODEL_ALIASES, ...catalog];
 }
 
 export type RefreshResult = { ok: boolean; count?: number; syncedAt?: number; error?: string };
@@ -235,24 +220,4 @@ export function refreshModelsIfStale(): void {
   inflight = refreshModels()
     .catch(() => {})
     .finally(() => { inflight = null; });
-}
-
-/** Remember concrete CLI discoveries so a release announced without an API
- * key also appears in the global Settings picker. Capabilities remain live. */
-export function observeClaudeCliModels(models: Array<{ id: string; resolved?: string; label?: string }>): void {
-  observeModels('claude', getMergedModels());
-  const existing = getMergedModels();
-  const ids = new Set(existing.map((m) => m.id));
-  const added: KnownModel[] = [];
-  for (const model of models) {
-    const id = model.resolved || model.id;
-    if (!id.startsWith('claude-') || ids.has(id)) continue;
-    ids.add(id);
-    added.push({ id, label: model.resolved ? id : (model.label || id), group: 'current' });
-  }
-  if (!added.length) return;
-  setSetting('claude.cli_models_cache', JSON.stringify([
-    ...cachedModels('claude.cli_models_cache'), ...added,
-  ]));
-  observeModels('claude', getMergedModels());
 }

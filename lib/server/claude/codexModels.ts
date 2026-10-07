@@ -7,7 +7,7 @@ import { CODEX_CANONICAL_EFFORTS, type CodexModelsResponse, type CodexModelPick 
 // ── Codex model catalog (per-VPS, account-driven) — GET /api/codex/models ─────
 //
 // Source: the agent's `list_codex_models` RPC (openai_codex .models(), agent
-// >= 0.15.0). Unlike Claude's hub-side seed ∪ live-catalog (modelSync.ts), the
+// >= 0.15.0). Unlike Claude's hub-wide API catalog (modelSync.ts), the
 // Codex catalog is entirely account/VPS-scoped — there's no curated seed, so we
 // serve whatever the VPS's Codex login reports. Mirrors the Claude picker shape
 // so the UI can reuse the same <ModelPicker>/<EffortPicker> machinery.

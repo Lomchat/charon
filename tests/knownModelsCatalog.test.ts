@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-import { isPlausibleModelId, KNOWN_MODELS } from '@/lib/server/claude/knownModels';
+import { isPlausibleModelId, CLAUDE_MODEL_ALIASES } from '@/lib/server/claude/knownModels';
 
 // CLAUDE.md §14.43: "Do NOT allowlist families (an `opus|sonnet|haiku` regex
 // once silently dropped `claude-fable-5` — accept any `^claude-`)."
@@ -30,14 +30,13 @@ describe('isPlausibleModelId — no family allow-list', () => {
   });
 
   it('accepts bare aliases, which are not `claude-*` at all', () => {
-    for (const id of ['default', 'best', 'opus', 'sonnet', 'haiku', 'fable', 'opusplan']) {
+    for (const id of ['default', 'best', 'opus', 'sonnet', 'haiku', 'fable']) {
       expect(isPlausibleModelId(id)).toBe(true);
     }
   });
 
   it('accepts the [1m] context variant on both spellings', () => {
     expect(isPlausibleModelId('sonnet[1m]')).toBe(true);
-    expect(isPlausibleModelId('opusplan[1m]')).toBe(true);
     expect(isPlausibleModelId('claude-opus-4-6[1m]')).toBe(true);
     expect(isPlausibleModelId('claude-opus-4-6[1M]')).toBe(true);
   });
@@ -50,15 +49,22 @@ describe('isPlausibleModelId — no family allow-list', () => {
   });
 });
 
-describe('KNOWN_MODELS catalog', () => {
+describe('Claude aliases', () => {
   it('every listed id passes its own validator', () => {
     // A picker entry the validator rejects is unselectable — the two must not
     // be able to disagree.
-    for (const m of KNOWN_MODELS) expect(isPlausibleModelId(m.id)).toBe(true);
+    for (const m of CLAUDE_MODEL_ALIASES) expect(isPlausibleModelId(m.id)).toBe(true);
+  });
+
+  it('contains only short aliases, with no static releases or opusplan', () => {
+    expect(CLAUDE_MODEL_ALIASES.map((m) => m.id)).toEqual(['default', 'best', 'opus', 'sonnet', 'haiku', 'fable']);
+    expect(CLAUDE_MODEL_ALIASES.every((m) => m.group === 'aliases')).toBe(true);
+    expect(isPlausibleModelId('opusplan')).toBe(false);
+    expect(isPlausibleModelId('opusplan[1m]')).toBe(false);
   });
 
   it('has no duplicate ids', () => {
-    const ids = KNOWN_MODELS.map((m) => m.id);
+    const ids = CLAUDE_MODEL_ALIASES.map((m) => m.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });

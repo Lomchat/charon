@@ -42,7 +42,7 @@ export function armModelWatch(): void {
   const timer = setInterval(() => { void tick(); }, INTERVAL_MS);
   timer.unref?.();
   g._modelWatch = { timer, running: false };
-  // Establish Claude's baseline before resumed sessions report CLI catalogs.
+  // Establish Claude's baseline from the last successful API catalog.
   observeModels('claude', getMergedModels());
   const first = setTimeout(() => { void tick(); }, 30_000);
   first.unref?.();

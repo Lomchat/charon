@@ -8,7 +8,7 @@ vi.mock('@/lib/server/claude/settings', () => ({
 }));
 
 import { getModelNotices, markModelsSeen, observeModels, subscribeModelNotices } from '@/lib/server/claude/modelNotices';
-import { getMergedModels, observeClaudeCliModels, refreshModels } from '@/lib/server/claude/modelSync';
+import { getMergedModels, refreshModels } from '@/lib/server/claude/modelSync';
 
 const model = (id: string) => ({ id, label: id });
 
@@ -94,23 +94,19 @@ describe('global model release notices', () => {
 });
 
 describe('catalog integration', () => {
-  it('announces a CLI alias resolving to a new Claude release and offers it in Settings without an API key', () => {
-    observeClaudeCliModels([{ id: 'opus', resolved: 'claude-test-99[1m]', label: 'Opus (latest)' }]);
-    expect(getModelNotices().claude.map((m) => m.id)).toEqual(['claude-test-99']);
-    expect(getMergedModels().some((m) => m.id === 'claude-test-99[1m]')).toBe(true);
-    markModelsSeen('claude', ['claude-test-99']);
-    observeClaudeCliModels([{ id: 'opus', resolved: 'claude-test-99[1m]' }]);
-    expect(getModelNotices().claude).toEqual([]);
-  });
-
   it('detects a newly synchronized API model and retains unread notices on a failed refresh', async () => {
     settings.set('claude.api_key', 'test-key');
+    settings.set('claude.models_cache', JSON.stringify([
+      { id: 'claude-first-1', label: 'First 1', group: 'current' },
+    ]));
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({
       data: [{ id: 'claude-test-99', display_name: 'Test 99' }],
     }))).mockResolvedValueOnce(new Response('unauthorized', { status: 401 }));
     expect((await refreshModels()).ok).toBe(true);
     expect(getModelNotices().claude).toEqual([{ id: 'claude-test-99', label: 'Test 99' }]);
+    const cached = getMergedModels();
     expect((await refreshModels()).ok).toBe(false);
+    expect(getMergedModels()).toEqual(cached);
     expect(getModelNotices().claude).toEqual([{ id: 'claude-test-99', label: 'Test 99' }]);
   });
 });

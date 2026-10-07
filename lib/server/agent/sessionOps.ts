@@ -1,7 +1,6 @@
 import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
 import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
-import { observeClaudeCliModels } from '@/lib/server/claude/modelSync';
 import { adaptCursorEffortForVps } from '@/lib/server/claude/cursorModels';
 import 'server-only';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
@@ -1510,9 +1509,6 @@ export class SessionStream {
         break;
       }
       case 'session_info':
-        if (this.kind === 'claude' && ev.models
-          && !connectionConfig(db.select({ config: claudeSessions.codexConfig }).from(claudeSessions)
-            .where(eq(claudeSessions.id, this.id)).get()?.config).customEndpoint) observeClaudeCliModels(ev.models);
         // The CLI's init frame. Kept in memory only: it describes the CURRENT
         // CLI process, so persisting it would let a stale snapshot outlive the
         // process it described. `capabilities` is the sanctioned way to ask

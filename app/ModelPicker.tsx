@@ -4,24 +4,10 @@ import { useEffect, useState } from 'react';
 import type { KnownClaudeModel, ClaudeModelGroup } from '@/lib/types/api';
 import { getModels, peekModels } from './modelsCache';
 
-// Fallback list shown on first render before /api/claude/models has resolved.
-// Kept in sync with lib/server/claude/knownModels.ts (which is the source of
-// truth — this is just a no-flash baseline so the dropdown isn't empty on
-// the first mount of a session). If the server list drifts after the fetch
-// resolves, the picker re-renders with the fresh data.
-const FALLBACK_MODELS: KnownClaudeModel[] = [
-  { id: 'opus',   label: 'opus (latest)',   group: 'aliases' },
-  { id: 'sonnet', label: 'sonnet (latest)', group: 'aliases' },
-  { id: 'haiku',  label: 'haiku (latest)',  group: 'aliases' },
-  { id: 'claude-opus-4-8',   label: 'Opus 4.8',   group: 'current' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', group: 'current' },
-  { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',  group: 'current' },
-];
-
 const GROUP_LABELS: Record<ClaudeModelGroup, string> = {
   aliases: 'Aliases (always latest)',
-  current: 'Current versioned',
-  previous: 'Previous versions',
+  current: 'Versioned models',
+  previous: 'Custom model',
 };
 
 type Props = {
@@ -42,59 +28,44 @@ type Props = {
   catalogVersion?: string;
 };
 
-/**
- * <ModelPicker> — drop-in <select> for Claude model IDs. Single shared
- * component used by:
- *   - NewSessionDialog (desktop "model" + "fallback model")
- *   - NewSessionSheet (mobile)
- *   - SettingsModal (global defaults)
- *   - SessionRuntimePanel direct choices
- *
- * The list is fetched once per tab from /api/claude/models via modelsCache.
- * Until the fetch resolves, we render a 6-item baseline so the dropdown is
- * never empty (= no flash, no layout shift).
- *
- * The list itself is now dynamic: the server unions the curated seed with
- * Anthropic's live `GET /v1/models` catalog when a hub-side API key is set
- * (see lib/server/claude/modelSync.ts), so a new model shows up here on its
- * own within 24h — no code edit, no redeploy.
- *
- * Free-text was the ORIGINAL UX and was removed because users typed
- * non-existent IDs and got silent SDK fallback. We bring it back as an
- * explicit "✎ enter a model id…" option (not the default free-form input):
- * the user has to deliberately choose it, which sidesteps the accidental
- * typo path while restoring the "I need a model the list doesn't have yet"
- * escape hatch (e.g. a model released in the last 24h with no API key set).
- */
+/** Shared Claude picker: short aliases plus API-discovered models, with no
+ * static model baseline. Preserve custom session values and manual ids. */
 export default function ModelPicker({
   value, onChange, inheritPlaceholder, noInherit, className, id, catalogVersion,
   presentation, disabled,
 }: Props) {
   const [models, setModels] = useState<KnownClaudeModel[]>(
-    () => peekModels() ?? FALLBACK_MODELS,
+    () => peekModels() ?? [],
   );
+
+  const [loaded, setLoaded] = useState(() => peekModels() !== null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     getModels()
       .then((m) => {
         if (cancelled) return;
         setModels(m);
+        setLoaded(true);
       })
       .catch(() => {
-        // Keep the usable baseline when the catalog cannot be fetched.
+        if (cancelled) return;
+        setError('Catalog unavailable');
+        setLoaded(true);
       });
     return () => { cancelled = true; };
   }, [catalogVersion]);
 
   // If the current value isn't in the loaded list (e.g. a session was
-  // created with a model that's since been removed from the curated list,
+  // created with a model that's since been removed from the API catalog,
   // or someone hand-edited the DB), inject it as a "Custom" entry so the
   // dropdown faithfully shows the actual current value instead of silently
   // resetting it to the first option.
   const knownIds = new Set(models.map((m) => m.id));
   const customEntry = value && !knownIds.has(value)
-    ? { id: value, label: `${value} (custom)`, group: 'previous' as const, hint: 'not in the curated list' }
+    ? { id: value, label: `${value} (custom)`, group: 'previous' as const, hint: 'not in the API catalog' }
     : null;
   const all = customEntry ? [...models, customEntry] : models;
 
@@ -130,6 +101,11 @@ export default function ModelPicker({
             ? `inherit (${inheritPlaceholder})`
             : 'inherit (SDK default)'}
         </option>
+      )}
+      {!loaded && models.length === 0 && <option value="" disabled>loading catalog…</option>}
+      {loaded && error && <option value="" disabled>{error}</option>}
+      {loaded && !error && grouped.current.length === 0 && (
+        <option value="" disabled>No versioned models — sync the API catalog in Settings</option>
       )}
       {(Object.keys(grouped) as ClaudeModelGroup[]).map((g) => {
         const items = grouped[g];
