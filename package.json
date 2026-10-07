@@ -61,7 +61,7 @@
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "mermaid": "^11.17.2",
-    "next": "^15.5.25",
+    "next": "^16.3.8",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
