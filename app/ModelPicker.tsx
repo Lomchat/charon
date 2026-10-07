@@ -96,7 +96,7 @@ export default function ModelPicker({
       }}
     >
       {!noInherit && (
-        <option value="">
+        <option value="" data-inherit>
           {inheritPlaceholder
             ? `inherit (${inheritPlaceholder})`
             : 'inherit (SDK default)'}

@@ -30,7 +30,7 @@ describe('isPlausibleModelId — no family allow-list', () => {
   });
 
   it('accepts bare aliases, which are not `claude-*` at all', () => {
-    for (const id of ['default', 'best', 'opus', 'sonnet', 'haiku', 'fable']) {
+    for (const id of ['opus', 'sonnet', 'haiku', 'fable']) {
       expect(isPlausibleModelId(id)).toBe(true);
     }
   });
@@ -56,10 +56,10 @@ describe('Claude aliases', () => {
     for (const m of CLAUDE_MODEL_ALIASES) expect(isPlausibleModelId(m.id)).toBe(true);
   });
 
-  it('contains only short aliases, with no static releases or opusplan', () => {
-    expect(CLAUDE_MODEL_ALIASES.map((m) => m.id)).toEqual(['default', 'best', 'opus', 'sonnet', 'haiku', 'fable']);
+  it('contains only short aliases, with no static releases or special defaults', () => {
+    expect(CLAUDE_MODEL_ALIASES.map((m) => m.id)).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
     expect(CLAUDE_MODEL_ALIASES.every((m) => m.group === 'aliases')).toBe(true);
-    expect(isPlausibleModelId('opusplan')).toBe(false);
+    for (const id of ['default', 'best', 'opusplan']) expect(isPlausibleModelId(id)).toBe(false);
     expect(isPlausibleModelId('opusplan[1m]')).toBe(false);
   });
 

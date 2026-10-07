@@ -80,7 +80,7 @@ export default function CodexModelPicker({
       }}
     >
       {!noInherit && (
-        <option value="">
+        <option value="" data-inherit>
           {inheritPlaceholder ? `inherit (${inheritPlaceholder})` : 'inherit (Codex default)'}
         </option>
       )}

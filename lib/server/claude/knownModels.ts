@@ -14,8 +14,6 @@ export type KnownModel = {
 };
 
 export const CLAUDE_MODEL_ALIASES: KnownModel[] = [
-  { id: 'default', label: 'default', group: 'aliases', hint: "Claude Code's own default" },
-  { id: 'best', label: 'best', group: 'aliases', hint: 'highest-capability model available to the account' },
   { id: 'opus', label: 'opus (latest)', group: 'aliases', hint: 'always latest Opus' },
   { id: 'sonnet', label: 'sonnet (latest)', group: 'aliases', hint: 'always latest Sonnet' },
   { id: 'haiku', label: 'haiku (latest)', group: 'aliases', hint: 'always latest Haiku' },

@@ -10,7 +10,7 @@ type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'value' | 'onChange' 
   presentation?: 'select' | 'list';
 };
 type Choice = { value: string; label: ReactNode; title?: string; disabled?: boolean;
-  group?: string; search?: string };
+  group?: string; search?: string; inherit?: boolean };
 
 /**
  * A stacked option row: the name, then ONE LINE PER FACT under it.
@@ -61,7 +61,7 @@ function nodeText(node: ReactNode): string {
 function readChoices(nodes: ReactNode, group?: string, groupDisabled = false): Choice[] {
   return Children.toArray(nodes).flatMap((node): Choice[] => {
     if (!isValidElement<{ children?: ReactNode; value?: string | number; label?: string;
-      disabled?: boolean; title?: string; 'data-search'?: string }>(node)) return [];
+      disabled?: boolean; title?: string; 'data-search'?: string; 'data-inherit'?: boolean }>(node)) return [];
     if (node.type === Fragment) return readChoices(node.props.children, group, groupDisabled);
     if (node.type === 'optgroup') return readChoices(node.props.children, node.props.label, !!node.props.disabled);
     if (node.type !== 'option') return [];
@@ -69,7 +69,7 @@ function readChoices(nodes: ReactNode, group?: string, groupDisabled = false): C
     // model row matches its ID as well as its name.
     const own = node.props['data-search'];
     return [{ value: String(node.props.value ?? ''), label: node.props.children, title: node.props.title,
-      disabled: groupDisabled || node.props.disabled, group,
+      disabled: groupDisabled || node.props.disabled, group, inherit: node.props['data-inherit'],
       search: (own ?? nodeText(node.props.children)).toLowerCase() }];
   });
 }
@@ -247,7 +247,7 @@ export default function PickerControl({ value, onValueChange, children, presenta
       <button type="button" role={inline ? 'menuitemradio' : 'option'}
         aria-checked={inline ? choice.value === String(value) : undefined}
         aria-selected={!inline ? choice.value === String(value) : undefined}
-        data-selected={choice.value === String(value)} tabIndex={-1}
+        data-selected={choice.value === String(value)} data-inherit={choice.inherit || undefined} tabIndex={-1}
         disabled={disabled || choice.disabled} title={choice.title}
         onClick={() => { if (!inline) close(); onValueChange(choice.value); }}>
         <span>{inline && choice.value === '' && !choice.disabled ? 'Default' : choice.label}</span>
@@ -265,6 +265,7 @@ export default function PickerControl({ value, onValueChange, children, presenta
   return <>
     <button {...buttonProps} ref={trigger} id={id ?? generatedId} type="button" role="combobox" aria-haspopup="listbox"
       aria-controls={open ? menuId : undefined} aria-expanded={open} disabled={disabled}
+      data-inherit={selected?.inherit || undefined}
       className={`picker-trigger${className ? ` ${className}` : ''}`} style={style}
       onClick={(e) => { onClick?.(e); if (!e.defaultPrevented) setOpen((v) => !v); }}
       onKeyDown={(e) => {

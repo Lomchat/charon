@@ -6955,6 +6955,9 @@
 .picker-options button > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .picker-options button:hover:not(:disabled), .picker-options button:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: none; }
 .picker-options button[data-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); }
+/* Inheritance stays selectable; its label is distinct from concrete choices. */
+.picker-options button[data-inherit="true"] > span:first-child,
+.picker-trigger[data-inherit="true"] > span:first-child { color: color-mix(in srgb, var(--text-muted) 80%, var(--text)); }
 
 /* Shared two-line picker row: name followed by one line per fact. */
 .picker-line { display: flex; flex-direction: column; gap: 1px; min-width: 0; }

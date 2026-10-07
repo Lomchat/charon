@@ -90,7 +90,7 @@ export default function EffortPicker({
       onValueChange={onChange}
     >
       {!noInherit && (
-        <option value="">
+        <option value="" data-inherit>
           {inheritPlaceholder ? `inherit (${inheritPlaceholder})` : 'inherit (global default)'}
         </option>
       )}

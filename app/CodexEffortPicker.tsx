@@ -71,7 +71,7 @@ export default function CodexEffortPicker({
       onValueChange={onChange}
     >
       {!noInherit && (
-        <option value="">
+        <option value="" data-inherit>
           {inheritPlaceholder ? `inherit (${inheritPlaceholder})` : 'inherit (Codex default)'}
         </option>
       )}
