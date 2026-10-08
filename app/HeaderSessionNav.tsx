@@ -158,10 +158,11 @@ export default function HeaderSessionNav({ sessions, waitingSessionIds, vpsName,
   // the panel always reopens on the live picture rather than on an old filter.
   // A hover opens nothing the keyboard asked for — the pointer can cross the
   // trigger while you are typing in the chat box, and pulling focus out of it
-  // would eat the next keystrokes.
+  // would eat the next keystrokes. A coarse pointer never auto-focuses: the
+  // virtual keyboard would cover the very list the tap opened (vpsSearch.ts).
   useEffect(() => {
     if (!open) { setQuery(''); return; }
-    if (opened.current === 'click') search.current?.focus({ preventScroll: true });
+    if (opened.current === 'click' && hoverOpens()) search.current?.focus({ preventScroll: true });
   }, [open]);
 
   const rows = useMemo(
