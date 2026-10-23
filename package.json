@@ -86,7 +86,7 @@
     "@types/three": "^0.186.0",
     "@types/web-push": "^3.6.4",
     "drizzle-kit": "^0.31.10",
-    "typescript": "^5.7.3",
+    "typescript": "^7.0.2",
     "vitest": "^3.2.6"
   },
   "overrides": {
