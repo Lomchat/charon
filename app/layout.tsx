@@ -51,8 +51,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   try { density = resolveDensity(getSetting('app.density')); } catch { /* use the default */ }
   let fileIcons = DEFAULT_FILE_ICONS;
   try { fileIcons = resolveFileIcons(getSetting('app.file_icons')); } catch { /* use the default */ }
+  // translate="no": browser page translation (Chrome on a non-English phone
+  // offers it on its own) rewrites text nodes behind React's back, and the
+  // next re-render throws removeChild/insertBefore NotFoundError — the view
+  // falls into its error screen as soon as anything updates.
   return (
-    <html lang="en" data-theme={activeTheme().id} data-density={density} data-file-icons={fileIcons}>
+    <html lang="en" translate="no" data-theme={activeTheme().id} data-density={density} data-file-icons={fileIcons}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />

@@ -22,7 +22,7 @@ export default function GlobalError({
 
   const chunk = isChunkLoadError(error);
   return (
-    <html lang="en">
+    <html lang="en" translate="no">
       <body
         style={{
           margin: 0,
