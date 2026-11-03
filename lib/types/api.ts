@@ -414,6 +414,8 @@ export type FsSearchQuery = {
   exclude?: string;
   /** Skip node_modules & co. On by default; the UI exposes the switch. */
   useDefaultExcludes?: boolean;
+  /** Answer as NDJSON `FsSearchStreamLine`s, hits as they are found. */
+  stream?: boolean;
 };
 
 export type FsSearchMatch = {
@@ -453,7 +455,16 @@ export type FsSearchResponse = {
   elapsedMs?: number;
   /** 'git' = .gitignore decided what is in scope, 'walk' = the default list. */
   source?: 'git' | 'walk';
+  /** Stopped because a newer search replaced it (streamed searches only). */
+  cancelled?: boolean;
 };
+
+/** One line of a streamed search (`stream: true`): hits as they are found,
+ *  then ONE `done` with the totals (its `files` stays empty). An agent older
+ *  than streaming answers with a single `files` line holding everything. */
+export type FsSearchStreamLine =
+  | { type: 'files'; files: FsSearchFile[]; scanned?: number; totalMatches?: number }
+  | ({ type: 'done' } & FsSearchResponse);
 
 // ── Source control (agent >= 0.24.0, agent/charon_agent/git.py) ────────────
 // Shapes mirror the RPC results verbatim: the hub routes are a thin

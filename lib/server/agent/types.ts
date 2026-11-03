@@ -140,6 +140,19 @@ export type AgentEventCommonFields = {
   ts?: number;
 };
 
+// A streamed search's hits (agent >= 0.116.0), sent only to the client that
+// asked, ahead of the fs_search answer. Keyed on the caller's search id, not a
+// session: it never reaches the session subscribers or the sync bus — the
+// HTTP route that started the search relays it (§14.84).
+export type FsSearchProgressEvent = {
+  event: 'fs_search_progress';
+  search_id: string;
+  files: unknown[];
+  scanned?: number;
+  total_files?: number;
+  total_matches?: number;
+};
+
 // Events pushed by the agent. session_id required for all except global
 // errors (rare). We keep a wide union to not lie to ourselves.
 export type AgentEvent = (
@@ -461,8 +474,11 @@ export type AgentMethodName =
   | 'fs_delete'
   // Search across the tree (agent >= 0.29.0) - grep inside files, or match
   // file names. Bounded in files, matches and wall clock, and every bound it
-  // hits comes back as truncated. cf. CLAUDE.md §14.84.
+  // hits comes back as truncated. cf. CLAUDE.md §14.84. With a stream id
+  // (agent >= 0.116.0) the hits arrive first as progress events, and the
+  // cancel method stops a search a newer one replaced.
   | 'fs_search'
+  | 'fs_search_cancel'
   // Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
   // to the repo containing a cwd, NOT to a session. No ssh fallback exists on
   // purpose - duplicating the porcelain-v2 parser hub-side is the real cost,

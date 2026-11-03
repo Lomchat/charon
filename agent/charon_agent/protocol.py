@@ -131,6 +131,7 @@ METHODS = {
     # bounded in files, matches and wall clock - and it reports every bound it
     # hit, because a silently truncated search reads as an empty one.
     "fs_search",
+    "fs_search_cancel",
     # Source control for the hub's git panel (agent >= 0.24.0, git.py). Scoped
     # to the repo containing a path, not to a session - the hub polls
     # git_status while a session is on screen, so it rides the persistent pipe

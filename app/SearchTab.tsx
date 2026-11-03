@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { FsSearchFile, FsSearchMode, FsSearchResponse } from '@/lib/types/api';
 import { openTab as openWorkspaceTab } from './tabStore';
@@ -45,10 +45,13 @@ const DEFAULTS: Options = {
  * Module-level and deliberately not persisted — a result list goes stale the
  * moment an agent writes a file, so it must not outlive the browser tab.
  */
+/** A result, possibly still arriving (`streaming`: more hits may come). */
+type Result = FsSearchResponse & { streaming?: boolean };
+
 type Saved = {
   query: string;
   opts: Options;
-  res: FsSearchResponse | null;
+  res: Result | null;
   showGlobs: boolean;
   collapsed: Set<string>;
 };
@@ -67,7 +70,7 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
   const [query, setQuery] = useState(saved?.query ?? '');
   const [opts, setOpts] = useState<Options>(saved?.opts ?? DEFAULTS);
   const [showGlobs, setShowGlobs] = useState(saved?.showGlobs ?? false);
-  const [res, setRes] = useState<FsSearchResponse | null>(saved?.res ?? null);
+  const [res, setRes] = useState<Result | null>(saved?.res ?? null);
   const [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(saved?.collapsed ?? []));
 
@@ -78,7 +81,8 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
   // A restored result already answers the restored query. Without this guard,
   // every session/file/shell switch immediately repeated the whole SSH walk,
   // making a logically shared sidebar look and behave like a reload.
-  const restoredResultRef = useRef(!!saved?.res && saved.query.trim().length >= 2);
+  // A search cut short by leaving the tab is not an answer: it runs again.
+  const restoredResultRef = useRef(!!saved?.res && !saved.res.streaming && saved.query.trim().length >= 2);
   const restoredViewRef = useRef(!!saved);
   const optsRef = useRef(opts);
   optsRef.current = opts;
@@ -98,39 +102,67 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
     inputRef.current?.select();
   }, []);
 
+  // The search in flight: a newer one, or leaving the tab, aborts it — and the
+  // hub then stops the walk on the VPS instead of letting it run out its 20s.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const run = useCallback(async (q: string, o: Options) => {
     if (!vpsId || !cwd) return;
+    abortRef.current?.abort();
     if (!q) { setRes(null); setBusy(false); return; }
     const seq = ++seqRef.current;
+    const ac = new AbortController();
+    abortRef.current = ac;
     setBusy(true);
+    setCollapsed(new Set());
+    setRes({ ok: true, mode: o.mode, files: [], streaming: true });
+    // Hits arrive in batches; the list repaints at most every 80ms, the very
+    // first batch at once.
+    let found: FsSearchFile[] = [];
+    let scanned: number | undefined;
+    let paint: number | null = null;
+    const repaint = () => {
+      paint = null;
+      if (seq === seqRef.current) setRes({ ok: true, mode: o.mode, files: found, scanned, streaming: true });
+    };
     try {
-      const r = await api.searchFs(vpsId, {
+      const r = await api.searchFsStream(vpsId, {
         root: cwd, query: q, mode: o.mode,
         regex: o.regex, caseSensitive: o.caseSensitive, wholeWord: o.wholeWord,
         include: o.include, exclude: o.exclude, useDefaultExcludes: o.useDefaultExcludes,
+      }, {
+        signal: ac.signal,
+        onFiles: (files, n) => {
+          if (n != null) scanned = n;
+          const first = found.length === 0 && files.length > 0;
+          if (files.length) found = found.concat(files);
+          if (paint == null) paint = window.setTimeout(repaint, first ? 0 : 80);
+        },
       });
       if (seq !== seqRef.current) return;
-      setRes(r);
-      setCollapsed(new Set());
+      setRes({ ...r, files: found.length ? found : r.files });
     } catch (e: unknown) {
       if (seq !== seqRef.current) return;
       setRes({ ok: false, files: [], error: e instanceof Error ? e.message : String(e) });
     } finally {
+      if (paint != null) window.clearTimeout(paint);
       if (seq === seqRef.current) setBusy(false);
     }
   }, [vpsId, cwd]);
 
-  // Search as you type, like VS Code — but at 350ms and from two characters,
-  // because every keystroke here is an ssh round trip and a repo walk, not a
-  // local index.
+  // Search as you type, like VS Code — from two characters, 200ms after the
+  // last key. Each keystroke is an ssh round trip and a tree walk, not a local
+  // index, but a superseded search is aborted on the VPS and the hits stream
+  // in, so waiting longer would only make the first one later.
   useEffect(() => {
     if (restoredResultRef.current) {
       restoredResultRef.current = false;
       return;
     }
     const q = query.trim();
-    if (q.length < 2) { seqRef.current++; setRes(null); setBusy(false); return; }
-    const t = window.setTimeout(() => { void run(query, optsRef.current); }, 350);
+    if (q.length < 2) { seqRef.current++; abortRef.current?.abort(); setRes(null); setBusy(false); return; }
+    const t = window.setTimeout(() => { void run(query, optsRef.current); }, 200);
     return () => window.clearTimeout(t);
   }, [query, run]);
 
@@ -169,7 +201,7 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
 
   const files = res?.files ?? [];
   const summary = useMemo(() => {
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok || res.streaming) return null;
     if (!files.length) return 'No results';
     const n = res.mode === 'file' ? files.length : (res.totalMatches ?? 0);
     const noun = res.mode === 'file' ? 'file' : 'result';
@@ -258,7 +290,13 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
         </div>
       )}
 
-      {busy && <div className="sr-status">searching…</div>}
+      {busy && (
+        <div className="sr-status">
+          searching…
+          {files.length > 0 && ` ${files.length} file${files.length === 1 ? '' : 's'} so far`}
+          {!!res?.scanned && ` · ${res.scanned.toLocaleString()} read`}
+        </div>
+      )}
 
       {!busy && res && !res.ok && (
         <div className={`gt-warn ${res.reason === 'bad_query' ? '' : 'err'}`}>
@@ -284,14 +322,15 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
         </div>
       )}
 
-      {!busy && res?.ok && files.map((f) => (
+      {/* While it runs too: the hits are worth reading before the walk ends. */}
+      {res?.ok && files.map((f) => (
         <FileGroup
           key={f.path}
           file={f}
           mode={res.mode ?? 'text'}
           cwd={cwd}
           collapsed={collapsed.has(f.path)}
-          onToggle={() => toggleFile(f.path)}
+          onToggle={toggleFile}
           onOpen={openHit}
           onInsertPath={onInsertPath}
         />
@@ -308,12 +347,14 @@ export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: 
   );
 }
 
-function FileGroup({ file, mode, cwd, collapsed, onToggle, onOpen, onInsertPath }: {
+// Memo: the list grows while the hits stream in, and the groups already
+// painted must not render again for each batch.
+const FileGroup = memo(function FileGroup({ file, mode, cwd, collapsed, onToggle, onOpen, onInsertPath }: {
   file: FsSearchFile;
   mode: FsSearchMode;
   cwd: string;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (path: string) => void;
   onOpen: (path: string, line: number | null, pin: boolean) => void;
   onInsertPath?: (text: string) => void;
 }) {
@@ -328,7 +369,7 @@ function FileGroup({ file, mode, cwd, collapsed, onToggle, onOpen, onInsertPath 
            draggable={!!onInsertPath}
            onDragStart={(e) => onInsertPath && setPathDrag(e.dataTransfer, abs)}>
         {isText && (
-          <button className="sr-caret" onClick={onToggle}
+          <button className="sr-caret" onClick={() => onToggle(file.path)}
                   aria-label={collapsed ? 'expand' : 'collapse'}
                   aria-expanded={!collapsed}>{collapsed ? '▸' : '▾'}</button>
         )}
@@ -389,7 +430,7 @@ function FileGroup({ file, mode, cwd, collapsed, onToggle, onOpen, onInsertPath 
       )}
     </div>
   );
-}
+});
 
 /**
  * The line, with the matched spans marked.

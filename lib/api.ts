@@ -20,7 +20,7 @@ import type {
   GitOpResponse, GitMessageResponse, FsListResponse, FsReadResponse, FsStatResponse, FsLivePreviewBody, FsLivePreviewResponse,
   FsRangeResponse, FsSqliteBody, FsSqliteResponse, FsArchiveBody, FsArchiveResponse, FsConvertBody, FsConvertResponse,
   FsWriteBody, FsWriteResponse, TabsResponse, TabDTO, OpenTabBody, CloseTabResponse,
-  ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchQuery, FsSearchResponse,
+  ReorderTabsBody, FsOpBody, FsOpResponse, FsSearchFile, FsSearchQuery, FsSearchResponse, FsSearchStreamLine,
   FsUploadBody, FsUploadResponse,
   CreateVpsFolderBody, UpdateVpsFolderBody, VpsLayoutBody, VpsLayoutResponse,
   LocalAgentStatus,
@@ -140,6 +140,68 @@ async function send<TRes = unknown>(
   } finally {
     clearTimeout(timer);
     if (opts?.signal) opts.signal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+/** Silence that means the stream is dead (a sleeping device, a half-open
+ *  socket): the agent sends a heartbeat twice a second while it searches. */
+const SEARCH_STREAM_STALL_MS = 30_000;
+
+async function readSearchStream(path: string, body: FsSearchQuery, opts: {
+  signal: AbortSignal;
+  onFiles: (files: FsSearchFile[], scanned?: number) => void;
+}): Promise<FsSearchResponse> {
+  const ac = new AbortController();
+  const forward = () => ac.abort(opts.signal.reason);
+  if (opts.signal.aborted) forward();
+  else opts.signal.addEventListener('abort', forward, { once: true });
+  let stalled = false;
+  let timer = setTimeout(() => { stalled = true; ac.abort(); }, SEARCH_STREAM_STALL_MS);
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { stalled = true; ac.abort(); }, SEARCH_STREAM_STALL_MS);
+  };
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`POST ${path} → ${res.status}${txt ? ': ' + txt.slice(0, 400) : ''}`);
+    }
+    // Refused before anything was searched (offline agent, bad body): JSON.
+    if (!(res.headers.get('content-type') ?? '').includes('ndjson') || !res.body) {
+      return (await res.json()) as FsSearchResponse;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let done: FsSearchResponse | null = null;
+    for (;;) {
+      const { value, done: end } = await reader.read();
+      if (end) break;
+      alive();
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line) as FsSearchStreamLine;
+        if (msg.type === 'files') opts.onFiles(msg.files, msg.scanned);
+        else done = msg;
+      }
+    }
+    return done ?? { ok: false, reason: 'error', error: 'the search was cut short', files: [] };
+  } catch (error) {
+    if (stalled) throw new Error('the search stopped answering; try again when the connection is stable');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    opts.signal.removeEventListener('abort', forward);
   }
 }
 
@@ -329,6 +391,14 @@ export const api = {
    */
   searchFs: (id: string, body: FsSearchQuery) =>
     send<FsSearchResponse>('POST', `/api/vps/${id}/fs/search`, body, { timeoutMs: 45_000 }),
+  /** The same search, its hits as they are found (§14.84): `onFiles` gets
+   *  each batch, and the promise the totals (`files` empty, or everything at
+   *  once from an agent older than streaming). Abort `signal` to drop it —
+   *  the hub then cancels the walk on the VPS. */
+  searchFsStream: (id: string, body: FsSearchQuery, opts: {
+    signal: AbortSignal;
+    onFiles: (files: FsSearchFile[], scanned?: number) => void;
+  }) => readSearchStream(`/api/vps/${id}/fs/search`, { ...body, stream: true }, opts),
   // URL for the BYTES — media, a file download, or a streamed directory ZIP.
   fsFileUrl: (
     id: string, root: string, path: string,

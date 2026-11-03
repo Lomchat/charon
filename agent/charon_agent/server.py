@@ -11,6 +11,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -175,6 +176,9 @@ class Server:
     def __init__(self, *, socket_path: Path, state_path: Path) -> None:
         self.socket_path = socket_path
         self.state_path = state_path
+        # Streamed searches in flight (agent >= 0.116.0): stream_id → the
+        # flag `fs_search_cancel` sets.
+        self._fs_searches: dict[str, threading.Event] = {}
         self._socket_ino: int | None = None   # set at bind (§14.97)
         # Durable event logs live next to state.json, in ~/.charon/events/.
         self.events_dir = state_path.parent / "events"
@@ -956,7 +960,7 @@ class Server:
         "lsp_status", "lsp_open", "lsp_close", "lsp_diagnostics", "lsp_request",
         "lsp_apply_edit", "lsp_stop",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_symlink", "fs_delete",
-        "fs_search",
+        "fs_search", "fs_search_cancel",
     }) | _FILETOOLS
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -1309,8 +1313,8 @@ class Server:
                 cap = int(params.get("max_results") or 0)
             except (TypeError, ValueError):
                 cap = 0
-            return await asyncio.to_thread(
-                _fs_search, str(params.get("root") or ""), str(params.get("query") or ""),
+            args = (
+                str(params.get("root") or ""), str(params.get("query") or ""),
                 str(params.get("mode") or "text"),
                 bool(params.get("regex")), bool(params.get("case_sensitive")),
                 bool(params.get("whole_word")),
@@ -1318,6 +1322,33 @@ class Server:
                 params.get("use_default_excludes") is not False,
                 cap,
             )
+            # `stream_id` (agent >= 0.116.0): the hits leave as they are found,
+            # as `fs_search_progress` events to THIS client only, ahead of the
+            # answer (one FIFO send queue), which then carries the totals. An
+            # older hub sends no id and gets the whole list in the answer.
+            stream_id = params.get("stream_id")
+            if not isinstance(stream_id, str) or not 0 < len(stream_id) <= 64:
+                return await asyncio.to_thread(_fs_search, *args)
+            loop = asyncio.get_running_loop()
+            cancel = threading.Event()
+            self._fs_searches[stream_id] = cancel
+
+            def progress(payload: dict[str, Any]) -> None:
+                event = {"event": "fs_search_progress", "search_id": stream_id, **payload}
+                loop.call_soon_threadsafe(client.send_json, event)
+
+            try:
+                return await asyncio.to_thread(_fs_search, *args, progress=progress, cancel=cancel)
+            finally:
+                self._fs_searches.pop(stream_id, None)
+
+        if method == "fs_search_cancel":
+            # A newer search replaced it, or the reader went away: stop the
+            # walk and the greps instead of burning the box for 20s.
+            flag = self._fs_searches.get(str(params.get("search_id") or ""))
+            if flag is not None:
+                flag.set()
+            return {"ok": True, "found": flag is not None}
 
         # Language servers (agent >= 0.33.0, lsp.py). OUTSIDE the git branch:
         # nesting them under `startswith("git_")` made every one of them

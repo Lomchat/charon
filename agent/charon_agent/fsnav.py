@@ -27,6 +27,9 @@ turn a file browser into a way to page through `/etc` by accident.
 from __future__ import annotations
 
 import base64
+import collections
+import concurrent.futures
+import contextlib
 import hashlib
 import os
 import re
@@ -34,9 +37,10 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 import zipfile
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Iterator
 
 MAX_ENTRIES = 400
 # One directory at a time, so this is a per-directory cap, not a repo cap.
@@ -1035,13 +1039,13 @@ def fs_delete(root: str, path: str, recursive: bool = False,
 SEARCH_BUDGET_S = 20.0
 SEARCH_MAX_FILE_BYTES = 1024 * 1024
 SEARCH_HEAD_BYTES = 8000
-# Enumeration is cheap — 20k paths off a warm cache is under a second — so the
-# real bound is the clock, not this. It is set high enough that a folder OF
-# projects (/srv, /var/www) still gets a complete answer, because a cap hit
-# during enumeration truncates in DIRECTORY order, which is nobody's idea of
-# relevance: the first 20k version of this returned zero hits on a tree whose
-# matches all lived past the cut.
-SEARCH_MAX_SCAN = 200_000          # candidate files enumerated
+# Enumeration is cheap and streamed (nothing is held), and git drops ignored
+# folders unopened — so the real bound is the clock, not this. It is set high
+# enough that a folder OF projects (/srv, /var/www) and even `/` get a complete
+# answer, because a cap hit during enumeration truncates in DIRECTORY order,
+# which is nobody's idea of relevance: the first 20k version of this returned
+# zero hits on a tree whose matches all lived past the cut.
+SEARCH_MAX_SCAN = 1_000_000        # candidate files enumerated
 SEARCH_MAX_FILES = 500             # files carried back in the answer
 SEARCH_MAX_RESULTS = 2000          # matches carried back in the answer
 SEARCH_MAX_PER_FILE = 100
@@ -1063,6 +1067,9 @@ DEFAULT_EXCLUDE_DIRS = frozenset({
 # human ever wants back from a search, and a packed repo alone would eat the
 # whole scan budget.
 ALWAYS_SKIP_DIRS = frozenset({".git"})
+# Kernel pseudo-filesystems, never descended into from `/`: no file there is
+# anybody's text, and reading one can block or cost the box.
+PSEUDO_FS_DIRS = frozenset({"/proc", "/sys", "/dev"})
 
 
 def _glob_to_regex(pat: str) -> str:
@@ -1167,139 +1174,333 @@ def _matches_any(rel: str, pats: list[re.Pattern[str]]) -> bool:
     return any(p.match(rel) for p in pats)
 
 
-def _walk_search_files(root: str, skip: frozenset[str],
-                       deadline: float) -> tuple[list[str], set[str], bool]:
-    """Every candidate file under `root`, plus the repo roots seen on the way.
+# Streaming (agent >= 0.116.0): with a `progress` callback the hits leave in
+# batches as they are found — the first one at once, the rest at most this
+# late — and a heartbeat carries the scan count while nothing matches.
+SEARCH_FLUSH_S = 0.15
+SEARCH_FLUSH_FILES = 50
+SEARCH_HEARTBEAT_S = 0.5
 
-    The walk is the ONLY enumeration, deliberately. `git ls-files` was the
-    obvious shortcut and it is wrong here: it does not descend into a nested
-    checkout, so a folder OF projects (/srv, /var/www — a normal cwd on these
-    boxes, cf. §14.83) answered with the handful of files that happened to live
-    outside the sub-repos. A search that quietly skips 95% of the tree is worse
-    than a slow one.
 
-    Repo roots are picked up for free — a directory holding a `.git` entry is
-    one — and gitignore is applied afterwards, per repo, by `_drop_gitignored`.
+class _SearchStopped(Exception):
+    """The clock ran out: what was found so far is the (truncated) answer."""
 
-    Symlinks are neither followed nor returned: a search that walks into a link
-    either leaves the root or loops, and neither is worth a duplicate hit.
+
+class _SearchCancelled(Exception):
+    """The caller gave up on this search (a newer one replaced it)."""
+
+
+def _git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["LC_ALL"] = "C"
+    return env
+
+
+def _in_work_tree(path: str) -> bool:
+    """Whether the checkout around `path` decides what is searched there.
+
+    True inside a checkout — a subfolder of one too, which then keeps the
+    checkout's .gitignore. False for a folder that checkout IGNORES (its
+    `data/`, a vendored `sources/`): opened on purpose, it is searched whole —
+    `git ls-files` from inside it would list nothing at all.
     """
-    out: list[str] = []
-    repos: set[str] = set()
-    stack = [root]
-    truncated = False
-    while stack:
-        if len(out) >= SEARCH_MAX_SCAN or time.monotonic() > deadline:
-            truncated = True
-            break
-        d = stack.pop()
-        try:
-            with os.scandir(d) as it:
-                for e in it:
-                    try:
-                        if e.name == ".git":
-                            # A file here means a worktree/submodule; both are
-                            # repos as far as check-ignore is concerned.
-                            repos.add(os.path.relpath(d, root))
-                            continue
-                        if e.is_dir(follow_symlinks=False):
-                            if e.name in skip:
-                                continue
-                            stack.append(e.path)
-                        elif e.is_file(follow_symlinks=False):
-                            out.append(os.path.relpath(e.path, root))
-                            if len(out) >= SEARCH_MAX_SCAN:
-                                truncated = True
-                                break
-                    except OSError:
-                        continue
-        except OSError:
-            continue
-    return out, repos, truncated
-
-
-def _check_ignore_batch(repo: str, rels: list[str], timeout: float) -> set[str] | None:
-    """Which of `rels` git ignores in `repo`, or None when it can't answer."""
-    if not rels:
-        return set()
     try:
-        env = os.environ.copy()
-        env["GIT_OPTIONAL_LOCKS"] = "0"
-        env["LC_ALL"] = "C"
         p = subprocess.run(
-            ["git", "-C", repo, "check-ignore", "--stdin", "-z"],
-            input="\0".join(rels).encode("utf-8", "surrogateescape") + b"\0",
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=env, timeout=timeout,
+            ["git", "-C", path, "rev-parse", "--is-inside-work-tree", "--show-toplevel", "--show-prefix"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            env=_git_env(), timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
-    if p.returncode not in (0, 1):  # 128 = not a repo, 127 = no git
-        return None
-    return {n for n in p.stdout.decode("utf-8", "replace").split("\0") if n}
+        return False
+    lines = p.stdout.decode("utf-8", "surrogateescape").splitlines()
+    if p.returncode != 0 or not lines or lines[0] != "true":
+        return False
+    top = lines[1] if len(lines) > 1 else ""
+    prefix = (lines[2] if len(lines) > 2 else "").strip("/")
+    if not prefix or not top:
+        return True
+    parts = prefix.split("/")
+    # Every ancestor, not just the folder: an older git does not see a path as
+    # ignored because a folder above it is.
+    ancestors = ["/".join(parts[:i + 1]) for i in range(len(parts))]
+    try:
+        # No `-q`: git refuses it with more than one path (exit 128), which
+        # read as "not ignored" and listed nothing.
+        q = subprocess.run(
+            ["git", "-C", top, "check-ignore", "--", *ancestors],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            env=_git_env(), timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return q.returncode != 0  # 0 = some ancestor is ignored
 
 
-def _nearest_repo(rel_dir: str, repos: set[str]) -> str | None:
-    """The innermost repo containing `rel_dir` ('' = the search root itself)."""
-    cur = rel_dir
-    while True:
-        if cur in repos:
-            return cur
-        if cur in ("", "."):
-            return None
-        nxt = os.path.dirname(cur)
-        if nxt == cur:
-            return None
-        cur = nxt
+def _git_listing(path: str) -> tuple[subprocess.Popen[bytes], bytes] | None:
+    """Start `git ls-files` on the checkout at `path`: tracked files plus the
+    untracked ones git does not ignore. .gitignore is applied BY git, as it
+    lists, so an ignored folder (a 2GB `data/`) is never even opened — the walk
+    used to enumerate it and then ask `check-ignore` about every file in it.
 
-
-def _drop_gitignored(root: str, rels: list[str], repos: set[str],
-                     deadline: float) -> tuple[list[str], bool]:
-    """Remove what git ignores, one `check-ignore` per repo. (kept, applied?)
-
-    Applied AFTER the walk rather than instead of it: the walk is what
-    guarantees completeness, and this is what makes a search inside a project
-    return the code somebody wrote instead of whatever a build step left
-    behind. .gitignore is the answer the project already gave to "what is
-    mine", so it is not this feature's business to invent a second one.
-
-    Any failure (no git, a timeout, a directory that stopped being a repo
-    between the walk and now) keeps everything: dropping files because a
-    subprocess misbehaved would be an invisible way to lose results.
+    None when git cannot answer (not installed, not a repo, dubious ownership):
+    the caller walks that folder instead, without ignore rules — never fewer
+    files. The first chunk is read here because a failure only shows as an
+    empty stdout and a non-zero exit, and a generator cannot take back what it
+    already yielded.
     """
-    if not repos or not rels:
-        return rels, False
-    # "" (the root is itself a repo) normalises out of relpath as "."
-    repos = {("" if r in (".", "") else r) for r in repos}
-    by_repo: dict[str, list[str]] = {}
-    for rel in rels:
-        repo = _nearest_repo(os.path.dirname(rel), repos)
-        if repo is None:
-            continue
-        by_repo.setdefault(repo, []).append(rel)
-    if not by_repo:
-        return rels, False
+    try:
+        p = subprocess.Popen(
+            ["git", "-C", path, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            env=_git_env(),
+        )
+    except OSError:
+        return None
+    assert p.stdout is not None
+    first = p.stdout.read1(1 << 16)
+    if first:
+        return p, first
+    try:
+        rc = p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        rc = -1
+    p.stdout.close()
+    return (p, b"") if rc == 0 else None
 
-    ignored: set[str] = set()
-    applied = False
-    for repo, paths in by_repo.items():
-        left = deadline - time.monotonic()
-        if left <= 0.5:
-            break
-        abs_repo = os.path.join(root, repo) if repo else root
-        # check-ignore speaks the repo's own relative paths.
-        inner = [p[len(repo) + 1:] if repo else p for p in paths]
-        got = _check_ignore_batch(abs_repo, inner, min(left, 20.0))
-        if got is None:
+
+def _git_paths(p: subprocess.Popen[bytes], first: bytes,
+               check: Callable[[], None]) -> Iterator[str]:
+    """The NUL-separated paths of a `_git_listing`, as they arrive. Closing
+    the generator (the search stopped) kills git."""
+    try:
+        buf = first
+        while True:
+            parts = buf.split(b"\0")
+            buf = parts.pop()
+            for raw in parts:
+                if raw:
+                    yield os.fsdecode(raw)
+            check()
+            if p.stdout is None or p.stdout.closed:
+                break
+            chunk = p.stdout.read1(1 << 16)
+            if not chunk:
+                break
+            buf += chunk
+        if buf:
+            yield os.fsdecode(buf)
+    finally:
+        if p.poll() is None:
+            p.kill()
+        if p.stdout is not None and not p.stdout.closed:
+            p.stdout.close()
+        p.wait()
+
+
+def _skipped(rel: str, skip: frozenset[str], is_dir: bool = False) -> bool:
+    """A path under one of the skipped folder names (node_modules, .git…)."""
+    parts = rel.split("/")
+    return any(seg in skip for seg in (parts if is_dir else parts[:-1]))
+
+
+def _iter_search_files(root: str, skip: frozenset[str], check: Callable[[], None],
+                       state: dict[str, Any]) -> Iterator[tuple[str, os.stat_result]]:
+    """Every candidate FILE under `root`, as (relative path, lstat), streamed.
+
+    Folders are walked; a checkout met on the way — a `.git` entry, or the root
+    itself sitting inside one — is listed by git instead, which applies its
+    .gitignore, and every nested checkout it reports (an untracked `x/` holding
+    its own .git, a submodule's gitlink) is visited in turn with ITS rules.
+    `git ls-files` alone would be wrong: it stops at a nested checkout, so a
+    folder OF projects (/srv, /var/www — a normal cwd here, §14.83) would
+    answer with the few files living outside them. A search that quietly skips
+    95% of the tree is worse than a slow one.
+
+    Order: a folder's files (sorted) before its sub-folders, depth-first — a
+    tree listing, so hits stream in an order that reads. Symlinks are neither
+    followed nor returned: a link either leaves the root or loops. Sets
+    state["git"] once any listing came from git.
+    """
+    pending: list[str] = [""]
+    root_in_repo = _in_work_tree(root)
+    while pending:
+        check()
+        rel_dir = pending.pop()
+        abs_dir = os.path.join(root, rel_dir) if rel_dir else root
+        prefix = f"{rel_dir}/" if rel_dir else ""
+        try:
+            with os.scandir(abs_dir) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
             continue
-        applied = True
-        if not got:
-            continue
-        prefix = f"{repo}/" if repo else ""
-        ignored.update(prefix + n for n in got)
-    if not applied:
-        return rels, False
-    return [r for r in rels if r not in ignored], True
+        if (root_in_repo and not rel_dir) or any(e.name == ".git" for e in entries):
+            listing = _git_listing(abs_dir)
+            if listing is not None:
+                nested: list[str] = []
+                listed = 0
+                with contextlib.closing(_git_paths(*listing, check)) as paths:
+                    for entry in paths:
+                        listed += 1
+                        if entry.endswith("/"):
+                            nested.append(entry.rstrip("/"))
+                            continue
+                        if _skipped(entry, skip):
+                            continue
+                        rel = prefix + entry
+                        try:
+                            st = os.lstat(os.path.join(root, rel))
+                        except OSError:
+                            continue  # tracked, but deleted on disk
+                        if stat.S_ISDIR(st.st_mode):
+                            nested.append(entry)  # a submodule's gitlink
+                        elif stat.S_ISREG(st.st_mode):
+                            yield rel, st
+                # Nothing listed in the very folder the search was asked for,
+                # yet it holds files: git's rules leave none of it, so those
+                # rules are not what was meant — it is searched whole.
+                if listed or rel_dir or not entries:
+                    if listed:
+                        state["git"] = True
+                    for sub in sorted(nested, reverse=True):
+                        if not _skipped(sub, skip, is_dir=True):
+                            pending.append(prefix + sub)
+                    continue
+            # git could not answer for this checkout (or answered nothing for
+            # the search root): walk it, keeping all.
+        subdirs: list[str] = []
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if e.name not in skip:
+                        subdirs.append(e.name)
+                elif e.is_file(follow_symlinks=False):
+                    yield prefix + e.name, e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+        for name in reversed(subdirs):
+            if os.path.join(abs_dir, name) not in PSEUDO_FS_DIRS:
+                pending.append(prefix + name)
+
+
+def _prefilter(query: str, regex: bool, case_sensitive: bool) -> Callable[[bytes], bool] | None:
+    """A cheap test on a file's RAW bytes that rejects only files the real
+    matcher would reject too — so the decode and the Unicode regex are paid
+    for the few files that may match, not for the whole tree.
+
+    None when no such test is safe: a regex (its classes mean something else
+    on bytes), or a case-insensitive term outside ASCII (its folds are not
+    byte-wise). Whole-word is left to the real matcher: the bare term is a
+    superset of it. The one gap: a case-insensitive ASCII term no longer
+    meets the two non-ASCII letters Unicode folds onto ASCII ones (the Kelvin
+    sign, the long s).
+    """
+    if regex or not query:
+        return None
+    needle = query.encode("utf-8")
+    if case_sensitive:
+        return lambda data: needle in data
+    if query.isascii():
+        brx = re.compile(re.escape(needle), re.IGNORECASE)
+        return lambda data: brx.search(data) is not None
+    return None
+
+
+# GNU grep, ahead of the Python matcher (agent >= 0.116.0): a literal term
+# goes through grep first, in parallel batches, and Python only reads the
+# files grep says contain it. grep is C, mmaps, and runs on every core — the
+# Python loop reads ~8k files/s on one. It only ever NARROWS: `-a` so its own
+# binary rule never hides a file Python would have read, no `-w` (the bare
+# term is a superset), and Python still decides every hit.
+SEARCH_GREP_BATCH = 400
+_grep_ok: bool | None = None
+
+
+def _grep_usable() -> bool:
+    """GNU grep with the flags this needs (busybox lacks some): probed once."""
+    global _grep_ok
+    if _grep_ok is None:
+        try:
+            p = subprocess.run(
+                ["grep", "-l", "-Z", "-a", "-s", "-F", "-e", "x", "--", os.devnull],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                timeout=5,
+            )
+            _grep_ok = p.returncode == 1 and p.stdout == b""
+        except (OSError, subprocess.SubprocessError):
+            _grep_ok = False
+    return _grep_ok
+
+
+def _grep_batch(paths: list[str], needle: bytes, case_sensitive: bool,
+                timeout: float) -> set[str] | None:
+    """Which of `paths` contain `needle` (bytes, C locale), or None when grep
+    could not say — the caller then hands the whole batch to Python."""
+    args: list[str | bytes] = ["grep", "-l", "-Z", "-a", "-s", "-F"]
+    if not case_sensitive:
+        args.append("-i")
+    args += ["-e", needle, "--", *paths]
+    try:
+        p = subprocess.run(
+            args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+            env={**os.environ, "LC_ALL": "C"}, timeout=max(0.5, timeout),
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # 2 = some file could not be read; the others' answer still stands.
+    if p.returncode not in (0, 1, 2):
+        return None
+    return {os.fsdecode(x) for x in p.stdout.split(b"\0") if x}
+
+
+def _grep_stage(root: str, items: Iterator[tuple[str, os.stat_result]], query: str,
+                case_sensitive: bool, deadline: float,
+                counted: Callable[[int], None]) -> Iterator[tuple[str, os.stat_result]]:
+    """The files of `items` that may contain `query`, in the order they came.
+
+    Batches leave for grep as they fill, a few in flight at once, and
+    come back in submission order, so hits still stream in tree order.
+    `counted(n)` reports the files grep read.
+    """
+    # Up to 4 greps at once, always one core left for the box's real work
+    # (sessions, the hub itself when it lives here).
+    workers = max(1, min(4, (os.cpu_count() or 2) - 1))
+    needle = query.encode("utf-8")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    inflight: collections.deque[tuple[concurrent.futures.Future[set[str] | None],
+                                      list[tuple[str, os.stat_result]]]] = collections.deque()
+    batch: list[tuple[str, os.stat_result]] = []
+
+    def submit() -> None:
+        nonlocal batch
+        paths = [os.path.join(root, rel) for rel, _ in batch]
+        fut = pool.submit(_grep_batch, paths, needle, case_sensitive, deadline - time.monotonic())
+        inflight.append((fut, batch))
+        batch = []
+
+    def drain() -> Iterator[tuple[str, os.stat_result]]:
+        fut, done_items = inflight.popleft()
+        got = fut.result()
+        counted(len(done_items))
+        for rel, st in done_items:
+            if got is None or os.path.join(root, rel) in got:
+                yield rel, st
+
+    try:
+        for item in items:
+            batch.append(item)
+            if len(batch) >= SEARCH_GREP_BATCH:
+                submit()
+                while len(inflight) > workers or (inflight and inflight[0][0].done()):
+                    yield from drain()
+        if batch:
+            submit()
+        while inflight:
+            yield from drain()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _build_matcher(query: str, regex: bool, case_sensitive: bool,
@@ -1340,13 +1541,20 @@ def fs_search(root: str, query: str, mode: str = "text", regex: bool = False,
               case_sensitive: bool = False, whole_word: bool = False,
               include: str = "", exclude: str = "",
               use_default_excludes: bool = True,
-              max_results: int = SEARCH_MAX_RESULTS) -> dict[str, Any]:
+              max_results: int = SEARCH_MAX_RESULTS,
+              progress: Callable[[dict[str, Any]], None] | None = None,
+              cancel: threading.Event | None = None) -> dict[str, Any]:
     """Search the tree under `root`: text inside files, or file names.
 
     Contained exactly like the rest of this module, and read-only by
     construction. Everything it returns is bounded and every bound is reported,
     because a silently truncated search reads as "there is nothing else" — the
     one answer a search must never give by accident.
+
+    With `progress`, the hits are not held until the end: each batch goes to
+    `progress({"files", "scanned", "total_files", "total_matches"})` as it is
+    found, and the answer then carries the totals only (`streamed: true`,
+    `files: []`). `cancel` set ⇒ it stops where it is (`cancelled: true`).
     """
     started = time.monotonic()
     deadline = started + SEARCH_BUDGET_S
@@ -1358,6 +1566,8 @@ def fs_search(root: str, query: str, mode: str = "text", regex: bool = False,
             "total_matches": 0, "scanned": 0, "truncated": False,
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
+        if progress is not None:
+            base["streamed"] = True
         base.update(extra)
         return base
 
@@ -1372,89 +1582,134 @@ def fs_search(root: str, query: str, mode: str = "text", regex: bool = False,
         rx = _build_matcher(query, regex, case_sensitive, whole_word)
         if isinstance(rx, str):
             return {"ok": False, "error": rx, "reason": "bad_query", "files": []}
+        pre = _prefilter(query, regex, case_sensitive) if mode == "text" else None
 
         inc = _compile_globs(include)
         exc = _compile_globs(exclude)
         skip = (DEFAULT_EXCLUDE_DIRS if use_default_excludes else frozenset()) | ALWAYS_SKIP_DIRS
-
-        names, repos, truncated = _walk_search_files(real_root, skip, deadline)
-        names, ignores_applied = _drop_gitignored(real_root, names, repos, deadline)
-        source = "git" if ignores_applied else "walk"
-        names.sort()
-
         cap = max(1, min(int(max_results or SEARCH_MAX_RESULTS), SEARCH_MAX_RESULTS))
-        files: list[dict[str, Any]] = []
-        total_matches = 0
-        scanned = 0
 
-        for rel in names:
-            if rel.startswith(".." + os.sep) or rel.startswith("../"):
-                continue
-            if inc and not _matches_any(rel, inc):
-                continue
-            if exc and _matches_any(rel, exc):
-                continue
+        found: list[dict[str, Any]] = []   # the whole answer (no `progress`)
+        batch: list[dict[str, Any]] = []   # not sent yet (with `progress`)
+        total_files = total_matches = scanned = enumerated = 0
+        truncated = cancelled = False
+        state: dict[str, Any] = {"git": False}
+        last_sent = started
+        sent_any = False
+
+        def check() -> None:
+            if cancel is not None and cancel.is_set():
+                raise _SearchCancelled()
             if time.monotonic() > deadline:
-                truncated = True
-                break
-            if len(files) >= SEARCH_MAX_FILES or total_matches >= cap:
-                truncated = True
-                break
+                raise _SearchStopped()
 
-            target = os.path.join(real_root, rel)
-            try:
-                st = os.stat(target, follow_symlinks=False)
-            except OSError:
-                continue
-            # lstat, so a symlink is not a regular file here — deliberate: a
-            # link either points back inside (a duplicate hit) or outside the
-            # root (a hit the caller never asked for).
-            if not stat.S_ISREG(st.st_mode):
-                continue
+        def send(force: bool = False) -> None:
+            nonlocal last_sent, sent_any
+            if progress is None:
+                return
+            now = time.monotonic()
+            due = (batch and (force or not sent_any or now - last_sent >= SEARCH_FLUSH_S
+                              or len(batch) >= SEARCH_FLUSH_FILES)
+                   or now - last_sent >= SEARCH_HEARTBEAT_S)
+            if not due:
+                return
+            progress({"files": batch[:], "scanned": scanned,
+                      "total_files": total_files, "total_matches": total_matches})
+            sent_any = sent_any or bool(batch)
+            batch.clear()
+            last_sent = now
 
-            if mode == "file":
-                scanned += 1
-                if rx.search(rel):
-                    files.append({"path": rel, "size": st.st_size,
-                                  "mtime": int(st.st_mtime), "count": 0,
-                                  "matches": [], "truncated": False})
-                    total_matches += 1
-                continue
-
-            if st.st_size > SEARCH_MAX_FILE_BYTES or st.st_size == 0:
-                continue
-            try:
-                with open(target, "rb") as f:
-                    head = f.read(SEARCH_HEAD_BYTES)
-                    if _looks_binary(head):
+        def eligible() -> Iterator[tuple[str, os.stat_result]]:
+            """Enumerated files past the globs (and, for text, the size rule)."""
+            nonlocal enumerated, truncated
+            with contextlib.closing(_iter_search_files(real_root, skip, check, state)) as files:
+                for rel, st in files:
+                    enumerated += 1
+                    if enumerated > SEARCH_MAX_SCAN:
+                        truncated = True
+                        return
+                    if enumerated % 1000 == 0:
+                        send()  # the heartbeat, while the globs drop everything
+                    if inc and not _matches_any(rel, inc):
                         continue
-                    data = head + f.read(SEARCH_MAX_FILE_BYTES - len(head))
-            except OSError:
-                continue
-            scanned += 1
-            text = data.decode("utf-8", "replace")
-            if not rx.search(text):
-                continue  # one scan of the blob before paying for the split
+                    if exc and _matches_any(rel, exc):
+                        continue
+                    if mode == "text" and not 0 < st.st_size <= SEARCH_MAX_FILE_BYTES:
+                        continue
+                    yield rel, st
 
-            matches: list[dict[str, Any]] = []
-            file_truncated = False
-            for lineno, line in enumerate(text.splitlines(), 1):
-                hit = _line_matches(line, rx, lineno)
-                if hit is None:
-                    continue
-                matches.append(hit)
-                total_matches += len(hit["ranges"]) or 1
-                if len(matches) >= SEARCH_MAX_PER_FILE or total_matches >= cap:
-                    file_truncated = len(matches) >= SEARCH_MAX_PER_FILE
+        def grep_counted(n: int) -> None:
+            nonlocal scanned
+            scanned += n
+            send()  # grep finds nothing for a while: the reader still sees it move
+
+        use_grep = pre is not None and _grep_usable()
+        stream = (_grep_stage(real_root, eligible(), query, case_sensitive, deadline, grep_counted)
+                  if use_grep else eligible())
+        try:
+            for rel, st in stream:
+                if total_files >= SEARCH_MAX_FILES or total_matches >= cap:
+                    truncated = True
                     break
-            if matches:
-                files.append({"path": rel, "size": st.st_size,
-                              "mtime": int(st.st_mtime), "count": len(matches),
-                              "matches": matches, "truncated": file_truncated})
+                check()
 
-        return done(root=real_root, files=files, total_files=len(files),
-                    total_matches=total_matches, scanned=scanned,
-                    truncated=truncated, source=source)
+                hit: dict[str, Any] | None = None
+                if mode == "file":
+                    scanned += 1
+                    if rx.search(rel):
+                        hit = {"path": rel, "size": st.st_size, "mtime": int(st.st_mtime),
+                               "count": 0, "matches": [], "truncated": False}
+                        total_matches += 1
+                else:
+                    try:
+                        with open(os.path.join(real_root, rel), "rb") as f:
+                            head = f.read(SEARCH_HEAD_BYTES)
+                            data = None if _looks_binary(head) else head + f.read(SEARCH_MAX_FILE_BYTES - len(head))
+                    except OSError:
+                        data = None
+                    if data is not None:
+                        if not use_grep:
+                            scanned += 1
+                        # The bytes first: most files cannot match, and saying
+                        # so costs no decode and no Unicode regex.
+                        text = None if pre is not None and not pre(data) else data.decode("utf-8", "replace")
+                        if text is not None and rx.search(text):
+                            matches: list[dict[str, Any]] = []
+                            file_truncated = False
+                            for lineno, line in enumerate(text.splitlines(), 1):
+                                m = _line_matches(line, rx, lineno)
+                                if m is None:
+                                    continue
+                                matches.append(m)
+                                total_matches += len(m["ranges"]) or 1
+                                if len(matches) >= SEARCH_MAX_PER_FILE or total_matches >= cap:
+                                    file_truncated = len(matches) >= SEARCH_MAX_PER_FILE
+                                    break
+                            if matches:
+                                hit = {"path": rel, "size": st.st_size, "mtime": int(st.st_mtime),
+                                       "count": len(matches), "matches": matches,
+                                       "truncated": file_truncated}
+                if hit is not None:
+                    total_files += 1
+                    (batch if progress is not None else found).append(hit)
+                send()
+        except _SearchStopped:
+            truncated = True
+        except _SearchCancelled:
+            truncated = cancelled = True
+        finally:
+            stream.close()
+
+        source = "git" if state["git"] else "walk"
+        totals = dict(root=real_root, total_files=total_files, total_matches=total_matches,
+                      scanned=scanned, truncated=truncated, source=source)
+        if cancelled:
+            totals["cancelled"] = True
+        if progress is not None:
+            send(force=True)
+            return done(files=[], **totals)
+        found.sort(key=lambda f: f["path"])
+        return done(files=found, **totals)
     except PermissionError:
         return {"ok": False, "error": "permission denied", "reason": "error", "files": []}
     except (OSError, ValueError, re.error) as e:

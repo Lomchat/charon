@@ -262,5 +262,212 @@ class NestedRepoTest(unittest.TestCase):
         self.assertNotIn("back/dist/index.js", paths)
 
 
+class StreamingTest(unittest.TestCase):
+    """With a progress callback the hits leave as they are found (0.116.0)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-search-stream-")
+        for i in range(120):
+            write(self.root, f"d{i // 10}/f{i:03}.txt", "the needle\n" if i % 3 == 0 else "hay\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_streamed_batches_add_up_to_the_whole_answer(self):
+        batches = []
+        r = F.fs_search(self.root, "needle", progress=batches.append)
+        self.assertTrue(r["streamed"])
+        self.assertEqual(r["files"], [])
+        streamed = [f["path"] for b in batches for f in b["files"]]
+        self.assertEqual(len(streamed), len(set(streamed)))
+        whole = [f["path"] for f in F.fs_search(self.root, "needle")["files"]]
+        self.assertEqual(sorted(streamed), whole)
+        self.assertEqual(r["total_files"], len(whole))
+        # The first hit is not held back for a batch to fill.
+        first = next(b for b in batches if b["files"])
+        self.assertEqual(len(first["files"]), 1)
+
+    def test_a_cancelled_search_stops_and_says_so(self):
+        import threading
+        flag = threading.Event()
+
+        def stop_after_first(batch):
+            if batch["files"]:
+                flag.set()
+
+        r = F.fs_search(self.root, "needle", progress=stop_after_first, cancel=flag)
+        self.assertTrue(r["cancelled"])
+        self.assertTrue(r["truncated"])
+        self.assertLess(r["total_files"], 40)
+
+    def test_without_grep_the_answer_is_the_same(self):
+        with_grep = [f["path"] for f in F.fs_search(self.root, "needle")["files"]]
+        saved = F._grep_ok
+        try:
+            F._grep_ok = False
+            without = [f["path"] for f in F.fs_search(self.root, "needle")["files"]]
+        finally:
+            F._grep_ok = saved
+        self.assertEqual(with_grep, without)
+
+    def test_a_grep_that_cannot_answer_hands_the_batch_to_python(self):
+        real = F._grep_batch
+        try:
+            F._grep_batch = lambda *a, **k: None
+            got = [f["path"] for f in F.fs_search(self.root, "needle")["files"]]
+        finally:
+            F._grep_batch = real
+        self.assertEqual(len(got), 40)
+
+    def test_accents_fold_without_the_byte_shortcut(self):
+        write(self.root, "fr.txt", "Un ÉTÉ chaud\n")
+        self.assertIn("fr.txt", {f["path"] for f in F.fs_search(self.root, "été")["files"]})
+        self.assertNotIn("fr.txt", {f["path"] for f in F.fs_search(self.root, "été", case_sensitive=True)["files"]})
+
+    def test_whole_word_still_decided_by_python(self):
+        write(self.root, "w.txt", "needles\n")
+        hits = {f["path"] for f in F.fs_search(self.root, "needle", whole_word=True)["files"]}
+        self.assertNotIn("w.txt", hits)
+
+    def test_pseudo_filesystems_are_never_walked(self):
+        write(self.root, "proc/1/status", "the needle\n")
+        saved = F.PSEUDO_FS_DIRS
+        try:
+            F.PSEUDO_FS_DIRS = frozenset({os.path.join(self.root, "proc")})
+            paths = {f["path"] for f in F.fs_search(self.root, "needle")["files"]}
+        finally:
+            F.PSEUDO_FS_DIRS = saved
+        self.assertFalse([p for p in paths if p.startswith("proc/")])
+
+
+@unittest.skipUnless(HAS_GIT, "git not installed")
+class GitListingTest(unittest.TestCase):
+    """git lists each checkout (0.116.0): its rules, inside AND below it."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="charon-search-ls-")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        write(self.root, ".gitignore", "generated/\ndata/\n")
+        write(self.root, "src/app.ts", "const needle = 1\n")
+        write(self.root, "data/huge.csv", "needle\n")
+        write(self.root, "generated/forced.js", "var needle = 3\n")
+        subprocess.run(["git", "add", "-f", "generated/forced.js", "src/app.ts", ".gitignore"],
+                       cwd=self.root, check=True)
+        # A checkout inside the checkout, with rules of its own.
+        inner = os.path.join(self.root, "vendored")
+        os.makedirs(inner)
+        subprocess.run(["git", "init", "-q"], cwd=inner, check=True)
+        write(self.root, "vendored/.gitignore", "out/\n")
+        write(self.root, "vendored/lib.ts", "export const needle = 4\n")
+        write(self.root, "vendored/out/gen.js", "needle\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def paths(self, root=None, **kw):
+        return {f["path"] for f in F.fs_search(root or self.root, "needle", **kw)["files"]}
+
+    def test_ignored_folders_stay_out_and_tracked_files_in_them_stay_in(self):
+        got = self.paths()
+        self.assertIn("src/app.ts", got)
+        self.assertNotIn("data/huge.csv", got)
+        # Tracked despite the rule: git never applies ignore rules to it.
+        self.assertIn("generated/forced.js", got)
+
+    def test_a_nested_checkout_is_searched_with_its_own_rules(self):
+        got = self.paths()
+        self.assertIn("vendored/lib.ts", got)
+        self.assertNotIn("vendored/out/gen.js", got)
+
+    def test_a_subfolder_of_a_checkout_keeps_the_checkout_rules(self):
+        write(self.root, "src/data/x.ts", "needle\n")
+        r = F.fs_search(os.path.join(self.root, "src"), "needle")
+        self.assertEqual(r["source"], "git")
+        self.assertEqual({f["path"] for f in r["files"]}, {"app.ts"})
+
+    def test_a_folder_the_checkout_ignores_is_searched_whole(self):
+        # Opened on purpose (a folder tab on it): its checkout's rules would
+        # leave nothing, since `git ls-files` lists nothing under an ignored
+        # folder.
+        write(self.root, "data/deep/more.csv", "needle\n")
+        r = F.fs_search(os.path.join(self.root, "data"), "needle")
+        self.assertEqual({f["path"] for f in r["files"]}, {"huge.csv", "deep/more.csv"})
+        # Deeper than the ignored folder: every ancestor is asked about at
+        # once — the case `check-ignore -q` refused (one path only).
+        r = F.fs_search(os.path.join(self.root, "data", "deep"), "needle")
+        self.assertEqual({f["path"] for f in r["files"]}, {"more.csv"})
+
+    def test_a_root_git_lists_nothing_in_is_still_searched(self):
+        # Whatever the reason the rules leave nothing (a `*` in a nested
+        # .gitignore), the folder the user asked for is searched whole.
+        write(self.root, "src/blob/.gitignore", "*\n")
+        write(self.root, "src/blob/a.txt", "needle\n")
+        r = F.fs_search(os.path.join(self.root, "src", "blob"), "needle")
+        self.assertIn("a.txt", {f["path"] for f in r["files"]})
+
+    def test_the_reader_hears_from_a_search_that_finds_nothing(self):
+        for i in range(2500):
+            write(self.root, f"src/many/f{i}.txt", "hay\n")
+        beats = []
+        saved = F.SEARCH_HEARTBEAT_S
+        try:
+            F.SEARCH_HEARTBEAT_S = 0.0  # every chance to beat is taken
+            F.fs_search(self.root, "zzqq-nowhere", progress=beats.append)
+        finally:
+            F.SEARCH_HEARTBEAT_S = saved
+        self.assertTrue(any(b["scanned"] > 0 and not b["files"] for b in beats))
+
+    def test_a_checkout_git_refuses_is_walked_whole(self):
+        real = F._git_listing
+        try:
+            F._git_listing = lambda path: None
+            got = self.paths()
+        finally:
+            F._git_listing = real
+        self.assertIn("data/huge.csv", got)  # no rules, but never fewer files
+
+
+class ServerStreamTest(unittest.IsolatedAsyncioTestCase):
+    """The daemon side: events to the asking client, ahead of the answer."""
+
+    async def asyncSetUp(self):
+        from pathlib import Path
+        from charon_agent.server import Server
+        self.tmp = tempfile.mkdtemp(prefix="charon-search-srv-")
+        for i in range(30):
+            write(self.tmp, f"t/f{i}.txt", "needle\n")
+        self.server = Server(socket_path=Path(self.tmp) / "agent.sock",
+                             state_path=Path(self.tmp) / "state.json")
+
+    async def asyncTearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    async def test_progress_events_precede_the_answer_and_cancel_is_known(self):
+        sent = []
+
+        class FakeClient:
+            def send_json(self, obj):
+                sent.append(obj)
+
+        result = await self.server._handle_meta_rpc("fs_search", {
+            "root": os.path.join(self.tmp, "t"), "query": "needle", "stream_id": "s1",
+        }, FakeClient())
+        self.assertTrue(result["streamed"])
+        events = [e for e in sent if e.get("event") == "fs_search_progress"]
+        self.assertTrue(events)
+        self.assertTrue(all(e["search_id"] == "s1" for e in events))
+        self.assertEqual(sum(len(e["files"]) for e in events), 30)
+        self.assertEqual(result["total_files"], 30)
+        gone = await self.server._handle_meta_rpc("fs_search_cancel", {"search_id": "s1"}, FakeClient())
+        self.assertEqual(gone, {"ok": True, "found": False})
+
+    async def test_without_a_stream_id_the_answer_carries_the_files(self):
+        result = await self.server._handle_meta_rpc("fs_search", {
+            "root": os.path.join(self.tmp, "t"), "query": "needle",
+        }, None)
+        self.assertEqual(len(result["files"]), 30)
+        self.assertNotIn("streamed", result)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

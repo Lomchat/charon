@@ -11,6 +11,7 @@ import {
   AgentRpcError,
   AgentSessionInfo,
   AgentShellInfo,
+  FsSearchProgressEvent,
 } from './types';
 // Shared SSH plumbing (options, remote python lookup, ControlMaster mux).
 // Single source of truth with server.js's per-WS shell proxies — see the
@@ -233,6 +234,8 @@ export class AgentClient {
   // see §14 gotcha 41). Re-asserted via the `shell_watch` RPC on every
   // (re)connect when non-empty.
   private shellWatchListeners = new Set<EventListener>();
+  /** Streamed searches in flight, by the hub-chosen search id (§14.84). */
+  private searchListeners = new Map<string, (ev: FsSearchProgressEvent) => void>();
   // Snapshot listeners for the `shell_watch` RPC result: the agent returns
   // the list of LIVE shells when the watch is (re)armed — i.e. on every
   // (re)connect. shellNotify uses it to prune DB rows for shells the agent
@@ -609,6 +612,16 @@ export class AgentClient {
     this.replayOpen.clear();
   }
 
+  /** Receive a streamed search's hits (`fs_search` with `stream_id`). Returns
+   *  the detach. Nothing is subscribed agent-side: the events go to this
+   *  connection because it is the one that asked. */
+  onSearchProgress(searchId: string, listener: (ev: FsSearchProgressEvent) => void): () => void {
+    this.searchListeners.set(searchId, listener);
+    return () => {
+      if (this.searchListeners.get(searchId) === listener) this.searchListeners.delete(searchId);
+    };
+  }
+
   unsubscribe(sessionId: string, listener: EventListener): void {
     const set = this.subscribers.get(sessionId);
     if (!set) return;
@@ -873,6 +886,13 @@ export class AgentClient {
       } else {
         try { pending.onResult?.(msg.result); } catch {}
         pending.resolve(msg.result);
+      }
+      return;
+    }
+    // A streamed search's hits: to the route that asked, never to a session.
+    if (msg.event === 'fs_search_progress') {
+      if (typeof msg.search_id === 'string') {
+        try { this.searchListeners.get(msg.search_id)?.(msg as FsSearchProgressEvent); } catch {}
       }
       return;
     }
