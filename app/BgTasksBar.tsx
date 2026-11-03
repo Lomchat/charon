@@ -3,6 +3,8 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { sessionApi } from '@/lib/api';
 import { createLatestGate } from './sync/revResource';
 import TaskModal, { TaskGroup } from './TaskModal';
+import BgTaskConstellation from './BgTaskConstellation';
+import { backgroundWorkText } from '@/lib/providerText';
 import { fmtDuration, fmtMoment } from './taskTime';
 import { CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
@@ -79,13 +81,18 @@ function taskTitle(t: BgTask): string {
   return t.description || t.workflowName || t.command || t.taskId;
 }
 
-function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
+function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd }: {
   tasks: BgTask[];
   sessionId: string;
+  vpsId: string;
+  cwd: string | null;
   provider: SessionProvider;
   sessionStatus: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(20);
   const [nowS, setNowS] = useState(() => Math.floor(Date.now() / 1000));
   // taskId → in-flight/failed kill. Pessimistic (§14.18): the row keeps saying
   // "running" until the CLI's own terminal event arrives, because only the CLI
@@ -196,6 +203,9 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
     return () => clearInterval(iv);
   }, [running.length, open]);
 
+  const selectedTask = taskView.find(({ t }) => t.taskId === selectedTaskId)
+    ?? runningRows[runningRows.length - 1] ?? ended[0];
+
   const close = useCallback(() => setOpen(false), []);
 
   const runningCount = running.length + terminals.length;
@@ -224,7 +234,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
       <article key={t.taskId} className={`tm-card ${meta.cls}`}>
         <div className="tm-card-top">
           <span className={`tm-pill ${meta.cls}`} title={meta.hint}><i aria-hidden />{meta.label}</span>
-          <span className="tm-card-title">{title}</span>
+          <button type="button" className="tm-card-title bgc-inspect-task" onClick={() => setSelectedTaskId(t.taskId)} title={backgroundWorkText.inspect}>{title}</button>
           {status === 'running' && (stoppable ? (
             // Kills the TASK, not the session. The row stays "running" until
             // the CLI's own terminal event lands (§14.18).
@@ -347,6 +357,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
         <TaskModal
           icon={<span className={`bgtasks-dot ${runningCount > 0 ? 'running' : 'done'}`} />}
           tone="work"
+          wide
           title="Background work"
           subtitle={<>
             {runningCount > 0 ? `${runningCount} running` : 'Nothing running'}
@@ -355,16 +366,27 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus }: {
           </>}
           onClose={close}
         >
-          <TaskGroup label="Running" count={runningRows.length + terminals.length}>
-            {runningRows.map(renderTask)}
-            {terminals.map(renderTerminal)}
-          </TaskGroup>
-          {terminalError && terminals.length > 0 && (
-            <div className="tm-error">Process list refresh failed: {terminalError}</div>
-          )}
-          <TaskGroup label="Finished" count={ended.length}>
-            {ended.map(renderTask)}
-          </TaskGroup>
+          {selectedTask && <>
+            <div className="bgc-task-picker">
+              <label htmlFor="bgc-task-select">{backgroundWorkText.task}</label>
+              <select id="bgc-task-select" value={selectedTask.t.taskId} onChange={(e) => setSelectedTaskId(e.target.value)}>
+                {runningRows.length > 0 && <optgroup label={backgroundWorkText.running}>{runningRows.map(({ t }) => <option key={t.taskId} value={t.taskId}>{taskTitle(t)}</option>)}</optgroup>}
+                {ended.length > 0 && <optgroup label={backgroundWorkText.finished}>{ended.slice(0, historyLimit).map(({ t }) => <option key={t.taskId} value={t.taskId}>{taskTitle(t)}</option>)}</optgroup>}
+              </select>
+            </div>
+            <BgTaskConstellation key={`${selectedTask.t.taskId}:${selectedTask.t.startedAt}`} task={selectedTask.t} status={selectedTask.status}
+              vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} />
+          </>}
+          <TaskGroup label="Processes" count={terminals.length}>{terminals.map(renderTerminal)}</TaskGroup>
+          {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}
+          {ended.length > 0 && <section className="bgc-history">
+            <button type="button" className="bgc-history-toggle" aria-expanded={historyOpen} onClick={() => setHistoryOpen((value) => !value)}>
+              {historyOpen ? '⌄' : '›'} {backgroundWorkText.finished} <span>{ended.length}</span>
+            </button>
+            {historyOpen && <div className="tm-cards">{ended.slice(0, historyLimit).map(renderTask)}
+              {ended.length > historyLimit && <button type="button" className="bgc-more" onClick={() => setHistoryLimit((n) => n + 20)}>{backgroundWorkText.showMore}</button>}
+            </div>}
+          </section>}
           {runningRows.length + terminals.length + ended.length === 0 && (
             <p className="tm-empty">Nothing in the background right now.</p>
           )}

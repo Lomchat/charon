@@ -226,3 +226,18 @@ export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; ti
   agent: { glyph: '✎', label: 'agent', title: 'agent — normal access, with the provider’s own reviewer vetting risky calls' },
   force: { glyph: '⚡', label: 'force', title: 'force — every tool call runs unreviewed, with no sandbox (DANGER)' },
 };
+
+/** Background-work constellation: shared copy for all providers. */
+export const backgroundWorkText = {
+  graph: 'Graph', list: 'List', inspect: 'Inspect', output: 'Output', preview: 'Provider preview',
+  fileOutput: 'Task output', latest: 'Latest output', reading: 'Reading earlier output',
+  latestAction: 'Latest output ↓', waiting: 'No output has been reported yet.',
+  previewHint: 'Only the preview reported by the provider is available for this sub-agent.',
+  outputError: 'Could not read task output', unknown: 'unknown', agents: 'Sub-agents',
+  parentStop: 'Select the workflow node to stop the task. Individual workflow agents have no stop handle.',
+  tokens: 'Tokens', elapsed: 'Elapsed', workflow: 'Workflow', task: 'Task',
+  stop: 'Stop', stopping: 'stopping…', stopHint: 'Stop this task. The session keeps running.',
+  finished: 'Finished', showMore: 'Show more', running: 'Running',
+  tailHint: 'Recent output · scroll up to read', loading: 'Reading output…',
+  unavailablePath: 'The output path cannot be resolved for this session.',
+};

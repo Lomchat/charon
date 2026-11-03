@@ -1079,7 +1079,7 @@ export default function ClaudeSessionView({
             (§14.91). Gating it meant a reader in conversation view — the
             usual choice on a phone, where the preference is per-browser —
             could neither see nor stop background work. */}
-        <BgTasksBar tasks={bgTasks} sessionId={sessionId}
+        <BgTasksBar tasks={bgTasks} sessionId={sessionId} vpsId={vpsId} cwd={selected.cwd || null}
           provider={asSessionProvider(sessionKind)}
           sessionStatus={status ?? 'sleeping'} />
         {/* What will wake the session later (CronCreate / ScheduleWakeup /

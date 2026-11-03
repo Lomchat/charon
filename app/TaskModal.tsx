@@ -6,7 +6,7 @@
 import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-export default function TaskModal({ icon, tone, title, subtitle, onClose, children, foot }: {
+export default function TaskModal({ icon, tone, title, subtitle, onClose, children, foot, wide = false }: {
   icon: ReactNode;
   /** The bar's colour: background work vs scheduled tasks. */
   tone: 'work' | 'scheduled';
@@ -15,6 +15,7 @@ export default function TaskModal({ icon, tone, title, subtitle, onClose, childr
   onClose: () => void;
   children: ReactNode;
   foot?: ReactNode;
+  wide?: boolean;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -24,7 +25,7 @@ export default function TaskModal({ icon, tone, title, subtitle, onClose, childr
 
   const body = (
     <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`claude-modal task-modal tone-${tone}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`claude-modal task-modal tone-${tone}${wide ? ' task-modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="tm-head">
           <span className="tm-ico" aria-hidden>{icon}</span>
           <div className="tm-title">
