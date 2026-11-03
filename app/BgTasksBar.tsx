@@ -375,7 +375,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
               </select>
             </div>
             <BgTaskConstellation key={`${selectedTask.t.taskId}:${selectedTask.t.startedAt}`} task={selectedTask.t} status={selectedTask.status}
-              vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} />
+              sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} />
           </>}
           <TaskGroup label="Processes" count={terminals.length}>{terminals.map(renderTerminal)}</TaskGroup>
           {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}

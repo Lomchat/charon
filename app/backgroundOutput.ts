@@ -28,3 +28,20 @@ export function backgroundOutputPath(path: string, cwd: string | null): { root: 
   if (path.startsWith('/')) return { root: '/', path: path.slice(1) };
   return cwd?.startsWith('/') ? { root: cwd, path } : null;
 }
+
+/** Native readers return content blocks encoded as strings. Show assistant
+ * prose and tool names, never the serialized envelope or hidden reasoning. */
+export function subagentOutputText(messages: Array<{ role?: string; content?: string }>): string {
+  return messages.filter((m) => m.role === 'assistant').flatMap((m) => {
+    if (!m.content) return [];
+    let blocks: unknown;
+    try { blocks = JSON.parse(m.content); } catch { return [m.content]; }
+    if (blocks == null) return [];
+    if (!Array.isArray(blocks)) return [m.content];
+    return blocks.flatMap((b) => {
+      if (b?.type === 'text' && typeof b.text === 'string') return [b.text];
+      if (b?.type === 'tool_use' && typeof b.name === 'string') return [`› ${b.name}`];
+      return [];
+    });
+  }).join('\n\n');
+}

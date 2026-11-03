@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { backgroundOutputPath, backgroundOutputText } from '@/app/backgroundOutput';
+import { backgroundOutputPath, backgroundOutputText, subagentOutputText } from '@/app/backgroundOutput';
 import { bgAgentStatus } from '@/app/BgTaskConstellation';
 import type { BgAgent } from '@/app/bgTasks';
 
@@ -29,5 +29,16 @@ describe('background output presentation', () => {
     expect(bgAgentStatus(agent('new-sdk-word'))).toBe('unknown');
     expect(bgAgentStatus(agent('done'))).toBe('completed');
     expect(bgAgentStatus(agent('error'))).toBe('failed');
+  });
+});
+
+ describe('native sub-agent transcript', () => {
+  it('renders SDK content blocks without reasoning, raw tool arguments or null placeholders', () => {
+    expect(subagentOutputText([
+      {role: 'assistant', content: 'null'},
+      {role: 'user', content: 'private prompt'},
+      {role: 'assistant', content: JSON.stringify([{type: 'thinking', thinking: 'hidden'}, {type: 'tool_use', name: 'Read', input: {key: 'hidden'}}, {type: 'text', text: 'Visible output'}])},
+    ])).toBe('› Read\n\nVisible output');
+    expect(subagentOutputText([{role:'assistant',content:'{"status":"ok"}'}])).toBe('{"status":"ok"}');
   });
 });

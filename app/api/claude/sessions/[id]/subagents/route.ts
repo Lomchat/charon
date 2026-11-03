@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
+import { recoverSubagentTranscript } from '@/lib/server/claude/subagentTranscriptCompat';
 import { hideInternalCodexSubagents } from '@/lib/server/claude/sessionInsightCompat';
 import { readSessionInsightSnapshot } from '@/lib/server/claude/sessionInsightSnapshot';
 
@@ -17,7 +18,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const agent = new URL(req.url).searchParams.get('agent');
   if (agent) {
     return NextResponse.json(
-      await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent }));
+      await recoverSubagentTranscript(id, agent, await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent })));
   }
   const force = new URL(req.url).searchParams.get('force') === '1';
   return NextResponse.json(readSessionInsightSnapshot(

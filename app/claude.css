@@ -9241,10 +9241,10 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgc-canvas.list .bgc-children { display: flex; flex-direction: column; gap: 12px; margin: 0; max-width: none; }
 .bgc-canvas.list .bgc-branch { padding: 0; }
 .bgc-canvas.list .bgc-children::before, .bgc-canvas.list .bgc-branch::before, .bgc-canvas.list .bgc-branch::after { display: none; }
-.bgc-inspector { display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 18px 20px; border-left: 1px solid var(--border); background: var(--bg-raised); }
+.bgc-inspector { overflow-y: auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 18px 20px; border-left: 1px solid var(--border); background: var(--bg-raised); }
 .bgc-inspector-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; font: 10px var(--display); text-transform: uppercase; letter-spacing: .12em; color: var(--accent-strong); }
-.bgc-inspector-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin: 14px 0 7px; }
-.bgc-inspector-title h3 { margin: 0; font: 600 15px/1.5 var(--body); color: var(--text-strong); overflow-wrap: anywhere; max-height: 68px; overflow: auto; }
+.bgc-inspector-title { flex-shrink: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin: 14px 0 7px; }
+.bgc-inspector-title h3 { display: block; margin: 0; min-width: 0; font: 600 15px/1.5 var(--body); letter-spacing: 0; text-transform: none; color: var(--text-strong); overflow-wrap: anywhere; }
 .bgc-model { font: 10px var(--mono); color: var(--text-muted); }
 .bgc-phase { font: 12px/1.5 var(--body); color: var(--text); margin-top: 8px; }
 .bgc-stop-hint { font: 10px/1.5 var(--body); color: var(--text-muted); margin-top: 8px; }
@@ -9288,3 +9288,13 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .bgc-history { padding: 0 14px 12px; }
   .bgc-map-head, .bgc-map-foot { padding: 12px 14px; }
 }
+
+/* Headings must not inherit the modal's flex-centered, uppercase section style. */
+.bgc-inspector > :not(.bgc-output) { flex-shrink: 0; }
+.bgc-missing-progress { margin: 18px auto 0; max-width: 360px; color: var(--text-muted); font: 11px/1.6 var(--body); text-align: center; }
+.bgc-native-agents { border-top: 1px solid var(--border); margin-top: 25px; padding-top: 16px; }
+.bgc-native-agents h4 { font: 10px var(--display); letter-spacing: .1em; color: var(--accent-strong); text-transform: uppercase; }
+.bgc-native-agents > p { margin: 10px 0; font: 11px/1.6 var(--body); color: var(--text-muted); }
+.bgc-native-agents > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.bgc-native-agents .bgc-node-head strong { font: 11px var(--mono); }
+@media(max-width: 540px) { .bgc-native-agents > div { grid-template-columns: 1fr; } }

@@ -3,27 +3,29 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { backgroundWorkText as text } from '@/lib/providerText';
 import { fromBase64, cutToLineStart } from './byteText';
-import { backgroundOutputPath, backgroundOutputText } from './backgroundOutput';
+import { backgroundOutputPath, backgroundOutputText, subagentOutputText } from './backgroundOutput';
 
 const TAIL_BYTES = 128 * 1024;
 
 /** Mounted only for the inspected node. One bounded read at a time, through
  * the existing agent channel; no file polling while reading earlier output. */
-function BgTaskOutput({ vpsId, cwd, outputFile, preview, running }: {
+function BgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionId, nativeAgentId }: {
+  sessionId: string; nativeAgentId?: string;
   vpsId: string; cwd: string | null; outputFile?: string | null; preview?: string | null; running: boolean;
 }) {
   const [fileText, setFileText] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(!!outputFile);
+  const [loading, setLoading] = useState(!!outputFile || !!nativeAgentId);
   const [following, setFollowing] = useState(true);
   const follow = useRef(true);
   const scroll = useRef<HTMLDivElement>(null);
   const wake = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!outputFile) return;
-    const at = backgroundOutputPath(outputFile, cwd);
-    if (!at) { setLoading(false); setError(text.unavailablePath); return; }
+    if (!outputFile && !nativeAgentId) return;
+    const at = outputFile ? backgroundOutputPath(outputFile, cwd) : null;
+    if (!at && !nativeAgentId) { setLoading(false); setError(text.unavailablePath); return; }
     let disposed = false, busy = false;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (disposed || busy) return;
@@ -33,25 +35,34 @@ function BgTaskOutput({ vpsId, cwd, outputFile, preview, running }: {
       }
       busy = true;
       try {
-        const result = await api.fsReadRange(vpsId, at.root, at.path, -TAIL_BYTES, TAIL_BYTES);
+        let next: string;
+        if (nativeAgentId) {
+          const response = await fetch(`/api/claude/sessions/${sessionId}/subagents?agent=${encodeURIComponent(nativeAgentId)}`, { signal: controller.signal });
+          const result = await response.json();
+          if (!response.ok || result.ok === false) throw new Error(result.error || text.outputError);
+          next = subagentOutputText(Array.isArray(result.messages) ? result.messages : []);
+        } else {
+          const result = await api.fsReadRange(vpsId, at!.root, at!.path, -TAIL_BYTES, TAIL_BYTES);
+          if (!result.ok || result.data == null) throw new Error(result.error || text.outputError);
+          const bytes = fromBase64(result.data);
+          const window = (result.offset ?? 0) > 0 ? cutToLineStart(bytes).bytes : bytes;
+          next = backgroundOutputText(new TextDecoder().decode(window));
+        }
         if (disposed) return;
-        if (!result.ok || result.data == null) throw new Error(result.error || text.outputError);
-        const bytes = fromBase64(result.data);
-        const window = (result.offset ?? 0) > 0 ? cutToLineStart(bytes).bytes : bytes;
-        // Do not replace the viewport if the user scrolled up during the read.
-        if (follow.current) setFileText(backgroundOutputText(new TextDecoder().decode(window)));
+        // A request finishing while the reader scrolls must not replace it.
+        if (follow.current) setFileText(next);
         setError('');
       } catch (err) {
         if (!disposed) setError(err instanceof Error ? err.message : text.outputError);
       } finally {
         busy = false;
-        if (!disposed) { setLoading(false); if (running) timer = setTimeout(poll, 3000); }
+        if (!disposed) { setLoading(false); if (running || nativeAgentId) timer = setTimeout(poll, nativeAgentId ? 5000 : 3000); }
       }
     };
     wake.current = () => void poll();
     void poll();
-    return () => { disposed = true; clearTimeout(timer); wake.current = null; };
-  }, [vpsId, cwd, outputFile, running]);
+    return () => { disposed = true; controller.abort(); clearTimeout(timer); wake.current = null; };
+  }, [vpsId, cwd, outputFile, running, sessionId, nativeAgentId]);
   const content = fileText || preview || '';
   useLayoutEffect(() => {
     if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
@@ -64,11 +75,11 @@ function BgTaskOutput({ vpsId, cwd, outputFile, preview, running }: {
     return () => observer.disconnect();
   }, []);
   return <section className="bgc-output" aria-label={text.output}>
-    <header><span>{text.output}</span><span>{outputFile ? text.fileOutput : text.preview}</span></header>
+    <header><span>{text.output}</span><span>{nativeAgentId ? text.transcript : outputFile ? text.fileOutput : preview ? text.preview : text.sourceUnavailable}</span></header>
     {error && <div className="tm-error">{text.outputError}: {error}</div>}
     <div className="bgc-output-scroll" ref={scroll} tabIndex={0} role="region" aria-label={text.output}
       onScroll={() => { const el = scroll.current!; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 32; setFollowing(follow.current); }}>
-      <pre>{content || (loading ? text.loading : text.waiting)}</pre>
+      <pre>{content || (loading ? text.loading : !nativeAgentId && !outputFile && !preview ? text.noTaskOutput : text.waiting)}</pre>
     </div>
     <footer><span>{following ? text.tailHint : text.reading}</span>
       {!following && <button type="button" onClick={() => {
@@ -77,7 +88,8 @@ function BgTaskOutput({ vpsId, cwd, outputFile, preview, running }: {
         wake.current?.();
       }}>{text.latestAction}</button>}
     </footer>
-    {!outputFile && <p className="bgc-output-hint">{text.previewHint}</p>}
+    {nativeAgentId && <p className="bgc-output-hint">{text.nativeHint}</p>}
+    {!nativeAgentId && !outputFile && preview && <p className="bgc-output-hint">{text.previewHint}</p>}
   </section>;
 }
 export default memo(BgTaskOutput);

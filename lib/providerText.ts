@@ -232,7 +232,7 @@ export const backgroundWorkText = {
   graph: 'Graph', list: 'List', inspect: 'Inspect', output: 'Output', preview: 'Provider preview',
   fileOutput: 'Task output', latest: 'Latest output', reading: 'Reading earlier output',
   latestAction: 'Latest output ↓', waiting: 'No output has been reported yet.',
-  previewHint: 'Only the preview reported by the provider is available for this sub-agent.',
+  previewHint: 'Only the result preview reported by the provider is available here.',
   outputError: 'Could not read task output', unknown: 'unknown', agents: 'Sub-agents',
   parentStop: 'Select the workflow node to stop the task. Individual workflow agents have no stop handle.',
   tokens: 'Tokens', elapsed: 'Elapsed', workflow: 'Workflow', task: 'Task',
@@ -240,4 +240,14 @@ export const backgroundWorkText = {
   finished: 'Finished', showMore: 'Show more', running: 'Running',
   tailHint: 'Recent output · scroll up to read', loading: 'Reading output…',
   unavailablePath: 'The output path cannot be resolved for this session.',
+  sessionAgents: 'Session sub-agents', transcript: 'Saved transcript',
+  inventoryLoading: 'Reading session sub-agents…', inventoryUnavailable: 'Session sub-agents are unavailable.',
+  needsAgentUpdate: 'This VPS agent does not support the sub-agent reader. Update the agent to use it.',
+  inventoryHint: 'Saved sub-agents for this session. Their association with the selected task is not reported.',
+  missingProgress: 'Live workflow details have not been received. This does not mean there are no sub-agents.',
+  detailsUnknown: 'Details not received', noAgents: 'No saved sub-agent transcripts were found.',
+  nativeHint: 'Saved assistant output and tool activity · bounded provider transcript.',
+  noTaskOutput: 'This task has not reported an output file or a result yet. Select a saved sub-agent to read its transcript.',
+  sourceUnavailable: 'No output source reported',
+
 };

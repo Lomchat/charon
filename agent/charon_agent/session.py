@@ -152,6 +152,23 @@ SNAPSHOT_TOOLS = {"Edit", "Write", "MultiEdit"}
 SNAPSHOT_MAX = 256 * 1024  # 256KB per snapshot
 
 
+def _subagent_content_text(content: Any) -> str:
+    """Bound visible prose/tool names before serialization, never split JSON."""
+    if isinstance(content, str):
+        return content[:8000]
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+        elif block.get("type") == "tool_use" and isinstance(block.get("name"), str):
+            parts.append("› " + block["name"])
+    return "\n\n".join(parts)[:8000]
+
+
 def _field(obj: Any, *names: str) -> Any:
     """Read the first present field from a dict OR a dataclass, trying each
     name in order. SDK payloads arrive as either, and switched between snake
@@ -1054,19 +1071,16 @@ class AgentSession:
             return {"ok": False, "error": f"SDK too old: {e}"}
         try:
             msgs = sdk_call(self.session_config.get("accountProfile"), "get_subagent_messages", self.claude_session_id, agent_id,
-                                         directory=self.cwd, limit=limit)
+                                         directory=self.cwd)
         except Exception as e:
             return {"ok": False, "error": str(e)}
         out = []
-        for m in (msgs or []):
-            content = _field(m, "content", "text")
-            if not isinstance(content, str):
-                try:
-                    content = json.dumps(content, default=str)
-                except Exception:
-                    content = str(content)
+        for m in (msgs or [])[-max(1, min(limit, 400)):]:
+            message = _field(m, "message")
+            content = _field(message, "content", "text") if message is not None else _field(m, "content", "text")
+            content = _subagent_content_text(content)
             out.append({
-                "role": _field(m, "role", "type") or "assistant",
+                "role": _field(message, "role") or _field(m, "role", "type") or "assistant",
                 # Bounded: this is a reader, not an export. A runaway sub-agent
                 # must not be able to push megabytes through one RPC line.
                 "content": content[:8000],
