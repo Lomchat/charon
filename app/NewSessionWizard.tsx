@@ -1,8 +1,6 @@
 'use client';
 import PickerControl from './PickerControl';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode, RefObject } from 'react';
-import { createPortal } from 'react-dom';
 import { api, sessionApi } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
@@ -25,6 +23,7 @@ import { agentAvailability, backendAvailability, backendLauncher, type BackendLa
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 import SettingSourcesPicker from './SettingSourcesPicker';
+import PathChooser, { knownPathsFor } from './PathChooser';
 import {
   resolveSettingSources, safeParseSettingSources, type ClaudeSettingSource,
 } from '@/lib/settingSources';
@@ -80,10 +79,6 @@ type Props = {
   onOpenSettings?: (section: 'claude' | 'codex') => void;
 };
 
-function basename(p: string): string {
-  return p.split('/').filter(Boolean).pop() || '(root)';
-}
-
 export default function NewSessionWizard({
   kind: openedAs, offerShell = false, agentKind, initialAccountProfile, onProfileLogin, vpsList, vpsFolders, vpsPaths, initialVpsId, initialCwd, onClose,
   onCreatedSession, onCreatedShell,
@@ -138,24 +133,11 @@ export default function NewSessionWizard({
   const [name, setName] = useState('');
   const [custom, setCustom] = useState('');
   const [pathError, setPathError] = useState<string | null>(null);
-  // ── Path autocomplete (step 2) ── suggestions = known paths ∪ the REAL
-  // subdirectories of the typed dir on the VPS (GET /api/vps/[id]/fs,
-  // debounced, cached per dir for the wizard's lifetime).
-  type Suggestion = { path: string; kind: 'known' | 'dir' };
-  const [sug, setSug] = useState<Suggestion[]>([]);
-  const [sugOpen, setSugOpen] = useState(false);
-  const [sugIdx, setSugIdx] = useState(-1);
-  const [sugLoading, setSugLoading] = useState(false); // ssh listing in flight (or debounce-pending)
-  const [sugNote, setSugNote] = useState<string | null>(null); // "no match" / failure hint
+  // Step 2's input and its autocomplete live in PathChooser (shared with the
+  // explorer's "open a folder"); what a submitted path MEANS stays here.
   const [checking, setChecking] = useState(false);      // existence check on "Use ›"
   const [allowForce, setAllowForce] = useState(false);  // "use anyway" after a failed check
   const [pathPreview, setPathPreview] = useState<{ key: string; result: SessionPathResponse } | null>(null);
-  const customRef = useRef<HTMLInputElement | null>(null);
-  const customRowRef = useRef<HTMLDivElement | null>(null);  // input + "Use ›": the suggestions' anchor
-  const sugListRef = useRef<HTMLDivElement | null>(null);
-  const dirCacheRef = useRef(new Map<string, string[]>());  // `${vpsId}:${dir}` → subdirs
-  const prefetchingRef = useRef(new Set<string>());
-  const fetchSeqRef = useRef(0);
   const [step, setStep] = useState<Step>(
     !initialVpsId ? 'vps' : !hasInitialCwd ? 'path' : showBackendStep ? 'backend' : 'name');
   // The enabled set arrives after mount (the panel starts from "all on"): once
@@ -318,16 +300,7 @@ export default function NewSessionWizard({
   }, [buckets, vpsSearch]);
   const shownVps = useMemo(() => shownBuckets.flatMap((b) => b.vps), [shownBuckets]);
 
-  const pickList = useMemo(() => {
-    if (!vps) return [] as { label: string; path: string }[];
-    const rows = vpsPaths
-      .filter((p) => p.vpsId === vps.id)
-      .map((p) => ({ label: p.label || basename(p.path), path: p.path }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-    const dp = (vps as any).defaultPath as string | null | undefined;
-    if (dp && !rows.some((r) => r.path === dp)) rows.unshift({ label: 'default', path: dp });
-    return rows;
-  }, [vps, vpsPaths]);
+  const pickList = useMemo(() => knownPathsFor(vps, vpsPaths), [vps, vpsPaths]);
 
   // Per-VPS availability — shared diagnosis (app/vpsHealth.tsx). Sessions
   // need the whole stack for their backend; a shell only needs the agent
@@ -428,60 +401,8 @@ export default function NewSessionWizard({
 
   function choosePath(p: string | null) {
     setPath(p); setPathChosen(true); setPathError(null);
-    setSugOpen(false);
     setStep('name');
   }
-
-  // Live path suggestions. No '/' typed yet → known paths only (fuzzy).
-  // Otherwise split on the LAST '/': list the dir on the VPS (debounced
-  // 250ms; per-dir cache makes further keystrokes in the same dir instant)
-  // and prefix-filter its subdirs, with matching known paths on top.
-  useEffect(() => {
-    if (step !== 'path' || !vpsId) return;
-    const typed = custom;
-    const seq = ++fetchSeqRef.current;
-    const q = typed.trim().toLowerCase();
-    const knownMatches: Suggestion[] = pickList
-      .filter((p) => p.path !== typed && (q === '' || p.path.toLowerCase().includes(q)))
-      .map((p) => ({ path: p.path, kind: 'known' as const }));
-    const lastSlash = typed.lastIndexOf('/');
-    if (lastSlash === -1) { setSug(knownMatches.slice(0, 12)); setSugIdx(-1); setSugLoading(false); setSugNote(null); return; }
-    const dir = typed.slice(0, lastSlash + 1) || '/';
-    const base = typed.slice(lastSlash + 1);
-    const compose = (subdirs: string[], failed = false) => {
-      const dirMatches: Suggestion[] = subdirs
-        .filter((n) => n.startsWith(base))
-        .slice(0, 30)
-        .map((n) => ({ path: dir + n + '/', kind: 'dir' as const }));
-      const seen = new Set(dirMatches.map((s) => s.path));
-      const merged = [
-        ...knownMatches.filter((k) => !seen.has(k.path) && !seen.has(k.path + '/')).slice(0, 6),
-        ...dirMatches,
-      ];
-      setSug(merged);
-      setSugIdx(-1);
-      setSugLoading(false);
-      setSugNote(merged.length === 0 ? (failed ? 'listing failed' : 'no matching directory') : null);
-    };
-    const cacheKey = `${vpsId}:${dir}`;
-    const cached = dirCacheRef.current.get(cacheKey);
-    if (cached) { compose(cached); return; }
-    // Uncached dir → the spinner shows through the debounce AND the ssh
-    // round-trip (the user must SEE that deeper levels are on their way).
-    setSugLoading(true); setSugNote(null);
-    const t = setTimeout(() => {
-      api.listVpsDirs(vpsId, dir)
-        .then((r) => {
-          if (seq !== fetchSeqRef.current) return;   // stale response
-          const subdirs = r.ok && r.exists ? (r.dirs ?? []) : [];
-          if (r.ok) dirCacheRef.current.set(cacheKey, subdirs); // never cache a FAILURE
-          compose(subdirs, !r.ok);
-        })
-        .catch(() => { if (seq === fetchSeqRef.current) compose([], true); });
-    }, 150);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [custom, step, vpsId, pickList]);
 
   // Read-only preview; cancel stale results when the path or VPS changes.
   const previewPath = step === 'path' ? custom.trim() : (path?.trim() ?? '');
@@ -501,122 +422,6 @@ export default function NewSessionWizard({
     }, 350);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [kind, vpsId, previewPath, previewKey, step]);
-
-  // Warm-up: entering step 2 pre-lists '/' in the background. This opens the
-  // per-VPS persistent SSH master server-side (the expensive part) so the
-  // first real keystroke listing returns fast, and pre-caches the root dir.
-  useEffect(() => {
-    if (step !== 'path' || !vpsId) return;
-    const key = `${vpsId}:/`;
-    if (dirCacheRef.current.has(key)) return;
-    api.listVpsDirs(vpsId, '/')
-      .then((r) => { if (r.ok) dirCacheRef.current.set(key, r.dirs ?? []); })
-      .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, vpsId]);
-
-  // Step 2 has to be keyboard-usable the moment it opens — the sidebar's ＋
-  // lands straight here, and with nothing focused Enter did nothing at all
-  // (the tab-bar ＋ passes a cwd, skips to step 3 and its autoFocus'd name
-  // input, which is why it "worked there"). The dropdown stays SHUT: the known
-  // paths are already listed right above, and an overlay covering its own list
-  // on open reads as a glitch. Coarse pointers are skipped (a phone keyboard
-  // would hide the list), same rule as the step-1 search box.
-  useEffect(() => {
-    if (step !== 'path') return;
-    if (typeof window === 'undefined') return;
-    if (window.matchMedia?.('(pointer: coarse)').matches) return;
-    const id = requestAnimationFrame(() => {
-      customRef.current?.focus();
-      setSugOpen(false);   // batched with the focus handler's auto-open
-    });
-    return () => cancelAnimationFrame(id);
-  }, [step]);
-
-  // Pre-list a suggested dir while the user hovers/highlights it — by the
-  // time they click, the drill-down composes straight from cache.
-  function prefetchDir(p: string) {
-    if (!vpsId) return;
-    const key = `${vpsId}:${p}`;
-    if (dirCacheRef.current.has(key) || prefetchingRef.current.has(key)) return;
-    prefetchingRef.current.add(key);
-    api.listVpsDirs(vpsId, p)
-      .then((r) => { if (r.ok) dirCacheRef.current.set(key, r.dirs ?? []); })
-      .catch(() => {})
-      .finally(() => prefetchingRef.current.delete(key));
-  }
-
-  // Keep the highlighted suggestion visible while arrowing through the list
-  // (+ prefetch it so Enter drills down instantly).
-  useEffect(() => {
-    if (sugIdx < 0) return;
-    sugListRef.current?.children[sugIdx]?.scrollIntoView({ block: 'nearest' });
-    const s = sug[sugIdx];
-    if (s?.kind === 'dir') prefetchDir(s.path);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sugIdx]);
-
-  // Focus the path input with the caret AFTER the text: the whole point of
-  // filling it from a row is to keep typing DEEPER into that path. `.focus()`
-  // alone lands at offset 0 on an input that wasn't focused (and mid-string on
-  // one that was), so the path ends up behind the cursor. The rAF is
-  // load-bearing: React must commit the controlled `value` first, or the
-  // re-render wipes the selection we just set.
-  function focusCustomAtEnd(p: string) {
-    requestAnimationFrame(() => {
-      const el = customRef.current;
-      if (!el) return;
-      el.focus();
-      try { el.setSelectionRange(p.length, p.length); } catch { /* detached */ }
-    });
-  }
-
-  // The ⧉ button fills the input with a trailing slash to keep typing deeper.
-  function copyToInput(p: string) {
-    const prefix = p.endsWith('/') ? p : p + '/';
-    setCustom(prefix);
-    setPathError(null); setAllowForce(false);
-    setSugOpen(true);
-    focusCustomAtEnd(prefix);
-  }
-
-  // The suggestions float OVER what sits under the input: a failed "Use ›"
-  // shuts them so its error can be read (an arrow key reopens them).
-  useEffect(() => { if (pathError) setSugOpen(false); }, [pathError]);
-  const sugShown = sugOpen && (sug.length > 0 || sugLoading || !!sugNote);
-
-  function applySuggestion(s: Suggestion) {
-    setCustom(s.path);
-    setPathError(null); setAllowForce(false);
-    setSugOpen(true);
-    focusCustomAtEnd(s.path);
-  }
-
-  function onCustomKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Escape' && sugShown) {
-      // Close only the dropdown — NOT the wizard (the modal's window-level
-      // Escape listener sits behind this stopPropagation).
-      e.stopPropagation(); setSugOpen(false); return;
-    }
-    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && sug.length > 0) {
-      e.preventDefault();
-      setSugOpen(true);
-      setSugIdx((i) => {
-        const n = sug.length;
-        return e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n;
-      });
-      return;
-    }
-    if (e.key === 'Tab' && sugOpen && sug.length > 0) {
-      e.preventDefault();
-      applySuggestion(sug[Math.max(0, sugIdx)]);
-      return;
-    }
-    if (e.key === 'Enter') {
-      if (sugOpen && sugIdx >= 0 && sug[sugIdx]) { applySuggestion(sug[sugIdx]); return; }
-      void submitCustom();
-    }
-  }
 
   // Agent paths must exist or have exactly one missing leaf. The legacy
   // shell picker retains its existence check and "use anyway" escape hatch.
@@ -1033,9 +838,11 @@ export default function NewSessionWizard({
         {/* ── Step 2: Path ── */}
         {step === 'path' && vps && (
           <div className="wiz-body">
-            <div className="wiz-label">Path on <b>{vps.name}</b></div>
-            <div className="wiz-pick-list">
-              {kind === 'shell' && (
+            <PathChooser
+              vpsId={vps.id}
+              label={<>Path on <b>{vps.name}</b></>}
+              known={pickList}
+              leading={kind === 'shell' && (
                 <button className="wiz-pick" onClick={() => choosePath(null)}>
                   <span className="wiz-pick-glyph">~</span>
                   <span className="wiz-pick-main">
@@ -1045,79 +852,21 @@ export default function NewSessionWizard({
                   <span className="wiz-pick-go">›</span>
                 </button>
               )}
-              {pickList.map((p) => (
-                // A <div>, not a <button>: the row hosts the nested ⧉
-                // copy-to-input button (nested <button> is invalid HTML).
-                <div key={p.path} className="wiz-pick" role="button" tabIndex={0}
-                  onClick={() => choosePath(p.path)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') choosePath(p.path); }}
-                >
-                  <span className="wiz-pick-glyph">▤</span>
-                  <span className="wiz-pick-main">
-                    <span className="wiz-pick-name">{p.label}</span>
-                    <span className="wiz-pick-sub mono">{p.path}</span>
-                  </span>
-                  <button type="button" className="wiz-pick-copy"
-                    title="copy this path into the input (edit before use)"
-                    onClick={(e) => { e.stopPropagation(); copyToInput(p.path); }}
-                  >⧉</button>
-                  <span className="wiz-pick-go">›</span>
-                </div>
-              ))}
-            </div>
-            <div className="wiz-custom" ref={customRowRef}>
-              <input
-                ref={customRef}
-                placeholder="/custom/path…  (type / to browse the server)"
-                value={custom}
-                disabled={checking}
-                onChange={(e) => { setCustom(e.target.value); setPathError(null); setAllowForce(false); setSugOpen(true); }}
-                onFocus={() => setSugOpen(true)}
-                onBlur={() => setTimeout(() => setSugOpen(false), 120)}
-                onKeyDown={onCustomKeyDown}
-                autoCapitalize="off" autoCorrect="off" spellCheck={false}
-              />
-              <button className="wiz-btn primary" onClick={() => void submitCustom()} disabled={checking}>
-                {checking ? '…' : 'Use ›'}
-              </button>
-            </div>
-            {/* ONE line, reserved even when empty: the page's height is
-                measured on entry, so a verdict arriving later must not need
-                more room. A failed "Use ›" outranks the live preview. */}
-            <div className={`wiz-status${pathError || previewNote?.err ? ' is-error' : ''}`} role="status">
-              {pathError ? <>⚠ {pathError}
+              value={custom}
+              onChange={(v) => { setCustom(v); setPathError(null); setAllowForce(false); }}
+              onChoose={choosePath}
+              onSubmit={() => void submitCustom()}
+              busy={checking}
+              // A failed "Use ›" outranks the live preview.
+              status={pathError ? <>⚠ {pathError}
                 {allowForce && (
                   <button type="button" className="wiz-btn ghost" onClick={() => void submitCustom(true)}>use anyway ›</button>
                 )}
               </> : previewNote?.text}
-            </div>
-            {sugShown && (
-              <FloatingSuggestions anchor={customRowRef}>
-                {/* The verdict on the typed path, repeated on top: the list
-                    covers the line under the input that carries it. */}
-                {previewNote && (
-                  <div className={`wiz-sug-status${previewNote.err ? ' is-error' : ''}`}>{previewNote.text}</div>
-                )}
-                <div className="wiz-sug-items" ref={sugListRef}>
-                  {sug.map((s2, i) => (
-                    <button key={s2.kind + s2.path} type="button"
-                      className={`wiz-sug-item${i === sugIdx ? ' active' : ''}`}
-                      onMouseEnter={() => { if (s2.kind === 'dir') prefetchDir(s2.path); }}
-                      onClick={() => applySuggestion(s2)}
-                    >
-                      <span className="wiz-sug-tag">{s2.kind === 'known' ? '★' : '▸'}</span>
-                      <span className="wiz-sug-path">{s2.path}</span>
-                    </button>
-                  ))}
-                </div>
-                {sugLoading && (
-                  <div className="wiz-sug-note"><span className="wiz-sug-spin">⟳</span> listing directory…</div>
-                )}
-                {!sugLoading && sugNote && sug.length === 0 && (
-                  <div className="wiz-sug-note">{sugNote}</div>
-                )}
-              </FloatingSuggestions>
-            )}
+              statusError={!!pathError || !!previewNote?.err}
+              note={previewNote}
+              error={pathError}
+            />
           </div>
         )}
 
@@ -1304,58 +1053,6 @@ export default function NewSessionWizard({
         </>)}
       </div>
     </div>
-  );
-}
-
-/** Step 2's path suggestions, floated OVER the wizard instead of laid out in
- *  it: in flow they grew the modal on every keystroke, and the wizard keeps
- *  ONE size from open to launch. Portaled (the scrolling body would clip
- *  them), as wide as the input row so they cover the status line under it,
- *  below the row, above it only when the viewport has no room below —
- *  PickerControl's rule. A mousedown anywhere in it keeps the input focused,
- *  so its blur-close never swallows a click. */
-function FloatingSuggestions({ anchor, children }: {
-  anchor: RefObject<HTMLElement | null>; children: ReactNode;
-}) {
-  const popup = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<CSSProperties>({ visibility: 'hidden' });
-  useLayoutEffect(() => {
-    const place = () => {
-      const rect = anchor.current?.getBoundingClientRect();
-      if (!rect) return;
-      const viewport = window.visualViewport;
-      const edgeX = viewport?.offsetLeft ?? 0, edgeY = viewport?.offsetTop ?? 0;
-      const width = viewport?.width ?? innerWidth, height = viewport?.height ?? innerHeight;
-      const below = height + edgeY - rect.bottom - 12, above = rect.top - edgeY - 12;
-      const upwards = below < 160 && above > below;
-      const maxHeight = Math.max(80, Math.min(320, upwards ? above : below));
-      const popupWidth = Math.min(rect.width, width - 24);
-      setPosition({ width: popupWidth, maxHeight,
-        left: Math.max(edgeX + 12, Math.min(rect.left, edgeX + width - popupWidth - 12)),
-        top: upwards ? Math.max(edgeY + 12, rect.top - 4 - Math.min(popup.current?.scrollHeight ?? maxHeight, maxHeight)) : rect.bottom + 4 });
-    };
-    place();
-    const observer = new ResizeObserver(place);
-    if (popup.current) observer.observe(popup.current);
-    if (anchor.current) observer.observe(anchor.current);
-    const onScroll = (e: Event) => { if (!popup.current?.contains(e.target as Node)) place(); };
-    window.addEventListener('resize', place);
-    window.addEventListener('scroll', onScroll, true);
-    window.visualViewport?.addEventListener('resize', place);
-    window.visualViewport?.addEventListener('scroll', place);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', place);
-      window.removeEventListener('scroll', onScroll, true);
-      window.visualViewport?.removeEventListener('resize', place);
-      window.visualViewport?.removeEventListener('scroll', place);
-    };
-  }, [anchor]);
-  return createPortal(
-    <div ref={popup} className="wiz-sug" style={position} onMouseDown={(e) => e.preventDefault()}>
-      {children}
-    </div>,
-    anchor.current?.closest('.claude-root') ?? document.body,
   );
 }
 

@@ -16,6 +16,8 @@ type Props = {
   cwd: string | null;
   /** Present exactly when a chat is open — same signal the explorer uses. */
   onInsertPath?: (text: string) => void;
+  /** A hit is about to open as a file tab (grouped by this folder). */
+  onWillOpenFile?: () => void;
 };
 
 type Options = {
@@ -58,7 +60,7 @@ const OPTION_HINTS: Record<'case' | 'word' | 'regex', string> = {
   regex: 'Use Regular Expression',
 };
 
-export default function SearchTab({ vpsId, cwd, onInsertPath }: Props) {
+export default function SearchTab({ vpsId, cwd, onInsertPath, onWillOpenFile }: Props) {
   const memKey = workspaceScopeKey(vpsId, cwd);
   const saved = memory.get(memKey);
 
@@ -152,9 +154,10 @@ export default function SearchTab({ vpsId, cwd, onInsertPath }: Props) {
 
   const openHit = useCallback((path: string, line: number | null, pin: boolean) => {
     if (!vpsId || !cwd) return;
+    onWillOpenFile?.();
     if (line != null) revealLine(vpsId, cwd, path, line);
     void openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: path, pin });
-  }, [vpsId, cwd]);
+  }, [vpsId, cwd, onWillOpenFile]);
 
   const toggleFile = useCallback((path: string) => {
     setCollapsed((prev) => {

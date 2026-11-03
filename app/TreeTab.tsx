@@ -24,7 +24,8 @@ import {
   FileIcon, IconFolder, IconFolderGit, IconFolderGitOpen,
   IconFilePlus, IconFolderPlus, IconCopy, IconRename, IconDelete, IconInsert, IconSymlink,
 } from './fileIcons';
-import { IconClipboard, IconFileEarmark, IconPencil } from './icons';
+import { IconClipboard, IconFileEarmark, IconPencil, IconRobot } from './icons';
+import { normalizeWorkspacePath } from './workspaceScope';
 import ConfirmModal from './ConfirmModal';
 import PromptModal from './PromptModal';
 import { isPathDrag, setPathDrag } from './pathDrag';
@@ -58,6 +59,11 @@ type Props = {
   onInsertPath?: (text: string) => void;
   /** Jump to the session that is touching a file (§14.88). */
   onOpenSession?: (sessionId: string) => void;
+  /** "New Session Here…": the new-session wizard on this VPS and that folder
+   *  (absolute). Absent: no such menu entry. */
+  onNewSessionIn?: (cwd: string) => void;
+  /** A file of this tree is about to open as a tab (grouped by this root). */
+  onWillOpenFile?: () => void;
 };
 
 type Menu = { x: number; y: number; row: Row | null; rows: Row[] };
@@ -199,7 +205,7 @@ type PendingUpload = {
  * path, its sha precondition and its conflict handling all live in FileEditor,
  * so there is exactly one place that can modify a file from the browser.
  */
-export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, onOpenSession }: Props) {
+export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, onOpenSession, onNewSessionIn, onWillOpenFile }: Props) {
   const { workspace } = useGitStatus(vpsId, cwd);
   // Who is reading/writing what on this machine, right now (§14.88).
   const activity = useFileActivity(vpsId);
@@ -231,9 +237,10 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   // for HTML and Markdown), whatever a chat link last rendered (§14.84).
   const openFile = useCallback((rel: string, pin: boolean) => {
     if (!vpsId || !cwd) return;
+    onWillOpenFile?.();
     revealView(vpsId, cwd, rel, 'default');
     void openWorkspaceTab({ vpsId, path: cwd, kind: 'file', ref: rel, pin });
-  }, [vpsId, cwd]);
+  }, [vpsId, cwd, onWillOpenFile]);
   /** path → whether the listing in flight asked for git flags. */
   const inflight = useRef<Map<string, boolean>>(new Map());
   /** Forced re-lists that arrived during a flight: rerun ONCE after it (the
@@ -685,6 +692,12 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   /** Directory a create action should act in: the row's folder, or the row's
    *  own path when it IS a folder. */
   const dirOf = (row: Row | null): string => (!row ? '' : row.dir ? row.path : parentOf(row));
+  /** Where "New Session Here…" starts: `dirOf`, absolute on the VPS. */
+  const newSessionDir = (row: Row | null): string => {
+    const dir = dirOf(row);
+    const root = normalizeWorkspacePath(cwd) ?? cwd ?? '/';
+    return dir ? absUnderRoot(root, dir) : root;
+  };
   const reload = (dir: string) => {
     void load(dir, true);
     if (dir) void load('', true);
@@ -1201,6 +1214,20 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
                   onClick={() => void createInstructionSymlink(menu.row!, instructionSymlink)}
                 >
                   <IconSymlink />Create {instructionSymlink} Symlink
+                </button>
+                <div className="tt-menu-sep" />
+              </>
+            )}
+            {/* A session where the tree says: the folder right-clicked, a
+                file's own folder, or this root for the empty space. The
+                wizard asks which agent (or a shell), then the name. */}
+            {onNewSessionIn && menu.rows.length <= 1 && (
+              <>
+                <button
+                  title={newSessionDir(menu.row)}
+                  onClick={() => { onNewSessionIn(newSessionDir(menu.row)); setMenu(null); }}
+                >
+                  <IconRobot />{menu.row && !menu.row.dir ? 'New Session in Its Folder…' : 'New Session Here…'}
                 </button>
                 <div className="tt-menu-sep" />
               </>

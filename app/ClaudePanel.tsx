@@ -80,6 +80,7 @@ import {
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
 import { DeepLinkGuard } from './deepLinkGuard';
+import { openExplorerRoot } from './explorerRoots';
 import { PROVIDER_VERSION_COLUMNS, pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { nudgeGit } from './gitStore';
 import {
@@ -98,6 +99,7 @@ const MAX_MOUNTED_FILES = 4;
 const fileTabKey = (t: { vpsId: string; path: string; ref: string }) => `${t.vpsId}\u0000${t.path}\u0000${t.ref}`;
 const InstallSessionView = dynamic(() => import('./InstallSessionView'));
 const NewSessionWizard = dynamic(() => import('./NewSessionWizard'), { ssr: false });
+const OpenFolderModal = dynamic(() => import('./OpenFolderModal'), { ssr: false });
 const DataModal = dynamic(() => import('./DataModal'), { ssr: false });
 const ResumeModal = dynamic(() => import('./ResumeModal'), { ssr: false });
 const PausedSessionsModal = dynamic(() => import('./PausedSessionsModal'), { ssr: false });
@@ -935,6 +937,23 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   // button that opened it (＋Agent vs ＋Shell). Replaces the old
   // NewSessionDialog / NewShellDialog.
   const [wizard, setWizard] = useState<null | { kind: 'agent' | 'shell'; vpsId?: string; cwd?: string | null; agentKind?: AgentKind; accountProfile?: string; offerShell?: boolean }>(null);
+  // The explorer's ＋ (ToolPanel): which folder to open as a tab of the
+  // workspace `(vpsId, cwd)` it was asked from (`explorerRoots.ts`).
+  const [folderPicker, setFolderPicker] = useState<null | { vpsId: string; cwd: string }>(null);
+  const openFolderPicker = useCallback((vpsId: string, cwd: string) => setFolderPicker({ vpsId, cwd }), []);
+  const folderPickerInUse = useMemo(() => {
+    if (!folderPicker) return [] as string[];
+    const out: string[] = [];
+    for (const x of sessions) if (x.vpsId === folderPicker.vpsId && x.cwd) out.push(x.cwd);
+    for (const x of shells) if (x.vpsId === folderPicker.vpsId && x.cwd) out.push(x.cwd);
+    return out;
+  }, [folderPicker, sessions, shells]);
+  // The explorer's "New Session Here…": the header's "＋ agent here" flow on
+  // any folder — which agent (or a shell), then the name.
+  const newSessionIn = useCallback((vpsId: string, cwd: string) => {
+    closeDrawers();
+    setWizard({ kind: 'agent', vpsId, cwd, offerShell: true });
+  }, [closeDrawers]);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2245,6 +2264,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           vpsId={selectedFile.vpsId}
           cwd={selectedFile.path}
           onOpenSession={(id) => openSessionById(id, false)}
+          onOpenFolder={openFolderPicker}
+          onNewSessionIn={newSessionIn}
           onReveal={() => setToolsOpen(true)}
         />
         </>
@@ -2294,6 +2315,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
               vpsId={selectedShell!.vpsId}
               cwd={selectedShellWorkspaceRoot}
               onOpenSession={(id) => openSessionById(id, false)}
+              onOpenFolder={openFolderPicker}
+              onNewSessionIn={newSessionIn}
               onReveal={() => setToolsOpen(true)}
             />
           ) : (
@@ -2343,6 +2366,8 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onNewAgentHere={selected.cwd
             ? () => setWizard({ kind: 'agent', vpsId: selected.vpsId, cwd: selected.cwd, offerShell: true })
             : undefined}
+          onOpenFolder={openFolderPicker}
+          onNewSessionIn={newSessionIn}
           onImportError={(vps) => {
             // The VPS agent crashed an "import claude_agent_sdk" → we trigger
             // the install in a new install session (instead of the
@@ -2478,6 +2503,23 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onOpenSettings={(section) => { setWizard(null); setSettingsCat(section); setSettingsOpen(true); }}
         />
       )}
+
+      {folderPicker && (() => {
+        const v = vpsList.find((x) => x.id === folderPicker.vpsId);
+        if (!v) return null;
+        return (
+          <OpenFolderModal
+            vps={v}
+            vpsPaths={vpsPaths}
+            inUse={folderPickerInUse}
+            onOpen={(path) => {
+              openExplorerRoot(folderPicker.vpsId, folderPicker.cwd, path);
+              setFolderPicker(null);
+            }}
+            onClose={() => setFolderPicker(null)}
+          />
+        );
+      })()}
 
       {resumeOpen && (
         <ResumeModal

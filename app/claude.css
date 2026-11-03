@@ -4018,6 +4018,8 @@
   overflow: hidden; text-indent: -99px;
   background: var(--accent-strong);
 }
+/* The body column: the folder tabs (tree/search/git only) over the scroller. */
+.tp-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .tp-body { flex: 1; overflow-y: auto; padding: 10px; }
 .tp-empty { font-style: italic; color: var(--text-muted); padding: 20px; font-size: 12px; text-align: center; }
 .tp-empty-hint { display: inline-block; margin-top: 8px; opacity: 0.75; font-size: 11px; }
@@ -5011,8 +5013,10 @@
 .wiz-pick:hover:not(:disabled) .wiz-pick-go { color: var(--accent-strong); }
 
 .wiz-custom { display: flex; gap: 8px; margin-top: 8px; }
+/* "Open ›" stays one line beside the input on a phone. */
+.wiz-custom > .wiz-btn { flex: none; white-space: nowrap; }
 .wiz-custom input {
-  flex: 1; padding: 9px 11px; border-radius: var(--radius-md);
+  flex: 1; min-width: 0; padding: 9px 11px; border-radius: var(--radius-md);
   background: var(--bg-inset); border: 1px solid var(--border);
   color: var(--text); font-family: var(--mono); font-size: 12px; outline: none;
 }
@@ -5361,6 +5365,7 @@
     overflow: hidden; text-indent: -99px; background: var(--accent-strong);
   }
   .tp-body { flex: 1 1 auto; min-width: 0; }
+  .claude-root[data-tools="closed"] .tp-main { display: none; }
   .claude-root[data-tools="closed"] .tp-tabs { border-left: 0; }
   .claude-root[data-tools="closed"] .tp-tabs button.on { background: transparent; color: var(--text-muted); box-shadow: none; }
   .claude-root[data-tools="closed"] .tp-tabs button:hover { color: var(--accent-strong); }
@@ -6549,6 +6554,65 @@
 .tt-tools button.cs-chip { padding: 0; border: 0; background: none; color: inherit; font: inherit; }
 .tt-tools button.cs-chip:disabled { cursor: default; opacity: 0.4; }
 .tt-tools button.cs-chip:disabled .cs-chip-face { color: var(--text-muted); border-color: var(--border); }
+/* The folder tabs (ExplorerRootTabs): the tab bar's pills one size down,
+   pinned over the explorer, search and git. They scroll sideways rather than
+   wrap — a wrap would move the whole panel under the pointer. ORANGE while a
+   folder other than the workspace's own is shown: everything below is about
+   somewhere else. */
+.tt-roots {
+  flex: none; display: flex; align-items: center; gap: 3px; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-family: var(--mono); font-size: 10.5px;
+  background: color-mix(in srgb, var(--bg-raised) 50%, var(--bg-elevated));
+}
+.tt-roots.away { border-bottom-color: color-mix(in srgb, var(--attention) 55%, var(--border)); }
+@media (max-width: 1100px) { .tt-roots { background: var(--bg-elevated); } }
+.tt-roots::-webkit-scrollbar { display: none; }
+.tt-root-tab {
+  flex: none; display: inline-flex; align-items: center; max-width: 160px;
+  border-radius: var(--radius-md); color: var(--text-muted);
+}
+.tt-root-tab:hover { color: var(--accent-strong); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.tt-root-tab.on {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: -1px;
+}
+.tt-root-tab.on:not(.home) {
+  color: var(--attention);
+  background: color-mix(in srgb, var(--attention) 15%, transparent);
+  outline-color: color-mix(in srgb, var(--attention) 50%, transparent);
+}
+.tt-root-main {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 3px 7px; border: 0; background: none; color: inherit; cursor: pointer;
+  font: inherit; font-size: 10.5px;
+}
+.tt-root-tab:not(.home) .tt-root-main { padding-right: 2px; }
+.tt-root-main svg { flex: none; width: 12px; height: 12px; }
+.tt-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Hidden until hovered or current, like the tab bar's ✕; always shown on
+   touch, which has no hover. */
+.tt-root-close {
+  flex: none; padding: 3px 6px 3px 3px; border: 0; background: none; cursor: pointer;
+  color: transparent; font-size: 9px;
+}
+.tt-root-tab:hover .tt-root-close, .tt-root-tab.on .tt-root-close { color: var(--text-muted); }
+.tt-root-close:hover { color: var(--danger-strong) !important; }
+.tt-root-add {
+  flex: none; display: inline-grid; place-items: center; width: 24px; height: 22px;
+  border: 1px dashed var(--border); border-radius: var(--radius-md); background: none;
+  color: var(--text-muted); cursor: pointer;
+}
+.tt-root-add svg { width: 13px; height: 13px; }
+.tt-root-add:hover { color: var(--accent-strong); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+@media (hover: none) { .tt-root-close { color: var(--text-muted); } }
+@media (pointer: coarse) {
+  .tt-root-main { padding: 6px 9px; }
+  .tt-root-close { padding: 6px 9px 6px 4px; }
+  .tt-root-add { width: 34px; height: 30px; }
+}
 /* Under a folder being read: a bar (indeterminate until the first page, then
    how far the rest has come) — and, past a listing's budget, "load more". */
 .tt-extra { list-style: none; }

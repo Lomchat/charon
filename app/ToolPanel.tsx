@@ -11,6 +11,8 @@ import { fmtSize } from './sessionAttachments';
 import GitTab from './GitTab';
 import InsightSection from './InsightSection';
 import TreeTab from './TreeTab';
+import ExplorerRootTabs from './ExplorerRootTabs';
+import { carryExplorerRoots, useExplorerRoots } from './explorerRoots';
 import SearchTab from './SearchTab';
 import { useGitStatus, workspaceDirtyCount, workspaceRepos } from './gitStore';
 import { IconTree } from './fileIcons';
@@ -70,6 +72,11 @@ type Props = {
   onInsertPath?: (path: string) => void;
   /** Jump to the session touching a file, from the explorer (§14.88). */
   onOpenSession?: (sessionId: string) => void;
+  /** The explorer strip's ＋: ask for a folder of this VPS to open as a tab
+   *  of the workspace `(vpsId, cwd)` (`explorerRoots.ts`). */
+  onOpenFolder?: (vpsId: string, cwd: string) => void;
+  /** The explorer's "New Session Here…": the wizard on that VPS and folder. */
+  onNewSessionIn?: (vpsId: string, cwd: string) => void;
   // Source control (§14.76). Scoped to the REPO containing `cwd`, not to the
   // session — which is why it takes (vpsId, cwd) and not sessionId.
   vpsId?: string | null;
@@ -168,7 +175,7 @@ function tabTip(id: Tab, n: number, git: 'repo' | 'none' | 'unknown'): HoverTipC
 function ToolPanel({
   sessionId, workspaceOnly = false, kind = 'claude', toolCalls: liveToolCalls, toolCallCount = null,
   transcriptView = null, edits, onRevert,
-  attachments = [], onRemoveAttachment, onInsertPath, onOpenSession,
+  attachments = [], onRemoveAttachment, onInsertPath, onOpenSession, onOpenFolder, onNewSessionIn,
   vpsId = null, cwd = null, repoBusy = false, requestedTab = null, onTabConsumed,
   onReveal, context = null, contextLoaded = false, contextLoading = false,
   onRefreshContext, onCompact, compacting = false, compactDisabled = true,
@@ -268,8 +275,36 @@ function ToolPanel({
 
   // Same poll the chip and the git tab already share — keyed on (vpsId, cwd),
   // so asking for it here costs nothing extra (§14.76).
-  const { workspace } = useGitStatus(vpsId, cwd);
+  // The folder tabs (`explorerRoots.ts`): the workspace's own folder, or
+  // another one of this VPS opened with the strip's ＋. The one shown is THE
+  // folder of the three workspace tabs — explorer, search and git — and of
+  // the git badge, so they always describe the same place.
+  const roots = useExplorerRoots(vpsId, cwd);
+  const treeRoot = roots.active ?? cwd;
+  /** Elsewhere than the workspace's own folder: what is the SESSION's (its
+   *  review, its busy turn) does not apply to what is shown. */
+  const away = roots.active != null;
+  const { workspace } = useGitStatus(vpsId, treeRoot);
   const gitDirty = workspaceDirtyCount(workspace);
+  const newSessionIn = useMemo(
+    () => (onNewSessionIn && vpsId ? (dir: string) => onNewSessionIn(vpsId, dir) : undefined),
+    [onNewSessionIn, vpsId],
+  );
+  // A file from another root opens in that folder's tab group: its panel
+  // inherits these tabs, so the way back to this folder is still one click.
+  const willOpenFile = useMemo(
+    () => (vpsId && cwd && treeRoot && away ? () => carryExplorerRoots(vpsId, cwd, treeRoot) : undefined),
+    [vpsId, cwd, treeRoot, away],
+  );
+  const rootTabsShown = !!vpsId && !!cwd && (activeTab === 'tree' || activeTab === 'search' || activeTab === 'git');
+  // Another folder, another height: start it at its top, not at the scroll
+  // the previous one left.
+  const shownRoot = useRef(treeRoot);
+  useLayoutEffect(() => {
+    if (shownRoot.current === treeRoot) return;
+    shownRoot.current = treeRoot;
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [treeRoot]);
 
   // The explorer is where a dragged OS file can be uploaded into a folder
   // (app/fileDropZones.ts). When another tab is showing, its button says so
@@ -346,15 +381,49 @@ function ToolPanel({
         })}
       </nav>
       {tip.node}
+      <div className="tp-main">
+      {rootTabsShown && (
+        <ExplorerRootTabs vpsId={vpsId!} cwd={cwd!} roots={roots}
+          onAdd={onOpenFolder ? () => onOpenFolder(vpsId!, cwd!) : undefined} />
+      )}
       <div
         ref={bodyRef}
         className="tp-body"
         onScroll={(event) => writeWorkspacePanelScroll(vpsId, cwd, activeTab, event.currentTarget.scrollTop)}
       >
         {!workspaceOnly && activeTab === 'edits' && <EditsTab sessionId={sessionId} kind={kind} edits={editArr} onRevert={onRevert} />}
-        {activeTab === 'git' && <GitTab key={`git:${panelScope}`} sessionId={sessionId} kind={kind} vpsId={vpsId} cwd={cwd} busy={repoBusy} onOpenSession={onOpenSession} />}
-        {activeTab === 'tree' && <TreeTab key={`tree:${panelScope}`} vpsId={vpsId} cwd={cwd} sessionId={sessionId} onInsertPath={onInsertPath} onOpenSession={onOpenSession} />}
-        {activeTab === 'search' && <SearchTab key={`search:${panelScope}`} vpsId={vpsId} cwd={cwd} onInsertPath={onInsertPath} />}
+        {activeTab === 'git' && (
+          <GitTab
+            key={`git:${panelScope}:${treeRoot ?? ''}`}
+            sessionId={away ? null : sessionId}
+            kind={kind}
+            vpsId={vpsId}
+            cwd={treeRoot}
+            busy={away ? false : repoBusy}
+            onOpenSession={onOpenSession}
+          />
+        )}
+        {activeTab === 'tree' && (
+          <TreeTab
+            key={`tree:${panelScope}:${treeRoot ?? ''}`}
+            vpsId={vpsId}
+            cwd={treeRoot}
+            sessionId={sessionId}
+            onInsertPath={onInsertPath}
+            onOpenSession={onOpenSession}
+            onNewSessionIn={newSessionIn}
+            onWillOpenFile={willOpenFile}
+          />
+        )}
+        {activeTab === 'search' && (
+          <SearchTab
+            key={`search:${panelScope}:${treeRoot ?? ''}`}
+            vpsId={vpsId}
+            cwd={treeRoot}
+            onInsertPath={onInsertPath}
+            onWillOpenFile={willOpenFile}
+          />
+        )}
         {/* Keep the inspector mounted while another tab is visible. Its four
             panel-only requests therefore start with the session (right after
             its transcript, `deferInsight`), not on the first Tools click;
@@ -396,6 +465,7 @@ function ToolPanel({
             onInsert={onInsertPath}
           />
         )}
+      </div>
       </div>
     </aside>
     </>

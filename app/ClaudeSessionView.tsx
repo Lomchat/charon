@@ -137,6 +137,9 @@ type Props = {
    *  session's VPS and path, asking only which backend (or a shell) and a
    *  name (the TabBar carries the desktop equivalent, hidden ≤820px). */
   onNewAgentHere?: () => void;
+  /** The explorer's folder tabs and "New Session Here…" (ToolPanel). */
+  onOpenFolder?: (vpsId: string, cwd: string) => void;
+  onNewSessionIn?: (vpsId: string, cwd: string) => void;
 };
 
 // Module-side session cache — sessionCache.ts shared desktop/mobile.
@@ -162,6 +165,8 @@ export default function ClaudeSessionView({
   onOpenTools,
   onOpenSession,
   onNewAgentHere,
+  onOpenFolder,
+  onNewSessionIn,
 }: Props) {
   const [endpoint, refreshEndpoint] = useSessionEndpoint(sessionId, selected.endpoint);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
@@ -1160,6 +1165,8 @@ export default function ClaudeSessionView({
         cwd={selected.cwd || null}
         repoBusy={status === 'thinking'}
         onOpenSession={onOpenSession}
+        onOpenFolder={onOpenFolder}
+        onNewSessionIn={onNewSessionIn}
         onReveal={onOpenTools}
         context={sessionContext}
         contextLoaded={contextLoaded}

@@ -71,6 +71,7 @@ html[data-density='small'] .claude-input-bar .send { min-height: 34px; }
 
 html[data-density='small'] .tp-tabs button { padding: 7px 8px; }
 html[data-density='small'] .tp-body { padding: 7px; }
+html[data-density='small'] .tt-roots { padding: 5px 7px; }
 html[data-density='small'] .files-list { gap: 5px; }
 html[data-density='small'] .files-list > li { padding: 6px 8px; }
 html[data-density='small'] .files-list .f-actions { margin-top: 5px; }
