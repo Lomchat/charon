@@ -50,6 +50,11 @@ export function resolveDocPath(docDir: string, ref: string): string | null {
   return normalizeAbs(abs) + hash;
 }
 
+/** A path relative to `root` as an absolute one; a root of `/` gives `/x`, not `//x`. */
+export function absUnderRoot(root: string | null, path: string): string {
+  return `${(root ?? '').replace(/\/+$/, '')}/${path}`;
+}
+
 /**
  * The (root, path) pair the file routes take for an absolute path: inside the
  * tab's root when it is, else its own folder — containment is per request.

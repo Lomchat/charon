@@ -17,6 +17,7 @@ import BranchModal from './BranchModal';
 import { fmtSize } from './sessionAttachments';
 import { ago } from './desk/ui/time';
 import { activityLabel, useFileActivity } from './fileActivityStore';
+import { absUnderRoot } from './fileViews';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import { revealView } from './revealLine';
 import {
@@ -818,7 +819,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   }
   /** What the agent needs to act on this row: the path as it exists ON the VPS.
    *  `row.path` is relative to the session cwd. */
-  const absPathOf = (row: Row): string => `${cwd}/${row.path}`;
+  const absPathOf = (row: Row): string => absUnderRoot(cwd, row.path);
   /**
    * Open one file's history. The repo is resolved from the workspace snapshot
    * we already poll: with several checkouts under one cwd (§14.83) the file
@@ -1309,7 +1310,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             </div>
           ) : (
             <ul className="confirm-list">
-              {dialog.rows.map((row) => <li key={row.path} title={`${cwd}/${row.path}`}>{row.path}</li>)}
+              {dialog.rows.map((row) => <li key={row.path} title={absUnderRoot(cwd, row.path)}>{row.path}</li>)}
             </ul>
           )}
           <p className="confirm-text">
@@ -1336,7 +1337,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             </div>
           ) : (
             <ul className="confirm-list">
-              {dialog.paths.map((p) => <li key={p} title={`${cwd}/${p}`}>{p}</li>)}
+              {dialog.paths.map((p) => <li key={p} title={absUnderRoot(cwd, p)}>{p}</li>)}
             </ul>
           )}
           <p className="confirm-text">
@@ -1374,7 +1375,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
               </div>
             ) : (
               <ul className="confirm-list">
-                {conflicts.map((rel) => <li key={rel} title={`${cwd}/${at(rel)}`}>{at(rel)}</li>)}
+                {conflicts.map((rel) => <li key={rel} title={absUnderRoot(cwd, at(rel))}>{at(rel)}</li>)}
               </ul>
             )}
             <p className="confirm-text">
@@ -1423,7 +1424,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             const busy = loading.has(r.path);
             const err = errors.get(r.path);
             // Absolute path: the activity map is per VPS, not per tree root.
-            const act = r.dir ? undefined : activity.get(`${cwd}/${r.path}`);
+            const act = r.dir ? undefined : activity.get(absUnderRoot(cwd, r.path));
             const isActive = !r.dir && r.path === activeFile;
             const isSelected = selected.has(r.path);
             const isDeleting = [...deletingPaths].some((path) =>

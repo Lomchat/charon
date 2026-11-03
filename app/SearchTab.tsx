@@ -6,6 +6,7 @@ import { openTab as openWorkspaceTab } from './tabStore';
 import { FileIcon, IconInsert } from './fileIcons';
 import { IconSearch } from './icons';
 import { revealLine } from './revealLine';
+import { absUnderRoot } from './fileViews';
 import { setPathDrag } from './pathDrag';
 import { workspaceScopeKey } from './workspaceScope';
 import { tipAttrs } from './tooltipText';
@@ -315,7 +316,7 @@ function FileGroup({ file, mode, cwd, collapsed, onToggle, onOpen, onInsertPath 
 }) {
   const name = file.path.split('/').pop() || file.path;
   const dir = file.path.slice(0, file.path.length - name.length).replace(/\/$/, '');
-  const abs = `${cwd}/${file.path}`;
+  const abs = absUnderRoot(cwd, file.path);
   const isText = mode === 'text';
 
   return (

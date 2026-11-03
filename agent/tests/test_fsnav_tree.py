@@ -81,6 +81,19 @@ class TreeTest(unittest.TestCase):
             self.assertFalse(r["ok"], bad)
             self.assertEqual(r["entries"], [])
 
+    def test_a_session_at_the_filesystem_root_opens_its_folders(self):
+        # "/" + os.sep is "//", which prefixed nothing: only `/` itself listed.
+        names = [e["name"] for e in F.fs_list("/", self.root.lstrip("/"))["entries"]]
+        self.assertIn("src", names)
+        self.assertEqual(F.contained_path("/", "../etc"), "/etc")
+        self.assertEqual(F.contained_path("/", "/etc"), "/etc")
+
+    def test_a_root_is_not_the_prefix_of_its_sibling(self):
+        sibling = self.root + "-sibling"
+        os.mkdir(sibling)
+        self.addCleanup(shutil.rmtree, sibling, True)
+        self.assertIsNone(F.contained_path(self.root, sibling))
+
     def test_symlink_out_of_the_tree_is_followed(self):
         # A link inside the tree is deliberate: the project that points at
         # /srv/shared is browsed from here or not at all.

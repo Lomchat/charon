@@ -803,6 +803,11 @@ class GitHistoryTest(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertEqual(r["reason"], "bad_path")
 
+    def test_safe_rel_accepts_paths_under_the_filesystem_root(self):
+        self.assertEqual(G._safe_rel("/", "/etc/passwd"), "etc/passwd")
+        self.assertEqual(G._safe_rel("/", "etc/passwd"), "etc/passwd")
+        self.assertIsNone(G._safe_rel("/", "/"))
+
     def test_show_returns_metadata_files_and_patch(self):
         sha = G.git_log(self.dir, {"limit": 1})["commits"][0]["sha"]
         r = G.git_show(self.dir, {"sha": sha})

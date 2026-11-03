@@ -207,7 +207,7 @@ def _safe_rel(root: str, p: str) -> str | None:
     real_root = os.path.realpath(root)
     # The file itself may not exist (deleted entry) → resolve its parent.
     real = os.path.realpath(cand)
-    if real != real_root and not real.startswith(real_root + os.sep):
+    if real != real_root and not real.startswith(real_root.rstrip(os.sep) + os.sep):
         return None
     rel = os.path.relpath(real, real_root)
     if rel == "." or rel.startswith(".."):
