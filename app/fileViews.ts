@@ -56,6 +56,15 @@ export function absUnderRoot(root: string | null, path: string): string {
 }
 
 /**
+ * An explorer rooted at `/` reaches the whole machine: anything outside the
+ * sites is system territory, where a slip breaks the box, so it asks harder.
+ */
+export function isSystemPath(root: string | null, rel: string): boolean {
+  if ((root ?? '').replace(/\/+$/, '') !== '') return false;
+  return !absUnderRoot(root, rel).startsWith('/var/www/');
+}
+
+/**
  * The (root, path) pair the file routes take for an absolute path: inside the
  * tab's root when it is, else its own folder — containment is per request.
  */

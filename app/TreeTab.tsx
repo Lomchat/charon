@@ -17,7 +17,7 @@ import BranchModal from './BranchModal';
 import { fmtSize } from './sessionAttachments';
 import { ago } from './desk/ui/time';
 import { activityLabel, useFileActivity } from './fileActivityStore';
-import { absUnderRoot } from './fileViews';
+import { absUnderRoot, isSystemPath } from './fileViews';
 import { openTab as openWorkspaceTab, useTabs } from './tabStore';
 import { revealView } from './revealLine';
 import {
@@ -269,6 +269,8 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   // File history — the repo that owns the file is resolved from the workspace.
   const [history, setHistory] = useState<{ path: string; repo: string | null } | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  // The word a delete of system files has to be confirmed with.
+  const [deleteWord, setDeleteWord] = useState('');
   // Row being dragged, for the dimmed styling only — the payload itself rides
   // in the dataTransfer, so nothing here is load-bearing for the drop.
   const [dragPath, setDragPath] = useState<string | null>(null);
@@ -691,7 +693,7 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
   };
   /** Open a dialog. The menu closes first — it sits at z-index 400, above the
    *  modal backdrop, and would otherwise stay clickable over it. */
-  const openDialog = (d: Dialog) => { setMenu(null); setDialog(d); };
+  const openDialog = (d: Dialog) => { setMenu(null); setDeleteWord(''); setDialog(d); };
 
   /**
    * Run one fs mutation, refresh the affected directory, close the dialog.
@@ -1280,7 +1282,9 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
         <PromptModal
           title="rename"
           icon={<IconPencil />}
-          hint={dialog.row.path}
+          hint={isSystemPath(cwd, dialog.row.path)
+            ? `${absUnderRoot(cwd, dialog.row.path)}: a system path, renaming it can break the server`
+            : dialog.row.path}
           initial={dialog.row.name}
           // The extension is rarely what changes, and re-typing it is where a
           // rename goes wrong.
@@ -1292,21 +1296,24 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
           onClose={() => setDialog(null)}
         />
       )}
-      {dialog?.kind === 'delete' && (
+      {dialog?.kind === 'delete' && (() => {
+        const system = dialog.rows.some((row) => isSystemPath(cwd, row.path));
+        return (
         <ConfirmModal
           title={dialog.rows.length > 1
             ? `delete ${dialog.rows.length} items`
             : dialog.rows[0].dir ? 'delete folder' : 'delete file'}
           confirmLabel={dialog.rows.length > 1 ? `delete ${dialog.rows.length}` : 'delete'}
           busyLabel="deleting…"
-          confirmOnEnter
+          confirmOnEnter={!system}
+          confirmDisabled={system && deleteWord !== 'delete'}
           onConfirm={() => startDelete(dialog.rows)}
           onClose={() => setDialog(null)}
         >
           {dialog.rows.length === 1 ? (
             <div className="confirm-target">
               <span className="ct-name">{dialog.rows[0].name}</span>
-              <span className="ct-sub">{cwd}/{dialog.rows[0].path}</span>
+              <span className="ct-sub">{absUnderRoot(cwd, dialog.rows[0].path)}</span>
             </div>
           ) : (
             <ul className="confirm-list">
@@ -1317,8 +1324,20 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             {dialog.rows.some((row) => row.dir) ? 'Selected folders and everything in them will be deleted. ' : ''}
             It is not undoable from here, and an agent may be working in this tree.
           </p>
+          {system && (
+            <label className="confirm-system">
+              This is outside /var/www: deleting system files can break the server. Type <b>delete</b> to confirm.
+              <input
+                value={deleteWord}
+                onChange={(e) => setDeleteWord(e.target.value)}
+                autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                aria-label="type delete to confirm"
+              />
+            </label>
+          )}
         </ConfirmModal>
-      )}
+        );
+      })()}
       {dialog?.kind === 'move' && (
         <ConfirmModal
           title={dialog.paths.length > 1 ? `move ${dialog.paths.length} items` : 'move'}
@@ -1344,6 +1363,9 @@ export default function TreeTab({ vpsId, cwd, sessionId = null, onInsertPath, on
             into <b>{dialog.dir ? `${dialog.dir}/` : `${rootName}/ (the root)`}</b>. An agent may be
             working in this tree; a name already taken there is refused, never overwritten.
           </p>
+          {(isSystemPath(cwd, `${dialog.dir}/`.replace(/^\//, '')) || dialog.paths.some((p) => isSystemPath(cwd, p))) && (
+            <p className="confirm-system">This touches files outside /var/www: moving system files can break the server.</p>
+          )}
         </ConfirmModal>
       )}
       {dialog?.kind === 'upload-conflict' && (() => {

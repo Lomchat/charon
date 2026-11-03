@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
+import { IconFolder } from './fileIcons';
 import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
 import { getDraft, useHasDraft } from './inputDraftStore';
 import { fmtMoment } from './taskTime';
@@ -205,6 +206,8 @@ type Props = {
   enabledBackends?: EnabledBackends;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind; accountProfile?: string }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
+  /** Browse this VPS's whole filesystem, no agent involved. */
+  onOpenFiles: (vpsId: string) => void;
   onScan: (vpsId: string) => void;
   // "Manage VPS & folders" button in the sidebar toolbar.
   onOpenData: () => void;
@@ -277,7 +280,7 @@ export default function Sidebar({
   toolbarSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
-  onNew, onNewShell, onScan, onOpenData, onOpenPausedCleanup,
+  onNew, onNewShell, onOpenFiles, onScan, onOpenData, onOpenPausedCleanup,
   onContext, onContextShell, onContextInstall,
   editingId, onRenameSubmit, onRenameCancel,
   onInstallAgent, onProviderLogin, onProviderContext, signingOutAccounts,
@@ -780,7 +783,7 @@ export default function Sidebar({
                     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
                     selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
                     enabledBackends,
-                    onNew, onNewShell, onScan,
+                    onNew, onNewShell, onOpenFiles, onScan,
                     onContext: openSessionContext, onContextShell, onContextInstall,
                     editingId, onRenameSubmit, onRenameCancel,
                     onInstallAgent, onProviderLogin, onProviderContext, signingOutAccounts,
@@ -838,6 +841,7 @@ type VpsRenderOpts = {
   enabledBackends: EnabledBackends;
   onNew: (opts: { vpsId?: string; cwd?: string; agentKind?: AgentKind; accountProfile?: string }) => void;
   onNewShell: (opts: { vpsId?: string; cwd?: string | null }) => void;
+  onOpenFiles: (vpsId: string) => void;
   onScan: (vpsId: string) => void;
   onContext?: (session: SessionListItem, x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
@@ -864,7 +868,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
     onSelect, onSelectShell, onSelectInstall, onReorderSessions,
     selectedSessionIds, onSessionSelectionGesture,
     enabledBackends,
-    onNew, onNewShell, onScan,
+    onNew, onNewShell, onOpenFiles, onScan,
     onContext, onContextShell, onContextInstall,
     editingId, onRenameSubmit, onRenameCancel,
     onInstallAgent, onProviderLogin, onProviderContext, signingOutAccounts,
@@ -943,7 +947,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   );
   const addBtns = (
     <VpsAddButtons vps={v} enabledBackends={enabledBackends} signingOutAccounts={signingOutAccounts}
-      onNew={onNew} onNewShell={onNewShell} onProviderLogin={onProviderLogin} onProviderContext={onProviderContext} />
+      onNew={onNew} onNewShell={onNewShell} onOpenFiles={onOpenFiles} onProviderLogin={onProviderLogin} onProviderContext={onProviderContext} />
   );
 
   const hostLabel = `${v.sshUser}@${v.ip}${v.sshPort !== 22 ? `:${v.sshPort}` : ''}`;
@@ -1126,9 +1130,9 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
 
 /** A component, not part of `renderVpsBox`: that one runs inside a `.map()`,
  *  where a hook would change count with the visible VPS list. */
-function VpsAddButtons({ vps, enabledBackends, signingOutAccounts, onNew, onNewShell, onProviderLogin, onProviderContext }: {
+function VpsAddButtons({ vps, enabledBackends, signingOutAccounts, onNew, onNewShell, onOpenFiles, onProviderLogin, onProviderContext }: {
   vps: Vps;
-} & Pick<VpsRenderOpts, 'enabledBackends' | 'signingOutAccounts' | 'onNew' | 'onNewShell' | 'onProviderLogin' | 'onProviderContext'>) {
+} & Pick<VpsRenderOpts, 'enabledBackends' | 'signingOutAccounts' | 'onNew' | 'onNewShell' | 'onOpenFiles' | 'onProviderLogin' | 'onProviderContext'>) {
   const profiles = useAccountProfiles(vps.id);
   return (
     <div className="cs-add">
@@ -1151,6 +1155,12 @@ function VpsAddButtons({ vps, enabledBackends, signingOutAccounts, onNew, onNewS
         title="new SSH shell on this VPS"
         aria-label="new shell"
       ><IconTerminal /></button>
+      <button
+        className="cs-add-btn files"
+        onClick={(e) => { e.stopPropagation(); onOpenFiles(vps.id); }}
+        title="browse this VPS's files"
+        aria-label="files"
+      ><IconFolder /></button>
     </div>
   );
 }

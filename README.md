@@ -169,6 +169,10 @@ writing** (click to jump to that session). Right-click: new file/folder, copy
 path, rename, delete, download. Files download streamed through SSH; **folders
 download as a ZIP** built on the fly. Project-wide file and content search.
 
+**File manager**: the folder button on a VPS opens that explorer at `/` in its
+own tab, with no agent session. In an explorer rooted at `/`, anything outside
+`/var/www` asks harder: a delete needs the word typed, a rename or a move warns.
+
 <img src="./docs/img/explorer.png" alt="The file explorer's context menu — new file, new folder, copy path, rename, delete — over a git-decorated tree" width="70%"></img>
 
 **Code intelligence.** Language servers (`pyright`,

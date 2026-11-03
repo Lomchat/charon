@@ -898,6 +898,7 @@
 }
 .cs-add-btn.agent:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-strong); }
 .cs-add-btn.shell:hover:not(:disabled) { background: color-mix(in srgb, var(--info) 16%, transparent); color: var(--info); }
+.cs-add-btn.files:hover:not(:disabled) { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 /* per-VPS variant: icon-only, tighter, stacked vertically. */
 .cs-vps-head .cs-add { flex-direction: column; flex-shrink: 0; }
 .cs-vps-head .cs-add-btn { padding: 4px 7px; }
@@ -9131,3 +9132,10 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
    blocking PendingZone), so its 65vh cap left a phone's chat ~84px tall. Its
    own cap keeps the transcript usable; the form scrolls inside. */
 [data-async-strip] .claude-pending-zone { max-height: 35vh; max-height: 35dvh; }
+
+/* The file manager tab: the explorer as the main pane. */
+.files-main { display: flex; flex-direction: column; min-height: 0; }
+.files-bar-title { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.files-tree { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.confirm-system { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 0; font-size: 13px; color: var(--warning); }
+.confirm-system input { padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); font: inherit; }

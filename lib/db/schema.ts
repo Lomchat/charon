@@ -552,7 +552,7 @@ export const tabs = sqliteTable('tabs', {
   // Group key. The session/shell cwd, or the containing folder for a file.
   // '' for the pathless (installs), which get their own group.
   path: text('path').notNull(),
-  // 'session' | 'shell' | 'install' | 'file'
+  // 'session' | 'shell' | 'install' | 'file' | 'files' (the server's file manager)
   kind: text('kind').notNull(),
   ref: text('ref').notNull(),
   // 0 = temporary (italic, one per group, replaced by the next open),

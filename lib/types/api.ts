@@ -140,7 +140,7 @@ export type VpsFsListResponse = {
 };
 
 // ── Tabs: the persisted workspace layout (§14.78) ──────────────────────────
-export type TabKind = 'session' | 'shell' | 'install' | 'file';
+export type TabKind = 'session' | 'shell' | 'install' | 'file' | 'files';
 
 export type TabDTO = {
   id: string;

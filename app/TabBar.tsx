@@ -5,7 +5,8 @@ import { useReorder } from './useReorder';
 import type { Vps, VpsFolder } from '@/lib/db/schema';
 import type { SessionListItem, ShellInfo, InstallInfo, AgentKind, TabDTO } from '@/lib/types/api';
 import { IconTerminal, IconTools } from './icons';
-import { FileIcon } from './fileIcons';
+import { absUnderRoot } from './fileViews';
+import { IconFolder, FileIcon } from './fileIcons';
 import AgentLogo, { agentLogoLabel } from './AgentLogo';
 import { tipAttrs } from './tooltipText';
 import { accountProfileNumber, profileLabel } from '@/lib/accountProfiles';
@@ -135,11 +136,19 @@ export function resolveTabs({
         state: i?.status === 'running' ? 'thinking' : i?.status === 'error' ? 'failed' : 'active',
       };
     }
+    if (t.kind === 'files') {
+      return {
+        ...t, dirty, orphan: false, live: false,
+        label: 'files',
+        title: `file manager\n${t.path}`,
+        state: 'sleeping',
+      };
+    }
     const name = t.ref.split('/').pop() || t.ref;
     return {
       ...t, dirty, orphan: false, live: false,
       label: name,
-      title: `${t.path}/${t.ref}${dirty ? '\nunsaved changes' : ''}`,
+      title: `${absUnderRoot(t.path, t.ref)}${dirty ? '\nunsaved changes' : ''}`,
       state: 'sleeping',
     };
   });
@@ -372,11 +381,12 @@ export default function TabBar({
               {...tipAttrs({
                 detail: [[
                   t.kind === 'session' ? agentLogoLabel(t.agentKind, t.profileNumber)
-                    : t.kind === 'shell' ? 'SSH shell' : t.kind === 'install' ? 'agent installation' : 'file',
+                    : t.kind === 'shell' ? 'SSH shell' : t.kind === 'install' ? 'agent installation'
+                    : t.kind === 'files' ? 'file manager' : 'file',
                   t.pinned ? null : 'preview tab',
                   t.dirty ? 'unsaved changes' : null,
                 ].filter(Boolean).join(' · '),
-                t.kind === 'file' ? `${t.path}/${t.ref}` : t.kind === 'install' ? null : t.path],
+                t.kind === 'file' ? absUnderRoot(t.path, t.ref) : t.kind === 'install' ? null : t.path],
                 actions: [
                   ['Click', 'show'],
                   !t.pinned && ['Double-click', 'keep it open'],
@@ -391,6 +401,7 @@ export default function TabBar({
                 {t.kind === 'session' ? <AgentLogo kind={t.agentKind ?? 'claude'} profileNumber={t.profileNumber} size={12} title="" />
                   : t.kind === 'shell' ? <IconTerminal />
                   : t.kind === 'install' ? <IconTools />
+                  : t.kind === 'files' ? <IconFolder />
                   : <FileIcon name={t.label} />}
               </span>
               <span className="tb-name">{t.label}</span>

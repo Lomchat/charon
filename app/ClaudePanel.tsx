@@ -28,6 +28,7 @@ import {
   closeTabsWhere as closeWorkspaceTabsWhere, reorderTabs as reorderWorkspaceTabs,
 } from './tabStore';
 import ShellTerminal from './ShellTerminal';
+import TreeTab from './TreeTab';
 import ConfirmModal from './ConfirmModal';
 import PermissionPopup from './PermissionPopup';
 import InstallNotificationPopup from './InstallNotificationPopup';
@@ -77,6 +78,7 @@ import {
   IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
   IconMenu, IconPanelRight, IconRobot, IconThreeDotsVertical,
 } from './icons';
+import { IconFolder } from './fileIcons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
 import { canResumeSession, canSleepSession } from './sessionBulkActions';
 import { DeepLinkGuard } from './deepLinkGuard';
@@ -793,7 +795,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   const openShellFromNav = useCallback((id: string) => selectShellRef.current(id, true), []);
   function selectClaude(id: string, pin = false) {
     const sess = sessions.find((x) => x.id === id);
-    if (sess && !selected && !selectedShellId && !selectedInstallId && !selectedFile) {
+    if (sess && !selected && !selectedShellId && !selectedInstallId && !selectedFile && activeTab?.kind !== 'files') {
       // A cold workspace must be able to open its first conversation without
       // relying on the tab-store → pane effect becoming live first. Use the
       // same native entry path as a session link; subsequent switches stay
@@ -1240,12 +1242,20 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
 
   /** Open (or focus) something as a tab. Preview unless `pin`. */
   const openEntityTab = useCallback((
-    kind: 'session' | 'shell' | 'install' | 'file',
+    kind: 'session' | 'shell' | 'install' | 'file' | 'files',
     ref: string, vpsId: string, path: string, pin = false,
   ) => {
     setBrowseVpsId(null); setBrowsePath(null);
     void openWorkspaceTab({ vpsId, path, kind, ref, pin });
   }, []);
+
+  // The file manager: the explorer over the VPS's whole filesystem, no session.
+  // Pinned, or the first file opened from it (same `/` group) would evict it.
+  const activeFilesTab = activeTab?.kind === 'files' ? activeTab : null;
+  const openFilesTab = useCallback((vpsId: string) => {
+    closeDrawers();
+    openEntityTab('files', '/', vpsId, '/', true);
+  }, [closeDrawers, openEntityTab]);
 
   // Consume external deep links without feeding Charon's own URL writes back
   // into local active-tab state. The guard also keeps a new arrival in
@@ -1933,7 +1943,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
   return (
     <PanelLayoutProvider value={initialPanels}>
     <div
-      className={`claude-root has-tools${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${menuOpen ? ' menu-open' : ''}`}
+      className={`claude-root${activeFilesTab ? '' : ' has-tools'}${navOpen ? ' nav-open' : ''}${toolsOpen ? ' tools-open' : ''}${menuOpen ? ' menu-open' : ''}`}
       style={{ '--side-w': `${panels.sideW}px`, '--tools-w': `${panels.toolsW}px` } as React.CSSProperties}
       data-side={sideTier(panels.sideW)}
       data-tools={toolsTier(panels.toolsW)}
@@ -2168,6 +2178,7 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
         enabledBackends={backends}
         onNew={(opts) => setWizard({ kind: 'agent', ...opts })}
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
+        onOpenFiles={openFilesTab}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
         onOpenPausedCleanup={() => setPausedCleanupOpen(true)}
@@ -2362,6 +2373,22 @@ export default function ClaudePanel({ vpsList: initialVpsList, vpsFolders: initi
           onAfterRevert={() => refreshSessions()}
         />
         </SessionErrorBoundary>
+      ) : activeFilesTab ? (
+      <main className="claude-main files-main">
+        <div className="claude-bar files-bar">
+          <span className="files-bar-title">
+            <IconFolder /> {vpsList.find((v) => v.id === activeFilesTab.vpsId)?.name ?? 'files'}
+          </span>
+        </div>
+        <div className="files-tree">
+          <TreeTab
+            key={`files:${activeFilesTab.vpsId}`}
+            vpsId={activeFilesTab.vpsId}
+            cwd={activeFilesTab.path}
+            onOpenSession={(id) => openSessionById(id, false)}
+          />
+        </div>
+      </main>
       ) : (
       // No session selected: placeholder. ToolPanel is not rendered in this
       // case (before the refactor it was, with sessionId=null, but displayed

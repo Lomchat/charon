@@ -33,13 +33,15 @@ type Props = {
   // Optional middle answer between cancel and confirm — e.g. "skip existing"
   // beside "replace". Runs like onConfirm (busy state, a throw keeps it open).
   secondary?: { label: string; onClick: () => void | Promise<void> };
+  // Holds the confirm button back until the caller is satisfied (a typed word).
+  confirmDisabled?: boolean;
   onConfirm: () => void | Promise<void>;
   onClose: () => void;
 };
 
 export default function ConfirmModal({
   title, children, confirmLabel, busyLabel, cancelLabel = 'cancel',
-  icon, tone = 'danger', confirmOnEnter = false, secondary, onConfirm, onClose,
+  icon, tone = 'danger', confirmOnEnter = false, secondary, confirmDisabled = false, onConfirm, onClose,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export default function ConfirmModal({
       // Enter from anywhere in the dialog. Skipped when a button has the
       // focus: the browser already turns Enter into a click there, and
       // handling it twice would confirm on top of a cancel.
-      if (confirmOnEnter && e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+      if (confirmOnEnter && !confirmDisabled && e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
         e.preventDefault();
         void handleConfirm();
       }
@@ -59,7 +61,7 @@ export default function ConfirmModal({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onClose, busy, confirmOnEnter]);
+  }, [onClose, busy, confirmOnEnter, confirmDisabled]);
 
   async function handleConfirm(action: () => void | Promise<void> = onConfirm) {
     if (busy) return;
@@ -92,7 +94,7 @@ export default function ConfirmModal({
               {secondary.label}
             </button>
           )}
-          <button type="button" className={`confirm-btn ${tone === 'neutral' ? 'primary' : 'danger'}`} autoFocus={confirmOnEnter} disabled={busy} onClick={() => handleConfirm()}>
+          <button type="button" className={`confirm-btn ${tone === 'neutral' ? 'primary' : 'danger'}`} autoFocus={confirmOnEnter} disabled={busy || confirmDisabled} onClick={() => handleConfirm()}>
             {busy ? (busyLabel ?? confirmLabel) : confirmLabel}
           </button>
         </div>

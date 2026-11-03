@@ -31,7 +31,7 @@ import type { TabDTO, TabKind } from '@/lib/types/api';
  * `setActive`, but current clients never adopt it from a server snapshot.
  */
 
-const KINDS: TabKind[] = ['session', 'shell', 'install', 'file'];
+const KINDS: TabKind[] = ['session', 'shell', 'install', 'file', 'files'];
 export const isTabKind = (k: string): k is TabKind => (KINDS as string[]).includes(k);
 
 function toDTO(r: TabRow): TabDTO {

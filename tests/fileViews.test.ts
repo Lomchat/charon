@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  absUnderRoot, isMarkdownName, markdownSlug, nextMountedFiles, resolveDocPath, rootedPath, wheelFactor,
+  absUnderRoot, isMarkdownName, isSystemPath, markdownSlug, nextMountedFiles, resolveDocPath, rootedPath, wheelFactor,
 } from '../app/fileViews';
 
 // §14.111: rendered views of a file and the panes kept mounted across tabs.
@@ -80,5 +80,16 @@ describe('a tree path as an absolute one', () => {
     expect(absUnderRoot('/', 'etc/hosts')).toBe('/etc/hosts');
     expect(absUnderRoot('/srv/app', 'src/a.ts')).toBe('/srv/app/src/a.ts');
     expect(absUnderRoot('/srv/app/', 'src/a.ts')).toBe('/srv/app/src/a.ts');
+  });
+});
+
+describe('what counts as a system path', () => {
+  it('is everything outside the sites, in an explorer rooted at /', () => {
+    expect(isSystemPath('/', 'etc/hosts')).toBe(true);
+    expect(isSystemPath('/', 'var/www')).toBe(true);
+    expect(isSystemPath('/', 'var/www/dev/a.ts')).toBe(false);
+  });
+  it('never applies to an explorer rooted at a project', () => {
+    expect(isSystemPath('/opt/charon', 'app/a.ts')).toBe(false);
   });
 });
