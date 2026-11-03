@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isMarkdownName, markdownSlug, nextMountedFiles, resolveDocPath, rootedPath, wheelFactor,
+  absUnderRoot, isMarkdownName, markdownSlug, nextMountedFiles, resolveDocPath, rootedPath, wheelFactor,
 } from '../app/fileViews';
 
 // §14.111: rendered views of a file and the panes kept mounted across tabs.
@@ -72,5 +72,13 @@ describe('Ctrl+wheel zoom', () => {
     expect(wheelFactor({ deltaY: 100, deltaMode: 0 })).toBeCloseTo(Math.exp(-0.48));
     expect(wheelFactor({ deltaY: -3, deltaMode: 1 })).toBeCloseTo(Math.exp(0.384));
     expect(wheelFactor({ deltaY: -1, deltaMode: 2 })).toBeLessThan(1.7);
+  });
+});
+
+describe('a tree path as an absolute one', () => {
+  it('never doubles the slash of a root at /', () => {
+    expect(absUnderRoot('/', 'etc/hosts')).toBe('/etc/hosts');
+    expect(absUnderRoot('/srv/app', 'src/a.ts')).toBe('/srv/app/src/a.ts');
+    expect(absUnderRoot('/srv/app/', 'src/a.ts')).toBe('/srv/app/src/a.ts');
   });
 });

@@ -109,7 +109,9 @@ def contained_path(root: str, target: str) -> str | None:
     except (OSError, ValueError):
         return None
     resolved = os.path.normpath(spelled)
-    if resolved != real_root and not resolved.startswith(real_root + os.sep):
+    # rstrip: a session at `/` has "/" as its root, and "/" + sep ("//") prefixes
+    # nothing, which refused every folder under it.
+    if resolved != real_root and not resolved.startswith(real_root.rstrip(os.sep) + os.sep):
         return None
     return resolved
 
