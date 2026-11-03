@@ -16,7 +16,7 @@ import { parseScheduledResume } from '@/lib/scheduledResume';
 import { describeSchedule, parseScheduledFire, scheduledTaskBody, scheduledTaskTitle } from '@/lib/scheduledTasks';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import { formatMessageTime, useTodayStart } from './messageTime';
-import { findTextLinks, messageFileTarget, remarkFilePaths } from './messageLinks';
+import { findTextLinks, messageFileTarget, remarkCodeUrls, remarkFilePaths } from './messageLinks';
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
 import { peerRequestTarget } from './peerMessageLinks';
@@ -29,7 +29,7 @@ export type { Msg };
 // Stable plugin/component identities. Besides avoiding small allocations on
 // every bubble render, this lets react-markdown reuse more of its processing
 // setup for completed messages.
-export const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkCodeUrls];
 const MermaidDiagram = dynamic(() => import('./MermaidDiagram'), {
   ssr: false,
   loading: () => <p className="mermaid-status" role="status">Rendering diagram…</p>,

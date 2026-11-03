@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LinkifiedText, MessageLink, MessageMarkdown } from '@/app/Message';
-import { findTextLinks, findTextPaths, findTextUrls, messageFileTarget, remarkFilePaths, wholeTextPath } from '@/app/messageLinks';
+import { findTextLinks, findTextPaths, findTextUrls, messageFileTarget, remarkFilePaths, wholeTextPath, wholeTextUrl } from '@/app/messageLinks';
 import { openTab } from '@/app/tabStore';
 import { revealLine, revealView } from '@/app/revealLine';
 
@@ -146,6 +146,18 @@ describe('file paths written as plain text', () => {
     remarkFilePaths({ accept: () => true })(tree);
     expect(tree.children[0]).toEqual({ type: 'code', value: 'cat /srv/charon/docs/x.html' });
     expect(JSON.stringify(tree.children[1])).toContain('"type":"link"');
+  });
+
+  it('links a code span that is one whole web URL, with or without a VPS', () => {
+    const content = '- Charon : `https://95-133-254-146.sslip.io`\n- Modèle : `glm53-flash-local`, voir `curl https://x.example/a`';
+    for (const props of [{ content }, { content, vpsId: 'vps', cwd: '/srv/charon' }]) {
+      const html = renderToStaticMarkup(createElement(MessageMarkdown, props));
+      expect(html).toContain('<a href="https://95-133-254-146.sslip.io" target="_blank" rel="noopener noreferrer"><code>https://95-133-254-146.sslip.io</code></a>');
+      expect(html.match(/<a /g)).toHaveLength(1);
+    }
+    expect(wholeTextUrl(' https://x.example/a ')).toBe('https://x.example/a');
+    expect(wholeTextUrl('javascript:alert(1)')).toBeNull();
+    expect(wholeTextUrl('see https://x.example/a')).toBeNull();
   });
 
   it('links nothing without a VPS to open it on', () => {

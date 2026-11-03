@@ -169,6 +169,13 @@ export function wholeTextPath(text: string): string | null {
   return hits.length === 1 && hits[0].start === 0 && hits[0].end === t.length ? hits[0].href : null;
 }
 
+/** The whole string is one http(s) URL (an inline `code` span, say). */
+export function wholeTextUrl(text: string): string | null {
+  const t = text.trim();
+  const hits = findTextUrls(t);
+  return hits.length === 1 && hits[0].start === 0 && hits[0].end === t.length ? hits[0].href : null;
+}
+
 // Minimal mdast: the plugin only reads types, values and children.
 type MdNode = {
   type: string; value?: string; url?: string; title?: string | null;
@@ -217,4 +224,24 @@ function linkify(node: MdNode, accept: (href: string) => boolean): void {
  */
 export function remarkFilePaths(options: { accept: (href: string) => boolean }) {
   return (tree: MdNode) => { linkify(tree, options.accept); };
+}
+
+function linkCodeUrls(node: MdNode): void {
+  const children = node.children ?? [];
+  children.forEach((child, i) => {
+    if (child.type === 'inlineCode' && child.value) {
+      const href = wholeTextUrl(child.value);
+      if (href) children[i] = { type: 'link', url: href, title: null, children: [child] };
+    } else if (!SKIP.has(child.type)) {
+      linkCodeUrls(child);
+    }
+  });
+}
+
+/**
+ * remark plugin: a `code` span that is exactly one web URL is a link too —
+ * remark-gfm autolinks prose only. Needs no VPS, so it rides every Markdown view.
+ */
+export function remarkCodeUrls() {
+  return (tree: MdNode) => { linkCodeUrls(tree); };
 }
