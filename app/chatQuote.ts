@@ -2,7 +2,7 @@
 //
 // Select text in a FINISHED assistant answer or a thinking block, press the
 // floating "Quote" button (or `q`), and the passage lands in the composer as
-// a Markdown blockquote with the caret on the empty line below it — so a
+// a Markdown blockquote with the caret on the line right below it — so a
 // question can be answered point by point. It is plain text in the
 // textarea: editable, kept in the draft store, nothing new on the wire.
 
@@ -34,8 +34,8 @@ export function formatQuote(raw: string): string {
 
 /**
  * Splice a block (a quote) into `cur` at `pos`, on its own lines: separated
- * from text before it by a blank line, and followed by a blank line and then
- * the caret, so typing starts the answer. Text after the caret is kept,
+ * from text before it by a blank line, the caret on the very next line, so
+ * typing starts the answer right under the quote. Text after the caret is kept,
  * pushed below the answer line.
  */
 export function insertQuoteBlock(cur: string, pos: number, block: string): { next: string; caret: number } {
@@ -43,8 +43,8 @@ export function insertQuoteBlock(cur: string, pos: number, block: string): { nex
   const before = cur.slice(0, at).replace(/[ \t]+$/, '');
   const after = cur.slice(at).replace(/^[ \t]+/, '');
   const lead = before === '' ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
-  const head = before + lead + block + '\n\n';
-  const tail = after === '' ? '' : after.startsWith('\n') ? after : '\n\n' + after;
+  const head = before + lead + block + '\n';
+  const tail = after === '' ? '' : after.startsWith('\n') ? after : '\n' + after;
   return { next: head + tail, caret: head.length };
 }
 

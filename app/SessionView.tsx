@@ -1442,7 +1442,7 @@ const ChatInputBar = memo(function ChatInputBar({
     });
   }, [setInput]);
 
-  /** A quote: on its own lines, the caret on the empty line below it. */
+  /** A quote: on its own lines, the caret on the line right below it. */
   const insertBlockAtCaret = useCallback((block: string) => {
     const { next, caret } = insertQuoteBlock(inputRef.current, caretRef.current ?? inputRef.current.length, block);
     inputRef.current = next;

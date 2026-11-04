@@ -24,38 +24,38 @@ describe('formatQuote', () => {
 });
 
 describe('insertQuoteBlock', () => {
-  it('into an empty composer: quote, blank line, caret', () => {
+  it('into an empty composer: quote, then the caret on the next line', () => {
     const r = insertQuoteBlock('', 0, '> q');
-    expect(r.next).toBe('> q\n\n');
+    expect(r.next).toBe('> q\n');
     expect(r.caret).toBe(r.next.length);
   });
 
   it('after text: separated by a blank line', () => {
     const r = insertQuoteBlock('my answer', 9, '> q');
-    expect(r.next).toBe('my answer\n\n> q\n\n');
+    expect(r.next).toBe('my answer\n\n> q\n');
     expect(r.caret).toBe(r.next.length);
   });
 
   it('after a line break: completes the blank line only', () => {
-    expect(insertQuoteBlock('a\n', 2, '> q').next).toBe('a\n\n> q\n\n');
-    expect(insertQuoteBlock('a\n\n', 3, '> q').next).toBe('a\n\n> q\n\n');
+    expect(insertQuoteBlock('a\n', 2, '> q').next).toBe('a\n\n> q\n');
+    expect(insertQuoteBlock('a\n\n', 3, '> q').next).toBe('a\n\n> q\n');
   });
 
   it('chains quotes point by point', () => {
     let cur = insertQuoteBlock('', 0, '> one');
     const typed = cur.next + 'yes';
     cur = insertQuoteBlock(typed, typed.length, '> two');
-    expect(cur.next).toBe('> one\n\nyes\n\n> two\n\n');
+    expect(cur.next).toBe('> one\nyes\n\n> two\n');
   });
 
   it('mid-text: keeps what followed the caret below the answer line', () => {
     const r = insertQuoteBlock('before after', 6, '> q');
-    expect(r.next).toBe('before\n\n> q\n\n\n\nafter');
-    expect(r.next.slice(0, r.caret)).toBe('before\n\n> q\n\n');
+    expect(r.next).toBe('before\n\n> q\n\nafter');
+    expect(r.next.slice(0, r.caret)).toBe('before\n\n> q\n');
   });
 
   it('clamps an out-of-range caret', () => {
-    expect(insertQuoteBlock('x', 99, '> q').next).toBe('x\n\n> q\n\n');
+    expect(insertQuoteBlock('x', 99, '> q').next).toBe('x\n\n> q\n');
   });
 });
 
