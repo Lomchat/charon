@@ -79,17 +79,25 @@ function quotableOf(node: Node | null): Element | null {
   return el?.closest(QUOTABLE_SELECTOR) ?? null;
 }
 
-/** The current selection, if it is quotable inside `root`: both ends in the
- *  SAME quotable element, non-empty text. Returns the text and the rectangle
- *  to anchor the button on. */
+/** The current selection, if it is quotable inside `root`: it STARTS in a
+ *  quotable element and ends in the same one — or just past it (a triple-
+ *  click puts the end at the start of the next block; a drag overshoots),
+ *  in which case it is clamped to the element. Ending inside ANOTHER
+ *  quotable element is a two-bubble selection: not quotable. Returns the
+ *  text and the rectangle to anchor the button on. */
 export function quotableSelection(root: HTMLElement | null, sel: Selection | null):
   { text: string; rect: DOMRect } | null {
   if (!root || !sel || sel.isCollapsed || sel.rangeCount !== 1) return null;
-  const box = quotableOf(sel.anchorNode);
-  if (!box || box !== quotableOf(sel.focusNode) || !root.contains(box)) return null;
-  const text = sel.toString();
+  const range = sel.getRangeAt(0).cloneRange();
+  const startBox = quotableOf(range.startContainer);
+  const endBox = quotableOf(range.endContainer);
+  const box = startBox ?? endBox;
+  if (!box || !root.contains(box)) return null;
+  if (startBox && endBox && startBox !== endBox) return null;
+  if (!startBox) range.setStart(box, 0);
+  if (!endBox) range.setEnd(box, box.childNodes.length);
+  const text = range.toString();
   if (!text.trim()) return null;
-  const range = sel.getRangeAt(0);
   const rects = range.getClientRects();
   const rect = rects.length ? rects[0] : range.getBoundingClientRect();
   return { text, rect: rects.length > 1 ? mergeRects(rects) : rect };

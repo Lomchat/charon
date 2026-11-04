@@ -38,7 +38,7 @@ const nextConfig = {
   serverExternalPackages: ['better-sqlite3'],
   reactStrictMode: false,
   poweredByHeader: false,
-  // Hub-wide routes left /api/claude/ for /api/ (§15). A tab still running a
+  // Hub-wide routes left /api/claude/ for /api/ (§3). A tab still running a
   // bundle from before that deploy keeps calling the old paths until it
   // reloads; these rewrites answer it. /api/claude/models stays a real route.
   async rewrites() {

@@ -202,7 +202,9 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             <MessageMarkdown content={m.content} vpsId={vpsId} cwd={cwd} />
           )
         ) : (
-          <span><QuotedText text={m.content} vpsId={vpsId} cwd={cwd} /></span>
+          <span>{m.role === 'user'
+            ? <QuotedText text={m.content} vpsId={vpsId} cwd={cwd} />
+            : <LinkifiedText text={m.content} vpsId={vpsId} cwd={cwd} />}</span>
         )}
       </div>
       {isPeerStatus && m.peerError && (
@@ -282,11 +284,10 @@ export function MessageMarkdown({ content, vpsId, cwd }: {
   );
 }
 
-/** Plain text (your bubble, a peer's, an agent's question): web URLs, and file
- *  paths where a VPS can open them. */
-/** Plain-text bubble body where `> ` lines (a quote made from the chat,
- *  chatQuote.ts) render as a quote block. Spans only: this sits inside the
- *  bubble's inline wrapper; `.msg-quote` is display:block. */
+/** YOUR bubble's body, where `> ` lines (a quote made from the chat,
+ *  chatQuote.ts) render as a quote block. Peers' text stays literal. Spans
+ *  only: this sits inside the bubble's inline wrapper; `.msg-quote` is
+ *  display:block. */
 function QuotedText({ text, vpsId, cwd }: { text: string; vpsId?: string; cwd?: string | null }) {
   const segs = useMemo(() => splitQuotedLines(text), [text]);
   if (!segs.some((x) => x.quote)) return <LinkifiedText text={text} vpsId={vpsId} cwd={cwd} />;
@@ -295,6 +296,8 @@ function QuotedText({ text, vpsId, cwd }: { text: string; vpsId?: string; cwd?: 
     : <LinkifiedText key={i} text={x.text} vpsId={vpsId} cwd={cwd} />)}</>;
 }
 
+/** Plain text (your bubble, a peer's, an agent's question): web URLs, and file
+ *  paths where a VPS can open them. */
 export function LinkifiedText({ text, vpsId, cwd }: { text: string; vpsId?: string; cwd?: string | null }) {
   const parts = useMemo(() => {
     const hits = findTextLinks(text, vpsId ? (href) => !!messageFileTarget(href, vpsId, cwd) : undefined);

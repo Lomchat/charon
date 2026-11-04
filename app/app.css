@@ -2867,7 +2867,8 @@
    portaled to <body>; (left, top) = the selection's top centre, or its bottom
    centre with .is-below (touch, where the OS menu takes the top). */
 .chat-quote-btn {
-  position: fixed; z-index: 60;
+  /* Above the desk's session modal (200), under the hub's modals (300+). */
+  position: fixed; z-index: 250;
   transform: translate(-50%, -100%);
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 11px;
@@ -2879,7 +2880,7 @@
   box-shadow: 0 4px 14px color-mix(in srgb, var(--shadow-color) 45%, transparent);
   cursor: pointer;
   user-select: none; -webkit-user-select: none;
-  touch-action: manipulation;
+  touch-action: none;
 }
 .chat-quote-btn.is-below { transform: translate(-50%, 0); }
 .chat-quote-btn:hover { background: var(--bg-high); border-color: var(--accent-strong); }

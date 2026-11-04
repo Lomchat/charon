@@ -20,6 +20,7 @@ export default function QuoteSelectionButton({ chatRef, onQuote }: {
   const anchorRef = useRef<Anchor | null>(null);
   anchorRef.current = anchor;
   const frame = useRef(0);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   const measure = useCallback(() => {
     cancelAnimationFrame(frame.current);
@@ -33,7 +34,8 @@ export default function QuoteSelectionButton({ chatRef, onQuote }: {
       const below = window.matchMedia?.('(pointer: coarse)').matches ?? false;
       const x = Math.min(Math.max(hit.rect.left + hit.rect.width / 2, view.left + 40), view.right - 40);
       const y = below
-        ? Math.min(hit.rect.bottom, view.bottom - 36) + GAP
+        // Below on touch, clear of the end-selection handle.
+        ? Math.min(hit.rect.bottom, view.bottom - 48) + GAP + 18
         : Math.max(hit.rect.top, view.top + 36) - GAP;
       setAnchor({ text: hit.text, x, y, below });
     });
@@ -67,7 +69,8 @@ export default function QuoteSelectionButton({ chatRef, onQuote }: {
   useEffect(() => {
     if (!anchor) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'q' || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      // By physical key, so Caps Lock, Shift and non-Latin layouts work.
+      if ((e.code !== 'KeyQ' && e.key.toLowerCase() !== 'q') || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
       e.preventDefault();
@@ -83,10 +86,22 @@ export default function QuoteSelectionButton({ chatRef, onQuote }: {
       type="button"
       className={`chat-quote-btn${anchor.below ? ' is-below' : ''}`}
       style={{ left: anchor.x, top: anchor.y }}
-      // Act on pointerdown: by the click, a touch has already collapsed the
-      // selection (and the button with it). preventDefault keeps a mouse
-      // selection alive meanwhile. onClick serves the keyboard.
-      onPointerDown={(e) => { if (e.button === 0) { e.preventDefault(); quote(); } }}
+      // Mouse: act on pointerdown (preventDefault keeps the selection; by the
+      // click it could be gone). Touch: a TAP — quote on pointerup if the
+      // finger barely moved, so a pan starting on the button never quotes.
+      // onClick serves the keyboard; quote() runs once per gesture.
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        if (e.pointerType === 'mouse') quote();
+        else touchStart.current = { x: e.clientX, y: e.clientY };
+      }}
+      onPointerUp={(e) => {
+        const s = touchStart.current;
+        touchStart.current = null;
+        if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) < 10) quote();
+      }}
+      onPointerCancel={() => { touchStart.current = null; }}
       onClick={quote}
       title="Quote in the reply (Q)"
     >
