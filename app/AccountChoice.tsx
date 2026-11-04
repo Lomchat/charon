@@ -19,10 +19,11 @@ import { useLongPress } from './useLongPress';
  * tab bar keeps its own per-account buttons.
  */
 
-/** The VPS as one account sees it: an extra profile's login stands in for the
- *  default's columns in the launcher rule (`vpsHealth § backendLauncher`). */
+/** The VPS as one account sees it: the account's own sign-in state stands in
+ *  for the VPS columns in the launcher rule (`vpsHealth § backendLauncher`) —
+ *  every account is a hub account (§14.115). */
 export function vpsForProfile(v: Vps, provider: AgentKind, profile?: AccountProfile): Vps {
-  return profile && profile.number > 1 ? { ...v, ...providerLoginPatch(provider, profile.loggedIn ? 1 : 0) } : v;
+  return profile && profile.id !== DEFAULT_ACCOUNT_PROFILE ? { ...v, ...providerLoginPatch(provider, profile.loggedIn ? 1 : 0) } : v;
 }
 
 /** This VPS's accounts for one backend, default first. A synthetic default

@@ -12,8 +12,9 @@ import { getSetting, setSetting } from '@/lib/server/hub/settings';
 import type { AccountUsage, AccountUsageWindow, AccountUsageLimit } from '@/lib/server/hub/types';
 import { asSessionProvider, type SessionProvider } from '@/lib/sessionCapabilities';
 import { DEFAULT_ACCOUNT_PROFILE, profileUsageKey } from '@/lib/accountProfiles';
-import { profileStatuses, statusKey, listAccountProfiles, readProfileStatus } from './accountProfiles';
+import { profileStatuses, statusKey, listLegacyAccountProfiles as listAccountProfiles, readProfileStatus } from './accountProfiles';
 import { identityChecked } from './accountProfileState';
+import { getAccountRow, isGlobalAccountId } from '@/lib/server/accounts/store';
 
 // Account quotas are scoped to confirmed local login identities, never only an
 // organization id. The profile watcher invalidates old bindings independently
@@ -400,6 +401,10 @@ export function pollUsageForVps(vpsId: string, opts?: { force?: boolean; steady?
  * them — not N.
  */
 export function armUsageWatch(vpsId: string): void {
+  // Hub-owned accounts (§14.115): gauges are polled once per ACCOUNT by the
+  // accounts engine; a VPS no longer has a login of its own to poll.
+  void vpsId;
+  return;
   loadPersisted();
   void pollUsageForVps(vpsId, { steady: true });
   if (timers.has(vpsId)) return;
@@ -426,6 +431,10 @@ export function usageSnapshotAge(vpsId: string): number {
  * setUsagePollTrigger (injection avoids an import cycle).
  */
 export function triggerUsagePoll(vpsId: string, profile = 'default'): void {
+  if (isGlobalAccountId(profile)) {
+    setTimeout(() => void import('@/lib/server/accounts/engine').then((e) => e.pollAccountUsage(profile)), 5_000).unref?.();
+    return;
+  }
   if (profile !== 'default') {
     const st = accounts.get(profileBucket(vpsId, 'claude', profile));
     if (!st?.live) setTimeout(() => void pollAccountProfileUsage(vpsId, 'claude', profile), 5_000).unref?.();
@@ -648,6 +657,9 @@ function looksLikeCodexAuthFailure(err: string | null | undefined): boolean {
 }
 
 function setCodexLoggedIn(vpsId: string, val: 0 | 1, current: number | null): void {
+  // §14.115: the login columns mirror the hub's accounts (accounts engine).
+  void vpsId; void val; void current;
+  return;
   if (current === val) return; // no churn
   try {
     db.update(vpsTable)
@@ -743,6 +755,9 @@ export function pollCodexUsageForVps(vpsId: string, opts?: { force?: boolean }):
  * forced poll (fresh gauges + login discovery) + install the interval once.
  */
 export function armCodexUsageWatch(vpsId: string): void {
+  // §14.115: see armUsageWatch.
+  void vpsId;
+  return;
   const st = codexStateFor(vpsId);
   void pollCodexUsageForVps(vpsId, { force: true });
   if (st.timer) return;
@@ -764,6 +779,10 @@ export function codexUsageSnapshotAge(vpsId: string): number {
  *  Debounced; respects MIN_GAP. Wired into sessionOps' `stop` handler (only
  *  fired for kind==='codex' sessions) via setCodexUsagePollTrigger. */
 export function triggerCodexUsagePoll(vpsId: string, profile = 'default'): void {
+  if (isGlobalAccountId(profile)) {
+    setTimeout(() => void import('@/lib/server/accounts/engine').then((e) => e.pollAccountUsage(profile)), 2_500).unref?.();
+    return;
+  }
   if (profile !== 'default') {
     setTimeout(() => void pollAccountProfileUsage(vpsId, 'codex', profile), 2_500).unref?.();
     return;
@@ -862,6 +881,7 @@ function profileBucket(vpsId: string, provider: SessionProvider, profile: string
 }
 
 export function getAccountProfileUsage(vpsId: string, provider: SessionProvider, profile = DEFAULT_ACCOUNT_PROFILE): AccountUsage | null {
+  if (isGlobalAccountId(profile)) return globalAccountUsage(profile);
   const snapshot = profile === DEFAULT_ACCOUNT_PROFILE ? PROVIDER_USAGE[provider].snapshot(vpsId)
     : provider === 'claude' ? accounts.get(profileBucket(vpsId, provider, profile))?.last
     : codexStates.get(profileUsageKey(vpsId, provider, profile))?.last;
@@ -871,6 +891,10 @@ export function getAccountProfileUsage(vpsId: string, provider: SessionProvider,
 
 export async function pollAccountProfileUsage(vpsId: string, provider: SessionProvider, profile = DEFAULT_ACCOUNT_PROFILE,
   opts: { force?: boolean; steady?: boolean } = {}): Promise<AccountUsage | null> {
+  if (isGlobalAccountId(profile)) {
+    const engine = await import('@/lib/server/accounts/engine');
+    return engine.pollAccountUsage(profile, opts);
+  }
   if (profile === DEFAULT_ACCOUNT_PROFILE) {
     await PROVIDER_USAGE[provider].poll(vpsId, opts);
     return getAccountProfileUsage(vpsId, provider, profile);
@@ -938,6 +962,7 @@ function fromOtherAccount(observed: { logged_in?: boolean; account_key?: string 
 }
 
 export function ingestProfileUsageWindows(vpsId: string, windows: unknown, at: number, profile = DEFAULT_ACCOUNT_PROFILE, accountKey?: string | null): void {
+  if (isGlobalAccountId(profile)) { void import('@/lib/server/accounts/engine').then((e) => e.ingestAccountWindows(profile, windows, at)); return; }
   const observed = profileStatuses.get(statusKey(vpsId, 'claude', profile));
   if (fromOtherAccount(observed, accountKey)) return;
   if (profile === DEFAULT_ACCOUNT_PROFILE) { ingestUsageWindows(vpsId, windows, at); return; }
@@ -956,6 +981,7 @@ export function ingestProfileUsageWindows(vpsId: string, windows: unknown, at: n
 }
 
 export function ingestProfileCodexPush(vpsId: string, detail: unknown, profile = DEFAULT_ACCOUNT_PROFILE, accountKey?: string | null): void {
+  if (isGlobalAccountId(profile)) { void import('@/lib/server/accounts/engine').then((e) => e.ingestAccountCodexPush(profile, detail)); return; }
   const observed = profileStatuses.get(statusKey(vpsId, 'codex', profile));
   if (fromOtherAccount(observed, accountKey)) return;
   if (profile === DEFAULT_ACCOUNT_PROFILE) { ingestCodexUsagePush(vpsId, detail); return; }
@@ -983,3 +1009,26 @@ setUsageResetResolver((vpsId, kind, profile = 'default') => {
   for (const limit of snapshot.limits ?? []) add(limit.percent, limit.resetsAt);
   return exhausted.length ? Math.max(...exhausted) : future.length ? Math.min(...future) : null;
 });
+
+// ── Shared with the accounts engine (§14.115) ────────────────────────────────
+export const normalizeClaudeUsage = normalize;
+export const normalizeCodexUsage = normalizeCodex;
+export const layLiveWindows = withLiveWindows;
+export function liveUsageWindows(windows: unknown, observedAt: number): LiveWindows | null {
+  if (!windows || typeof windows !== 'object') return null;
+  const now = Date.now();
+  const w = windows as Record<string, unknown>;
+  const fiveHour = liveWindow(w.five_hour, now);
+  const sevenDay = liveWindow(w.seven_day, now);
+  if (!fiveHour && !sevenDay) return null;
+  return { at: Math.min(observedAt, now), fiveHour, sevenDay };
+}
+
+/** A global account's cached gauges, read straight from the engine's
+ *  process-wide state (importing the engine here would be a cycle). */
+function globalAccountUsage(id: string): AccountUsage | null {
+  const last = (globalThis as unknown as { _accountsEngine?: { usage: Map<string, { last: AccountUsage | null }> } })
+    ._accountsEngine?.usage.get(id)?.last;
+  const row = getAccountRow(id);
+  return row && last ? { ...last, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey } : null;
+}

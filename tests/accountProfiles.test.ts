@@ -23,7 +23,7 @@ vi.mock('@/lib/server/agent/usagePoll', () => ({ invalidateAccountProfileUsage: 
 vi.mock('@/lib/server/hub/codexModels', () => ({ invalidateCodexAccountModels: vi.fn() }));
 
 import { db } from '@/lib/db';
-import { createAccountProfile, listAccountProfiles, profileStatuses, readProfileStatus,
+import { createAccountProfile, listLegacyAccountProfiles as listAccountProfiles, profileStatuses, readProfileStatus,
   removeAccountProfile, requireAccountProfile } from '@/lib/server/agent/accountProfiles';
 
 beforeEach(() => {

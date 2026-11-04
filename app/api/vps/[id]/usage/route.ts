@@ -16,6 +16,7 @@ import { requireAccountProfile, readProfileStatus } from '@/lib/server/agent/acc
 import { profileStatuses, statusKey } from '@/lib/server/agent/accountProfileState';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { DEFAULT_ACCOUNT_PROFILE } from '@/lib/accountProfiles';
+import { isGlobalAccountId } from '@/lib/server/accounts/store';
 
 // GET /api/vps/[id]/usage
 // Cached account-usage snapshot (the `/usage` gauges) for the header widget.
@@ -59,12 +60,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
           await adapter.poll(id, { force: refresh || adapter.needsForce(cached) });
         }
       } else {
+        // A hub account (§14.115) is read by the hub itself, VPS or not.
+        const hubAccount = isGlobalAccountId(profile);
         // An extra profile has no bucket until something verified who it is.
-        if (connected && provider !== 'cursor' && !profileStatuses.has(statusKey(id, provider, profile))) {
+        if (connected && !hubAccount && provider !== 'cursor' && !profileStatuses.has(statusKey(id, provider, profile))) {
           await readProfileStatus(id, provider, profile).catch(() => {});
         }
         const cached = getAccountProfileUsage(id, provider, profile);
-        if (connected && (refresh || !cached?.ok || Date.now() - cached.fetchedAt > USAGE_STALE_MS)) {
+        if ((connected || (hubAccount && !cachedOnly)) && (refresh || !cached?.ok || Date.now() - cached.fetchedAt > USAGE_STALE_MS)) {
           await pollAccountProfileUsage(id, provider, profile, { force: refresh || !cached?.ok });
         }
       }

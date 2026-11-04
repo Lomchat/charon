@@ -945,6 +945,7 @@ class Server:
         "cli_agents",
         "peer_list", "peer_send", "peer_status", "peer_conversation", "peer_inbox",
         "hello", "ping", "list_sessions", "get_usage", "account_profiles",
+        "accounts_set", "accounts_list", "accounts_merge_history", "accounts_transcript_check",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
         "codex_login_start", "codex_login_status", "codex_login_cancel",
         "codex_login_api_key", "codex_logout", "codex_auth_status", "codex_archive_thread", "codex_unarchive_thread",
@@ -998,6 +999,8 @@ class Server:
         if method == "hello":
             return {
                 "agent_version": __version__,
+                # Hub-owned accounts (§14.115): this agent takes `accounts_set`.
+                "global_accounts": True,
                 "agent_pyz_sha": _PYZ_SHA,
                 "sdk_available": SDK_AVAILABLE,
                 "sdk_error": SDK_IMPORT_ERROR,
@@ -1463,6 +1466,37 @@ class Server:
 
         if method == "list_sessions":
             return [s.to_info() for s in self.sessions.values()]
+
+        # ── Hub-owned accounts (§14.115) ─────────────────────────────────────
+        # Credentials cross this RPC ON PURPOSE: the hub is their only owner
+        # and pushes short-lived ones; nothing here can refresh a login.
+        if method == "accounts_set":
+            from . import global_accounts
+            try:
+                result = await asyncio.to_thread(global_accounts.apply, params)
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+            from .account_profiles import _cache as _profile_cache
+            for key in [k for k in _profile_cache if k[1] in set(result.get("applied", [])) | set(result.get("removed", []))]:
+                _profile_cache.pop(key, None)
+            return result
+        if method == "accounts_list":
+            from . import global_accounts
+            return {"ok": True, "accounts": await asyncio.to_thread(global_accounts.listing)}
+        if method == "accounts_merge_history":
+            from . import global_accounts
+            try:
+                return await asyncio.to_thread(global_accounts.merge_history, str(params.get("provider") or ""),
+                                               str(params.get("profile") or ""))
+            except ValueError as e:
+                raise RpcError(ERR_INVALID_PARAMS, str(e))
+        if method == "accounts_transcript_check":
+            from . import global_accounts
+            ids = params.get("ids")
+            if not isinstance(ids, list) or len(ids) > 500:
+                raise RpcError(ERR_INVALID_PARAMS, "ids must be a list of at most 500 entries")
+            found = await asyncio.to_thread(lambda: {str(i): global_accounts.transcript_exists(str(i)) for i in ids})
+            return {"ok": True, "found": found}
 
         if method == "account_profiles":
             requested = params.get("profiles")

@@ -672,7 +672,7 @@ export default function NewSessionWizard({
                     <WizardBackendRow key={k} vps={vps} provider={k} profiles={choicesFor(vps, k)}
                       onLaunch={(profile, l) => {
                         if (l.ready) pickBackend(k, profile.id);
-                        else if (profile.number > 1) onProfileLogin?.(vps, k, profile);
+                        else if (profile.id !== 'default') onProfileLogin?.(vps, k, profile);
                         else if (l.fix) onFix?.(vps, l.fix.action);
                       }} />
                   );
@@ -778,7 +778,7 @@ export default function NewSessionWizard({
                               <WizardKindButton key={k} vps={v} provider={k} profiles={choicesFor(v, k)}
                                 onLaunch={(profile, l) => {
                                   if (l.ready) pickVps(v, k, profile.id);
-                                  else if (profile.number > 1) onProfileLogin?.(v, k, profile);
+                                  else if (profile.id !== 'default') onProfileLogin?.(v, k, profile);
                                   else if (l.fix) onFix?.(v, l.fix.action);
                                 }} />
                             ))}

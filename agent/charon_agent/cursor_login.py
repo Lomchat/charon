@@ -30,6 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
+import tempfile
 import time
 import uuid
 from typing import Any, Optional
@@ -53,9 +56,13 @@ _KEY_NAME = "Charon"
 
 
 class _Attempt:
-    def __init__(self, login_id: str, proc: Any) -> None:
+    def __init__(self, login_id: str, proc: Any, home: Optional[str] = None) -> None:
         self.login_id = login_id
         self.proc = proc
+        # Isolated attempt (global accounts, §14.115): the SDK stores the
+        # minted key under this throwaway HOME; the hub takes it, the box
+        # keeps nothing.
+        self.home = home
         self.url: Optional[str] = None
         self.status = "pending"           # pending | success | error
         self.error: Optional[str] = None
@@ -71,6 +78,12 @@ class _Attempt:
 
 
 _current: Optional[_Attempt] = None
+
+
+def _drop_home(attempt: _Attempt) -> None:
+    if attempt.home:
+        shutil.rmtree(attempt.home, ignore_errors=True)
+        attempt.home = None
 
 
 async def _reap(attempt: Optional[_Attempt]) -> None:
@@ -101,6 +114,7 @@ async def _expire(attempt: _Attempt) -> None:
     attempt.error = "the sign-in link expired — start again"
     attempt.watchdog = None
     await _reap(attempt)
+    _drop_home(attempt)
 
 
 _LOGIN_BODY = """
@@ -168,11 +182,18 @@ async def login_start(_params: dict[str, Any] | None = None) -> dict[str, Any]:
     global _current
     # A second start supersedes the first — its verifier is now unreachable
     # from any modal the user still has open.
-    await _reap(_current)
+    if _current is not None:
+        await _reap(_current)
+        _drop_home(_current)
     _current = None
 
-    proc = await spawn_node_helper(_LOGIN_BODY)
-    attempt = _Attempt(uuid.uuid4().hex, proc)
+    home = None
+    if (_params or {}).get("isolated"):
+        root = os.environ.get("CHARON_AGENT_HOME") or os.path.expanduser("~/.charon")
+        os.makedirs(root, mode=0o700, exist_ok=True)
+        home = tempfile.mkdtemp(prefix="cursor-login-", dir=root)
+    proc = await spawn_node_helper(_LOGIN_BODY, env={"HOME": home} if home else None)
+    attempt = _Attempt(uuid.uuid4().hex, proc, home)
     attempt.reader = asyncio.create_task(_read_attempt(attempt))
     # Reaped on its own clock, not only when someone polls (see _expire).
     attempt.watchdog = asyncio.create_task(_expire(attempt))
@@ -189,6 +210,7 @@ async def login_start(_params: dict[str, Any] | None = None) -> dict[str, Any]:
     if attempt.status == "error":
         err = attempt.error or "login failed"
         await _reap(attempt)
+        _drop_home(attempt)
         _current = None
         raise CursorRuntimeError(err)
     return {"ok": True, "login_id": attempt.login_id, "url": attempt.url}
@@ -214,10 +236,18 @@ async def login_status(params: dict[str, Any]) -> dict[str, Any]:
     if attempt.status == "success":
         out["email"] = attempt.email
         await _reap(attempt)
+        if attempt.home:
+            try:
+                raw = json.loads(open(os.path.join(attempt.home, ".cursor", "sdk", "auth.json")).read())
+                out["credentials"] = {"apiKey": raw["apiKey"], "expiresAt": raw.get("apiKeyExpiresAtMs")}
+            except Exception as e:
+                out.update(status="error", error=f"the minted key could not be read: {type(e).__name__}")
+        _drop_home(attempt)
         _current = None
     elif attempt.status == "error":
         out["error"] = attempt.error or "login failed"
         await _reap(attempt)
+        _drop_home(attempt)
         _current = None
     return out
 
@@ -228,6 +258,7 @@ async def login_cancel(params: dict[str, Any]) -> dict[str, Any]:
     attempt = _current
     if attempt is not None and (not login_id or attempt.login_id == login_id):
         await _reap(attempt)
+        _drop_home(attempt)
         _current = None
     return {"ok": True}
 

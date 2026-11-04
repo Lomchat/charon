@@ -12,6 +12,38 @@ export const accountProfiles = sqliteTable('account_profiles', {
   accountKey: text('account_key'),
 }, (t) => [uniqueIndex('account_profiles_vps_provider_number').on(t.vpsId, t.provider, t.number)]);
 
+// Hub-owned provider accounts (CLAUDE.md §14.115): signed in ONCE, refreshed
+// by the hub only, pushed to every agent as short-lived credentials. `id` is a
+// 16-hex account-profile id, so sessions reference one through the existing
+// `providerConfig.accountProfile` slot. `credentials` = AES-GCM JSON (master
+// key): the refresh token (Claude/Codex) or API key (Cursor) never leaves the
+// hub except as the short-lived part pushed to agents.
+export const providerAccounts = sqliteTable('provider_accounts', {
+  id: text('id').primaryKey(),
+  provider: text('provider').notNull(),
+  name: text('name').notNull().default(''),
+  position: integer('position').notNull().default(0),
+  email: text('email'),
+  displayName: text('display_name'),
+  organization: text('organization'),
+  plan: text('plan'),
+  // Same identity hash the agent computes for a login (account_profiles.py
+  // `_identity`): what maps legacy per-VPS sessions to their account.
+  accountKey: text('account_key'),
+  credentials: text('credentials').notNull(),
+  // Epoch ms. access = the short-lived token agents hold; login = when the
+  // sign-in itself dies (Claude refresh-token family, Cursor key) — NULL = no
+  // known end. earliestRefresh = the provider's own floor (Codex).
+  accessExpiresAt: integer('access_expires_at'),
+  loginExpiresAt: integer('login_expires_at'),
+  earliestRefreshAt: integer('earliest_refresh_at'),
+  lastRefreshAt: integer('last_refresh_at'),
+  // 'ok' | 'expired' (sign in again) | 'error' (transient refresh failure).
+  status: text('status').notNull().default('ok'),
+  lastError: text('last_error'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+}, (t) => [uniqueIndex('uq_provider_accounts_provider_key').on(t.provider, t.accountKey)]);
+
 export const users = sqliteTable('users', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   passwordHash: text('password_hash').notNull(),

@@ -1,28 +1,18 @@
 'use client';
 // ── Per-provider sign-in surfaces, declared once ─────────────────────────────
-// Signing in is genuinely bespoke per backend — Claude runs the hosted
-// OAuth-code flow (§14.64), Codex a ChatGPT device code (§14.61) — so the
-// MODALS stay separate components. What used to be duplicated is everything
-// AROUND them: one `useState` per provider in HubPanel, one close handler
-// hard-coding that provider's DB columns, one `on<Provider>LoginAgent` prop
-// threaded through Sidebar, and one branch per provider at each opener.
-//
-// This is the registry for that wrapper (§14.102). A new backend adds ONE entry
-// and gets: the sidebar sign-in bar, the health-chip fix button, the auth-error
-// bubble's "Sign in", the install console's button and the wizard's row — all
-// routed to its modal. A missing entry is a compile error (`Record` over the
-// union), never a login button that opens nothing.
+// Every "Sign in" (sidebar bar, health-chip fix, auth-error bubble, wizard row,
+// launcher) lands here. Logins belong to the HUB (§14.115): each entry opens
+// the hub account sign-in for its provider; the VPS it came from is irrelevant.
+// A missing entry is a compile error (`Record` over the union), never a login
+// button that opens nothing.
 import type { ComponentType } from 'react';
 import dynamic from 'next/dynamic';
 import type { Vps } from '@/lib/db/schema';
-import { api } from '@/lib/api';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 
-// Lazy: a login modal is rare and pulls its own polling logic — keep both out
-// of the dashboard bootstrap chunk (§11).
-const ClaudeLoginModal = dynamic(() => import('./ClaudeLoginModal'), { ssr: false });
-const CodexLoginModal = dynamic(() => import('./CodexLoginModal'), { ssr: false });
-const CursorLoginModal = dynamic(() => import('./CursorLoginModal'), { ssr: false });
+// Lazy: a login modal is rare and pulls its own polling logic — keep it out of
+// the dashboard bootstrap chunk (§11).
+const AccountLoginModal = dynamic(() => import('./AccountLoginModal'), { ssr: false });
 
 /** Every provider's modal takes the same pair, so one renderer serves all. */
 export type LoginModalProps = {
@@ -41,36 +31,26 @@ export type ProviderLoginSurface = {
    *  row's Codex ＋ re-enables live and the user launches from where they were. */
   closesWizard: boolean;
   /** Re-read the login state when the modal closes WITHOUT confirming, in case
-   *  the user signed in (or out) by another route. Only providers with a probe
-   *  route have one; absent means "trust the flag we already have". */
+   *  the user signed in (or out) by another route. Absent means "trust the flag
+   *  we already have". */
   recheck?: (vpsId: string) => Promise<{ loggedIn: boolean; checkedAt?: number | null } | null>;
 };
 
+// Accounts belong to the HUB (§14.115): whichever VPS a "Sign in" came from,
+// it signs a hub account in (or the profile's account again) — never a VPS.
+function hubLogin(provider: SessionProvider): ComponentType<LoginModalProps> {
+  function HubAccountLogin({ profile, onClose }: LoginModalProps) {
+    const accountId = profile && profile.id !== 'default' ? profile.id : null;
+    return <AccountLoginModal provider={provider} accountId={accountId} onClose={onClose} />;
+  }
+  HubAccountLogin.displayName = `HubAccountLogin(${provider})`;
+  return HubAccountLogin;
+}
+
+const noLocalSignOut = async () => ({ ok: false, error: 'Accounts are managed once for every VPS — open Accounts.' });
+
 export const PROVIDER_LOGIN: Record<SessionProvider, ProviderLoginSurface> = {
-  claude: {
-    Modal: ClaudeLoginModal,
-    signOut: api.claudeSignOut,
-    closesWizard: true,
-    recheck: async (vpsId) => {
-      // Best-effort: on an SSH failure keep the value we already show.
-      const r = await api.checkVpsClaudeLogin(vpsId).catch(() => null);
-      return r?.ok ? { loggedIn: r.loggedIn, checkedAt: r.checkedAt } : null;
-    },
-  },
-  codex: {
-    Modal: CodexLoginModal,
-    signOut: api.codexSignOut,
-    closesWizard: false,
-  },
-  cursor: {
-    Modal: CursorLoginModal,
-    signOut: api.cursorSignOut,
-    // Overlays like Codex's: the user finishes in another tab/device and comes
-    // back to a launcher that has re-enabled itself, still on the same screen.
-    closesWizard: false,
-    recheck: async (vpsId) => {
-      const r = await api.checkVpsCursorLogin(vpsId).catch(() => null);
-      return r?.ok ? { loggedIn: r.loggedIn, checkedAt: r.checkedAt } : null;
-    },
-  },
+  claude: { Modal: hubLogin('claude'), signOut: noLocalSignOut, closesWizard: true },
+  codex: { Modal: hubLogin('codex'), signOut: noLocalSignOut, closesWizard: false },
+  cursor: { Modal: hubLogin('cursor'), signOut: noLocalSignOut, closesWizard: false },
 };

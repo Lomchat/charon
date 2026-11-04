@@ -118,7 +118,7 @@ class RuntimeLaunchTest(unittest.IsolatedAsyncioTestCase):
         original_sdk = cursor_session.require_sdk
         original_key = cursor_session.effective_api_key
         cursor_session.require_sdk = lambda: _Sdk  # type: ignore
-        cursor_session.effective_api_key = lambda: None  # type: ignore
+        cursor_session.effective_api_key = lambda *_a, **_k: None  # type: ignore
         self.addCleanup(setattr, cursor_session, "require_sdk", original_sdk)
         self.addCleanup(setattr, cursor_session, "effective_api_key", original_key)
 

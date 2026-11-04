@@ -147,7 +147,7 @@ describe('terminal Claude assistant errors', () => {
   it.each([
     'Failed to authenticate. API Error: 401 Unauthorized',
     'Failed to authenticate: OAuth session expired and could not be refreshed',
-  ])('latches an authentication failure and flags Claude signed out: %s', (message) => {
+  ])('latches an authentication failure — the hub repairs the account, no VPS column moves (§14.115): %s', (message) => {
     const stream = createStream();
     stream._onAgentEvent({
       event: 'effective_model', session_id: SID, model: '<synthetic>', seq: 9,
@@ -162,7 +162,7 @@ describe('terminal Claude assistant errors', () => {
 
     expect(sessionStatus()).toBe('failed');
     expect(db.select().from(schema.vps).all()[0]).toMatchObject({
-      claudeLoggedIn: 0, codexLoggedIn: 1,
+      claudeLoggedIn: 1, codexLoggedIn: 1,
     });
     expect(persistedErrors()).toEqual([]);
     expect(telegramMocks.sendPlainToTelegram.mock.calls[0][0])
@@ -317,7 +317,7 @@ describe('terminal Claude assistant errors', () => {
       .not.toContain('finished its response');
   });
 
-  it('persists a Codex auth failure with sign-in recovery and updates VPS health', () => {
+  it('persists a Codex auth failure with sign-in recovery, VPS columns untouched (§14.115)', () => {
     const stream = createStream('codex');
     stream._onAgentEvent({
       event: 'error', session_id: SID, msg: 'Not logged in. Run codex login.', seq: 50,
@@ -330,7 +330,7 @@ describe('terminal Claude assistant errors', () => {
       provider: 'codex', kind: 'authentication', action: 'sign_in',
     }]);
     const [vps] = db.select().from(schema.vps).all();
-    expect(vps.codexLoggedIn).toBe(0);
+    expect(vps.codexLoggedIn).toBe(1);
   });
 
   it('persists Claude quota reset as a UTC instant for automatic recovery', () => {

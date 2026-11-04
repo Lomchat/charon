@@ -6,6 +6,7 @@
 // `currentRev()` reflect every frame ≤ it (I1); archive ⇒ null, unarchive ⇒
 // summary; every action route's `sync.rev` ≥ its summary frame; VPS writers
 // V1/V2/V6 publish the stored runtime. Real handlers, hermetic DB.
+import { seedProviderAccounts } from './helpers/providerAccounts';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { summaryKey } from '@/lib/sessionSummary';
@@ -98,6 +99,7 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'pub-vps', ip: '127.0.0.1', sshUser: 'root', agentStatus: 'ok' })
     .onConflictDoNothing().run();
+  seedProviderAccounts(db, schema);
   db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ops = await import('@/lib/server/agent/sessionOps');
   sums = await import('@/lib/server/sync/sessionSummaries');

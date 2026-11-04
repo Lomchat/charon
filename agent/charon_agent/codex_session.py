@@ -35,6 +35,7 @@ cards and session-scoped grants.
 from __future__ import annotations
 
 from .account_profiles import profile_id, profile_env, status as account_status, cached_account_key
+from . import global_accounts
 from .stream_metrics import counter as _sdk_counter
 
 from .endpoint_credentials import public_config
@@ -308,6 +309,52 @@ def make_codex_config(**kwargs: Any):
     return CodexConfig(**kwargs)
 
 
+async def global_codex_login(raw: Any, account_profile: Any) -> None:
+    """Hand a hub-owned account's token to an initialized app-server (§14.115).
+
+    `raw` is the SDK's AsyncCodexClient. The app-server keeps the token in
+    memory (external auth ignores any auth.json) and asks
+    `account/chatgptAuthTokens/refresh` when it is refused; the answer is the
+    newest token the hub pushed. A default/legacy profile is left alone."""
+    try:
+        pid = profile_id(account_profile)
+    except ValueError:
+        return
+    if pid == "default" or not global_accounts.is_global("codex", pid):
+        return
+    params = global_accounts.codex_login_params(pid)
+    if params is None:
+        raise RuntimeError("this Codex account has no credentials on this VPS yet — the hub pushes them on connect")
+    sync = raw._sync
+    previous = sync._approval_handler
+
+    def handler(method: str, p: Any) -> Any:
+        if method == "account/chatgptAuthTokens/refresh":
+            return global_accounts.codex_refresh_answer(pid)
+        return previous(method, p)
+
+    sync._approval_handler = handler
+    await raw.account_login_start(params)
+
+
+async def open_codex(account_profile: Any = "default") -> Any:
+    """A short-lived AsyncCodex for helper RPCs, signed in when the profile is
+    a global account (its app-server would otherwise run unauthenticated)."""
+    client = AsyncCodex(make_codex_config(env=profile_env("codex", account_profile) or None))
+    try:
+        pid = profile_id(account_profile)
+    except ValueError:
+        pid = "default"
+    if pid != "default" and global_accounts.is_global("codex", pid):
+        try:
+            await client._ensure_initialized()
+            await global_codex_login(client._client, pid)
+        except Exception:
+            await client.close()
+            raise
+    return client
+
+
 def _enum_val(v: Any) -> Any:
     return getattr(v, "value", v)
 
@@ -351,7 +398,7 @@ async def fetch_codex_models(account_profile: str = "default") -> dict[str, Any]
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(make_codex_config(env=profile_env("codex", account_profile) or None))
+        client = await open_codex(account_profile)
         resp = await client.models(include_hidden=False)
         raw = getattr(resp, "data", None)
         if raw is None:
@@ -398,7 +445,7 @@ async def fetch_codex_threads(*, archived: bool = False, account_profile: str = 
         from openai_codex.generated.v2_all import (
             SortDirection, ThreadSortKey, ThreadSourceKind,
         )
-        client = AsyncCodex(make_codex_config(env=profile_env("codex", account_profile) or None))
+        client = await open_codex(account_profile)
         cursor = None
         rows: list[dict[str, Any]] = []
         source_kinds = [
@@ -494,7 +541,7 @@ async def codex_set_thread_archived(thread_id: str, archived: bool, account_prof
         return {"ok": False, "error": CODEX_IMPORT_ERROR or "codex unavailable"}
     client = None
     try:
-        client = AsyncCodex(make_codex_config(env=profile_env("codex", account_profile) or None))
+        client = await open_codex(account_profile)
         if archived:
             await client.thread_archive(thread_id)
         else:
@@ -544,6 +591,7 @@ async def fetch_codex_usage(account_profile: str = "default") -> dict[str, Any]:
         client = AsyncCodexClient(make_codex_config(env=profile_env("codex", account_profile) or None))
         await client.start()
         await client.initialize()
+        await global_codex_login(client, account_profile)
         acct = await client.account_read(GetAccountParams(refresh_token=False))
         plan = None
         a = getattr(acct, "account", None)
@@ -1244,6 +1292,7 @@ class CodexSession:
                 # the callback first in case MCP startup needs an elicitation.
                 client._client._sync._approval_handler = self._sdk_approval_handler
                 await self._initialize_sdk(client)
+                await global_codex_login(client._client, self.codex_config.get("accountProfile"))
                 params = {k: v for k, v in {
                     "cwd": self.cwd,
                     "model": self.model,
@@ -3142,6 +3191,7 @@ class CodexSession:
                     if hasattr(client, "_client"):
                         client._client._sync._approval_handler = self._sdk_approval_handler
                         await self._initialize_sdk(client)
+                        await global_codex_login(client._client, self.codex_config.get("accountProfile"))
                     return client
             except asyncio.CancelledError:
                 await _close_codex_client(client)

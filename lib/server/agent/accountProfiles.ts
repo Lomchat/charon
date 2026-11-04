@@ -10,6 +10,7 @@ import { AGENT_DIR_NAME } from './agentPaths.js';
 import { getSetting, setSetting } from '@/lib/server/hub/settings';
 import { emitGlobalAccountProfiles, emitGlobalVpsRuntimeFromDb } from './sessionOps';
 import { cursorIdentities, identityChecked, profileStatuses, statusKey } from './accountProfileState';
+import { isGlobalAccountId, publicAccounts } from '@/lib/server/accounts/store';
 export { profileStatuses, statusKey } from './accountProfileState';
 
 export type ProfileStatus = {
@@ -61,7 +62,30 @@ export function acceptCursorIdentity(vpsId: string, loggedIn: boolean, email: un
   if ((old ?? null) !== next) emitGlobalAccountProfiles(vpsId);
 }
 
+/** Hub-owned accounts (§14.115) as the per-VPS profiles every surface already
+ *  understands: one entry per (VPS × account), same id everywhere. There is no
+ *  local login any more, so no `default` entry either. */
+function globalProfiles(vpsId?: string): AccountProfile[] {
+  const rows = db.select({ id: vps.id }).from(vps).where(vpsId ? eq(vps.id, vpsId) : undefined).all();
+  const accounts = publicAccounts();
+  const out: AccountProfile[] = [];
+  for (const row of rows) for (const a of accounts) {
+    out.push({ id: a.id, vpsId: row.id, provider: a.provider, number: a.number, name: a.name,
+      // The header names a login by its official name, else its email: for hub
+      // accounts that is the user's own name for it, else the (unique) email —
+      // two accounts of one person share a provider display name.
+      loggedIn: a.status !== 'expired', accountKey: a.accountKey, email: a.email, displayName: a.name?.trim() || null,
+      subscriptionType: a.plan, organization: a.organization });
+  }
+  return out;
+}
+
 export function listAccountProfiles(vpsId?: string): AccountProfile[] {
+  return globalProfiles(vpsId);
+}
+
+/** The pre-§14.115 per-VPS profiles (local logins). Kept for the migration. */
+export function listLegacyAccountProfiles(vpsId?: string): AccountProfile[] {
   const persisted = persistedDefaultKeys();
   const rows = db.select().from(vps).where(vpsId ? eq(vps.id, vpsId) : undefined).all();
   const result: AccountProfile[] = [];
@@ -93,6 +117,11 @@ export function listAccountProfiles(vpsId?: string): AccountProfile[] {
 export function requireAccountProfile(vpsId: string, provider: SessionProvider, value: unknown = DEFAULT_ACCOUNT_PROFILE): AccountProfile {
   const id = value ?? DEFAULT_ACCOUNT_PROFILE;
   if (typeof id !== 'string') throw new Error('Invalid account profile');
+  if (isGlobalAccountId(id)) {
+    const found = globalProfiles(vpsId).find((p) => p.id === id);
+    if (!found || found.provider !== provider) throw new Error('This account belongs to another provider');
+    return found;
+  }
   if (id === DEFAULT_ACCOUNT_PROFILE) return { id, vpsId, provider, number: 1, name: '', loggedIn: null };
   const row = db.select().from(accountProfiles).where(and(eq(accountProfiles.id, id),
     eq(accountProfiles.vpsId, vpsId), eq(accountProfiles.provider, provider), eq(accountProfiles.removed, 0))).get();
@@ -255,6 +284,10 @@ export async function removeAccountProfile(vpsId: string, provider: SessionProvi
 }
 
 export function armAccountProfileWatch(vpsId: string): void {
+  // §14.115: logins belong to the hub now — there is nothing on a VPS to
+  // probe. Only release the usage poller's identity wait.
+  identityChecked.add(vpsId);
+  return;
   const tick = (): Promise<void> => {
     const existing = checks.get(vpsId);
     if (existing) return existing;

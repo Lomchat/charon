@@ -248,19 +248,30 @@ def workspace_ref(cwd: str | None) -> str:
     return cwd if isinstance(cwd, str) and cwd else os.path.expanduser("~")
 
 
-def effective_api_key() -> str | None:
+def effective_api_key(account_profile: Any = None) -> str | None:
     """The credential a session will actually run under.
 
-    `stored_api_key()` is the login flow's own artefact, but the SDK ALSO
-    honours `CURSOR_API_KEY` (its documented BYO-key path, and the only way to
-    run this backend on a box signed in by other means). Refusing to start when
-    only the env var is set would reject a perfectly configured host.
+    A hub-owned account (§14.115) runs on ITS key and nothing else — a missing
+    one never falls back to a local login. Otherwise `stored_api_key()` is the
+    login flow's own artefact, but the SDK ALSO honours `CURSOR_API_KEY` (its
+    documented BYO-key path); with neither, any global account's key serves
+    account-less calls (catalog, history scans).
     """
+    from . import global_accounts
+    if global_accounts.valid_id(account_profile) and global_accounts.is_global("cursor", account_profile):
+        return global_accounts.cursor_api_key(account_profile)
     stored = stored_api_key()
     if stored:
         return stored
     env = (os.environ.get("CURSOR_API_KEY") or "").strip()
-    return env or None
+    if env:
+        return env
+    for item in global_accounts.listing():
+        if item["provider"] == "cursor" and item["has_credentials"]:
+            key = global_accounts.cursor_api_key(item["id"])
+            if key:
+                return key
+    return None
 
 
 def stored_api_key() -> str | None:

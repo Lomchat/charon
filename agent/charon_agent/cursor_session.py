@@ -310,7 +310,7 @@ class CursorSession:
             "model": parse_model(self.model, self.effort),
             **self._tool_lists(),
         }
-        key = effective_api_key()
+        key = effective_api_key(self.session_config.get("accountProfile"))
         if key:
             opts["api_key"] = key
         if self.name:
@@ -346,7 +346,7 @@ class CursorSession:
             await self._fail(f"could not start the Cursor runtime: {e}")
             return
 
-        if not effective_api_key():
+        if not effective_api_key(self.session_config.get("accountProfile")):
             # Say the useful thing before the SDK says the confusing one
             # (`ConfigurationError: missing_api_key`, which reads as a
             # misconfiguration rather than "click Sign in").

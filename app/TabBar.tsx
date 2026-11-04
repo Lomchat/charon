@@ -416,7 +416,7 @@ export default function TabBar({
             }).map(({ k, profile }) => {
               const label = profileLabel(providerName(k), profile);
               const vps = vpsList.find((v) => v.id === activeVpsId);
-              const av = profile.number > 1 && vps ? backendAvailability({ ...vps, ...providerLoginPatch(k, profile.loggedIn ? 1 : 0) }, k) : null;
+              const av = profile.id !== 'default' && vps ? backendAvailability({ ...vps, ...providerLoginPatch(k, profile.loggedIn ? 1 : 0) }, k) : null;
               const reason = av ? av.ok ? null : av.reason : newSessionDisabledReason[k];
               return (
                 <button

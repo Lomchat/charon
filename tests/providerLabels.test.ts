@@ -73,6 +73,8 @@ const PROVIDER_OWNED = [
   'app/api/vps/[id]/claude/account/route.ts',
   // The product's own name in metadata, and the wizard's per-backend rows.
   'app/layout.tsx',
+  // The providers' own OAuth endpoints, driven by the hub (§14.115).
+  'lib/server/accounts/oauth.ts',
 ];
 
 function allowed(rel: string): boolean {

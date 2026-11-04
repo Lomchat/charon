@@ -82,6 +82,8 @@ export type AgentHelloResult = {
   // Cursor availability (§14.103). Absent on an agent predating the probe —
   // same no-null-clobber contract as the codex fields above.
   cursor_available?: boolean;
+  // Hub-owned accounts (§14.115): the agent takes `accounts_set` (>= 0.120.0).
+  global_accounts?: boolean;
   cursor_error?: string | null;
   cursor_sdk_version?: string | null;
   pid: number;
@@ -413,6 +415,10 @@ export type AgentMethodName =
   | 'list_sessions'
   | 'get_usage'
   | 'account_profiles'
+  | 'accounts_set'
+  | 'accounts_list'
+  | 'accounts_merge_history'
+  | 'accounts_transcript_check'
   | 'list_codex_models'
   | 'list_codex_threads'
   | 'get_codex_usage'

@@ -103,7 +103,7 @@ export default function ForkModal({
             a backend silently becomes un-forkable-to. */}
         <div className="fork-choices">
           {destinations.map(({ target, profile }, i) => {
-            const row = profile.number > 1 ? { ...vps, ...providerLoginPatch(target, profile.loggedIn ? 1 : 0) } : vps;
+            const row = profile.id !== 'default' ? { ...vps, ...providerLoginPatch(target, profile.loggedIn ? 1 : 0) } : vps;
             const av = row ? backendAvailability(row as any, target) : { ok: true, reason: '' };
             const unavailable = !av.ok;
             return (

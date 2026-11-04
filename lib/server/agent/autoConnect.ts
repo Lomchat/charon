@@ -5,7 +5,6 @@ import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession, setSessionStatusLocal } from './sessionOps';
 // Registers the session-summary provider on the sync bus at boot (§14.108).
 import '@/lib/server/sync/sessionSummaries';
-import { sweepProviderLogins } from './loginSweeps';
 import { ensureShellIdleWatch } from './shellNotify';
 import { armUsageWatch, armCodexUsageWatch } from './usagePoll';
 import { armAccountProfileWatch } from './accountProfiles';
@@ -46,7 +45,14 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
   const runReconcile = () => {
     const hello = client.hello;
     if (!hello) return;
-    reconcileVpsAgentState(vpsId, hello.sessions).catch(() => {});
+    // Hub-owned accounts FIRST (§14.115): a session reconcile resumes must
+    // find its account's credentials on the box. A failed push is retried by
+    // the accounts engine's tick; reconcile never waits on it for long.
+    void import('@/lib/server/accounts/engine')
+      .then((e) => Promise.race([e.pushAccountsToClient(client), new Promise((r) => setTimeout(r, 15_000))]))
+      .catch(() => {})
+      .finally(() => { reconcileVpsAgentState(vpsId, hello.sessions).catch(() => {}); });
+    void import('@/lib/server/accounts/migration').then((m) => m.scheduleMigration()).catch(() => {});
     ensureShellIdleWatch(client);
     armAccountProfileWatch(vpsId);
     // Account-usage gauges (§14.58): immediate poll on connect + a steady
@@ -57,14 +63,8 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
     // connect too), not the DB row. Idempotent per vpsId; the poll self-gates on
     // codex_available + login. cf. CLAUDE.md §14.58 / §14.59.
     if (hello.codex_available) armCodexUsageWatch(vpsId);
-    try {
-      // Every provider that declares a stale-login sweep (loginSweeps.ts).
-      // Named one by one here, a backend whose credential EXPIRES simply
-      // never got re-probed and its lapsed sign-in showed up as a failing
-      // turn instead of a button (§14.102).
-      const [fresh] = db.select().from(vpsTable).where(eq(vpsTable.id, vpsId)).all();
-      if (fresh) sweepProviderLogins(fresh);
-    } catch {}
+    // No stale-login sweeps (loginSweeps.ts): a VPS holds no login of its own
+    // any more; the accounts engine owns expiry and the launcher columns.
   };
   client.onStatus((status) => {
     if (status === 'connected') runReconcile();
@@ -105,6 +105,8 @@ export function autoConnectAgentsIfNeeded(): void {
   // from GET /v1/models (no-op without `claude.api_key`). Not per-VPS — the
   // model list is an Anthropic-side concept. Cf. lib/server/hub/modelSync.ts.
   refreshModelsIfStale();
+  // Hub-owned accounts (§14.115): refresh loop + gauges + launcher columns.
+  void import('@/lib/server/accounts/engine').then((e) => { e.ensureAccountsEngine(); e.syncVpsLoginColumns(); }).catch(() => {});
   setImmediate(() => {
     let vpses: Vps[] = [];
     try {

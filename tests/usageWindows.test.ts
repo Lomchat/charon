@@ -19,7 +19,7 @@ vi.mock('@/lib/server/agent/sessionOps', () => ({
   setCodexUsagePushHandler: vi.fn(), setUsageResetResolver: vi.fn(), setUsageWindowsHandler: vi.fn(),
 }));
 
-vi.mock('@/lib/server/agent/accountProfiles', () => ({ profileStatuses: new Map(), statusKey: (v: string, p: string, id = 'default') => `${v}:${p}:${id}`, listAccountProfiles: () => [] }));
+vi.mock('@/lib/server/agent/accountProfiles', () => ({ profileStatuses: new Map(), statusKey: (v: string, p: string, id = 'default') => `${v}:${p}:${id}`, listAccountProfiles: () => [] , listLegacyAccountProfiles: () => [] }));
 
 import { getUsageSnapshot, ingestUsageWindows, pollUsageForVps, triggerUsagePoll } from '@/lib/server/agent/usagePoll';
 import { identityChecked } from '@/lib/server/agent/accountProfileState';

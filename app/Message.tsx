@@ -7,6 +7,8 @@ import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { providerName, providerText } from '@/lib/providerText';
+import { apiErrorText, providerAccountLabel } from '@/lib/providerAccounts';
+import { useAccounts } from './accountsStore';
 import { IconAlarm, IconClipboard } from './icons';
 import { hastText, hastCodeLanguage } from './hastText';
 import { isClaudeAuthExpired } from '@/lib/authExpired';
@@ -82,6 +84,10 @@ type Props = {
   substitutedFor?: string | null;
   onScheduleResume?: () => Promise<void>;
   onCancelScheduledResume?: (scheduleId: string) => Promise<void>;
+  // Usage-limit error, newest row: switch this session to another hub account
+  // and continue there (§14.115). `currentAccount` = the one that hit it.
+  onContinueWithAccount?: (accountId: string) => Promise<void>;
+  currentAccount?: string;
   peerSessionId?: string | null;
   onOpenPeerSession?: (sessionId: string) => void;
   onPeerRequestHover?: (messageId: string | null) => void;
@@ -89,7 +95,7 @@ type Props = {
   peerReplyTo?: string | null;
 };
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo }: Props) {
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -115,7 +121,8 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
       type: 'session_error', provider: kind, kind: 'api', message: m.content,
       action: null, fatal: false, resetAt: null,
     } satisfies SessionErrorPayload;
-    return <SessionErrorMessage m={m} error={error} onReauth={onReauth} onContinue={onContinue} onScheduleResume={onScheduleResume} />;
+    return <SessionErrorMessage m={m} error={error} onReauth={onReauth} onContinue={onContinue} onScheduleResume={onScheduleResume}
+      onContinueWithAccount={onContinueWithAccount} currentAccount={currentAccount} />;
   }
 
   // Borderless until `stop` names the final answer (S2): a live bubble is
@@ -336,12 +343,14 @@ export function MessageLink({ href, vpsId, cwd, ...props }: React.ComponentProps
   }} />;
 }
 
-function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume }: {
+function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume, onContinueWithAccount, currentAccount }: {
   m: Msg;
   error: SessionErrorPayload;
   onReauth?: () => void;
   onContinue?: () => void;
   onScheduleResume?: () => Promise<void>;
+  onContinueWithAccount?: (accountId: string) => Promise<void>;
+  currentAccount?: string;
 }) {
   const firstLine = error.message.split('\n')[0].slice(0, 500);
   const hasDetails = error.message.includes('\n') || error.message.length > firstLine.length;
@@ -373,9 +382,43 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume 
         </div>
       )}
       {error.action === 'continue' && onContinue && <ContinueCta onContinue={onContinue} />}
+      {error.kind === 'rate_limit' && onContinueWithAccount && (
+        <ContinueWithAccountCta provider={error.provider} current={currentAccount ?? ''} onPick={onContinueWithAccount} />
+      )}
       {resetAt && onScheduleResume && (
         <ScheduleResumeCta resetAt={resetAt} onSchedule={onScheduleResume} />
       )}
+    </div>
+  );
+}
+
+/** "Continue with <account>" (§14.115): the provider's other signed-in hub
+ *  accounts, least used first when their gauges are known. */
+function ContinueWithAccountCta({ provider, current, onPick }: {
+  provider: AgentKind; current: string; onPick: (accountId: string) => Promise<void>;
+}) {
+  const { data } = useAccounts();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = (id: string) => {
+    const u = data.usage[id];
+    return Math.max(u?.fiveHour?.utilization ?? 0, u?.sevenDay?.utilization ?? 0);
+  };
+  const others = data.accounts.filter((a) => a.provider === provider && a.id !== current && a.status !== 'expired')
+    .sort((a, b) => load(a.id) - load(b.id));
+  if (!others.length) return null;
+  return (
+    <div className="bubble-continue continue-with-account">
+      <span>Another account can take over — same conversation:</span>
+      {others.map((a) => (
+        <button key={a.id} type="button" className="wiz-btn primary" disabled={!!busy} onClick={async () => {
+          setBusy(a.id); setError(null);
+          try { await onPick(a.id); } catch (e) { setError(apiErrorText(e)); setBusy(null); }
+        }}>
+          {busy === a.id ? 'switching…' : `Continue with ${providerAccountLabel(providerName(provider), a)}`}
+        </button>
+      ))}
+      {error && <span className="runtime-choice-error" role="alert">{error}</span>}
     </div>
   );
 }

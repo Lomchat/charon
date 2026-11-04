@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import global_accounts
+
 DEFAULT = "default"
 
 
@@ -25,6 +27,10 @@ def config_dir(provider: str, value: Any = None) -> Path:
     pid = profile_id(value)
     if provider not in ("claude", "codex"):
         raise ValueError("account profiles require Claude or Codex")
+    if pid != DEFAULT and provider == "codex" and global_accounts.is_global(provider, pid):
+        # A global Codex account keeps the default home: its threads stay
+        # where they are and its token reaches each app-server in memory.
+        pid = DEFAULT
     if pid == DEFAULT:
         var = "CLAUDE_CONFIG_DIR" if provider == "claude" else "CODEX_HOME"
         return Path(os.environ.get(var) or str(Path.home() / f".{provider}"))
@@ -71,6 +77,8 @@ def profile_env(provider: str, value: Any = None) -> dict[str, str]:
     pid = profile_id(value)
     if pid == DEFAULT:
         return {}
+    if global_accounts.is_global(provider, pid):
+        return _global_env(provider, pid)
     directory = config_dir(provider, pid)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     link_shared(provider, directory)
@@ -84,8 +92,28 @@ def profile_env(provider: str, value: Any = None) -> dict[str, str]:
             "CODEX_API_KEY": ""}
 
 
+def _global_env(provider: str, pid: str) -> dict[str, str]:
+    """Env of a hub-owned account (global_accounts): the same auth pinning as
+    a profile, but the home shares history with the default one."""
+    if provider == "claude":
+        directory = global_accounts.prepare_claude(pid)
+        return {"CLAUDE_CONFIG_DIR": str(directory), "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "", "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_AUTH_TOKEN": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                "ANTHROPIC_BASE_URL": "", "CLAUDE_CODE_USE_BEDROCK": "",
+                "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": ""}
+    if provider == "codex":
+        return {"CODEX_HOME": str(global_accounts.default_home("codex")), "OPENAI_API_KEY": "", "CODEX_API_KEY": ""}
+    return {}
+
+
 def signature(provider: str, value: Any = None) -> str:
     """Opaque generation used to discard events from a previous login."""
+    pid = profile_id(value)
+    if pid != DEFAULT and global_accounts.is_global(provider, pid):
+        h = hashlib.sha256(b"global")
+        h.update(json.dumps(global_accounts.credentials(provider, pid), sort_keys=True).encode())
+        h.update(json.dumps(global_accounts.meta(provider, pid), sort_keys=True).encode())
+        return h.hexdigest()
     directory = config_dir(provider, value)
     names = (".credentials.json",) if provider == "claude" else ("auth.json",)
     h = hashlib.sha256()
@@ -156,6 +184,12 @@ async def status(provider: str, value: Any = None, *, force: bool = False) -> di
     key = (provider, pid)
     async with _locks.setdefault(key, asyncio.Lock()):
         sig = signature(provider, pid)
+        if pid != DEFAULT and global_accounts.is_global(provider, pid):
+            result = global_accounts.status(provider, pid)
+            result.update({"provider": provider, "account_profile": pid, "generation": sig,
+                           "config_dir": str(config_dir(provider, pid))})
+            _cache[key] = (sig, dict(result))
+            return result
         cached = _cache.get(key)
         if not force and cached and cached[0] == sig:
             # The public name is outside the generation (renaming an account is

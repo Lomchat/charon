@@ -52,7 +52,10 @@ import { applyDensity } from './density';
 import { applyFileIcons } from './fileIconStyle';
 import SessionContextMenu from './SessionContextMenu';
 import ProviderAccountMenu from './ProviderAccountMenu';
-import AccountProfileModal from './AccountProfileModal';
+import { useAccounts } from './accountsStore';
+import AccountsBanner, { accountsNeedAttention } from './AccountsBanner';
+const AccountsModal = dynamic(() => import('./AccountsModal'), { ssr: false });
+const AccountLoginModal = dynamic(() => import('./AccountLoginModal'), { ssr: false });
 import { sessionAccountProfile, sameLoginProfiles, usageAccountLabel, accountProfileId, accountProfileNumber, profileUsageKey, type AccountProfile } from '@/lib/accountProfiles';
 import { useAccountProfiles, useAccountProfilesLoaded, refreshAccountProfiles } from './accountProfileStore';
 import PromptModal from './PromptModal';
@@ -74,7 +77,7 @@ import { ensureFreshServiceWorker } from './pushClient';
 import { useBrowserNotifications, saveBrowserNotifications, readBrowserNotifications } from './browserNotifications';
 import {
   IconArrowClockwise, IconBellFill, IconBellSlash, IconGear, IconSearch,
-  IconServers, IconVolumeMute, IconVolumeUp, IconTelegram,
+  IconServers, IconVolumeMute, IconVolumeUp, IconTelegram, IconPeople,
   IconMenu, IconPanelRight, IconRobot, IconThreeDotsVertical,
 } from './icons';
 import { SHOW_TOOLS_STORAGE_KEY } from './chatVisibility';
@@ -336,34 +339,19 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const profiles = useAccountProfiles();
   const profilesLoaded = useAccountProfilesLoaded();
   const profileState = useRef(profiles); profileState.current = profiles;
-  const [profileEditor, setProfileEditor] = useState<{ vps: Vps; provider: AgentKind; profile?: AccountProfile } | null>(null);
+  // Hub-owned accounts (§14.115): the Accounts panel and its own sign-in
+  // (opened from the panel/banner, where no VPS is involved).
+  const [accountsOpen, setAccountsOpen] = useState(false);
+  const [hubLogin, setHubLogin] = useState<{ provider: AgentKind; accountId: string | null } | null>(null);
+  const accountsState = useAccounts();
   /** Open a provider's sign-in surface. Closing the wizard is the surface's own
    *  declared behaviour, not the caller's guess. */
   const openProviderLogin = useCallback((v: Vps, provider: AgentKind, profile?: AccountProfile) => {
     if (PROVIDER_LOGIN[provider].closesWizard) setWizard(null);
     setLoginTarget({ vps: v, provider, profile });
   }, []);
-  const [signingOutAccounts, setSigningOutAccounts] = useState<ReadonlySet<string>>(() => new Set());
-  const signOutInFlight = useRef(new Set<string>());
-  const signOutProvider = useCallback(async (v: Vps, provider: AgentKind, profile?: AccountProfile) => {
-    const key = `${v.id}:${provider}:${profile?.id ?? "default"}`;
-    if (signOutInFlight.current.has(key)) return;
-    signOutInFlight.current.add(key);
-    setSigningOutAccounts(new Set(signOutInFlight.current));
-    try {
-      const r = profile && profile.id !== "default" ? await api.signOutAccountProfile(v.id, provider, profile.id) : await PROVIDER_LOGIN[provider].signOut(v.id);
-      if (!r.ok) throw new Error(r.error ?? 'Logout failed');
-      void refreshAccountProfiles();
-      if (profile && profile.id !== "default") return;
-      const patch = providerLoginPatch(provider, 0);
-      setVpsList((prev) => prev.map((vp) => vp.id === v.id ? { ...vp, ...patch } as Vps : vp));
-    } catch (e: unknown) {
-      setError({ msg: `${providerName(provider)} logout: ${e instanceof Error ? e.message : String(e)}` });
-    } finally {
-      signOutInFlight.current.delete(key);
-      setSigningOutAccounts(new Set(signOutInFlight.current));
-    }
-  }, []);
+  // Accounts are the hub's (§14.115): nothing is ever signed out per VPS.
+  const signingOutAccounts: ReadonlySet<string> = useMemo(() => new Set<string>(), []);
 
   // "Which Claude settings files does this VPS load?" (§14.100). Opened by an
   // agent install, and by the VPS card in DataModal for a later change.
@@ -2093,6 +2081,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           >
             <IconTelegram />
           </button>
+          <button className="head-btn model-notice-anchor" onClick={() => setAccountsOpen(true)}
+            title={accountsNeedAttention(accountsState.data, backends) ? 'accounts — action needed' : 'accounts — sign in once, for every VPS'}
+            aria-label="accounts" data-label="accounts">
+            <IconPeople />
+            {accountsNeedAttention(accountsState.data, backends) && <span className="model-notice-dot" aria-hidden="true" />}
+          </button>
           <button className="head-btn" onClick={() => setDataOpen(true)} title="VPS, projects, paths" aria-label="VPS data" data-label="vps, projects & paths">
             <IconServers />
           </button>
@@ -2140,6 +2134,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         </button>
         </div>
       </header>
+      <AccountsBanner data={accountsState.data} loaded={accountsState.loaded} enabled={backends} hasVps={vpsList.length > 0}
+        onOpen={() => setAccountsOpen(true)}
+        onLogin={(provider, accountId) => setHubLogin({ provider, accountId })} />
 
       <Sidebar
         toolbarSlot={(
@@ -2476,11 +2473,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         onDismiss={dismissInstallNotif}
       />
 
-      {profileEditor && <AccountProfileModal {...profileEditor} onClose={() => setProfileEditor(null)}
-        onCreated={(profile) => {
-          const target = profileEditor; setProfileEditor(null);
-          openProviderLogin(target.vps, target.provider, profile);
-        }} />}
+      {accountsOpen && <AccountsModal enabled={(p) => backends[p]} onClose={() => setAccountsOpen(false)}
+        onLogin={(provider, account) => setHubLogin({ provider, accountId: account?.id ?? null })} />}
+      {hubLogin && <AccountLoginModal key={`${hubLogin.provider}:${hubLogin.accountId ?? 'new'}`} provider={hubLogin.provider}
+        accountId={hubLogin.accountId} onClose={() => { setHubLogin(null); void refreshAccountProfiles(); }} />}
       {wizard && (
         <NewSessionWizard
           kind={wizard.kind}
@@ -2615,19 +2611,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         const { provider, x, y, profile } = ctxMenu;
         const v = vpsList.find((v) => v.id === ctxMenu.vps.id) ?? ctxMenu.vps;
         return <ProviderAccountMenu key={`${v.id}:${provider}:${profile?.id ?? "default"}`}
-          vps={v} provider={provider} profile={profile} x={x} y={y}
-          signingOut={signingOutAccounts.has(`${v.id}:${provider}:${profile?.id ?? "default"}`)}
+          vps={v} provider={provider} profile={profile && profile.id !== 'default' ? profile : undefined} x={x} y={y}
           onLogin={() => openProviderLogin(v, provider, profile)}
-          onLogout={() => void signOutProvider(v, provider, profile)}
-          onAdd={() => setProfileEditor({ vps: v, provider })}
-          onRename={profile?.number && profile.number > 1 ? () => setProfileEditor({ vps: v, provider, profile }) : undefined}
-          onRemove={profile?.number && profile.number > 1 ? async () => { await api.removeAccountProfile(profile); await refreshAccountProfiles(); } : undefined}
-          onChecked={(loggedIn, checkedAt) => {
-            void refreshAccountProfiles();
-            if (profile && profile.id !== "default") return;
-            const patch = providerLoginPatch(provider, loggedIn ? 1 : 0, checkedAt);
-            setVpsList((prev) => prev.map((vp) => vp.id === v.id ? { ...vp, ...patch } as Vps : vp));
-          }}
+          onManage={() => setAccountsOpen(true)}
           onClose={() => setCtxMenu(null)}
         />;
       })()}

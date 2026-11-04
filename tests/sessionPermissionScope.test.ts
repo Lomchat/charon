@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { seedProviderAccounts } from './helpers/providerAccounts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,6 +66,7 @@ beforeAll(async () => {
   db.insert(schema.vps).values({
     id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root', codexAvailable: 1,
   }).onConflictDoNothing().run();
+  seedProviderAccounts(db, schema);
   ({
     SessionStream, startNewSession, sweepExpiredInteractions, subscribeGlobalSessionEvents,
   } = await import('@/lib/server/agent/sessionOps'));

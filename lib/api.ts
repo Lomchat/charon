@@ -1,4 +1,6 @@
 import type { AccountProfile } from './accountProfiles';
+import type { AccountLoginAttempt, AccountsResponse } from './providerAccounts';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import type { AccountProfilesResponse, CreateAccountProfileResponse, UpdateAccountProfileResponse } from './types/api';
 import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 // Typed HTTP client for the dashboard's API routes.
@@ -537,6 +539,20 @@ export const api = {
   // in or out), or on manual demand.
   checkVpsClaudeLogin: (id: string) =>
     send<CheckClaudeLoginResponse>('POST', `/api/vps/${id}/claude/check-login`),
+  // Hub-owned provider accounts (§14.115).
+  listAccounts: () => send<AccountsResponse>('GET', '/api/accounts'),
+  startAccountLogin: (provider: SessionProvider, accountId?: string | null) =>
+    send<{ attempt: AccountLoginAttempt }>('POST', '/api/accounts/login', { provider, accountId: accountId ?? null }, { timeoutMs: 75_000 }),
+  accountLoginStatus: (attemptId: string) => send<{ attempt: AccountLoginAttempt }>('GET', `/api/accounts/login/${encodeURIComponent(attemptId)}`),
+  submitAccountLoginCode: (attemptId: string, code: string) =>
+    send<{ attempt: AccountLoginAttempt }>('POST', `/api/accounts/login/${encodeURIComponent(attemptId)}`, { code }, { timeoutMs: 60_000 }),
+  cancelAccountLogin: (attemptId: string) => send<OkResponse>('DELETE', `/api/accounts/login/${encodeURIComponent(attemptId)}`),
+  renameAccount: (id: string, name: string) => send<OkResponse>('PATCH', '/api/accounts', { id, name }),
+  reorderAccounts: (provider: SessionProvider, order: string[]) => send<OkResponse>('PATCH', '/api/accounts', { provider, order }),
+  removeAccount: (id: string) => send<OkResponse>('DELETE', '/api/accounts', { id }),
+  refreshAccountUsage: (id: string) => send<{ usage: AccountUsage | null }>('POST', `/api/accounts/${encodeURIComponent(id)}/usage`, undefined, { timeoutMs: 60_000 }),
+  switchSessionAccount: (sessionId: string, accountId: string) =>
+    send<OkResponse & { restarted: boolean } & ActionSyncStamp>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/account`, { accountId }, { timeoutMs: 120_000 }),
   getAccountProfiles: (vpsId?: string) => send<AccountProfilesResponse>('GET', `/api/account-profiles${vpsId ? `?vpsId=${encodeURIComponent(vpsId)}` : ''}`),
   createAccountProfile: (vpsId: string, provider: SessionProvider, name: string) => send<CreateAccountProfileResponse>('POST', '/api/account-profiles', { vpsId, provider, name }),
   renameAccountProfile: (profile: AccountProfile, name: string) => send<UpdateAccountProfileResponse>('PATCH', '/api/account-profiles', { ...profile, name }),

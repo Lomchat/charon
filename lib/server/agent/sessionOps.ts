@@ -73,7 +73,7 @@ import {
 } from './pendingInteractions';
 import { flushSummaryNow, markSummaryDirty, publish, subscribeFrames } from '@/lib/server/sync/syncBus';
 import { markAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
-import { providerText } from '@/lib/providerText';
+import { providerText, providerName } from '@/lib/providerText';
 import {
   allowRulesOf, offeredSuggestions, parseSuggestions, type PermissionSuggestion,
 } from '@/lib/permissionSuggestions';
@@ -3645,25 +3645,15 @@ export class SessionStream {
     try {
       const row = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, this.id)).get();
       if (connectionConfig(row?.config).customEndpoint) return;
-      if (this.accountProfile !== 'default') {
-        void import('./accountProfiles').then((p) => p.readProfileStatus(this.vpsId, this.kind, this.accountProfile, true)).catch(() => {});
-        return;
-      }
-      const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).all();
-      if (!v) return;
-      if (providerBackendState(v as any, this.kind).loggedIn === 0) return;
-      const checkedAt = Math.floor(Date.now() / 1000);
-      db.update(vpsTable)
-        .set(providerLoginPatch(this.kind, 0, checkedAt))
-        .where(eq(vpsTable.id, this.vpsId)).run();
-      this._log('warn', `${this.kind}_auth_expired`, { vpsId: this.vpsId });
-      // Only mirror a status we actually know: emitGlobalVpsStatus's union
-      // excludes 'unknown', and sending a wrong agentStatus would corrupt the
-      // badge (the client patches it from the event).
-      if (v.agentStatus === 'ok' || v.agentStatus === 'missing' || v.agentStatus === 'error') {
-        emitGlobalVpsStatus(this.vpsId, v.agentStatus,
-          { [PROVIDERS[this.kind].backend.loggedInColumn]: 0 });
-      }
+      // §14.115: a hub-owned account is the hub's to repair (re-push, refresh);
+      // no VPS column moves, there is no local login behind it.
+      void import('@/lib/server/accounts/store').then(async (store) => {
+        if (store.isGlobalAccountId(this.accountProfile)) {
+          (await import('@/lib/server/accounts/engine')).repairAfterAuthError(this.accountProfile, this.vpsId);
+        }
+      }).catch(() => {});
+      // The VPS login columns mirror the hub's accounts (accounts engine):
+      // a session never writes them.
     } catch {}
   }
 
@@ -4771,7 +4761,9 @@ export async function importExistingSession(opts: {
   // VPS's settings scope too, or the same transcript would run under different
   // rules depending on how it entered Charon.
   const { requireAccountProfile } = await import('./accountProfiles');
-  const profile = requireAccountProfile(opts.vpsId, kind, opts.accountProfile);
+  const { defaultAccountFor } = await import('@/lib/server/accounts/store');
+  const profile = requireAccountProfile(opts.vpsId, kind,
+    opts.accountProfile && opts.accountProfile !== 'default' ? opts.accountProfile : defaultAccountFor(kind) ?? 'default');
   const providerConfig = resolveProviderConfig(kind, { accountProfile: profile.id, accountProfileNumber: profile.number }, vps);
   db.insert(agentSessions).values({
     id: sessionId,
@@ -4830,10 +4822,20 @@ export async function startNewSession(opts: {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
   let requestedConfig = opts.sessionConfig ?? opts.providerConfig ?? null;
+  // Hub-owned accounts (§14.115): every session runs on one. No choice ⇒ the
+  // provider's first usable account; a custom endpoint needs none.
+  if (!(requestedConfig as { customEndpoint?: unknown } | null)?.customEndpoint
+      && (!requestedConfig?.accountProfile || requestedConfig.accountProfile === 'default')) {
+    const { defaultAccountFor } = await import('@/lib/server/accounts/store');
+    const fallback = defaultAccountFor(kind);
+    if (!fallback) throw new Error(`Add a ${providerName(kind)} account first (Accounts).`);
+    requestedConfig = { ...(requestedConfig ?? {}), accountProfile: fallback };
+  }
   if (requestedConfig?.accountProfile) {
     const { requireAccountProfile, readProfileStatus } = await import('./accountProfiles');
     const profile = requireAccountProfile(opts.vpsId, kind, requestedConfig.accountProfile);
-    if (profile.number > 1) {
+    if (profile.loggedIn === false) throw new Error('This account must be signed in again (Accounts).');
+    if (profile.number > 1 && !(await import('@/lib/server/accounts/store')).isGlobalAccountId(profile.id)) {
       const auth = await readProfileStatus(opts.vpsId, kind, profile.id);
       if (!auth.logged_in) throw new Error('Sign in to this account profile first');
     }

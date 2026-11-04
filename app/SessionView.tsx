@@ -1,6 +1,7 @@
 'use client';
 import { api } from '@/lib/api';
 import PickerControl from './PickerControl';
+import SessionAccountChoice from './SessionAccountChoice';
 import dynamic from 'next/dynamic';
 import { useSessionEndpoint } from './useSessionEndpoint';
 import { endpointParameters, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
@@ -498,6 +499,22 @@ export default function SessionView({
     return null;
   }, [messages]);
 
+  // The newest chat row is a usage-limit error: offer the provider's other
+  // hub accounts (§14.115) — switch, then "Continue" on that account.
+  const limitMsgId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'event' || m.role === 'edit_snapshot') continue;
+      return m.role === 'error' && parseSessionError(m.content)?.kind === 'rate_limit' ? m.id : null;
+    }
+    return null;
+  }, [messages]);
+  const currentAccount = accountProfileId(selected);
+  const continueWithAccount = useCallback(async (accountId: string) => {
+    await api.switchSessionAccount(sessionId, accountId);
+    void streamSend('Continue');
+  }, [sessionId, streamSend]);
+
   // Stable ref (memo(Message), §14.38). `send` is optimistic, so the user
   // bubble appears at once and `continuableMsgId` goes null on the next render.
   const sendContinue = useCallback(() => { void streamSend('Continue'); }, [streamSend]);
@@ -965,6 +982,9 @@ export default function SessionView({
                   onScheduleResume={scheduleResume}
                   onCancelScheduledResume={cancelScheduledResume}
                   schedulableMsgId={schedulableMsgId}
+                  limitMsgId={endpoint.active ? null : limitMsgId}
+                  currentAccount={currentAccount}
+                  onContinueWithAccount={continueWithAccount}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1215,6 +1235,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
+  limitMsgId, currentAccount, onContinueWithAccount,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1237,6 +1258,9 @@ const MessageHistory = memo(function MessageHistory({
   onContinue: () => void;
   onScheduleResume: (messageId: string) => Promise<void>;
   onCancelScheduledResume: (scheduleId: string) => Promise<void>;
+  limitMsgId: string | null;
+  currentAccount: string;
+  onContinueWithAccount: (accountId: string) => Promise<void>;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1261,6 +1285,8 @@ const MessageHistory = memo(function MessageHistory({
       onReauth={onReauth}
       onContinue={msg.id === continuableMsgId ? onContinue : undefined}
       onScheduleResume={msg.id === schedulableMsgId ? () => onScheduleResume(msg.id) : undefined}
+      onContinueWithAccount={msg.id === limitMsgId ? onContinueWithAccount : undefined}
+      currentAccount={msg.id === limitMsgId ? currentAccount : undefined}
       onCancelScheduledResume={onCancelScheduledResume}
       orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
       peerSessionId={peerSessionTarget(msg, siblings)} onOpenPeerSession={onOpenPeerSession}
@@ -2119,6 +2145,8 @@ function SessionRuntimePanel({
               finally { setSaving(false); }
             }}>Return to standard connection</button>}
           </div>}
+          {open === 'model' && !endpoint.active && <SessionAccountChoice sessionId={sessionId} kind={kind} current={accountProfile}
+            disabled={saving} onSwitched={close} />}
           {endpoint.active?.usageUrl && <a className="runtime-usage-link" href={endpoint.active.usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
           {endpoint.pending && <p className="runtime-choice-note">Connection change queued until current work finishes. <button type="button" onClick={async () => { try { await api.setSessionEndpoint(sessionId, { cancelPending: true }); onEndpointChanged(); } catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not cancel change.'); } }}>Cancel change</button></p>}
           {endpoint.error && <p role="alert" className="runtime-choice-error">{endpoint.error}</p>}
