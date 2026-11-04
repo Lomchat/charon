@@ -75,6 +75,8 @@ describe('buildAccountGroups — one group per login across VPSes', () => {
     expect(alone).toHaveLength(1);
     expect(alone[0].sessions.map((x) => x.id)).toEqual(['e']);
     expect(alone[0].members[0].sessionCount).toBe(0);
+    // On no account at all (hub accounts, §14.115): no account button.
+    expect(build([s('e', { ...ep, accountProfile: 'default' })], [prof({ id: 'aaaaaaaaaaaaaaaa', accountKey: 'K' })])).toEqual([]);
   });
 
   it('two logins with the same name on the same machine still read apart', () => {

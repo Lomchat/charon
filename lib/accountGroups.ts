@@ -129,10 +129,14 @@ export function buildAccountGroups(input: {
   for (const [key, s] of viaEndpoint) {
     const d = drafts.get(key);
     if (d) { d.sessions.push(s); continue; }
+    // A custom endpoint on NO account (the hub owns every login, §14.115, and
+    // an endpoint needs none): no account button to light.
+    const profile = sessionAccountProfile(profiles, s) ?? null;
+    if (!profile) continue;
     // Its login has no button of its own (signed out, backend off): the
     // session still needs one, so it makes a member without usage weight.
     const provider = asSessionProvider(s.kind);
-    member(provider, s.vpsId, accountProfileId(s), sessionAccountProfile(profiles, s) ?? null, accountProfileNumber(s))
+    member(provider, s.vpsId, accountProfileId(s), profile, accountProfileNumber(s))
       .d.sessions.push(s);
   }
 
