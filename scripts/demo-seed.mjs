@@ -40,8 +40,8 @@ db.pragma('foreign_keys = ON');
 const now = Math.floor(Date.now() / 1000);
 
 // Wipe (idempotent reseed)
-for (const t of ['claude_session_messages', 'claude_pending_permissions', 'claude_pending_questions',
-  'claude_session_logs', 'claude_session_attachments', 'tabs', 'claude_sessions', 'shells',
+for (const t of ['session_messages', 'session_pending_permissions', 'session_pending_questions',
+  'session_logs', 'session_attachments', 'tabs', 'agent_sessions', 'shells',
   'vps_paths', 'vps', 'vps_folders', 'sessions', 'users']) {
   try { db.prepare(`DELETE FROM ${t}`).run(); } catch {}
 }
@@ -127,8 +127,8 @@ const sessions = [
   // Labs · ml-trainer — a sleeping Codex session (read-only sandbox)
   ['s_pipe',   'codex',  'v_ml',  '/data/pipeline', 'profile data pipeline', 'sleeping', 'read-only',       PK, 'gpt-6',     'xhigh',  'gpt-6',     0],
 ];
-const insSes = db.prepare(`INSERT INTO claude_sessions
-  (id,claude_session_id,vps_id,kind,cwd,name,status,permission_mode,created_at,last_used_at,
+const insSes = db.prepare(`INSERT INTO agent_sessions
+  (id,native_session_id,vps_id,kind,cwd,name,status,permission_mode,created_at,last_used_at,
    color,model,effort,effective_model,unread_stop,sleep_requested)
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`);
 let age = 0;
@@ -144,7 +144,7 @@ for (const [id, kind, vps, cwd, name, status, mode, color, model, effort, effMod
 // demo-shots.mjs, so it appears next to that box's Claude and Codex sessions.
 
 // ── Message helper (stamps assistant rows with the per-message model chip) ──
-const insMsg = db.prepare(`INSERT INTO claude_session_messages
+const insMsg = db.prepare(`INSERT INTO session_messages
   (session_id,role,content,model,created_at) VALUES (?,?,?,?,?)`);
 function conv(sessionId, model, entries) {
   for (const [role, content, dt] of entries)
@@ -253,7 +253,7 @@ conv('s_pipe', 'gpt-6', [
 // A pending permission on the (thinking) api-gateway session — surfaces as a
 // cross-session permission popup in the dashboard shot, while the HERO session
 // keeps its prompt bar (a pending interaction there would replace it).
-db.prepare(`INSERT INTO claude_pending_permissions (id,session_id,tool_name,tool_input,status,created_at)
+db.prepare(`INSERT INTO session_pending_permissions (id,session_id,tool_name,tool_input,status,created_at)
             VALUES (?,?,?,?, 'pending', ?)`)
   .run('perm-1', 's_tests', 'Bash',
        JSON.stringify({ command: 'npm test -- login --runInBand', description: 'Run the login test suite serially' }), now - 18);
@@ -275,7 +275,7 @@ for (const [k, v] of [
   ['codex.latest_version', CODEX_V], ['codex.latest_version_at', nowMs],
   ['codex.cli_latest_version', CODEX_CLI_V], ['codex.cli_latest_version_at', nowMs],
 ])
-  db.prepare(`INSERT OR REPLACE INTO claude_settings (key, value) VALUES (?, ?)`).run(k, v);
+  db.prepare(`INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)`).run(k, v);
 
 console.log(`demo seed OK → ${DB_PATH} · cookie charon_session = ${RAW_TOKEN}`);
 db.close();

@@ -11,7 +11,7 @@ import type {
   WorkflowOutputQuery, WorkflowOutputResponse, WorkflowAgentsResponse,
   EndpointProbeBody, EndpointProbeResponse, EndpointSaveBody, SessionEndpointBody,
   EndpointBatchBody, EndpointBatchResponse,
-  Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
+  Vps, VpsFolder, VpsPath, AgentSession, PermissionMode, ShellInfo,
   CreateVpsBody, UpdateVpsBody, TestVpsResponse, UpdateVpsAgentResponse,
   RefreshVpsAgentResponse, VpsUsageResponse, VpsFsListResponse, SessionPathResponse,
   GitWorkspaceResponse, GitDiffResponse, GitCommitBody, GitCommitResponse,
@@ -35,26 +35,26 @@ import type {
   CodexLoginStartResponse, CodexLoginStatusResponse,
   CursorLoginStartResponse, CursorLoginStatusResponse, CursorLoginCheckResponse,
   CursorModelsResponse,
-  ClaudeSessionListQuery, ClaudeSessionsListResponse,
-  ClaudeSessionDetailResponse, ClaudeSessionMessageWindow,
-  ClaudeSessionEditsResponse,
-  CreateClaudeSessionBody, CreateClaudeSessionResponse,
-  ImportClaudeSessionBody, ImportClaudeSessionResponse,
-  RenameClaudeSessionBody,
-  DeleteClaudeSessionResponse, ResumeClaudeSessionResponse,
+  AgentSessionListQuery, AgentSessionsListResponse,
+  AgentSessionDetailResponse, AgentSessionMessageWindow,
+  AgentSessionEditsResponse,
+  CreateAgentSessionBody, CreateAgentSessionResponse,
+  ImportAgentSessionBody, ImportAgentSessionResponse,
+  RenameAgentSessionBody,
+  DeleteAgentSessionResponse, ResumeAgentSessionResponse,
   BulkDeleteSessionsBody, BulkDeleteSessionsResponse,
   RespondPermissionBody, RespondQuestionBody, RespondExitPlanBody,
-  SetClaudeModeResponse,
-  SetClaudeSessionModelBody, SetClaudeSessionModelResponse,
-  SetClaudeSessionEffortBody, SetClaudeSessionEffortResponse,
+  SetAgentModeResponse,
+  SetSessionModelBody, SetSessionModelResponse,
+  SetSessionEffortBody, SetSessionEffortResponse,
   ClaudeEffortLevel, ClaudeModelsResponse, ClaudeModelsRefreshResponse,
-  RevertClaudeEditResponse, SearchClaudeResponse,
-  ClaudeSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
+  RevertEditResponse, SessionSearchResponse,
+  AppSettingsMap, PushVapidKeyResponse, PushSubscribeBody,
   PushSubscribeResponse,
   SessionAttachmentsResponse, UploadSessionAttachmentResponse,
   OkResponse, OkOrErrorResponse,
-  SendClaudeInputBody, SendClaudeInputResponse, ActionSyncStamp,
-  SessionWindowQuery, SessionProbeResponse, ClaudeSessionToolCallsResponse,
+  SendAgentInputBody, SendAgentInputResponse, ActionSyncStamp,
+  SessionWindowQuery, SessionProbeResponse, AgentSessionToolCallsResponse,
 } from '@/lib/types/api';
 import type { TranscriptView } from '@/lib/transcriptRows';
 
@@ -69,7 +69,7 @@ async function send<TRes = unknown>(
   // — the socket is suspended, not closed, so the promise neither resolves
   // nor rejects until the OS finally tears the socket down (can be
   // minutes). A hung promise wedges any inflight-dedup guard built on top
-  // of it (sessionCache.inflight, useClaudeSessionStream.inflightPollRef),
+  // of it (sessionCache.inflight, useSessionStream.inflightPollRef),
   // which is exactly the "chat frozen until refresh" class of bug.
   // cf. CLAUDE.md §14 gotcha 24.
   const timeoutMs = opts?.timeoutMs ?? 30_000;
@@ -208,11 +208,11 @@ async function readSearchStream(path: string, body: FsSearchQuery, opts: {
 
 export const api = {
   getWorkflowAgents: (id: string, task: string, signal?: AbortSignal) =>
-    send<WorkflowAgentsResponse>('GET', `/api/claude/sessions/${id}/subagents?${new URLSearchParams({ task })}`, undefined, { signal }),
+    send<WorkflowAgentsResponse>('GET', `/api/sessions/${id}/subagents?${new URLSearchParams({ task })}`, undefined, { signal }),
   getWorkflowOutput: (id: string, query: WorkflowOutputQuery, signal?: AbortSignal) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) if (value != null) params.set(key, String(value));
-    return send<WorkflowOutputResponse>('GET', `/api/claude/sessions/${id}/subagents?${params}`, undefined, { signal });
+    return send<WorkflowOutputResponse>('GET', `/api/sessions/${id}/subagents?${params}`, undefined, { signal });
   },
   listCustomEndpoints: () => send<{ endpoints: CustomEndpoint[] }>('GET', '/api/custom-endpoints'),
   saveCustomEndpoint: (body: EndpointSaveBody) => send<{ endpoint: CustomEndpoint }>('POST', '/api/custom-endpoints', body),
@@ -221,8 +221,8 @@ export const api = {
   getEndpointBatch: () => send<EndpointBatchResponse>('GET', '/api/custom-endpoints/test-all'),
   startEndpointBatch: (body: EndpointBatchBody) => send<EndpointBatchResponse>('POST', '/api/custom-endpoints/test-all', body),
   cancelEndpointBatch: (id: string) => send<EndpointBatchResponse>('DELETE', '/api/custom-endpoints/test-all', { id }),
-  getSessionEndpoint: (id: string) => send<EndpointState>('GET', `/api/claude/sessions/${encodeURIComponent(id)}/endpoint`),
-  setSessionEndpoint: (id: string, body: SessionEndpointBody) => send<EndpointState>('POST', `/api/claude/sessions/${encodeURIComponent(id)}/endpoint`, body, { timeoutMs: 90_000 }),
+  getSessionEndpoint: (id: string) => send<EndpointState>('GET', `/api/sessions/${encodeURIComponent(id)}/endpoint`),
+  setSessionEndpoint: (id: string, body: SessionEndpointBody) => send<EndpointState>('POST', `/api/sessions/${encodeURIComponent(id)}/endpoint`, body, { timeoutMs: 90_000 }),
 
   // ── VPS ────────────────────────────────────────────────────────────────────
   createVps: (data: CreateVpsBody) =>
@@ -418,10 +418,10 @@ export const api = {
 
   /** Sidebar order of the sessions inside ONE vps (§14.80). */
   reorderSessions: (vpsId: string, ids: string[]) =>
-    send<OkResponse & ActionSyncStamp>('POST', '/api/claude/sessions/reorder', { vpsId, ids }),
+    send<OkResponse & ActionSyncStamp>('POST', '/api/sessions/reorder', { vpsId, ids }),
   /** Permanent deletion of MANY sessions in one request (paused cleanup). */
   bulkDeleteSessions: (body: BulkDeleteSessionsBody) =>
-    send<BulkDeleteSessionsResponse>('POST', '/api/claude/sessions/bulk-delete', body, { timeoutMs: 120_000 }),
+    send<BulkDeleteSessionsResponse>('POST', '/api/sessions/bulk-delete', body, { timeoutMs: 120_000 }),
 
   // ── Tabs: the shared workspace layout (§14.78) ────────────────────────────
   listTabs: () => send<TabsResponse>('GET', '/api/tabs'),
@@ -590,13 +590,13 @@ export const api = {
     send<CursorModelsResponse>('GET', `/api/cursor/models?vpsId=${encodeURIComponent(vpsId)}`),
 
   // ── Claude sessions ───────────────────────────────────────────────────────
-  listClaudeSessions: (q?: ClaudeSessionListQuery) => {
+  listSessions: (q?: AgentSessionListQuery) => {
     const p = new URLSearchParams();
     if (q?.vpsId) p.set('vpsId', q.vpsId);
     if (q?.status) p.set('status', q.status);
     if (q?.includeArchived) p.set('includeArchived', '1');
     const qs = p.toString();
-    return send<ClaudeSessionsListResponse>('GET', `/api/claude/sessions${qs ? '?' + qs : ''}`);
+    return send<AgentSessionsListResponse>('GET', `/api/sessions${qs ? '?' + qs : ''}`);
   },
   // `signal` lets a view that unmounts give its bandwidth back: on a slow link
   // the previous session's 100-300KB transcript otherwise keeps downloading
@@ -606,7 +606,7 @@ export const api = {
   // atomically (`conn`/`focusSeq`). `open=1`: this client reads the open
   // reasoning block from `streamingThinking` (an old bundle gets it as a
   // synthetic row instead).
-  getClaudeSession: (id: string, signal?: AbortSignal, q?: SessionWindowQuery) => {
+  getAgentSession: (id: string, signal?: AbortSignal, q?: SessionWindowQuery) => {
     const p = new URLSearchParams();
     p.set('open', '1');
     if (q?.view) p.set('view', q.view);
@@ -616,91 +616,91 @@ export const api = {
     }
     // The window can be several MB: 60 s for headers AND body (a stalled
     // body read must settle the single window flight, windowSync.ts).
-    return send<ClaudeSessionDetailResponse>('GET', `/api/claude/sessions/${id}?${p.toString()}`, undefined, { signal, timeoutMs: 60_000 });
+    return send<AgentSessionDetailResponse>('GET', `/api/sessions/${id}?${p.toString()}`, undefined, { signal, timeoutMs: 60_000 });
   },
   // Loads a window of older chat messages (scroll-up pagination).
   // The cursor is the `oldestChatId` returned by the previous response.
-  // Same endpoint as getClaudeSession, but `?before=<id>` is LEAN: the response
-  // is exactly {messages, hasMore, oldestChatId, sync} (ClaudeSessionMessageWindow);
+  // Same endpoint as getAgentSession, but `?before=<id>` is LEAN: the response
+  // is exactly {messages, hasMore, oldestChatId, sync} (AgentSessionMessageWindow);
   // the session-wide envelope belongs to the window GET. Server cap 1000.
-  loadOlderClaudeMessages: (id: string, before: number, limit = 200, view?: TranscriptView) => {
+  loadOlderMessages: (id: string, before: number, limit = 200, view?: TranscriptView) => {
     const p = new URLSearchParams();
     p.set('before', String(before));
     p.set('limit', String(limit));
     if (view) p.set('view', view);
-    return send<ClaudeSessionMessageWindow>('GET', `/api/claude/sessions/${id}?${p.toString()}`);
+    return send<AgentSessionMessageWindow>('GET', `/api/sessions/${id}?${p.toString()}`);
   },
   // The transcript's O(1) rev-gated check (app/sync/repairPolicy.ts): the hub
   // pushes one heartbeat to `conn` first. 404 = an older hub (no route) or a
   // deleted session — the caller asks for a window either way.
-  probeClaudeSession: (id: string, q: { conn: string; afterId: number; view: TranscriptView }, signal?: AbortSignal) => {
+  probeSession: (id: string, q: { conn: string; afterId: number; view: TranscriptView }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     p.set('conn', q.conn);
     p.set('afterId', String(Math.max(0, Math.floor(q.afterId))));
     p.set('view', q.view);
-    return send<SessionProbeResponse>('GET', `/api/claude/sessions/${id}/probe?${p.toString()}`,
+    return send<SessionProbeResponse>('GET', `/api/sessions/${id}/probe?${p.toString()}`,
       undefined, { signal, timeoutMs: 12_000 });
   },
   // The calls tab in conversation view (no tool rows were fetched): pages of
   // compact calls, newest first (each page chronological).
-  getClaudeSessionToolCalls: (id: string, q?: { before?: number; limit?: number }, signal?: AbortSignal) => {
+  getSessionToolCalls: (id: string, q?: { before?: number; limit?: number }, signal?: AbortSignal) => {
     const p = new URLSearchParams();
     if (q?.before != null) p.set('before', String(q.before));
     if (q?.limit != null) p.set('limit', String(q.limit));
     const qs = p.toString();
-    return send<ClaudeSessionToolCallsResponse>('GET', `/api/claude/sessions/${id}/tool-calls${qs ? '?' + qs : ''}`,
+    return send<AgentSessionToolCallsResponse>('GET', `/api/sessions/${id}/tool-calls${qs ? '?' + qs : ''}`,
       undefined, { signal });
   },
   // Lazily fetch the latest before/after diff content per modified file. The
   // main session GET strips edit_snapshot content (it's re-fetched in a 5s
   // loop — cf. CLAUDE.md §14 gotcha 41); this serves the diff content on
-  // demand, once per session view. Called by useClaudeSessionStream's
+  // demand, once per session view. Called by useSessionStream's
   // auto-load effect when the edits Map has files with stripped content.
-  getClaudeSessionEdits: (id: string, signal?: AbortSignal) =>
-    send<ClaudeSessionEditsResponse>('GET', `/api/claude/sessions/${id}/edits`, undefined, { signal }),
-  createClaudeSession: (data: CreateClaudeSessionBody) =>
-    send<CreateClaudeSessionResponse>('POST', '/api/claude/sessions', data),
-  importClaudeSession: (data: ImportClaudeSessionBody) =>
-    send<ImportClaudeSessionResponse>('POST', '/api/claude/sessions/import', data),
+  getSessionEdits: (id: string, signal?: AbortSignal) =>
+    send<AgentSessionEditsResponse>('GET', `/api/sessions/${id}/edits`, undefined, { signal }),
+  createSession: (data: CreateAgentSessionBody) =>
+    send<CreateAgentSessionResponse>('POST', '/api/sessions', data),
+  importSession: (data: ImportAgentSessionBody) =>
+    send<ImportAgentSessionResponse>('POST', '/api/sessions/import', data),
   // Permanent deletion: kill agent + DB cascade. No more soft-kill.
   // The caller must have confirmed on the UI side (`confirm()`) — no
   // shortcut button without a warning.
   // Action routes answer `sync` (§3.5 of the sync refonte): the revision an
   // optimistic overlay waits for (app/sync/summaryStore.ts § addOverlay).
-  deleteClaudeSession: (id: string) =>
-    send<DeleteClaudeSessionResponse & ActionSyncStamp>('DELETE', `/api/claude/sessions/${id}`),
+  deleteAgentSession: (id: string) =>
+    send<DeleteAgentSessionResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}`),
   archiveSession: (id: string) =>
-    send<OkResponse & ActionSyncStamp>('POST', `/api/claude/sessions/${id}/archive`),
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/archive`),
   unarchiveSession: (id: string) =>
-    send<OkResponse & ActionSyncStamp>('DELETE', `/api/claude/sessions/${id}/archive`),
-  renameClaudeSession: (id: string, name: string | null) =>
-    send<ClaudeSession & ActionSyncStamp>('PATCH', `/api/claude/sessions/${id}`, { name } as RenameClaudeSessionBody),
+    send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
+  renameAgentSession: (id: string, name: string | null) =>
+    send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, { name } as RenameAgentSessionBody),
   updateSessionHandle: (id: string, handle: string) =>
-    send<ClaudeSession & ActionSyncStamp>('PATCH', `/api/claude/sessions/${id}`, { handle } as RenameClaudeSessionBody),
+    send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, { handle } as RenameAgentSessionBody),
   /** Any PATCH of the session row (name, color, cwd). */
-  patchClaudeSession: (id: string, body: { name?: string | null; color?: string | null; cwd?: string }) =>
-    send<ClaudeSession & ActionSyncStamp>('PATCH', `/api/claude/sessions/${id}`, body),
+  patchAgentSession: (id: string, body: { name?: string | null; color?: string | null; cwd?: string }) =>
+    send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, body),
   // Sleep / resume / input / interrupt / force-stop: all return { ok: true }
-  sleepClaudeSession: (id: string) =>
-    send<OkResponse & ActionSyncStamp>('POST', `/api/claude/sessions/${id}/sleep`),
-  resumeClaudeSession: (id: string) =>
-    send<ResumeClaudeSessionResponse & ActionSyncStamp>('POST', `/api/claude/sessions/${id}/resume`),
+  sleepSession: (id: string) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/sleep`),
+  resumeSession: (id: string) =>
+    send<ResumeAgentSessionResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/resume`),
   // In-place SDK restart (awaited sleep + resume) — applies a deferred
   // model/effort change immediately (§14.35). The agent drains the in-flight
   // turn before answering the sleep (≤~5s) and the resume awaits the fresh
   // client's ready — give it a generous timeout.
-  restartClaudeSession: (id: string) =>
-    send<ResumeClaudeSessionResponse>('POST', `/api/claude/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
-  sendClaudeInput: (id: string, content: string, clientMessageId?: string) =>
+  restartSession: (id: string) =>
+    send<ResumeAgentSessionResponse>('POST', `/api/sessions/${id}/restart`, undefined, { timeoutMs: 60_000 }),
+  sendSessionInput: (id: string, content: string, clientMessageId?: string) =>
     // A message is the one request that must outlive the agent RPC's 60s
     // bound. Inspector traffic is isolated separately, but a real VPS/network
     // stall should still produce a precise error rather than Chrome's opaque
     // "signal is aborted without reason".
     // `clientMessageId`: the optimistic bubble's id, the agent's idempotency
     // key, echoed on `user_echo` (an older hub answers a bare `{ok}`).
-    send<SendClaudeInputResponse>('POST', `/api/claude/sessions/${id}/input`, {
+    send<SendAgentInputResponse>('POST', `/api/sessions/${id}/input`, {
       content, ...(clientMessageId ? { clientMessageId } : {}),
-    } satisfies SendClaudeInputBody, {
+    } satisfies SendAgentInputBody, {
       timeoutMs: 90_000,
       timeoutMessage: 'Sending the message timed out after 90s. It may already have been accepted; the transcript will reconcile automatically.',
     }),
@@ -709,7 +709,7 @@ export const api = {
   // sets `content-type: application/json`, and a multipart body needs the
   // browser to generate its own boundary — so it has a bespoke fetch below.
   listSessionAttachments: (id: string, opts?: { signal?: AbortSignal }) =>
-    send<SessionAttachmentsResponse>('GET', `/api/claude/sessions/${id}/attachments`, undefined, opts),
+    send<SessionAttachmentsResponse>('GET', `/api/sessions/${id}/attachments`, undefined, opts),
   uploadSessionAttachment: async (
     id: string,
     file: File,
@@ -731,7 +731,7 @@ export const api = {
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(`/api/claude/sessions/${id}/attachments`, {
+      res = await fetch(`/api/sessions/${id}/attachments`, {
         method: 'POST',
         // NO content-type header: the browser must set it WITH the multipart
         // boundary. Setting it by hand yields an unparseable body server-side.
@@ -753,40 +753,40 @@ export const api = {
     return res.json() as Promise<UploadSessionAttachmentResponse>;
   },
   deleteSessionAttachment: (id: string, attId: string) =>
-    send<OkResponse>('DELETE', `/api/claude/sessions/${id}/attachments/${attId}`),
+    send<OkResponse>('DELETE', `/api/sessions/${id}/attachments/${attId}`),
   // `inline` opens the file in a browser tab (images / PDF / audio / video /
   // text); without it the response is an opaque download. The server decides
   // what inline actually means — this flag only asks.
   sessionAttachmentUrl: (id: string, attId: string, opts?: { inline?: boolean }) =>
-    `/api/claude/sessions/${id}/attachments/${attId}${opts?.inline ? '?inline=1' : ''}`,
-  interruptClaude: (id: string) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/input`, { type: 'interrupt' }),
-  forceStopClaude: (id: string) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/force-stop`),
+    `/api/sessions/${id}/attachments/${attId}${opts?.inline ? '?inline=1' : ''}`,
+  interruptSession: (id: string) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/input`, { type: 'interrupt' }),
+  forceStop: (id: string) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/force-stop`),
   // Kill one BACKGROUND task, not the session (§14.91). The bar clears on the
   // terminal bg_task event the CLI sends back, not on this ack.
-  stopClaudeBgTask: (id: string, taskId: string) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/bg-tasks/${encodeURIComponent(taskId)}/stop`),
+  stopSessionBgTask: (id: string, taskId: string) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/bg-tasks/${encodeURIComponent(taskId)}/stop`),
   // Responses to interactions
-  respondClaudePermission: (id: string, permId: string, allow: boolean, always = false, suggestion?: number) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/permission`, {
+  respondPermission: (id: string, permId: string, allow: boolean, always = false, suggestion?: number) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/permission`, {
       id: permId, allow, always, ...(suggestion != null ? { suggestion } : {}),
     } as RespondPermissionBody),
-  respondClaudeQuestion: (id: string, qid: string, answers: Record<string, string> | null) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/question`, { id: qid, answers } as RespondQuestionBody),
-  respondClaudeExitPlan: (id: string, qid: string, decision: 'approve' | 'reject', feedback?: string) =>
-    send<OkResponse>('POST', `/api/claude/sessions/${id}/exit-plan`, { id: qid, decision, feedback } as RespondExitPlanBody),
-  setClaudeMode: (id: string, mode: import('@/lib/sessionCapabilities').SessionMode) =>
-    send<SetClaudeModeResponse>('POST', `/api/claude/sessions/${id}/mode`, { mode }),
+  respondSessionQuestion: (id: string, qid: string, answers: Record<string, string> | null) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/question`, { id: qid, answers } as RespondQuestionBody),
+  respondSessionExitPlan: (id: string, qid: string, decision: 'approve' | 'reject', feedback?: string) =>
+    send<OkResponse>('POST', `/api/sessions/${id}/exit-plan`, { id: qid, decision, feedback } as RespondExitPlanBody),
+  setAgentMode: (id: string, mode: import('@/lib/sessionCapabilities').SessionMode) =>
+    send<SetAgentModeResponse>('POST', `/api/sessions/${id}/mode`, { mode }),
   // Per-session model / effort. Both take effect on next sleep+resume — the
   // UI should label "applied at next start" until then. Passing null clears
   // back to the global default (cf. SettingsModal § Claude defaults).
-  setClaudeSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
-    send<SetClaudeSessionModelResponse>('POST', `/api/claude/sessions/${id}/model`,
-      { model, fallbackModel } as SetClaudeSessionModelBody),
-  setClaudeSessionEffort: (id: string, effort: string | null) =>
-    send<SetClaudeSessionEffortResponse>('POST', `/api/claude/sessions/${id}/effort`,
-      { effort } as SetClaudeSessionEffortBody),
+  setSessionModel: (id: string, model: string | null, fallbackModel: string | null = null) =>
+    send<SetSessionModelResponse>('POST', `/api/sessions/${id}/model`,
+      { model, fallbackModel } as SetSessionModelBody),
+  setSessionEffort: (id: string, effort: string | null) =>
+    send<SetSessionEffortResponse>('POST', `/api/sessions/${id}/effort`,
+      { effort } as SetSessionEffortBody),
   // Codex model catalog for a VPS (account-driven, per-VPS). Mirrors
   // getClaudeModels but sourced from the agent's list_codex_models RPC.
   getCodexModels: (vpsId: string, profile = "default") =>
@@ -796,10 +796,10 @@ export const api = {
     send<ClaudeModelsResponse>('GET', '/api/claude/models'),
   refreshClaudeModels: () =>
     send<ClaudeModelsRefreshResponse>('POST', '/api/claude/models/refresh'),
-  revertClaudeEdit: (id: string, filePath: string) =>
-    send<RevertClaudeEditResponse>('POST', `/api/claude/sessions/${id}/revert`, { filePath }),
-  searchClaude: (q: string) =>
-    send<SearchClaudeResponse>('GET', `/api/claude/search?q=${encodeURIComponent(q)}`),
+  revertSessionEdit: (id: string, filePath: string) =>
+    send<RevertEditResponse>('POST', `/api/sessions/${id}/revert`, { filePath }),
+  searchSessions: (q: string) =>
+    send<SessionSearchResponse>('GET', `/api/search?q=${encodeURIComponent(q)}`),
 
   getModelNotices: () =>
     send<import('@/lib/types/api').ModelNoticesResponse>('GET', '/api/models/notices'),
@@ -809,24 +809,24 @@ export const api = {
   // ── Settings & push ───────────────────────────────────────────────────────
   // `sync` (a non-string key of the flat map): the bus revision it reflects —
   // app/sync/revResource.ts compares it with `settings_changed`.
-  getClaudeSettings: () =>
-    send<ClaudeSettingsMap>('GET', '/api/claude/settings'),
-  // updateClaudeSettings accepts arbitrary key/value pairs (filtered on the
+  getSettings: () =>
+    send<AppSettingsMap>('GET', '/api/settings'),
+  // updateSettings accepts arbitrary key/value pairs (filtered on the
   // server side by ALLOWED_KEYS). We stay free on the client side.
-  updateClaudeSettings: (data: Record<string, string>) =>
-    send<ClaudeSettingsMap>('POST', '/api/claude/settings', data),
+  updateSettings: (data: Record<string, string>) =>
+    send<AppSettingsMap>('POST', '/api/settings', data),
   testTelegram: () =>
-    send<OkOrErrorResponse>('POST', '/api/claude/telegram/test'),
-  notificationSessions: () => send<import('@/lib/notificationPreferences').NotificationSession[]>('GET', '/api/claude/session-notifications'),
-  sessionNotifications: (id: string) => send<import('@/lib/notificationPreferences').SessionNotificationSettings>('GET', `/api/claude/sessions/${id}/notifications`),
+    send<OkOrErrorResponse>('POST', '/api/telegram/test'),
+  notificationSessions: () => send<import('@/lib/notificationPreferences').NotificationSession[]>('GET', '/api/session-notifications'),
+  sessionNotifications: (id: string) => send<import('@/lib/notificationPreferences').SessionNotificationSettings>('GET', `/api/sessions/${id}/notifications`),
   updateSessionNotifications: (id: string, telegram: import('@/lib/notificationPreferences').ChannelNotificationPreferences | null) =>
-    send<import('@/lib/notificationPreferences').SessionNotificationSettings>('PUT', `/api/claude/sessions/${id}/notifications`, { telegram }),
+    send<import('@/lib/notificationPreferences').SessionNotificationSettings>('PUT', `/api/sessions/${id}/notifications`, { telegram }),
   pushVapidKey: () =>
-    send<PushVapidKeyResponse>('GET', '/api/claude/push/key'),
+    send<PushVapidKeyResponse>('GET', '/api/push/key'),
   pushSubscribe: (data: PushSubscribeBody) =>
-    send<PushSubscribeResponse>('POST', '/api/claude/push/subscribe', data),
+    send<PushSubscribeResponse>('POST', '/api/push/subscribe', data),
   pushUnsubscribe: (endpoint: string) =>
-    send<OkResponse>('POST', '/api/claude/push/unsubscribe', { endpoint }),
+    send<OkResponse>('POST', '/api/push/unsubscribe', { endpoint }),
 };
 
 /**
@@ -838,30 +838,30 @@ export const api = {
  * vocabulary without duplicating requests or creating a flag-day rename.
  */
 export const sessionApi = {
-  list: api.listClaudeSessions,
-  get: api.getClaudeSession,
-  loadOlder: api.loadOlderClaudeMessages,
-  probe: api.probeClaudeSession,
-  toolCalls: api.getClaudeSessionToolCalls,
-  getEdits: api.getClaudeSessionEdits,
-  create: api.createClaudeSession,
-  import: api.importClaudeSession,
-  remove: api.deleteClaudeSession,
+  list: api.listSessions,
+  get: api.getAgentSession,
+  loadOlder: api.loadOlderMessages,
+  probe: api.probeSession,
+  toolCalls: api.getSessionToolCalls,
+  getEdits: api.getSessionEdits,
+  create: api.createSession,
+  import: api.importSession,
+  remove: api.deleteAgentSession,
   archive: api.archiveSession,
   unarchive: api.unarchiveSession,
-  rename: api.renameClaudeSession,
+  rename: api.renameAgentSession,
   updateHandle: api.updateSessionHandle,
-  sleep: api.sleepClaudeSession,
-  resume: api.resumeClaudeSession,
-  restart: api.restartClaudeSession,
-  sendInput: api.sendClaudeInput,
-  interrupt: api.interruptClaude,
-  forceStop: api.forceStopClaude,
-  stopBackgroundTask: api.stopClaudeBgTask,
-  respondPermission: api.respondClaudePermission,
-  respondQuestion: api.respondClaudeQuestion,
-  respondExitPlan: api.respondClaudeExitPlan,
-  setMode: api.setClaudeMode,
-  setModel: api.setClaudeSessionModel,
-  setEffort: api.setClaudeSessionEffort,
+  sleep: api.sleepSession,
+  resume: api.resumeSession,
+  restart: api.restartSession,
+  sendInput: api.sendSessionInput,
+  interrupt: api.interruptSession,
+  forceStop: api.forceStop,
+  stopBackgroundTask: api.stopSessionBgTask,
+  respondPermission: api.respondPermission,
+  respondQuestion: api.respondSessionQuestion,
+  respondExitPlan: api.respondSessionExitPlan,
+  setMode: api.setAgentMode,
+  setModel: api.setSessionModel,
+  setEffort: api.setSessionEffort,
 } as const;

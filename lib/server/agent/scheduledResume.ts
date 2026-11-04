@@ -2,7 +2,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 import { and, asc, eq, lte } from 'drizzle-orm';
 import {
-  db, claudeSessionMessages, claudeSessions, sessionScheduledResumes,
+  db, sessionMessages, agentSessions, sessionScheduledResumes,
   type SessionScheduledResume,
 } from '@/lib/db';
 import {
@@ -39,12 +39,12 @@ function payload(row: SessionScheduledResume): ScheduledResumePayload {
 function writeCard(row: SessionScheduledResume): void {
   const content = JSON.stringify(payload(row));
   persistBesideStream(row.sessionId, () => db.transaction((tx) => {
-    tx.update(claudeSessionMessages).set({ content, wireContent: null })
-      .where(eq(claudeSessionMessages.id, row.messageId)).run();
+    tx.update(sessionMessages).set({ content, wireContent: null })
+      .where(eq(sessionMessages.id, row.messageId)).run();
     // Updating a row does not advance the chat's id cursor. This invisible
     // wake row makes the 5s delta safety poll notice a missed SSE and perform
     // its normal clean reload, so sent/retry/cancel state always self-heals.
-    tx.insert(claudeSessionMessages).values({
+    tx.insert(sessionMessages).values({
       sessionId: row.sessionId, role: 'event',
       content: JSON.stringify({ type: 'scheduled_resume_update', messageId: row.messageId }),
       tsMs: Date.now(),
@@ -89,7 +89,7 @@ async function deliver(id: string): Promise<void> {
       const current = tx.select().from(sessionScheduledResumes)
         .where(eq(sessionScheduledResumes.id, id)).get();
       if (!current || current.userMessageId != null) return;
-      const result = tx.insert(claudeSessionMessages).values({
+      const result = tx.insert(sessionMessages).values({
         sessionId: current.sessionId, role: 'user', content: current.content,
         tsMs: Date.now(),
       }).run();
@@ -97,8 +97,8 @@ async function deliver(id: string): Promise<void> {
         .where(eq(sessionScheduledResumes.id, id)).run();
       // A fresh prompt: the next stop must not finalize an answer of the
       // turn before it (the same rule as a hub-persisted user row).
-      tx.update(claudeSessions).set({ pendingAssistantMessageId: null })
-        .where(eq(claudeSessions.id, current.sessionId)).run();
+      tx.update(agentSessions).set({ pendingAssistantMessageId: null })
+        .where(eq(agentSessions.id, current.sessionId)).run();
       insertedUser = true;
     }));
     row = reload(id);
@@ -159,8 +159,8 @@ export function createScheduledResume(input: {
   const existing = db.select().from(sessionScheduledResumes)
     .where(eq(sessionScheduledResumes.sourceMessageId, input.sourceMessageId)).get();
   if (existing) return existing;
-  const session = db.select({ id: claudeSessions.id }).from(claudeSessions)
-    .where(eq(claudeSessions.id, input.sessionId)).get();
+  const session = db.select({ id: agentSessions.id }).from(agentSessions)
+    .where(eq(agentSessions.id, input.sessionId)).get();
   if (!session) throw new Error('session not found');
   const id = crypto.randomUUID();
   const runAt = Math.max(Date.now() + 5_000, input.resetAt + RESET_SAFETY_DELAY_MS);
@@ -170,7 +170,7 @@ export function createScheduledResume(input: {
         type: 'scheduled_resume', scheduleId: id, status: 'scheduled', runAt,
         content: AUTO_RESUME_PROMPT, attempts: 0, lastError: null, sentAt: null,
       };
-      const card = tx.insert(claudeSessionMessages).values({
+      const card = tx.insert(sessionMessages).values({
         sessionId: input.sessionId, role: 'scheduled_resume',
         content: JSON.stringify(initial), tsMs: Date.now(),
       }).run();

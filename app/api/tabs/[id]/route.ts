@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
-import { activateTab, closeTab, listTabs, pinTab } from '@/lib/server/claude/tabs';
+import { activateTab, closeTab, listTabs, pinTab } from '@/lib/server/hub/tabs';
 import type { CloseTabResponse } from '@/lib/types/api';
 
 // PATCH  /api/tabs/[id]  { pin?: true, activate?: true }

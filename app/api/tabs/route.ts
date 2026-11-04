@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { currentRev } from '@/lib/server/sync/syncBus';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
-import { closeTabsWhere, isTabKind, listTabs, openTab } from '@/lib/server/claude/tabs';
+import { closeTabsWhere, isTabKind, listTabs, openTab } from '@/lib/server/hub/tabs';
 import type { OpenTabBody, TabsResponse } from '@/lib/types/api';
 
 // GET  /api/tabs            → the whole workspace layout

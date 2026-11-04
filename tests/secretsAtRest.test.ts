@@ -34,9 +34,9 @@ beforeAll(async () => {
   const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
   migrate(db, { migrationsFolder: './drizzle' });
   // Historical plaintext secret row (pre-encryption deployment).
-  db.insert(schema.claudeSettings).values({ key: 'telegram.bot_token', value: PLAINTEXT })
+  db.insert(schema.appSettings).values({ key: 'telegram.bot_token', value: PLAINTEXT })
     .onConflictDoNothing().run();
-  settings = await import('@/lib/server/claude/settings');
+  settings = await import('@/lib/server/hub/settings');
 });
 
 describe('secrets at rest — fail-closed policy', () => {
@@ -81,14 +81,14 @@ describe('secrets at rest — fail-closed policy', () => {
     expect(getEnvAesKey()).not.toBeNull();
 
     settings.encryptSecretsAtRest();
-    const [row] = db.select().from(schema.claudeSettings).all()
+    const [row] = db.select().from(schema.appSettings).all()
       .filter((r: any) => r.key === 'telegram.bot_token');
     expect(row.value.startsWith('enc:v1:')).toBe(true);      // encrypted at rest
     expect(settings.getSetting('telegram.bot_token')).toBe(PLAINTEXT); // transparent read
 
     // New writes encrypt too, and round-trip.
     settings.setSetting('claude.api_key', 'sk-ant-xyz');
-    const [row2] = db.select().from(schema.claudeSettings).all()
+    const [row2] = db.select().from(schema.appSettings).all()
       .filter((r: any) => r.key === 'claude.api_key');
     expect(row2.value.startsWith('enc:v1:')).toBe(true);
     expect(settings.getSetting('claude.api_key')).toBe('sk-ant-xyz');

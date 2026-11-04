@@ -10,7 +10,7 @@ import { isTurnInterrupted, SYNTHETIC_MODEL } from '../lib/turnInterrupted';
 
 describe('isTurnInterrupted', () => {
   it('matches the exact message the CLI produced in the wild', () => {
-    // Verbatim from claude_session_messages id=116808 (session bed9ec72…),
+    // Verbatim from session_messages id=116808 (session bed9ec72…),
     // which carried model='<synthetic>'.
     const msg = 'API Error: Connection closed mid-response. The response above may be incomplete.';
     expect(isTurnInterrupted(msg, SYNTHETIC_MODEL)).toBe(true);

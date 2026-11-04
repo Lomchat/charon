@@ -11,7 +11,7 @@
 // décide, côté Charon, ce qu'est « le même dossier » et dans quel ordre ses
 // titres s'affichent ; le desk importe les mêmes deux fonctions. Le placard et
 // la barre latérale ne peuvent donc pas diverger — et le style vient des mêmes
-// classes (`cs-path-*`), celles de la barre latérale, que `claude.css` publie
+// classes (`cs-path-*`), celles de la barre latérale, que `app.css` publie
 // déjà sur cette page.
 //
 // Il ne fait qu'une chose de plus : ouvrir. Chaque ligne ouvre la session

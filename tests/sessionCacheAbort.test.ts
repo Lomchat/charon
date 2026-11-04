@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ getClaudeSession: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getAgentSession: vi.fn() }));
 
 vi.mock('@/lib/api', () => ({
-  api: { getClaudeSession: mocks.getClaudeSession },
+  api: { getAgentSession: mocks.getAgentSession },
 }));
 
 import { fetchAndCache, getCached, invalidate } from '@/app/sessionCache';
@@ -13,7 +13,7 @@ import { fetchAndCache, getCached, invalidate } from '@/app/sessionCache';
 function pendingRequest() {
   let resolve!: (value: unknown) => void;
   let signal!: AbortSignal;
-  mocks.getClaudeSession.mockImplementationOnce((_id: string, s: AbortSignal) => {
+  mocks.getAgentSession.mockImplementationOnce((_id: string, s: AbortSignal) => {
     signal = s;
     return new Promise((res, rej) => {
       resolve = res;
@@ -27,15 +27,15 @@ const detail = (id: string) => ({ session: { id }, messages: [], streamingText: 
 
 describe('sessionCache in-flight sharing', () => {
   beforeEach(() => {
-    mocks.getClaudeSession.mockReset();
+    mocks.getAgentSession.mockReset();
     invalidate('s1');
   });
 
   it('keys entries by view: a conversation window never answers a full one', async () => {
-    mocks.getClaudeSession.mockImplementation(async (_id: string, _s: AbortSignal, q: { view?: string }) =>
+    mocks.getAgentSession.mockImplementation(async (_id: string, _s: AbortSignal, q: { view?: string }) =>
       ({ session: { id: 's1' }, messages: [], streamingText: '', view: q?.view }));
     await fetchAndCache('s1', { force: true, view: 'conversation' });
-    expect(mocks.getClaudeSession).toHaveBeenLastCalledWith('s1', expect.anything(), { view: 'conversation' });
+    expect(mocks.getAgentSession).toHaveBeenLastCalledWith('s1', expect.anything(), { view: 'conversation' });
     expect(getCached('s1', 'conversation')?.view).toBe('conversation');
     expect(getCached('s1')).toBeUndefined();
     expect(getCached('s1', 'full')).toBeUndefined();
@@ -51,12 +51,12 @@ describe('sessionCache in-flight sharing', () => {
     const first = fetchAndCache('s1', { force: true });
     const focused = pendingRequest();
     const second = fetchAndCache('s1', { force: true, focus: { conn: 'conn-1234', focusSeq: 3 } });
-    expect(mocks.getClaudeSession).toHaveBeenCalledTimes(2);
-    expect(mocks.getClaudeSession).toHaveBeenLastCalledWith('s1', expect.anything(),
+    expect(mocks.getAgentSession).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgentSession).toHaveBeenLastCalledWith('s1', expect.anything(),
       { view: 'full', conn: 'conn-1234', focusSeq: 3 });
     // A later plain request joins the plain one, not the focused one.
     const third = fetchAndCache('s1', { force: true });
-    expect(mocks.getClaudeSession).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgentSession).toHaveBeenCalledTimes(2);
     plain.resolve(detail('s1'));
     focused.resolve({ ...detail('s1'), streamingText: 'focused' });
     await expect(first).resolves.toMatchObject({ streamingText: 'live' });
@@ -65,7 +65,7 @@ describe('sessionCache in-flight sharing', () => {
   });
 
   it('stores entries with their `sync` stamp and blanks every live buffer', async () => {
-    mocks.getClaudeSession.mockResolvedValueOnce({
+    mocks.getAgentSession.mockResolvedValueOnce({
       session: { id: 's1' }, messages: [], streamingText: 'half', streamingThinking: 'th',
       streamingToolOutput: [{ toolUseId: 't1', text: 'out', truncated: false }],
       streamingExtends: { rowId: 4, length: 3 }, sync: { epoch: 5, rev: 9 },
@@ -78,9 +78,9 @@ describe('sessionCache in-flight sharing', () => {
   });
 
   it('never replaces a stored entry with an older answer', async () => {
-    mocks.getClaudeSession.mockResolvedValueOnce({ ...detail('s1'), sync: { epoch: 5, rev: 20 }, messages: [{ id: 2 }] });
+    mocks.getAgentSession.mockResolvedValueOnce({ ...detail('s1'), sync: { epoch: 5, rev: 20 }, messages: [{ id: 2 }] });
     await fetchAndCache('s1', { force: true });
-    mocks.getClaudeSession.mockResolvedValueOnce({ ...detail('s1'), sync: { epoch: 5, rev: 10 }, messages: [{ id: 1 }] });
+    mocks.getAgentSession.mockResolvedValueOnce({ ...detail('s1'), sync: { epoch: 5, rev: 10 }, messages: [{ id: 1 }] });
     const older = await fetchAndCache('s1', { force: true, focus: { conn: 'conn-1234', focusSeq: 1 } });
     expect(older.sync).toEqual({ epoch: 5, rev: 10 });
     expect(getCached('s1')?.sync).toEqual({ epoch: 5, rev: 20 });
@@ -92,7 +92,7 @@ describe('sessionCache in-flight sharing', () => {
     const b = new AbortController();
     const first = fetchAndCache('s1', { force: true, signal: a.signal });
     const second = fetchAndCache('s1', { force: true, signal: b.signal });
-    expect(mocks.getClaudeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.getAgentSession).toHaveBeenCalledTimes(1);
 
     a.abort();
     expect(req.signal().aborted).toBe(false);
@@ -123,7 +123,7 @@ describe('sessionCache in-flight sharing', () => {
     a.abort();
     const next = pendingRequest();
     const second = fetchAndCache('s1', { force: true, signal: new AbortController().signal });
-    expect(mocks.getClaudeSession).toHaveBeenCalledTimes(2);
+    expect(mocks.getAgentSession).toHaveBeenCalledTimes(2);
     expect(old.signal().aborted).toBe(true);
     next.resolve(detail('s1'));
     await expect(second).resolves.toMatchObject({ session: { id: 's1' } });
@@ -148,6 +148,6 @@ describe('sessionCache in-flight sharing', () => {
     const a = new AbortController();
     a.abort();
     await expect(fetchAndCache('s1', { force: true, signal: a.signal })).rejects.toThrow();
-    expect(mocks.getClaudeSession).not.toHaveBeenCalled();
+    expect(mocks.getAgentSession).not.toHaveBeenCalled();
   });
 });

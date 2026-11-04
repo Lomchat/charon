@@ -4,14 +4,14 @@
 //
 // Ce fichier est volontairement mince. Il ne reconstruit pas un transcript, il
 // ne réimplémente pas un composer, il ne redessine pas un explorateur : il
-// monte `<ClaudeSessionView>`, le composant que Charon utilise pour sa propre
+// monte `<SessionView>`, le composant que Charon utilise pour sa propre
 // zone de session, et `<ToolPanel>` avec lui. Une correction apportée à la
 // zone de session de Charon — un nouveau bouton, une permission, un mode —
 // apparaît ici sans que personne ne touche au desk. C'est tout l'intérêt de
 // la dépendance à sens unique : le desk regarde Charon, Charon ignore le desk.
 
 import { useEffect } from 'react';
-import ClaudeSessionView from '@/app/ClaudeSessionView';
+import SessionView from '@/app/SessionView';
 import type { Vps } from '@/lib/types/api';
 import type { DeskAction, DeskSession } from '../hall/palette';
 import { actionWord, beaconOf, robotName, stateOf, statusWord } from '../hall/palette';
@@ -84,13 +84,13 @@ export default function SessionModal({
           <button type="button" onClick={onClose} aria-label="Close">Close</button>
         </header>
 
-        <div className="dsk-embed claude-root">
+        <div className="dsk-embed app-root">
           {/* Les accessoires que Charon passe à sa propre vue. `selected` est
               la ligne de la session — celle que le desk tient à jour en direct,
               pas une copie figée. */}
           {/* `key`: une autre session (lien @handle) remonte la vue — l'état
               du transcript ne passe jamais d'une session à l'autre. */}
-          <ClaudeSessionView
+          <SessionView
             key={session.id}
             sessionId={session.id}
             selected={session}

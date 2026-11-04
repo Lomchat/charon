@@ -97,7 +97,7 @@ describe('stylesheets', () => {
     for (const file of readdirSync('app').filter((f) => f.endsWith('.css'))) {
       const css = readFileSync(`app/${file}`, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
       for (const [, selector, body] of css.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
-        const targetsRoot = selector.split(',').some((part) => /\.claude-root(?:[.:[][^\s]*)?\s*$/.test(part.trim()));
+        const targetsRoot = selector.split(',').some((part) => /\.app-root(?:[.:[][^\s]*)?\s*$/.test(part.trim()));
         const tracks = /grid-template-columns:\s*([^;]+)/.exec(body)?.[1].trim();
         if (targetsRoot && tracks && !tracks.includes('var(--side-col)') && tracks !== '1fr') {
           offenders.push(`${file}: ${selector.trim()} { grid-template-columns: ${tracks} }`);

@@ -93,7 +93,7 @@ We're interested in reports about:
 - Path traversal or unintended file access in authenticated endpoints that
   reach a managed VPS — notably `/api/vps/[id]/fs/*`, the Git and LSP route
   families, session attachment/revert routes and
-  `/api/claude/sessions/[id]/export`: any way to escape the workspace root or
+  `/api/sessions/[id]/export`: any way to escape the workspace root or
   bypass stale-write / revert checks.
 - Cross-session routing bugs that deliver an MCP peer message to the wrong
   stable `@handle`, permit self/cross-daemon delivery, or expose a private

@@ -2,7 +2,7 @@
  * Async-question answers being delivered RIGHT NOW (sync refonte C09, W2
  * review). `delivering` on a pending async question means "a send is in
  * flight", never "answers were once reserved": the reservation
- * (`claudePendingQuestions.answers`) outlives a failed send on purpose — a
+ * (`sessionPendingQuestions.answers`) outlives a failed send on purpose — a
  * retry must reuse the same content — and a form disabled by it could never
  * be answered again. In memory: a hub restart or a failure clears it.
  */

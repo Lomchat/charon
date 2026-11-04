@@ -14,7 +14,7 @@ vi.mock('@/lib/server/agent/sessionOps', () => ({
   peekStream: () => ({ status: runtime.status, hasRunningBgTasks: () => false }),
   resumeSession: async (id: string) => { runtime.resumes.push(id); },
 }));
-vi.mock('@/lib/server/claude/sessionInsightSnapshot', () => ({ invalidateSessionInsightSnapshot: vi.fn() }));
+vi.mock('@/lib/server/hub/sessionInsightSnapshot', () => ({ invalidateSessionInsightSnapshot: vi.fn() }));
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => ({
   status: 'connected', call: async (method: string, params: any) => {
     runtime.calls.push({ method, params });
@@ -36,10 +36,10 @@ beforeAll(async () => {
   ops = await import('@/lib/server/agent/endpointOps');
   database.db.insert(database.vpsFolders).values({ id: 'default', name: 'Default' }).onConflictDoNothing().run();
   database.db.insert(database.vps).values({ id: 'test', name: 'test', ip: '127.0.0.1', sshUser: 'test' }).run();
-  for (const id of ['one', 'two']) database.db.insert(database.claudeSessions).values({ id, vpsId: 'test', cwd: '/tmp', model: 'original', effort: 'high', status: 'active', kind: 'claude' }).run();
+  for (const id of ['one', 'two']) database.db.insert(database.agentSessions).values({ id, vpsId: 'test', cwd: '/tmp', model: 'original', effort: 'high', status: 'active', kind: 'claude' }).run();
 });
 const input = { name: 'Local', baseUrl: 'http://localhost:8000/v1/messages', auth: 'bearer' as const, token: 'test-secret-token', model: 'custom-model' };
-function row(id = 'one') { return database.db.select().from(database.claudeSessions).all().find((r) => r.id === id)!; }
+function row(id = 'one') { return database.db.select().from(database.agentSessions).all().find((r) => r.id === id)!; }
 describe('custom endpoint isolation', () => {
   it('does not dispatch discovery for unknown providers or unsafe probes to old agents', async () => {
     const { probeEndpoint } = await import('@/lib/server/endpointProbe');
@@ -127,7 +127,7 @@ describe('custom endpoint isolation', () => {
     expect(withEndpointChecks(changed, 'test').models).toEqual([]);
     expect(endpointModels({ ...endpoint, models: [{ id: 'unverified' }] }, 'claude')).toEqual([{ id: 'unverified' }]);
     await ops.queueEndpoint('two', { ...merged, model: 'messages-model' });
-    expect(store.connectionConfig(row('two').codexConfig).customEndpoint?.checks?.claude?.model).toBe('messages-model');
+    expect(store.connectionConfig(row('two').providerConfig).customEndpoint?.checks?.claude?.model).toBe('messages-model');
     runtime.probe = { ok: false, models: [], check: { ok: false, engine: 'codex', model: 'responses-model', streaming: false, tools: false } };
     await probeEndpoint({ ...endpoint, model: 'responses-model' }, 'codex', 'test', 'test');
     runtime.probe = null;
@@ -143,9 +143,9 @@ describe('custom endpoint isolation', () => {
     const result = await ops.queueEndpoint('one', store.savedEndpoint(saved.id!));
     expect(result.active?.model).toBe(input.model);
     expect(row()).toMatchObject({ model: input.model, effort: null, fallbackModel: null });
-    expect(row().codexConfig).not.toContain(input.token);
+    expect(row().providerConfig).not.toContain(input.token);
     store.saveEndpoint({ ...endpoint, name: 'Changed template' }, saved.id);
-    expect(store.publicConnection(row().codexConfig).active?.name).toBe('Local');
+    expect(store.publicConnection(row().providerConfig).active?.name).toBe('Local');
     expect(row('two')).toEqual(before);
     expect(runtime.calls.find((c) => c.method === 'sleep_session').params.only_if_idle).toBe(true);
   });
@@ -161,8 +161,8 @@ describe('custom endpoint isolation', () => {
     runtime.sleepBusy = false;
     await ops.applyPendingEndpoint('one');
     expect(row()).toMatchObject({ model: 'original', effort: 'high' });
-    expect(store.publicConnection(row().codexConfig).active).toBeNull();
-    expect(store.connectionConfig(row().codexConfig).standardConnection).toBeUndefined();
+    expect(store.publicConnection(row().providerConfig).active).toBeNull();
+    expect(store.connectionConfig(row().providerConfig).standardConnection).toBeUndefined();
   });
   it('queues parameter changes without interrupting a turn; latest selection wins and defaults clear it', async () => {
     const endpoint = { ...store.parseEndpoint(input), checks: { claude: {
@@ -175,7 +175,7 @@ describe('custom endpoint isolation', () => {
     await ops.queueEndpoint('one', endpoint, 'effort=low');
     await ops.queueEndpoint('one', endpoint, 'effort=high');
     expect(row().effort).toBeNull();
-    expect(store.connectionConfig(row().codexConfig).pendingConnection?.effort).toBe('effort=high');
+    expect(store.connectionConfig(row().providerConfig).pendingConnection?.effort).toBe('effort=high');
     expect(runtime.calls.some((c) => c.method === 'sleep_session')).toBe(false);
     runtime.status = 'active';
     await ops.applyPendingEndpoint('one');

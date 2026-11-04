@@ -110,11 +110,11 @@ function statements(c: RowCaches): Statements {
   c.statements = {
     handle,
     // idx_…_session_id_id, covering.
-    maxId: handle.prepare('SELECT max(id) AS m FROM claude_session_messages WHERE session_id = ?'),
-    hit: handle.prepare('SELECT 1 AS one FROM claude_session_messages WHERE id = ? AND session_id = ?'),
+    maxId: handle.prepare('SELECT max(id) AS m FROM session_messages WHERE session_id = ?'),
+    hit: handle.prepare('SELECT 1 AS one FROM session_messages WHERE id = ? AND session_id = ?'),
     // Index-only seek: the id `sliceRows` rows past lastId.
     sliceEnd: handle.prepare(
-      'SELECT id FROM claude_session_messages WHERE session_id = ? AND id > ? ORDER BY id LIMIT 1 OFFSET ?'),
+      'SELECT id FROM session_messages WHERE session_id = ? AND id > ? ORDER BY id LIMIT 1 OFFSET ?'),
     scans: new Map(),
   };
   return c.statements;
@@ -132,7 +132,7 @@ function scanStatement(s: Statements, likes: number): Database.Statement {
     // of a reasoning-heavy session; `+role` keeps it out too).
     st = s.handle.prepare(
       `SELECT id, content, created_at AS createdAt, seq, ts_ms AS tsMs
-        FROM claude_session_messages INDEXED BY idx_claude_session_messages_session_id_id
+        FROM session_messages INDEXED BY idx_session_messages_session_id_id
         WHERE session_id = ? AND id > ? AND id <= ? AND +role = 'event' AND (${like}) ORDER BY id`);
     s.scans.set(likes, st);
   }

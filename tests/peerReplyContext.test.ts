@@ -9,8 +9,8 @@ vi.mock('server-only', () => ({}));
 let db: any;
 let schema: any;
 let rawSqlite: () => import('better-sqlite3').Database;
-let attachPeerAssistantReplies: typeof import('@/lib/server/claude/peerReplyContext').attachPeerAssistantReplies;
-let priorInputStatement: typeof import('@/lib/server/claude/peerReplyContext').priorInputStatement;
+let attachPeerAssistantReplies: typeof import('@/lib/server/hub/peerReplyContext').attachPeerAssistantReplies;
+let priorInputStatement: typeof import('@/lib/server/hub/peerReplyContext').priorInputStatement;
 let CAP: number;
 
 const VPS = 'peer-vps';
@@ -19,13 +19,13 @@ let clock = 1_800_000_000_000;
 
 function newSession(): string {
   const id = (++counter).toString(16).padStart(32, 'e');
-  db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'peer', status: 'active' }).run();
+  db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'peer', status: 'active' }).run();
   return id;
 }
 
 function row(sid: string, role: string, content: unknown, tsMs: number | null = (clock += 10)): number {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
-  return Number(rawSqlite().prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)')
+  return Number(rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)')
     .run(sid, role, text, tsMs).lastInsertRowid);
 }
 
@@ -51,7 +51,7 @@ function filler(sid: string, n: number): void {
 
 /** The page whose FIRST row is `fromId` (fixture ids follow chronology). */
 function pageFrom(sid: string, fromId: number) {
-  const m = schema.claudeSessionMessages;
+  const m = schema.sessionMessages;
   return db.select().from(m).where(and(eq(m.sessionId, sid), gte(m.id, fromId))).orderBy(asc(m.id)).all();
 }
 
@@ -73,7 +73,7 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS, name: 'peer', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  ({ attachPeerAssistantReplies, priorInputStatement, PRIOR_INPUT_WALK_CAP: CAP } = await import('@/lib/server/claude/peerReplyContext'));
+  ({ attachPeerAssistantReplies, priorInputStatement, PRIOR_INPUT_WALK_CAP: CAP } = await import('@/lib/server/hub/peerReplyContext'));
 });
 
 describe('the input preceding a page', () => {
@@ -123,7 +123,7 @@ describe('the input preceding a page', () => {
     const repaired = newSession();
     const base = (clock += 1_000);
     request(repaired, 'req');
-    rawSqlite().prepare('UPDATE claude_session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM claude_session_messages)').run(base);
+    rawSqlite().prepare('UPDATE session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM session_messages)').run(base);
     const answer = row(repaired, 'assistant', 'answer', base + 100);
     row(repaired, 'user', 'repaired prompt', base + 50);
     expect(attachPeerAssistantReplies(repaired, pageFrom(repaired, answer).filter((r: any) => r.id === answer))[0].peerReplyTo)
@@ -136,7 +136,7 @@ describe('the input preceding a page', () => {
     row(lateRequest, 'user', 'human prompt', b2 + 50);
     const answer2 = row(lateRequest, 'assistant', 'answer', b2 + 100);
     request(lateRequest, 'req-late');
-    rawSqlite().prepare('UPDATE claude_session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM claude_session_messages)').run(b2);
+    rawSqlite().prepare('UPDATE session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM session_messages)').run(b2);
     expect(attachPeerAssistantReplies(lateRequest, pageFrom(lateRequest, answer2).filter((r: any) => r.id === answer2))[0].peerReplyTo)
       .toBeUndefined();
 
@@ -144,14 +144,14 @@ describe('the input preceding a page', () => {
     const tie = newSession();
     const t = (clock += 1_000);
     request(tie, 'req-tie', {});
-    rawSqlite().prepare('UPDATE claude_session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM claude_session_messages)').run(t);
+    rawSqlite().prepare('UPDATE session_messages SET ts_ms = ? WHERE id = (SELECT max(id) FROM session_messages)').run(t);
     const tied = row(tie, 'assistant', 'same ms answer', t);
     expect(replyOf(tie, tied)).toBe('req-tie');
 
     // ts_ms NULL (pre-0026 rows): ordered by created_at * 1000.
     const legacy = newSession();
     const created = Math.floor((clock += 5_000) / 1000);
-    rawSqlite().prepare(`INSERT INTO claude_session_messages (session_id, role, content, ts_ms, created_at)
+    rawSqlite().prepare(`INSERT INTO session_messages (session_id, role, content, ts_ms, created_at)
       VALUES (?, 'event', ?, NULL, ?)`).run(legacy, JSON.stringify({ type: 'external_message', messageId: 'req-legacy' }), created);
     const later = row(legacy, 'assistant', 'answer', created * 1000 + 500);
     expect(replyOf(legacy, later)).toBe('req-legacy');
@@ -188,7 +188,7 @@ describe('query plan', () => {
   function expectBoundedWalk(details: string[]): void {
     expect(details.join('\n')).not.toMatch(/TEMP B-TREE|MULTI-INDEX|SCAN /);
     expect(details).toContainEqual(expect.stringMatching(
-      /SEARCH claude_session_messages USING INDEX idx_claude_session_messages_session_chrono_id \(session_id=\? AND <expr><\?\)/));
+      /SEARCH session_messages USING INDEX idx_session_messages_session_chrono_id \(session_id=\? AND <expr><\?\)/));
   }
 
   it('is a bounded descending range on idx_…_session_chrono_id (no stats)', () => {
@@ -199,7 +199,7 @@ describe('query plan', () => {
     const statement = priorInputStatement();
     expect(priorInputStatement()).toBe(statement);
     vi.resetModules();
-    const twin = await import('@/lib/server/claude/peerReplyContext');
+    const twin = await import('@/lib/server/hub/peerReplyContext');
     expect(twin.priorInputStatement).not.toBe(priorInputStatement);
     expect(twin.priorInputStatement()).toBe(statement);
   });
@@ -208,15 +208,15 @@ describe('query plan', () => {
     const sqlite = rawSqlite();
     sqlite.exec('ANALYZE');
     try {
-      sqlite.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'claude_session_messages'");
-      const ins = sqlite.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('claude_session_messages', ?, ?)");
+      sqlite.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'session_messages'");
+      const ins = sqlite.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('session_messages', ?, ?)");
       // Production values (read-only copy of its sqlite_stat1, 2026-10-15).
       for (const [idx, stat] of [
-        ['idx_claude_session_messages_session_chrono_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
-        ['idx_claude_session_messages_session_seq', '347576 11986 1'],
-        ['idx_claude_session_messages_session_ts_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_session_id_id', '347576 11986 1'],
+        ['idx_session_messages_session_chrono_id', '347576 11986 1 1'],
+        ['idx_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
+        ['idx_session_messages_session_seq', '347576 11986 1'],
+        ['idx_session_messages_session_ts_id', '347576 11986 1 1'],
+        ['idx_session_messages_session_id_id', '347576 11986 1'],
       ]) ins.run(idx, stat);
       sqlite.exec('ANALYZE sqlite_schema');
       expectBoundedWalk(plan());

@@ -253,7 +253,7 @@ export function newForeignKeyViolations(before, after) {
   return grown;
 }
 
-/** One line per group: `claude_session_messages → claude_sessions ×6 (rowids 393, 394, …)`. */
+/** One line per group: `session_messages → agent_sessions ×6 (rowids 393, 394, …)`. */
 export function describeViolations(groups) {
   return [...groups.values()].map((g) => `${g.table} → ${g.parent} ×${g.rowids.length}`
     + ` (rowids ${g.rowids.slice(0, 10).join(', ')}${g.rowids.length > 10 ? ', …' : ''})`).join('; ');
@@ -279,29 +279,29 @@ function errorText(e) {
 
 const CHRONO = 'coalesce(ts_ms, created_at * 1000)';
 
-/** The keyset page over `idx_claude_session_messages_session_chrono_id`. The
+/** The keyset page over `idx_session_messages_session_chrono_id`. The
  *  redundant `>= @k` bound keeps it ONE index range (an OR alone plans as
  *  MULTI-INDEX OR + TEMP B-TREE, C03 §1). */
 export const PAGE_SQL = `SELECT id, role, seq, ts_ms, created_at, wire_content IS NULL AS wnull,
     CASE WHEN role = 'event' THEN content END AS content, ${CHRONO} AS k
-  FROM claude_session_messages
+  FROM session_messages
   WHERE session_id = @sid AND ${CHRONO} >= @k AND (${CHRONO} > @k OR id > @id)
   ORDER BY ${CHRONO}, id
   LIMIT @limit`;
 
 /** Rows left strictly after the kept row and up to the last deleted one (--verify). */
-export const BETWEEN_SQL = `SELECT count(*) AS n FROM claude_session_messages
+export const BETWEEN_SQL = `SELECT count(*) AS n FROM session_messages
   WHERE session_id = @sid AND ${CHRONO} >= @k1 AND ${CHRONO} <= @k2
     AND (${CHRONO} > @k1 OR id > @id1) AND (${CHRONO} < @k2 OR id <= @id2)`;
 
 /** Seq of the session's LAST seq-stamped row in rebuild order (a backward
  *  walk of the chrono index; `+seq` keeps the seq index out of the plan). */
-export const LATEST_SEQ_SQL = `SELECT seq FROM claude_session_messages
+export const LATEST_SEQ_SQL = `SELECT seq FROM session_messages
   WHERE session_id = ? AND +seq IS NOT NULL
   ORDER BY ${CHRONO} DESC, id DESC LIMIT 1`;
 
 /** MAX(seq) of the session: one seek on `idx_…_session_seq`. */
-export const MAX_SEQ_SQL = 'SELECT max(seq) AS seq FROM claude_session_messages WHERE session_id = ?';
+export const MAX_SEQ_SQL = 'SELECT max(seq) AS seq FROM session_messages WHERE session_id = ?';
 
 /** One chunk's DELETE: `n` rowid lookups. The unary `+` keeps `session_id`/
  *  `role` out of index selection — under prod statistics a chunk of ≥ 20 ids
@@ -309,24 +309,24 @@ export const MAX_SEQ_SQL = 'SELECT max(seq) AS seq FROM claude_session_messages 
  *  walked the session's whole event prefix (2.9 M entries for the heavy
  *  session: ~1000 s of rehearsal apply, quadratic in the session's size). The
  *  terms still guard each deleted row. @param {number} n */
-export const DELETE_SQL = (n) => `DELETE FROM claude_session_messages
+export const DELETE_SQL = (n) => `DELETE FROM session_messages
   WHERE id IN (${new Array(n).fill('?').join(',')}) AND +session_id = ? AND +role = 'event'`;
 
 function compactionStatements(db) {
   const deletes = new Map();
   return {
-    sessions: db.prepare('SELECT id, kind, last_seen_seq AS cursor FROM claude_sessions'),
-    session: db.prepare('SELECT id, kind, last_seen_seq AS cursor FROM claude_sessions WHERE id = ?'),
-    rowCount: db.prepare('SELECT count(*) AS n FROM claude_session_messages WHERE session_id = ?'),
-    nullTs: db.prepare('SELECT 1 AS one FROM claude_session_messages WHERE session_id = ? AND ts_ms IS NULL LIMIT 1'),
-    cursor: db.prepare('SELECT last_seen_seq AS cursor FROM claude_sessions WHERE id = ?'),
+    sessions: db.prepare('SELECT id, kind, last_seen_seq AS cursor FROM agent_sessions'),
+    session: db.prepare('SELECT id, kind, last_seen_seq AS cursor FROM agent_sessions WHERE id = ?'),
+    rowCount: db.prepare('SELECT count(*) AS n FROM session_messages WHERE session_id = ?'),
+    nullTs: db.prepare('SELECT 1 AS one FROM session_messages WHERE session_id = ? AND ts_ms IS NULL LIMIT 1'),
+    cursor: db.prepare('SELECT last_seen_seq AS cursor FROM agent_sessions WHERE id = ?'),
     latestSeq: db.prepare(LATEST_SEQ_SQL),
     maxSeq: db.prepare(MAX_SEQ_SQL),
     page: db.prepare(PAGE_SQL),
     keep: db.prepare(`SELECT role, content, seq, wire_content IS NULL AS wnull, ${CHRONO} AS k
-      FROM claude_session_messages WHERE id = ? AND session_id = ?`),
+      FROM session_messages WHERE id = ? AND session_id = ?`),
     between: db.prepare(BETWEEN_SQL),
-    update: db.prepare(`UPDATE claude_session_messages SET content = ?
+    update: db.prepare(`UPDATE session_messages SET content = ?
       WHERE id = ? AND session_id = ? AND role = 'event' AND wire_content IS NULL`),
     refsTable: db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'session_scheduled_resumes'"),
     refs: () => db.prepare('SELECT source_message_id AS a, message_id AS b, user_message_id AS c FROM session_scheduled_resumes'),
@@ -770,12 +770,12 @@ export async function backupDatabase(db, dbPath, destination, opts = {}) {
  * The hub creates it at boot only on a small table; a large DB gets it here,
  * offline, before ANALYZE (never from a migration on the live DB, SPEC I12).
  */
-export const CONVERSATION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_claude_session_messages_conversation_chrono ON claude_session_messages (session_id, coalesce(ts_ms, created_at * 1000), id) WHERE (role NOT IN ('edit_snapshot', 'event', 'tool_use', 'tool_result', 'thinking', 'user_question', 'exit_plan_request') OR (role = 'event' AND (CASE WHEN json_valid(content) THEN json_extract(content, '$.type') END) IN ('compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message', 'peer_message_status', 'bg_task', 'interaction_resolved')))";
+export const CONVERSATION_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_session_messages_conversation_chrono ON session_messages (session_id, coalesce(ts_ms, created_at * 1000), id) WHERE (role NOT IN ('edit_snapshot', 'event', 'tool_use', 'tool_result', 'thinking', 'user_question', 'exit_plan_request') OR (role = 'event' AND (CASE WHEN json_valid(content) THEN json_extract(content, '$.type') END) IN ('compaction', 'scheduled_fire', 'structured_output', 'fork_point', 'external_message', 'peer_message_status', 'bg_task', 'interaction_resolved')))";
 
 /** Build the conversation index, replacing one built for an older predicate
  *  (sqlite_master stores it without `IF NOT EXISTS`). */
 export function ensureConversationIndexOffline(db) {
-  const name = 'idx_claude_session_messages_conversation_chrono';
+  const name = 'idx_session_messages_conversation_chrono';
   const stored = db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(name);
   if (stored && stored.sql !== CONVERSATION_INDEX_SQL.replace('CREATE INDEX IF NOT EXISTS ', 'CREATE INDEX ')) {
     db.exec(`DROP INDEX ${name}`);
@@ -805,7 +805,7 @@ export function vacuumDatabase(db, opts = {}) {
   const fkBefore = timer.time('foreign_key_check', () => foreignKeyViolations(db));
   const ck1 = timer.time('checkpoint', () => checkpoint(db));
   if (ck1.busy !== 0) throw new RefusedError(`wal_checkpoint(TRUNCATE) reported busy=${ck1.busy}`);
-  const hasMessages = db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'claude_session_messages'").get();
+  const hasMessages = db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'session_messages'").get();
   if (hasMessages) timer.time('conversation index', () => ensureConversationIndexOffline(db));
   if (opts.analyze !== false) timer.time('analyze', () => db.exec('ANALYZE'));
   timer.time('vacuum', () => db.exec('VACUUM'));
@@ -821,11 +821,11 @@ export function vacuumDatabase(db, opts = {}) {
   const fkAfter = timer.time('foreign_key_check', () => foreignKeyViolations(db));
   const preExisting = checkForeignKeys(fkBefore, fkAfter, log);
   passed.push(preExisting ? `foreign_key_check: no new violation (${preExisting} pre-existing)` : 'foreign_key_check clean');
-  const hasFts = db.prepare("SELECT 1 AS one FROM sqlite_master WHERE name = 'claude_session_messages_fts'").get();
+  const hasFts = db.prepare("SELECT 1 AS one FROM sqlite_master WHERE name = 'session_messages_fts'").get();
   if (hasFts) {
     try {
       timer.time('fts integrity-check', () => db.exec(
-        "INSERT INTO claude_session_messages_fts(claude_session_messages_fts) VALUES('integrity-check')"));
+        "INSERT INTO session_messages_fts(session_messages_fts) VALUES('integrity-check')"));
     } catch (e) {
       throw new Error(`FTS integrity-check: ${errorText(e)}`);
     }

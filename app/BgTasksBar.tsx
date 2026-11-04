@@ -118,7 +118,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
     if (provider !== 'codex') return;
     const n = terminalsGate.next();
     try {
-      const response = await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
+      const response = await fetch(`/api/sessions/${sessionId}/background-terminals`, {
         cache: 'no-store',
       });
       const data = await response.json().catch(() => null);
@@ -137,7 +137,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
   const killTerminal = useCallback(async (processId: string) => {
     setTerminalKilling((current) => ({ ...current, [processId]: 'pending' }));
     try {
-      const response = await fetch(`/api/claude/sessions/${sessionId}/background-terminals`, {
+      const response = await fetch(`/api/sessions/${sessionId}/background-terminals`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ processId }),
       });

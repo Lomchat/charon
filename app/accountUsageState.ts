@@ -1,4 +1,4 @@
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 
 /** When the newest number on a snapshot was read: a live window update
  *  (`windowsAt`) outdates a poll with the same `fetchedAt`. §14.72. */

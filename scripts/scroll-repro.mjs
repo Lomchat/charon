@@ -34,7 +34,7 @@ page.on('console', (m) => {
 });
 
 await page.goto(`${BASE}/?session=${SID}`, { waitUntil: 'domcontentloaded' });
-await page.waitForSelector('.claude-chat .bubble', { timeout: 30_000 });
+await page.waitForSelector('.app-chat .bubble', { timeout: 30_000 });
 // A/B harness: inject a candidate fix as CSS and re-measure, so each theory is
 // settled by the same number rather than by argument.
 if (process.env.CSS) {
@@ -43,7 +43,7 @@ if (process.env.CSS) {
 }
 await page.waitForTimeout(2500); // let the first window settle
 
-const box = await page.locator('.claude-chat').boundingBox();
+const box = await page.locator('.app-chat').boundingBox();
 await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 
 const samples = [];
@@ -52,7 +52,7 @@ for (let i = 0; i < STEPS; i++) {
   await page.waitForTimeout(60);
   samples.push(
     await page.evaluate(() => {
-      const el = document.querySelector('.claude-chat');
+      const el = document.querySelector('.app-chat');
       return {
         top: Math.abs(el.scrollTop),
         height: el.scrollHeight,

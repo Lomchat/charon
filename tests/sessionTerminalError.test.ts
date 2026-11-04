@@ -13,7 +13,7 @@ const telegramMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -48,18 +48,18 @@ function createStream(
     name: 'build',
     status,
     permissionMode: 'normal',
-    claudeSessionId: null,
+    nativeSessionId: null,
     kind,
   }) as any;
 }
 
 function sessionStatus(): string | undefined {
-  return db.select().from(schema.claudeSessions).all()
+  return db.select().from(schema.agentSessions).all()
     .find((row: any) => row.id === SID)?.status;
 }
 
 function persistedErrors(): any[] {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((row: any) => row.sessionId === SID && row.role === 'error')
     .map((row: any) => JSON.parse(row.content));
 }
@@ -77,7 +77,7 @@ beforeAll(async () => {
   db.insert(schema.vps).values({
     id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root',
   }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({
+  db.insert(schema.appSettings).values({
     key: 'notif.global_enabled', value: 'false',
   }).onConflictDoNothing().run();
 
@@ -86,9 +86,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   telegramMocks.sendPlainToTelegram.mockClear();
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudeSessions).run();
-  db.insert(schema.claudeSessions).values({
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.agentSessions).run();
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'active',
   }).run();
   db.update(schema.vps).set({ claudeLoggedIn: 1, codexLoggedIn: 1 }).run();
@@ -172,7 +172,7 @@ describe('terminal Claude assistant errors', () => {
   });
 
   it('preserves a durable connected failure when reconnect sees the daemon idle', () => {
-    db.update(schema.claudeSessions).set({ status: 'failed' }).run();
+    db.update(schema.agentSessions).set({ status: 'failed' }).run();
     const stream = createStream('claude', 'failed');
 
     stream._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 1 });
@@ -393,7 +393,7 @@ describe('terminal Claude assistant errors', () => {
     // After a hub restart from a cursor pinned below the failed turn.
     const restarted = new SessionStream({
       id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'active', permissionMode: 'normal',
-      claudeSessionId: null, kind, lastSeenSeq: 9, lastStopNotifiedSeq: 15,
+      nativeSessionId: null, kind, lastSeenSeq: 9, lastStopNotifiedSeq: 15,
     }) as any;
     replayInto(restarted);
     expect([restarted.status, sessionStatus()]).toEqual(['active', 'active']);
@@ -404,7 +404,7 @@ describe('terminal Claude assistant errors', () => {
   it('a failed stop the hub never handled (it was down) still latches on replay', () => {
     const stream = new SessionStream({
       id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'active', permissionMode: 'normal',
-      claudeSessionId: null, kind: 'codex', lastSeenSeq: 9, lastStopNotifiedSeq: 8,
+      nativeSessionId: null, kind: 'codex', lastSeenSeq: 9, lastStopNotifiedSeq: 8,
     }) as any;
     stream._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 2 });
     stream._onAgentEvent({ event: 'error', session_id: SID, msg: 'turn: rejected', seq: 10 });

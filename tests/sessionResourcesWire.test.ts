@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { browserSessionResources } from '@/lib/server/claude/sessionResourcesWire';
+import { browserSessionResources } from '@/lib/server/hub/sessionResourcesWire';
 
 describe('browserSessionResources', () => {
   it('keeps only the App fields the inspector reads', () => {

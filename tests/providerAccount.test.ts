@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   set: vi.fn(), run: vi.fn(), emit: vi.fn(), cursorIdentity: vi.fn(),
 }));
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/sshExec', () => ({ sshExec: vi.fn(), shQuote: (s: string) => s }));
+vi.mock('@/lib/server/hub/sshExec', () => ({ sshExec: vi.fn(), shQuote: (s: string) => s }));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: mocks.auth }));
 vi.mock('@/lib/db', () => ({
   vps: { id: 'id' },

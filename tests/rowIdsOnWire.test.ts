@@ -34,9 +34,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => codexObservations.list }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => codexObservations.list }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -139,9 +139,9 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
   unprompted_turn: {
     events: [{ event: 'unprompted_turn' }],
     setup: (s) => {
-      db.update(schema.claudeSessions).set({ scheduledTasksJson: JSON.stringify({ asOf: T0, tasks: [
+      db.update(schema.agentSessions).set({ scheduledTasksJson: JSON.stringify({ asOf: T0, tasks: [
         { id: 'aaaaaaaa', schedule: '* * * * *', recurring: true, prompt: '[Recheck] look again', nextFireAt: T0, createdAt: T0 },
-      ] }) }).where(eq(schema.claudeSessions.id, s.id)).run();
+      ] }) }).where(eq(schema.agentSessions.id, s.id)).run();
     },
   },
   session_info: { events: [{ event: 'session_info', capabilities: ['x'] }] },
@@ -198,7 +198,7 @@ let nextSeq = 1;
 function mkStream(kind: 'claude' | 'codex' = 'claude') {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null, kind,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null, kind,
   }) as any;
 }
 
@@ -210,7 +210,7 @@ function stamp(e: Record<string, unknown>) {
 }
 
 function allRows() {
-  return db.select().from(schema.claudeSessionMessages).all().filter((r: any) => r.sessionId === SID);
+  return db.select().from(schema.sessionMessages).all().filter((r: any) => r.sessionId === SID);
 }
 function eventType(r: any): string | null {
   if (r.role !== 'event') return null;
@@ -268,18 +268,18 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
   // Preloaded: a first import racing the stop handlers' deferred import hits its TDZ.
   await import('@/lib/server/agent/endpointOps');
 });
 
 afterEach(() => {
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.delete(schema.claudePendingPermissions).run();
-  db.update(schema.claudeSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null, lastStopNotifiedSeq: null }).run();
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.update(schema.agentSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null, lastStopNotifiedSeq: null }).run();
   codexObservations.list = [];
 });
 
@@ -334,7 +334,7 @@ describe('rowId on every frame of a persisted row (exhaustive over AgentEvent)',
   it('the codex background reconcile names the row it wrote', async () => {
     const s = mkStream('codex');
     s.attached = true;
-    s.claudeSessionId = 'thread-1';
+    s.nativeSessionId = 'thread-1';
     s.bgRunning = new Map([['agent-1', nowS()]]);
     s.codexBgChecks.set('agent-1', { revision: 1, since: 0 });
     codexObservations.list = [{ taskId: 'agent-1', status: 'completed', at: nowS() }];

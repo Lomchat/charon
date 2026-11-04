@@ -1,11 +1,11 @@
 import 'server-only';
-import { sendPlainToTelegram } from '@/lib/server/claude/telegram';
+import { sendPlainToTelegram } from '@/lib/server/hub/telegram';
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { bootstrapVps, type BootstrapEvent } from '@/lib/server/claude/bootstrap';
-import { sendPushToAll } from '@/lib/server/claude/webPush';
+import { bootstrapVps, type BootstrapEvent } from '@/lib/server/hub/bootstrap';
+import { sendPushToAll } from '@/lib/server/hub/webPush';
 import { publish } from '@/lib/server/sync/syncBus';
 
 // ── Install sessions — ephemeral, memory only ───────────────────────────────

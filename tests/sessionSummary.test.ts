@@ -9,8 +9,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({ userId: 'u' })) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(() => {}),
@@ -36,18 +36,18 @@ let sums: typeof import('@/lib/server/sync/sessionSummaries');
 let summaryKey: typeof import('@/lib/sessionSummary').summaryKey;
 
 function insertSession(id: string, extra: Record<string, unknown> = {}) {
-  db.insert(schema.claudeSessions).values({
+  db.insert(schema.agentSessions).values({
     id, vpsId: VPS_ID, cwd: '/tmp/sum', name: id.slice(0, 4), status: 'active', ...extra,
   }).run();
 }
 function perm(id: string, sessionId: string, extra: Record<string, unknown> = {}) {
-  db.insert(schema.claudePendingPermissions).values({
+  db.insert(schema.sessionPendingPermissions).values({
     id, sessionId, toolName: 'Bash', toolInput: JSON.stringify({ command: 'ls -la' }), status: 'pending', ...extra,
   }).run();
 }
 function question(id: string, sessionId: string, kind: 'question' | 'async_question' | 'exit_plan' = 'question',
   extra: Record<string, unknown> = {}) {
-  db.insert(schema.claudePendingQuestions).values({
+  db.insert(schema.sessionPendingQuestions).values({
     id, sessionId, kind, status: 'pending',
     payload: kind === 'exit_plan' ? JSON.stringify({ plan: 'the plan' })
       : JSON.stringify([{ question: 'Which colour?', options: [{ label: 'Orange' }] }]),
@@ -82,10 +82,10 @@ beforeAll(async () => {
 beforeEach(() => {
   clearStreams();
   sums.resetSessionSummariesForTests();
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudePendingPermissions).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.delete(schema.agentSessions).run();
 });
 
 afterEach(() => {
@@ -100,10 +100,10 @@ describe('attention derivation — R5 §5.1 scenario matrix', () => {
     perm('p1', A);
     expect(attention(A)).toBe('blocked');
     // A blocking question and a plan review block too.
-    db.delete(schema.claudePendingPermissions).run();
+    db.delete(schema.sessionPendingPermissions).run();
     question('q1', A, 'question');
     expect(attention(A)).toBe('blocked');
-    db.delete(schema.claudePendingQuestions).run();
+    db.delete(schema.sessionPendingQuestions).run();
     question('x1', A, 'exit_plan');
     expect(attention(A)).toBe('blocked');
   });
@@ -154,7 +154,7 @@ describe('attention derivation — R5 §5.1 scenario matrix', () => {
     perm('p1', A);
     expect(attention(A)).toBeNull();
     clearStreams();
-    db.update(schema.claudeSessions).set({ status: 'error' }).run();
+    db.update(schema.agentSessions).set({ status: 'error' }).run();
     expect(attention(A)).toBeNull();
   });
 
@@ -177,8 +177,8 @@ describe('attention derivation — R5 §5.1 scenario matrix', () => {
   it('K: a just-finished session carries its last activity', () => {
     insertSession(A, { unreadStop: 1 });
     const now = Date.now();
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'hello there', tsMs: now - 5000 }).run();
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'assistant', content: 'done', tsMs: now }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'hello there', tsMs: now - 5000 }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'assistant', content: 'done', tsMs: now }).run();
     const s = sums.buildSessionSummary(A)!;
     expect(s.lastActivityMs).toBe(now);
     expect(s.firstUserMessage).toBe('hello there');
@@ -197,8 +197,8 @@ describe('attention derivation — R5 §5.1 scenario matrix', () => {
 describe('summary shape', () => {
   it('is a superset of the list row: same fields as annotateSessionRows', async () => {
     insertSession(A, { color: '#f00' });
-    const { annotateSessionRows } = await import('@/lib/server/claude/sessionList');
-    const row = db.select().from(schema.claudeSessions).all()[0];
+    const { annotateSessionRows } = await import('@/lib/server/hub/sessionList');
+    const row = db.select().from(schema.agentSessions).all()[0];
     const [item] = annotateSessionRows([row]);
     const s = sums.buildSessionSummary(A)!;
     for (const [k, v] of Object.entries(item)) {
@@ -207,7 +207,7 @@ describe('summary shape', () => {
     }
     expect(s.gates).toEqual([]);
     expect(s.attention).toBeNull();
-    expect(JSON.parse(JSON.stringify(s)).codexConfig).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(s)).providerConfig).toBeUndefined();
   });
 
   it('lists every pending gate oldest first with its title and kind', () => {
@@ -288,10 +288,10 @@ describe('gate preview: once per gate, bounded', () => {
     insertSession(A);
     perm('p1', A, { toolInput: JSON.stringify({ command: 'first-marker' }) });
     sums.buildSessionSummary(A);
-    db.update(schema.claudePendingPermissions).set({ status: 'allowed' }).run();
+    db.update(schema.sessionPendingPermissions).set({ status: 'allowed' }).run();
     expect(sums.buildSessionSummary(A)!.gates).toEqual([]);
     // Same id reused (a test-only shape): recomputed from the new row, not the cache.
-    db.update(schema.claudePendingPermissions)
+    db.update(schema.sessionPendingPermissions)
       .set({ status: 'pending', toolInput: JSON.stringify({ command: 'second-marker' }) }).run();
     expect(sums.buildSessionSummary(A)!.gates[0].preview).toContain('second-marker');
   });
@@ -301,10 +301,10 @@ describe('first user message cache', () => {
   it('is read once, cached, and dropped on demand (rollback)', () => {
     insertSession(A);
     expect(sums.buildSessionSummary(A)!.firstUserMessage).toBeNull();
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'first prompt' }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'first prompt' }).run();
     expect(sums.buildSessionSummary(A)!.firstUserMessage).toBe('first prompt');
-    db.delete(schema.claudeSessionMessages).run();
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'other prompt' }).run();
+    db.delete(schema.sessionMessages).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'other prompt' }).run();
     // Cached once non-null…
     expect(sums.buildSessionSummary(A)!.firstUserMessage).toBe('first prompt');
     sums.forgetFirstUserMessage(A);
@@ -313,7 +313,7 @@ describe('first user message cache', () => {
 
   it('is cut at 180 chars like the list row', () => {
     insertSession(A);
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'p'.repeat(400) }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'p'.repeat(400) }).run();
     expect(sums.buildSessionSummary(A)!.firstUserMessage).toBe('p'.repeat(180));
   });
 });

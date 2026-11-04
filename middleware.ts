@@ -6,7 +6,7 @@ export const config = {
   // notif.wav: notification sound, a non-sensitive static asset loaded by
   // `new Audio()`. Excluded so the fetch isn't 307-redirected to /login
   // (which would return HTML and break audio decoding). If you rename the
-  // sound file (see NOTIF_SOUND_URL in ClaudePanel.tsx), update this too.
+  // sound file (see NOTIF_SOUND_URL in HubPanel.tsx), update this too.
   matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|sw.js|notif.wav).*)'],
   runtime: 'nodejs'
 };
@@ -54,7 +54,7 @@ export async function middleware(req: NextRequest) {
       const xfh = req.headers.get('x-forwarded-host');
       if (xfh) for (const part of xfh.split(',')) allowed.add(part.trim());
       try {
-        const { getSetting } = await import('@/lib/server/claude/settings');
+        const { getSetting } = await import('@/lib/server/hub/settings');
         const pu = getSetting('app.public_url');
         if (pu) allowed.add(new URL(pu).host);
       } catch {}

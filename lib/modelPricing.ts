@@ -5,7 +5,7 @@ import type { ModelPrice } from './types/api';
  *
  * Pure and client-safe, so the parser is testable against the real document and
  * the browser formats the same numbers the server stored. The fetching and
- * caching half lives in `lib/server/claude/cursorPricing.ts`.
+ * caching half lives in `lib/server/hub/cursorPricing.ts`.
  *
  * Why a document at all: the model CATALOG carries no price, no multiplier and
  * no tier (§14.103), while Cursor publishes `models-and-pricing.md` — listed in

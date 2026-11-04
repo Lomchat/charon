@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getGitLog } from '@/lib/server/claude/git';
+import { getGitLog } from '@/lib/server/hub/git';
 
 // GET /api/vps/[id]/git/log?cwd=&repo=&path=&limit=&skip=
 //

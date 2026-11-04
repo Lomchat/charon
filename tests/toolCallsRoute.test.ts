@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
-// GET /api/claude/sessions/[id]/tool-calls (sync refonte C14, CLAUDE.md
+// GET /api/sessions/[id]/tool-calls (sync refonte C14, CLAUDE.md
 // §14.25): the calls tab in conversation view. Pages of tool_use rows (newest
 // page first, chronological inside), paired with their tool_result by
 // `tool_use_id`, ≤ 512-char previews computed in SQLite — a tool_result's
@@ -17,19 +17,19 @@ let db: any;
 let schema: any;
 let rawSqlite: () => import('better-sqlite3').Database;
 let deriveMessageStorage: (role: string, content: string) => Record<string, unknown>;
-let GET: typeof import('@/app/api/claude/sessions/[id]/tool-calls/route').GET;
+let GET: typeof import('@/app/api/sessions/[id]/tool-calls/route').GET;
 let counter = 0;
 let clock = Date.now() - 3_600_000;
 
 function newSession(): string {
   const id = (++counter).toString(16).padStart(32, 'c');
-  db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 't', status: 'sleeping' }).run();
+  db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 't', status: 'sleeping' }).run();
   return id;
 }
 function add(sid: string, role: string, content: unknown): number {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
   clock += 1000;
-  return Number(db.insert(schema.claudeSessionMessages).values({
+  return Number(db.insert(schema.sessionMessages).values({
     sessionId: sid, role, content: text, ...deriveMessageStorage(role, text), tsMs: clock,
   }).run().lastInsertRowid);
 }
@@ -39,7 +39,7 @@ const result = (sid: string, id: string, content: unknown = `out of ${id}`, isEr
   add(sid, 'tool_result', { type: 'tool_result', tool_use_id: id, content, is_error: isError });
 
 async function calls(sid: string, query = ''): Promise<any> {
-  const res = await GET(new Request(`http://localhost/api/claude/sessions/${sid}/tool-calls${query}`),
+  const res = await GET(new Request(`http://localhost/api/sessions/${sid}/tool-calls${query}`),
     { params: Promise.resolve({ id: sid }) });
   return { status: res.status, body: await res.json() };
 }
@@ -66,8 +66,8 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS, name: 'c', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  ({ deriveMessageStorage } = await import('@/lib/server/claude/messageWire') as any);
-  ({ GET } = await import('@/app/api/claude/sessions/[id]/tool-calls/route'));
+  ({ deriveMessageStorage } = await import('@/lib/server/hub/messageWire') as any);
+  ({ GET } = await import('@/app/api/sessions/[id]/tool-calls/route'));
 });
 
 describe('GET …/tool-calls', () => {
@@ -208,7 +208,7 @@ describe('GET …/tool-calls', () => {
     const sqls = await preparedDuring(async () => { res = await calls(sid); });
     expect(res.body.calls[0].result.preview).toBe('z'.repeat(512));
     expect(JSON.parse(res.body.calls[1].result.preview)).toEqual([{ type: 'text', text: 'block' }]);
-    const touching = sqls.filter((q) => /claude_session_messages/.test(q));
+    const touching = sqls.filter((q) => /session_messages/.test(q));
     expect(touching.length).toBeGreaterThanOrEqual(3);              // count, page, results
     for (const q of touching) {
       // Left once the bounded form, the wire column and JSON paths are removed:
@@ -221,14 +221,14 @@ describe('GET …/tool-calls', () => {
     const page = touching.find((q) => /role = \?/.test(q) && /created_at AS createdAt/.test(q))!;
     const plan = rawSqlite().prepare(`EXPLAIN QUERY PLAN ${page}`).all(sid, 'tool_use', 501)
       .map((r: any) => r.detail).join(' | ');
-    expect(plan).toMatch(/idx_claude_session_messages_snapshot_lookup/);
+    expect(plan).toMatch(/idx_session_messages_snapshot_lookup/);
     expect(plan).not.toMatch(/TEMP B-TREE/);
   });
 
   it('clamps `limit` to 1..500, 404s an unknown session and stays behind the auth gate', async () => {
     const sid = newSession();
     const ins = rawSqlite().prepare(
-      'INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+      'INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     rawSqlite().transaction(() => {
       for (let i = 0; i < 502; i++) ins.run(sid, 'tool_use', JSON.stringify({ id: `k${i}`, name: 'Read', input: {} }), ++clock);
     })();

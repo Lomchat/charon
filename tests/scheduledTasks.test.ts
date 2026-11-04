@@ -12,8 +12,8 @@ import {
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({ userId: 'u' })) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(() => {}),
@@ -111,7 +111,7 @@ function stamp(e: Record<string, unknown>, atMs = T0 + seq * 1000) {
   return { session_id: SID, seq: seq++, ts: atMs / 1000, ...e };
 }
 function rows() {
-  return db.select().from(schema.claudeSessionMessages).all().filter((r: any) => r.sessionId === SID);
+  return db.select().from(schema.sessionMessages).all().filter((r: any) => r.sessionId === SID);
 }
 const WIRE = [
   { id: '4a0671cb', schedule: '7 20 * * *', recurring: true, prompt: '[Recheck 3/3] daily', next_fire_at: T0 + 11 * 3600_000 },
@@ -126,8 +126,8 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'sched', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ops = await import('@/lib/server/agent/sessionOps');
   sums = await import('@/lib/server/sync/sessionSummaries');
   ({ rebuildStateFromMessages: rebuild } = await import('@/app/sessionRebuild'));
@@ -136,15 +136,15 @@ beforeAll(async () => {
 afterEach(() => {
   for (const s of ops.listStreams()) s.detach();
   (globalThis as any)._sessionStreams?.clear();
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-  db.update(schema.claudeSessions).set({ scheduledTasksJson: null, lastSeenSeq: null, pendingAssistantMessageId: null })
-    .where(eq(schema.claudeSessions.id, SID)).run();
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+  db.update(schema.agentSessions).set({ scheduledTasksJson: null, lastSeenSeq: null, pendingAssistantMessageId: null })
+    .where(eq(schema.agentSessions.id, SID)).run();
 });
 
 describe('the hub keeps the CLI list', () => {
   it('turn_end records the list on the session and its summary carries it', () => {
     // The CronCreate result is when the CLI created the task.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_result', tsMs: T0 - 86_400_000,
       content: JSON.stringify({ type: 'tool_result', tool_use_id: 'tu', content: 'Scheduled recurring job 4a0671cb (Every day at 8:07 PM). Next run: …' }),
     }).run();
@@ -166,7 +166,7 @@ describe('the hub keeps the CLI list', () => {
   });
 
   it('an unchanged list is not rewritten; an absent one changes nothing; an empty one clears', async () => {
-    const { recordScheduledTasks, readScheduledTasks } = await import('@/lib/server/claude/scheduledTaskState');
+    const { recordScheduledTasks, readScheduledTasks } = await import('@/lib/server/hub/scheduledTaskState');
     expect(recordScheduledTasks(SID, WIRE, { name: 'CET', offset_min: 60 }, T0)).toBe(true);
     expect(recordScheduledTasks(SID, WIRE, { name: 'CET', offset_min: 60 }, T0 + 60_000)).toBe(false);
     expect(readScheduledTasks(SID)?.asOf).toBe(T0);

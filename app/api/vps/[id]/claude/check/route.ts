@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { sshExec } from '@/lib/server/hub/sshExec';
 
 // GET /api/vps/[id]/claude/check
 // Checks that the VPS has everything needed to run a Claude session:

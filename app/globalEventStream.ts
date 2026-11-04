@@ -1,5 +1,5 @@
 'use client';
-import type { WorkerEvent } from '@/lib/server/claude/types';
+import type { WorkerEvent } from '@/lib/server/hub/types';
 import type { InstallStatus } from '@/lib/types/api';
 import { cmpRev, type SyncRev } from '@/lib/sync/rev';
 import { attentionAgeMs, installAttentionTracking, isAttentive, noteAttentionProofLost } from './attention';
@@ -11,12 +11,12 @@ import {
 
 // globalEventStream — THE transport (CLAUDE.md §9, §14.24)
 // ─────────────────────────────────────────────────────────────────────────────
-// ONE EventSource on /api/claude/events per tab, speaking proto 2: every bus
+// ONE EventSource on /api/events per tab, speaking proto 2: every bus
 // frame carries `id: <epoch>.<rev>`; per-connection control frames (§3.3 of
 // lib/sync/protocol.ts) are recognised by type. Consumers subscribe here
 // (`subscribeSession`, `subscribeAll`, `subscribeSyncFrames`) instead of
 // opening their own stream (HTTP/1.1 caps connections per origin, §14.15). The
-// focus moves with POST /api/claude/focus; the stream stays open.
+// focus moves with POST /api/focus; the stream stays open.
 //
 // Reconnects are MANUAL, always: `onerror` closes the EventSource and
 // schedules a reconnect (jittered 250–1500 ms, then 1→2→4→6 s ±20 %), the URL
@@ -217,7 +217,7 @@ async function postFocus(sessionId: string | null, focusSeq: number, attemptNo =
     setTimeout(() => { void postFocus(sessionId, focusSeq, attemptNo + 1, notAppliedSoFar); }, FOCUS_POST_RETRY_MS);
   };
   try {
-    const r = await fetch('/api/claude/focus', {
+    const r = await fetch('/api/focus', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -259,7 +259,7 @@ async function postFocus(sessionId: string | null, focusSeq: number, attemptNo =
 // hello's focus re-POST (reassertAttendedFocus) carries it meanwhile.
 function postAttention(): void {
   if (typeof window === 'undefined' || !connId || !es) return;
-  void fetch('/api/claude/focus', {
+  void fetch('/api/focus', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ conn: connId, kind: 'attention' }),
@@ -293,7 +293,7 @@ function attentionParams(): string {
 
 function buildUrl(): string {
   const since = sinceParam(sync);
-  return `/api/claude/events?conn=${encodeURIComponent(getConnId())}`
+  return `/api/events?conn=${encodeURIComponent(getConnId())}`
     + (currentFocus ? `&focus=${encodeURIComponent(currentFocus)}` : '')
     + `&focusSeq=${currentFocusSeq}`
     + `&visible=${docVisible() ? '1' : '0'}`

@@ -3,8 +3,8 @@ import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import { invalidateGitStatus } from '@/lib/server/claude/git';
-import { beginUpload } from '@/lib/server/claude/fsUpload';
+import { invalidateGitStatus } from '@/lib/server/hub/git';
+import { beginUpload } from '@/lib/server/hub/fsUpload';
 import { compareVersions } from '@/lib/version';
 import {
   FS_UPLOAD_AGENT_VERSION, FS_UPLOAD_MAX_ITEMS, findExistingUploadTargets, uploadPathError,

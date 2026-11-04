@@ -1,5 +1,5 @@
 import 'server-only';
-import { getSetting, setSetting } from './claude/settings';
+import { getSetting, setSetting } from './hub/settings';
 import { isOpenCodeGo, mergeOpenCodeModels, parseOpenCodeModels } from '@/lib/opencodeModels';
 import type { CustomEndpoint, EndpointModel } from '@/lib/customEndpoints';
 

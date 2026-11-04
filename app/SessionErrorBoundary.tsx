@@ -7,8 +7,8 @@ import React from 'react';
 //
 // Why this exists (CLAUDE.md §14 gotcha 24):
 //   The live-update pipeline (SSE subscription, 5s polling loop,
-//   refetch-on-reconnect) all live inside `useClaudeSessionStream`, which
-//   runs inside `<ClaudeSessionView>`. If ANY render in that subtree throws
+//   refetch-on-reconnect) all live inside `useSessionStream`, which
+//   runs inside `<SessionView>`. If ANY render in that subtree throws
 //   — a hydration mismatch (React 19 error #418), a transient undefined
 //   while data is mid-flight, a bad markdown parse — React unwinds and
 //   UNMOUNTS the subtree. Unmount fires every useEffect cleanup, which

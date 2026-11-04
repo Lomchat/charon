@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
 
 import { applyBgTaskEvent, eventIsTerminal, isTerminalBgStatus, type BgTask } from '@/app/bgTasks';
-import { isBgTaskDone } from '@/lib/server/claude/bgTaskState';
+import { isBgTaskDone } from '@/lib/server/hub/bgTaskState';
 
 // §14.91: the hub kept TWO hand-written terminal-word lists (client + server)
 // and they drifted in opposite directions — one ended the task on `error`, the

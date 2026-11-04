@@ -8,7 +8,7 @@ import type { Metadata, Viewport } from 'next';
 import NotificationClickHandler from './NotificationClickHandler';
 import ChunkReloadGuard from './ChunkReloadGuard';
 import { TooltipLayer } from './HoverTip';
-import { getSetting } from '@/lib/server/claude/settings';
+import { getSetting } from '@/lib/server/hub/settings';
 import { resolveTheme } from './themes';
 import { resolveDensity } from './density';
 import { DEFAULT_FILE_ICONS, resolveFileIcons } from './fileIconStyle';
@@ -27,13 +27,13 @@ function activeTheme() {
 
 export const metadata: Metadata = {
   title: 'Charon',
-  description: 'Hub for Claude Code sessions over SSH'
+  description: 'Hub for coding-agent sessions (Claude, Codex, Cursor) over SSH'
 };
 
 // Viewport for the single responsive UI. Without this, phones render the page
 // in a ~980px virtual viewport zoomed out → the whole UI is tiny and unusable
 // (this was the #1 cause of "mobile works badly"). Must ship WITH the
-// responsive CSS in claude.css — device-width alone would overflow the fixed
+// responsive CSS in app.css — device-width alone would overflow the fixed
 // 3-col grid. §11.
 export function generateViewport(): Viewport {
   return {

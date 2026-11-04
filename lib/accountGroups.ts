@@ -20,7 +20,7 @@
 // signed-in profile with nothing connected shows nothing; once visible, the
 // dropdown lists every session of the login (finished ones included).
 import type { SessionListItem } from '@/lib/types/api';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import { SESSION_PROVIDERS, asSessionProvider, type SessionProvider } from './sessionCapabilities';
 import { providerName, providerText } from './providerText';
 import {

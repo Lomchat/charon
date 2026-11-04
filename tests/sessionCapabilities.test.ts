@@ -87,10 +87,10 @@ describe('provider-specific modes and efforts', () => {
 
 describe('provider-neutral HTTP facade', () => {
   it('is a zero-copy compatibility facade over the established endpoints', () => {
-    expect(sessionApi.list).toBe(api.listClaudeSessions);
-    expect(sessionApi.create).toBe(api.createClaudeSession);
-    expect(sessionApi.sendInput).toBe(api.sendClaudeInput);
-    expect(sessionApi.respondPermission).toBe(api.respondClaudePermission);
-    expect(sessionApi.setMode).toBe(api.setClaudeMode);
+    expect(sessionApi.list).toBe(api.listSessions);
+    expect(sessionApi.create).toBe(api.createSession);
+    expect(sessionApi.sendInput).toBe(api.sendSessionInput);
+    expect(sessionApi.respondPermission).toBe(api.respondPermission);
+    expect(sessionApi.setMode).toBe(api.setAgentMode);
   });
 });

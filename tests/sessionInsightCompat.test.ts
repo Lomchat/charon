@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   hideInternalCodexSubagents,
   normalizeCodexContextUsage,
-} from '../lib/server/claude/sessionInsightCompat';
+} from '../lib/server/hub/sessionInsightCompat';
 
 describe('Codex session insight rolling compatibility', () => {
   it('uses the latest request footprint instead of lifetime compute', () => {

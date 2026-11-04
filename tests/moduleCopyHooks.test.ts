@@ -10,9 +10,9 @@ import type { Vps } from '@/lib/db/schema';
 // `let`s, every one of these read null in copy 2.
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: vi.fn(async () => []) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: vi.fn(async () => []) }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -31,7 +31,7 @@ vi.mock('@/lib/server/agent/usagePoll', () => ({ armUsageWatch: vi.fn(), armCode
 vi.mock('@/lib/server/agent/loginSweeps', () => ({ sweepProviderLogins: vi.fn() }));
 vi.mock('@/lib/server/agent/shellNotify', () => ({ ensureShellIdleWatch: vi.fn() }));
 vi.mock('@/lib/server/agent/accountProfiles', () => ({ armAccountProfileWatch: vi.fn() }));
-vi.mock('@/lib/server/claude/modelSync', () => ({ refreshModelsIfStale: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/modelSync', () => ({ refreshModelsIfStale: vi.fn(async () => {}) }));
 
 const VPS_ID = 'copyvps';
 const SID = 'd'.repeat(32);
@@ -54,12 +54,12 @@ async function twoCopies(): Promise<[Ops, Ops]> {
 function stream(ops: Ops, kind: 'claude' | 'codex' = 'claude') {
   return new ops.SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'thinking',
-    permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', claudeSessionId: null, kind,
+    permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', nativeSessionId: null, kind,
   }) as any;
 }
 
 function unreadStop(): number {
-  return db.select().from(schema.claudeSessions).all().find((r: any) => r.id === SID)?.unreadStop;
+  return db.select().from(schema.agentSessions).all().find((r: any) => r.id === SID)?.unreadStop;
 }
 
 beforeAll(async () => {
@@ -71,13 +71,13 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root' })
     .onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
 });
 
 beforeEach(() => {
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudeSessions).run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'thinking' }).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.agentSessions).run();
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'thinking' }).run();
 });
 
 describe('hook slots shared by every module copy', () => {

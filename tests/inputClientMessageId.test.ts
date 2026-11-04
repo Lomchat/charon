@@ -22,9 +22,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => ({}),
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -41,7 +41,7 @@ let subscribeGlobalSessionEvents: any;
 let POST: any;
 
 function userRows() {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === SID && r.role === 'user')
     .sort((a: any, b: any) => a.id - b.id);
 }
@@ -58,7 +58,7 @@ function busFrames() {
 }
 
 function post(body: unknown) {
-  return POST(new Request(`http://localhost/api/claude/sessions/${SID}/input`, {
+  return POST(new Request(`http://localhost/api/sessions/${SID}/input`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   }), { params: Promise.resolve({ id: SID }) });
 }
@@ -71,10 +71,10 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ getOrCreateStream, subscribeGlobalSessionEvents } = await import('@/lib/server/agent/sessionOps'));
-  ({ POST } = await import('@/app/api/claude/sessions/[id]/input/route'));
+  ({ POST } = await import('@/app/api/sessions/[id]/input/route'));
 });
 
 beforeEach(() => {
@@ -84,10 +84,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
   db.delete(schema.sessionScheduledResumes).run();
   db.delete(schema.tabs).run();
-  db.update(schema.claudeSessions).set({ pendingAssistantMessageId: null, status: 'active' }).run();
+  db.update(schema.agentSessions).set({ pendingAssistantMessageId: null, status: 'active' }).run();
 });
 
 describe('sendUserMessage with a clientMessageId', () => {
@@ -181,8 +181,8 @@ describe('POST /input', () => {
   });
 
   it('announces tabs_changed only when pinning changed a tab', async () => {
-    const { openTab } = await import('@/lib/server/claude/tabs');
-    const { pinTabForRef } = await import('@/lib/server/claude/tabs');
+    const { openTab } = await import('@/lib/server/hub/tabs');
+    const { pinTabForRef } = await import('@/lib/server/hub/tabs');
     // No tab for the session: nothing pinned, nothing announced.
     let bus = busFrames();
     await post({ content: 'one', clientMessageId: 'tab-1' });
@@ -203,11 +203,11 @@ describe('scheduled resume', () => {
   it('clears the pending-assistant pointer with its user row and names that row on the echo', async () => {
     vi.useFakeTimers({ now: Date.now() });
     const s = getOrCreateStream(SID);
-    const answer = Number(db.insert(schema.claudeSessionMessages).values({
+    const answer = Number(db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'an answer of the turn before', assistantFinal: 0, tsMs: Date.now() - 10_000,
     }).run().lastInsertRowid);
-    db.update(schema.claudeSessions).set({ pendingAssistantMessageId: answer }).where(eq(schema.claudeSessions.id, SID)).run();
-    const source = Number(db.insert(schema.claudeSessionMessages).values({
+    db.update(schema.agentSessions).set({ pendingAssistantMessageId: answer }).where(eq(schema.agentSessions.id, SID)).run();
+    const source = Number(db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'error', content: '{}', tsMs: Date.now() - 5_000,
     }).run().lastInsertRowid);
     const { createScheduledResume, runScheduledResumesDue } = await import('@/lib/server/agent/scheduledResume');
@@ -218,7 +218,7 @@ describe('scheduled resume', () => {
     off();
     const sent = db.select().from(schema.sessionScheduledResumes).all().find((r: any) => r.id === job.id);
     expect(sent.status).toBe('sent');
-    const session = db.select().from(schema.claudeSessions).all().find((r: any) => r.id === SID);
+    const session = db.select().from(schema.agentSessions).all().find((r: any) => r.id === SID);
     expect(session.pendingAssistantMessageId).toBeNull();
     expect(seen.filter((f) => f.type === 'user_echo')).toEqual([expect.objectContaining({
       rowId: sent.userMessageId, clientMessageId: sent.clientMessageId,

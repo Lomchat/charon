@@ -3,7 +3,7 @@
 //
 // Lists every paused session of the fleet in the sidebar's own tree (folder →
 // VPS → path), each with the day and time of its last message, and deletes
-// whatever is ticked in ONE request (`/api/claude/sessions/bulk-delete`).
+// whatever is ticked in ONE request (`/api/sessions/bulk-delete`).
 // Order, filters and the meaning of a group checkbox live in
 // `pausedCleanup.ts`; this file only draws them.
 //
@@ -192,8 +192,8 @@ export default function PausedSessionsModal({
   const showFolders = tree.folders.length > 1 || (tree.folders[0] && tree.folders[0].key !== 'default');
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="claude-modal paused-cleanup" role="dialog" aria-modal="true" aria-label="Paused sessions">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="app-modal paused-cleanup" role="dialog" aria-modal="true" aria-label="Paused sessions">
         <div className="pc-head">
           <span className="confirm-ico"><IconTrash /></span>
           <div className="pc-title">
@@ -209,7 +209,7 @@ export default function PausedSessionsModal({
         </div>
 
         <div className="pc-tools">
-          {/* A div, not a label: `.claude-modal label` restyles both itself
+          {/* A div, not a label: `.app-modal label` restyles both itself
               and the input inside it as a form field caption. */}
           <div className="pc-search">
             <IconSearch />

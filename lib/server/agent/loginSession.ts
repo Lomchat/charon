@@ -1,12 +1,12 @@
 import 'server-only';
 import { randomBytes } from 'crypto';
-import { shQuote } from '@/lib/server/claude/sshExec';
+import { shQuote } from '@/lib/server/hub/sshExec';
 import { requireAccountProfile, readProfileStatus } from './accountProfiles';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { getSetting } from '@/lib/server/claude/settings';
+import { getSetting } from '@/lib/server/hub/settings';
 import { KNOWN_HOSTS_PATH, controlPath } from '@/lib/server/agent/sshShared.js';
 import { readClaudeAuthStatus, type ClaudeAccount } from './claudeLoginCheck';
 import { emitGlobalVpsStatus } from './sessionOps';

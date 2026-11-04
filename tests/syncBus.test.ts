@@ -7,8 +7,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: async () => ({ userId: 'u' }) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -525,7 +525,7 @@ describe('publishers and the legacy SSE route on the bus', () => {
     dbMod.db.insert(dbMod.vps).values({ id: VPS, name: 'v', ip: '127.0.0.1', sshUser: 'root' })
       .onConflictDoNothing().run();
     for (const id of [S1, S2]) {
-      dbMod.db.insert(dbMod.claudeSessions).values({
+      dbMod.db.insert(dbMod.agentSessions).values({
         id, vpsId: VPS, name: id.slice(0, 4), cwd: '/tmp', status: 'active',
       }).onConflictDoNothing().run();
     }
@@ -551,7 +551,7 @@ describe('publishers and the legacy SSE route on the bus', () => {
   });
 
   it('model notices are published as a LOW bus frame when the ledger changes', async () => {
-    const { observeModels, getModelNotices } = await import('@/lib/server/claude/modelNotices');
+    const { observeModels, getModelNotices } = await import('@/lib/server/hub/modelNotices');
     const seen: Array<{ route: string; data: Record<string, unknown> }> = [];
     const off = bus.subscribeFrames((f) => { seen.push({ route: f.route, data: frames(text(f.chunk))[0].data }); });
     try {
@@ -563,10 +563,10 @@ describe('publishers and the legacy SSE route on the bus', () => {
   });
 
   it('legacy route: snapshot without ids, then a heartbeat at currentRev, then id-stamped bus frames', async () => {
-    const { GET } = await import('@/app/api/claude/events/route');
+    const { GET } = await import('@/app/api/events/route');
     const ac = new AbortController();
     const res = await GET(new Request(
-      `http://localhost/api/claude/events?conn=conn-route-0001&focus=${S1}&focusSeq=1`,
+      `http://localhost/api/events?conn=conn-route-0001&focus=${S1}&focusSeq=1`,
       { signal: ac.signal },
     ));
     expect(res.headers.get('content-type')).toBe('text/event-stream; charset=utf-8');

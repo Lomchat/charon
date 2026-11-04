@@ -26,9 +26,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -45,7 +45,7 @@ let schema: any;
 let getOrCreateStream: any;
 let conns: typeof import('@/lib/server/agent/eventConnections');
 let bus: typeof import('@/lib/server/sync/syncBus');
-let GET: typeof import('@/app/api/claude/sessions/[id]/route').GET;
+let GET: typeof import('@/app/api/sessions/[id]/route').GET;
 
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
@@ -56,19 +56,19 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   for (const id of [SID, OTHER]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
   }
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ getOrCreateStream } = await import('@/lib/server/agent/sessionOps'));
   conns = await import('@/lib/server/agent/eventConnections');
   bus = await import('@/lib/server/sync/syncBus');
-  ({ GET } = await import('@/app/api/claude/sessions/[id]/route'));
+  ({ GET } = await import('@/app/api/sessions/[id]/route'));
 });
 
 const unregs: Array<() => void> = [];
 afterEach(() => {
   for (const u of unregs.splice(0)) u();
-  db.delete(schema.claudeSessionMessages).run();
+  db.delete(schema.sessionMessages).run();
 });
 
 let seqN = 100;
@@ -96,7 +96,7 @@ function liveConn(connId: string, focus: string | null = OTHER) {
 }
 
 async function windowGet(query = '') {
-  const res = await GET(new Request(`http://localhost/api/claude/sessions/${SID}?open=1${query}`),
+  const res = await GET(new Request(`http://localhost/api/sessions/${SID}?open=1${query}`),
     { params: Promise.resolve({ id: SID }) });
   return res.json();
 }
@@ -153,7 +153,7 @@ describe('atomic focus inside the window GET', () => {
     const body = await windowGet();
     expect(body).not.toHaveProperty('focus');
     expect(body.sync.epoch).toBe(bus.epoch());
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: SID, role: 'user', content: 'u1', tsMs: T0 + 1 },
       { sessionId: SID, role: 'user', content: 'u2', tsMs: T0 + 2 },
     ]).run();
@@ -193,7 +193,7 @@ describe('delta GET (?since=) and the lane coalescer (W2 review)', () => {
     s._onAgentEvent(ev('assistant_text', { delta: 'Hello ' }));
     s._onAgentEvent(ev('assistant_text', { delta: 'world' }));
     expect(got.some((f) => f.data.type === 'assistant_text')).toBe(false);
-    const res = await GET(new Request(`http://localhost/api/claude/sessions/${SID}?since=0`),
+    const res = await GET(new Request(`http://localhost/api/sessions/${SID}?since=0`),
       { params: Promise.resolve({ id: SID }) });
     const body = await res.json();
     expect(body.streamingText).toBe('Hello world');
@@ -236,7 +236,7 @@ describe('streamingToolOutput (I6 covered)', () => {
     expect(body.streamingToolOutput.at(-1).text).toBe('o2+');
     s._onAgentEvent(ev('stop', { subtype: 'success' }));
     expect(s.getStreamingToolOutput()).toEqual([]);
-    db.update(schema.claudeSessions).set({ status: 'active', unreadStop: 0 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ status: 'active', unreadStop: 0 }).where(eq(schema.agentSessions.id, SID)).run();
   });
 
   it('a non-live status clears it', () => {

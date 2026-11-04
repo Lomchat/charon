@@ -9,10 +9,10 @@ const mocks = vi.hoisted(() => ({
   subscribe: vi.fn(), resubscribe: vi.fn(),
 }));
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/bootstrap', () => ({ updateVpsAgent: mocks.update }));
+vi.mock('@/lib/server/hub/bootstrap', () => ({ updateVpsAgent: mocks.update }));
 vi.mock('@/lib/server/agent/autoConnect', () => ({ armAgentClientHooks: vi.fn() }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn() }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn() }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(), sendQuestionToTelegram: vi.fn(),
   markInteractionResolvedInTelegram: vi.fn(), sendPlainToTelegram: vi.fn(),
 }));
@@ -24,11 +24,11 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   holdAgentConnection: mocks.hold,
 }));
 let db: any, schema: any, ops: typeof import('@/lib/server/agent/sessionOps');
-let runUpdate: typeof import('@/lib/server/claude/agentUpdate').runAgentUpdateFlow;
+let runUpdate: typeof import('@/lib/server/hub/agentUpdate').runAgentUpdateFlow;
 let vps: any, sid: string;
 let counter = 0;
-const row = () => db.select().from(schema.claudeSessions).all().find((r: any) => r.id === sid);
-const logs = () => db.select().from(schema.claudeSessionLogs).all().filter((r: any) => r.sessionId === sid);
+const row = () => db.select().from(schema.agentSessions).all().find((r: any) => r.id === sid);
+const logs = () => db.select().from(schema.sessionLogs).all().filter((r: any) => r.sessionId === sid);
 
 beforeAll(async () => {
   schema = await import('@/lib/db'); db = schema.db;
@@ -38,13 +38,13 @@ beforeAll(async () => {
   db.insert(schema.vps).values({ id: 'update-vps', name: 'test', ip: '127.0.0.1', sshUser: 'root' }).run();
   vps = db.select().from(schema.vps).get();
   ops = await import('@/lib/server/agent/sessionOps');
-  ({ runAgentUpdateFlow: runUpdate } = await import('@/lib/server/claude/agentUpdate'));
+  ({ runAgentUpdateFlow: runUpdate } = await import('@/lib/server/hub/agentUpdate'));
 });
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks();
   sid = `update-session-${++counter}`;
-  db.delete(schema.claudeSessions).run();
-  db.insert(schema.claudeSessions).values({ id: sid, vpsId: vps.id, cwd: '/tmp', status: 'active' }).run();
+  db.delete(schema.agentSessions).run();
+  db.insert(schema.agentSessions).values({ id: sid, vpsId: vps.id, cwd: '/tmp', status: 'active' }).run();
   mocks.update.mockImplementation(async () => ({ ok: true, detail: 'updated' }));
   mocks.call.mockImplementation(async (method: string) => method === 'list_sessions'
     ? [{ session_id: sid, status: 'active' }] : { ok: true, status: 'starting' });
@@ -114,7 +114,7 @@ describe('post-update recovery', () => {
   });
 
   it('preserves pending resume at starting, then clears it on a live active event', async () => {
-    db.update(schema.claudeSessions).set({ resumePending: 1 }).run();
+    db.update(schema.agentSessions).set({ resumePending: 1 }).run();
     const stream = await ops.resumeSession(sid);
     expect(row().resumePending).toBe(1);
     (stream as any)._onAgentEvent({ event: 'status', session_id: sid, status: 'active' });
@@ -122,7 +122,7 @@ describe('post-update recovery', () => {
   });
 
   it('keeps the intent when reconnect sees starting and retries an errored startup', async () => {
-    db.update(schema.claudeSessions).set({ resumePending: 1, status: 'starting' }).run();
+    db.update(schema.agentSessions).set({ resumePending: 1, status: 'starting' }).run();
     await ops.reconcileVpsAgentState(vps.id, [{ session_id: sid, status: 'starting' } as any]);
     expect(row().resumePending).toBe(1);
     expect(mocks.call).not.toHaveBeenCalled();

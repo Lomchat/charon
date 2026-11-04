@@ -28,7 +28,7 @@ export type PanelLayout = {
 
 export const PANEL_LAYOUT_COOKIE = 'charon_panels';
 
-/** `min` is the closed width (mirrored in claude.css), `def` what a
+/** `min` is the closed width (mirrored in app.css), `def` what a
  *  double-click restores and the size a hover-peek opens at. */
 export const PANEL_BOUNDS: Record<PanelId, { min: number; def: number; max: number }> = {
   side: { min: 56, def: 280, max: 560 },
@@ -50,7 +50,7 @@ export const PANEL_WIDTH_KEY: Record<PanelId, 'sideW' | 'toolsW'> = { side: 'sid
 export const PANEL_LAST_KEY: Record<PanelId, 'sideLast' | 'toolsLast'> = { side: 'sideLast', tools: 'toolsLast' };
 
 /** How a column lays its contents out at a width, as `data-side` /
- *  `data-tools` on the grid (claude.css § SIDE COLUMNS). Sidebar: icons only
+ *  `data-tools` on the grid (app.css § SIDE COLUMNS). Sidebar: icons only
  *  (also the closed state), then cards with names but no state pill, then
  *  everything. ToolPanel: its activity bar alone when closed, the bar beside
  *  the body otherwise. */

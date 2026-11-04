@@ -5,7 +5,7 @@ import type { Vps } from '@/lib/db/schema';
 import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
-import { ensureAgentRunning } from '@/lib/server/claude/bootstrap';
+import { ensureAgentRunning } from '@/lib/server/hub/bootstrap';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 

@@ -18,7 +18,7 @@
 // an outside press or opening a session. Desktop CSS ignores the fold and
 // hides the toggle.
 import { memo, useCallback, useEffect, useRef, useState, type WheelEvent } from 'react';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 import type { AccountGroup } from '@/lib/accountGroups';
 import { providerText } from '@/lib/providerText';
@@ -47,7 +47,7 @@ type ItemProps = {
   selected?: boolean;
 };
 
-// Memoized: ClaudePanel re-renders on every drawer/modal/selection change;
+// Memoized: HubPanel re-renders on every drawer/modal/selection change;
 // an item only re-renders when its group, its usage or the selection moves.
 export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRefreshUsage, vpsName, selectedId, onOpen, current, selected }: ItemProps) {
   // The usage popover and the sessions panel share one anchor: exactly one
@@ -73,12 +73,12 @@ export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRef
   // the panel's hover bridge to the real item→panel gap (`--acct-pop-gap`).
   function place() {
     const el = menu.wrapRef.current;
-    const head = el?.closest('.claude-head');
+    const head = el?.closest('.app-head');
     if (!el || !head) return;
     const box = el.getBoundingClientRect();
     const headBox = head.getBoundingClientRect();
     el.style.setProperty('--acct-pop-x', `${Math.round(box.left - headBox.left)}px`);
-    // Panel top = header bottom + 2px (claude.css § .acct-nav-panel).
+    // Panel top = header bottom + 2px (app.css § .acct-nav-panel).
     el.style.setProperty('--acct-pop-gap', `${Math.max(0, Math.ceil(headBox.bottom - box.bottom) + 2)}px`);
   }
 

@@ -4,7 +4,7 @@ import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
-import { webUrlFromRemote } from '@/lib/server/claude/git';
+import { webUrlFromRemote } from '@/lib/server/hub/git';
 import type { FsEntry, FsListResponse } from '@/lib/types/api';
 
 // GET /api/vps/[id]/fs/list?root=<session cwd>&path=<rel>[&git=1]

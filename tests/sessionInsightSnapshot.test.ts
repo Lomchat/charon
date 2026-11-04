@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
 
 const { readSessionInsightSnapshot } = await import(
-  '@/lib/server/claude/sessionInsightSnapshot'
+  '@/lib/server/hub/sessionInsightSnapshot'
 );
 
 let sequence = 0;

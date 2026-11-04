@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { fileToolCall, rootAndPath } from '@/lib/server/claude/fileToolsRpc';
-import { invalidateGitStatus } from '@/lib/server/claude/git';
+import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
+import { invalidateGitStatus } from '@/lib/server/hub/git';
 
 export const dynamic = 'force-dynamic';
 

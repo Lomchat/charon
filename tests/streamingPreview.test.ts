@@ -78,11 +78,11 @@ describe('reconcileStreamingPreview', () => {
 // The other half of the fix: a cached response is HISTORY. Storing the live
 // preview with it is what replayed a dead turn's text into a fresh mount.
 describe('sessionCache', () => {
-  const getClaudeSession = vi.fn();
-  beforeEach(() => { vi.resetModules(); getClaudeSession.mockReset(); });
+  const getAgentSession = vi.fn();
+  beforeEach(() => { vi.resetModules(); getAgentSession.mockReset(); });
 
   async function load() {
-    vi.doMock('@/lib/api', () => ({ api: { getClaudeSession } }));
+    vi.doMock('@/lib/api', () => ({ api: { getAgentSession } }));
     return import('@/app/sessionCache');
   }
 
@@ -93,7 +93,7 @@ describe('sessionCache', () => {
 
   it('returns the live preview to the caller but never stores it', async () => {
     const { fetchAndCache, getCached } = await load();
-    getClaudeSession.mockResolvedValue(response('half a sent'));
+    getAgentSession.mockResolvedValue(response('half a sent'));
 
     const fresh = await fetchAndCache('s1', { force: true });
     // The caller opening a session that IS streaming still gets its preview…
@@ -105,7 +105,7 @@ describe('sessionCache', () => {
 
   it('stores the open reasoning block (`streamingThinking`) blanked too', async () => {
     const { fetchAndCache, getCached } = await load();
-    getClaudeSession.mockResolvedValue({ ...response(''), streamingThinking: 'half a thou' });
+    getAgentSession.mockResolvedValue({ ...response(''), streamingThinking: 'half a thou' });
     const fresh = await fetchAndCache('s1', { force: true });
     expect(fresh.streamingThinking).toBe('half a thou');
     expect(getCached('s1')?.streamingThinking).toBe('');
@@ -115,7 +115,7 @@ describe('sessionCache', () => {
 
   it('leaves a response without a preview untouched', async () => {
     const { fetchAndCache, getCached } = await load();
-    getClaudeSession.mockResolvedValue(response(''));
+    getAgentSession.mockResolvedValue(response(''));
     const fresh = await fetchAndCache('s1', { force: true });
     expect(getCached('s1')).toBe(fresh);
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeAttachmentName, previewMimeFor } from '../lib/server/claude/attachmentNames';
+import { sanitizeAttachmentName, previewMimeFor } from '../lib/server/hub/attachmentNames';
 
 // ── Session attachments ──────────────────────────────────────────────────────
 // Two pure functions carry the load of the drag & drop feature, and both fail

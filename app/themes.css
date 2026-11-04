@@ -1,6 +1,6 @@
 /* ── Theme tokens ───────────────────────────────────────────────────────────
    The ONLY place a literal colour is allowed. Every other stylesheet
-   (globals.css, agent-ui.css, the ~6000 lines of claude.css) consumes the
+   (globals.css, agent-ui.css, the ~6000 lines of app.css) consumes the
    semantic names below and never a hex or an rgba(). §11
 
    Two tiers on purpose:

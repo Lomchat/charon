@@ -15,7 +15,7 @@
 //    between (a tool call, a turn_usage close, a hub-stamped bg_task…);
 //  - every row is mergeable thinking (`isMergeableThinking`);
 //  - every row has `seq IS NULL`, or a seq at or below the session's durable
-//    cursor (`claude_sessions.last_seen_seq`): rows above it are still
+//    cursor (`agent_sessions.last_seen_seq`): rows above it are still
 //    replayed by identity after the restart and must keep their own seq
 //    (the runner passes NO cursor for a session whose seqs restarted — a
 //    recreated agent log, compact-thinking.mjs § seqEpochSuspect);
@@ -35,7 +35,7 @@ export const DELTA_KINDS = Object.freeze(['codex', 'cursor']);
 export const DEFAULT_MAX_CHARS = 262144;
 
 /**
- * One `claude_session_messages` row as the runner reads it. `content` is only
+ * One `session_messages` row as the runner reads it. `content` is only
  * needed for `role='event'` rows; `wnull` is `wire_content IS NULL` (1/0).
  * The rebuild key is `k` when present, else `coalesce(ts_ms, created_at*1000)`.
  * @typedef {{

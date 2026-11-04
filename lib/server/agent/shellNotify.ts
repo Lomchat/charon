@@ -1,8 +1,8 @@
 import 'server-only';
 import { and, eq } from 'drizzle-orm';
 import { db, shells as shellsTable, vps as vpsTable } from '@/lib/db';
-import { sendPushToAll } from '@/lib/server/claude/webPush';
-import { sendPlainToTelegram } from '@/lib/server/claude/telegram';
+import { sendPushToAll } from '@/lib/server/hub/webPush';
+import { sendPlainToTelegram } from '@/lib/server/hub/telegram';
 import { emitGlobalShellStatus, emitGlobalShellUnread } from './sessionOps';
 import { hubHooks } from './hubHooks';
 import type { AgentClient } from './AgentClient';
@@ -132,7 +132,7 @@ export function markShellFinished(shellId: string, lastOutputAtMs?: number | nul
   if (res.changes > 0) emitGlobalShellUnread(shellId, true);
 }
 
-/** Attended focus on the shell (POST /api/claude/focus): it is read.
+/** Attended focus on the shell (POST /api/focus): it is read.
  *  Writes and publishes only when it was unread. */
 export function markShellRead(shellId: string): void {
   try {

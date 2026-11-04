@@ -23,13 +23,13 @@ db.prepare(
    VALUES (?, 'scroll-test', '192.0.2.10', 'root', 22, 'default', 0, 'ok')`,
 ).run(VPS_ID);
 db.prepare(
-  `INSERT OR REPLACE INTO claude_sessions (id, vps_id, cwd, name, status, permission_mode, kind, created_at)
+  `INSERT OR REPLACE INTO agent_sessions (id, vps_id, cwd, name, status, permission_mode, kind, created_at)
    VALUES (?, ?, '/srv/scrolltest', 'scroll repro', 'sleeping', 'normal', 'claude', unixepoch())`,
 ).run(SESSION_ID, VPS_ID);
-db.prepare('DELETE FROM claude_session_messages WHERE session_id = ?').run(SESSION_ID);
+db.prepare('DELETE FROM session_messages WHERE session_id = ?').run(SESSION_ID);
 
 const ins = db.prepare(
-  `INSERT INTO claude_session_messages (session_id, role, content, created_at, ts_ms, seq, model)
+  `INSERT INTO session_messages (session_id, role, content, created_at, ts_ms, seq, model)
    VALUES (?, ?, ?, ?, ?, ?, ?)`,
 );
 
@@ -63,5 +63,5 @@ db.transaction(() => {
   }
 })();
 
-const n = db.prepare('SELECT count(*) c FROM claude_session_messages WHERE session_id = ?').get(SESSION_ID);
+const n = db.prepare('SELECT count(*) c FROM session_messages WHERE session_id = ?').get(SESSION_ID);
 console.log(`seeded ${n.c} rows in ${DB} · session=${SESSION_ID}`);

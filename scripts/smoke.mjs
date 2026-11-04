@@ -204,8 +204,8 @@ async function main() {
       const { default: Database } = await import('better-sqlite3');
       const sdb = new Database(DB_PATH);
       const now = Math.floor(Date.now() / 1000);
-      sdb.prepare(`INSERT INTO claude_sessions
-        (id,claude_session_id,vps_id,cwd,name,status,permission_mode,created_at,last_used_at,color,model,effort,sleep_requested)
+      sdb.prepare(`INSERT INTO agent_sessions
+        (id,native_session_id,vps_id,cwd,name,status,permission_mode,created_at,last_used_at,color,model,effort,sleep_requested)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)`)
         .run('s_smoke', 'uuid-s_smoke', body.id, '/srv/app', 'smoke session probe',
              'active', 'normal', now - 60, now - 10, '#7c9cff', 'claude-opus-4-8', 'high');

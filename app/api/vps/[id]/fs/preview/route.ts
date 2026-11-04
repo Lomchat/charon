@@ -5,8 +5,8 @@ import { requireApiSession } from '@/lib/server/session';
 import {
   isLiveHtmlName, livePreviewScope, livePreviewUrl, parseLivePreviewPath,
 } from '@/lib/livePreview';
-import { LIVE_PREVIEW_TTL_SECS, signLivePreviewToken } from '@/lib/server/claude/livePreviewToken';
-import { livePreviewKey } from '@/lib/server/claude/livePreviewAuth';
+import { LIVE_PREVIEW_TTL_SECS, signLivePreviewToken } from '@/lib/server/hub/livePreviewToken';
+import { livePreviewKey } from '@/lib/server/hub/livePreviewAuth';
 import type { FsLivePreviewBody, FsLivePreviewResponse } from '@/lib/types/api';
 
 // POST /api/vps/[id]/fs/preview  { root, path }  →  { ok, url, expiresAt }

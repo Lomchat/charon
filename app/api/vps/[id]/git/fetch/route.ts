@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitFetch } from '@/lib/server/claude/git';
+import { gitFetch } from '@/lib/server/hub/git';
 
 // POST /api/vps/[id]/git/fetch  { cwd, repo? }
 //

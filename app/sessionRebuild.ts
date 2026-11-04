@@ -1,16 +1,16 @@
 // Reconstruction of a session state from messages persisted in the DB
 // (used at mount, session switch, tab return).
 //
-// Used by the chat view (ClaudeSessionView via useClaudeSessionStream). It was
+// Used by the chat view (SessionView via useSessionStream). It was
 // once duplicated identically on the old separate mobile view (since folded
 // into the responsive `/`, CLAUDE.md §11) with a "copied from
-// ClaudePanel.rebuildStateFromMessages" comment; extracting it here killed
+// HubPanel.rebuildStateFromMessages" comment; extracting it here killed
 // that fork.
 
 import type {
   Msg, ToolCallEntry, EditSnapshot,
 } from './sessionTypes';
-import type { WorkerStatus } from '@/lib/server/claude/types';
+import type { WorkerStatus } from '@/lib/server/hub/types';
 import {
   applyBgTaskEvent, bgTasksToArray, isBgLaunchToolUse, markRunningBgTasksStale,
   type BgTask, type BgLaunchCandidate,
@@ -23,7 +23,7 @@ import { appendThinkingMessage, closeThinkingMessage } from './thinkingMessages'
 import { parseAsyncQuestion, resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
 
-// Shape of a message as it comes from the `GET /api/claude/sessions/[id]` API.
+// Shape of a message as it comes from the `GET /api/sessions/[id]` API.
 // Deliberately permissive (the `role` values in the DB are free-form strings).
 export type PersistedMessage = {
   id: number;
@@ -253,7 +253,7 @@ export function rebuildStateFromMessages(
     }
     if (m.role === 'tool_result') {
       // Re-pair the result onto its tool call (mirror of the live tool_result
-      // handler in useClaudeSessionStream). Keeps `result` populated across a
+      // handler in useSessionStream). Keeps `result` populated across a
       // full refetch so currentTool / ThinkingBar and the ToolPanel stay right.
       try {
         const parsed = JSON.parse(m.content);

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { invalidateGitStatus } from '@/lib/server/claude/git';
-import { cancelUpload, writeUploadChunk } from '@/lib/server/claude/fsUpload';
+import { invalidateGitStatus } from '@/lib/server/hub/git';
+import { cancelUpload, writeUploadChunk } from '@/lib/server/hub/fsUpload';
 import { FS_UPLOAD_CHUNK_BYTES } from '@/lib/fsUpload';
 import type { FsUploadResponse } from '@/lib/types/api';
 

@@ -32,7 +32,7 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
 
   // 259 live rows: seqs 1..260 EXCEPT 20 (its persist "failed"). A user row
   // sits after seq 100 to pin the anchoring rule. Then the REPAIR of seq 20
@@ -46,26 +46,26 @@ beforeAll(async () => {
   const at = (s: number, offsetMs = 0) => BASE + s * 1000 + offsetMs;
   for (let s = 1; s <= 260; s++) {
     if (s === 20) continue;
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: `msg-${s}`, seq: s, tsMs: at(s),
     }).run();
     if (s === 100) {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: SID, role: 'user', content: 'user-after-100', seq: null, tsMs: at(100, 1),
       }).run();
     }
     // one attachment riding right after seq 150 (must follow its page)
     if (s === 150) {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: SID, role: 'event', content: '{"type":"bg_task","kind":"started"}', seq: null, tsMs: at(150, 1),
       }).run();
     }
   }
-  db.insert(schema.claudeSessionMessages).values({
+  db.insert(schema.sessionMessages).values({
     sessionId: SID, role: 'assistant', content: 'msg-20-REPAIRED', seq: 20, tsMs: at(20),
   }).run();
 
-  ({ loadMessageWindow } = await import('@/lib/server/claude/messageWindow'));
+  ({ loadMessageWindow } = await import('@/lib/server/hub/messageWindow'));
 });
 
 describe('chronological pagination with a repaired row (Codex 18)', () => {
@@ -111,11 +111,11 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
 
   it('attachments PARTITION across pages: boundary/leading/trailing all owned exactly once (Codex 20)', () => {
     const BSID = 'd'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: BSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
-    const addChat = (s: number) => db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.agentSessions).values({ id: BSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    const addChat = (s: number) => db.insert(schema.sessionMessages).values({
       sessionId: BSID, role: 'assistant', content: `c-${s}`, seq: s,
     }).run();
-    const addEvent = (label: string) => db.insert(schema.claudeSessionMessages).values({
+    const addEvent = (label: string) => db.insert(schema.sessionMessages).values({
       sessionId: BSID, role: 'event', content: `{"type":"bg_task","label":"${label}"}`, seq: null,
     }).run();
     // Layout (insertion = chronological): E-lead, c1..5, E-after-5, c6..15,
@@ -160,9 +160,9 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
 
   it('side-channel-only session: attachments are still served, bounded (Codex 22.1)', () => {
     const ESID = 'e'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: ESID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id: ESID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
     for (let i = 1; i <= 15; i++) {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: ESID, role: 'event', content: `{"type":"replay_gap","n":${i}}`, seq: null,
       }).run();
     }
@@ -176,7 +176,7 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
     expect(win.oldestChatId).toBeNull(); // no chat cursor to hand out
     // and a truly empty session still returns empty
     const NSID = 'f'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: NSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id: NSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
     const empty = loadMessageWindow(NSID, 10, null);
     expect(empty.messages).toHaveLength(0);
     expect(empty.hasMore).toBe(false);
@@ -184,9 +184,9 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
 
   it('pagination still exact on a fully-legacy session (all seq NULL → id order)', () => {
     const LEGACY = 'c'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: LEGACY, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id: LEGACY, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).onConflictDoNothing().run();
     for (let i = 1; i <= 25; i++) {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: LEGACY, role: 'assistant', content: `legacy-${i}`, seq: null,
       }).run();
     }
@@ -213,9 +213,9 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
 
   it('serves only latest edit metadata instead of every historical snapshot', () => {
     const SSID = '9'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: SSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).run();
+    db.insert(schema.agentSessions).values({ id: SSID, vpsId: VPS_ID, cwd: '/tmp', status: 'sleeping' }).run();
     for (let turn = 1; turn <= 20; turn++) {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: SSID, role: 'assistant', content: `turn-${turn}`, tsMs: 1_800_000_000_000 + turn * 10,
       }).run();
       for (const file of ['/a.ts', '/b.ts']) for (const phase of ['before', 'after']) {
@@ -223,7 +223,7 @@ describe('chronological pagination with a repaired row (Codex 18)', () => {
           type: 'edit_snapshot', file_path: file, phase,
           tool_use_id: `tool-${turn}`, content: 'x'.repeat(10_000),
         });
-        db.insert(schema.claudeSessionMessages).values({
+        db.insert(schema.sessionMessages).values({
           sessionId: SSID, role: 'edit_snapshot', content,
           wireContent: JSON.stringify({ file_path: file, phase, tool_use_id: `tool-${turn}`, content: null, contentStripped: true }),
           snapshotFilePath: file, snapshotPhase: phase, snapshotToolUseId: `tool-${turn}`,

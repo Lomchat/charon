@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitDiscard } from '@/lib/server/claude/git';
+import { gitDiscard } from '@/lib/server/hub/git';
 
 // POST /api/vps/[id]/git/discard  { cwd, paths[] }
 //

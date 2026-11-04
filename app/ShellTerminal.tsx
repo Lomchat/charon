@@ -10,7 +10,7 @@ type Props = {
   cwd: string | null;
   onKilled: () => void;
   // When false, this terminal is mounted but hidden (its slot has
-  // display:none in ClaudePanel — see §14 gotcha 37). xterm gets 0
+  // display:none in HubPanel — see §14 gotcha 37). xterm gets 0
   // dimensions while hidden so the FitAddon can't measure; we skip
   // fitting and re-fit + focus on the rAF after `active` flips back
   // to true. Defaults to true (mobile + standalone callers).

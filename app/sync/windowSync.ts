@@ -1,5 +1,5 @@
 // ONE window GET per transcript at a time (sync refonte C16, CLAUDE.md
-// §14.107). React-free controller; `useClaudeSessionStream` instantiates one.
+// §14.107). React-free controller; `useSessionStream` instantiates one.
 //
 // Transcript = snapshot@R + frames>R. A request starts the journal; frames
 // delivered meanwhile are applied live AND journaled; the answer (stamped

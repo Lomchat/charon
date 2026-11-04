@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { sshExec } from '@/lib/server/hub/sshExec';
 import { readClaudeAuthStatus } from '@/lib/server/agent/claudeLoginCheck';
 import { stopLoginSession } from '@/lib/server/agent/loginSession';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';

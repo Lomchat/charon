@@ -2,14 +2,14 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getGitWorkspace } from '@/lib/server/claude/git';
+import { getGitWorkspace } from '@/lib/server/hub/git';
 
 // GET /api/vps/[id]/git/status?cwd=<path>[&force=1]
 //
 // Working-tree summary for the repo containing `cwd` — backs BOTH the
 // explorer (colours, branch, forge) and the git tab, which is why it is keyed on
 // (vpsId, cwd) and not on a session id: two sessions in the same repo share
-// one poll and must show the same number (cf. lib/server/claude/git.ts).
+// one poll and must show the same number (cf. lib/server/hub/git.ts).
 //
 // Always 200. `isRepo:false` is the normal answer for a non-git cwd (the UI
 // renders nothing), and an agent-level failure carries a `reason` the panel

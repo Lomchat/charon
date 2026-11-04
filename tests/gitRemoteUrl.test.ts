@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 // stubbed purely so the module graph loads.
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => null }));
 
-const { webUrlFromRemote } = await import('@/lib/server/claude/git');
+const { webUrlFromRemote } = await import('@/lib/server/hub/git');
 
 // The remote is a string out of a VPS's git config and the result goes into an
 // `<a href>`, so this function is a small trust boundary as well as a

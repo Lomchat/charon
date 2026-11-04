@@ -20,7 +20,7 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
 }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({ emitGlobalAccountProfiles: fake.emit, emitGlobalVpsStatus: vi.fn(), emitGlobalVpsRuntimeFromDb: vi.fn() }));
 vi.mock('@/lib/server/agent/usagePoll', () => ({ invalidateAccountProfileUsage: fake.invalidate }));
-vi.mock('@/lib/server/claude/codexModels', () => ({ invalidateCodexAccountModels: vi.fn() }));
+vi.mock('@/lib/server/hub/codexModels', () => ({ invalidateCodexAccountModels: vi.fn() }));
 
 import { db } from '@/lib/db';
 import { createAccountProfile, listAccountProfiles, profileStatuses, readProfileStatus,
@@ -29,7 +29,7 @@ import { createAccountProfile, listAccountProfiles, profileStatuses, readProfile
 beforeEach(() => {
   fake.call.mockReset(); fake.invalidate.mockReset(); fake.emit.mockReset();
   profileStatuses.clear();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.agentSessions).run();
   db.delete(schema.accountProfiles).run();
   db.delete(schema.vps).run();
   db.insert(schema.vps).values([
@@ -87,8 +87,8 @@ describe('VPS account profiles', () => {
 
   it('protects profiles used by paused or archived sessions', async () => {
     const profile = await createAccountProfile('a', 'codex', 'Work');
-    db.insert(schema.claudeSessions).values({ id: 'session', vpsId: 'a', cwd: '/project',
-      kind: 'codex', status: 'sleeping', archived: 1, codexConfig: JSON.stringify({ accountProfile: profile.id }) }).run();
+    db.insert(schema.agentSessions).values({ id: 'session', vpsId: 'a', cwd: '/project',
+      kind: 'codex', status: 'sleeping', archived: 1, providerConfig: JSON.stringify({ accountProfile: profile.id }) }).run();
     await expect(removeAccountProfile('a', 'codex', profile.id)).rejects.toThrow(/sessions/);
   });
 
@@ -156,8 +156,8 @@ describe('VPS account profiles', () => {
 
   it('reads redacted session metadata and legacy construction JSON consistently', () => {
     const config = { accountProfile: '0123456789abcdef', accountProfileNumber: 2 };
-    expect(accountProfileId({ ...config, codexConfig: undefined })).toBe(config.accountProfile);
-    expect(accountProfileNumber({ codexConfig: JSON.stringify(config) })).toBe(2);
+    expect(accountProfileId({ ...config, providerConfig: undefined })).toBe(config.accountProfile);
+    expect(accountProfileNumber({ providerConfig: JSON.stringify(config) })).toBe(2);
     expect(accountProfileId(null)).toBe('default');
   });
 });

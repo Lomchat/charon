@@ -41,7 +41,7 @@ import { FileIconSample } from './fileIcons';
 
 type Props = {
   onClose: () => void;
-  /** Passed by ClaudePanel — used to source the per-VPS Codex catalog for the
+  /** Passed by HubPanel — used to source the per-VPS Codex catalog for the
    *  codex-defaults pickers (first codex-capable VPS wins). */
   vpsList?: Vps[];
   /** Section to open on. Used by the "enable one in Settings" link the wizard
@@ -174,7 +174,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   }, [close, sessionSettings]);
 
   useEffect(() => {
-    api.getClaudeSettings().then((r) => setS(r)).catch(() => setS({}));
+    api.getSettings().then((r) => setS(r)).catch(() => setS({}));
   }, []);
 
   function set(k: string, v: string) {
@@ -211,7 +211,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     if (!s) return;
     setBusy(true);
     try {
-      const resp: any = await api.updateClaudeSettings(dirty);
+      const resp: any = await api.updateSettings(dirty);
       const rejected: string[] | undefined = resp?.rejected;
       delete resp?.rejected;
       if (rejected?.includes('claude.api_key')) {
@@ -236,7 +236,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const saved: any = await api.updateClaudeSettings(dirty); // persist the key first
+      const saved: any = await api.updateSettings(dirty); // persist the key first
       acceptSavedDisplaySettings(saved);
       if (saved?.rejected?.includes('claude.api_key')) {
         setSyncMsg({ ok: false, msg: 'key rejected — it must start with "sk-ant-". A browser autofill likely replaced it with your login password; retype the real Anthropic key.' });
@@ -260,7 +260,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
     setTesting(true);
     setTestResult(null);
     try {
-      const saved = await api.updateClaudeSettings(dirty); // persist first, then test
+      const saved = await api.updateSettings(dirty); // persist first, then test
       acceptSavedDisplaySettings(saved);
       await api.testTelegram();
       setTestResult({ ok: true, msg: 'test message sent ✓ — check Telegram' });
@@ -305,8 +305,8 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
 
   return (
     <>
-    <div style={sessionSettings ? { display: 'none' } : undefined} className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div className="claude-modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
+    <div style={sessionSettings ? { display: 'none' } : undefined} className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="app-modal settings-modal" role="dialog" aria-modal="true" aria-label="Settings">
         <button className="modal-close" onClick={close} aria-label="Close settings" title="Close settings">✕</button>
         <h2>settings</h2>
         {s == null && <div className="empty">loading…</div>}

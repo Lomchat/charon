@@ -198,20 +198,20 @@ export default function SessionInsight({
         apply: (value: any) => void;
       }> = [];
       if (hasResources) {
-        requests.push({ key: 'resources', path: `/api/claude/sessions/${sessionId}/resources`, apply: setResources });
+        requests.push({ key: 'resources', path: `/api/sessions/${sessionId}/resources`, apply: setResources });
       }
       if (capabilities.subagents !== 'none') {
-        requests.push({ key: 'subagents', path: `/api/claude/sessions/${sessionId}/subagents`, apply: setSubagents });
+        requests.push({ key: 'subagents', path: `/api/sessions/${sessionId}/subagents`, apply: setSubagents });
       }
       // NATIVE only: an `adapted` backend runs MCP servers Charon wired itself
       // and has no inventory API to report them (§14.103).
       if (capabilities.mcp === 'native') {
-        requests.push({ key: 'mcp', path: `/api/claude/sessions/${sessionId}/mcp`, apply: setMcp });
+        requests.push({ key: 'mcp', path: `/api/sessions/${sessionId}/mcp`, apply: setMcp });
       }
       if (hasSecurity) {
         requests.push({
           key: 'security',
-          path: `/api/claude/sessions/${sessionId}/security`,
+          path: `/api/sessions/${sessionId}/security`,
           apply: setSecurity,
         });
       }
@@ -302,7 +302,7 @@ export default function SessionInsight({
   const openTranscript = useCallback(async (id: string) => {
     if (openAgent === id) { setOpenAgent(null); setAgentMsgs(null); return; }
     setOpenAgent(id); setAgentMsgs(null);
-    const r = await fetch(`/api/claude/sessions/${sessionId}/subagents?agent=${encodeURIComponent(id)}`)
+    const r = await fetch(`/api/sessions/${sessionId}/subagents?agent=${encodeURIComponent(id)}`)
       .then((x) => x.json()).catch(() => null);
     setAgentMsgs(Array.isArray(r?.messages) ? r.messages : []);
   }, [openAgent, sessionId]);
@@ -322,7 +322,7 @@ export default function SessionInsight({
   const updateSecurity = useCallback(async (patch: { reviewer?: 'user' | 'auto_review'; permissionProfile?: string | null }) => {
     setSecurityBusy(true);
     try {
-      const r = await fetch(`/api/claude/sessions/${sessionId}/security`, {
+      const r = await fetch(`/api/sessions/${sessionId}/security`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
       });
@@ -345,7 +345,7 @@ export default function SessionInsight({
       : display;
     setResourceBusy(`${kind}:${name}`);
     try {
-      await fetch(`/api/claude/sessions/${sessionId}/input`, {
+      await fetch(`/api/sessions/${sessionId}/input`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ content, ...(isCodex && kind !== 'command' ? { codexInputs: [
           { type: 'text', text: display },
@@ -413,7 +413,7 @@ export default function SessionInsight({
               <button type="button" disabled={securityBusy} onClick={async () => {
                 setSecurityBusy(true);
                 try {
-                  await fetch(`/api/claude/sessions/${sessionId}/security`, {
+                  await fetch(`/api/sessions/${sessionId}/security`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ action: 'approve_denial', reviewId: denial.review_id }),
                   });
@@ -461,7 +461,7 @@ export default function SessionInsight({
                 && <button type="button" disabled={!!resourceBusy} onClick={async () => {
                 setResourceBusy(`toggle:${skill.name}`);
                 try {
-                  await fetch(`/api/claude/sessions/${sessionId}/resources`, {
+                  await fetch(`/api/sessions/${sessionId}/resources`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ name: skill.name, path: skill.path, enabled: skill.enabled === false }),
                   });
@@ -566,7 +566,7 @@ export default function SessionInsight({
                 {!isMcpServerReady(sv.status) && <button
                   type="button"
                   onClick={async () => {
-                    await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
+                    await fetch(`/api/sessions/${sessionId}/mcp`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ action: 'reconnect', name: sv.name }),
@@ -577,7 +577,7 @@ export default function SessionInsight({
                 {capabilities.mcpOauth !== 'none' && ['notloggedin', 'auth required'].includes(
                   String(sv.auth_status || sv.status || '').toLowerCase().replace(/[^a-z ]/g, ''),
                 ) && <button type="button" onClick={async () => {
-                  const response = await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
+                  const response = await fetch(`/api/sessions/${sessionId}/mcp`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ action: 'oauth', name: sv.name }),
                   });
@@ -589,7 +589,7 @@ export default function SessionInsight({
                 {sv.name && mcpOauthUrls[sv.name] && <a href={mcpOauthUrls[sv.name]}
                   target="_blank" rel="noreferrer">open login</a>}
                 {capabilities.mcpToggle !== 'none' && <button type="button" onClick={async () => {
-                  await fetch(`/api/claude/sessions/${sessionId}/mcp`, {
+                  await fetch(`/api/sessions/${sessionId}/mcp`, {
                     method: 'POST', headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({ action: 'toggle', name: sv.name,
                       enabled: String(sv.status ?? '').toLowerCase() === 'disabled' }),

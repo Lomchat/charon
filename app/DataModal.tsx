@@ -36,7 +36,7 @@ type Props = {
   initialPaths: VpsPath[];
   onChange?: (next: { vps: Vps[]; folders: VpsFolder[]; paths: VpsPath[] }) => void;
   // "install agent" button on a VPS card: closes the modal and delegates to
-  // ClaudePanel which opens an install session (cf. ClaudePanel.openInstallSession).
+  // HubPanel which opens an install session (cf. HubPanel.openInstallSession).
   // Before: opened a BootstrapBanner overlay INSIDE the modal, but it stacked
   // overlays and blocked access to the rest of the hub during the install.
   onInstallAgent?: (vps: Vps) => void;
@@ -46,19 +46,19 @@ type Props = {
   onRefreshAgent?: (vps: Vps) => void;
   onUpdateAgent?: (vps: Vps) => void;
   // Device-code logins (Codex §14.61, Claude §14.64): delegated UP —
-  // ClaudePanel renders both modals AFTER this one so they overlay it; on
+  // HubPanel renders both modals AFTER this one so they overlay it; on
   // success the liveVps merge below repaints the chips (claudeLoggedIn /
   // codexLoggedIn are merged keys).
-  /** Sign in to ONE backend — delegated up to ClaudePanel so the modal
+  /** Sign in to ONE backend — delegated up to HubPanel so the modal
    *  overlays this one (§14.102). Replaces the former per-provider pair. */
   onProviderLogin?: (vps: Vps, provider: AgentKind) => void;
   // "settings scope" on a VPS card (§14.100). Delegated UP for the same reason
-  // as the logins: ClaudePanel renders that dialog after this modal, so it
+  // as the logins: HubPanel renders that dialog after this modal, so it
   // overlays instead of stacking a second surface inside it.
   onEditSettingScope?: (vps: Vps) => void;
   refreshingAgentVpsIds?: Set<string>;
   updatingAgentVpsIds?: Set<string>;
-  // Live copy of ClaudePanel's vpsList: the modal owns its rows for CRUD, but
+  // Live copy of HubPanel's vpsList: the modal owns its rows for CRUD, but
   // health fields (agentStatus / agentLastError / logins / codex) must follow
   // the live `vps_status` bus events while the modal is open — a refresh or
   // update fired from a card must repaint its chips without closing/reopening.
@@ -153,7 +153,7 @@ export default function DataModal({
     if (p) onProviderLogin?.(v, p);
   }, [handleBootstrap, onRefreshAgent, onUpdateAgent, onProviderLogin]);
 
-  // Follow ClaudePanel's live vpsList for the RUNTIME fields only — the set is
+  // Follow HubPanel's live vpsList for the RUNTIME fields only — the set is
   // DERIVED from the provider registry (`pickVpsRuntimeFields`, §14.52): the
   // hand-listed 11 keys missed every cursor column (R3 F4). CRUD fields
   // (name/ip/folder/position) stay owned by the modal's local state — a live
@@ -533,8 +533,8 @@ export default function DataModal({
     : null;
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal data-modal data-modal-v2">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="app-modal data-modal data-modal-v2">
         <button className="modal-close" onClick={onClose}>✕</button>
         <header className="data-head">
           <h2>VPS & paths</h2>

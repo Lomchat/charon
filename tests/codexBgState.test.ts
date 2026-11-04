@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/sshExec', () => ({ sshExec: vi.fn(), shQuote: (s: string) => s }));
-import { CODEX_BG_STATE_PY } from '@/lib/server/claude/codexBgState';
+vi.mock('@/lib/server/hub/sshExec', () => ({ sshExec: vi.fn(), shQuote: (s: string) => s }));
+import { CODEX_BG_STATE_PY } from '@/lib/server/hub/codexBgState';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });

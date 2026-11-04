@@ -30,7 +30,7 @@ const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 /** Keys declared in `settings.ts § DEFAULTS` (not exported — scanned). */
 function declaredSettingKeys(): Set<string> {
-  const src = read('lib/server/claude/settings.ts');
+  const src = read('lib/server/hub/settings.ts');
   const start = src.indexOf('const DEFAULTS');
   expect(start, 'settings.ts no longer declares DEFAULTS').toBeGreaterThan(-1);
   const keys = new Set<string>();
@@ -40,7 +40,7 @@ function declaredSettingKeys(): Set<string> {
 
 /** The literal value a key carries in `settings.ts § DEFAULTS`. */
 function declaredSettingValue(key: string): string {
-  const src = read('lib/server/claude/settings.ts');
+  const src = read('lib/server/hub/settings.ts');
   const m = new RegExp(`'${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'\\s*:\\s*'([^']*)'`).exec(src);
   return m ? m[1] : '';
 }
@@ -234,7 +234,7 @@ describe('provider registry', () => {
     // NEVER stale — the package would silently stop being updated fleet-wide
     // while the chip says "✓". It also needs a REFRESHER, or its cached latest
     // is frozen at whatever it was when someone last called it by name.
-    const sdkSync = read('lib/server/claude/sdkSync.ts');
+    const sdkSync = read('lib/server/hub/sdkSync.ts');
     const body = sdkSync.slice(sdkSync.indexOf('export const LATEST_LINES'));
     const map = body.slice(0, body.indexOf('\n};'));
     for (const p of SESSION_PROVIDERS) {
@@ -321,7 +321,7 @@ describe('provider registry', () => {
     // `sdkWatch`'s axis calls `after(result)` with the COLUMN name, so
     // `UpdateAgentResult` must carry that exact field or a successful update
     // reads as "still behind" and retries forever.
-    const bootstrap = read('lib/server/claude/bootstrap.ts');
+    const bootstrap = read('lib/server/hub/bootstrap.ts');
     for (const p of SESSION_PROVIDERS) {
       for (const line of PROVIDERS[p].backend.versions) {
         expect(bootstrap, `UpdateAgentResult has no '${line.column}' field`)
@@ -358,7 +358,7 @@ describe('provider registry', () => {
   });
 
   it('enrols every provider in the bootstrap and the import scan', () => {
-    const bootstrap = read('lib/server/claude/bootstrap.ts');
+    const bootstrap = read('lib/server/hub/bootstrap.ts');
     for (const p of SESSION_PROVIDERS) {
       const d = PROVIDERS[p].deployment;
       // Declared but unwired = a runtime installed on no VPS.

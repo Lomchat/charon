@@ -5,9 +5,9 @@ import Database from 'better-sqlite3';
 export async function smokeResponseSpeed({ page, open, dbPath, assertAsync }) {
   await page.setViewportSize({ width: 1600, height: 1000 });
   const db = new Database(dbPath);
-  const vpsId = db.prepare('SELECT vps_id FROM claude_sessions LIMIT 1').get().vps_id;
+  const vpsId = db.prepare('SELECT vps_id FROM agent_sessions LIMIT 1').get().vps_id;
   for (const provider of ['claude', 'codex', 'cursor']) {
-    db.prepare(`INSERT INTO claude_sessions (id,vps_id,cwd,name,status,kind,permission_mode)
+    db.prepare(`INSERT INTO agent_sessions (id,vps_id,cwd,name,status,kind,permission_mode)
       VALUES (?,?,?,?,'thinking',?,?)`).run(`smoke-speed-${provider}`, vpsId, '/tmp',
       `Reception ${provider}`, provider, provider === 'claude' ? 'normal' : 'read-only');
   }
@@ -58,7 +58,7 @@ export async function smokeResponseSpeed({ page, open, dbPath, assertAsync }) {
   await assertAsync('RECEPTION: late final SDK report stays visible after stop', async () => {
     const sid = 'smoke-speed-cursor';
     const finishedDb = new Database(dbPath);
-    finishedDb.prepare("UPDATE claude_sessions SET status='active' WHERE id=?").run(sid);
+    finishedDb.prepare("UPDATE agent_sessions SET status='active' WHERE id=?").run(sid);
     finishedDb.close();
     await page.evaluate((sessionId) => {
       window.__receptionSmokeEmit({ type: 'stop', sessionId });

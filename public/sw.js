@@ -46,7 +46,7 @@ self.addEventListener('notificationclick', (event) => {
   const sessionId = data.sessionId || null;
   // Fallback URL: only used when no Charon tab is open. Server-side this
   // is `/?session=<id>` (see sessionOps.ts § _maybePush) — desktop hub
-  // ClaudePanel reads ?session=… via useSearchParams.
+  // HubPanel reads ?session=… via useSearchParams.
   const fallbackUrl = data.url || '/';
   event.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

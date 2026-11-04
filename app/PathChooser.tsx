@@ -340,6 +340,6 @@ function FloatingSuggestions({ anchor, children }: {
     <div ref={popup} className="wiz-sug" style={position} onMouseDown={(e) => e.preventDefault()}>
       {children}
     </div>,
-    anchor.current?.closest('.claude-root') ?? document.body,
+    anchor.current?.closest('.app-root') ?? document.body,
   );
 }

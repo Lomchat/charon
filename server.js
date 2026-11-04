@@ -61,7 +61,7 @@ const STMT_VPS = db.prepare('SELECT id, ip, ssh_user, ssh_port FROM vps WHERE id
 // handle — and tell the browser via a terminal {type:'gone'} control frame.
 const STMT_DELETE_SHELL = db.prepare('DELETE FROM shells WHERE id = ?');
 // Custom ssh key path (settings) — consumed by the WS shell proxy (P1.2).
-const STMT_KEYPATH = db.prepare("SELECT value FROM claude_settings WHERE key = 'ssh.private_key_path'");
+const STMT_KEYPATH = db.prepare("SELECT value FROM app_settings WHERE key = 'ssh.private_key_path'");
 // NOTE: there is deliberately NO replay cursor for shells (the vestigial
 // `shells.last_seen_seq` column was dropped in migration 0016). The
 // browser's xterm is the ONLY place the rendered scrollback lives — there
@@ -283,7 +283,7 @@ function handleShellWs(ws, shellId) {
 // present it must match the request Host, a forwarded host, or the
 // configured public URL. Absent Origin (curl, native clients) → allowed,
 // the session cookie is still required.
-const STMT_PUBURL = db.prepare("SELECT value FROM claude_settings WHERE key = 'app.public_url'");
+const STMT_PUBURL = db.prepare("SELECT value FROM app_settings WHERE key = 'app.public_url'");
 function originAllowed(req) {
   const origin = req.headers.origin;
   if (!origin) return true;

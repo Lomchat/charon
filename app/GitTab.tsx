@@ -74,7 +74,7 @@ export default function GitTab({ sessionId = null, kind = 'claude', vpsId, cwd, 
     setReviewing(true);
     setReviewError(null);
     try {
-      const response = await fetch(`/api/claude/sessions/${sessionId}/review`, {
+      const response = await fetch(`/api/sessions/${sessionId}/review`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ target, delivery }),

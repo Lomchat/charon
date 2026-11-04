@@ -7,7 +7,7 @@ import { rawSqlite } from '@/lib/db';
 // carry their FIRST delta's seq). Never MAX(seq): a failed persist at N under
 // a successful N+1 must be repaired, and a max proves nothing below it.
 //
-// Each question is ONE indexed point lookup (idx_claude_session_messages_
+// Each question is ONE indexed point lookup (idx_session_messages_
 // session_seq), asked when the event is dispatched. The old design loaded
 // every seq of the session into a Set at each replay_begin: a covering scan of
 // millions of entries on the event loop at every reconnect. The lookup also
@@ -64,18 +64,18 @@ function statements(): Statements {
   prepared = {
     handle,
     rowAtSeq: handle.prepare(
-      `SELECT id, role FROM claude_session_messages WHERE ${AT_SEQ} ORDER BY id LIMIT 1`),
+      `SELECT id, role FROM session_messages WHERE ${AT_SEQ} ORDER BY id LIMIT 1`),
     eventRowAtSeq: handle.prepare(
-      `SELECT id, content FROM claude_session_messages WHERE ${AT_SEQ} AND ${ROLE} = 'event' ORDER BY id LIMIT 1`),
+      `SELECT id, content FROM session_messages WHERE ${AT_SEQ} AND ${ROLE} = 'event' ORDER BY id LIMIT 1`),
     assistantRowAtSeq: handle.prepare(
-      `SELECT id, content FROM claude_session_messages WHERE ${AT_SEQ} AND ${ROLE} = 'assistant' ORDER BY id LIMIT 1`),
+      `SELECT id, content FROM session_messages WHERE ${AT_SEQ} AND ${ROLE} = 'assistant' ORDER BY id LIMIT 1`),
     hasStamped: handle.prepare(
-      'SELECT 1 AS one FROM claude_session_messages WHERE session_id = ? AND seq IS NOT NULL LIMIT 1'),
+      'SELECT 1 AS one FROM session_messages WHERE session_id = ? AND seq IS NOT NULL LIMIT 1'),
     hasLegacyToolRows: handle.prepare(
-      `SELECT 1 AS one FROM claude_session_messages WHERE session_id = ? AND seq IS NULL
+      `SELECT 1 AS one FROM session_messages WHERE session_id = ? AND seq IS NULL
          AND ${ROLE} IN ('tool_use', 'tool_result') LIMIT 1`),
     legacy: handle.prepare(
-      `SELECT role, content FROM claude_session_messages WHERE session_id = ? AND seq IS NULL
+      `SELECT role, content FROM session_messages WHERE session_id = ? AND seq IS NULL
          AND ${ROLE} IN ('tool_use', 'tool_result', 'assistant', 'thinking', 'event')`),
   };
   return prepared;

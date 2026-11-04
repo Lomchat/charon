@@ -162,8 +162,8 @@ export default function ClaudeLoginModal({ vps, onClose, profile }: {
     : '';
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div className="claude-modal claude-login-modal">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="app-modal claude-login-modal">
         <button className="modal-close" onClick={close}>✕</button>
         <div className="cxl-head">
           <AgentLogo profileNumber={profile?.number} kind="claude" size={18} />

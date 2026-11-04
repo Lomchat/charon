@@ -11,7 +11,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode, typ
 import type { AgentKind } from '@/lib/types/api';
 import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
 import { providerText } from '@/lib/providerText';
-import type { AccountUsage, AccountUsageLimit } from '@/lib/server/claude/types';
+import type { AccountUsage, AccountUsageLimit } from '@/lib/server/hub/types';
 import AgentLogo from './AgentLogo';
 import { accountUsageReadAt } from './accountUsageState';
 
@@ -157,7 +157,7 @@ function cellTitle(c: UsageCell, pace: number | null): string {
  *  gauge (`--um-surface`), cut up from the bottom edge, with a solid point
  *  inside it. Vector shapes, not boxes: at a fractional zoom a box snaps to
  *  device pixels differently at each offset, and the marks of one column read
- *  as different sizes. `h` is the pill's height (claude.css § .um-pill); the
+ *  as different sizes. `h` is the pill's height (app.css § .um-pill); the
  *  shape grows with it more gently than the pill does. */
 function PaceMark({ pace, h }: { pace: number | null; h: number }) {
   if (pace == null) return null;
@@ -349,7 +349,7 @@ export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh,
   //
   // It keeps the meter's own wrapper classes rather than inventing a parallel
   // one, so every rule already written for the cell applies to it — including
-  // the ≤820px `.claude-bar .runtime-usage { display:none }` that hands usage
+  // the ≤820px `.app-bar .runtime-usage { display:none }` that hands usage
   // to the rings on a phone. A new element that must obey the same rules
   // carries the same hooks; a private class means remembering to update each
   // rule, which is how this once shipped visible in the mobile header while

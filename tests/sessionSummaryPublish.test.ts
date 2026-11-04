@@ -15,12 +15,12 @@ vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({ userId: 'u' })) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
 const push = vi.hoisted(() => ({ sendPushToAll: vi.fn(async (_p: any) => {}) }));
-vi.mock('@/lib/server/claude/webPush', () => push);
+vi.mock('@/lib/server/hub/webPush', () => push);
 const telegram = vi.hoisted(() => ({
   sendPlainToTelegram: vi.fn(async (..._a: any[]) => {}),
   sendPermissionToTelegram: vi.fn(async (..._a: any[]) => {}),
 }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: telegram.sendPermissionToTelegram,
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(() => {}),
@@ -41,7 +41,7 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   dropAgentClient: async () => {},
 }));
 const ssh = vi.hoisted(() => ({ exec: vi.fn(async (..._a: any[]): Promise<any> => ({ ok: true, code: 0, stdout: '', stderr: '' })) }));
-vi.mock('@/lib/server/claude/sshExec', () => ({
+vi.mock('@/lib/server/hub/sshExec', () => ({
   sshExec: ssh.exec,
   shQuote: (s: string) => `'${s}'`,
 }));
@@ -68,10 +68,10 @@ const tick = () => new Promise<void>((r) => setImmediate(r));
 const summaries = (id: string) => frames.filter((f) => f.type === 'session_summary' && f.sessionId === id);
 const lastSummary = (id: string) => summaries(id).at(-1)?.ev.summary;
 const statusFrames = (id: string) => frames.filter((f) => f.type === 'status' && f.sessionId === id).map((f) => f.ev.status);
-const row = (id: string) => db.select().from(schema.claudeSessions).all().find((r: any) => r.id === id);
+const row = (id: string) => db.select().from(schema.agentSessions).all().find((r: any) => r.id === id);
 
 function insertSession(id: string, extra: Record<string, unknown> = {}) {
-  db.insert(schema.claudeSessions).values({
+  db.insert(schema.agentSessions).values({
     id, vpsId: VPS_ID, cwd: '/tmp/pub', name: id.slice(0, 4), status: 'active', ...extra,
   }).run();
 }
@@ -98,7 +98,7 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'pub-vps', ip: '127.0.0.1', sshUser: 'root', agentStatus: 'ok' })
     .onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ops = await import('@/lib/server/agent/sessionOps');
   sums = await import('@/lib/server/sync/sessionSummaries');
   bus = await import('@/lib/server/sync/syncBus');
@@ -106,10 +106,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   clearStreams();
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudePendingPermissions).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.delete(schema.agentSessions).run();
   agent.call.mockReset();
   agent.call.mockResolvedValue({ ok: true });
   agent.status = 'connected';
@@ -138,7 +138,7 @@ afterEach(async () => {
 
 describe('one frame per tick, only on change', () => {
   it('a status flip and an unread clear in the same tick publish ONE summary', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1 }).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1 }).run();
     sums.reconcileAllSummaries();
     frames = [];
     const s = stream(A);
@@ -159,11 +159,11 @@ describe('one frame per tick, only on change', () => {
     bus.markSummaryDirty(A);
     await tick();
     expect(summaries(A)).toHaveLength(0);
-    db.update(schema.claudeSessions).set({ lastSeenSeq: 42, lastUsedAt: 123 }).run();
+    db.update(schema.agentSessions).set({ lastSeenSeq: 42, lastUsedAt: 123 }).run();
     bus.markSummaryDirty(A);
     await tick();
     expect(summaries(A)).toHaveLength(0);
-    db.update(schema.claudeSessions).set({ color: '#0f0' }).where(eq(schema.claudeSessions.id, A)).run();
+    db.update(schema.agentSessions).set({ color: '#0f0' }).where(eq(schema.agentSessions.id, A)).run();
     bus.markSummaryDirty(A);
     await tick();
     expect(summaries(A)).toHaveLength(1);
@@ -172,7 +172,7 @@ describe('one frame per tick, only on change', () => {
 
   it('a vps_status re-evaluates every session of that VPS', async () => {
     db.update(schema.vps).set({ agentVersion: '99.0.0' }).run();
-    db.update(schema.claudeSessions).set({ handle: 'h-a' }).where(eq(schema.claudeSessions.id, A)).run();
+    db.update(schema.agentSessions).set({ handle: 'h-a' }).where(eq(schema.agentSessions.id, A)).run();
     ops.emitGlobalVpsStatus(VPS_ID, 'ok', { agentVersion: '99.0.0' });
     await tick();
     // A became addressable (handle + recent agent + live status); B did not change.
@@ -235,7 +235,7 @@ describe('silent status writers now publish (R1 §3)', () => {
     agent.status = 'disconnected';
     agent.call.mockRejectedValue(new Error('agent not connected'));
     const s = stream(A, 'active');
-    db.update(schema.claudeSessions).set({ status: 'sleeping' }).where(eq(schema.claudeSessions.id, B)).run();
+    db.update(schema.agentSessions).set({ status: 'sleeping' }).where(eq(schema.agentSessions.id, B)).run();
     const prev = process.env.CHARON_DISABLE_AUTOCONNECT;
     delete process.env.CHARON_DISABLE_AUTOCONNECT;
     (globalThis as any)._agentBooted = false;
@@ -267,7 +267,7 @@ describe('silent status writers now publish (R1 §3)', () => {
   });
 
   it('S8 reconcile: a background session the agent calls idle is published as background', async () => {
-    db.update(schema.claudeSessions).set({ status: 'background' }).where(eq(schema.claudeSessions.id, A)).run();
+    db.update(schema.agentSessions).set({ status: 'background' }).where(eq(schema.agentSessions.id, A)).run();
     const s = stream(A, 'background');
     s._onAgentEvent({ event: 'bg_task', session_id: A, seq: 1, kind: 'started', task_id: 't9', ts: Date.now() / 1000 });
     s.status = 'active';   // a stale in-memory status
@@ -304,8 +304,8 @@ describe('silent status writers now publish (R1 §3)', () => {
 
   it('the window GET serves the stream\'s known pending-apply flags; a live starting clears them', async () => {
     const s = stream(A, 'active');
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const get = async () => (await (await GET(new Request(`http://hub.test/api/claude/sessions/${A}`), params(A))).json());
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const get = async () => (await (await GET(new Request(`http://hub.test/api/sessions/${A}`), params(A))).json());
     expect((await get()).pendingApply).toBeUndefined();          // unknown since boot
     s._onAgentEvent({ event: 'effort_changed', session_id: A, effort: 'high', applied_at_next_start: true, seq: 1 });
     expect((await get()).pendingApply).toEqual({ effort: true });
@@ -365,7 +365,7 @@ describe('silent status writers now publish (R1 §3)', () => {
       return { ok: true, profiles: [] };
     });
     await expect(ops.startNewSession({ vpsId: VPS_ID, cwd: '/tmp/new', kind: 'claude' } as any)).rejects.toThrow();
-    const created = db.select().from(schema.claudeSessions).all().find((r: any) => r.id !== A && r.id !== B);
+    const created = db.select().from(schema.agentSessions).all().find((r: any) => r.id !== A && r.id !== B);
     expect(created.status).toBe('error');
     expect(statusFrames(created.id)).toContain('error');
     await tick();
@@ -375,9 +375,9 @@ describe('silent status writers now publish (R1 §3)', () => {
 
 describe('reconcile and lifecycle snapshots', () => {
   it('reconcile publishes a diff for a row mutated behind the bus and null for a deleted one', () => {
-    db.update(schema.claudeSessions).set({ name: 'renamed behind the bus' })
-      .where(eq(schema.claudeSessions.id, A)).run();
-    db.delete(schema.claudeSessions).where(eq(schema.claudeSessions.id, B)).run();
+    db.update(schema.agentSessions).set({ name: 'renamed behind the bus' })
+      .where(eq(schema.agentSessions.id, A)).run();
+    db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, B)).run();
     const all = sums.reconcileAllSummaries();
     expect(all.map((s) => s.id)).toEqual([A]);
     expect(summaries(A)).toHaveLength(1);
@@ -416,8 +416,8 @@ describe('reconcile and lifecycle snapshots', () => {
 
   it('deleteSession republishes the siblings its path pack moved (I9)', async () => {
     const C = 'c2'.repeat(16);
-    db.update(schema.claudeSessions).set({ cwd: '/p1', position: 0 }).where(eq(schema.claudeSessions.id, A)).run();
-    db.update(schema.claudeSessions).set({ cwd: '/p2', position: 1 }).where(eq(schema.claudeSessions.id, B)).run();
+    db.update(schema.agentSessions).set({ cwd: '/p1', position: 0 }).where(eq(schema.agentSessions.id, A)).run();
+    db.update(schema.agentSessions).set({ cwd: '/p2', position: 1 }).where(eq(schema.agentSessions.id, B)).run();
     insertSession(C, { cwd: '/p1', position: 2 });
     sums.reconcileAllSummaries();
     frames = [];
@@ -432,8 +432,8 @@ describe('reconcile and lifecycle snapshots', () => {
   });
 
   it('summary caches: the first prompt is cached bounded; a deleted session\'s texts are dropped', async () => {
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'x'.repeat(50_000) }).run();
-    db.insert(schema.claudePendingPermissions).values({ id: 'perm-cache', sessionId: A, toolName: 'Bash', toolInput: '{}' }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'x'.repeat(50_000) }).run();
+    db.insert(schema.sessionPendingPermissions).values({ id: 'perm-cache', sessionId: A, toolName: 'Bash', toolInput: '{}' }).run();
     sums.resetSessionSummariesForTests();
     sums.reconcileAllSummaries();
     const S = (globalThis as any).__charonSummaries;
@@ -452,7 +452,7 @@ describe('reconcile and lifecycle snapshots', () => {
   });
 
   it('archive ⇒ null, unarchive ⇒ the summary again', async () => {
-    const route = await import('@/app/api/claude/sessions/[id]/archive/route');
+    const route = await import('@/app/api/sessions/[id]/archive/route');
     stream(A, 'active');
     const r1 = await (await route.POST(req('POST'), params(A))).json();
     expect(r1).toMatchObject({ ok: true, archived: true });
@@ -476,7 +476,7 @@ describe('PATCH cwd: the kill echo is not a deletion (S7)', () => {
       if (method === 'kill_session') s._onAgentEvent({ event: 'status', session_id: A, status: 'killed' });
       return { ok: true };
     });
-    const route = await import('@/app/api/claude/sessions/[id]/route');
+    const route = await import('@/app/api/sessions/[id]/route');
     const res = await (await route.PATCH(req('PATCH', { cwd: '/tmp/elsewhere' }), params(A))).json();
     expect(res.cwd).toBe('/tmp/elsewhere');
     expect(statusFrames(A)).not.toContain('killed');
@@ -486,7 +486,7 @@ describe('PATCH cwd: the kill echo is not a deletion (S7)', () => {
     // The killed instance's tool output is gone (W2 integration: C12 × C13).
     expect(s.getStreamingToolOutput()).toEqual([]);
     // No bg burial: the task row stays as it was (no synthetic terminal row).
-    const buried = db.select().from(schema.claudeSessionMessages).all()
+    const buried = db.select().from(schema.sessionMessages).all()
       .filter((m: any) => m.role === 'event' && /"kind":"(stale|killed|expired)"/.test(m.content));
     expect(buried).toHaveLength(0);
     expect(lastSummary(A)).toMatchObject({ cwd: '/tmp/elsewhere', liveStatus: 'sleeping' });
@@ -505,7 +505,7 @@ describe('PATCH cwd: the kill echo is not a deletion (S7)', () => {
       }
       return { ok: true };
     });
-    const route = await import('@/app/api/claude/sessions/[id]/route');
+    const route = await import('@/app/api/sessions/[id]/route');
     await (await route.PATCH(req('PATCH', { cwd: '/tmp/race' }), params(A))).json();
     expect(statusFrames(A)).not.toContain('killed');
     expect(s.status).toBe('sleeping');
@@ -521,7 +521,7 @@ describe('PATCH cwd: the kill echo is not a deletion (S7)', () => {
   it('an echo HELD by a subscribe replay lands after the PATCH answered: still sleeping, never a durable killed', async () => {
     const s = stream(A, 'active');
     agent.call.mockResolvedValue({ ok: true });                  // the answer overtakes the held echo
-    const route = await import('@/app/api/claude/sessions/[id]/route');
+    const route = await import('@/app/api/sessions/[id]/route');
     await (await route.PATCH(req('PATCH', { cwd: '/tmp/held' }), params(A))).json();
     expect(row(A).status).toBe('sleeping');
     s._onAgentEvent({ event: 'status', session_id: A, status: 'killed' });   // released hold
@@ -548,7 +548,7 @@ describe('PATCH cwd: the kill echo is not a deletion (S7)', () => {
 
   it('PATCH name updates the hydrated stream (push labels) and publishes', async () => {
     const s = stream(A, 'active');
-    const route = await import('@/app/api/claude/sessions/[id]/route');
+    const route = await import('@/app/api/sessions/[id]/route');
     const res = await (await route.PATCH(req('PATCH', { name: 'Renamed', color: '#123456' }), params(A))).json();
     expect(s.name).toBe('Renamed');
     expect(lastSummary(A)).toMatchObject({ name: 'Renamed', color: '#123456' });
@@ -573,23 +573,23 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
 
   it('sleep', async () => {
     stream(A, 'active');
-    const r = await import('@/app/api/claude/sessions/[id]/sleep/route');
+    const r = await import('@/app/api/sessions/[id]/sleep/route');
     await expectCovered(A, await r.POST(req('POST'), params(A)), { liveStatus: 'sleeping' });
   });
 
   it('resume', async () => {
-    db.update(schema.claudeSessions).set({ status: 'sleeping' }).where(eq(schema.claudeSessions.id, A)).run();
+    db.update(schema.agentSessions).set({ status: 'sleeping' }).where(eq(schema.agentSessions.id, A)).run();
     stream(A, 'sleeping');
     sums.reconcileAllSummaries();
     frames = [];
     agent.call.mockImplementation(async (method: string) => (method === 'resume_session' ? { ok: true, status: 'active' } : { ok: true, profiles: [] }));
-    const r = await import('@/app/api/claude/sessions/[id]/resume/route');
+    const r = await import('@/app/api/sessions/[id]/resume/route');
     await expectCovered(A, await r.POST(req('POST'), params(A)), { liveStatus: 'active' });
   });
 
   it('force-stop', async () => {
     stream(A, 'thinking');
-    const r = await import('@/app/api/claude/sessions/[id]/force-stop/route');
+    const r = await import('@/app/api/sessions/[id]/force-stop/route');
     await expectCovered(A, await r.POST(req('POST'), params(A)), { liveStatus: 'sleeping' });
   });
 
@@ -599,46 +599,46 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
     await tick();
     frames = [];
     agent.call.mockResolvedValue({ ok: true, resolved: true });
-    const r = await import('@/app/api/claude/sessions/[id]/permission/route');
+    const r = await import('@/app/api/sessions/[id]/permission/route');
     await expectCovered(A, await r.POST(req('POST', { id: 'perm-r', allow: true }), params(A)), { pendingBlocking: 0, gates: [] });
   });
 
   it('input', async () => {
     stream(A, 'active');
     agent.call.mockImplementation(async (method: string) => (method === 'send_input' ? { ok: true } : { ok: true }));
-    const r = await import('@/app/api/claude/sessions/[id]/input/route');
+    const r = await import('@/app/api/sessions/[id]/input/route');
     const body = await expectCovered(A, await r.POST(req('POST', { content: 'hello', clientMessageId: 'cm-sync-1' }), params(A)),
       { liveStatus: 'thinking' });
     expect(body).toMatchObject({ ok: true, clientMessageId: 'cm-sync-1' });
   });
 
   it('PATCH and DELETE', async () => {
-    const r = await import('@/app/api/claude/sessions/[id]/route');
+    const r = await import('@/app/api/sessions/[id]/route');
     await expectCovered(A, await r.PATCH(req('PATCH', { color: '#abcdef' }), params(A)), { color: '#abcdef' });
     await expectCovered(A, await r.DELETE(req('DELETE'), params(A)), null);
   });
 
   it('reorder', async () => {
-    const r = await import('@/app/api/claude/sessions/reorder/route');
+    const r = await import('@/app/api/sessions/reorder/route');
     const body = await expectCovered(A, await r.POST(req('POST', { vpsId: VPS_ID, ids: [B, A] })), { position: 1 });
     // Every summary the reorder published (the whole VPS was re-evaluated).
     for (const f of frames.filter((x) => x.type === 'session_summary')) expect(f.rev).toBeLessThanOrEqual(body.sync.rev);
   });
 
   it('bulk-delete', async () => {
-    db.update(schema.claudeSessions).set({ status: 'sleeping' }).run();
-    const r = await import('@/app/api/claude/sessions/bulk-delete/route');
+    db.update(schema.agentSessions).set({ status: 'sleeping' }).run();
+    const r = await import('@/app/api/sessions/bulk-delete/route');
     const body = await expectCovered(A, await r.POST(req('POST', { ids: [A, B] })), null);
     expect(body.deleted.sort()).toEqual([A, B].sort());
     expect(summaries(B).at(-1)!.ev.summary).toBeNull();
   });
 
   it('rollback publishes transcript_reset and the new status', async () => {
-    const msg = db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'user', content: 'first' }).returning().get();
-    db.insert(schema.claudeSessionMessages).values({ sessionId: A, role: 'assistant', content: 'answer' }).run();
+    const msg = db.insert(schema.sessionMessages).values({ sessionId: A, role: 'user', content: 'first' }).returning().get();
+    db.insert(schema.sessionMessages).values({ sessionId: A, role: 'assistant', content: 'answer' }).run();
     sums.buildSessionSummary(A);   // caches the first prompt
     agent.call.mockResolvedValue({ claude_session_id: 'fork-1', strategy: 'fork' });
-    const r = await import('@/app/api/claude/sessions/[id]/rollback/route');
+    const r = await import('@/app/api/sessions/[id]/rollback/route');
     const body = await expectCovered(A, await r.POST(req('POST', { messageId: `m${msg.id}` }), params(A)));
     expect(frames.find((f) => f.type === 'transcript_reset' && f.sessionId === A)?.ev).toMatchObject({ reason: 'rollback' });
     expect(lastSummary(A).firstUserMessage).toBeNull();
@@ -650,7 +650,7 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
   it('restart', async () => {
     stream(A, 'active');
     agent.call.mockImplementation(async (method: string) => (method === 'resume_session' ? { ok: true, status: 'active' } : { ok: true, profiles: [] }));
-    const r = await import('@/app/api/claude/sessions/[id]/restart/route');
+    const r = await import('@/app/api/sessions/[id]/restart/route');
     await expectCovered(A, await r.POST(req('POST'), params(A)), { liveStatus: 'active' });
     expect(statusFrames(A)).toContain('sleeping');
   });
@@ -662,14 +662,14 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
     expect(lastSummary(A)).toMatchObject({ pendingBlocking: 1 });
     frames = [];
     agent.call.mockResolvedValue({ ok: true, resolved: true });
-    const r = await import('@/app/api/claude/sessions/[id]/question/route');
+    const r = await import('@/app/api/sessions/[id]/question/route');
     await expectCovered(A, await r.POST(req('POST', { id: 'q-r', answers: { 'Which?': 'One' } }), params(A)),
       { pendingBlocking: 0, gates: [] });
   });
 
   it('exit-plan', async () => {
     stream(A, 'thinking');
-    db.insert(schema.claudePendingQuestions).values({
+    db.insert(schema.sessionPendingQuestions).values({
       id: 'x-r', sessionId: A, kind: 'exit_plan', status: 'pending', payload: JSON.stringify({ plan: 'p' }),
     }).run();
     sums.reconcileAllSummaries();
@@ -677,7 +677,7 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
     expect(lastSummary(A)).toMatchObject({ pendingBlocking: 1 });
     frames = [];
     agent.call.mockResolvedValue({ ok: true, resolved: true });
-    const r = await import('@/app/api/claude/sessions/[id]/exit-plan/route');
+    const r = await import('@/app/api/sessions/[id]/exit-plan/route');
     await expectCovered(A, await r.POST(req('POST', { id: 'x-r', decision: 'approve' }), params(A)),
       { pendingBlocking: 0, gates: [] });
   });
@@ -688,7 +688,7 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
       if (method === 'set_permission_mode') s._onAgentEvent({ event: 'mode_changed', session_id: A, mode: p.mode });
       return { ok: true };
     });
-    const r = await import('@/app/api/claude/sessions/[id]/mode/route');
+    const r = await import('@/app/api/sessions/[id]/mode/route');
     await expectCovered(A, await r.POST(req('POST', { mode: 'bypass' }), params(A)), { permissionMode: 'bypass' });
   });
 
@@ -698,7 +698,7 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
       if (method === 'set_model') s._onAgentEvent({ event: 'model_changed', session_id: A, model: p.model, fallback_model: null });
       return { ok: true };
     });
-    const r = await import('@/app/api/claude/sessions/[id]/model/route');
+    const r = await import('@/app/api/sessions/[id]/model/route');
     await expectCovered(A, await r.POST(req('POST', { model: 'claude-sync-test' }), params(A)), { model: 'claude-sync-test' });
   });
 
@@ -708,15 +708,15 @@ describe('action routes: summary frame rev ≤ response sync.rev', () => {
       if (method === 'set_effort') s._onAgentEvent({ event: 'effort_changed', session_id: A, effort: p.effort, applied_at_next_start: true });
       return { ok: true };
     });
-    const r = await import('@/app/api/claude/sessions/[id]/effort/route');
+    const r = await import('@/app/api/sessions/[id]/effort/route');
     await expectCovered(A, await r.POST(req('POST', { effort: 'high' }), params(A)), { effort: 'high' });
   });
 
-  it('GET /api/tabs and GET /api/claude/settings carry sync = currentRev()', async () => {
+  it('GET /api/tabs and GET /api/settings carry sync = currentRev()', async () => {
     const tabs = await import('@/app/api/tabs/route');
     const tb = await (await tabs.GET()).json();
     expect(tb.sync).toEqual(bus.currentRev());
-    const settings = await import('@/app/api/claude/settings/route');
+    const settings = await import('@/app/api/settings/route');
     const st = await (await settings.GET()).json();
     expect(st.sync).toEqual(bus.currentRev());
   });

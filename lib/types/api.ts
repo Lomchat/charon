@@ -2,15 +2,15 @@ import type { EndpointState, CustomEndpoint } from '@/lib/customEndpoints';
 import type { AccountProfile } from '@/lib/accountProfiles';
 // Request/response types for `lib/api.ts`.
 // Every `api.*` method must have its `XxxBody` / `XxxResponse` pair here.
-// Reuse DB types (Vps, ClaudeSession, ...) and protocol types (PermissionMode,
+// Reuse DB types (Vps, AgentSession, ...) and protocol types (PermissionMode,
 // WorkerStatus) rather than redeclaring them.
 
 import type {
-  Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
-  ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
-  ClaudePushSub,
+  Vps, VpsFolder, VpsPath, AgentSession, AgentSessionMessage,
+  AgentPendingPermission, AgentPendingQuestion, AppSetting,
+  PushSub,
 } from '@/lib/db/schema';
-import type { PermissionMode, WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
+import type { PermissionMode, WorkerStatus, AccountUsage } from '@/lib/server/hub/types';
 import type { ShellInfo } from '@/lib/server/shell/shellSession';
 import type { InstallInfo, InstallStatus } from '@/lib/server/install/installSession';
 import type {
@@ -20,14 +20,11 @@ import type { ClaudeSettingSource } from '@/lib/settingSources';
 import type { ScheduledTasksState } from '@/lib/scheduledTasks';
 
 // Re-export so consumers don't have to know the source
-export type { Vps, VpsFolder, VpsPath, ClaudeSession, ClaudeSessionMessage,
-  ClaudePendingPermission, ClaudePendingQuestion, ClaudeSetting,
-  ClaudePushSub, PermissionMode, WorkerStatus, AccountUsage, ShellInfo,
+export type { Vps, VpsFolder, VpsPath, AgentSession, AgentSessionMessage,
+  AgentPendingPermission, AgentPendingQuestion, AppSetting,
+  PushSub, PermissionMode, WorkerStatus, AccountUsage, ShellInfo,
   InstallInfo, InstallStatus };
-export type {
-  AgentSession, AgentSessionMessage, AgentPendingPermission,
-  AgentPendingQuestion, AgentSessionAttachment, AgentSessionLog,
-} from '@/lib/db/schema';
+export type { AgentSessionAttachment, AgentSessionLog } from '@/lib/db/schema';
 
 // Account usage (the `/usage` gauges) for a VPS. `usage` = the Claude account
 // (api.anthropic.com/api/oauth/usage); `codexUsage` = the Codex account
@@ -1072,9 +1069,9 @@ export type ScanVpsSessionsQuery = {
 
 // ── Claude sessions ──────────────────────────────────────────────────────────
 
-export type ClaudeSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
+export type AgentSessionListQuery = { vpsId?: string; status?: string; includeArchived?: boolean };
 
-export type SessionListItem = ClaudeSession & {
+export type SessionListItem = AgentSession & {
   accountProfile?: string;
   accountProfileNumber?: number;
   endpoint?: EndpointState;
@@ -1135,7 +1132,7 @@ export type VpsStalenessBaselines = {
   builtAgentVersion?: string | null;
 } & Partial<Record<string, string | null>>;
 
-export type ClaudeSessionsListResponse = {
+export type AgentSessionsListResponse = {
   sessions: SessionListItem[];
   // Authoritative runtime state for the fleet. Optional for rolling upgrades:
   // older hubs omit it, while newer clients keep the SSE-only behavior.
@@ -1220,7 +1217,7 @@ export type SessionBackgroundTask = {
   agents: SessionBackgroundTaskAgent[] | null;
 };
 
-export type ClaudeSessionDetailResponse = {
+export type AgentSessionDetailResponse = {
   // The transcript view this window was cut for (`?view=`, CLAUDE.md §14.25):
   // `conversation` carries no tool/thinking/plan rows. Optional: older hubs
   // omit it (and always answer `full`).
@@ -1231,7 +1228,7 @@ export type ClaudeSessionDetailResponse = {
   // null while the hub's incremental fold of a cold session warms ("unknown,
   // keep the last value"; a `session_token_usage` frame follows).
   tokenUsage?: import('@/lib/sessionTokenUsage').SessionTokenUsage | null;
-  session: ClaudeSession & { endpoint?: EndpointState };
+  session: AgentSession & { endpoint?: EndpointState };
   liveStatus: WorkerStatus | string;
   // "Applies at next start" flags the hub knows (window mode; a key is absent
   // when unknown since the hub's boot — keep the view's own value).
@@ -1241,7 +1238,7 @@ export type ClaudeSessionDetailResponse = {
   // tool_result/user_question/exit_plan_request/thinking) + all the
   // edit_snapshot and event entries in the same ID range (cf. backend
   // loadMessageWindow). Sorted asc by id.
-  messages: Array<ClaudeSessionMessage & { peerReplyTo?: string }>;
+  messages: Array<AgentSessionMessage & { peerReplyTo?: string }>;
   // True if there are CHAT messages even older than `oldestChatId`.
   // Used by the client to decide whether to enable scroll-up loadMore.
   hasMore: boolean;
@@ -1302,10 +1299,10 @@ export type ClaudeSessionDetailResponse = {
   sync?: import('@/lib/sync/protocol').SyncStamp;
 };
 
-/** The window GET's answer (`GET /api/claude/sessions/[id]` without `before`/
+/** The window GET's answer (`GET /api/sessions/[id]` without `before`/
  *  `since`) — the transcript snapshot the client sync applies (CLAUDE.md
  *  §14.107, app/sync/windowSync.ts). */
-export type SessionWindowResponse = ClaudeSessionDetailResponse;
+export type SessionWindowResponse = AgentSessionDetailResponse;
 /** Query of the window GET: the transcript view, and the SSE connection whose
  *  focus the GET applies atomically (`conn`/`focusSeq`). */
 export type SessionWindowQuery = {
@@ -1314,7 +1311,7 @@ export type SessionWindowQuery = {
   focusSeq?: number;
 };
 
-// GET /api/claude/sessions/[id]/probe?conn&afterId&view — the transcript's
+// GET /api/sessions/[id]/probe?conn&afterId&view — the transcript's
 // O(1) rev-gated check (sync refonte C12). The hub pushes one heartbeat to
 // `conn` first, so the SSE carries a frame ≥ `rev` right behind everything it
 // queued before.
@@ -1329,14 +1326,14 @@ export type SessionProbeResponse = {
   pendingIds: string[];            // pending gate ids (all kinds) of this session
 };
 
-// POST /api/claude/focus (kind 'focus'): the registry's answer + the bus
+// POST /api/focus (kind 'focus'): the registry's answer + the bus
 // revision at that moment.
-export type ClaudeFocusResponse = {
+export type FocusResponse = {
   ok: boolean; applied: boolean; focus: string | null; focusSeq: number;
   sync?: import('@/lib/sync/protocol').SyncStamp;
 };
 
-// GET /api/claude/sessions/[id]/tool-calls?before=<rowId>&limit=N (≤500): the
+// GET /api/sessions/[id]/tool-calls?before=<rowId>&limit=N (≤500): the
 // calls tab in conversation view, paged newest first, each page in
 // chronological order. Never ships a full tool result — a ≤512-char preview.
 export type ToolCallSummary = {
@@ -1350,7 +1347,7 @@ export type ToolCallSummary = {
    *  may exist further on, e.g. a long sub-agent): NOT proof it is running. */
   resultUnknown?: true;
 };
-export type ClaudeSessionToolCallsResponse = {
+export type AgentSessionToolCallsResponse = {
   calls: ToolCallSummary[];
   hasMore: boolean;            // older calls exist (next `before` = calls[0].rowId)
   total: number;               // tool_use rows of the session
@@ -1358,8 +1355,8 @@ export type ClaudeSessionToolCallsResponse = {
 
 // loadMore response (GET ...?before=<id>): LEAN — exactly these fields; the
 // session-wide envelope belongs to the window GET.
-export type ClaudeSessionMessageWindow = {
-  messages: Array<ClaudeSessionMessage & { peerReplyTo?: string }>;
+export type AgentSessionMessageWindow = {
+  messages: Array<AgentSessionMessage & { peerReplyTo?: string }>;
   hasMore: boolean;
   oldestChatId: number | null;
   // The bus revision this page reflects (sync refonte C12). Optional: older
@@ -1367,7 +1364,7 @@ export type ClaudeSessionMessageWindow = {
   sync?: import('@/lib/sync/protocol').SyncStamp;
 };
 
-// GET /api/claude/sessions/[id]/edits — lazy diff-content fetch.
+// GET /api/sessions/[id]/edits — lazy diff-content fetch.
 //
 // The main session GET strips edit_snapshot `content` because it is re-fetched
 // in a 5s loop (a large session's full snapshots = tens of MB per fetch, which
@@ -1375,21 +1372,21 @@ export type ClaudeSessionMessageWindow = {
 // endpoint serves the LATEST before/after content per modified file, once per
 // session view, so the ToolPanel diffs tab still works. `before == null` means
 // a new file (Write); `after == null` means a deletion / budget-dropped file.
-export type ClaudeEditContent = {
+export type SessionEditContent = {
   filePath: string;
   toolUseId: string;
   before: string | null;
   after: string | null;
   truncated: boolean;
 };
-export type ClaudeSessionEditsResponse = {
-  edits: ClaudeEditContent[];
+export type AgentSessionEditsResponse = {
+  edits: SessionEditContent[];
   // True if total content exceeded the server budget and some files' content
   // was omitted (before/after null, truncated true).
   truncatedList: boolean;
 };
 
-export type CreateClaudeSessionBody = {
+export type CreateAgentSessionBody = {
   vpsId: string;
   cwd: string;
   name?: string | null;
@@ -1411,7 +1408,7 @@ export type CreateClaudeSessionBody = {
    * semantics; the adapters map them to each SDK's native shape. */
   sessionConfig?: ProviderSessionConfig | null;
   /** @deprecated request compatibility for clients predating the neutral name. */
-  codexConfig?: CodexSessionConfig | null;
+  providerConfig?: CodexSessionConfig | null;
 };
 
 export type SharedSessionConfig = {
@@ -1470,11 +1467,11 @@ export const CURSOR_SETTING_SOURCES = [
 export type CursorSettingSource = typeof CURSOR_SETTING_SOURCES[number];
 export type ProviderSessionConfig =
   ClaudeSessionConfig | CodexSessionConfig | CursorSessionConfig;
-export type CreateClaudeSessionResponse = {
+export type CreateAgentSessionResponse = {
   id: string;
   kind: AgentKind;
   status: WorkerStatus | string;
-  claudeSessionId: string | null;
+  nativeSessionId: string | null;
   vpsId: string;
   cwd: string;
   name: string | null;
@@ -1484,31 +1481,31 @@ export type CreateClaudeSessionResponse = {
   effort: string | null;
 };
 
-export type ImportClaudeSessionBody = {
+export type ImportAgentSessionBody = {
   accountProfile?: string;
   vpsId: string;
   // Claude: the SDK session uuid. Codex: the thread id (§14.59).
-  claudeSessionId: string;
+  nativeSessionId: string;
   cwd: string;
   name?: string | null;
   kind?: AgentKind;
   // Whatever this backend declares (`sessionModes(kind)`).
   permissionMode?: SessionMode;
 };
-export type ImportClaudeSessionResponse = {
+export type ImportAgentSessionResponse = {
   id: string;
   messagesImported: number;
   importError?: string;
 };
 
-export type RenameClaudeSessionBody = {
+export type RenameAgentSessionBody = {
   name?: string | null;
   handle?: string;
   color?: string | null;
   cwd?: string;
 };
 
-export type SendClaudeInputBody = {
+export type SendAgentInputBody = {
   content: string;
   // The browser's UUID for its optimistic bubble (≤64 chars, [A-Za-z0-9-]):
   // the agent's idempotency key, echoed on `user_echo`. A retry with the same
@@ -1516,10 +1513,10 @@ export type SendClaudeInputBody = {
   clientMessageId?: string;
   codexInputs?: Array<Record<string, unknown>>;
 };
-export type SendClaudeInputResponse = { ok: true; rowId: number | null; clientMessageId: string } & ActionSyncStamp;
+export type SendAgentInputResponse = { ok: true; rowId: number | null; clientMessageId: string } & ActionSyncStamp;
 // The /input endpoint also accepts `{ type: 'interrupt' }` — modelled as a
-// union to stay typed. `interruptClaude` sends the 2nd branch.
-export type ClaudeInputBody = SendClaudeInputBody | { type: 'interrupt' };
+// union to stay typed. `interruptSession` sends the 2nd branch.
+export type AgentInputBody = SendAgentInputBody | { type: 'interrupt' };
 
 export type RespondPermissionBody = {
   id: string;
@@ -1539,28 +1536,8 @@ export type RespondExitPlanBody = {
   feedback?: string;
 };
 
-export type SetClaudeModeBody = { mode: SessionMode };
-export type SetClaudeModeResponse = { ok: true; mode: SessionMode };
-
-// Canonical provider-neutral aliases. Historical `Claude*` names remain part
-// of the public TypeScript surface so existing extensions do not break.
-export type AgentSessionListQuery = ClaudeSessionListQuery;
-export type AgentSessionsListResponse = ClaudeSessionsListResponse;
-export type AgentSessionDetailResponse = ClaudeSessionDetailResponse;
-export type AgentSessionMessageWindow = ClaudeSessionMessageWindow;
-export type AgentSessionEditsResponse = ClaudeSessionEditsResponse;
-export type CreateAgentSessionBody = CreateClaudeSessionBody;
-export type CreateAgentSessionResponse = CreateClaudeSessionResponse;
-export type ImportAgentSessionBody = ImportClaudeSessionBody;
-export type ImportAgentSessionResponse = ImportClaudeSessionResponse;
-export type RenameAgentSessionBody = RenameClaudeSessionBody;
-export type SendAgentInputBody = SendClaudeInputBody;
-export type SendAgentInputResponse = SendClaudeInputResponse;
-export type AgentInputBody = ClaudeInputBody;
-export type DeleteAgentSessionResponse = DeleteClaudeSessionResponse;
-export type ResumeAgentSessionResponse = ResumeClaudeSessionResponse;
-export type SetAgentModeBody = SetClaudeModeBody;
-export type SetAgentModeResponse = SetClaudeModeResponse;
+export type SetAgentModeBody = { mode: SessionMode };
+export type SetAgentModeResponse = { ok: true; mode: SessionMode };
 
 // Mirrors EffortLevel in lib/server/agent/types.ts (and claude_agent_sdk).
 // Duplicated here to avoid client bundles pulling a `server-only` module.
@@ -1575,24 +1552,24 @@ export type ClaudeEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'u
 // EffortPicker when no live capability data is available (no API key, alias,
 // or custom model id) and server-side as the baseline for `isKnownEffort`.
 // The LIVE per-model list comes from the catalog's `capabilities.effort` tree
-// (see lib/server/claude/modelSync.ts) — a model may support fewer (Sonnet
+// (see lib/server/hub/modelSync.ts) — a model may support fewer (Sonnet
 // 4.6 has no `xhigh`; Haiku 4.5 has none) or, in future, a brand-new level.
 export const CANONICAL_EFFORTS: ClaudeEffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-// POST /api/claude/sessions/[id]/model — change the model for ONE session.
+// POST /api/sessions/[id]/model — change the model for ONE session.
 // Both fields nullable: null/empty clears back to the global default. Takes
 // effect on the next sleep+resume (see /model/route.ts header for why).
-export type SetClaudeSessionModelBody = {
+export type SetSessionModelBody = {
   model: string | null;
   fallbackModel?: string | null;
 };
-export type SetClaudeSessionModelResponse = { ok: true } | { error: string };
+export type SetSessionModelResponse = { ok: true } | { error: string };
 
-// POST /api/claude/sessions/[id]/effort (effort validity depends on the
+// POST /api/sessions/[id]/effort (effort validity depends on the
 // session's kind — Codex efforts are CodexEffortLevel).
 /** Native effort level or a validated per-model parameter set (Cursor/endpoints). */
-export type SetClaudeSessionEffortBody = { effort: string | null };
-export type SetClaudeSessionEffortResponse = { ok: true } | { error: string };
+export type SetSessionEffortBody = { effort: string | null };
+export type SetSessionEffortResponse = { ok: true } | { error: string };
 
 // GET /api/claude/models — short aliases plus API-discovered concrete models.
 export type ClaudeModelGroup = 'aliases' | 'current' | 'previous';
@@ -1620,10 +1597,10 @@ export type ClaudeModelsRefreshResponse = {
   efforts: string[];
 };
 
-export type RevertClaudeEditBody = {
+export type RevertEditBody = {
   filePath: string;
 };
-export type RevertClaudeEditResponse = {
+export type RevertEditResponse = {
   ok: boolean;
   action?: 'restored' | 'deleted';
   filePath?: string;
@@ -1631,23 +1608,23 @@ export type RevertClaudeEditResponse = {
   error?: string;
 };
 
-export type SearchClaudeResult = {
+export type SearchSessionsResult = {
   messageId: number;
   sessionId: string;
   role: string;
   snippet: string;
   createdAt: number;
-  session: ClaudeSession & { vpsName: string | null };
+  session: AgentSession & { vpsName: string | null };
 };
-export type SearchClaudeResponse = { results: SearchClaudeResult[] };
+export type SessionSearchResponse = { results: SearchSessionsResult[] };
 
-// Response of DELETE /api/claude/sessions/[id]: permanent deletion
+// Response of DELETE /api/sessions/[id]: permanent deletion
 // (DB cascade). Before the kill→delete rework, the `hard` flag distinguished
 // soft-kill (status='killed') from hard-delete (cascade). Soft-kill no
 // longer exists — DELETE is always destructive.
-export type DeleteClaudeSessionResponse = { ok: true };
+export type DeleteAgentSessionResponse = { ok: true };
 
-// POST /api/claude/sessions/bulk-delete — the paused-sessions cleanup. Same
+// POST /api/sessions/bulk-delete — the paused-sessions cleanup. Same
 // destruction as the DELETE above, N at a time, announced ONCE. `onlyPaused`
 // re-checks each row at deletion time: the list the user picked from can be a
 // poll old, and a session that woke up since is kept, not deleted.
@@ -1662,7 +1639,7 @@ export type BulkDeleteSessionsResponse = {
   failed: { id: string; error: string }[];
 } & ActionSyncStamp;
 
-export type ResumeClaudeSessionResponse = {
+export type ResumeAgentSessionResponse = {
   ok: true;
   status: WorkerStatus | string;
 };
@@ -1671,7 +1648,7 @@ export type ResumeClaudeSessionResponse = {
 
 // Settings: free-form key/value. ALLOWED_KEYS on the server side restricts to
 // a fixed set — we type minimally as Record<string, string>.
-export type ClaudeSettingsMap = Record<string, string>;
+export type AppSettingsMap = Record<string, string>;
 
 export type PushVapidKeyResponse = { publicKey: string };
 

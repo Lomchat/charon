@@ -55,8 +55,8 @@ export default function SessionSettingsModal({ session, onClose }: {
     finally { saving.current = false; setBusy(false); }
   }
   const local = browser.sessions?.[session.id];
-  return <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-    <div className="claude-modal session-settings-modal" role="dialog" aria-modal="true" aria-labelledby="session-settings-title">
+  return <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="app-modal session-settings-modal" role="dialog" aria-modal="true" aria-labelledby="session-settings-title">
       <div className="notification-modal-heading">
         <div><h2 id="session-settings-title">Session settings</h2><p>{session.name || session.cwd.split('/').filter(Boolean).pop() || session.id.slice(0, 8)}</p></div>
         <button ref={closeButton} type="button" className="notification-close" onClick={onClose} aria-label="Close session settings" title="Close session settings">✕</button>

@@ -224,7 +224,7 @@ export function AccountChoiceMenu({ choice, vps, provider, profiles, busy, onPic
     </div>
   );
   // Inside the themed root, like every popup (PickerControl).
-  return createPortal(list, choice.element()?.closest('.claude-root') ?? document.body);
+  return createPortal(list, choice.element()?.closest('.app-root') ?? document.body);
 }
 
 function AccountChoiceRow({ vps, provider, profile, busy, onPick, onContext }: {

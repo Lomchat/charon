@@ -20,7 +20,7 @@ vi.mock('@/lib/db', () => ({
     id: 'login-test-vps', ip: '127.0.0.1', sshUser: 'test', sshPort: 22,
   }] }) }) }) },
 }));
-vi.mock('@/lib/server/claude/settings', () => ({ getSetting: () => null }));
+vi.mock('@/lib/server/hub/settings', () => ({ getSetting: () => null }));
 vi.mock('@/lib/server/agent/accountProfiles', () => ({
   requireAccountProfile: vi.fn(),
   readProfileStatus: async () => ({ config_dir: mocks.profileDir }),

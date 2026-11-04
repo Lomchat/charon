@@ -22,12 +22,12 @@ import { db, vps as vpsTable, vpsFolders as vpsFoldersTable } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
 import { ssrSummaries } from '@/lib/server/sync/ssrSummaries';
-// `claude.css` est une feuille de PAGE dans Charon (importée par `app/page.tsx`),
+// `app.css` est une feuille de PAGE dans Charon (importée par `app/page.tsx`),
 // pas une feuille du layout. Le modal du desk monte la vraie vue de session de
 // Charon : sans cet import, elle s'afficherait sans sa grille ni ses couleurs.
 // Les jetons de thème, eux, viennent déjà du layout racine — donc de `data-theme`
 // sur <html>, et le modal suit le thème choisi dans Charon, y compris le clair.
-import '../claude.css';
+import '../app.css';
 import './desk.css';
 import Desk from './Desk';
 

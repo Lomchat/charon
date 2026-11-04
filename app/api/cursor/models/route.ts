@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { getCursorModelsForVps } from '@/lib/server/claude/cursorModels';
+import { getCursorModelsForVps } from '@/lib/server/hub/cursorModels';
 
 // GET /api/cursor/models?vpsId=<id>
 //

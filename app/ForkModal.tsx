@@ -42,7 +42,7 @@ export default function ForkModal({
   const [replacement, setReplacement] = useState('');
   useEffect(() => {
     let live = true;
-    fetch(`/api/claude/sessions/${sessionId}/fork`).then((r) => r.json()).then((data) => {
+    fetch(`/api/sessions/${sessionId}/fork`).then((r) => r.json()).then((data) => {
       if (live) setPoints(Array.isArray(data?.points) ? data.points : []);
     }).catch(() => { if (live) setPoints([]); });
     return () => { live = false; };
@@ -67,10 +67,10 @@ export default function ForkModal({
   }, [busy, onClose]);
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => {
+    <div className="app-modal-bg" onClick={(e) => {
       if (e.target === e.currentTarget && !busy) onClose();
     }}>
-      <div className="claude-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="fork-title">
+      <div className="app-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="fork-title">
         <div className="fork-head">
           <div>
             <h2 id="fork-title">Fork conversation</h2>

@@ -18,9 +18,9 @@ const pushMocks = vi.hoisted(() => ({ sendPushToAll: vi.fn(async (_p: any) => {}
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: async () => ({ userId: 'u' }) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => pushMocks);
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => pushMocks);
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -156,11 +156,11 @@ const T_OLD = Date.now() - 3_600_000;   // the old epoch
 const T_NEW = Date.now() - 60_000;      // the recreated log
 
 function rows(): any[] {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === SID).sort((a: any, b: any) => a.id - b.id);
 }
 function sessionRow(): any {
-  return db.select().from(schema.claudeSessions).where(eq(schema.claudeSessions.id, SID)).get();
+  return db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).get();
 }
 function eventType(r: any): string | null {
   if (r.role !== 'event') return null;
@@ -174,7 +174,7 @@ function mkStream(kind: 'claude' | 'codex' = 'codex') {
   const row = sessionRow();
   const s = new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'v', name: 'n', status: 'thinking',
-    permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', claudeSessionId: null, kind,
+    permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', nativeSessionId: null, kind,
     lastSeenSeq: row.lastSeenSeq, lastStopNotifiedSeq: row.lastStopNotifiedSeq,
   }) as any;
   const frames: any[] = [];
@@ -214,9 +214,9 @@ beforeEach(() => {
   pool.backpressured = true;
   pushMocks.sendPushToAll.mockClear();
   hubHooks().focusChecker = undefined;
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-  db.delete(schema.claudeSessions).where(eq(schema.claudeSessions.id, SID)).run();
-  db.insert(schema.claudeSessions).values({
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+  db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).run();
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'n', status: 'thinking',
     lastSeenSeq: 3990, lastStopNotifiedSeq: 3989,
   }).run();
@@ -300,7 +300,7 @@ describe('SessionStream: seq_epoch_reset', () => {
     s._onAgentEvent(oldEv(3995, { event: 'assistant_text', delta: 'Old answer.' }));
     s._onAgentEvent(oldEv(3996, { event: 'stop', subtype: 'success' }));
     expect(sessionRow().unreadStop).toBe(1);
-    db.update(schema.claudeSessions).set({ unreadStop: 0 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ unreadStop: 0 }).where(eq(schema.agentSessions.id, SID)).run();
     pushMocks.sendPushToAll.mockClear();
     s._onAgentEvent(oldEv(3997, { event: 'status', status: 'thinking' }));
     s._onAgentEvent(reset);
@@ -320,7 +320,7 @@ describe('SessionStream: seq_epoch_reset', () => {
     expect(sessionRow()).toMatchObject({ unreadStop: 1, lastStopNotifiedSeq: 3 });
     expect(pushMocks.sendPushToAll).not.toHaveBeenCalled();
     // A live new-epoch stop pushes.
-    db.update(schema.claudeSessions).set({ unreadStop: 0 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ unreadStop: 0 }).where(eq(schema.agentSessions.id, SID)).run();
     s._onAgentEvent(newEv(4, { event: 'status', status: 'thinking' }));
     s._onAgentEvent(newEv(5, { event: 'assistant_text', delta: 'Live.' }));
     s._onAgentEvent(newEv(6, { event: 'stop', subtype: 'success' }));
@@ -333,7 +333,7 @@ describe('SessionStream: seq_epoch_reset', () => {
     const { s } = mkStream('claude');
     s._onAgentEvent(oldEv(3995, { event: 'assistant_text', delta: 'Old answer.' }));
     s._onAgentEvent(oldEv(3996, { event: 'stop', subtype: 'success' }));
-    db.update(schema.claudeSessions).set({ unreadStop: 0 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ unreadStop: 0 }).where(eq(schema.agentSessions.id, SID)).run();
     s._onAgentEvent(reset);
     const floor = Math.max(...rows().map((r) => r.tsMs));
     expect(s.stopNotifyFloorTsMs).toBe(floor);
@@ -455,7 +455,7 @@ describe('SessionStream: seq_epoch_reset', () => {
     const first = mkStream('claude').s;
     first._onAgentEvent(oldEv(3995, { event: 'assistant_text', delta: 'Old answer.' }));
     first._onAgentEvent(oldEv(3996, { event: 'stop', subtype: 'success' }));
-    db.update(schema.claudeSessions).set({ unreadStop: 0 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ unreadStop: 0 }).where(eq(schema.agentSessions.id, SID)).run();
     pushMocks.sendPushToAll.mockClear();
     first._onAgentEvent(reset);
     const floor = Math.max(...rows().map((r) => r.tsMs));

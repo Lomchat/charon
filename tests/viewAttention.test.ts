@@ -10,9 +10,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({ userId: 'test-user' })) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: vi.fn() }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: vi.fn(async () => []) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: vi.fn(async () => []) }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -54,19 +54,19 @@ function register(connId: string, o: { focus?: string | null; visible?: boolean;
 }
 
 function post(body: Record<string, unknown>) {
-  return POST(new Request('http://localhost/api/claude/focus', {
+  return POST(new Request('http://localhost/api/focus', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   }));
 }
 
 function unreadStop(id = SID): number {
-  return db.select().from(schema.claudeSessions).all().find((r: any) => r.id === id)?.unreadStop;
+  return db.select().from(schema.agentSessions).all().find((r: any) => r.id === id)?.unreadStop;
 }
 
 function finishTurn(seq: number) {
   const stream = new ops.SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'thinking',
-    permissionMode: 'normal', claudeSessionId: null, kind: 'claude',
+    permissionMode: 'normal', nativeSessionId: null, kind: 'claude',
   }) as any;
   stream._onAgentEvent({ event: 'stop', session_id: SID, seq, subtype: 'end_turn' });
 }
@@ -80,10 +80,10 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root' })
     .onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ops = await import('@/lib/server/agent/sessionOps');
   ec = await import('@/lib/server/agent/eventConnections');
-  ({ POST } = await import('@/app/api/claude/focus/route'));
+  ({ POST } = await import('@/app/api/focus/route'));
   ops.subscribeGlobalSessionEvents((ev) => busEvents.push(ev));
 });
 
@@ -92,10 +92,10 @@ beforeEach(() => {
   base += 60 * 60_000;
   at(0);
   busEvents.length = 0;
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.agentSessions).run();
   for (const id of [SID, OTHER]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'active' }).run();
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'active' }).run();
   }
 });
 
@@ -130,7 +130,7 @@ describe('attended viewing matrix', () => {
   });
 
   it('attentive=0 watches nothing until an attention POST, which revives it and reads the focused session', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1 }).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1 }).run();
     register('att-revive-1', { attentive: false });
     expect(ec.isBeingWatched(SID)).toBe(false);
 
@@ -147,7 +147,7 @@ describe('attended viewing matrix', () => {
   });
 
   it('an attention POST on a hidden conn reads nothing and watches nothing; an unknown conn is ok:false', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1 }).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1 }).run();
     register('att-hidden-1', { attentive: false, visible: false });
     expect(await (await post({ conn: 'att-hidden-1', kind: 'attention' })).json()).toEqual({ ok: true });
     expect(ec.isBeingWatched(SID)).toBe(false);
@@ -157,7 +157,7 @@ describe('attended viewing matrix', () => {
   });
 
   it('a focus POST: attentive:false reads nothing, attentive:true is a proof of attention and reads', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1 }).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1 }).run();
     register('att-focus-1', { attentive: false, focus: OTHER });
     let res = await post({ conn: 'att-focus-1', sessionId: SID, focusSeq: 2, visible: true, attentive: false });
     expect(await res.json()).toMatchObject({ ok: true, applied: true, focus: SID });
@@ -171,7 +171,7 @@ describe('attended viewing matrix', () => {
   });
 
   it('attentive:false never erases a newer attention report (out-of-order POSTs, FM9); idleness = the 120 s expiry', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1 }).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1 }).run();
     // (a) the onopen re-POST (same seq, sent while idle) lands AFTER the
     // immediate idle→active attention POST.
     register('att-race-1', { attentive: false });
@@ -321,7 +321,7 @@ describe('attended viewing matrix', () => {
     function liveStream() {
       return new ops.SessionStream({
         id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'thinking',
-        permissionMode: 'normal', claudeSessionId: null, kind: 'claude',
+        permissionMode: 'normal', nativeSessionId: null, kind: 'claude',
       }) as any;
     }
 

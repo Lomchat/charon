@@ -3,7 +3,7 @@
 //
 // Browser-safe, no React, no DOM: every client transcript guarantee is proven
 // against this module (tests/transcriptReducer.test.ts, transcriptSync.test.ts)
-// — there is no DOM test environment (SPEC §11). `useClaudeSessionStream` is a
+// — there is no DOM test environment (SPEC §11). `useSessionStream` is a
 // thin adapter: a state ref + `applyFrame`/`applySnapshot` + an effect runner.
 //
 // Transcript = snapshot@R + frames>R (I6). Every frame type has a snapshot
@@ -23,7 +23,7 @@
 import type {
   Msg, ToolCallEntry, EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan,
 } from '../sessionTypes';
-import type { WorkerEvent, WorkerStatus } from '@/lib/server/claude/types';
+import type { WorkerEvent, WorkerStatus } from '@/lib/server/hub/types';
 import {
   asSessionProvider, defaultSessionMode, isSessionMode, PROVIDERS,
   type SessionMode, type SessionProvider,
@@ -994,7 +994,7 @@ export function mergeEdits(prev: Map<string, EditSnapshot>, rebuilt: Map<string,
   return next;
 }
 
-/** Chronological order key of a row (lib/server/claude/messageOrder.ts:
+/** Chronological order key of a row (lib/server/hub/messageOrder.ts:
  *  `ts_ms`, ties by id). */
 function chronoKey(m: ApiMessage): [number, number] {
   const ts = (m as { tsMs?: number | null }).tsMs;

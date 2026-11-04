@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/settings', () => ({ getSetting: () => null }));
-import { sessionPathScript } from '@/lib/server/claude/sessionPath';
+vi.mock('@/lib/server/hub/settings', () => ({ getSetting: () => null }));
+import { sessionPathScript } from '@/lib/server/hub/sessionPath';
 
 const dirs: string[] = [];
 function fixture() { const dir = mkdtempSync(join(tmpdir(), 'charon-path-test-')); dirs.push(dir); return dir; }

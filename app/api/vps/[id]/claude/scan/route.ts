@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
+import { sshExec, shQuote } from '@/lib/server/hub/sshExec';
 
 // GET /api/vps/[id]/claude/scan
 // Lists existing Claude sessions on the VPS (.jsonl files in

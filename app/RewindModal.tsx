@@ -56,8 +56,8 @@ export default function RewindModal({ messages, provider, busy, error, onConfirm
     return () => window.removeEventListener('keydown', key);
   }, [busy, onClose]);
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="claude-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="rewind-title">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="app-modal fork-modal" role="dialog" aria-modal="true" aria-labelledby="rewind-title">
         <div className="fork-head">
           <div><h2 id="rewind-title">Rewind {provider} history</h2><p>Choose the first message to remove</p></div>
           <button type="button" className="modal-close" disabled={busy} onClick={onClose}>×</button>

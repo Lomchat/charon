@@ -26,7 +26,7 @@ beforeAll(async () => {
   ({ deleteSession } = await import('@/lib/server/agent/sessionOps'));
 });
 
-beforeEach(() => { db.delete(schema.claudeSessions).run(); });
+beforeEach(() => { db.delete(schema.agentSessions).run(); });
 
 describe('session deletion keeps sidebar path order', () => {
   it('packs surviving paths in the order shown before deleting their first card', async () => {
@@ -38,14 +38,14 @@ describe('session deletion keeps sidebar path order', () => {
       { id: 'a3', cwd: '/srv/a', position: 4 },
     ];
     for (const [i, row] of rows.entries()) {
-      db.insert(schema.claudeSessions).values({
+      db.insert(schema.agentSessions).values({
         ...row, vpsId: 'vps1', status: 'sleeping', createdAt: i + 1,
       }).run();
     }
 
     expect((await deleteSession('a1')).deleted).toBe(true);
-    const remaining = db.select({ id: schema.claudeSessions.id, position: schema.claudeSessions.position })
-      .from(schema.claudeSessions).all().sort((a, b) => a.position - b.position);
+    const remaining = db.select({ id: schema.agentSessions.id, position: schema.agentSessions.position })
+      .from(schema.agentSessions).all().sort((a, b) => a.position - b.position);
     expect(remaining).toEqual([
       { id: 'a2', position: 0 }, { id: 'a3', position: 1 },
       { id: 'b1', position: 2 }, { id: 'c1', position: 3 },
@@ -61,17 +61,17 @@ describe('session deletion keeps sidebar path order', () => {
       { id: 'a2', cwd: '/srv/a', position: 4, archived: 0 },
     ];
     for (const [i, row] of rows.entries()) {
-      db.insert(schema.claudeSessions).values({
+      db.insert(schema.agentSessions).values({
         ...row, vpsId: 'vps1', status: 'sleeping', createdAt: i + 1,
       }).run();
     }
 
     await deleteSession('a1');
     const remaining = db.select({
-      id: schema.claudeSessions.id,
-      position: schema.claudeSessions.position,
-      archived: schema.claudeSessions.archived,
-    }).from(schema.claudeSessions).all().sort((a, b) => a.position - b.position);
+      id: schema.agentSessions.id,
+      position: schema.agentSessions.position,
+      archived: schema.agentSessions.archived,
+    }).from(schema.agentSessions).all().sort((a, b) => a.position - b.position);
     expect(remaining).toEqual([
       { id: 'b1', position: 0, archived: 0 },
       { id: 'a2', position: 1, archived: 0 },

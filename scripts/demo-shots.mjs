@@ -6,7 +6,7 @@
 // What this captures (the CURRENT interface):
 //   dashboard.png   desktop 3-column: tab bar, Claude + Codex sessions, usage
 //                   gauge, a cross-session permission popup, the tool panel
-//   claude-chat.png Claude session close-up (streamed answer, tool pairing)
+//   chat.png Claude session close-up (streamed answer, tool pairing)
 //   codex-chat.png  Codex session close-up (codex logo bubbles, sandbox mode)
 //   editor.png      the built-in editor: file tree + CodeMirror on a real file
 //   explorer.png    the explorer's context menu over the git-decorated tree
@@ -82,11 +82,11 @@ function resetDemoState(keepPending) {
   const db = new Database(DB);
   db.pragma('busy_timeout = 5000');
   db.prepare(`UPDATE vps SET agent_status='ok', agent_last_error=NULL, codex_available=1, claude_logged_in=1, codex_logged_in=1`).run();
-  const up = db.prepare(`UPDATE claude_sessions SET status=? WHERE id=?`);
+  const up = db.prepare(`UPDATE agent_sessions SET status=? WHERE id=?`);
   for (const [id, st] of Object.entries(SESSION_STATUS)) up.run(st, id);
-  db.prepare(`DELETE FROM claude_pending_permissions WHERE id=?`).run(PENDING.id);
+  db.prepare(`DELETE FROM session_pending_permissions WHERE id=?`).run(PENDING.id);
   if (keepPending) {
-    db.prepare(`INSERT INTO claude_pending_permissions (id,session_id,tool_name,tool_input,status,created_at)
+    db.prepare(`INSERT INTO session_pending_permissions (id,session_id,tool_name,tool_input,status,created_at)
                 VALUES (?,?,?,?, 'pending', unixepoch())`)
       .run(PENDING.id, PENDING.session_id, PENDING.tool_name, PENDING.tool_input);
   }
@@ -122,7 +122,7 @@ async function shot(ctxOpts, fn, file, opts = {}) {
       body: JSON.stringify({ usage: claudeUsage, codexUsage }) }));
   // Demo sessions have no provider process; keep their runtime fixture stable
   // while the real agent continues to serve files, Git and terminal traffic.
-  const snapshotResponse = await context.request.get(`${BASE}/api/claude/sessions`);
+  const snapshotResponse = await context.request.get(`${BASE}/api/sessions`);
   if (!snapshotResponse.ok()) throw new Error('Cannot load demo sessions');
   const snapshot = await snapshotResponse.json();
   if (!snapshot.sessions.some((s) => s.id === 's_auth') ||
@@ -136,7 +136,7 @@ async function shot(ctxOpts, fn, file, opts = {}) {
     agentStatus: 'ok', agentLastError: null, claudeLoggedIn: 1,
     codexAvailable: 1, codexLoggedIn: 1,
   }));
-  await context.route(/\/api\/claude\/sessions(?:\?.*)?$/, async (route) => {
+  await context.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     await route.fulfill({ response, json: { ...data, meta: snapshot.meta, vpsRuntime: snapshot.vpsRuntime } });
@@ -148,7 +148,7 @@ async function shot(ctxOpts, fn, file, opts = {}) {
     ...(opts.keepPending ? [{ type: 'permission_request', sessionId: PENDING.session_id,
       id: PENDING.id, tool: PENDING.tool_name, input: JSON.parse(PENDING.tool_input) }] : []),
   ];
-  await context.route('**/api/claude/events?*', (route) => route.fulfill({
+  await context.route('**/api/events?*', (route) => route.fulfill({
     contentType: 'text/event-stream', body: 'retry: 60000\n\n' + events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(''),
   }));
   const page = await context.newPage();
@@ -157,7 +157,7 @@ async function shot(ctxOpts, fn, file, opts = {}) {
     resetDemoState(!!opts.keepPending);
     const theme = opts.theme || 'nordic';
     await open(page);
-    const status = await page.evaluate(async (id) => (await fetch('/api/claude/settings', {
+    const status = await page.evaluate(async (id) => (await fetch('/api/settings', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ 'app.theme': id }),
     })).status, theme);
@@ -229,7 +229,7 @@ await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
   await open(page, '/?session=s_auth');
   await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor({ timeout: 12000 });
   await sleep(1800);
-}, 'claude-chat.png');
+}, 'chat.png');
 
 // 3) Codex chat close-up — codex logo bubbles, gpt-6, sandbox mode
 await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
@@ -243,7 +243,7 @@ await shot({ viewport: { width: 1680, height: 1040 } }, async (page) => {
 await shot({ viewport: { width: 1920, height: 940 } }, async (page) => {
   await warmAgent(page);
   await open(page, '/?session=s_auth');
-  await page.locator('.claude-chat').first().waitFor({ timeout: 12000 });
+  await page.locator('.app-chat').first().waitFor({ timeout: 12000 });
   await sleep(1200);   // let the chat settle: it steals the click while it scrolls
   await clickToolTab(page, 'files');
   await treeRow(page, 'src').click({ timeout: 8000 });
@@ -261,7 +261,7 @@ await shot({ viewport: { width: 1920, height: 940 } }, async (page) => {
 await shot({ viewport: { width: 1680, height: 1000 } }, async (page) => {
   await warmAgent(page);
   await open(page, '/?session=s_auth');
-  await page.locator('.claude-chat').first().waitFor({ timeout: 12000 });
+  await page.locator('.app-chat').first().waitFor({ timeout: 12000 });
   await sleep(1200);
   await clickToolTab(page, 'files');
   await treeRow(page, 'src').click({ timeout: 8000 });
@@ -275,7 +275,7 @@ await shot({ viewport: { width: 1680, height: 1000 } }, async (page) => {
 await shot({ viewport: { width: 1680, height: 1000 } }, async (page) => {
   await warmAgent(page);
   await open(page, '/?session=s_auth');
-  await page.locator('.claude-chat').first().waitFor({ timeout: 12000 });
+  await page.locator('.app-chat').first().waitFor({ timeout: 12000 });
   await sleep(1200);
   await clickToolTab(page, 'git');
   await page.locator('.git-tab .gt-files li').first().waitFor({ timeout: 12000 });
@@ -291,7 +291,7 @@ await shot({ viewport: { width: 1680, height: 1000 } }, async (page) => {
 await shot({ viewport: { width: 1680, height: 760 } }, async (page) => {
   await warmAgent(page);
   await open(page, '/?session=s_auth');
-  await page.locator('.claude-chat').first().waitFor({ timeout: 12000 });
+  await page.locator('.app-chat').first().waitFor({ timeout: 12000 });
   await sleep(1200);
   await clickToolTab(page, 'git');
   await page.locator('.git-tab .gt-files li').first().waitFor({ timeout: 12000 });
@@ -384,7 +384,7 @@ for (const theme of ['nordic', 'daylight', 'etonc', 'cupertino', 'cupertino-nigh
     await page.getByText('Refactor the auth middleware', { exact: false }).first().waitFor();
     await treeRow(page, 'src').waitFor();
     await sleep(1800);
-    await page.locator('.claude-chat').evaluate((el) => { el.scrollTop = 0; });
+    await page.locator('.app-chat').evaluate((el) => { el.scrollTop = 0; });
   }, `theme-${theme}.png`, { theme });
 }
 await browser.close();

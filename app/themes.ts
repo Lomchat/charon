@@ -2,7 +2,7 @@
  *  THE single source of truth for the look of the hub (§11).
  *
  *  Adding a theme = one `[data-theme='<id>']` block in `app/themes.css` + one
- *  entry here. Nothing else: every colour in claude.css / agent-ui.css /
+ *  entry here. Nothing else: every colour in app.css / agent-ui.css /
  *  globals.css goes through the semantic tokens that block defines.
  *
  *  This file exists because three surfaces are NOT styled by CSS and would

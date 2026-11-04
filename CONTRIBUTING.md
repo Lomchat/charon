@@ -73,8 +73,8 @@ dispatch sets; the prebuild check asserts Python and TypeScript agree.
 
 ### Modify the UI
 
-State mostly lives in `app/ClaudePanel.tsx` (the shell) and
-`app/ClaudeSessionView.tsx` (the chat), which share the `useClaudeSessionStream`
+State mostly lives in `app/HubPanel.tsx` (the shell) and
+`app/SessionView.tsx` (the chat), which share the `useSessionStream`
 hook. Check it before adding another `useEffect`.
 
 ## Conventions

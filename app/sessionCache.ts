@@ -1,11 +1,11 @@
 'use client';
 import { api } from '@/lib/api';
-import type { ClaudeSessionDetailResponse, ClaudeSessionMessageWindow } from '@/lib/types/api';
+import type { AgentSessionDetailResponse, AgentSessionMessageWindow } from '@/lib/types/api';
 import type { TranscriptView } from '@/lib/transcriptRows';
 
-// Module-level cache for session detail/messages. ClaudePanel prefetches the
+// Module-level cache for session detail/messages. HubPanel prefetches the
 // sidebar sessions on mount → switching between sessions is instant via
-// `<ClaudeSessionView key={id}>` (re-mount, but the hook reads the cache on
+// `<SessionView key={id}>` (re-mount, but the hook reads the cache on
 // mount).
 //
 // Originally `app/m/chatCache.ts` (mobile-only); promoted here and renamed when
@@ -17,7 +17,7 @@ import type { TranscriptView } from '@/lib/transcriptRows';
 // snapshot: the entry is older, so the fresh answer always wins (§14.107).
 
 type CacheEntry = {
-  data: ClaudeSessionDetailResponse;
+  data: AgentSessionDetailResponse;
   fetchedAt: number;
   approxBytes: number;
 };
@@ -27,7 +27,7 @@ type CacheEntry = {
 // The request is cancelled only when its LAST holder leaves — a view that
 // unmounts stops competing for bandwidth with the session opened next.
 type Inflight = {
-  promise: Promise<ClaudeSessionDetailResponse>;
+  promise: Promise<AgentSessionDetailResponse>;
   controller: AbortController;
   holders: number;
   pinned: boolean;
@@ -48,7 +48,7 @@ const MAX_APPROX_BYTES = 24 * 1024 * 1024;
 // when the fresh data arrives).
 const STALE_MS = 15_000;
 
-function estimateBytes(data: ClaudeSessionDetailResponse): number {
+function estimateBytes(data: AgentSessionDetailResponse): number {
   let n = 2_048;
   for (const m of data.messages ?? []) {
     n += 256 + (typeof m.content === 'string' ? m.content.length * 2 : 0);
@@ -67,7 +67,7 @@ function estimateBytes(data: ClaudeSessionDetailResponse): number {
 // tools' output (`streamingToolOutput`) and the reopened row the text extends
 // (`streamingExtends`) are the same kind of live state and are blanked the
 // same way.
-function withoutLiveState(data: ClaudeSessionDetailResponse): ClaudeSessionDetailResponse {
+function withoutLiveState(data: AgentSessionDetailResponse): AgentSessionDetailResponse {
   if (!data.streamingText && !data.streamingThinking && !data.streamingToolOutput?.length
       && !data.streamingExtends) return data;
   return {
@@ -97,7 +97,7 @@ function prune(): void {
   }
 }
 
-export function getCached(id: string, view: TranscriptView = 'full'): ClaudeSessionDetailResponse | undefined {
+export function getCached(id: string, view: TranscriptView = 'full'): AgentSessionDetailResponse | undefined {
   const key = keyOf(id, view);
   const e = cache.get(key);
   if (!e) return undefined;
@@ -149,7 +149,7 @@ export type FetchSessionOptions = {
 export async function fetchAndCache(
   id: string,
   opts: FetchSessionOptions = {},
-): Promise<ClaudeSessionDetailResponse> {
+): Promise<AgentSessionDetailResponse> {
   const { view = 'full', force = false, signal, focus } = opts;
   if (signal?.aborted) throw new DOMException('session view closed', 'AbortError');
   const key = keyOf(id, view);
@@ -166,12 +166,12 @@ export async function fetchAndCache(
   }
   const controller = new AbortController();
   const req: Inflight = {
-    promise: undefined as unknown as Promise<ClaudeSessionDetailResponse>,
+    promise: undefined as unknown as Promise<AgentSessionDetailResponse>,
     controller, holders: 0, pinned: false,
   };
   req.promise = (async () => {
     try {
-      const data = await api.getClaudeSession(id, controller.signal, {
+      const data = await api.getAgentSession(id, controller.signal, {
         view, ...(focus ? { conn: focus.conn, focusSeq: focus.focusSeq } : {}),
       });
       // Never let an older answer replace a newer stored one (a request
@@ -203,7 +203,7 @@ export function invalidate(id: string): void {
 
 /**
  * Extend a session's cache entry with a window of older messages
- * (the result of a loadOlderClaudeMessages). Preserves the position
+ * (the result of a loadOlderMessages). Preserves the position
  * in history across session switches / component remounts.
  *
  * No error if the entry doesn't exist (no-op) — the caller may still
@@ -212,7 +212,7 @@ export function invalidate(id: string): void {
  * to the latest window. The trade-off: simplicity > absolute
  * scroll fidelity after long absence.
  */
-export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow, view: TranscriptView = 'full'): void {
+export function extendWithOlder(id: string, older: AgentSessionMessageWindow, view: TranscriptView = 'full'): void {
   const key = keyOf(id, view);
   const e = cache.get(key);
   if (!e) return;
@@ -227,7 +227,7 @@ export function extendWithOlder(id: string, older: ClaudeSessionMessageWindow, v
       hasMore: older.hasMore,
       oldestChatId: older.oldestChatId,
     },
-    approxBytes: e.approxBytes + estimateBytes({ ...e.data, messages: older.messages } as ClaudeSessionDetailResponse),
+    approxBytes: e.approxBytes + estimateBytes({ ...e.data, messages: older.messages } as AgentSessionDetailResponse),
     // fetchedAt unchanged: we didn't refresh the session, just extended it.
   });
   prune();

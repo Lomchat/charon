@@ -22,7 +22,7 @@
  * which is where you are already looking once you care.
  *
  * Navigation uses `window.location.assign`, a real page load, not
- * `router.push`. That is deliberate: ClaudePanel reads the filter once on
+ * `router.push`. That is deliberate: HubPanel reads the filter once on
  * mount, and Charon rewrites its own URL (`?session=`, `?shell=`) behind a
  * DeepLinkGuard. A hard load keeps the two mechanisms from racing.
  */

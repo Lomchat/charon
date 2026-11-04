@@ -2,7 +2,7 @@ import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { sshExec } from '@/lib/server/hub/sshExec';
 
 // TTL beyond which we re-check the `claude login` state of a VPS.
 // 24h: short enough to detect a server-side logout within the day,

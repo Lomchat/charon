@@ -1,7 +1,7 @@
 import { requireAccountProfile } from '@/lib/server/agent/accountProfiles';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { getCodexModelsForVps } from '@/lib/server/claude/codexModels';
+import { getCodexModelsForVps } from '@/lib/server/hub/codexModels';
 import { CODEX_CANONICAL_EFFORTS } from '@/lib/types/api';
 
 // GET /api/codex/models?vpsId=<id>

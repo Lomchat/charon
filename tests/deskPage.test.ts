@@ -9,8 +9,8 @@ vi.mock('@/lib/server/session', () => ({ requireSession: vi.fn(async () => ({ us
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
 // `/` reads the side-column layout cookie (app/panelLayout.ts); no request here.
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined }) }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: vi.fn(async () => {}) }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(() => {}),
@@ -26,7 +26,7 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
 }));
 // The client shell (Three.js) is not under test: only the props it receives.
 vi.mock('@/app/desk/Desk', () => ({ default: function Desk() { return null; } }));
-vi.mock('@/app/ClaudePanel', () => ({ default: function ClaudePanel() { return null; } }));
+vi.mock('@/app/HubPanel', () => ({ default: function HubPanel() { return null; } }));
 
 const V = 'deskvps1';
 const A = 'd1'.repeat(16);   // active, a pending permission
@@ -45,12 +45,12 @@ beforeAll(async () => {
   migrate(schema.db, { migrationsFolder: './drizzle' });
   schema.db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   schema.db.insert(schema.vps).values({ id: V, name: V, ip: '127.0.0.1', sshUser: 'root' }).run();
-  schema.db.insert(schema.claudeSessions).values([
+  schema.db.insert(schema.agentSessions).values([
     { id: A, vpsId: V, cwd: '/a', name: 'alpha', status: 'active', createdAt: 300 },
     { id: B, vpsId: V, cwd: '/b', name: 'beta', status: 'sleeping', unreadStop: 1, createdAt: 200 },
     { id: Z, vpsId: V, cwd: '/z', name: 'zeta', status: 'sleeping', archived: 1, createdAt: 100 },
   ]).run();
-  schema.db.insert(schema.claudePendingPermissions).values({
+  schema.db.insert(schema.sessionPendingPermissions).values({
     id: 'perm-desk-1', sessionId: A, toolName: 'Bash', toolInput: '{"command":"ls"}',
     createdAt: Math.floor(Date.now() / 1000),
   }).run();

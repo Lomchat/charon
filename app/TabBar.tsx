@@ -80,7 +80,7 @@ type Args = {
 /**
  * Resolve every tab against the live entity lists.
  *
- * Pure and exported so ClaudePanel can reuse the same resolution for the main
+ * Pure and exported so HubPanel can reuse the same resolution for the main
  * pane — two different answers to "what is this tab" is how a bar and a pane
  * end up disagreeing.
  */
@@ -274,10 +274,10 @@ export default function TabBar({
     (ids) => activeVpsId && onReorderTabs(
       activeVpsId, activePath ?? '', mergeVisibleOrder(fullOrder.tabs, ids)));
 
-  if (vpsRows.length === 0) return <div className="claude-tabbar" />;
+  if (vpsRows.length === 0) return <div className="app-tabbar" />;
 
   return (
-    <div className="claude-tabbar">
+    <div className="app-tabbar">
       {/* The three rows share one shape (`tb-item`) AND one size — what tells
           them apart is their line and their content, nothing else. Giving row 2
           its own scale made it read as a filter bar bolted on rather than as

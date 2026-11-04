@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@/lib/types/api';
 import type { AccountProfile } from '@/lib/accountProfiles';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import { PROVIDERS } from '@/lib/sessionCapabilities';
 import { buildAccountGroups } from '@/lib/accountGroups';
 import AccountNav, { AccountNavItem } from '@/app/AccountNav';

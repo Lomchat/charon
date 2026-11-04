@@ -145,8 +145,8 @@ export default function CodexLoginModal({ vps, onClose, profile }: {
   }
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(phase.kind === 'success'); }}>
-      <div className="claude-modal codex-login-modal">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(phase.kind === 'success'); }}>
+      <div className="app-modal codex-login-modal">
         <button className="modal-close" onClick={() => onClose(phase.kind === 'success')}>✕</button>
         <div className="cxl-head">
           <AgentLogo profileNumber={profile?.number} kind="codex" size={18} />

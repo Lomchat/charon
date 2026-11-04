@@ -13,7 +13,7 @@ const dbPath = process.env.DATABASE_URL || './data/charon.db';
 // WAL (an exclusive-lock operation). On ext4 that race is usually won quietly;
 // on the overlayfs of a Docker image build it loses, and the whole build dies
 // with `SqliteError: database is locked` / "Failed to collect page data for
-// /api/claude/push/key" — a flaky red CI on a tree where nothing is wrong.
+// /api/push/key" — a flaky red CI on a tree where nothing is wrong.
 //
 // No route needs a single ROW at build time (it only needs the module to
 // import), so the build phase gets a throwaway in-memory DB: no file, no lock,

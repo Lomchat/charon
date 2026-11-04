@@ -26,9 +26,9 @@
 import 'server-only';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
-  db, claudeSessions, claudePendingPermissions, claudePendingQuestions, type ClaudeSession,
+  db, agentSessions, sessionPendingPermissions, sessionPendingQuestions, type AgentSession,
 } from '@/lib/db';
-import { annotateSessionRows } from '@/lib/server/claude/sessionList';
+import { annotateSessionRows } from '@/lib/server/hub/sessionList';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { deriveAttention } from '@/lib/sessionAttention';
 import { isAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
@@ -96,7 +96,7 @@ function readFirstUserMessage(sessionId: string): string | null {
   const hit = S.firstUserMsg.get(sessionId);
   if (hit !== undefined) return hit;
   const row = db.get(sql`
-    SELECT substr(content, 1, ${FIRST_MSG_CHARS}) AS content FROM claude_session_messages
+    SELECT substr(content, 1, ${FIRST_MSG_CHARS}) AS content FROM session_messages
     WHERE session_id = ${sessionId} AND role = 'user'
       AND snapshot_file_path IS NULL AND snapshot_phase IS NULL
     ORDER BY id LIMIT 1
@@ -127,7 +127,7 @@ function permissionText(id: string, sessionId: string, toolName: string): GateTe
     SELECT substr(tool_input, 1, ${GATE_PREVIEW_PARSE_MAX + 1}) AS head,
            length(CAST(tool_input AS BLOB)) AS bytes,
            substr(reason, 1, ${GATE_PREVIEW_CHARS}) AS reason, suggestions
-    FROM claude_pending_permissions WHERE id = ${id}
+    FROM session_pending_permissions WHERE id = ${id}
   `) as {
     head: string | null; bytes: number | null; reason: string | null; suggestions: string | null;
   } | undefined;
@@ -149,7 +149,7 @@ function permissionText(id: string, sessionId: string, toolName: string): GateTe
 function questionText(id: string, sessionId: string): GateText {
   const row = db.get(sql`
     SELECT CASE WHEN length(CAST(payload AS BLOB)) <= ${QUESTION_PAYLOAD_PARSE_MAX} THEN payload END AS payload
-    FROM claude_pending_questions WHERE id = ${id}
+    FROM session_pending_questions WHERE id = ${id}
   `) as { payload: string | null } | undefined;
   let title = 'question';
   try {
@@ -179,13 +179,13 @@ function loadGates(sessionIds: string[]): { gates: Map<string, SummaryGate[]>; c
   const seen = new Set<string>();
   for (const ids of chunks(sessionIds)) {
     const perms = db.select({
-      id: claudePendingPermissions.id, sessionId: claudePendingPermissions.sessionId,
-      toolName: claudePendingPermissions.toolName,
-      createdAt: claudePendingPermissions.createdAt, expiresAt: claudePendingPermissions.expiresAt,
-    }).from(claudePendingPermissions).where(and(
-      inArray(claudePendingPermissions.sessionId, ids),
-      eq(claudePendingPermissions.status, 'pending'),
-    )).orderBy(asc(claudePendingPermissions.createdAt), asc(claudePendingPermissions.id)).all();
+      id: sessionPendingPermissions.id, sessionId: sessionPendingPermissions.sessionId,
+      toolName: sessionPendingPermissions.toolName,
+      createdAt: sessionPendingPermissions.createdAt, expiresAt: sessionPendingPermissions.expiresAt,
+    }).from(sessionPendingPermissions).where(and(
+      inArray(sessionPendingPermissions.sessionId, ids),
+      eq(sessionPendingPermissions.status, 'pending'),
+    )).orderBy(asc(sessionPendingPermissions.createdAt), asc(sessionPendingPermissions.id)).all();
     for (const p of perms) {
       seen.add(p.id);
       count(p.sessionId).permissions++;
@@ -200,13 +200,13 @@ function loadGates(sessionIds: string[]): { gates: Map<string, SummaryGate[]>; c
       });
     }
     const qs = db.select({
-      id: claudePendingQuestions.id, sessionId: claudePendingQuestions.sessionId,
-      kind: claudePendingQuestions.kind,
-      createdAt: claudePendingQuestions.createdAt, expiresAt: claudePendingQuestions.expiresAt,
-    }).from(claudePendingQuestions).where(and(
-      inArray(claudePendingQuestions.sessionId, ids),
-      eq(claudePendingQuestions.status, 'pending'),
-    )).orderBy(asc(claudePendingQuestions.createdAt), asc(claudePendingQuestions.id)).all();
+      id: sessionPendingQuestions.id, sessionId: sessionPendingQuestions.sessionId,
+      kind: sessionPendingQuestions.kind,
+      createdAt: sessionPendingQuestions.createdAt, expiresAt: sessionPendingQuestions.expiresAt,
+    }).from(sessionPendingQuestions).where(and(
+      inArray(sessionPendingQuestions.sessionId, ids),
+      eq(sessionPendingQuestions.status, 'pending'),
+    )).orderBy(asc(sessionPendingQuestions.createdAt), asc(sessionPendingQuestions.id)).all();
     for (const q of qs) {
       seen.add(q.id);
       const asynchronous = q.kind === 'async_question';
@@ -237,7 +237,7 @@ function loadGates(sessionIds: string[]): { gates: Map<string, SummaryGate[]>; c
 
 // ── Builders ────────────────────────────────────────────────────────────────
 
-function buildFrom(rows: ClaudeSession[]): SessionSummary[] {
+function buildFrom(rows: AgentSession[]): SessionSummary[] {
   const live = rows.filter((r) => !r.archived);
   if (!live.length) return [];
   const { gates, counts } = loadGates(live.map((r) => r.id));
@@ -270,17 +270,17 @@ function buildFrom(rows: ClaudeSession[]): SessionSummary[] {
 
 /** Every NON-archived session (or the non-archived ones among `rows`), in the
  *  list order (newest first) — `annotateSessionRows` + gates + attention. */
-export function buildSessionSummaries(rows?: ClaudeSession[]): SessionSummary[] {
-  const source = rows ?? db.select().from(claudeSessions)
-    .where(eq(claudeSessions.archived, 0))
-    .orderBy(desc(claudeSessions.createdAt), desc(claudeSessions.id))
+export function buildSessionSummaries(rows?: AgentSession[]): SessionSummary[] {
+  const source = rows ?? db.select().from(agentSessions)
+    .where(eq(agentSessions.archived, 0))
+    .orderBy(desc(agentSessions.createdAt), desc(agentSessions.id))
     .all();
   return buildFrom(source);
 }
 
 /** One session's summary; null if it was deleted OR is archived. */
 export function buildSessionSummary(id: string): SessionSummary | null {
-  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+  const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
   if (!row || row.archived) return null;
   return buildFrom([row])[0] ?? null;
 }
@@ -312,13 +312,13 @@ function publishGone(id: string): void {
  * id, syncBus.ts) matches nothing.
  */
 export function publishSummaryDiffs(ids: string[], vpsIds: string[]): void {
-  const rows = new Map<string, ClaudeSession>();
+  const rows = new Map<string, AgentSession>();
   for (const part of chunks([...new Set(ids)])) {
-    for (const r of db.select().from(claudeSessions).where(inArray(claudeSessions.id, part)).all()) rows.set(r.id, r);
+    for (const r of db.select().from(agentSessions).where(inArray(agentSessions.id, part)).all()) rows.set(r.id, r);
   }
   for (const part of chunks([...new Set(vpsIds)])) {
-    for (const r of db.select().from(claudeSessions).where(and(
-      inArray(claudeSessions.vpsId, part), eq(claudeSessions.archived, 0),
+    for (const r of db.select().from(agentSessions).where(and(
+      inArray(agentSessions.vpsId, part), eq(agentSessions.archived, 0),
     )).all()) rows.set(r.id, r);
   }
   const built = buildFrom([...rows.values()]);
@@ -344,7 +344,7 @@ export function reconcileAllSummaries(): SessionSummary[] {
 /** A FILTERED list (never complete): build the matching summaries and
  *  publish the changed ones — never a removal (an id it lacks may simply be
  *  filtered out). Every summary a client holds is then a known key. */
-export function publishMatchingSummaries(rows: ClaudeSession[]): SessionSummary[] {
+export function publishMatchingSummaries(rows: AgentSession[]): SessionSummary[] {
   const built = buildFrom(rows);
   for (const s of built) publishIfChanged(s);
   return built;

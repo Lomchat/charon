@@ -24,8 +24,8 @@ export default function TaskModal({ icon, tone, title, subtitle, onClose, childr
   }, [onClose]);
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className={`claude-modal task-modal tone-${tone}${wide ? ' task-modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className={`app-modal task-modal tone-${tone}${wide ? ' task-modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="tm-head">
           <span className="tm-ico" aria-hidden>{icon}</span>
           <div className="tm-title">

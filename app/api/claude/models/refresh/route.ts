@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { refreshModels, getModelsAndEfforts } from '@/lib/server/claude/modelSync';
+import { refreshModels, getModelsAndEfforts } from '@/lib/server/hub/modelSync';
 
 // POST /api/claude/models/refresh
 // Forces an immediate sync from Anthropic's GET /v1/models (requires

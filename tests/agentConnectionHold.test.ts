@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 const mock = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: mock.spawn }));
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/settings', () => ({ getSetting: () => '' }));
+vi.mock('@/lib/server/hub/settings', () => ({ getSetting: () => '' }));
 vi.mock('@/lib/server/agent/sshShared.js', () => ({ buildAgentSshArgs: () => [] }));
 vi.mock('@/lib/db', () => ({ db: {}, vps: {} }));
 import { getAgentClient, dropAgentClient, holdAgentConnection } from '@/lib/server/agent/AgentClientPool';

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import UsageMeter, { UsagePopover, UsageRings } from '../app/UsageMeter';
 import { accountIdentity, sessionAccountProfile, usageAccountLabel, type AccountProfile } from '@/lib/accountProfiles';
 import { newestAccountUsage } from '@/app/accountUsageState';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 
 // The vitest transform is classic JSX.
 (globalThis as { React?: typeof React }).React = React;
@@ -39,8 +39,8 @@ describe('usage account label', () => {
   it('resolves a session to ITS profile by (VPS, provider, profile id)', () => {
     const profiles = [P({ email: 'one@x.io' }), P({ id: 'p2', number: 2, email: 'two@x.io' }),
       P({ id: 'p2', vpsId: 'w', number: 2, email: 'other-vps@x.io' }), P({ provider: 'codex', email: 'cx@x.io' })];
-    const one = { vpsId: 'v', kind: 'claude', codexConfig: null };
-    const two = { vpsId: 'v', kind: 'claude', codexConfig: JSON.stringify({ accountProfile: 'p2', accountProfileNumber: 2 }) };
+    const one = { vpsId: 'v', kind: 'claude', providerConfig: null };
+    const two = { vpsId: 'v', kind: 'claude', providerConfig: JSON.stringify({ accountProfile: 'p2', accountProfileNumber: 2 }) };
     expect(sessionAccountProfile(profiles, one)?.email).toBe('one@x.io');
     expect(sessionAccountProfile(profiles, two)?.email).toBe('two@x.io');
     expect(sessionAccountProfile(profiles, { ...one, kind: 'codex' })?.email).toBe('cx@x.io');

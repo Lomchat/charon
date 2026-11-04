@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { getModelNotices, markModelsSeen } from '@/lib/server/claude/modelNotices';
+import { getModelNotices, markModelsSeen } from '@/lib/server/hub/modelNotices';
 import { isSessionProvider } from '@/lib/sessionCapabilities';
 
 export async function GET() {

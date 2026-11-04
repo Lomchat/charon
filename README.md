@@ -39,7 +39,7 @@ the hub. Charon is only the control plane.
 
 ## 1 · Coding sessions — Claude, Codex and Cursor, one UI
 
-<img src="./docs/img/claude-chat.png" alt="Claude session: model and effort controls, paired tool calls and the live file explorer" width="49%"></img>
+<img src="./docs/img/chat.png" alt="Claude session: model and effort controls, paired tool calls and the live file explorer" width="49%"></img>
 <img src="./docs/img/codex-chat.png" alt="Codex session: model and effort controls, a security audit and permission modes" width="49%"></img>
 
 Each session runs **on the VPS**: a `ClaudeSDKClient`, a Codex thread (via the

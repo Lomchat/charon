@@ -1,4 +1,4 @@
-import type { WorkerEvent } from '@/lib/server/claude/types';
+import type { WorkerEvent } from '@/lib/server/hub/types';
 
 const WINDOW_MS = 3_000;
 const BUCKET_MS = 100;

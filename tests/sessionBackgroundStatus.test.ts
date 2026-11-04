@@ -12,13 +12,13 @@ const telegramMocks = vi.hoisted(() => ({
   sendPlainToTelegram: vi.fn(async (_text: string, _linkPath?: string, _event?: string) => {}),
 }));
 const pushMocks = vi.hoisted(() => ({ sendPushToAll: vi.fn(async (_payload: any) => {}) }));
-vi.mock('@/lib/server/claude/webPush', () => pushMocks);
+vi.mock('@/lib/server/hub/webPush', () => pushMocks);
 const bgMocks = vi.hoisted(() => ({ read: vi.fn(async (..._args: any[]): Promise<any[]> => []) }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: bgMocks.read }));
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: bgMocks.read }));
 
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({})) }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -54,13 +54,13 @@ function createStream(status: string = 'active', kind: 'claude' | 'codex' | 'cur
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build',
     status, permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
-    claudeSessionId: null, kind,
+    nativeSessionId: null, kind,
     lastStopNotifiedSeq: sessionRow()?.lastStopNotifiedSeq,
   }) as any;
 }
 
 function sessionRow(): any {
-  return db.select().from(schema.claudeSessions).all().find((r: any) => r.id === SID);
+  return db.select().from(schema.agentSessions).all().find((r: any) => r.id === SID);
 }
 
 /** The agent's own event shape for a background task lifecycle frame. */
@@ -82,14 +82,14 @@ beforeAll(async () => {
     .onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root' })
     .onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' })
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' })
     .onConflictDoNothing().run();
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
   ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
   ({ sessionTokenUsage } = await import('@/lib/server/agent/sessionTokenUsage'));
-  ({ runningBgTaskDetailsFromDb } = await import('@/lib/server/claude/bgTaskState'));
-  ({ setSetting } = await import('@/lib/server/claude/settings'));
+  ({ runningBgTaskDetailsFromDb } = await import('@/lib/server/hub/bgTaskState'));
+  ({ setSetting } = await import('@/lib/server/hub/settings'));
 });
 
 beforeEach(() => {
@@ -98,9 +98,9 @@ beforeEach(() => {
   pushMocks.sendPushToAll.mockClear();
   setSetting('notif.global_enabled', 'false');
   bgMocks.read.mockReset().mockResolvedValue([]);
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudeSessions).run();
-  db.insert(schema.claudeSessions).values({
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.agentSessions).run();
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'build', status: 'active',
   }).run();
 });
@@ -137,7 +137,7 @@ describe('provider-neutral durable turn usage', () => {
       cache_read_tokens: 40, final: true, duration_ms: 2000,
     });
 
-    const rows = db.select().from(schema.claudeSessionMessages).all();
+    const rows = db.select().from(schema.sessionMessages).all();
     expect(rows).toHaveLength(2);
     expect(rows.map((row: any) => JSON.parse(row.content).provider)).toEqual(['claude', 'codex']);
     expect(recordedSessionUsage(SID)).toEqual({ pending: false, usage: {
@@ -204,14 +204,14 @@ describe('recorded endpoint session tokens', () => {
   it('returns full totals on a small history page and an empty delta, without hydrating the agent', async () => {
     const stream = createStream('thinking', 'codex');
     request(stream, 1, 'old-request', 100, 20, 120);
-    db.insert(schema.claudeSessionMessages).values(Array.from({ length: 25 }, (_, i) => ({
+    db.insert(schema.sessionMessages).values(Array.from({ length: 25 }, (_, i) => ({
       sessionId: SID, role: 'user', content: `message ${i}`,
     }))).run();
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const root = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?limit=1`), { params: Promise.resolve({ id: SID }) })).json();
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const root = await (await GET(new Request(`http://localhost/api/sessions/${SID}?limit=1`), { params: Promise.resolve({ id: SID }) })).json();
     expect(root.tokenUsage).toMatchObject({ totalTokens: 120, requests: 1 });
     expect(root.hasMore).toBe(true);
-    const delta = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?since=${root.maxMessageId}`), { params: Promise.resolve({ id: SID }) })).json();
+    const delta = await (await GET(new Request(`http://localhost/api/sessions/${SID}?since=${root.maxMessageId}`), { params: Promise.resolve({ id: SID }) })).json();
     expect(delta.messages).toEqual([]);
     expect(delta.tokenUsage).toEqual(root.tokenUsage);
     expect(mergeSessionTokenUsage(delta.tokenUsage, { ...root.tokenUsage, revision: 0, totalTokens: 0 })).toBe(delta.tokenUsage);
@@ -223,16 +223,16 @@ describe('recorded endpoint session tokens', () => {
 
   it('keeps already consumed tokens when conversation history is rewound', async () => {
     const stream = createStream('active', 'codex');
-    db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'user', content: 'rewind me' }).run();
-    const user = db.select().from(schema.claudeSessionMessages).all()[0];
+    db.insert(schema.sessionMessages).values({ sessionId: SID, role: 'user', content: 'rewind me' }).run();
+    const user = db.select().from(schema.sessionMessages).all()[0];
     request(stream, 1, 'consumed', 100, 20, 120);
     const before = sessionTokenUsage(SID);
-    const { POST } = await import('@/app/api/claude/sessions/[id]/rollback/route');
-    const response = await POST(new Request(`http://localhost/api/claude/sessions/${SID}/rollback`, {
+    const { POST } = await import('@/app/api/sessions/[id]/rollback/route');
+    const response = await POST(new Request(`http://localhost/api/sessions/${SID}/rollback`, {
       method: 'POST', body: JSON.stringify({ messageId: `m${user.id}` }),
     }), { params: Promise.resolve({ id: SID }) });
     expect(response.status).toBe(200);
-    expect(db.select().from(schema.claudeSessionMessages).all().some((m: any) => m.role === 'user')).toBe(false);
+    expect(db.select().from(schema.sessionMessages).all().some((m: any) => m.role === 'user')).toBe(false);
     expect(sessionTokenUsage(SID)).toEqual(before);
   });
 });
@@ -314,7 +314,7 @@ describe('debounced session_token_usage broadcast (incremental fold)', () => {
     const { rawSqlite } = await import('@/lib/db');
     const { invalidateSessionRowCaches } = await import('@/lib/server/agent/sessionRowCache');
     const { subscribeGlobalSessionEvents, getOrCreateStream } = await import('@/lib/server/agent/sessionOps');
-    const ins = rawSqlite().prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+    const ins = rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     const usage = (id: string) => JSON.stringify({ type: 'endpoint_usage', requestId: id, inputTokens: 10, outputTokens: 1, totalTokens: 11 });
     // Reasoning rows: outside the token LIKE, and not FTS-indexed (cheap to wipe).
     const FILLER = JSON.stringify({ type: 'thinking', text: 'filler' });
@@ -332,15 +332,15 @@ describe('debounced session_token_usage broadcast (incremental fold)', () => {
       if (ev.type === 'session_token_usage' && ev.sessionId === SID) frames.push(ev);
     });
     try {
-      const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-      const window = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?limit=5`),
+      const { GET } = await import('@/app/api/sessions/[id]/route');
+      const window = await (await GET(new Request(`http://localhost/api/sessions/${SID}?limit=5`),
         { params: Promise.resolve({ id: SID }) })).json();
       expect(window.tokenUsage).toBeNull();
       expect(mergeSessionTokenUsage(null, window.tokenUsage)).toBeNull();
       await vi.waitFor(() => expect(frames).toHaveLength(1));
       expect(frames[0].usage).toMatchObject({ requests: 2, totalTokens: 22 });
       if (viaStream) expect(tokenFrames(viaStream)).toHaveLength(1);
-      const warm = await (await GET(new Request(`http://localhost/api/claude/sessions/${SID}?limit=5`),
+      const warm = await (await GET(new Request(`http://localhost/api/sessions/${SID}?limit=5`),
         { params: Promise.resolve({ id: SID }) })).json();
       expect(warm.tokenUsage).toEqual(frames[0].usage);
     } finally {
@@ -354,7 +354,7 @@ describe('debounced session_token_usage broadcast (incremental fold)', () => {
     const { invalidateSessionRowCaches, sessionRowCacheStats } = await import('@/lib/server/agent/sessionRowCache');
     const { TOKEN_FOLD_SLICE_ROWS } = await import('@/lib/server/agent/sessionTokenUsage');
     const { subscribeGlobalSessionEvents } = await import('@/lib/server/agent/sessionOps');
-    const ins = rawSqlite().prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+    const ins = rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     const early = JSON.stringify({ type: 'endpoint_usage', requestId: 'early', inputTokens: 10, outputTokens: 1, totalTokens: 11 });
     // Reasoning rows: outside the token LIKE, and not FTS-indexed (cheap to wipe).
     const FILLER = JSON.stringify({ type: 'thinking', text: 'filler' });
@@ -411,8 +411,8 @@ describe('debounced session_token_usage broadcast (incremental fold)', () => {
       const { deleteSession } = await import('@/lib/server/agent/sessionOps');
       expect((await deleteSession(SID)).deleted).toBe(true);
     } else {
-      const { POST } = await import('@/app/api/claude/sessions/[id]/archive/route');
-      const res = await POST(new Request(`http://localhost/api/claude/sessions/${SID}/archive`, { method: 'POST' }),
+      const { POST } = await import('@/app/api/sessions/[id]/archive/route');
+      const res = await POST(new Request(`http://localhost/api/sessions/${SID}/archive`, { method: 'POST' }),
         { params: Promise.resolve({ id: SID }) });
       expect(res.status).toBe(200);
     }
@@ -429,9 +429,9 @@ describe('debounced session_token_usage broadcast (incremental fold)', () => {
     stream._persist('user', 'Human follow-up');
     stream._onAgentEvent({ event: 'assistant_text', session_id: SID, seq: 4, delta: 'Human answer' });
     stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 5, peer_request_id: null });
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
+    const { GET } = await import('@/app/api/sessions/[id]/route');
     const { sessionRowCacheStats } = await import('@/lib/server/agent/sessionRowCache');
-    const get = async (query: string) => (await GET(new Request(`http://localhost/api/claude/sessions/${SID}${query}`),
+    const get = async (query: string) => (await GET(new Request(`http://localhost/api/sessions/${SID}${query}`),
       { params: Promise.resolve({ id: SID }) })).json();
     const root = await get('?limit=1');
     expect(root.tokenUsage).toBeDefined();
@@ -542,8 +542,8 @@ describe('assistant peer anchors across message pages', () => {
     stream._onAgentEvent({ event: 'assistant_text', session_id: SID, seq: 7, delta: 'Internal progress update' });
     stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 8, peer_request_id: null });
 
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const get = async (query: string) => (await GET(new Request(`http://localhost/api/claude/sessions/${SID}${query}`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const get = async (query: string) => (await GET(new Request(`http://localhost/api/sessions/${SID}${query}`),
       { params: Promise.resolve({ id: SID }) })).json();
     const full = await get('');
     expect(full.messages.find((m: any) => m.content === 'Earlier peer answer').peerReplyTo).toBe('earlier-request');
@@ -576,8 +576,8 @@ describe('assistant peer anchors across message pages', () => {
       origin: 'charon_peer', text: 'Peer request', message_id: 'request-anchor', from: 'requester' });
     stream._onAgentEvent({ event: 'assistant_text', session_id: SID, seq: 2, delta: 'Peer answer' });
     stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 3, peer_request_id: 'request-anchor' });
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const get = async (query: string) => (await GET(new Request(`http://localhost/api/claude/sessions/${SID}${query}`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const get = async (query: string) => (await GET(new Request(`http://localhost/api/sessions/${SID}${query}`),
       { params: Promise.resolve({ id: SID }) })).json();
     const root = await get('?limit=1');
     expect(root.hasMore).toBe(true);
@@ -659,11 +659,11 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(stream.status).toBe('active');
     expect(runningBgTaskDetailsFromDb(SID)).toEqual([]);
     expect(createStream().hasRunningBgTasks()).toBe(false);
-    const before = db.select().from(schema.claudeSessionMessages).all().length;
+    const before = db.select().from(schema.sessionMessages).all().length;
     stream._onAgentEvent({ event: 'replay_begin', session_id: SID });
     stream._onAgentEvent({ event: 'turn_end', session_id: SID, seq: 3, background_tasks: [] });
     stream._onAgentEvent({ event: 'replay_end', session_id: SID });
-    expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
+    expect(db.select().from(schema.sessionMessages).all()).toHaveLength(before);
   });
 
   it("keeps a sub-agent's own command the Stop hook cannot see, while its owner runs", () => {
@@ -693,7 +693,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     const old = { event, session_id: SID, seq: 2, background_tasks: [] };
     stream._onAgentEvent(old); // Nothing to bury, hence no identity receipt.
     stream._onAgentEvent(bgTask(3, 'started', 'new-child'));
-    const before = db.select().from(schema.claudeSessionMessages).all().length;
+    const before = db.select().from(schema.sessionMessages).all().length;
     const revived = createStream('background');
     revived._onAgentEvent({ event: 'replay_begin', session_id: SID });
     revived._onAgentEvent(old);
@@ -702,7 +702,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     expect(runningBgTaskDetailsFromDb(SID).map((t: any) => t.taskId)).toEqual(['new-child']);
     expect(revived.hasRunningBgTasks()).toBe(true);
     expect(revived.status).toBe('background');
-    expect(db.select().from(schema.claudeSessionMessages).all()).toHaveLength(before);
+    expect(db.select().from(schema.sessionMessages).all()).toHaveLength(before);
   });
 
   it('a replayed Stop hook still closes older absent tasks while preserving later ones', () => {
@@ -760,7 +760,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
 
   it('repairs a Codex child from native completion and ignores late metadata', async () => {
     const stream = createStream('active', 'codex');
-    stream.claudeSessionId = 'parent';
+    stream.nativeSessionId = 'parent';
     stream._onAgentEvent({ ...bgTask(1, 'started', 'child'), task_type: 'codex_subagent', ts: 100 });
     stream._onAgentEvent({ event: 'stop', session_id: SID, seq: 2, subtype: 'end_turn' });
     stream.attach();
@@ -776,7 +776,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
 
   it('keeps native running/unknown tasks and ignores an observation superseded by activity', async () => {
     const stream = createStream('active', 'codex');
-    stream.claudeSessionId = 'parent';
+    stream.nativeSessionId = 'parent';
     stream._onAgentEvent({ ...bgTask(1, 'started', 'child'), task_type: 'codex_subagent' });
     stream.attach();
     await stream._reconcileCodexBgTasks();
@@ -1010,7 +1010,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
       description: 'wait for the long benchmark',
       task_type: 'local_bash',
     });
-    db.insert(schema.claudeSessionMessages).values(Array.from({ length: 201 }, (_, i) => ({
+    db.insert(schema.sessionMessages).values(Array.from({ length: 201 }, (_, i) => ({
       sessionId: SID,
       role: 'user',
       content: `later message ${i}`,
@@ -1034,7 +1034,7 @@ describe('a turn that ends with background tasks still running (§14.91)', () =>
     stream._onAgentEvent(bgTask(1, 'started', 'watcher'));
     stream._onAgentEvent({ event: 'stop', session_id: SID, subtype: 'end_turn', seq: 2 });
     // Even a row an older hub already repainted green heals on the next one.
-    db.update(schema.claudeSessions).set({ status: 'active' }).run();
+    db.update(schema.agentSessions).set({ status: 'active' }).run();
     clientMocks.call.mockResolvedValueOnce({ ok: true, status: 'active', noop: true });
     const resumed = await resumeSession(SID);
     expect(resumed.status).toBe('background');

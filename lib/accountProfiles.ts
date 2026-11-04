@@ -22,8 +22,8 @@ export function accountProfileId(config: unknown): string {
   if (typeof config === 'string') {
     try { config = JSON.parse(config); } catch { return DEFAULT_ACCOUNT_PROFILE; }
   }
-  if (config && typeof config === 'object' && !('accountProfile' in config) && 'codexConfig' in config) {
-    return accountProfileId((config as { codexConfig: unknown }).codexConfig);
+  if (config && typeof config === 'object' && !('accountProfile' in config) && 'providerConfig' in config) {
+    return accountProfileId((config as { providerConfig: unknown }).providerConfig);
   }
   const id = (config as { accountProfile?: unknown } | null)?.accountProfile;
   return typeof id === 'string' && id ? id : DEFAULT_ACCOUNT_PROFILE;
@@ -33,8 +33,8 @@ export function accountProfileNumber(config: unknown): number {
   if (typeof config === 'string') {
     try { config = JSON.parse(config); } catch { return 1; }
   }
-  if (config && typeof config === 'object' && !('accountProfileNumber' in config) && 'codexConfig' in config) {
-    return accountProfileNumber((config as { codexConfig: unknown }).codexConfig);
+  if (config && typeof config === 'object' && !('accountProfileNumber' in config) && 'providerConfig' in config) {
+    return accountProfileNumber((config as { providerConfig: unknown }).providerConfig);
   }
   const n = (config as { accountProfileNumber?: unknown } | null)?.accountProfileNumber;
   return typeof n === 'number' && Number.isInteger(n) && n >= 1 ? n : 1;
@@ -52,7 +52,7 @@ export function profileLabel(providerName: string, profile: AccountProfile): str
  *  two profiles on one VPS must never resolve to each other. */
 export function sessionAccountProfile(
   profiles: readonly AccountProfile[],
-  session: { vpsId?: string | null; kind?: string | null; codexConfig?: unknown } | null | undefined,
+  session: { vpsId?: string | null; kind?: string | null; providerConfig?: unknown } | null | undefined,
 ): AccountProfile | undefined {
   if (!session) return undefined;
   const provider = asSessionProvider(session.kind);

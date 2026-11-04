@@ -1,7 +1,7 @@
-import { invalidateSessionInsightSnapshot } from '@/lib/server/claude/sessionInsightSnapshot';
+import { invalidateSessionInsightSnapshot } from '@/lib/server/hub/sessionInsightSnapshot';
 import 'server-only';
 import { eq } from 'drizzle-orm';
-import { db, claudeSessions } from '@/lib/db';
+import { db, agentSessions } from '@/lib/db';
 import { connectionConfig, publicConnection, type StoredEndpoint } from '@/lib/server/customEndpoints';
 import { emitGlobalSessionListChanged, peekStream, resumeSession } from './sessionOps';
 import { getAgentClientForVpsId } from './AgentClientPool';
@@ -12,9 +12,9 @@ const inflight = new Map<string, Promise<void>>();
 export async function applyPendingEndpoint(id: string): Promise<void> {
   if (inflight.has(id)) return inflight.get(id);
   const promise = (async () => {
-    let row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+    let row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
     if (!row || row.archived) return;
-    const config = connectionConfig(row.codexConfig);
+    const config = connectionConfig(row.providerConfig);
     if (!config.pendingConnection || config.endpointError) return;
     const stream = peekStream(id);
     if (['thinking', 'starting', 'background'].includes(stream?.status ?? row.status) || stream?.hasRunningBgTasks()) return;
@@ -30,9 +30,9 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
       const stopped = await client.call('sleep_session', { session_id: id, only_if_idle: true });
       if (stopped.busy) return;
     }
-    row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+    row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
     if (!row || row.archived) return;
-    const current = connectionConfig(row.codexConfig);
+    const current = connectionConfig(row.providerConfig);
     const pending = current.pendingConnection;
     if (!pending) {
       if (running) await resumeSession(id);
@@ -49,8 +49,8 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
     if (!pending.endpoint) delete current.standardConnection;
     current.pendingConnection = null;
     current.endpointError = null;
-    db.update(claudeSessions).set({ codexConfig: JSON.stringify(current), model, fallbackModel, effort, effectiveModel: null })
-      .where(eq(claudeSessions.id, id)).run();
+    db.update(agentSessions).set({ providerConfig: JSON.stringify(current), model, fallbackModel, effort, effectiveModel: null })
+      .where(eq(agentSessions.id, id)).run();
     if (stream) {
       stream.model = model; stream.fallbackModel = fallbackModel;
       stream.effort = effort as any; stream.effectiveModel = null;
@@ -60,11 +60,11 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
     emitGlobalSessionListChanged(id);
     if (running) await resumeSession(id);
   })().catch((error) => {
-    const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+    const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
     if (row) {
-      const cfg = connectionConfig(row.codexConfig);
+      const cfg = connectionConfig(row.providerConfig);
       cfg.endpointError = error instanceof Error ? error.message.slice(0, 300) : 'Could not apply endpoint.';
-      db.update(claudeSessions).set({ codexConfig: JSON.stringify(cfg) }).where(eq(claudeSessions.id, id)).run();
+      db.update(agentSessions).set({ providerConfig: JSON.stringify(cfg) }).where(eq(agentSessions.id, id)).run();
       emitGlobalSessionListChanged(id);
     }
     throw error;
@@ -73,7 +73,7 @@ export async function applyPendingEndpoint(id: string): Promise<void> {
   return promise;
 }
 export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null, effort?: string | null) {
-  const row = db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get();
+  const row = db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
   if (!row) throw new Error('Session not found.');
   if (endpoint) {
     endpoint = await enrichEndpoint(endpoint);
@@ -87,7 +87,7 @@ export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null,
     if (!endpoint || !validEndpointEffort(endpoint, row.kind, endpoint.model, effort)) throw new Error('These parameters are not supported by this endpoint model.');
   }
   if (inflight.has(id)) await inflight.get(id);
-  const cfg = connectionConfig(db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get()!.codexConfig);
+  const cfg = connectionConfig(db.select().from(agentSessions).where(eq(agentSessions.id, id)).get()!.providerConfig);
   if (effort !== undefined && (cfg.customEndpoint?.model !== endpoint?.model
     || cfg.customEndpoint?.baseUrl !== endpoint?.baseUrl || cfg.customEndpoint?.secret !== endpoint?.secret)) {
     throw new Error('The session connection changed. Refresh before changing parameters.');
@@ -95,8 +95,8 @@ export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null,
   if (effort !== undefined && cfg.pendingConnection && cfg.pendingConnection.effort === undefined) throw new Error('Apply or cancel the pending connection change before changing parameters.');
   cfg.pendingConnection = { endpoint, model: endpoint?.model ?? null, ...(effort !== undefined ? { effort } : {}) };
   cfg.endpointError = null;
-  db.update(claudeSessions).set({ codexConfig: JSON.stringify(cfg) }).where(eq(claudeSessions.id, id)).run();
+  db.update(agentSessions).set({ providerConfig: JSON.stringify(cfg) }).where(eq(agentSessions.id, id)).run();
   emitGlobalSessionListChanged(id);
   await applyPendingEndpoint(id);
-  return publicConnection(db.select().from(claudeSessions).where(eq(claudeSessions.id, id)).get()?.codexConfig);
+  return publicConnection(db.select().from(agentSessions).where(eq(agentSessions.id, id)).get()?.providerConfig);
 }

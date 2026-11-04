@@ -5,7 +5,7 @@
 // from the SDK's first-class TaskStartedMessage / TaskUpdatedMessage /
 // TaskNotificationMessage. They are persisted as role='event' rows
 // ({type:'bg_task'}) so the registry can be rebuilt from history
-// (sessionRebuild) and patched live from the SSE (useClaudeSessionStream) —
+// (sessionRebuild) and patched live from the SSE (useSessionStream) —
 // the SAME reducer below serves both paths, mirroring the toolCalls pairing
 // pattern (CLAUDE.md §14.39: change the live path ⇒ change the rebuild path;
 // here they share the code instead).
@@ -99,7 +99,7 @@ function normStatus(raw: string | undefined, fallback: BgTaskStatus): BgTaskStat
 const TERMINAL: ReadonlySet<BgTaskStatus> = new Set(['completed', 'failed', 'killed']);
 
 /** THE terminal-word oracle, shared with the server reducer
- *  (`lib/server/claude/bgTaskState.ts § isBgTaskDone`) so the two cannot
+ *  (`lib/server/hub/bgTaskState.ts § isBgTaskDone`) so the two cannot
  *  drift. They used to keep separate lists and disagreed on `error`/`timeout`:
  *  the client ended the task while the hub kept the session pinned violet
  *  `background` forever — and on `stop`, the mirror image. One list, one

@@ -64,7 +64,7 @@ type Props = {
   edits: Map<string, EditSnapshot>;
   onRevert: () => void; // refresh signal
   // Files the user attached to this session (drag & drop / paperclip). The
-  // list is owned by ClaudeSessionView so this panel and the input bar always
+  // list is owned by SessionView so this panel and the input bar always
   // show the same thing. cf. app/sessionAttachments.ts.
   attachments?: SessionAttachment[];
   onRemoveAttachment?: (id: string) => void;
@@ -112,7 +112,7 @@ const SessionInsight = dynamic(() => import('./SessionInsight'), {
 export type Tab = WorkspacePanelTab;
 
 // On a desktop the tabs are a vertical ACTIVITY BAR on the panel's outer edge
-// (claude.css § SIDE COLUMNS): icons, counts as corner dots, each explained by
+// (app.css § SIDE COLUMNS): icons, counts as corner dots, each explained by
 // its own tooltip (`tabTip`). In the drawer (<=1100px, touch) they stay a
 // horizontal strip where only the ACTIVE tab is labelled — tooltips don't exist
 // there, so icon-only-everywhere would be undiscoverable; the active label is
@@ -132,7 +132,7 @@ const TABS: { id: Tab; label: string; Icon: (p: { className?: string }) => React
   { id: 'calls', label: 'tools', Icon: IconTools },
 ];
 
-/** The width at which the tabs are the desktop activity bar (claude.css). */
+/** The width at which the tabs are the desktop activity bar (app.css). */
 const DESKTOP_BAR_QUERY = '(min-width: 1101px)';
 const isDesktopBar = () => typeof window !== 'undefined' && window.matchMedia(DESKTOP_BAR_QUERY).matches;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -182,7 +182,7 @@ function ToolPanel({
   compactError = null, deferInsight = false,
 }: Props) {
   // The right sidebar belongs to the tab-row GROUP `(vpsId, cwd)`, not to the
-  // entity currently filling the main pane. ClaudeSessionView is keyed by
+  // entity currently filling the main pane. SessionView is keyed by
   // session and file/shell views live in other branches, so this small shared
   // store is what makes their remounted ToolPanels resume the same surface.
   const panelScope = workspaceScopeKey(vpsId, cwd);
@@ -504,7 +504,7 @@ function EditsTab({ sessionId, kind, edits, onRevert }: { sessionId: string | nu
     if (!confirm(`Restore "${filePath}" to its initial state?`)) return;
     setBusy(filePath);
     try {
-      await api.revertClaudeEdit(sessionId, filePath);
+      await api.revertSessionEdit(sessionId, filePath);
       onRevert();
     } catch (e: any) {
       alert('revert: ' + (e?.message ?? e));
@@ -693,7 +693,7 @@ function useConversationToolCalls(sessionId: string | null, enabled: boolean): {
   const fetchPage = useCallback(async (sid: string, before: number | null) => {
     setLoading(true);
     try {
-      const r = await api.getClaudeSessionToolCalls(sid, before != null ? { before, limit: 200 } : { limit: 200 });
+      const r = await api.getSessionToolCalls(sid, before != null ? { before, limit: 200 } : { limit: 200 });
       setPages((cur) => {
         const base = cur.sid === sid ? cur.calls : [];
         return {

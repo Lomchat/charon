@@ -117,7 +117,7 @@ function fetchSnapshot(vpsId: string, alive: () => boolean = () => true): Promis
 /**
  * Refetch every WATCHED VPS's snapshot now. Called by the resync handler:
  * `file_activity` frames missed beyond the hub's ring are otherwise lost
- * (ClaudePanel § subscribeResync, A13).
+ * (HubPanel § subscribeResync, A13).
  */
 export function refreshAll(): Promise<void> {
   const jobs: Promise<void>[] = [];

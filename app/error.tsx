@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { isChunkLoadError, reloadOnceForChunkError } from './chunkReload';
 
 // Route-segment error boundary (§14.57). Catches render errors in the app shell
-// (ClaudePanel, Sidebar, TabBar, modals) that fall OUTSIDE SessionErrorBoundary,
+// (HubPanel, Sidebar, TabBar, modals) that fall OUTSIDE SessionErrorBoundary,
 // so a bad render recovers here instead of white-screening to global-error.
 // On a stale-chunk error, reload onto the fresh build; otherwise offer reset.
 export default function AppError({

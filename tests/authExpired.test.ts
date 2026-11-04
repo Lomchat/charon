@@ -11,7 +11,7 @@ import { isClaudeAuthExpired } from '../lib/authExpired';
 
 describe('isClaudeAuthExpired', () => {
   it('matches the exact message the CLI produced in the wild', () => {
-    // Verbatim from claude_session_messages id=115776 (session 0827823f…).
+    // Verbatim from session_messages id=115776 (session 0827823f…).
     expect(isClaudeAuthExpired(
       'Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue.',
     )).toBe(true);

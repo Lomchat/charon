@@ -9,7 +9,7 @@ sans qu'on l'ait lu, et on ouvre la session d'un clic.
 **Le desk dépend de Charon ; Charon ne dépend pas du desk.** Rien hors de
 `app/desk/` n'importe ce dossier : le supprimer ne casse aucune autre page. Seule
 trace à retirer alors : l'ancre `a.head-btn[href="/desk"]` de l'en-tête
-(`app/ClaudePanel.tsx`), qui ouvre la salle dans un nouvel onglet (la salle prend
+(`app/HubPanel.tsx`), qui ouvre la salle dans un nouvel onglet (la salle prend
 l'écran et le clavier).
 
 Ce qui existe côté Charon est **importé, jamais recopié** — deux définitions de
@@ -25,8 +25,8 @@ Ce qui existe côté Charon est **importé, jamais recopié** — deux définiti
 | `setFocus`, `subscribeAll`, `subscribeReconnect`, `initSyncPosition` | `app/globalEventStream.ts` |
 | `sidebarPathKey`, `sidebarPathOrderedIds` | `app/sidebarPathGroups.ts` |
 | `canSleepSession`, `canResumeSession` | `app/sessionBulkActions.ts` |
-| `ClaudeSessionView`, `SessionContextMenu`, `ConfirmModal`, `PromptModal` | `app/*` |
-| `GET /api/claude/sessions` (filet de 60 s), `GET /api/claude/events` (SSE) | `app/api/claude/**` |
+| `SessionView`, `SessionContextMenu`, `ConfirmModal`, `PromptModal` | `app/*` |
+| `GET /api/sessions` (filet de 60 s), `GET /api/events` (SSE) | `app/api/{sessions,events}/**` |
 | `requireSession()`, tables `vps` / `vps_folders` | `lib/**` |
 
 Le desk lit ; il n'écrit que ce que l'utilisateur demande depuis un modal ou un
@@ -38,7 +38,7 @@ menu, par les mêmes appels que `/`.
 app/desk/
   page.tsx       composant serveur : session, base, résumés + révision (SSR)
   Desk.tsx       coquille React : magasin de résumés, SSE, modals, menus
-  desk.css       habillage (le modal réutilise claude.css)
+  desk.css       habillage (le modal réutilise app.css)
   ui/            SessionModal, StoreModal, Hud, time
   vendor/        three.module.js (r160, vendu, pas de CDN)
   hall/          la salle : Three.js, sans React

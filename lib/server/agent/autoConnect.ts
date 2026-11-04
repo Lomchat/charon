@@ -1,6 +1,6 @@
 import 'server-only';
 import { and, eq, inArray, or } from 'drizzle-orm';
-import { db, claudeSessions, vps as vpsTable, claudeSessionLogs } from '@/lib/db';
+import { db, agentSessions, vps as vpsTable, sessionLogs } from '@/lib/db';
 import { getAgentClient, getAgentClientForVpsId } from './AgentClientPool';
 import { reconcileVpsAgentState, resumeSession, setSessionStatusLocal } from './sessionOps';
 // Registers the session-summary provider on the sync bus at boot (§14.108).
@@ -10,7 +10,7 @@ import { ensureShellIdleWatch } from './shellNotify';
 import { armUsageWatch, armCodexUsageWatch } from './usagePoll';
 import { armAccountProfileWatch } from './accountProfiles';
 import { startInteractionSweeper } from './interactionSweeper';
-import { refreshModelsIfStale } from '@/lib/server/claude/modelSync';
+import { refreshModelsIfStale } from '@/lib/server/hub/modelSync';
 import { hubHooks } from './hubHooks';
 import type { AgentClient } from './AgentClient';
 import type { Vps } from '@/lib/db/schema';
@@ -103,7 +103,7 @@ export function autoConnectAgentsIfNeeded(): void {
   if (process.env.CHARON_DISABLE_AUTOCONNECT === '1') return;
   // Hub-global, key-gated, 24h-throttled refresh of the Claude model catalog
   // from GET /v1/models (no-op without `claude.api_key`). Not per-VPS — the
-  // model list is an Anthropic-side concept. Cf. lib/server/claude/modelSync.ts.
+  // model list is an Anthropic-side concept. Cf. lib/server/hub/modelSync.ts.
   refreshModelsIfStale();
   setImmediate(() => {
     let vpses: Vps[] = [];
@@ -131,18 +131,18 @@ export function autoConnectAgentsIfNeeded(): void {
     // a query, the session stayed 'thinking' in DB and was ignored here).
     let active: { id: string; vpsId: string }[] = [];
     try {
-      active = db.select({ id: claudeSessions.id, vpsId: claudeSessions.vpsId })
-        .from(claudeSessions)
+      active = db.select({ id: agentSessions.id, vpsId: agentSessions.vpsId })
+        .from(agentSessions)
         .where(and(
-          eq(claudeSessions.archived, 0),
-          eq(claudeSessions.sleepRequested, 0),
+          eq(agentSessions.archived, 0),
+          eq(agentSessions.sleepRequested, 0),
           or(
-            inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'background']),
+            inArray(agentSessions.status, ['active', 'thinking', 'starting', 'background']),
             // Durable POST-UPDATE resume intent (§14.62): an agent update put
             // these to sleep and the fire-and-forget resume died with a hub
             // restart — finish the job at boot. (sleepRequested can't coexist
             // with resumePending: both setters clear the other.)
-            eq(claudeSessions.resumePending, 1),
+            eq(agentSessions.resumePending, 1),
           ),
         ))
         .all();
@@ -153,14 +153,14 @@ export function autoConnectAgentsIfNeeded(): void {
       resumeSession(s.id)
         .then(() => {
           try {
-            db.insert(claudeSessionLogs).values({
+            db.insert(sessionLogs).values({
               sessionId: s.id, level: 'info', event: 'auto_resume', detail: null,
             }).run();
           } catch {}
         })
         .catch((e) => {
           try {
-            db.insert(claudeSessionLogs).values({
+            db.insert(sessionLogs).values({
               sessionId: s.id, level: 'warn', event: 'auto_resume',
               detail: JSON.stringify({ err: e?.message ?? String(e) }),
             }).run();

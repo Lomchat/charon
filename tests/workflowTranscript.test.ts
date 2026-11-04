@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
-import { workflowRunFromReceipt, workflowAgentFromJournal, workflowAgentsFromJournal, readWorkflowTranscriptPage } from '@/lib/server/claude/workflowTranscript';
+import { workflowRunFromReceipt, workflowAgentFromJournal, workflowAgentsFromJournal, readWorkflowTranscriptPage } from '@/lib/server/hub/workflowTranscript';
 
 const record = (content: unknown, agentId = 'agent1') => JSON.stringify({ type: 'assistant', sessionId: 'session1', agentId, message: { content } }) + '\n';
 function reader(raw: string) {

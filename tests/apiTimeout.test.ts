@@ -16,7 +16,7 @@ describe('HTTP request timeouts', () => {
       }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const pending = api.sendClaudeInput('session-1', 'hello');
+    const pending = api.sendSessionInput('session-1', 'hello');
     const rejected = expect(pending).rejects.toThrow(
       'Sending the message timed out after 90s. It may already have been accepted; the transcript will reconcile automatically.',
     );
@@ -40,7 +40,7 @@ describe('HTTP request timeouts', () => {
       } as unknown as Response;
     });
     vi.stubGlobal('fetch', fetchMock);
-    const pending = api.getClaudeSession('session-1');
+    const pending = api.getAgentSession('session-1');
     const rejected = expect(pending).rejects.toThrow(/timed out after 60s/);
     await vi.advanceTimersByTimeAsync(59_999);
     expect(bodySignal?.aborted).toBe(false);
@@ -56,7 +56,7 @@ describe('HTTP request timeouts', () => {
         init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
       }),
     }) as unknown as Response));
-    const pending = api.getClaudeSession('session-1', ac.signal);
+    const pending = api.getAgentSession('session-1', ac.signal);
     await new Promise((r) => setTimeout(r, 0));
     ac.abort(new DOMException('window superseded', 'AbortError'));
     await expect(pending).rejects.toThrow('window superseded');

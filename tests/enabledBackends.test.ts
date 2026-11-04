@@ -8,7 +8,7 @@ import {
 import {
   PROVIDERS, SESSION_PROVIDERS, providerSettingKey, type SessionProvider,
 } from '@/lib/sessionCapabilities';
-import { SETTINGS_WRITE_ALLOWLIST } from '@/lib/server/claude/settingsKeys';
+import { SETTINGS_WRITE_ALLOWLIST } from '@/lib/server/hub/settingsKeys';
 
 /**
  * The hub-wide backend switches (`claude.enabled` / `codex.enabled`, §11).
@@ -85,7 +85,7 @@ describe('the settings route accepts every provider switch', () => {
 
   it('stores each switch at its declared default', () => {
     const settings = readFileSync(
-      path.join(path.resolve(__dirname, '..'), 'lib/server/claude/settings.ts'), 'utf8');
+      path.join(path.resolve(__dirname, '..'), 'lib/server/hub/settings.ts'), 'utf8');
     for (const p of SESSION_PROVIDERS) {
       const key = PROVIDERS[p].settings.enabledKey.replace('.', '\\.');
       const want = PROVIDERS[p].settings.defaultEnabled ? 'true' : 'false';

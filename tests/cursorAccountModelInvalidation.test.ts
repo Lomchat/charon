@@ -28,7 +28,7 @@ vi.mock('@/lib/server/agent/sessionOps', () => ({
 vi.mock('@/lib/sessionCapabilities', () => ({
   providerLoginPatch: (_provider: string, value: number) => ({ cursorLoggedIn: value }),
 }));
-vi.mock('@/lib/server/claude/cursorModels', () => ({
+vi.mock('@/lib/server/hub/cursorModels', () => ({
   invalidateCursorModels: mocks.invalidate,
 }));
 

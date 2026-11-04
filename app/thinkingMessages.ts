@@ -93,7 +93,7 @@ export function applyThinkingReopened(messages: Msg[], openText: string): Msg[] 
   return content ? [...messages.slice(0, -1), { ...last, content }] : messages.slice(0, -1);
 }
 
-// ─── The live lane (useClaudeSessionStream's delta-reasoning state) ────────
+// ─── The live lane (useSessionStream's delta-reasoning state) ────────
 // Kept pure so the hub's real frame stream can be replayed through the exact
 // client logic in tests (thinkingCoalescing.test.ts: live == rebuild).
 // `batch`: fragments received but not committed to `messages` yet (≤ 80 ms,

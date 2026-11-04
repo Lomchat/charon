@@ -35,9 +35,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => {
   };
   return { getAgentClientForVpsId: () => client, getAgentClient: () => client, dropAgentClient: async () => {} };
 });
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -189,9 +189,9 @@ const smallSessions = (n: number, deltas = 3): FixtureSession[] => Array.from({ 
 function seed(h: Database.Database, sessions: FixtureSession[]) {
   h.prepare("INSERT OR IGNORE INTO vps_folders (id, name, position) VALUES ('default', 'default', 0)").run();
   h.prepare("INSERT OR IGNORE INTO vps (id, name, ip, ssh_user) VALUES (?, 'compact', '127.0.0.1', 'root')").run(VPS_ID);
-  const session = h.prepare(`INSERT INTO claude_sessions (id, vps_id, cwd, status, kind, last_seen_seq)
+  const session = h.prepare(`INSERT INTO agent_sessions (id, vps_id, cwd, status, kind, last_seen_seq)
     VALUES (?, ?, '/tmp', 'active', ?, ?)`);
-  const message = h.prepare(`INSERT INTO claude_session_messages
+  const message = h.prepare(`INSERT INTO session_messages
     (session_id, role, content, wire_content, seq, ts_ms, created_at, model, assistant_final)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const insert = (sid: string, r: FixtureRow) => message.run(sid, r.role, r.content, r.wire ?? null, r.seq, r.ts,
@@ -221,7 +221,7 @@ type RawRow = {
 
 function rawRows(h: Database.Database, sid: string): RawRow[] {
   return h.prepare(`SELECT id, session_id, role, content, wire_content, seq, ts_ms, created_at, model, assistant_final
-    FROM claude_session_messages WHERE session_id = ? ORDER BY id`).all(sid) as RawRow[];
+    FROM session_messages WHERE session_id = ? ORDER BY id`).all(sid) as RawRow[];
 }
 
 const key = (r: RawRow) => r.ts_ms ?? r.created_at * 1000;
@@ -429,7 +429,7 @@ describe('compaction keeps every rendering', () => {
         cursor = w.oldestChatId;
       }
     }
-    const fts = h.prepare(`SELECT rowid, content FROM claude_session_messages_fts WHERE session_id = ? ORDER BY rowid`).all(s.id);
+    const fts = h.prepare(`SELECT rowid, content FROM session_messages_fts WHERE session_id = ? ORDER BY rowid`).all(s.id);
     return { rows, full, fullLegacy, pages, fts };
   }
 
@@ -439,8 +439,8 @@ describe('compaction keeps every rendering', () => {
     migrate(dbMod.db, { migrationsFolder: './drizzle' });
     const { rebuildStateFromMessages } = await import('@/app/sessionRebuild');
     rebuild = (rows, provider) => rebuildStateFromMessages(rows, 'active', provider as any);
-    ({ orderChronologically } = await import('@/lib/server/claude/messageOrder') as any);
-    ({ loadMessageWindow } = await import('@/lib/server/claude/messageWindow') as any);
+    ({ orderChronologically } = await import('@/lib/server/hub/messageOrder') as any);
+    ({ loadMessageWindow } = await import('@/lib/server/hub/messageWindow') as any);
     seed(h, FIXTURE);
     for (const s of FIXTURE) before.set(s.id, snapshot(s));
     report = await compactDatabase(h, { apply: true, verify: true });
@@ -573,7 +573,7 @@ describe('compaction keeps every rendering', () => {
       const { SessionStream } = await import('@/lib/server/agent/sessionOps');
       const s: any = new SessionStream({
         id: sid, vpsId: VPS_ID, vpsName: 'compact', name: null, status: 'active', permissionMode: 'normal' as any,
-        claudeSessionId: null, kind: 'codex', lastSeenSeq: 22,
+        nativeSessionId: null, kind: 'codex', lastSeenSeq: 22,
       });
       const frames: any[] = [];
       vi.spyOn(s, '_emitBroadcast').mockImplementation((e: any) => { frames.push(e); });
@@ -615,45 +615,45 @@ describe('compaction keeps every rendering', () => {
     ].map(detail);
     const check = () => {
       for (const plan of plans()) {
-        expect(plan).toMatch(/SEARCH claude_session_messages USING (COVERING )?INDEX idx_claude_session_messages_session_chrono_id \(session_id=\? AND <expr>>\?/);
+        expect(plan).toMatch(/SEARCH session_messages USING (COVERING )?INDEX idx_session_messages_session_chrono_id \(session_id=\? AND <expr>>\?/);
         expect(plan).not.toMatch(/TEMP B-TREE|MULTI-INDEX|SCAN/);
       }
       const latest = detail(h.prepare(`EXPLAIN QUERY PLAN ${LATEST_SEQ_SQL}`).all(CODEX));
-      expect(latest).toMatch(/SEARCH claude_session_messages USING INDEX idx_claude_session_messages_session_chrono_id \(session_id=\?\)/);
+      expect(latest).toMatch(/SEARCH session_messages USING INDEX idx_session_messages_session_chrono_id \(session_id=\?\)/);
       expect(latest).not.toMatch(/TEMP B-TREE|MULTI-INDEX|SCAN/);
       const max = detail(h.prepare(`EXPLAIN QUERY PLAN ${MAX_SEQ_SQL}`).all(CODEX));
-      expect(max).toMatch(/SEARCH claude_session_messages USING COVERING INDEX idx_claude_session_messages_session_seq \(session_id=\?\)/);
+      expect(max).toMatch(/SEARCH session_messages USING COVERING INDEX idx_session_messages_session_seq \(session_id=\?\)/);
       expect(max).not.toMatch(/TEMP B-TREE|MULTI-INDEX|SCAN/);
       // A DELETE chunk is rowid lookups, never a walk of the session's event
       // prefix on idx_…_snapshot_lookup (the rehearsal's 1000 s apply).
       for (const n of [1, 20, 900]) {
         const ids = Array.from({ length: n }, (_, i) => i + 1);
         const del = detail(h.prepare(`EXPLAIN QUERY PLAN ${DELETE_SQL(n)}`).all(...ids, CODEX))
-          .split(' | ').filter((d) => d.includes('claude_session_messages')).join(' | ');
-        expect(del).toBe('SEARCH claude_session_messages USING INTEGER PRIMARY KEY (rowid=?)');
+          .split(' | ').filter((d) => d.includes('session_messages')).join(' | ');
+        expect(del).toBe('SEARCH session_messages USING INTEGER PRIMARY KEY (rowid=?)');
       }
     };
     check();
     h.exec('ANALYZE');
     try {
-      h.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'claude_session_messages'");
-      const ins = h.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('claude_session_messages', ?, ?)");
+      h.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'session_messages'");
+      const ins = h.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('session_messages', ?, ?)");
       // Production values (read-only copy of its sqlite_stat1, as in peerReplyContext.test.ts).
       for (const [idx, stat] of [
-        ['idx_claude_session_messages_session_chrono_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
-        ['idx_claude_session_messages_session_seq', '347576 11986 1'],
-        ['idx_claude_session_messages_session_ts_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_session_id_id', '347576 11986 1'],
+        ['idx_session_messages_session_chrono_id', '347576 11986 1 1'],
+        ['idx_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
+        ['idx_session_messages_session_seq', '347576 11986 1'],
+        ['idx_session_messages_session_ts_id', '347576 11986 1 1'],
+        ['idx_session_messages_session_id_id', '347576 11986 1'],
       ]) ins.run(idx, stat);
       h.exec('ANALYZE sqlite_schema');
       check();
       // Negative control: the pre-fix DELETE (bare session_id/role terms)
       // plans a 900-id chunk on the snapshot_lookup prefix under these stats.
       const ids = Array.from({ length: 900 }, (_, i) => i + 1);
-      expect(detail(h.prepare(`EXPLAIN QUERY PLAN DELETE FROM claude_session_messages
+      expect(detail(h.prepare(`EXPLAIN QUERY PLAN DELETE FROM session_messages
         WHERE id IN (${ids.map(() => '?').join(',')}) AND session_id = ? AND role = 'event'`).all(...ids, CODEX)))
-        .toMatch(/USING COVERING INDEX idx_claude_session_messages_snapshot_lookup \(session_id=\? AND role=\?\)/);
+        .toMatch(/USING COVERING INDEX idx_session_messages_snapshot_lookup \(session_id=\? AND role=\?\)/);
     } finally {
       h.exec('DELETE FROM sqlite_stat1');
       try { h.exec('DELETE FROM sqlite_stat4'); } catch { /* not compiled in */ }
@@ -713,7 +713,7 @@ describe('apply mechanics', () => {
     const file = tmpFile('fk.db');
     makeDb(file);
     let h = new Database(file);
-    const victim = (h.prepare(`SELECT id FROM claude_session_messages WHERE session_id = ? AND seq = 11`).get(CODEX) as any).id;
+    const victim = (h.prepare(`SELECT id FROM session_messages WHERE session_id = ? AND seq = 11`).get(CODEX) as any).id;
     h.prepare(`INSERT INTO session_scheduled_resumes (id, session_id, source_message_id, message_id, content, run_at, client_message_id)
       VALUES ('sr1', ?, ?, ?, 'continue', 1, 'c1')`).run(CODEX, victim, victim);
     h.close();
@@ -730,7 +730,7 @@ describe('apply mechanics', () => {
     makeDb(file);
     let h = new Database(file);
     h.pragma('foreign_keys = OFF');
-    const orphan = (d: Database.Database, sid: string) => Number(d.prepare(`INSERT INTO claude_session_messages
+    const orphan = (d: Database.Database, sid: string) => Number(d.prepare(`INSERT INTO session_messages
       (session_id, role, content, ts_ms) VALUES (?, 'user', 'orphan', 1)`).run(sid).lastInsertRowid);
     const old = orphan(h, 'gone');
     h.close();
@@ -740,10 +740,10 @@ describe('apply mechanics', () => {
     h.close();
     expect(r.foreignKeyViolationsPreExisting).toBe(1);
     expect(lines).toContain(`warning: foreign_key_check: 1 pre-existing violations, left untouched: `
-      + `claude_session_messages → claude_sessions ×1 (rowids ${old})`);
+      + `session_messages → agent_sessions ×1 (rowids ${old})`);
     expect(finalRows(file)).toEqual(reference);
     h = new Database(file, { readonly: true });
-    expect(h.prepare('SELECT count(*) AS n FROM claude_session_messages WHERE id = ?').get(old)).toEqual({ n: 1 });
+    expect(h.prepare('SELECT count(*) AS n FROM session_messages WHERE id = ?').get(old)).toEqual({ n: 1 });
     h.close();
 
     // An orphan appearing during the run (seam: the session-boundary stop check).
@@ -772,20 +772,20 @@ describe('apply mechanics', () => {
     const before = finalRows(file);
     const h = openOffline(Database, file);
     // A connection-local trigger slips a row into the run as it is merged.
-    h.exec(`CREATE TEMP TRIGGER sneak AFTER UPDATE OF content ON main.claude_session_messages
+    h.exec(`CREATE TEMP TRIGGER sneak AFTER UPDATE OF content ON main.session_messages
       WHEN new.session_id = '${CODEX}' AND new.seq = 10
       BEGIN
-        INSERT INTO claude_session_messages (session_id, role, content, seq, ts_ms, created_at)
+        INSERT INTO session_messages (session_id, role, content, seq, ts_ms, created_at)
         VALUES (new.session_id, 'assistant', 'intruder', NULL, new.ts_ms + 15, new.created_at);
       END`);
     await expect(compactDatabase(h, { apply: true, verify: true, sessionId: CODEX })).rejects.toThrow(/--verify: 1 rows remain/);
     expect(h.inTransaction).toBe(false);
     // …and a kept row whose text is not the concatenation.
     h.exec('DROP TRIGGER sneak');
-    h.exec(`CREATE TEMP TRIGGER tamper AFTER UPDATE OF content ON main.claude_session_messages
+    h.exec(`CREATE TEMP TRIGGER tamper AFTER UPDATE OF content ON main.session_messages
       WHEN new.session_id = '${CODEX}' AND new.seq = 10
       BEGIN
-        UPDATE claude_session_messages SET content = '{"type":"thinking","text":"Let me"}' WHERE id = new.id;
+        UPDATE session_messages SET content = '{"type":"thinking","text":"Let me"}' WHERE id = new.id;
       END`);
     await expect(compactDatabase(h, { apply: true, verify: true, sessionId: CODEX })).rejects.toThrow(/--verify: row \d+ does not hold the merged run/);
     expect(h.inTransaction).toBe(false);
@@ -800,12 +800,12 @@ describe('apply mechanics', () => {
     const h = openOffline(Database, file);
     try {
       // The first run is seq 10..14: keep 10, delete 11..14 in one statement.
-      h.exec(`CREATE TEMP TRIGGER skip_delete BEFORE DELETE ON main.claude_session_messages
+      h.exec(`CREATE TEMP TRIGGER skip_delete BEFORE DELETE ON main.session_messages
         WHEN old.session_id = '${CODEX}' AND old.seq = 12 BEGIN SELECT RAISE(IGNORE); END`);
       await expect(compactDatabase(h, { apply: true, sessionId: CODEX })).rejects.toThrow(/DELETE of 4 rows after \d+ changed 3/);
       expect(h.inTransaction).toBe(false);
       h.exec('DROP TRIGGER skip_delete');
-      h.exec(`CREATE TEMP TRIGGER skip_update BEFORE UPDATE ON main.claude_session_messages
+      h.exec(`CREATE TEMP TRIGGER skip_update BEFORE UPDATE ON main.session_messages
         WHEN old.session_id = '${CODEX}' AND old.seq = 10 BEGIN SELECT RAISE(IGNORE); END`);
       await expect(compactDatabase(h, { apply: true, sessionId: CODEX })).rejects.toThrow(/UPDATE of row \d+ changed 0 rows/);
       expect(h.inTransaction).toBe(false);
@@ -822,9 +822,9 @@ describe('apply mechanics', () => {
     let error: any;
     try {
       // Bumps last_seen_seq inside the first batch's transaction.
-      h.exec(`CREATE TEMP TRIGGER bump AFTER UPDATE OF content ON main.claude_session_messages
+      h.exec(`CREATE TEMP TRIGGER bump AFTER UPDATE OF content ON main.session_messages
         WHEN new.session_id = '${CODEX}' AND new.seq = 10
-        BEGIN UPDATE claude_sessions SET last_seen_seq = last_seen_seq + 1 WHERE id = new.session_id; END`);
+        BEGIN UPDATE agent_sessions SET last_seen_seq = last_seen_seq + 1 WHERE id = new.session_id; END`);
       error = await compactDatabase(h, { apply: true, batch: 1, sessionId: CODEX }).then(() => null, (e) => e);
       expect(h.inTransaction).toBe(false);
       // Only the batch committed before the check landed.
@@ -926,7 +926,7 @@ describe('apply mechanics', () => {
         const D = require(${JSON.stringify(SQLITE_MODULE)});
         try {
           const d = new D(${JSON.stringify(file)}, { timeout: 0 });
-          d.prepare("INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'intruder', 1)").run(${JSON.stringify(CODEX)});
+          d.prepare("INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'intruder', 1)").run(${JSON.stringify(CODEX)});
           d.close();
           console.log('WROTE');
         } catch (e) { console.log('REFUSED: ' + e.message); }`], { encoding: 'utf8', timeout: 30_000 });
@@ -1038,9 +1038,9 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     makeDb(file);
     // A persistent trigger (the CLI is another process): the first merge moves the cursor.
     let h = new Database(file);
-    h.exec(`CREATE TRIGGER bump AFTER UPDATE OF content ON claude_session_messages
+    h.exec(`CREATE TRIGGER bump AFTER UPDATE OF content ON session_messages
       WHEN new.session_id = '${CODEX}' AND new.seq = 10
-      BEGIN UPDATE claude_sessions SET last_seen_seq = last_seen_seq + 1 WHERE id = new.session_id; END`);
+      BEGIN UPDATE agent_sessions SET last_seen_seq = last_seen_seq + 1 WHERE id = new.session_id; END`);
     h.close();
     const report = path.join(path.dirname(file), 'fail.json');
     const r = cli(['--db', file, '--offline', '--apply', '--batch', '1', '--session', CODEX, '--report', report]);
@@ -1196,7 +1196,7 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
       const D = require(${JSON.stringify(SQLITE_MODULE)});
       const d = new D(${JSON.stringify(file)});
       d.pragma('wal_autocheckpoint = 0');
-      d.prepare("INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'in the wal', 1)").run(${JSON.stringify(CODEX)});
+      d.prepare("INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'in the wal', 1)").run(${JSON.stringify(CODEX)});
       process.kill(process.pid, 'SIGKILL');`], { stdio: 'ignore' });
     await new Promise((resolve) => writer.on('exit', resolve));
     expect(fs.statSync(`${file}-wal`).size).toBeGreaterThan(0);
@@ -1214,7 +1214,7 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     expect(fs.readdirSync(path.dirname(dest)).filter((f) => f.startsWith('pre-compact'))).toEqual(['pre-compact.db']);
     const copy = new Database(dest, { readonly: true });
     try {
-      expect(copy.prepare("SELECT count(*) AS n FROM claude_session_messages WHERE content = 'in the wal'").get()).toEqual({ n: 1 });
+      expect(copy.prepare("SELECT count(*) AS n FROM session_messages WHERE content = 'in the wal'").get()).toEqual({ n: 1 });
     } finally {
       copy.close();
     }
@@ -1231,7 +1231,7 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
       const D = require(${JSON.stringify(SQLITE_MODULE)});
       const d = new D(${JSON.stringify(file)});
       d.pragma('wal_autocheckpoint = 0');
-      d.exec("UPDATE claude_sessions SET name = 'wal' WHERE kind = 'codex'");
+      d.exec("UPDATE agent_sessions SET name = 'wal' WHERE kind = 'codex'");
       process.kill(process.pid, 'SIGKILL');`], { stdio: 'ignore' });
     await new Promise((resolve) => writer.on('exit', resolve));
     const h = openOffline(Database, file);
@@ -1296,9 +1296,9 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     h.exec('ANALYZE');
     const stat = () => h.prepare('SELECT tbl, idx, stat FROM sqlite_stat1 ORDER BY tbl, idx').all();
     // Change the data so a new ANALYZE would write other numbers.
-    const ins = h.prepare("INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'x', ?)");
+    const ins = h.prepare("INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, 'user', 'x', ?)");
     h.transaction(() => { for (let i = 0; i < 500; i++) ins.run(CLAUDE, i); })();
-    h.exec(`DELETE FROM claude_session_messages WHERE session_id = '${CLAUDE}' AND content = 'x' AND ts_ms < 400`);
+    h.exec(`DELETE FROM session_messages WHERE session_id = '${CLAUDE}' AND content = 'x' AND ts_ms < 400`);
     const stats = stat();
     h.close();
 
@@ -1329,7 +1329,7 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     makeDb(orphan);
     let h = new Database(orphan);
     h.pragma('foreign_keys = OFF');
-    const insertOrphan = (d: Database.Database, sid: string) => Number(d.prepare(`INSERT INTO claude_session_messages
+    const insertOrphan = (d: Database.Database, sid: string) => Number(d.prepare(`INSERT INTO session_messages
       (session_id, role, content, ts_ms) VALUES (?, 'user', 'orphan', 1)`).run(sid).lastInsertRowid);
     const old = insertOrphan(h, 'gone');
     h.close();
@@ -1337,10 +1337,10 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
     expect(r.out).toContain(`warning: foreign_key_check: 1 pre-existing violations, left untouched: `
-      + `claude_session_messages → claude_sessions ×1 (rowids ${old})`);
+      + `session_messages → agent_sessions ×1 (rowids ${old})`);
     expect(r.out).toMatch(/quick_check ok; foreign_key_check: no new violation \(1 pre-existing\); FTS integrity-check ok/);
     h = new Database(orphan, { readonly: true });
-    expect(h.prepare('SELECT count(*) AS n FROM claude_session_messages WHERE id = ?').get(old)).toEqual({ n: 1 });
+    expect(h.prepare('SELECT count(*) AS n FROM session_messages WHERE id = ?').get(old)).toEqual({ n: 1 });
     h.close();
 
     // An orphan the run itself leaves (seam: the checkpoint after VACUUM).
@@ -1357,7 +1357,7 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
           }
           return checkpointTruncate(d);
         },
-      })).toThrow(/foreign_key_check: 1 NEW violations \(1 pre-existing\), first \{"table":"claude_session_messages","parent":"claude_sessions","fkid":0,"before":1,"after":2,"rowids":\[\d+\]\}/);
+      })).toThrow(/foreign_key_check: 1 NEW violations \(1 pre-existing\), first \{"table":"session_messages","parent":"agent_sessions","fkid":0,"before":1,"after":2,"rowids":\[\d+\]\}/);
     } finally {
       h.close();
     }
@@ -1368,14 +1368,14 @@ describe('CLI (node scripts/compact-thinking.mjs)', () => {
     makeDb(fts);
     const h = new Database(fts);
     h.unsafeMode(true);   // lifts defensive mode: the FTS shadow tables become writable
-    expect(h.prepare(`UPDATE claude_session_messages_fts_content SET c3 = 'tampered'
-      WHERE id = (SELECT min(id) FROM claude_session_messages_fts_content)`).run().changes).toBe(1);
+    expect(h.prepare(`UPDATE session_messages_fts_content SET c3 = 'tampered'
+      WHERE id = (SELECT min(id) FROM session_messages_fts_content)`).run().changes).toBe(1);
     h.unsafeMode(false);
     h.close();
     const r = cli(['--db', fts, '--offline', '--vacuum', '--no-analyze']);
     expect(r.code).toBe(1);
     // SQLite ≥ 3.44's quick_check runs FTS5's own check: the first gate catches it.
-    expect(r.err).toMatch(/quick_check: malformed inverted index for FTS5 table main\.claude_session_messages_fts/);
+    expect(r.err).toMatch(/quick_check: malformed inverted index for FTS5 table main\.session_messages_fts/);
     expect(r.out).not.toMatch(/quick_check ok/);
   });
 

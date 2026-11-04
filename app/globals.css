@@ -101,7 +101,7 @@ a { color: inherit; }
 /* ── Tooltips (app/HoverTip.tsx) ──
    Every `title` on every page, and the structured tips, as one card: placed
    on the side that fits (`.top/.bottom/.left/.right`), its arrow pointing at
-   the control. Here and not in claude.css: /login and /desk use it too. */
+   the control. Here and not in app.css: /login and /desk use it too. */
 .hover-tip {
   position: fixed; z-index: 2100;
   max-width: 320px; padding: 8px 10px;

@@ -36,8 +36,8 @@ vi.mock('@/lib/server/install/installSession', () => ({
   subscribeInstallBus: () => () => {},
   listInstalls: () => [],
 }));
-vi.mock('@/lib/server/claude/modelNotices', async (importOriginal) => {
-  const real = await importOriginal<typeof import('@/lib/server/claude/modelNotices')>();
+vi.mock('@/lib/server/hub/modelNotices', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/server/hub/modelNotices')>();
   return {
     ...real,
     getModelNotices: () => {
@@ -87,8 +87,8 @@ describe('registerConnection identity (G8)', () => {
     expect(sendB).toHaveBeenCalledTimes(2);
 
     // A focus POST on the replacement applies (it is registered).
-    const { POST } = await import('@/app/api/claude/focus/route');
-    const res = await POST(new Request('http://localhost/api/claude/focus', {
+    const { POST } = await import('@/app/api/focus/route');
+    const res = await POST(new Request('http://localhost/api/focus', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ conn: 'identity-conn-1', sessionId: 'S2', focusSeq: 2, visible: true }),
     }));

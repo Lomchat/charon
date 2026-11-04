@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec } from '@/lib/server/claude/sshExec';
+import { sshExec } from '@/lib/server/hub/sshExec';
 
 // POST /api/vps/[id]/claude/setup
 // Installs claude-agent-sdk via pip --user. Returns stdout/stderr/code.

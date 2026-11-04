@@ -73,7 +73,7 @@ export function useSessionContext(sessionId: string) {
       }, REQUEST_TIMEOUT_MS);
       try {
         const response = await fetch(
-          `/api/claude/sessions/${sessionId}/context${force ? '?force=1' : ''}`,
+          `/api/sessions/${sessionId}/context${force ? '?force=1' : ''}`,
           {
             cache: 'no-store',
             signal: controller.signal,

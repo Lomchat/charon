@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 // Listens for `open-session` messages sent by the service worker (sw.js)
 // when the user clicks a push notification. We do the routing here, at
 // the root layout level, so it works on every Charon page: push
-// `/?session=<id>` and ClaudePanel's useSearchParams effect switches
+// `/?session=<id>` and HubPanel's useSearchParams effect switches
 // selectedId (no full reload, draft state preserved). Middleware redirects
 // to /login first if the session expired. Now that the UI is a single
 // responsive app at `/`, there is no longer a mobile (`/m/...`) branch.
@@ -13,9 +13,9 @@ import { useRouter } from 'next/navigation';
 // The service worker prefers focus+postMessage to opening a new tab — this
 // handler is what gives "focused tab + correct session" its meaning. If
 // no Charon tab existed, the SW falls back to openWindow(`/?session=<id>`),
-// and ClaudePanel still picks the session up on mount.
+// and HubPanel still picks the session up on mount.
 //
-// Note: ClaudePanel.tsx has its own duplicate listener that calls
+// Note: HubPanel.tsx has its own duplicate listener that calls
 // setSelectedId directly. Harmless redundancy on desktop; we keep it as
 // a safety net but the canonical routing path is now this one.
 export default function NotificationClickHandler() {

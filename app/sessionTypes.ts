@@ -1,7 +1,7 @@
-// Types for the chat view (ClaudePanel + ClaudeSessionView +
+// Types for the chat view (HubPanel + SessionView +
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
-// useClaudeSessionStream). Before this file, the desktop and the old separate
+// useSessionStream). Before this file, the desktop and the old separate
 // mobile view each redeclared the same types locally (Msg, ToolCallEntry,
 // EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan)
 // with a "copied from..." comment; the mobile view has since been folded into
@@ -9,7 +9,7 @@ import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
 //
 // Choice: `sessionId: string` required everywhere. The single-session hook
 // fills it with the current sessionId — negligible memory cost, and it
-// simplifies the `useClaudeSessionStream` hook which doesn't have to branch
+// simplifies the `useSessionStream` hook which doesn't have to branch
 // on two different shapes.
 
 export type Msg = {
@@ -22,7 +22,7 @@ export type Msg = {
   thinkingDelta?: boolean;
   thinkingClosed?: boolean;
   // role='assistant' only: the model id Anthropic ACTUALLY served this message
-  // with (claude_session_messages.model, stamped server-side from the agent's
+  // with (session_messages.model, stamped server-side from the agent's
   // effective_model event). Rendered as a small chip in the bubble header —
   // API truth, immune to the model's own (unreliable) self-identification.
   // Null/undefined on other roles and on rows persisted before the feature.

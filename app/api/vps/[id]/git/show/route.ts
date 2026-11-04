@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getGitShow } from '@/lib/server/claude/git';
+import { getGitShow } from '@/lib/server/hub/git';
 
 // GET /api/vps/[id]/git/show?cwd=&repo=&sha=&path=
 // One commit: metadata, the files it touched, and its patch (capped, §14.41).

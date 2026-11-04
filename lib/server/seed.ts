@@ -1,12 +1,12 @@
 import 'server-only';
-import { armModelWatch } from './claude/modelWatch';
+import { armModelWatch } from './hub/modelWatch';
 import { migrationV2IfNeeded } from './migrationV2';
 import { migrateSessionIdsToHashed, cleanupExpiredSessions } from './auth';
 import { autoConnectAgentsIfNeeded } from './agent/autoConnect';
-import { startTelegramBot } from './claude/telegram';
-import { armSdkAutoUpdate } from './claude/sdkWatch';
-import { encryptSecretsAtRest, seedSettingsFromEnv } from './claude/settings';
-import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/claude/tabs';
+import { startTelegramBot } from './hub/telegram';
+import { armSdkAutoUpdate } from './hub/sdkWatch';
+import { encryptSecretsAtRest, seedSettingsFromEnv } from './hub/settings';
+import { reconcileTabs, seedTabsIfEmpty } from '@/lib/server/hub/tabs';
 import { validateConfigAtBoot } from './configCheck';
 import { reconcileShellsOnBoot, armShellReconcileLoop } from './shell/shellSession';
 import { ensureSessionHandles } from './agent/sessionHandles';

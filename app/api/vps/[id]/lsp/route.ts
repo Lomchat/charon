@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { lspApplyEdit, lspClose, lspDiagnostics, lspOpen, lspRequest, lspStatus } from '@/lib/server/claude/lsp';
+import { lspApplyEdit, lspClose, lspDiagnostics, lspOpen, lspRequest, lspStatus } from '@/lib/server/hub/lsp';
 
 // Code intelligence — ONE route with an `op`, not five files. Every call is
 // the same shape (a root, a file, and something to ask about it) and the

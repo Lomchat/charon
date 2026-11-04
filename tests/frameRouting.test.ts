@@ -60,7 +60,7 @@ describe('FRAME_CLASS', () => {
   });
 
   it('covers every member of the BridgeEvent/SyntheticEvent unions (source scan)', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'lib/server/claude/types.ts'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'lib/server/hub/types.ts'), 'utf8');
     const unions = [
       src.slice(src.indexOf('export type BridgeEvent ='), src.indexOf('export type EffortLevel')),
       src.slice(src.indexOf('export type SyntheticEvent ='), src.indexOf('export type WorkerEvent')),

@@ -14,7 +14,7 @@ import {
  * The background-task terminal rule (§14.91).
  *
  * Two reducers read the SAME persisted `bg_task` rows — `app/bgTasks.ts` for
- * the bar and `lib/server/claude/bgTaskState.ts` for the session's
+ * the bar and `lib/server/hub/bgTaskState.ts` for the session's
  * `background` status and the auto-update quiet gate. They used to keep
  * SEPARATE word lists and disagreed in both directions, which is exactly how a
  * task ends up "running" forever on one side and finished on the other. These

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@/lib/types/api';
 import { sameLoginProfiles, usageAccountLabel, type AccountProfile } from '@/lib/accountProfiles';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import {
   accountGroupKey, accountGroupRepresentative, accountGroupUsage, buildAccountGroups,
 } from '@/lib/accountGroups';

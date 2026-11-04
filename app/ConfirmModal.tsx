@@ -1,7 +1,7 @@
 'use client';
 // Small styled confirmation dialog — replaces the native `confirm()` for
 // destructive actions ("Delete permanently", …), consistent with the other
-// `claude-modal` surfaces. Escape / backdrop click / cancel all dismiss;
+// `app-modal` surfaces. Escape / backdrop click / cancel all dismiss;
 // the destructive button awaits `onConfirm` and shows a busy label while
 // the action runs (the PARENT closes the modal when done, so a failure can
 // keep its error banner visible underneath).
@@ -73,8 +73,8 @@ export default function ConfirmModal({
   }
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className={`claude-modal confirm${tone === 'neutral' ? ' neutral' : ''}`} role="alertdialog" aria-modal="true" aria-label={title}>
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className={`app-modal confirm${tone === 'neutral' ? ' neutral' : ''}`} role="alertdialog" aria-modal="true" aria-label={title}>
         <div className="confirm-head">
           <span className="confirm-ico">{icon ?? <IconTrash />}</span>
           <h2>{title}</h2>

@@ -8,7 +8,7 @@ import { and, asc, eq, like, or } from 'drizzle-orm';
 
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: vi.fn(async () => ({})) }));
-vi.mock('@/lib/server/claude/sessionRpc', () => ({ callSessionRpc: vi.fn(async () => ({})) }));
+vi.mock('@/lib/server/hub/sessionRpc', () => ({ callSessionRpc: vi.fn(async () => ({})) }));
 const agentCall = vi.hoisted(() => vi.fn(async (..._args: any[]): Promise<any> => ({})));
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({ call: agentCall, setAfterSeq: () => {}, subscribe: () => {}, unsubscribe: () => {}, resubscribe: () => {} }),
@@ -25,7 +25,7 @@ let rawSqlite: () => import('better-sqlite3').Database;
 let rowCache: Mod;
 let sessionTokenUsage: typeof import('@/lib/server/agent/sessionTokenUsage').sessionTokenUsage;
 let recordedSessionUsage: typeof import('@/lib/server/agent/sessionUsage').recordedSessionUsage;
-let bg: typeof import('@/lib/server/claude/bgTaskState');
+let bg: typeof import('@/lib/server/hub/bgTaskState');
 let bgTasks: typeof import('@/app/bgTasks');
 
 const VPS = 'rowcache-vps';
@@ -33,13 +33,13 @@ let sessionCounter = 0;
 
 function newSession(kind = 'codex', status = 'active'): string {
   const id = (++sessionCounter).toString(16).padStart(32, '0');
-  db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'rc', status, kind }).run();
+  db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'rc', status, kind }).run();
   return id;
 }
 
 function insert(sessionId: string, role: string, content: unknown, tsMs?: number): number {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
-  return Number(db.insert(schema.claudeSessionMessages)
+  return Number(db.insert(schema.sessionMessages)
     .values({ sessionId, role, content: text, ...(tsMs != null ? { tsMs } : {}) }).run().lastInsertRowid);
 }
 
@@ -47,7 +47,7 @@ function insert(sessionId: string, role: string, content: unknown, tsMs?: number
 const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 
 function refTokens(sessionId: string) {
-  const m = schema.claudeSessionMessages;
+  const m = schema.sessionMessages;
   const rows = db.select({ id: m.id, content: m.content }).from(m).where(and(
     eq(m.sessionId, sessionId), eq(m.role, 'event'),
     or(like(m.content, '%"type":"endpoint_usage"%'), like(m.content, '%"type":"turn_usage"%')),
@@ -91,7 +91,7 @@ function refTokens(sessionId: string) {
 }
 
 function refRecorded(sessionId: string) {
-  const m = schema.claudeSessionMessages;
+  const m = schema.sessionMessages;
   const rows = db.select({ content: m.content }).from(m).where(and(
     eq(m.sessionId, sessionId), eq(m.role, 'event'), like(m.content, '%"type":"turn_usage"%'),
   )).orderBy(asc(m.id)).all();
@@ -125,7 +125,7 @@ function refRecorded(sessionId: string) {
 }
 
 function refBg(sessionId: string) {
-  const m = schema.claudeSessionMessages;
+  const m = schema.sessionMessages;
   return db.select({ content: m.content, createdAt: m.createdAt, seq: m.seq, tsMs: m.tsMs }).from(m).where(and(
     eq(m.sessionId, sessionId), eq(m.role, 'event'), like(m.content, '%"bg_task"%'),
   )).orderBy(asc(m.id)).all();
@@ -281,7 +281,7 @@ function insertRandomRow(rnd: () => number, sessionId: string, i: number): void 
       ...(rnd() < 0.2 ? { description: `d${i}` } : {}),
     }, ts);
     // Sometimes the seq is stamped too (the before-event rule reads it).
-    if (rnd() < 0.5) db.update(schema.claudeSessionMessages).set({ seq: i }).where(eq(schema.claudeSessionMessages.id, rowId)).run();
+    if (rnd() < 0.5) db.update(schema.sessionMessages).set({ seq: i }).where(eq(schema.sessionMessages.id, rowId)).run();
   } else {
     // Corrupt rows that DO match the LIKE: skipped by both folds.
     insert(sessionId, 'event', rnd() < 0.5 ? '{"type":"turn_usage", oops' : '{"type":"endpoint_usage" "bg_task" broken', ts);
@@ -308,7 +308,7 @@ beforeAll(async () => {
   rowCache = await import('@/lib/server/agent/sessionRowCache');
   ({ sessionTokenUsage } = await import('@/lib/server/agent/sessionTokenUsage'));
   ({ recordedSessionUsage } = await import('@/lib/server/agent/sessionUsage'));
-  bg = await import('@/lib/server/claude/bgTaskState');
+  bg = await import('@/lib/server/hub/bgTaskState');
   bgTasks = await import('@/app/bgTasks');
 });
 
@@ -390,7 +390,7 @@ describe('bg registry readers once warm (G1)', () => {
   it('10 000 lifecycle rows: every warm read stays far under 1 ms, and matches the full-scan readers', () => {
     const a = newSession('claude', 'background');
     const ins = rawSqlite().prepare(
-      'INSERT INTO claude_session_messages (session_id, role, content, seq, ts_ms) VALUES (?, ?, ?, ?, ?)');
+      'INSERT INTO session_messages (session_id, role, content, seq, ts_ms) VALUES (?, ?, ?, ?, ?)');
     const pad = 'x'.repeat(600);
     let seq = 0;
     rawSqlite().transaction(() => {
@@ -440,11 +440,11 @@ describe('validation', () => {
     for (let i = 0; i < 80; i++) insertRandomRow(rnd, a, i);
     for (const key of KEYS) check(key, a);
     // The harness pattern of many test files: wipe the rows, reuse the SID.
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, a)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, a)).run();
     for (let i = 0; i < 30; i++) insertRandomRow(rnd, a, i);
     for (const key of KEYS) check(key, a);
     // Wiped with nothing after: max(id) fell below the cached position.
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, a)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, a)).run();
     for (const key of KEYS) check(key, a);
     expect(sessionTokenUsage(a)).toMatchObject({ revision: 0, requests: 0, totalTokens: null });
   });
@@ -454,7 +454,7 @@ describe('validation', () => {
     insert(a, 'event', { type: 'endpoint_usage', requestId: 'keep', inputTokens: 1, outputTokens: 1, totalTokens: 2 });
     const tail = [insert(a, 'user', 'u1'), insert(a, 'user', 'u2')];
     expect(sessionTokenUsage(a)).toEqual(refTokens(a));
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.id, tail[1])).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.id, tail[1])).run();
     const dropped = rowCache.sessionRowCacheStats().dropped;
     expect(sessionTokenUsage(a)).toEqual(refTokens(a));
     expect(rowCache.sessionRowCacheStats().dropped).toBe(dropped + 1);
@@ -476,8 +476,8 @@ describe('validation', () => {
       .toEqual([['early', 'completed'], ['rewound', 'running']]);
     checkBg(a);
 
-    const { POST } = await import('@/app/api/claude/sessions/[id]/rollback/route');
-    const res = await POST(new Request(`http://localhost/api/claude/sessions/${a}/rollback`, {
+    const { POST } = await import('@/app/api/sessions/[id]/rollback/route');
+    const res = await POST(new Request(`http://localhost/api/sessions/${a}/rollback`, {
       method: 'POST', body: JSON.stringify({ messageId: `m${user}` }),
     }), { params: Promise.resolve({ id: a }) });
     expect(res.status).toBe(200);
@@ -497,7 +497,7 @@ describe('deletion paths free the folds (I11)', () => {
     db.insert(schema.vps).values({ id: vpsId, name: 'gone', ip: '127.0.0.2', sshUser: 'root' }).run();
     const goneSession = (): string => {
       const id = (++sessionCounter).toString(16).padStart(32, '0');
-      db.insert(schema.claudeSessions).values({ id, vpsId, cwd: '/tmp', name: 'gone', status: 'sleeping', kind: 'codex' }).run();
+      db.insert(schema.agentSessions).values({ id, vpsId, cwd: '/tmp', name: 'gone', status: 'sleeping', kind: 'codex' }).run();
       return id;
     };
     const gone = [goneSession(), goneSession()];
@@ -514,7 +514,7 @@ describe('deletion paths free the folds (I11)', () => {
     const res = await DELETE(new Request(`http://localhost/api/vps/${vpsId}`, { method: 'DELETE' }),
       { params: Promise.resolve({ id: vpsId }) });
     expect(res.status).toBe(200);
-    const m = schema.claudeSessionMessages;
+    const m = schema.sessionMessages;
     for (const sid of gone) expect(db.select().from(m).where(eq(m.sessionId, sid)).all()).toEqual([]);
     // Only the surviving session's three folds stay in memory.
     expect(rowCache.sessionRowCacheStats().entries).toBe(3);
@@ -669,7 +669,7 @@ describe('observability', () => {
 describe('the context route while the recorded fold warms', () => {
   it('answers recordedPending (never a partial sum), then the value', async () => {
     const a = newSession('codex', 'active');
-    const ins = rawSqlite().prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+    const ins = rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     const turn = (input: number) => JSON.stringify({ type: 'turn_usage', provider: 'codex', inputTokens: input, outputTokens: 1, durationMs: 10 });
     // Reasoning rows: outside every fold's LIKE, and not FTS-indexed (cheap to wipe).
     const FILLER = JSON.stringify({ type: 'thinking', text: 'filler' });
@@ -679,8 +679,8 @@ describe('the context route while the recorded fold warms', () => {
         ins.run(a, row[0], row[1], 1_800_000_000_000 + i);
       }
     })();
-    const { GET } = await import('@/app/api/claude/sessions/[id]/context/route');
-    const get = async () => (await GET(new Request(`http://localhost/api/claude/sessions/${a}/context`),
+    const { GET } = await import('@/app/api/sessions/[id]/context/route');
+    const get = async () => (await GET(new Request(`http://localhost/api/sessions/${a}/context`),
       { params: Promise.resolve({ id: a }) })).json();
 
     const warming = await get();
@@ -712,22 +712,22 @@ describe('the fold scan plan', () => {
     try {
       // One session holding the whole table: its index looks useless, and a
       // two-sided rowid range looks 64× more selective.
-      h.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'claude_session_messages'");
-      try { h.exec("DELETE FROM sqlite_stat4 WHERE tbl = 'claude_session_messages'"); } catch { /* not compiled in */ }
-      const ins = h.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('claude_session_messages', ?, ?)");
+      h.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'session_messages'");
+      try { h.exec("DELETE FROM sqlite_stat4 WHERE tbl = 'session_messages'"); } catch { /* not compiled in */ }
+      const ins = h.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('session_messages', ?, ?)");
       for (const [idx, stat] of [
-        ['idx_claude_session_messages_session_chrono_id', '1000000 1000000 1 1'],
-        ['idx_claude_session_messages_session_ts_id', '1000000 1000000 1 1'],
-        ['idx_claude_session_messages_snapshot_lookup', '1000000 1000000 1000000 1000000 1000000 1'],
-        ['idx_claude_session_messages_session_seq', '1000000 1000000 1'],
-        ['idx_claude_session_messages_session_id_id', '1000000 1000000 1'],
+        ['idx_session_messages_session_chrono_id', '1000000 1000000 1 1'],
+        ['idx_session_messages_session_ts_id', '1000000 1000000 1 1'],
+        ['idx_session_messages_snapshot_lookup', '1000000 1000000 1000000 1000000 1000000 1'],
+        ['idx_session_messages_session_seq', '1000000 1000000 1'],
+        ['idx_session_messages_session_id_id', '1000000 1000000 1'],
       ]) ins.run(idx, stat);
       h.exec('ANALYZE sqlite_schema');
       expect(plan(scan.source)).toBe(
-        'SEARCH claude_session_messages USING INDEX idx_claude_session_messages_session_id_id (session_id=? AND id>? AND id<?)');
+        'SEARCH session_messages USING INDEX idx_session_messages_session_id_id (session_id=? AND id>? AND id<?)');
       // Negative control: the same scan, unpinned, walks the table's rowid range.
       expect(plan(scan.source.replace(/INDEXED BY \S+/, ''))).toBe(
-        'SEARCH claude_session_messages USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)');
+        'SEARCH session_messages USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)');
     } finally {
       h.exec('DELETE FROM sqlite_stat1');
       try { h.exec('DELETE FROM sqlite_stat4'); } catch { /* not compiled in */ }
@@ -746,7 +746,7 @@ describe('the bg registry: strict and tolerant readers', () => {
   /** A session of three 20 k-row slices and a bit: bg rows near both ends. */
   function bigSession(kind = 'codex'): string {
     const a = newSession(kind, 'active');
-    const ins = rawSqlite().prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+    const ins = rawSqlite().prepare('INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     const FILLER = JSON.stringify({ type: 'thinking', text: 'filler' });
     const bg = (taskId: string, kind2: string) => JSON.stringify({
       type: 'bg_task', kind: kind2, taskId, taskType: 'codex_subagent', status: kind2 === 'finished' ? 'completed' : 'running',
@@ -784,8 +784,8 @@ describe('the bg registry: strict and tolerant readers', () => {
       if (ev.sessionId === a && ev.type === 'bg_tasks_snapshot') frames.push(ev);
     });
     try {
-      const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-      const get = async () => (await GET(new Request(`http://localhost/api/claude/sessions/${a}?open=1`),
+      const { GET } = await import('@/app/api/sessions/[id]/route');
+      const get = async () => (await GET(new Request(`http://localhost/api/sessions/${a}?open=1`),
         { params: Promise.resolve({ id: a }) })).json();
       const cold = await get();
       expect(cold.backgroundTasks).toBeUndefined();
@@ -814,8 +814,8 @@ describe('the bg registry: strict and tolerant readers', () => {
     });
     markConnectionLive('bgsnap-before-focus');   // the bus router skips a conn until its route says so (C11)
     try {
-      const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-      const cold = await (await GET(new Request(`http://localhost/api/claude/sessions/${a}?open=1`),
+      const { GET } = await import('@/app/api/sessions/[id]/route');
+      const cold = await (await GET(new Request(`http://localhost/api/sessions/${a}?open=1`),
         { params: Promise.resolve({ id: a }) })).json();
       expect(cold.backgroundTasksPending).toBe(true);
       await vi.waitFor(() => expect(got).toHaveLength(1), { timeout: 20_000 });
@@ -830,8 +830,8 @@ describe('the bg registry: strict and tolerant readers', () => {
   // registered when it went out asks again on its delta poll (`bg=1`).
   it('a delta poll with bg=1 answers the warm ACTIVE set; without it, nothing', async () => {
     const a = bigSession('claude');
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const get = async (qs: string) => (await GET(new Request(`http://localhost/api/claude/sessions/${a}?${qs}`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const get = async (qs: string) => (await GET(new Request(`http://localhost/api/sessions/${a}?${qs}`),
       { params: Promise.resolve({ id: a }) })).json();
     const cold = await get('open=1');
     expect(cold.backgroundTasksPending).toBe(true);
@@ -853,12 +853,12 @@ describe('the bg registry: strict and tolerant readers', () => {
     db.insert(schema.vps).values({ id: QUIET, name: 'quiet', ip: '127.0.0.2', sshUser: 'root' }).onConflictDoNothing().run();
     const hourAgo = Math.floor(Date.now() / 1000) - 3_600;            // outside the 30-min activity window
     const ins = rawSqlite().prepare(
-      'INSERT INTO claude_session_messages (session_id, role, content, created_at, ts_ms) VALUES (?, ?, ?, ?, ?)');
+      'INSERT INTO session_messages (session_id, role, content, created_at, ts_ms) VALUES (?, ?, ?, ?, ?)');
     const FILLER = JSON.stringify({ type: 'thinking', text: 'filler' });
     const finished = (kind2: string) => JSON.stringify({ type: 'bg_task', kind: kind2, taskId: 'done', status: 'completed' });
     const ids = [0, 1, 2].map(() => {
       const id = (++sessionCounter).toString(16).padStart(32, '0');
-      db.insert(schema.claudeSessions).values({ id, vpsId: QUIET, cwd: '/tmp', name: 'q', status: 'active', kind: 'codex' }).run();
+      db.insert(schema.agentSessions).values({ id, vpsId: QUIET, cwd: '/tmp', name: 'q', status: 'active', kind: 'codex' }).run();
       rawSqlite().transaction(() => {
         for (let i = 0; i < 20_050; i++) {
           ins.run(id, 'event', i === 1 ? finished('started') : i === 20_049 ? finished('finished') : FILLER, hourAgo, hourAgo * 1000 + i);
@@ -866,7 +866,7 @@ describe('the bg registry: strict and tolerant readers', () => {
       })();
       return id;
     });
-    const { isVpsBusy } = await import('@/lib/server/claude/sdkWatch');
+    const { isVpsBusy } = await import('@/lib/server/hub/sdkWatch');
     expect(isVpsBusy(QUIET)).toBe(true);                               // warming = busy…
     expect(rowCache.sessionRowCacheStats().chains).toBe(ids.length);  // …and every cold registry warms now
     await vi.waitFor(() => expect(rowCache.sessionRowCacheStats().chains).toBe(0), { timeout: 20_000 });

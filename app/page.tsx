@@ -1,14 +1,14 @@
-import './claude.css';
+import './app.css';
 import './density.css';
 import { db, vps as vpsTable, vpsFolders as vpsFoldersTable, vpsPaths as vpsPathsTable } from '@/lib/db';
 import { requireSession } from '@/lib/server/session';
 import { seedInitialData } from '@/lib/server/seed';
 import { asc } from 'drizzle-orm';
 import { cookies } from 'next/headers';
-import ClaudePanel from './ClaudePanel';
-import { listTabs } from '@/lib/server/claude/tabs';
+import HubPanel from './HubPanel';
+import { listTabs } from '@/lib/server/hub/tabs';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
-import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/claude/sdkSync';
+import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/hub/sdkSync';
 import { ssrSummaries } from '@/lib/server/sync/ssrSummaries';
 import { PANEL_LAYOUT_COOKIE, parsePanelLayout } from './panelLayout';
 
@@ -46,7 +46,7 @@ export default async function CharonPage() {
   const initialPanels = parsePanelLayout((await cookies()).get(PANEL_LAYOUT_COOKIE)?.value);
 
   return (
-    <ClaudePanel
+    <HubPanel
       vpsList={vpsRows}
       vpsFolders={folderRows}
       vpsPaths={pathRows}

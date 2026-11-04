@@ -5,7 +5,7 @@ import {
   batchCodexHistoryItems,
   codexItemsFromForkHistory,
   splitUtf8,
-} from '@/lib/server/claude/forkHistory';
+} from '@/lib/server/hub/forkHistory';
 
 describe('Claude -> Codex fork history', () => {
   it('keeps prose roles and labels provider-specific tool traffic', () => {
@@ -18,7 +18,7 @@ describe('Claude -> Codex fork history', () => {
     ]);
     expect(items.map((x) => x.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
     expect(items[0].content[0]).toEqual({ type: 'input_text', text: 'Inspect it' });
-    expect(items[1].content[0].text).toContain('Historical Claude tool call: Read');
+    expect(items[1].content[0].text).toContain('Historical tool call: Read');
     expect(items[2].content[0].text).toContain('contents');
     expect(items[3].content[0]).toEqual({ type: 'output_text', text: 'Done' });
   });

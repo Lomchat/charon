@@ -35,9 +35,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => fake.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -61,7 +61,7 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS, name: 'chain', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ AgentClient } = await import('@/lib/server/agent/AgentClient'));
 });
 
@@ -241,9 +241,9 @@ describe('hub boot: the connected hook reconciles every agent-known session', ()
   it('a seq-epoch reset inside the chain replays from 0 even when live new-epoch events arrive first', async () => {
     const E = 'e'.repeat(32);
     const F = 'f'.repeat(32);
-    db.insert(schema.claudeSessions).values({ id: E, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: 4000 })
+    db.insert(schema.agentSessions).values({ id: E, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: 4000 })
       .onConflictDoNothing().run();
-    db.insert(schema.claudeSessions).values({ id: F, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: 200 })
+    db.insert(schema.agentSessions).values({ id: F, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: 200 })
       .onConflictDoNothing().run();
     const { reconcileVpsAgentState, peekStream } = await import('@/lib/server/agent/sessionOps');
     const child = await connect([E, F], (client) => { void reconcileVpsAgentState(VPS, client.hello.sessions); }, '0.103.2');
@@ -257,14 +257,14 @@ describe('hub boot: the connected hook reconciles every agent-known session', ()
     feed(child, { id: lastSubscribeId(child, F), result: { ok: true, replay_count: 0 } });
     await settle();
     expect(subscribes(child)).toEqual(['e@4000', 'f@200', 'e@0']);
-    const row = db.select().from(schema.claudeSessions).where(eq(schema.claudeSessions.id, E)).get();
+    const row = db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, E)).get();
     expect(row.lastSeenSeq).toBe(0);
     for (const sid of [E, F]) peekStream(sid)?.detach();
   });
 
   it('each session is subscribed once, in turn; a rotated log at boot writes ONE replay_gap row', async () => {
     for (const [id, seq] of [[A, 100], [B, 200]] as const) {
-      db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: seq })
+      db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', status: 'active', kind: 'claude', lastSeenSeq: seq })
         .onConflictDoNothing().run();
     }
     const { reconcileVpsAgentState } = await import('@/lib/server/agent/sessionOps');
@@ -279,8 +279,8 @@ describe('hub boot: the connected hook reconciles every agent-known session', ()
     feed(child, { id: lastSubscribeId(child, B), result: { ok: true, replay_count: 0 } });
     await settle();
     expect(subscribes(child)).toEqual(['a@100', 'b@200']);
-    const rowsOf = (sid: string) => db.select().from(schema.claudeSessionMessages)
-      .where(eq(schema.claudeSessionMessages.sessionId, sid)).all();
+    const rowsOf = (sid: string) => db.select().from(schema.sessionMessages)
+      .where(eq(schema.sessionMessages.sessionId, sid)).all();
     const gaps = rowsOf(A).filter((r: any) => r.role === 'event' && JSON.parse(r.content).type === 'replay_gap')
       .map((r: any) => JSON.parse(r.content));
     expect(gaps).toEqual([{ type: 'replay_gap', from: 101, to: 149 }]);

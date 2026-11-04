@@ -41,7 +41,7 @@ export default function PanelResizer({ panel, onMouseEnter, onMouseLeave }: {
   function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     if (e.button !== 0) return;
     const handle = e.currentTarget;
-    const root = handle.closest<HTMLElement>('.claude-root');
+    const root = handle.closest<HTMLElement>('.app-root');
     if (!root) return;
     e.preventDefault();
     const startX = e.clientX;

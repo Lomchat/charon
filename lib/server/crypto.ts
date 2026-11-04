@@ -2,7 +2,7 @@ import 'server-only';
 import crypto from 'node:crypto';
 
 // Canary plaintext used to verify that an AES key derived from MASTER_PASSWORD
-// is correct (encrypted once at seed time in claudeSettings, decrypted on each
+// is correct (encrypted once at seed time in appSettings, decrypted on each
 // boot). The name 'hub-key-v1' is historical — the codebase was previously
 // called "hub". DO NOT rename without a migration plan: changing this constant
 // breaks every existing deployment (web-push keys, encrypted settings, etc.

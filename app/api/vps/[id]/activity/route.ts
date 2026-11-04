@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { activityFor } from '@/lib/server/claude/fileActivity';
+import { activityFor } from '@/lib/server/hub/fileActivity';
 
 // GET /api/vps/[id]/activity → who is reading/writing what, right now.
 //

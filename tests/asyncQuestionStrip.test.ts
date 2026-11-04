@@ -48,12 +48,12 @@ describe('AsyncQuestionStrip', () => {
   it('sits ABOVE the composer and above the Resume CTA', () => {
     const qs = [question('q-old', 10, 'Which colour?')];
     for (const slot of [
-      createElement('div', { className: 'claude-disconnect-cta' }, createElement('button', null, '↺ RESUME THIS SESSION')),
-      createElement('div', { className: 'claude-input-bar' }, createElement('textarea')),
+      createElement('div', { className: 'app-disconnect-cta' }, createElement('button', null, '↺ RESUME THIS SESSION')),
+      createElement('div', { className: 'app-input-bar' }, createElement('textarea')),
     ]) {
       const html = renderToStaticMarkup(createElement(ComposerWithAsyncStrip, { strip: strip(qs), children: slot }));
       const stripAt = html.indexOf('data-async-strip');
-      const slotAt = Math.max(html.indexOf('claude-disconnect-cta'), html.indexOf('claude-input-bar'));
+      const slotAt = Math.max(html.indexOf('app-disconnect-cta'), html.indexOf('app-input-bar'));
       expect(stripAt).toBeGreaterThanOrEqual(0);
       expect(slotAt).toBeGreaterThan(stripAt);
     }

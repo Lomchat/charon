@@ -80,8 +80,8 @@ export default function PromptModal({
   }
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="claude-modal prompt" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="app-modal prompt" role="dialog" aria-modal="true" aria-label={title}>
         <div className="confirm-head">
           {icon && <span className="confirm-ico neutral">{icon}</span>}
           <h2>{title}</h2>

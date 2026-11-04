@@ -4,7 +4,7 @@ import { eq, lt } from 'drizzle-orm';
 import { db, users, sessions } from '@/lib/db';
 // Plain CJS so server.js (WS-upgrade auth) shares the exact same hashing.
 import { hashSessionToken } from './sessionHash.js';
-import { getSetting, setSetting } from './claude/settings';
+import { getSetting, setSetting } from './hub/settings';
 
 const SESSION_TTL_SECS = 24 * 60 * 60; // 24h sliding inactivity
 
@@ -132,7 +132,7 @@ export async function cleanupExpiredSessions() {
 // Pre-2026-07 rows stored the raw cookie token as `sessions.id`. Rehash them
 // in place so existing browser cookies stay valid (lookup hashes the cookie,
 // so hash(old raw id) matches). Idempotence is enforced by a marker in
-// claude_settings — raw and hashed ids are both 64-hex, indistinguishable by
+// app_settings — raw and hashed ids are both 64-hex, indistinguishable by
 // format, so NEVER run this twice (double-hash = everyone logged out).
 export function migrateSessionIdsToHashed() {
   const MARKER = 'auth.session_ids_hashed' as any; // internal marker, not a user setting

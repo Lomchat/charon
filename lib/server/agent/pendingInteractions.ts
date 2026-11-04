@@ -1,6 +1,6 @@
 import 'server-only';
 import { and, eq, inArray, isNotNull, lte } from 'drizzle-orm';
-import { db, claudePendingPermissions, claudePendingQuestions } from '@/lib/db';
+import { db, sessionPendingPermissions, sessionPendingQuestions } from '@/lib/db';
 
 // Import-cycle-free on purpose (sessionOps imports this module): publishing
 // lives in sessionOps (`publishInteractionResolved`, `sweepExpiredInteractions`).
@@ -12,7 +12,7 @@ export type GateKind = 'permission' | 'question' | 'exit_plan';
 export type GateOutcome = 'answered' | 'denied' | 'expired' | 'cancelled';
 export type GateRef = { kind: GateKind; id: string; sessionId: string };
 
-/** `claude_pending_questions.kind` → wire kind (an async question is a question). */
+/** `session_pending_questions.kind` → wire kind (an async question is a question). */
 export function questionGateKind(kind: string): 'question' | 'exit_plan' {
   return kind === 'exit_plan' ? 'exit_plan' : 'question';
 }
@@ -44,25 +44,25 @@ export function gateOutcome(status: string): GateOutcome {
 export function expireStalePendingInteractions(
   nowSeconds = Math.floor(Date.now() / 1000),
 ): GateRef[] {
-  const perms = db.update(claudePendingPermissions)
+  const perms = db.update(sessionPendingPermissions)
     .set({ status: 'expired', respondedAt: nowSeconds })
     .where(and(
-      eq(claudePendingPermissions.status, 'pending'),
-      isNotNull(claudePendingPermissions.expiresAt),
-      lte(claudePendingPermissions.expiresAt, nowSeconds),
+      eq(sessionPendingPermissions.status, 'pending'),
+      isNotNull(sessionPendingPermissions.expiresAt),
+      lte(sessionPendingPermissions.expiresAt, nowSeconds),
     ))
-    .returning({ id: claudePendingPermissions.id, sessionId: claudePendingPermissions.sessionId })
+    .returning({ id: sessionPendingPermissions.id, sessionId: sessionPendingPermissions.sessionId })
     .all();
-  const questions = db.update(claudePendingQuestions)
+  const questions = db.update(sessionPendingQuestions)
     .set({ status: 'expired', respondedAt: nowSeconds })
     .where(and(
-      eq(claudePendingQuestions.status, 'pending'),
-      isNotNull(claudePendingQuestions.expiresAt),
-      lte(claudePendingQuestions.expiresAt, nowSeconds),
+      eq(sessionPendingQuestions.status, 'pending'),
+      isNotNull(sessionPendingQuestions.expiresAt),
+      lte(sessionPendingQuestions.expiresAt, nowSeconds),
     ))
     .returning({
-      id: claudePendingQuestions.id, sessionId: claudePendingQuestions.sessionId,
-      kind: claudePendingQuestions.kind,
+      id: sessionPendingQuestions.id, sessionId: sessionPendingQuestions.sessionId,
+      kind: sessionPendingQuestions.kind,
     })
     .all();
   return [
@@ -81,22 +81,22 @@ export function cancelBlockingGateRows(
   sessionId: string, nowSeconds = Math.floor(Date.now() / 1000),
 ): GateRef[] {
   return db.transaction(() => {
-    const perms = db.update(claudePendingPermissions)
+    const perms = db.update(sessionPendingPermissions)
       .set({ status: 'cancelled', respondedAt: nowSeconds })
       .where(and(
-        eq(claudePendingPermissions.sessionId, sessionId),
-        eq(claudePendingPermissions.status, 'pending'),
+        eq(sessionPendingPermissions.sessionId, sessionId),
+        eq(sessionPendingPermissions.status, 'pending'),
       ))
-      .returning({ id: claudePendingPermissions.id })
+      .returning({ id: sessionPendingPermissions.id })
       .all();
-    const questions = db.update(claudePendingQuestions)
+    const questions = db.update(sessionPendingQuestions)
       .set({ status: 'cancelled', respondedAt: nowSeconds })
       .where(and(
-        eq(claudePendingQuestions.sessionId, sessionId),
-        eq(claudePendingQuestions.status, 'pending'),
-        inArray(claudePendingQuestions.kind, ['question', 'exit_plan']),
+        eq(sessionPendingQuestions.sessionId, sessionId),
+        eq(sessionPendingQuestions.status, 'pending'),
+        inArray(sessionPendingQuestions.kind, ['question', 'exit_plan']),
       ))
-      .returning({ id: claudePendingQuestions.id, kind: claudePendingQuestions.kind })
+      .returning({ id: sessionPendingQuestions.id, kind: sessionPendingQuestions.kind })
       .all();
     return [
       ...perms.map((p) => ({ kind: 'permission' as const, id: p.id, sessionId })),
@@ -116,21 +116,21 @@ export function cancelPendingGateRow(
   kind: GateKind, id: string, sessionId: string, nowSeconds = Math.floor(Date.now() / 1000),
 ): boolean {
   if (kind === 'permission') {
-    return db.update(claudePendingPermissions)
+    return db.update(sessionPendingPermissions)
       .set({ status: 'cancelled', respondedAt: nowSeconds })
       .where(and(
-        eq(claudePendingPermissions.id, id),
-        eq(claudePendingPermissions.sessionId, sessionId),
-        eq(claudePendingPermissions.status, 'pending'),
+        eq(sessionPendingPermissions.id, id),
+        eq(sessionPendingPermissions.sessionId, sessionId),
+        eq(sessionPendingPermissions.status, 'pending'),
       )).run().changes > 0;
   }
-  return db.update(claudePendingQuestions)
+  return db.update(sessionPendingQuestions)
     .set({ status: 'cancelled', respondedAt: nowSeconds })
     .where(and(
-      eq(claudePendingQuestions.id, id),
-      eq(claudePendingQuestions.sessionId, sessionId),
-      eq(claudePendingQuestions.status, 'pending'),
-      eq(claudePendingQuestions.kind, kind),
+      eq(sessionPendingQuestions.id, id),
+      eq(sessionPendingQuestions.sessionId, sessionId),
+      eq(sessionPendingQuestions.status, 'pending'),
+      eq(sessionPendingQuestions.kind, kind),
     )).run().changes > 0;
 }
 
@@ -141,19 +141,19 @@ export function cancelPendingGateRow(
  * transaction (one SQLite connection: `db` inside `db.transaction` is in it).
  */
 export function deleteSessionGates(sessionId: string): GateRef[] {
-  const perms = db.select({ id: claudePendingPermissions.id }).from(claudePendingPermissions)
+  const perms = db.select({ id: sessionPendingPermissions.id }).from(sessionPendingPermissions)
     .where(and(
-      eq(claudePendingPermissions.sessionId, sessionId),
-      eq(claudePendingPermissions.status, 'pending'),
+      eq(sessionPendingPermissions.sessionId, sessionId),
+      eq(sessionPendingPermissions.status, 'pending'),
     )).all();
-  const questions = db.select({ id: claudePendingQuestions.id, kind: claudePendingQuestions.kind })
-    .from(claudePendingQuestions)
+  const questions = db.select({ id: sessionPendingQuestions.id, kind: sessionPendingQuestions.kind })
+    .from(sessionPendingQuestions)
     .where(and(
-      eq(claudePendingQuestions.sessionId, sessionId),
-      eq(claudePendingQuestions.status, 'pending'),
+      eq(sessionPendingQuestions.sessionId, sessionId),
+      eq(sessionPendingQuestions.status, 'pending'),
     )).all();
-  db.delete(claudePendingPermissions).where(eq(claudePendingPermissions.sessionId, sessionId)).run();
-  db.delete(claudePendingQuestions).where(eq(claudePendingQuestions.sessionId, sessionId)).run();
+  db.delete(sessionPendingPermissions).where(eq(sessionPendingPermissions.sessionId, sessionId)).run();
+  db.delete(sessionPendingQuestions).where(eq(sessionPendingQuestions.sessionId, sessionId)).run();
   return [
     ...perms.map((p) => ({ kind: 'permission' as const, id: p.id, sessionId })),
     ...questions.map((q) => ({ kind: questionGateKind(q.kind), id: q.id, sessionId })),

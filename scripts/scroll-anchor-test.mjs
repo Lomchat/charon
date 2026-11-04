@@ -29,11 +29,11 @@ async function run(label, css) {
   await ctx.addCookies([{ name: 'charon_session', value: TOKEN, domain: '127.0.0.1', path: '/' }]);
   const page = await ctx.newPage();
   await page.goto(`${BASE}/?session=${SID}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.claude-chat .bubble', { timeout: 30_000 });
+  await page.waitForSelector('.app-chat .bubble', { timeout: 30_000 });
   if (css) await page.addStyleTag({ content: css });
   await page.waitForTimeout(2000);
 
-  const box = await page.locator('.claude-chat').boundingBox();
+  const box = await page.locator('.app-chat').boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   for (let i = 0; i < 15; i++) {
     await page.mouse.wheel(0, -500);
@@ -44,7 +44,7 @@ async function run(label, css) {
   // Grow a bubble by 300px, on each side of the viewport in turn, and see
   // whether the offset the reader is sitting at survives it.
   const drift = await page.evaluate(async () => {
-    const el = document.querySelector('.claude-chat');
+    const el = document.querySelector('.app-chat');
     const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const vTop = el.getBoundingClientRect().top;
     const vBot = el.getBoundingClientRect().bottom;
@@ -66,7 +66,7 @@ async function run(label, css) {
 
   // …and the other invariant: pinned at the bottom must STAY pinned.
   const pinned = await page.evaluate(async () => {
-    const el = document.querySelector('.claude-chat');
+    const el = document.querySelector('.app-chat');
     el.scrollTop = 0;
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const b = el.querySelector('.bubble');
@@ -85,5 +85,5 @@ async function run(label, css) {
 }
 
 await run('anchoring: default', null);
-await run('overflow-anchor: none', '.claude-chat{overflow-anchor:none}');
+await run('overflow-anchor: none', '.app-chat{overflow-anchor:none}');
 await browser.close();

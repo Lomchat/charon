@@ -1,7 +1,7 @@
 'use client';
 // ── "Which settings files should this VPS load?" (§14.100) ───────────────────
 // Two entry points, one dialog:
-//   - installing an agent on a VPS (ClaudePanel § openInstallSession), which is
+//   - installing an agent on a VPS (HubPanel § openInstallSession), which is
 //     the moment the machine's policy is actually being decided;
 //   - the VPS card in DataModal, because a choice made at install time is made
 //     BEFORE ~/.claude/settings.json exists on a fresh box — it is a policy,
@@ -65,8 +65,8 @@ export default function SettingScopeModal({
   }
 
   const body = (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="claude-modal scope-modal" role="dialog" aria-modal="true" aria-label={providerText.settingScopeAria()}>
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="app-modal scope-modal" role="dialog" aria-modal="true" aria-label={providerText.settingScopeAria()}>
         <h2 className="scope-title">{providerText.settingScopeHeading()} <b>{vpsName}</b></h2>
         <p className="scope-lead">{providerText.settingScopeLead()}</p>
         <SettingSourcesPicker value={value} onChange={setValue} inherited={hubDefault} />

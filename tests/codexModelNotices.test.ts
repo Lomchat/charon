@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 const fake = vi.hoisted(() => ({ settings: new Map<string, string>(), call: vi.fn() }));
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/settings', () => ({
+vi.mock('@/lib/server/hub/settings', () => ({
   getSetting: (key: string) => fake.settings.get(key) ?? '',
   setSetting: (key: string, value: string) => { fake.settings.set(key, value); },
 }));
@@ -10,8 +10,8 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({ call: fake.call }),
 }));
 
-import { getCodexModelsForVps } from '@/lib/server/claude/codexModels';
-import { getModelNotices } from '@/lib/server/claude/modelNotices';
+import { getCodexModelsForVps } from '@/lib/server/hub/codexModels';
+import { getModelNotices } from '@/lib/server/hub/modelNotices';
 
 beforeEach(() => { fake.settings.clear(); fake.call.mockReset(); });
 

@@ -18,19 +18,19 @@ beforeAll(async () => {
   schema = await import('@/lib/db'); db = schema.db;
   const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
   migrate(db, { migrationsFolder: './drizzle' });
-  ({ setSetting } = await import('@/lib/server/claude/settings'));
-  ({ sendPushToAll } = await import('@/lib/server/claude/webPush'));
-  telegram = await import('@/lib/server/claude/telegram');
+  ({ setSetting } = await import('@/lib/server/hub/settings'));
+  ({ sendPushToAll } = await import('@/lib/server/hub/webPush'));
+  telegram = await import('@/lib/server/hub/telegram');
 });
 beforeEach(() => {
   vi.useFakeTimers();
   push.sendNotification.mockClear();
-  db.delete(schema.claudePushSubs).run();
+  db.delete(schema.pushSubs).run();
   db.delete(schema.sessionNotificationSettings).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.agentSessions).run();
   db.insert(schema.vps).values({ id: 'notify-vps', name: 'Test VPS', ip: '127.0.0.1', sshUser: 'test' }).onConflictDoNothing().run();
   for (const [id, status, archived] of [['session-a', 'active', 0], ['session-b', 'sleeping', 0], ['archived', 'sleeping', 1], ['killed', 'killed', 0]]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: 'notify-vps', cwd: '/tmp/test', name: id, status, archived }).run();
+    db.insert(schema.agentSessions).values({ id, vpsId: 'notify-vps', cwd: '/tmp/test', name: id, status, archived }).run();
   }
   setSetting('telegram.enabled', 'true');
   setSetting('telegram.bot_token', 'test-token');
@@ -39,7 +39,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 function browser(id: string, value: unknown) {
-  db.insert(schema.claudePushSubs).values({ id, endpoint: `https://push.example/${id}`,
+  db.insert(schema.pushSubs).values({ id, endpoint: `https://push.example/${id}`,
     p256dh: 'key', authKey: 'auth', preferences: JSON.stringify(value) }).run();
 }
 describe('independent notification channels', () => {
@@ -96,7 +96,7 @@ describe('independent notification channels', () => {
     const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, result: {} }) }));
     vi.stubGlobal('fetch', fetch);
     setSetting('telegram.enabled', 'false');
-    const route = await import('@/app/api/claude/sessions/[id]/notifications/route');
+    const route = await import('@/app/api/sessions/[id]/notifications/route');
     const context = { params: Promise.resolve({ id: 'session-a' }) };
     const put = (telegram: unknown) => route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify({ telegram }) }), context);
     expect((await put({ enabled: true, events: { session_error: false } })).status).toBe(200);
@@ -113,28 +113,28 @@ describe('independent notification channels', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
   it('exception candidates include sleeping sessions and exclude archived/deleted ones; deletion cascades', async () => {
-    const route = await import('@/app/api/claude/sessions/[id]/notifications/route');
+    const route = await import('@/app/api/sessions/[id]/notifications/route');
     for (const id of ['session-b', 'archived', 'killed']) {
       await route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify({ telegram: { enabled: false } }) }), { params: Promise.resolve({ id }) });
     }
-    const list = await import('@/app/api/claude/session-notifications/route');
+    const list = await import('@/app/api/session-notifications/route');
     const rows = await (await list.GET()).json();
     expect(rows.map((r: any) => r.id).sort()).toEqual(['session-a', 'session-b']);
     expect(rows.find((r: any) => r.id === 'session-b').telegramException).toBe(true);
     expect(rows.find((r: any) => r.id === 'session-a').telegramException).toBe(false);
-    db.delete(schema.claudeSessions).run();
+    db.delete(schema.agentSessions).run();
     expect(db.select().from(schema.sessionNotificationSettings).all()).toHaveLength(0);
   });
   it('session preferences reject unknown sessions and malformed bodies', async () => {
-    const route = await import('@/app/api/claude/sessions/[id]/notifications/route');
+    const route = await import('@/app/api/sessions/[id]/notifications/route');
     expect((await route.GET(new Request('http://localhost'), { params: Promise.resolve({ id: 'missing' }) })).status).toBe(404);
     for (const body of ['oops', { telegram: { enabled: 'false' } }, {}]) {
       expect((await route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'session-a' }) })).status).toBe(400);
     }
   });
   it('a fork inherits an override, and inherits nothing when the source has none', async () => {
-    const { copySessionNotificationSettings } = await import('@/lib/server/claude/sessionNotifications');
-    const route = await import('@/app/api/claude/sessions/[id]/notifications/route');
+    const { copySessionNotificationSettings } = await import('@/lib/server/hub/sessionNotifications');
+    const route = await import('@/app/api/sessions/[id]/notifications/route');
     await route.PUT(new Request('http://localhost', { method: 'PUT', body: JSON.stringify({ telegram: { enabled: true, events: { session_error: false } } }) }), { params: Promise.resolve({ id: 'session-a' }) });
     expect(copySessionNotificationSettings('session-a', 'session-b')).toBe(true);
     const branch = await (await route.GET(new Request('http://localhost'), { params: Promise.resolve({ id: 'session-b' }) })).json();

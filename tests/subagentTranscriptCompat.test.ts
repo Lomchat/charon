@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
-const mocks = vi.hoisted(() => ({ row: { kind: 'claude', claudeSessionId: '11111111-2222-3333-4444-555555555555', cwd: '/srv/project', codexConfig: JSON.stringify({accountProfile:'0123456789abcdef'}), vpsId:'vps' }, call: vi.fn() }));
-vi.mock('@/lib/db', () => ({ db: { select: () => ({ from: () => ({ where: () => ({ all: () => [mocks.row] }) }) }) }, claudeSessions: { id: 'id' } }));
+const mocks = vi.hoisted(() => ({ row: { kind: 'claude', nativeSessionId: '11111111-2222-3333-4444-555555555555', cwd: '/srv/project', providerConfig: JSON.stringify({accountProfile:'0123456789abcdef'}), vpsId:'vps' }, call: vi.fn() }));
+vi.mock('@/lib/db', () => ({ db: { select: () => ({ from: () => ({ where: () => ({ all: () => [mocks.row] }) }) }) }, agentSessions: { id: 'id' } }));
 vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({ getAgentClientForVpsId: () => ({ call: mocks.call }) }));
-import { recoverSubagentTranscript } from '@/lib/server/claude/subagentTranscriptCompat';
+import { recoverSubagentTranscript } from '@/lib/server/hub/subagentTranscriptCompat';
 
 const broken = { ok: true, messages: [{ role:'assistant', uuid:'known', content:'null' }] };
 function range(uuid: string) { return {ok:true, offset:0, data:Buffer.from(JSON.stringify({type:'assistant', uuid, message:{content:[{type:'thinking',thinking:'hidden'}, {type:'text',text:'Real output'}]}})+'\n').toString('base64')}; }

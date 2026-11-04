@@ -10,8 +10,8 @@ vi.mock('@/lib/server/session', () => ({
 // The route tests below run the real handlers against the hermetic DB; nothing
 // may reach an agent, a push service or Telegram.
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -248,9 +248,9 @@ describe('loop lag monitor', () => {
 describe('route sections carry their journal labels', () => {
   const VPS_ID = 'perfvps';
   const SID = 'e'.repeat(32);
-  type SessionGet = typeof import('@/app/api/claude/sessions/[id]/route').GET;
-  type ListGet = typeof import('@/app/api/claude/sessions/route').GET;
-  type EventsGet = typeof import('@/app/api/claude/events/route').GET;
+  type SessionGet = typeof import('@/app/api/sessions/[id]/route').GET;
+  type ListGet = typeof import('@/app/api/sessions/route').GET;
+  type EventsGet = typeof import('@/app/api/events/route').GET;
   let sessionGet: SessionGet;
   let listGet: ListGet;
   let eventsGet: EventsGet;
@@ -264,12 +264,12 @@ describe('route sections carry their journal labels', () => {
       .onConflictDoNothing().run();
     dbMod.db.insert(dbMod.vps).values({ id: VPS_ID, name: 'perf-vps', ip: '127.0.0.1', sshUser: 'root' })
       .onConflictDoNothing().run();
-    dbMod.db.insert(dbMod.claudeSessions).values({
+    dbMod.db.insert(dbMod.agentSessions).values({
       id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'perf', status: 'sleeping',
     }).onConflictDoNothing().run();
-    ({ GET: sessionGet } = await import('@/app/api/claude/sessions/[id]/route'));
-    ({ GET: listGet } = await import('@/app/api/claude/sessions/route'));
-    ({ GET: eventsGet } = await import('@/app/api/claude/events/route'));
+    ({ GET: sessionGet } = await import('@/app/api/sessions/[id]/route'));
+    ({ GET: listGet } = await import('@/app/api/sessions/route'));
+    ({ GET: eventsGet } = await import('@/app/api/events/route'));
   });
 
   afterEach(async () => {
@@ -307,7 +307,7 @@ describe('route sections carry their journal labels', () => {
     // under this clock. The request itself still prints exactly one line.
     const perfLines = () => allPerfLines().filter((l) => !l.startsWith('[perf] fold:'));
     const get = (query: string) => sessionGet(
-      new Request(`http://localhost/api/claude/sessions/${SID}${query}`),
+      new Request(`http://localhost/api/sessions/${SID}${query}`),
       { params: Promise.resolve({ id: SID }) },
     );
     const line = (mode: string) => new RegExp(`^\\[perf\\] session GET ${SID} ${mode} [\\d.]+ms$`);
@@ -333,7 +333,7 @@ describe('route sections carry their journal labels', () => {
   it('session list GET and SSE start are timed under their own labels', async () => {
     const { m, perfLines } = await sqlClockMonitor();
 
-    const list = await listGet(new Request('http://localhost/api/claude/sessions'));
+    const list = await listGet(new Request('http://localhost/api/sessions'));
     expect(list.status).toBe(200);
     expect((await list.json()).sessions.map((s: { id: string }) => s.id)).toContain(SID);
     expect(perfLines()).toHaveLength(1);
@@ -341,7 +341,7 @@ describe('route sections carry their journal labels', () => {
 
     // ReadableStream runs start() inside the constructor: the section is over
     // by the time the handler returns.
-    const sse = await eventsGet(new Request('http://localhost/api/claude/events?conn=perf-conn-1'));
+    const sse = await eventsGet(new Request('http://localhost/api/events?conn=perf-conn-1'));
     expect(sse.status).toBe(200);
     expect(perfLines()).toHaveLength(2);
     expect(perfLines()[1]).toMatch(/^\[perf\] SSE start [\d.]+ms$/);

@@ -74,7 +74,7 @@ describe('windowSync — one window GET at a time', () => {
     g.localStorage = { getItem: (k: string) => store.get(k) ?? null };
     try {
       const h = harness();
-      h.ws.setView(null);                                       // ClaudePanel has not read storage yet
+      h.ws.setView(null);                                       // HubPanel has not read storage yet
       h.ws.setView(transcriptViewFor(readShowToolsPreference())); // its mount effect
       await settle();
       expect(h.calls.map((c) => c.view)).toEqual(['conversation']);

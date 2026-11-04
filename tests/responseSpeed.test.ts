@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ResponseSpeedTracker } from '@/app/responseSpeed';
-import type { WorkerEvent } from '@/lib/server/claude/types';
+import type { WorkerEvent } from '@/lib/server/hub/types';
 
 const text: WorkerEvent = { type: 'assistant_text', delta: '🧠 Bonjour' };
 const usage = (tokens: number, elapsed: number): WorkerEvent => ({

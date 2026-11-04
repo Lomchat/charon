@@ -29,9 +29,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -51,7 +51,7 @@ let failMessageInserts = 0;
 function mkStream(kind = 'claude', lastSeenSeq: number | null = null) {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind, lastSeenSeq,
   }) as any;
 }
@@ -73,7 +73,7 @@ function replay(s: any, events: any[]) {
 }
 
 function rows(role?: string) {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === SID && (role == null || r.role === role))
     .sort((a: any, b: any) => a.id - b.id);
 }
@@ -113,13 +113,13 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' })
+  db.insert(schema.agentSessions).values({ id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active' })
     .onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
 
   const realInsert = db.insert.bind(db);
   vi.spyOn(db, 'insert').mockImplementation(((table: any) => {
-    if (failMessageInserts > 0 && table === schema.claudeSessionMessages) {
+    if (failMessageInserts > 0 && table === schema.sessionMessages) {
       failMessageInserts--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { values: () => ({ run: boom, onConflictDoNothing: () => ({ run: boom }) }) };
@@ -137,10 +137,10 @@ beforeEach(() => {
 
 afterEach(() => {
   failMessageInserts = 0;
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.delete(schema.claudePendingPermissions).run();
-  db.update(schema.claudeSessions).set({
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.update(schema.agentSessions).set({
     lastSeenSeq: null, pendingAssistantMessageId: null, lastStopNotifiedSeq: null, effectiveModel: null,
   }).run();
 });
@@ -260,20 +260,20 @@ describe('assistant_flushed at every hub boundary', () => {
       expect(frames().filter((f: any) => f.type === 'assistant_flushed').map((f: any) => [f.rowId, f.duplicate]))
         .toEqual([[row.id, true]]);
       expect(rows('assistant')).toHaveLength(1);
-      db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
+      db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
     }
   });
 
   it('the legacy content path (seq-less agent) announces rowId null + duplicate, or the extended row', () => {
-    db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Done.', tsMs: T0 }).run();
+    db.insert(schema.sessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Done.', tsMs: T0 }).run();
     const s = mkStream();
     const frames = spyFrames(s);
     replay(s, [text(null, 'Done.'), ev('tool_use', null, { id: 'legacy', name: 'Read', input: {} })]);
     expect(frames().filter((f: any) => f.type === 'assistant_flushed')).toEqual([
       expect.objectContaining({ rowId: null, length: 5, duplicate: true }),
     ]);
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-    const partial = Number(db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Hel', tsMs: T0 }).run().lastInsertRowid);
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+    const partial = Number(db.insert(schema.sessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Hel', tsMs: T0 }).run().lastInsertRowid);
     const s2 = mkStream();
     const frames2 = spyFrames(s2);
     replay(s2, [text(null, 'Hello'), ev('tool_use', null, { id: 'legacy2', name: 'Read', input: {} })]);

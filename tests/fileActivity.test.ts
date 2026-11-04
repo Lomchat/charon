@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // not a record.
 
 vi.mock('server-only', () => ({}));
-const F = await import('@/lib/server/claude/fileActivity');
+const F = await import('@/lib/server/hub/fileActivity');
 
 const CWD = '/srv/app';
 const at = (ms: number) => ({ vpsId: 'v1', sessionId: 's1', sessionName: 'A', at: ms });

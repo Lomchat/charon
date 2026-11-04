@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildClaudeReviewPrompt } from '@/lib/server/claude/reviewPrompt';
+import { buildClaudeReviewPrompt } from '@/lib/server/hub/reviewPrompt';
 
 describe('Claude review prompt parity', () => {
   it('keeps review read-only and findings-first', () => {

@@ -1,6 +1,6 @@
 /* Styles for components related to charon-agent
  * (LoginConsole, agent badges in DataModal, extended bootstrap banner).
- * Keeps a consistent appearance with the rest of claude.css.
+ * Keeps a consistent appearance with the rest of app.css.
  */
 
 /* ── Agent badges in the VPS list (DataModal) ───────────────────────────── */
@@ -36,7 +36,7 @@
 /* ── Sidebar v2: VPS card with clean hierarchy ──────────────────────────── */
 /* Each VPS is a "card" with header, meta, action bar, then projects inside. */
 
-.claude-sidebar .vps-card {
+.app-sidebar .vps-card {
   margin: 0 8px 14px;
   border: 1px solid color-mix(in srgb, var(--tint) 6%, transparent);
   border-radius: var(--radius-sm);
@@ -44,16 +44,16 @@
   overflow: hidden;
 }
 /* When the agent isn't ok, visually flag the card */
-.claude-sidebar .vps-card.agent-missing { border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
-.claude-sidebar .vps-card.agent-error   { border-color: color-mix(in srgb, var(--danger-strong) 40%, transparent); }
+.app-sidebar .vps-card.agent-missing { border-color: color-mix(in srgb, var(--warning) 35%, transparent); }
+.app-sidebar .vps-card.agent-error   { border-color: color-mix(in srgb, var(--danger-strong) 40%, transparent); }
 
 /* Override: the head becomes more compact, no dashed border-bottom */
-.claude-sidebar .vps-card .vps-head {
+.app-sidebar .vps-card .vps-head {
   padding: 7px 11px 5px;
   border-bottom: 0;
   gap: 7px;
 }
-.claude-sidebar .vps-card.collapsed .vps-head {
+.app-sidebar .vps-card.collapsed .vps-head {
   border-bottom: 0;
   padding-bottom: 7px;
 }
@@ -80,7 +80,7 @@
 }
 
 /* Meta line: user@ip · agent v0.1.0 — one step smaller, gray */
-.claude-sidebar .vps-meta {
+.app-sidebar .vps-meta {
   padding: 0 11px 5px 30px;  /* indented to align with the name (after caret+glyph) */
   font-family: var(--mono, 'JetBrains Mono', monospace);
   font-size: 10px;
@@ -100,7 +100,7 @@
 .vps-agent-text.agent-unknown { color: color-mix(in srgb, var(--term-fg) 50%, transparent); }
 
 /* Actions line: install / login / scan — readable text buttons */
-.claude-sidebar .vps-actions {
+.app-sidebar .vps-actions {
   padding: 4px 11px 9px 30px;
   display: flex;
   gap: 6px;
@@ -181,22 +181,22 @@
 }
 
 /* Override the global section margin for the card */
-.claude-sidebar .vps-section.vps-card {
+.app-sidebar .vps-section.vps-card {
   margin-bottom: 14px;
 }
 
 /* Indent proj-blocks inside the card to show hierarchy */
-.claude-sidebar .vps-card .proj-block {
+.app-sidebar .vps-card .proj-block {
   margin: 4px 0;
   padding-left: 0;
   position: relative;
 }
-.claude-sidebar .vps-card .proj-head {
+.app-sidebar .vps-card .proj-head {
   padding: 4px 11px 4px 20px;
   font-size: 11.5px;
 }
 /* Vertical indicator on the left for each project (tree-view hint) */
-.claude-sidebar .vps-card .proj-block::before {
+.app-sidebar .vps-card .proj-block::before {
   content: '';
   position: absolute;
   left: 17px;
@@ -205,14 +205,14 @@
   width: 1px;
   background: color-mix(in srgb, var(--tint) 8%, transparent);
 }
-.claude-sidebar .vps-card .session-row {
+.app-sidebar .vps-card .session-row {
   margin-left: 28px;
   width: calc(100% - 36px);
 }
 
 /* The last proj-block (before the end of the card) — no bottom border on the
  * last action-bar */
-.claude-sidebar .vps-card .proj-block.empty {
+.app-sidebar .vps-card .proj-block.empty {
   padding: 6px 11px 8px 20px;
 }
 
@@ -598,7 +598,7 @@
   border-bottom: 1px solid var(--border);
   align-items: center;       /* prevents flex from stretching the dots */
 }
-/* The .ctx-color-dot elements are <button>s in .session-ctx-menu — claude.css
+/* The .ctx-color-dot elements are <button>s in .session-ctx-menu — app.css
  * applies padding/text-align by default; we override everything to get
  * perfect circles. */
 .session-ctx-menu .ctx-color-dot {
@@ -658,14 +658,14 @@
 }
 
 /* ── ShellTerminal: fullscreen in the main panel ────────────────────────── */
-.claude-main.shell-main {
+.app-main.shell-main {
   display: flex;
   flex-direction: column;
   padding: 0;
   background: var(--term-bg);
 }
 /* One slot per kept-mounted shell inside the persistent shell layer. Only
-   the selected slot is visible (display toggled inline in ClaudePanel —
+   the selected slot is visible (display toggled inline in HubPanel —
    flex when selected, none otherwise); the others stay mounted but hidden
    so their WebSocket + xterm survive a session switch. `display` is owned
    by the inline style, so it's intentionally not set here. See §14 gotcha 37. */
@@ -1145,5 +1145,5 @@
 
 /* Health chips row (app/vpsHealth.tsx) — full-width second line of the VPS
    card header (the header is flex-wrap). Indented under the name, past the
-   drag handle + caret. Chip/fix visuals live in claude.css (.vh-*). */
+   drag handle + caret. Chip/fix visuals live in app.css (.vh-*). */
 .dv-health { flex-basis: 100%; display: flex; align-items: center; padding: 2px 0 0 30px; }

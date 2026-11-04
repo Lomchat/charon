@@ -5,7 +5,7 @@ import type { SessionAttachment } from '@/lib/types/api';
 
 // Session attachments — client state for the drag & drop / paperclip feature.
 // ─────────────────────────────────────────────────────────────────────────────
-// Owned by ClaudeSessionView because TWO consumers need it and they must agree:
+// Owned by SessionView because TWO consumers need it and they must agree:
 //   - <ChatInputBar> appends a path to the message whenever an upload lands,
 //     and gates the UI while one is in flight.
 //   - <ToolPanel> "files" tab lists them for re-download / re-insert.

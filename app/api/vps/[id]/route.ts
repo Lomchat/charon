@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
-import { claudeSessions, db, vps } from '@/lib/db';
+import { agentSessions, db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
@@ -85,7 +85,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     const { shells: shellsTable } = await import('@/lib/db');
     const { getAgentClientForVpsId } = await import('@/lib/server/agent/AgentClientPool');
     const shellRows = db.select().from(shellsTable).where(eq(shellsTable.vpsId, id)).all();
-    const sessRows = db.select().from(claudeSessions).where(eq(claudeSessions.vpsId, id)).all();
+    const sessRows = db.select().from(agentSessions).where(eq(agentSessions.vpsId, id)).all();
     if (shellRows.length || sessRows.length) {
       const client = getAgentClientForVpsId(id);
       const kills = [

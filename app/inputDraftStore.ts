@@ -6,12 +6,12 @@ import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore }
 //
 // Persistence is deliberately ephemeral:
 //   - Module-level Map → survives component re-mounts triggered by
-//     `<ClaudeSessionView key={selectedId}>` (session switch).
+//     `<SessionView key={selectedId}>` (session switch).
 //   - No localStorage / sessionStorage → an F5 wipes everything. This is the
 //     expected behavior (per user request): we keep the draft while
 //     navigating between sessions, no more.
 //
-// Consumed by `app/ClaudeSessionView.tsx` via the `useInputDraft` hook, and by
+// Consumed by `app/SessionView.tsx` via the `useInputDraft` hook, and by
 // the sidebar's cards via `useHasDraft`.
 
 const drafts = new Map<string, string>();

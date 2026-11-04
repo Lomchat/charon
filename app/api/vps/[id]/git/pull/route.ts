@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitPull } from '@/lib/server/claude/git';
+import { gitPull } from '@/lib/server/hub/git';
 
 // POST /api/vps/[id]/git/pull  { cwd }
 // `git pull --rebase --autostash` — the recovery path offered when a push is

@@ -89,8 +89,8 @@ export default function LspPicker(props: Props) {
   };
 
   return createPortal(
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
-      <div className="claude-modal lsp-picker" role="dialog" aria-modal="true" aria-label={props.title}
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
+      <div className="app-modal lsp-picker" role="dialog" aria-modal="true" aria-label={props.title}
         onKeyDown={onKey}>
         <div className="lp-head">
           <span className="lp-title">{props.title}</span>

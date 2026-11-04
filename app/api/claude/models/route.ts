@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { getModelsAndEfforts, refreshModelsIfStale } from '@/lib/server/claude/modelSync';
+import { getModelsAndEfforts, refreshModelsIfStale } from '@/lib/server/hub/modelSync';
 
 // GET /api/claude/models — short aliases plus the cached GET /v1/models
 // catalog, in the API's release order. No local versioned models or CLI

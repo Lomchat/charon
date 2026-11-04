@@ -1,5 +1,5 @@
 // TypeScript mirror of the agent's JSON-RPC protocol (agent/charon_agent/protocol.py).
-// Events are aligned with lib/server/claude/types.ts (BridgeEvent) — the wire
+// Events are aligned with lib/server/hub/types.ts (BridgeEvent) — the wire
 // type differs slightly: we have an "event" string instead of a "type".
 import type {
   ClaudeEffort, ClaudeMode, CodexEffort as ProviderCodexEffort,
@@ -215,8 +215,8 @@ export type AgentEvent = (
   // most). Useful when the configured `model` is an alias ('opus' → real id)
   // or when fallback_model kicked in. Decouples reality from what the LLM
   // claims about itself in text (which is unreliable — training cutoff).
-  // Persisted: claude_sessions.effective_model + stamped per assistant row
-  // (claude_session_messages.model, migration 0020).
+  // Persisted: agent_sessions.effective_model + stamped per assistant row
+  // (session_messages.model, migration 0020).
   | { event: 'effective_model'; session_id: string; model: string }
   // bg_task (agent >= 0.13.0): normalized background-task lifecycle, from the
   // SDK's first-class TaskStartedMessage / TaskUpdatedMessage /

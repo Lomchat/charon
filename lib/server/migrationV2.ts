@@ -1,6 +1,6 @@
 import 'server-only';
 import { eq } from 'drizzle-orm';
-import { db, claudeSessions, claudeSessionLogs, claudeSettings } from '@/lib/db';
+import { db, agentSessions, sessionLogs, appSettings } from '@/lib/db';
 
 const MARKER_KEY = 'migration.v2_agent_done';
 
@@ -15,30 +15,30 @@ const MARKER_KEY = 'migration.v2_agent_done';
  * Idempotent: a setting marker acts as the "already done" flag.
  */
 export function migrationV2IfNeeded(): void {
-  const [marker] = db.select().from(claudeSettings)
-    .where(eq(claudeSettings.key, MARKER_KEY)).all();
+  const [marker] = db.select().from(appSettings)
+    .where(eq(appSettings.key, MARKER_KEY)).all();
   if (marker) return;
 
   let affected = 0;
   try {
-    const r = db.update(claudeSessions)
+    const r = db.update(agentSessions)
       .set({ status: 'sleeping' })
-      .where(eq(claudeSessions.status, 'active'))
+      .where(eq(agentSessions.status, 'active'))
       .run();
     affected = (r as { changes?: number }).changes ?? 0;
   } catch (e: any) {
-    db.insert(claudeSessionLogs).values({
+    db.insert(sessionLogs).values({
       sessionId: null, level: 'warn', event: 'migration_v2',
       detail: JSON.stringify({ err: String(e?.message ?? e) }),
     }).run();
     return;
   }
 
-  db.insert(claudeSettings).values({
+  db.insert(appSettings).values({
     key: MARKER_KEY,
     value: String(Math.floor(Date.now() / 1000)),
   }).run();
-  db.insert(claudeSessionLogs).values({
+  db.insert(sessionLogs).values({
     sessionId: null, level: 'info', event: 'migration_v2',
     detail: JSON.stringify({ moved_to_sleeping: affected }),
   }).run();

@@ -5,7 +5,7 @@ import {
 import type { SessionWindowResponse } from '@/lib/types/api';
 import type { TranscriptView } from '@/lib/transcriptRows';
 
-// The tool-calls tab counter (useClaudeSessionStream § toolCallCount): the
+// The tool-calls tab counter (useSessionStream § toolCallCount): the
 // window's `toolCallCount` + the live tool_use ids since — it grows between
 // window answers (no poll refreshes it any more).
 const E = 1_700_000_000_000;

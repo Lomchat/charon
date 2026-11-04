@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
-import { fileToolCall, rootAndPath } from '@/lib/server/claude/fileToolsRpc';
+import { fileToolCall, rootAndPath } from '@/lib/server/hub/fileToolsRpc';
 
 export const dynamic = 'force-dynamic';
 

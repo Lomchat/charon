@@ -13,7 +13,7 @@ vi.mock('@/lib/db', () => ({
     update: () => ({ set: mocks.set }),
   },
 }));
-vi.mock('@/lib/server/claude/sshExec', () => ({ sshExec: mocks.ssh }));
+vi.mock('@/lib/server/hub/sshExec', () => ({ sshExec: mocks.ssh }));
 vi.mock('@/lib/server/agent/claudeLoginCheck', () => ({ readClaudeAuthStatus: mocks.status }));
 vi.mock('@/lib/server/agent/loginSession', () => ({ stopLoginSession: mocks.stopLogin }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({ emitGlobalVpsStatus: mocks.emit }));

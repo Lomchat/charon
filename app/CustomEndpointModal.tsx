@@ -136,8 +136,8 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
   const showModelList = modelInputMode === 'list' && modelChoices.length > 0;
   const title = sessionId ? 'Custom endpoint' : editingId ? 'Edit endpoint' : 'New endpoint';
   const testState = busy === 'test' ? 'Testing…' : check?.ok ? 'API verified' : check ? 'Test failed' : 'Not tested';
-  return createPortal(<div className="claude-modal-bg endpoint-modal-bg" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-    <div className="claude-modal endpoint-modal" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="endpoint-modal-title" aria-busy={!!busy}>
+  return createPortal(<div className="app-modal-bg endpoint-modal-bg" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <div className="app-modal endpoint-modal" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="endpoint-modal-title" aria-busy={!!busy}>
       <div className="endpoint-modal-head"><span className="endpoint-card-icon"><IconPlug /></span><div><h2 id="endpoint-modal-title">{title}</h2><p className="set-meta">{sessionId ? `Use your own model in this ${providerName(engine)} session.` : editingId ? 'Update this saved model connection.' : 'Connect a self-hosted model or another provider.'}</p></div><button type="button" className="endpoint-btn is-icon" onClick={onClose} disabled={!!busy} aria-label="Close endpoint dialog">×</button></div>
       <div className="endpoint-modal-body">
         {sessionId && <div className="endpoint-source"><label>Connection<PickerControl aria-label="Connection" value={savedId} disabled={!!busy} onValueChange={chooseSaved}>
@@ -197,5 +197,5 @@ export default function CustomEndpointModal({ sessionId, engine: initialEngine, 
       </div>
       <div className="endpoint-modal-foot"><p className="set-meta">{sessionId ? 'Applies to this session after its current work finishes.' : 'Existing sessions keep their current connection.'}</p><div className="modal-actions"><button type="button" onClick={onClose} disabled={!!busy}>Cancel</button><button type="button" className="primary" onClick={apply} disabled={!!busy || !valid || (!!sessionId && !!result?.check && !result.ok)}>{busy === 'save' ? 'Saving…' : sessionId ? 'Apply to this session' : editingId ? 'Save changes' : 'Add endpoint'}</button></div></div>
     </div>
-  </div>, document.querySelector('.claude-root') || document.body);
+  </div>, document.querySelector('.app-root') || document.body);
 }

@@ -36,8 +36,8 @@ vi.mock('@/lib/server/install/installSession', () => ({
   subscribeInstallBus: () => () => {},
   listInstalls: () => bus.installs,
 }));
-vi.mock('@/lib/server/claude/modelNotices', async (importOriginal) => {
-  const real = await importOriginal<typeof import('@/lib/server/claude/modelNotices')>();
+vi.mock('@/lib/server/hub/modelNotices', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/server/hub/modelNotices')>();
   return {
     ...real,
     getModelNotices: () => {
@@ -94,7 +94,7 @@ async function readFrames(
 
 const hasHeartbeat = (frames: Frame[]) => frames.some((f) => f.type === 'heartbeat');
 
-describe('GET /api/claude/events (legacy body)', () => {
+describe('GET /api/events (legacy body)', () => {
   let db: any;
   let schema: any;
   let GET: (req: Request) => Promise<Response>;
@@ -106,20 +106,20 @@ describe('GET /api/claude/events (legacy body)', () => {
     const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
     migrate(db, { migrationsFolder: './drizzle' });
     db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
-    ({ GET } = await import('@/app/api/claude/events/route'));
+    ({ GET } = await import('@/app/api/events/route'));
   });
 
   beforeEach(() => {
     bus.streams.clear();
-    db.delete(schema.claudePendingPermissions).run();
-    db.delete(schema.claudePendingQuestions).run();
-    db.delete(schema.claudeSessions).run();
+    db.delete(schema.sessionPendingPermissions).run();
+    db.delete(schema.sessionPendingQuestions).run();
+    db.delete(schema.agentSessions).run();
     db.delete(schema.vps).run();
   });
 
   const open = (conn: string, extra = '') => {
     const ac = new AbortController();
-    const res = GET(new Request(`http://localhost/api/claude/events?conn=${conn}&focus=S1&focusSeq=1${extra}`, {
+    const res = GET(new Request(`http://localhost/api/events?conn=${conn}&focus=S1&focusSeq=1${extra}`, {
       signal: ac.signal,
     }));
     return { ac, res };
@@ -130,17 +130,17 @@ describe('GET /api/claude/events (legacy body)', () => {
       { id: 'vps-g1', name: 'g1', ip: '127.0.0.1', sshUser: 'root', agentStatus: 'ok', agentVersion: '0.103.0',
         agentPyzSha: 'abc', cursorAvailable: 1, codexLoggedIn: 1 },
     ]).run();
-    const session = (id: string, createdAt: number, extra: Record<string, unknown>) => db.insert(schema.claudeSessions)
+    const session = (id: string, createdAt: number, extra: Record<string, unknown>) => db.insert(schema.agentSessions)
       .values({ id, vpsId: 'vps-g1', cwd: '/tmp', name: id, status: 'active', createdAt, ...extra }).run();
     session('G-a', 1, { unreadStop: 1 });
     session('G-b', 2, { status: 'sleeping' });
     session('G-c', 3, { status: 'background' });
     session('G-arch', 4, { archived: 1, unreadStop: 1 });
     bus.streams.set('G-c', { status: 'background', runningBgTaskCount: () => 1 });
-    db.insert(schema.claudePendingPermissions).values([
+    db.insert(schema.sessionPendingPermissions).values([
       { id: 'gp-1', sessionId: 'G-a', toolName: 'Bash', toolInput: '{"command":"ls"}', expiresAt: 4_000_000_000 },
     ]).run();
-    db.insert(schema.claudePendingQuestions).values([
+    db.insert(schema.sessionPendingQuestions).values([
       { id: 'gq-1', sessionId: 'G-a', kind: 'question', payload: '[{"question":"go?","options":[]}]', createdAt: 100 },
       { id: 'gq-2', sessionId: 'G-c', kind: 'async_question', payload: '[{"question":"later?","options":[]}]', createdAt: 101 },
       { id: 'gx-1', sessionId: 'G-b', kind: 'exit_plan', payload: '{"plan":"the plan"}', createdAt: 102 },
@@ -226,7 +226,7 @@ describe('GET /api/claude/events (legacy body)', () => {
       id: 'vps-a', name: 'a', ip: '127.0.0.1', sshUser: 'root', agentStatus: 'ok',
       cursorAvailable: 1, cursorSdkVersion: '1.2.3', cursorLoggedIn: 1, codexLoggedIn: 0,
     }).run();
-    const session = (id: string, extra: Record<string, unknown>) => db.insert(schema.claudeSessions).values({
+    const session = (id: string, extra: Record<string, unknown>) => db.insert(schema.agentSessions).values({
       id, vpsId: 'vps-a', cwd: '/tmp', name: id, status: 'active', ...extra,
     }).run();
     session('S-live', { unreadStop: 1 });
@@ -237,11 +237,11 @@ describe('GET /api/claude/events (legacy body)', () => {
     bus.streams.set('S-read', { status: 'thinking', runningBgTaskCount: () => 0 });
     bus.streams.set('S-arch', { status: 'sleeping', runningBgTaskCount: () => 3 });
 
-    db.insert(schema.claudePendingPermissions).values([
+    db.insert(schema.sessionPendingPermissions).values([
       { id: 'perm-1', sessionId: 'S-live', toolName: 'Bash', toolInput: '{"command":"ls"}' },
       { id: 'perm-done', sessionId: 'S-live', toolName: 'Bash', toolInput: '{}', status: 'allowed' },
     ]).run();
-    db.insert(schema.claudePendingQuestions).values([
+    db.insert(schema.sessionPendingQuestions).values([
       { id: 'q-async', sessionId: 'S-live', kind: 'async_question', payload: '[{"question":"why?"}]' },
       { id: 'q-block', sessionId: 'S-read', kind: 'question', payload: '[{"question":"ok?"}]' },
       { id: 'plan-1', sessionId: 'S-bg', kind: 'exit_plan', payload: '{"plan":"do it"}' },
@@ -293,7 +293,7 @@ describe('GET /api/claude/events (legacy body)', () => {
     // Next aborts the signal first and never cancels the destroyed body.
     const ac = new AbortController();
     ac.abort();
-    const res = await GET(new Request('http://localhost/api/claude/events?conn=route-aborted-conn&focus=SX&focusSeq=1&visible=1', {
+    const res = await GET(new Request('http://localhost/api/events?conn=route-aborted-conn&focus=SX&focusSeq=1&visible=1', {
       signal: ac.signal,
     }));
     const reader = res.body!.getReader();
@@ -313,7 +313,7 @@ describe('GET /api/claude/events (legacy body)', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       const ac = new AbortController();
-      const res = await GET(new Request('http://localhost/api/claude/events?conn=route-abort-mid-conn&focus=SY&focusSeq=1', {
+      const res = await GET(new Request('http://localhost/api/events?conn=route-abort-mid-conn&focus=SY&focusSeq=1', {
         signal: ac.signal,
       }));
       expect(focusCountFor('SY')).toBe(1);
@@ -332,7 +332,7 @@ describe('GET /api/claude/events (legacy body)', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const res = await GET(new Request('http://localhost/api/claude/events?conn=route-throw-conn&focus=SZ&focusSeq=1'));
+      const res = await GET(new Request('http://localhost/api/events?conn=route-throw-conn&focus=SZ&focusSeq=1'));
       const reader = res.body!.getReader();
       const rest = await readFrames(reader, () => false);
       expect(rest.done).toBe(true);
@@ -350,9 +350,9 @@ describe('GET /api/claude/events (legacy body)', () => {
 
   it('a pending gate larger than 512 KiB still ends in pending_snapshot + live (snapshot exempt from backpressure)', async () => {
     db.insert(schema.vps).values({ id: 'vps-big', name: 'big', ip: '127.0.0.1', sshUser: 'root' }).run();
-    db.insert(schema.claudeSessions).values({ id: 'S-big', vpsId: 'vps-big', cwd: '/tmp', name: 'b', status: 'active' }).run();
+    db.insert(schema.agentSessions).values({ id: 'S-big', vpsId: 'vps-big', cwd: '/tmp', name: 'b', status: 'active' }).run();
     const content = 'x'.repeat(600_000);
-    db.insert(schema.claudePendingPermissions).values([
+    db.insert(schema.sessionPendingPermissions).values([
       { id: 'perm-big', sessionId: 'S-big', toolName: 'Write', toolInput: JSON.stringify({ file_path: '/a', content }) },
       { id: 'perm-small', sessionId: 'S-big', toolName: 'Bash', toolInput: '{"command":"ls"}' },
     ]).run();

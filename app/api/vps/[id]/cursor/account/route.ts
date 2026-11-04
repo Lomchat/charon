@@ -5,7 +5,7 @@ import { requireApiSession } from '@/lib/server/session';
 import { getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import { providerLoginPatch } from '@/lib/sessionCapabilities';
-import { invalidateCursorModels } from '@/lib/server/claude/cursorModels';
+import { invalidateCursorModels } from '@/lib/server/hub/cursorModels';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

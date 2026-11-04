@@ -2,9 +2,9 @@ import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
-import { FILE_STREAM_AGENT_VERSION, openRemoteFileStream } from '@/lib/server/claude/fsByteStream';
-import { verifyLivePreviewToken } from '@/lib/server/claude/livePreviewToken';
-import { livePreviewKey, livePreviewSessionValid } from '@/lib/server/claude/livePreviewAuth';
+import { FILE_STREAM_AGENT_VERSION, openRemoteFileStream } from '@/lib/server/hub/fsByteStream';
+import { verifyLivePreviewToken } from '@/lib/server/hub/livePreviewToken';
+import { livePreviewKey, livePreviewSessionValid } from '@/lib/server/hub/livePreviewAuth';
 import {
   LIVE_PREVIEW_SANDBOX, livePreviewExt, livePreviewMimeFor, parseLivePreviewPath,
 } from '@/lib/livePreview';

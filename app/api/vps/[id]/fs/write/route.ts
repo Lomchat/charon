@@ -4,7 +4,7 @@ import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
-import { invalidateGitStatus } from '@/lib/server/claude/git';
+import { invalidateGitStatus } from '@/lib/server/hub/git';
 import type { FsWriteBody, FsWriteResponse } from '@/lib/types/api';
 
 // POST /api/vps/[id]/fs/write  { root, path, content, expectedSha256? }

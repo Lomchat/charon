@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { desc, eq } from 'drizzle-orm';
-import { db, vps as vpsTable, vpsPaths, claudeSessions } from '@/lib/db';
+import { db, vps as vpsTable, vpsPaths, agentSessions } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { ScannedCodexSession } from '@/lib/types/api';
@@ -36,9 +36,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const chosen = url.searchParams.get('cwd');
   const after = url.searchParams.get('after');
   const folders = [...new Set([
-    ...db.select({ cwd: claudeSessions.cwd }).from(claudeSessions)
-      .where(eq(claudeSessions.vpsId, id))
-      .orderBy(desc(claudeSessions.lastUsedAt), desc(claudeSessions.createdAt))
+    ...db.select({ cwd: agentSessions.cwd }).from(agentSessions)
+      .where(eq(agentSessions.vpsId, id))
+      .orderBy(desc(agentSessions.lastUsedAt), desc(agentSessions.createdAt))
       .all().map((r) => r.cwd),
     ...db.select({ path: vpsPaths.path }).from(vpsPaths)
       .where(eq(vpsPaths.vpsId, id)).all().map((r) => r.path),
@@ -77,8 +77,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // Hide what Charon already drives: re-importing a live session would create a
   // second row pointing at one conversation, and both would fight to resume it.
   const known = new Set(
-    db.select({ nativeId: claudeSessions.claudeSessionId })
-      .from(claudeSessions).where(eq(claudeSessions.vpsId, id)).all()
+    db.select({ nativeId: agentSessions.nativeSessionId })
+      .from(agentSessions).where(eq(agentSessions.vpsId, id)).all()
       .map((r) => r.nativeId).filter(Boolean) as string[],
   );
 

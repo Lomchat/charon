@@ -22,10 +22,10 @@ vi.mock('@/lib/server/agent/shellNotify', () => ({
   markShellRead: mocks.markShellRead,
 }));
 
-import { POST } from '@/app/api/claude/focus/route';
+import { POST } from '@/app/api/focus/route';
 
 function focusRequest(sessionId: string | null, visible = true, extra: Record<string, unknown> = {}) {
-  return new Request('http://localhost/api/claude/focus', {
+  return new Request('http://localhost/api/focus', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -39,14 +39,14 @@ function focusRequest(sessionId: string | null, visible = true, extra: Record<st
 }
 
 function attentionRequest(body: Record<string, unknown> = {}) {
-  return new Request('http://localhost/api/claude/focus', {
+  return new Request('http://localhost/api/focus', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ conn: 'connection-id', kind: 'attention', ...body }),
   });
 }
 
-describe('POST /api/claude/focus read acknowledgement', () => {
+describe('POST /api/focus read acknowledgement', () => {
   beforeEach(() => {
     mocks.setConnectionFocus.mockReset();
     mocks.noteConnectionAttention.mockReset();
@@ -142,7 +142,7 @@ describe('POST /api/claude/focus read acknowledgement', () => {
   });
 });
 
-describe('POST /api/claude/focus on a shell (§14.47 twin)', () => {
+describe('POST /api/focus on a shell (§14.47 twin)', () => {
   beforeEach(() => {
     mocks.setConnectionFocus.mockReset();
     mocks.noteConnectionAttention.mockReset();
@@ -166,7 +166,7 @@ describe('POST /api/claude/focus on a shell (§14.47 twin)', () => {
   });
 });
 
-describe('POST /api/claude/focus kind:attention', () => {
+describe('POST /api/focus kind:attention', () => {
   beforeEach(() => {
     mocks.setConnectionFocus.mockReset();
     mocks.noteConnectionAttention.mockReset();

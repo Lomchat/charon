@@ -38,7 +38,7 @@ function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionI
       try {
         let next: string;
         if (nativeAgentId) {
-          const response = await fetch(`/api/claude/sessions/${sessionId}/subagents?agent=${encodeURIComponent(nativeAgentId)}`, { signal: controller.signal });
+          const response = await fetch(`/api/sessions/${sessionId}/subagents?agent=${encodeURIComponent(nativeAgentId)}`, { signal: controller.signal });
           const result = await response.json();
           if (!response.ok || result.ok === false) throw new Error(result.error || text.outputError);
           next = subagentOutputText(Array.isArray(result.messages) ? result.messages : []);

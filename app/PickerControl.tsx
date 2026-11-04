@@ -22,7 +22,7 @@ type Choice = { value: string; label: ReactNode; title?: string; disabled?: bool
  * re-reading a sentence per row. Shared markup, so a model catalog and a theme
  * list cannot drift apart.
  *
- * Subtitles are HIDDEN in the collapsed trigger (`claude.css § .picker-line`)
+ * Subtitles are HIDDEN in the collapsed trigger (`app.css § .picker-line`)
  * — one line of room there, and it belongs to the name.
  */
 export function PickerOption(
@@ -276,6 +276,6 @@ export default function PickerControl({ value, onValueChange, children, presenta
       }}>
       <span>{selected?.label ?? String(value || 'Select…')}</span><span className="picker-chevron" aria-hidden="true">⌄</span>
     </button>
-    {open && createPortal(list, trigger.current?.closest('.claude-root') ?? document.body)}
+    {open && createPortal(list, trigger.current?.closest('.app-root') ?? document.body)}
   </>;
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// GET /api/claude/sessions/[id]/probe (sync refonte C12): the transcript's
+// GET /api/sessions/[id]/probe (sync refonte C12): the transcript's
 // O(1), rev-gated consistency check. It pushes a heartbeat to the caller's
 // connection BEFORE reading the revision (id ≥ the response's rev), then
 // answers from point lookups and one bounded range — never a window query, a
@@ -25,7 +25,7 @@ const OTHER = 'b2'.repeat(16);
 
 let db: any;
 let schema: any;
-let GET: typeof import('@/app/api/claude/sessions/[id]/probe/route').GET;
+let GET: typeof import('@/app/api/sessions/[id]/probe/route').GET;
 
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
@@ -36,16 +36,16 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS, name: 'p', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   for (const id of [SID, OTHER]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
   }
-  ({ GET } = await import('@/app/api/claude/sessions/[id]/probe/route'));
+  ({ GET } = await import('@/app/api/sessions/[id]/probe/route'));
 });
 
 const unregs: Array<() => void> = [];
 beforeEach(() => {
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudePendingPermissions).run();
-  db.delete(schema.claudePendingQuestions).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.delete(schema.sessionPendingQuestions).run();
 });
 afterEach(() => { for (const u of unregs.splice(0)) u(); });
 
@@ -68,11 +68,11 @@ function conn(connId: string, focus: string | null) {
 
 function row(role: string, content: unknown, sessionId = SID): number {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
-  return Number(db.insert(schema.claudeSessionMessages).values({ sessionId, role, content: text }).run().lastInsertRowid);
+  return Number(db.insert(schema.sessionMessages).values({ sessionId, role, content: text }).run().lastInsertRowid);
 }
 
 async function probe(query: string, id = SID) {
-  const res = await GET(new Request(`http://localhost/api/claude/sessions/${id}/probe?${query}`),
+  const res = await GET(new Request(`http://localhost/api/sessions/${id}/probe?${query}`),
     { params: Promise.resolve({ id }) });
   return { status: res.status, body: await res.json() };
 }
@@ -141,7 +141,7 @@ describe('probe', () => {
     const r = (await probe('afterId=0')).body;
     expect(r.newRows).toEqual(ids.slice(0, 50));
     expect(r.newRowsTruncated).toBe(true);
-    db.delete(schema.claudeSessionMessages).run();
+    db.delete(schema.sessionMessages).run();
     for (let i = 0; i < 210; i++) row('tool_use', { type: 'tool_use', id: `t${i}` });
     const conv = (await probe('afterId=0&view=conversation')).body;
     expect(conv.newRows).toEqual([]);
@@ -149,12 +149,12 @@ describe('probe', () => {
   });
 
   it('pendingIds = every pending gate of this session (all kinds)', async () => {
-    db.insert(schema.claudePendingPermissions).values([
+    db.insert(schema.sessionPendingPermissions).values([
       { id: 'p-1', sessionId: SID, toolName: 'Bash', toolInput: '{}' },
       { id: 'p-done', sessionId: SID, toolName: 'Bash', toolInput: '{}', status: 'allowed' },
       { id: 'p-other', sessionId: OTHER, toolName: 'Bash', toolInput: '{}' },
     ]).run();
-    db.insert(schema.claudePendingQuestions).values([
+    db.insert(schema.sessionPendingQuestions).values([
       { id: 'q-1', sessionId: SID, kind: 'question', payload: '[]' },
       { id: 'q-async', sessionId: SID, kind: 'async_question', payload: '[]' },
       { id: 'x-1', sessionId: SID, kind: 'exit_plan', payload: '{}' },

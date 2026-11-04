@@ -3,7 +3,7 @@ import { displayVersion } from '@/lib/version';
 import {
   formatUpdateSummary, formatUpdateAnnouncement, recordFailure, clearFailure,
   type FailureLedger,
-} from '@/lib/server/claude/updateNotice';
+} from '@/lib/server/hub/updateNotice';
 
 // The fleet auto-update notification is the most frequent thing Charon says on
 // Telegram (four staleness axes × a near-daily release cadence). What is

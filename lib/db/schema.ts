@@ -162,9 +162,9 @@ export const vpsPaths = sqliteTable('vps_paths', {
   uniqueIndex('uq_vps_paths_vps_id_path').on(t.vpsId, t.path),
 ]);
 
-export const claudeSessions = sqliteTable('claude_sessions', {
+export const agentSessions = sqliteTable('agent_sessions', {
   id: text('id').primaryKey(),
-  claudeSessionId: text('claude_session_id'),
+  nativeSessionId: text('native_session_id'),
   vpsId: text('vps_id').notNull().references(() => vps.id, { onDelete: 'cascade' }),
   // Sidebar order INSIDE a VPS. 0 for every pre-existing row, which sorts
   // them by createdAt exactly as before — the list only changes once
@@ -183,7 +183,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // Agent-type discriminator: 'claude' (default) | 'codex'. Determines which
   // backend drives the session (ClaudeSDKClient vs the Codex app-server via
   // openai-codex) and how the hub resolves config/model/effort/mode + which
-  // logo the sidebar paints. For a Codex session, claudeSessionId holds the
+  // logo the sidebar paints. For a Codex session, nativeSessionId holds the
   // Codex THREAD id (the resume handle), permissionMode holds a Codex sandbox
   // mode ('read-only' | 'workspace-write' | 'accept-all'), effort is a Codex
   // reasoning-effort, model is a Codex model id, and fallbackModel is unused
@@ -208,7 +208,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // the sidebar can paint a green "finished — unread" glow that SURVIVES
   // reloads and is shared across devices (DB is the source of truth, not a
   // per-device localStorage flag). Cleared back to 0 when the user opens /
-  // focuses the session (POST /api/claude/focus → markSessionRead), live across
+  // focuses the session (POST /api/focus → markSessionRead), live across
   // tabs via the `session_unread` SSE event. Independent of
   // lastStopNotifiedSeq (which dedups PUSH notifications) — this one is a
   // passive in-app cue, only for Claude sessions. cf. CLAUDE.md §14.47.
@@ -217,7 +217,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // replayed stop finalize the right row after a hub restart.
   pendingAssistantMessageId: integer('pending_assistant_message_id'),
   // Per-session Claude model / fallback / effort. All three NULL by default
-  // → use the global default from claude_settings; if the global default is
+  // → use the global default from app_settings; if the global default is
   // also NULL, the agent passes nothing to ClaudeAgentOptions and the SDK
   // applies its own default.
   // - model / fallback_model: free strings (model IDs like
@@ -234,7 +234,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // shipped first, but since agent 0.66 the same column carries Claude's
   // appended instructions, structured-output schema, skill filter and env.
   // Never return it from public session APIs (env may contain secrets).
-  codexConfig: text('codex_config'),
+  providerConfig: text('provider_config'),
   // Common workspace archive. Rows keep their complete Charon transcript but
   // disappear from normal list/resume/reconcile paths; ResumeModal restores
   // either provider. Codex also mirrors this into its native SDK archive,
@@ -246,7 +246,7 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   // kick in, the SDK may pick a default). Persisted so it survives Charon
   // restarts (the agent only re-emits on CHANGE) — hydrates
   // SessionStream.effectiveModel, which stamps each flushed assistant message
-  // row (claude_session_messages.model). NULL until the first turn on an
+  // row (session_messages.model). NULL until the first turn on an
   // agent >= 0.6.0.
   effectiveModel: text('effective_model'),
   // Durable "the user asked this session to sleep" intent (0/1). Set by
@@ -286,12 +286,12 @@ export const claudeSessions = sqliteTable('claude_sessions', {
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [
-  uniqueIndex('uq_claude_sessions_vps_id_handle').on(t.vpsId, t.handle),
+  uniqueIndex('uq_agent_sessions_vps_id_handle').on(t.vpsId, t.handle),
 ]);
 
-export const claudeSessionMessages = sqliteTable('claude_session_messages', {
+export const sessionMessages = sqliteTable('session_messages', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
   role: text('role').notNull(),
   content: text('content').notNull(),
   // Compact representation used by the looping chat API. `content` remains
@@ -359,13 +359,13 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
   // The autoincrement PK already indexes `id` alone, but the FK on
   // session_id has no automatic index in SQLite. The compound
   // (session_id, id) is the right shape for every chat read query.
-  index('idx_claude_session_messages_session_id_id').on(t.sessionId, t.id),
+  index('idx_session_messages_session_id_id').on(t.sessionId, t.id),
   // Chronological page seek — replaces a full-session JS sort per GET.
-  index('idx_claude_session_messages_session_ts_id').on(t.sessionId, t.tsMs, t.id),
+  index('idx_session_messages_session_ts_id').on(t.sessionId, t.tsMs, t.id),
   // Durable replay checks select only identities for one session.
-  index('idx_claude_session_messages_session_seq').on(t.sessionId, t.seq),
+  index('idx_session_messages_session_seq').on(t.sessionId, t.seq),
   // Latest before/after snapshot per path without parsing every JSON body.
-  index('idx_claude_session_messages_snapshot_lookup')
+  index('idx_session_messages_snapshot_lookup')
     .on(t.sessionId, t.role, t.snapshotFilePath, t.snapshotPhase, t.id),
 ]);
 
@@ -374,15 +374,15 @@ export const claudeSessionMessages = sqliteTable('claude_session_messages', {
 // ingress); `messageId` points at the status card visible in the transcript.
 export const sessionScheduledResumes = sqliteTable('session_scheduled_resumes', {
   id: text('id').primaryKey(),
-  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
-  sourceMessageId: integer('source_message_id').notNull().references(() => claudeSessionMessages.id, { onDelete: 'cascade' }),
-  messageId: integer('message_id').notNull().references(() => claudeSessionMessages.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
+  sourceMessageId: integer('source_message_id').notNull().references(() => sessionMessages.id, { onDelete: 'cascade' }),
+  messageId: integer('message_id').notNull().references(() => sessionMessages.id, { onDelete: 'cascade' }),
   content: text('content').notNull(),
   runAt: integer('run_at').notNull(),
   status: text('status').notNull().default('scheduled'),
   attempts: integer('attempts').notNull().default(0),
   clientMessageId: text('client_message_id').notNull(),
-  userMessageId: integer('user_message_id').references(() => claudeSessionMessages.id, { onDelete: 'set null' }),
+  userMessageId: integer('user_message_id').references(() => sessionMessages.id, { onDelete: 'set null' }),
   lastError: text('last_error'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`),
@@ -394,9 +394,9 @@ export const sessionScheduledResumes = sqliteTable('session_scheduled_resumes', 
   index('idx_session_scheduled_resumes_session').on(t.sessionId, t.status),
 ]);
 
-export const claudePendingPermissions = sqliteTable('claude_pending_permissions', {
+export const sessionPendingPermissions = sqliteTable('session_pending_permissions', {
   id: text('id').primaryKey(),
-  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
   toolName: text('tool_name').notNull(),
   toolInput: text('tool_input').notNull(),
   status: text('status').notNull().default('pending'),
@@ -413,16 +413,16 @@ export const claudePendingPermissions = sqliteTable('claude_pending_permissions'
   suggestions: text('suggestions'),
 }, (t) => [
   // GET session detail + SSE init snapshot filter by (session_id, status='pending').
-  index('idx_claude_pending_permissions_session_id_status').on(t.sessionId, t.status),
+  index('idx_session_pending_permissions_session_id_status').on(t.sessionId, t.status),
 ]);
 
 // Pending interactive questions (AskUserQuestion). We persist them so we can
 // re-emit them to clients that reconnect or switch tabs.
 // kind='question' = blocking question, 'async_question' = transcript form
 // (no provider deadline), 'exit_plan' = ExitPlanMode review.
-export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
+export const sessionPendingQuestions = sqliteTable('session_pending_questions', {
   id: text('id').primaryKey(),
-  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),
   payload: text('payload').notNull(),
   status: text('status').notNull().default('pending'),
@@ -433,7 +433,7 @@ export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
 }, (t) => [
   // GET session detail + SSE init snapshot filter by (session_id, status='pending').
   // `kind` is post-filtered in JS — too few distinct values to add to the index.
-  index('idx_claude_pending_questions_session_id_status').on(t.sessionId, t.status),
+  index('idx_session_pending_questions_session_id_status').on(t.sessionId, t.status),
 ]);
 
 // Files the user attached to a session (drag & drop / paperclip). Charon does
@@ -455,9 +455,9 @@ export const claudePendingQuestions = sqliteTable('claude_pending_questions', {
 // Deleting the session cascades this table; the hub blobs are swept by
 // deleteSession, the remote copy is left to the VPS (best-effort unlink only
 // on explicit per-file delete).
-export const claudeSessionAttachments = sqliteTable('claude_session_attachments', {
+export const sessionAttachments = sqliteTable('session_attachments', {
   id: text('id').primaryKey(),
-  sessionId: text('session_id').notNull().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull().references(() => agentSessions.id, { onDelete: 'cascade' }),
   // Original filename as sent by the browser, sanitised to a single path
   // segment (no separators, no leading dot-dot). Display + download name.
   name: text('name').notNull(),
@@ -476,10 +476,10 @@ export const claudeSessionAttachments = sqliteTable('claude_session_attachments'
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
 }, (t) => [
   // The Files tab lists by session, newest first.
-  index('idx_claude_session_attachments_session_id_id').on(t.sessionId, t.createdAt),
+  index('idx_session_attachments_session_id_id').on(t.sessionId, t.createdAt),
 ]);
 
-export const claudeSessionLogs = sqliteTable('claude_session_logs', {
+export const sessionLogs = sqliteTable('session_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   sessionId: text('session_id'),
   level: text('level').notNull(),
@@ -488,7 +488,7 @@ export const claudeSessionLogs = sqliteTable('claude_session_logs', {
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [
   // auto_resume + debug queries filter by sessionId then order by id.
-  index('idx_claude_session_logs_session_id_id').on(t.sessionId, t.id),
+  index('idx_session_logs_session_id_id').on(t.sessionId, t.id),
 ]);
 
 // Persistent SSH shells. The PTY (bash) lives in a DETACHED holder process
@@ -516,8 +516,8 @@ export const shells = sqliteTable('shells', {
    *  the header's session nav (§11). */
   lastActivityMs: integer('last_activity_ms'),
   /** Durable "finished, unread" marker, the shell twin of
-   *  `claudeSessions.unreadStop` (§14.47): set by a `shell_idle` nobody
-   *  attended, cleared by an attended focus (POST /api/claude/focus). */
+   *  `agentSessions.unreadStop` (§14.47): set by a `shell_idle` nobody
+   *  attended, cleared by an attended focus (POST /api/focus). */
   unreadFinish: integer('unread_finish').notNull().default(0),
 }, (t) => [
   // GET /api/vps/[id]/shells + boot reconcile filter by vpsId.
@@ -580,7 +580,7 @@ export const tabs = sqliteTable('tabs', {
   uniqueIndex('uq_tabs_vps_path_kind_ref').on(t.vpsId, t.path, t.kind, t.ref),
 ]);
 
-export const claudeSettings = sqliteTable('claude_settings', {
+export const appSettings = sqliteTable('app_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
   updatedAt: integer('updated_at').notNull().default(sql`(unixepoch())`)
@@ -588,11 +588,11 @@ export const claudeSettings = sqliteTable('claude_settings', {
 
 // Absence means inherit the global Telegram settings; browser overrides stay per endpoint.
 export const sessionNotificationSettings = sqliteTable('session_notification_settings', {
-  sessionId: text('session_id').primaryKey().references(() => claudeSessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').primaryKey().references(() => agentSessions.id, { onDelete: 'cascade' }),
   telegram: text('telegram').notNull(),
 });
 
-export const claudePushSubs = sqliteTable('claude_push_subscriptions', {
+export const pushSubs = sqliteTable('push_subscriptions', {
   preferences: text('preferences'), // Browser-local choices mirrored per endpoint for background delivery.
   id: text('id').primaryKey(),
   endpoint: text('endpoint').notNull().unique(),
@@ -608,34 +608,23 @@ export type Session = typeof sessions.$inferSelect;
 export type Vps = typeof vps.$inferSelect;
 export type VpsFolder = typeof vpsFolders.$inferSelect;
 export type VpsPath = typeof vpsPaths.$inferSelect;
-export type ClaudeSession = typeof claudeSessions.$inferSelect;
-export type ClaudeSessionMessageRow = typeof claudeSessionMessages.$inferSelect;
+export type AgentSession = typeof agentSessions.$inferSelect;
+export type AgentSessionMessageRow = typeof sessionMessages.$inferSelect;
 export type SessionScheduledResume = typeof sessionScheduledResumes.$inferSelect;
 // Internal compact-storage fields are deliberately not part of the API type:
 // route projections expose `wireContent ?? content` under the original
 // `content` key and never leak a second copy or implementation metadata.
-export type ClaudeSessionMessage = Omit<ClaudeSessionMessageRow,
+export type AgentSessionMessage = Omit<AgentSessionMessageRow,
   'wireContent' | 'snapshotFilePath' | 'snapshotPhase' |
   'snapshotToolUseId' | 'snapshotTruncated'>;
-export type ClaudePendingPermission = typeof claudePendingPermissions.$inferSelect;
-export type ClaudePendingQuestion = typeof claudePendingQuestions.$inferSelect;
-export type ClaudeSessionAttachment = typeof claudeSessionAttachments.$inferSelect;
-export type ClaudeSessionLog = typeof claudeSessionLogs.$inferSelect;
+export type AgentPendingPermission = typeof sessionPendingPermissions.$inferSelect;
+export type AgentPendingQuestion = typeof sessionPendingQuestions.$inferSelect;
+export type AgentSessionAttachment = typeof sessionAttachments.$inferSelect;
+export type AgentSessionLog = typeof sessionLogs.$inferSelect;
 export type Shell = typeof shells.$inferSelect;
 export type TabRow = typeof tabs.$inferSelect;
-export type ClaudeSetting = typeof claudeSettings.$inferSelect;
-export type ClaudePushSub = typeof claudePushSubs.$inferSelect;
-
-// Provider-neutral names for new code. The SQL/table identifiers stay
-// `claude_*` for migration and plugin compatibility; these aliases make that
-// historical storage detail stop leaking into shared Claude/Codex semantics.
-export type AgentSession = ClaudeSession;
-export type AgentSessionMessageRow = ClaudeSessionMessageRow;
-export type AgentSessionMessage = ClaudeSessionMessage;
-export type AgentPendingPermission = ClaudePendingPermission;
-export type AgentPendingQuestion = ClaudePendingQuestion;
-export type AgentSessionAttachment = ClaudeSessionAttachment;
-export type AgentSessionLog = ClaudeSessionLog;
+export type AppSetting = typeof appSettings.$inferSelect;
+export type PushSub = typeof pushSubs.$inferSelect;
 
 // Reusable connection templates; session copies remain independent. Credentials in config use AES-GCM.
 export const customEndpoints = sqliteTable('custom_endpoints', {

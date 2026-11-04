@@ -19,9 +19,9 @@ const clientMocks = vi.hoisted(() => ({ call: vi.fn(async (..._a: any[]): Promis
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/session', () => ({ requireApiSession: async () => ({ userId: 'u' }) }));
 vi.mock('@/lib/server/seed', () => ({ seedInitialData: () => {} }));
-vi.mock('@/lib/server/claude/webPush', () => pushMocks);
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/webPush', () => pushMocks);
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -46,13 +46,13 @@ let hubHooks: typeof import('@/lib/server/agent/hubHooks').hubHooks;
 let seq = 0;
 
 function row(): any {
-  return db.select().from(schema.claudeSessions).where(eq(schema.claudeSessions.id, SID)).get();
+  return db.select().from(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).get();
 }
 
 function mkStream(status = 'thinking', kind: 'claude' | 'codex' = 'claude') {
   const s = new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'v', name: 'n', status,
-    permissionMode: 'normal', claudeSessionId: null, kind,
+    permissionMode: 'normal', nativeSessionId: null, kind,
     lastStopNotifiedSeq: row()?.lastStopNotifiedSeq ?? null,
   }) as any;
   vi.spyOn(s, '_emitBroadcast').mockImplementation(((f: any) => {
@@ -93,9 +93,9 @@ beforeEach(() => {
   pushMocks.sendPushToAll.mockClear();
   telegramMocks.sendPlainToTelegram.mockClear();
   hubHooks().focusChecker = undefined;
-  db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
-  db.delete(schema.claudeSessions).where(eq(schema.claudeSessions.id, SID)).run();
-  db.insert(schema.claudeSessions).values({
+  db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
+  db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).run();
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', name: 'n', status: 'thinking', resumePending: 1,
   }).run();
 });
@@ -220,7 +220,7 @@ describe('unread gaps', () => {
   });
 
   it('U3: a user send marks the session read', async () => {
-    db.update(schema.claudeSessions).set({ unreadStop: 1, status: 'active' }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ unreadStop: 1, status: 'active' }).where(eq(schema.agentSessions.id, SID)).run();
     const { subscribeGlobalSessionEvents } = await import('@/lib/server/agent/sessionOps');
     const seen: any[] = [];
     const off = subscribeGlobalSessionEvents((e: any) => { if (e.sessionId === SID) seen.push(e); });

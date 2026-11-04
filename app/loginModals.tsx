@@ -3,7 +3,7 @@
 // Signing in is genuinely bespoke per backend — Claude runs the hosted
 // OAuth-code flow (§14.64), Codex a ChatGPT device code (§14.61) — so the
 // MODALS stay separate components. What used to be duplicated is everything
-// AROUND them: one `useState` per provider in ClaudePanel, one close handler
+// AROUND them: one `useState` per provider in HubPanel, one close handler
 // hard-coding that provider's DB columns, one `on<Provider>LoginAgent` prop
 // threaded through Sidebar, and one branch per provider at each opener.
 //

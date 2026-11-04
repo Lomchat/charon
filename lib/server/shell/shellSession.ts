@@ -43,7 +43,7 @@ export type ShellInfo = {
   color: string | null;
   startedAt: number;
   // The "exited" field is kept in the type for backward compatibility with
-  // existing consumers (ClaudePanel filters by it). With the agent-hosted
+  // existing consumers (HubPanel filters by it). With the agent-hosted
   // design the source of truth lives on the agent — `shell_list` returns
   // the live status — but we materialise the DB-only view as exited=false
   // until the user explicitly closes the shell. Truly-dead shells are
@@ -53,7 +53,7 @@ export type ShellInfo = {
   // Live activity status fed by the agent's `shell_status` busy/active
   // events (agent >= 0.9.0) over the global SSE bus — NOT persisted in DB
   // (the row only knows the shell EXISTS, not whether it's streaming). The
-  // DB-backed producers below leave it undefined; ClaudePanel fills it from
+  // DB-backed producers below leave it undefined; HubPanel fills it from
   // the bus. undefined = unknown → treat as idle/at-prompt. 'busy' = the PTY
   // is streaming output → the UI paints the tab/dot like a "thinking" Claude
   // session (blue). See §14 gotcha 42.

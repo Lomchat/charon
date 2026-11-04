@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { bootstrapVps } from '@/lib/server/claude/bootstrap';
+import { bootstrapVps } from '@/lib/server/hub/bootstrap';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

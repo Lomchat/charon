@@ -180,7 +180,7 @@ export default function NewSessionWizard({
   const [codexModelProvider, setCodexModelProvider] = useState('');
   const [sessionEnv, setSessionEnv] = useState('');
   const [codexBin, setCodexBin] = useState('');
-  const [claudeSkills, setClaudeSkills] = useState('');
+  const [skillsText, setSkillsText] = useState('');
   // §14.100 — null while the user hasn't touched it: the session then inherits
   // the VPS's scope (or the hub default). Claude only; Codex has no equivalent.
   const [settingSources, setSettingSources] = useState<ClaudeSettingSource[] | null>(null);
@@ -225,7 +225,7 @@ export default function NewSessionWizard({
 
   useEffect(() => {
     if (kind !== 'agent') return;
-    api.getClaudeSettings()
+    api.getSettings()
       .then((s) => setGlobalDefaults({
         model: s['claude.default_model'] ?? '',
         fallbackModel: s['claude.default_fallback_model'] ?? '',
@@ -499,7 +499,7 @@ export default function NewSessionWizard({
             codexBin: codexBin.trim() || null,
           } satisfies CodexSessionConfig;
         } else if (selKind === 'claude') {
-          const skills = claudeSkills.split('\n').map((v) => v.trim()).filter(Boolean);
+          const skills = skillsText.split('\n').map((v) => v.trim()).filter(Boolean);
           sessionConfig = {
             ...shared,
             skills: skills.length ? skills : null,
@@ -564,15 +564,15 @@ export default function NewSessionWizard({
   // looking like a bug.
   if (noBackend) {
     return (
-      <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-        <div className="claude-modal wizard kind-agent">
+      <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="app-modal wizard kind-agent">
           <button className="modal-close" onClick={onClose}>✕</button>
           <div className="wiz-head">
             <span className="wiz-kind"><IconRobot /> New agent</span>
           </div>
           <div className="wiz-body">
             <div className="wiz-no-backend">
-              <p>Claude and Codex are both turned off, so there is no agent to start.</p>
+              <p>Every agent backend is turned off, so there is no agent to start.</p>
               <p>Turn at least one back on in <b>Settings → Agents</b>.</p>
               {onOpenSettings && (
                 <button type="button" className="wiz-btn primary" onClick={() => onOpenSettings('claude')}>
@@ -587,8 +587,8 @@ export default function NewSessionWizard({
   }
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div ref={modalRef} className={`claude-modal wizard kind-${kind}`}>
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={modalRef} className={`app-modal wizard kind-${kind}`}>
         <button className="modal-close" onClick={onClose}>✕</button>
         <div className="wiz-head">
           <span className="wiz-kind"><KindIcon /> New {kindLabel}</span>
@@ -1014,7 +1014,7 @@ export default function NewSessionWizard({
                             its settings-file chain (§14.100), whose scope words
                             mean nothing to another runtime. */}
                         <label className="wiz-adv-field">skills <span className="wiz-opt">(one name per line; blank = CLI defaults)</span>
-                          <textarea className="mono" value={claudeSkills} onChange={(e) => setClaudeSkills(e.target.value)} placeholder={'code-review\nfrontend-design'} />
+                          <textarea className="mono" value={skillsText} onChange={(e) => setSkillsText(e.target.value)} placeholder={'code-review\nfrontend-design'} />
                         </label>
                         <div className="wiz-adv-field">settings files <span className="wiz-opt">(what this session reads)</span>
                           <SettingSourcesPicker

@@ -87,7 +87,7 @@ function emptyCounts(): Counts {
 }
 
 export default function Desk({ vpsList, folders, initialSummaries, initialSync }: Props) {
-  // Comme `ClaudePanel` : le magasin est amorcé du SSR au premier rendu, et la
+  // Comme `HubPanel` : le magasin est amorcé du SSR au premier rendu, et la
   // première connexion du flux reprend à la révision que ce SSR reflète (§9).
   initSyncPosition(initialSync);
   hydrateSummaries(initialSummaries, initialSync);
@@ -168,7 +168,7 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
   // n'y écrit rien). Un seul en vol, une relance après lui.
   const [lister] = useState(() => createRerunner(async () => {
     try {
-      const r = await api.listClaudeSessions();
+      const r = await api.listSessions();
       seedFromListResponse(r);
       setError(null);
       setLive(true);
@@ -476,7 +476,7 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
   // décidé ici : `canSleepSession` / `canResumeSession` sont les règles de
   // Charon, et la salle ne fait que leur poser la question.
   const lifecycle = useCallback((action: 'sleep' | 'resume', id: string) => {
-    const call = action === 'sleep' ? api.sleepClaudeSession : api.resumeClaudeSession;
+    const call = action === 'sleep' ? api.sleepSession : api.resumeSession;
     void call(id).then(() => refreshIfDegraded()).catch((e: unknown) => {
       setError(`${action}: ${e instanceof Error ? e.message : String(e)}`);
     });
@@ -489,9 +489,9 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
   // (§14.32), tenu jusqu'à ce que le résumé « supprimé » soit arrivé. Pas
   // avant : le calque retire la ligne dont le dialogue dépend, qui se
   // démonterait en pleine requête et perdrait l'erreur d'un échec (comme
-  // ClaudePanel.deleteOne).
+  // HubPanel.deleteOne).
   const deleteOne = useCallback(async (id: string) => {
-    const r = await api.deleteClaudeSession(id);
+    const r = await api.deleteAgentSession(id);
     addOverlay(id, { removed: true }).ack(r?.sync);
     setOpenId((current) => (current === id ? null : current));
     refreshIfDegraded();
@@ -502,7 +502,7 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
   const applyRename = useCallback(async (id: string, name: string) => {
     const overlay = addOverlay(id, { name: name || null });
     try {
-      const r = await api.renameClaudeSession(id, name || null);
+      const r = await api.renameAgentSession(id, name || null);
       overlay.ack(r?.sync);
     } catch (error) {
       overlay.fail();

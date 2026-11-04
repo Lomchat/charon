@@ -1,7 +1,7 @@
 /* Le desk — salle des machines de Charon.
    ─────────────────────────────────────────────────────────────────────────
    Tout est préfixé `dsk-` ou scopé sous `.desk` : cette feuille vit à côté de
-   `claude.css` et des thèmes de Charon, et elle n'a pas le droit d'aller
+   `app.css` et des thèmes de Charon, et elle n'a pas le droit d'aller
    toucher un `.label`, un `.chip` ou un `.card` qui appartiennent à Charon.
    Le modal, lui, réutilise VOLONTAIREMENT les variables de thème de Charon
    (`--bg-elevated`, `--text`, `--body`) : la session qu'on ouvre dedans doit
@@ -531,7 +531,7 @@
 
 /* ------------------------------------------------------------- le modal */
 
-/* Le modal reprend `claude-root`, le conteneur de Charon — mais sa grille
+/* Le modal reprend `app-root`, le conteneur de Charon — mais sa grille
    n'est pas celle de la page : pas de barre latérale, pas d'en-tête, pas
    d'onglets. Deux colonnes, la session et ses outils, c'est tout. */
 .dsk-modal {
@@ -627,17 +627,17 @@
   min-height: 0;
   position: relative;
 }
-/* `claude-root` est `position: fixed; inset: 0` dans claude.css : ici il doit
+/* `app-root` est `position: fixed; inset: 0` dans app.css : ici il doit
    se plier à la boîte du modal, sinon la session déborderait sur tout l'écran.
-   Le sélecteur porte trois classes parce que `claude.css` en aligne deux
-   (`.claude-root:not(.has-tools)`) : à spécificité égale, c'est l'ordre du
+   Le sélecteur porte trois classes parce que `app.css` en aligne deux
+   (`.app-root:not(.has-tools)`) : à spécificité égale, c'est l'ordre du
    bundle qui déciderait, et il ne dépend pas de nous.
 
    `relative` et non `absolute` : la boîte reste dans le flux du modal, donc
    SOUS la barre d'en-tête du desk. En `absolute`, elle remontait jusqu'aux
    bords du cadre et recouvrait cette barre — le nom du robot, la machine,
    l'état et le bouton de fermeture disparaissaient sous la session. */
-.desk .dsk-embed.claude-root {
+.desk .dsk-embed.app-root {
   position: relative;
   inset: auto;
   display: grid;
@@ -649,7 +649,7 @@
 /* Sous 1100 px, Charon range lui-même son panneau d'outils derrière un
    tiroir. Le modal suit : on garde la session, on masque les outils. */
 @media (max-width: 1100px) {
-  .desk .dsk-embed.claude-root {
+  .desk .dsk-embed.app-root {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas: "main";
   }
@@ -696,7 +696,7 @@
 /* La liste n'est plus une suite de lignes, mais une suite de CHEMINS : le
    titre de chaque groupe est un `.cs-path-group`, la classe de la barre
    latérale de Charon, et la mise en page du groupe appartient donc à
-   `claude.css`. Ici on ne dit que deux choses : comment le placard se pose
+   `app.css`. Ici on ne dit que deux choses : comment le placard se pose
    dedans, et la TAILLE des titres — là-bas ils sont écrits pour une colonne de
    260 px, ici la boîte fait quatre fois cette largeur. Le style reste le sien,
    seule l'échelle change. */

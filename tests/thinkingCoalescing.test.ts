@@ -43,9 +43,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -67,17 +67,17 @@ let SessionStream: any;
 let getOrCreateStream: any;
 let orderChronologically: any;
 let rebuildStateFromMessages: any;
-// Fail the next N INSERTs into claude_session_messages (other tables pass).
+// Fail the next N INSERTs into session_messages (other tables pass).
 let failMessageInserts = 0;
-// Fail the next N UPDATEs of claude_session_messages.
+// Fail the next N UPDATEs of session_messages.
 let failMessageUpdates = 0;
-// Fail the next N INSERTs into claude_pending_questions.
+// Fail the next N INSERTs into session_pending_questions.
 let failPendingInserts = 0;
 
 function mkStream(opts: { id?: string; kind?: string; lastSeenSeq?: number | null } = {}) {
   return new SessionStream({
     id: opts.id ?? SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: opts.kind ?? 'codex', lastSeenSeq: opts.lastSeenSeq ?? null,
   }) as any;
 }
@@ -105,7 +105,7 @@ function replay(s: any, events: any[], sid = SID) {
 }
 
 function rows(sid = SID) {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === sid)
     .sort((a: any, b: any) => a.id - b.id);
 }
@@ -139,19 +139,19 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   for (const id of ALL_SIDS) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active', kind: 'codex' })
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active', kind: 'codex' })
       .onConflictDoNothing().run();
   }
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
 
   const realInsert = db.insert.bind(db);
   vi.spyOn(db, 'insert').mockImplementation(((table: any) => {
-    if (failMessageInserts > 0 && table === schema.claudeSessionMessages) {
+    if (failMessageInserts > 0 && table === schema.sessionMessages) {
       failMessageInserts--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { values: () => ({ run: boom, onConflictDoNothing: () => ({ run: boom }) }) };
     }
-    if (failPendingInserts > 0 && table === schema.claudePendingQuestions) {
+    if (failPendingInserts > 0 && table === schema.sessionPendingQuestions) {
       failPendingInserts--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { values: () => ({ run: boom, onConflictDoNothing: () => ({ run: boom }) }) };
@@ -160,7 +160,7 @@ beforeAll(async () => {
   }) as any);
   const realUpdate = db.update.bind(db);
   vi.spyOn(db, 'update').mockImplementation(((table: any) => {
-    if (failMessageUpdates > 0 && table === schema.claudeSessionMessages) {
+    if (failMessageUpdates > 0 && table === schema.sessionMessages) {
       failMessageUpdates--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { set: () => ({ where: () => ({ run: boom }) }) };
@@ -169,7 +169,7 @@ beforeAll(async () => {
   }) as any);
 
   ({ SessionStream, getOrCreateStream } = await import('@/lib/server/agent/sessionOps'));
-  ({ orderChronologically } = await import('@/lib/server/claude/messageOrder'));
+  ({ orderChronologically } = await import('@/lib/server/hub/messageOrder'));
   ({ rebuildStateFromMessages } = await import('@/app/sessionRebuild'));
 });
 
@@ -184,11 +184,11 @@ afterEach(() => {
   failMessageUpdates = 0;
   failPendingInserts = 0;
   for (const id of ALL_SIDS) {
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, id)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, id)).run();
   }
-  db.delete(schema.claudePendingQuestions).run();
+  db.delete(schema.sessionPendingQuestions).run();
   db.delete(schema.sessionScheduledResumes).run();
-  db.update(schema.claudeSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null }).run();
+  db.update(schema.agentSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null }).run();
 });
 
 describe('boundaries (thinkingBoundaries.ts)', () => {
@@ -365,7 +365,7 @@ describe('I8: no row lands while a block is open', () => {
       const c = JSON.parse(r.content);
       return c.type === 'thinking' ? `thinking:${c.text}` : c.type;
     });
-    const source = db.insert(schema.claudeSessionMessages).values({
+    const source = db.insert(schema.sessionMessages).values({
       sessionId: SCHED_SID, role: 'error', content: '{}', tsMs: Date.now(),
     }).run();
     think(900, 'before card');
@@ -428,7 +428,7 @@ describe('sealed blocks and holdbacks', () => {
   const capWarnings = (warn: any) => warn.mock.calls.map(([m]: any[]) => String(m))
     .filter((m: string) => m.startsWith('[thinking] retry cap'));
   const persistedCursor = (sid = SID) =>
-    db.select().from(schema.claudeSessions).all().find((r: any) => r.id === sid).lastSeenSeq;
+    db.select().from(schema.agentSessions).all().find((r: any) => r.id === sid).lastSeenSeq;
 
   it('past 50 sealed blocks the oldest is dropped: its holdback stays, nothing is re-subscribed, one warning per drop', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -488,7 +488,7 @@ describe('sealed blocks and holdbacks', () => {
       };
       send(mkStream({ id: REF_SID, lastSeenSeq: 50 }), log(REF_SID));   // the uninterrupted run
 
-      db.update(schema.claudeSessions).set({ lastSeenSeq: 50 }).where(eq(schema.claudeSessions.id, SID)).run();
+      db.update(schema.agentSessions).set({ lastSeenSeq: 50 }).where(eq(schema.agentSessions.id, SID)).run();
       const events = log(SID);
       const s = mkStream({ lastSeenSeq: 50 });
       failMessageInserts = Number.MAX_SAFE_INTEGER;
@@ -551,7 +551,7 @@ describe('sealed blocks and holdbacks', () => {
       };
       send(mkStream({ id: REF_SID, lastSeenSeq: 99 }), log(REF_SID));   // the uninterrupted run
 
-      db.update(schema.claudeSessions).set({ lastSeenSeq: 99 }).where(eq(schema.claudeSessions.id, SID)).run();
+      db.update(schema.agentSessions).set({ lastSeenSeq: 99 }).where(eq(schema.agentSessions.id, SID)).run();
       const events = log(SID);
       const s = mkStream({ lastSeenSeq: 99 });
       failMessageInserts = Number.MAX_SAFE_INTEGER;
@@ -714,7 +714,7 @@ describe('sealed blocks and holdbacks', () => {
     send(s, [toolUse(22)]);                                          // sealed 'efgh'@20
     expect(s.thinkingRetry.map((x: any) => x.text)).toEqual(['efgh']);
     // A replay rebuilt (part of) the block meanwhile: row 'ef'@20.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'ef' }), seq: 20, tsMs: T0 + 20,
     }).run();
     failMessageUpdates = 1;                                          // the first extend fails: stays sealed
@@ -855,10 +855,10 @@ describe('a replay window starting INSIDE a persisted row (overlapping resubscri
   });
 
   it('a row proved by the cover (persisted by an earlier process): a later burst from its middle writes nothing', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'abc' }), seq: 10, tsMs: T0 + 10,
     }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't13', name: 'Read', input: {} }),
       seq: 13, tsMs: T0 + 13,
     }).run();
@@ -886,7 +886,7 @@ describe('a replay window starting INSIDE a persisted row (overlapping resubscri
   it('a block a window reopens from its anchor (its row was deleted meanwhile) keeps every delta: the span never cuts it', () => {
     const s = mkStream({ lastSeenSeq: 9 });
     send(s, [delta(10, 'a'), delta(11, 'b'), delta(12, 'c'), toolUse(13)]);
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();   // a rewind
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();   // a rewind
     replay(s, [delta(10, 'a'), delta(11, 'b'), delta(12, 'c'), toolUse(13)]);
     expect(thinkingRows().map((r: any) => [r.text, r.seq])).toEqual([['abc', 10]]);
   });
@@ -920,8 +920,8 @@ describe('a replay window starting INSIDE a persisted row (overlapping resubscri
   });
 
   it('assistant text: a row proved at a gated boundary (earlier process), then a burst from its middle ⇒ nothing written', () => {
-    db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'assistant', content: 'abc', seq: 10, tsMs: T0 + 10 }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({ sessionId: SID, role: 'assistant', content: 'abc', seq: 10, tsMs: T0 + 10 }).run();
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't13', name: 'Read', input: {} }),
       seq: 13, tsMs: T0 + 13,
     }).run();
@@ -985,8 +985,8 @@ describe('an event dropped behind a failed assistant flush (order rule 16.3)', (
     expect(rows().map((r: any) => [r.role, r.seq])).toEqual([['assistant', 10]]);
     expect(s.holdbacks.has('assistant:10')).toBe(false);
     expect(s._durableCursor()).toBe(9);                              // pinned at the buffer's anchor
-    const persisted = db.select({ c: schema.claudeSessions.lastSeenSeq }).from(schema.claudeSessions)
-      .where(eq(schema.claudeSessions.id, SID)).get().c;
+    const persisted = db.select({ c: schema.agentSessions.lastSeenSeq }).from(schema.agentSessions)
+      .where(eq(schema.agentSessions.id, SID)).get().c;
     expect(persisted).toBe(9);
     // Restart: the replay from the durable cursor writes tool_use 12 once.
     const s2 = mkStream({ kind, lastSeenSeq: persisted });
@@ -1046,11 +1046,11 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('legacy per-delta rows + replay ⇒ zero inserts, no text broadcast (the window\'s first row is re-cut)', () => {
-    const insert = (seq: number, text: string) => db.insert(schema.claudeSessionMessages).values({
+    const insert = (seq: number, text: string) => db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text }), seq, tsMs: T0 + seq,
     }).run();
     insert(10, 'a'); insert(11, 'b'); insert(12, 'c');
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't13', name: 'Read', input: {} }),
       seq: 13, tsMs: T0 + 13,
     }).run();
@@ -1066,10 +1066,10 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('a compacted merged row + replay of the same deltas ⇒ zero inserts', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'abc' }), seq: 10, tsMs: T0 + 10,
     }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't13', name: 'Read', input: {} }),
       seq: 13, tsMs: T0 + 13,
     }).run();
@@ -1080,7 +1080,7 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('a cover is positional: it never matches text after a boundary', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'abab' }), seq: 10, tsMs: T0 + 10,
     }).run();
     const s = mkStream({ lastSeenSeq: 9 });
@@ -1091,7 +1091,7 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('a cover is positional inside its row: it matches only from its start, never text found further in', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'aXb' }), seq: 10, tsMs: T0 + 10,
     }).run();
     const s = mkStream({ lastSeenSeq: 9 });
@@ -1101,7 +1101,7 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('a cover moves forward in seq: the anchor replayed again inside one window restarts it, never consumes it', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'abab' }), seq: 10, tsMs: T0 + 10,
     }).run();
     const s = mkStream({ lastSeenSeq: 9 });
@@ -1110,10 +1110,10 @@ describe('replay identity of delta reasoning', () => {
   });
 
   it('a cover left by a cut re-delivery window never swallows the next window\'s new deltas', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'ab the' }), seq: 10, tsMs: T0 + 10,
     }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't14', name: 'Read', input: {} }),
       seq: 14, tsMs: T0 + 14,
     }).run();
@@ -1132,10 +1132,10 @@ describe('replay identity of delta reasoning', () => {
 
   it('a cut re-delivery window resumed where it stopped: the cover carries over, the row\'s tail is not written again', () => {
     // 'ab the' = deltas 10 and 12 (a rate_limit at 11 between them).
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'ab the' }), seq: 10, tsMs: T0 + 10,
     }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't14', name: 'Read', input: {} }),
       seq: 14, tsMs: T0 + 14,
     }).run();
@@ -1154,10 +1154,10 @@ describe('replay identity of delta reasoning', () => {
 
   it('a hub-restart window cut mid-row: the next window resumes the cover (also through a transparent event), no duplicate', () => {
     // 'ab the' = deltas 10 and 12 (a rate_limit at 11 between them).
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'ab the' }), seq: 10, tsMs: T0 + 10,
     }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't14', name: 'Read', input: {} }),
       seq: 14, tsMs: T0 + 14,
     }).run();
@@ -1214,7 +1214,7 @@ describe('replay identity of delta reasoning', () => {
 
   it('a replayed delta at a persisted row closes the open block: later uncovered deltas never join it out of order', () => {
     // 11 was never persisted; 12.. is a SIGTERM partial 'BC' of the block 12-14.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'BC' }), seq: 12, tsMs: T0 + 12,
     }).run();
     const s = mkStream({ lastSeenSeq: 10 });
@@ -1232,7 +1232,7 @@ describe('replay identity of delta reasoning', () => {
       const s = mkStream({ lastSeenSeq: 9 });
       s._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 3 });
       send(s, [delta(10, 'ab'), delta(11, 'cd')]);                   // no row at 10 yet: the block opens
-      db.insert(schema.claudeSessionMessages).values({               // another writer's row appears meanwhile
+      db.insert(schema.sessionMessages).values({               // another writer's row appears meanwhile
         sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'xyz' }), seq: 10, tsMs: T0 + 10,
       }).run();
       send(s, [toolUse(12)]);
@@ -1263,8 +1263,8 @@ describe('replay identity of delta reasoning', () => {
 
   it('a replayed persisted delta while an assistant buffer is open: the buffer is dropped only if its flush row exists', () => {
     // Flush row present: no second assistant row.
-    db.insert(schema.claudeSessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Hello', seq: 20, tsMs: T0 + 20 }).run();
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({ sessionId: SID, role: 'assistant', content: 'Hello', seq: 20, tsMs: T0 + 20 }).run();
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'x' }), seq: 22, tsMs: T0 + 22,
     }).run();
     const s = mkStream({ lastSeenSeq: 19 });
@@ -1275,7 +1275,7 @@ describe('replay identity of delta reasoning', () => {
     // Flush row missing (it failed before the crash): the buffer is KEPT —
     // no early row at the replayed delta; the next boundary writes it, dated
     // from its first delta.
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.id, rows().find((r: any) => r.role === 'assistant').id)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.id, rows().find((r: any) => r.role === 'assistant').id)).run();
     const s2 = mkStream({ lastSeenSeq: 19 });
     replay(s2, [ev('assistant_text', 20, { delta: 'Hel' }), ev('assistant_text', 21, { delta: 'lo' }), delta(22, 'x')]);
     expect(rows().filter((r: any) => r.role === 'assistant')).toHaveLength(0);
@@ -1328,8 +1328,8 @@ describe('session GET', () => {
     const s = getOrCreateStream(GET_SID);
     s._onAgentEvent({ event: 'thinking', session_id: GET_SID, seq: 5, ts: (T0 + 5) / 1000, text: 'half a ' });
     s._onAgentEvent({ event: 'thinking', session_id: GET_SID, seq: 6, ts: (T0 + 6) / 1000, text: 'thought' });
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    const get = async () => (await GET(new Request(`http://localhost/api/claude/sessions/${GET_SID}?open=1`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    const get = async () => (await GET(new Request(`http://localhost/api/sessions/${GET_SID}?open=1`),
       { params: Promise.resolve({ id: GET_SID }) })).json();
     const open = await get();
     expect(open.streamingThinking).toBe('half a thought');
@@ -1344,8 +1344,8 @@ describe('session GET', () => {
 
 describe('session GET (step review)', () => {
   const getFrom = async (query: string) => {
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    return (await GET(new Request(`http://localhost/api/claude/sessions/${GET_SID}${query}`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    return (await GET(new Request(`http://localhost/api/sessions/${GET_SID}${query}`),
       { params: Promise.resolve({ id: GET_SID }) })).json();
   };
 
@@ -1401,8 +1401,8 @@ describe('step review: a failed assistant flush whose buffer runs on (16.3)', ()
   const assistantRows = () => orderChronologically(rows()).filter((r: any) => r.role === 'assistant')
     .map((r: any) => [r.content, r.seq]);
   const toolIds = () => rows().filter((r: any) => r.role === 'tool_use').map((r: any) => JSON.parse(r.content).id).sort();
-  const persistedCursor = () => db.select({ c: schema.claudeSessions.lastSeenSeq }).from(schema.claudeSessions)
-    .where(eq(schema.claudeSessions.id, SID)).get().c;
+  const persistedCursor = () => db.select({ c: schema.agentSessions.lastSeenSeq }).from(schema.agentSessions)
+    .where(eq(schema.agentSessions.id, SID)).get().c;
 
   it.each(['codex', 'claude'])('%s: the restart replays from the row\'s anchor and writes every row once', (kind) => {
     const log = [text(10, 'Hello '), text(11, 'world'), toolUse(12, 'tu1'), text(13, ' again'), toolUse(14, 'tu2'),
@@ -1460,7 +1460,7 @@ describe('step review: a failed assistant flush whose buffer runs on (16.3)', ()
     expect([row.content, row.assistantFinal]).toEqual(['AB', 0]);
     expect(s._durableCursor()).toBe(9);
     // A crash before the next stop: its row is still the pending one.
-    db.update(schema.claudeSessions).set({ pendingAssistantMessageId: row.id }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ pendingAssistantMessageId: row.id }).where(eq(schema.agentSessions.id, SID)).run();
     const s2 = mkStream({ lastSeenSeq: 9 });
     const emitted = vi.spyOn(s2, '_emitBroadcast').mockImplementation(() => {});
     replay(s2, log.slice(0, 2));
@@ -1802,7 +1802,7 @@ describe('step review 2: a replay block never runs through a SEALED block\'s anc
 
 // Second step review, findings 6 and 7: the browser's live reasoning, driven
 // through the client's REAL lane (app/thinkingMessages.ts, the functions
-// useClaudeSessionStream calls) with the hub's REAL frames, renders what a
+// useSessionStream calls) with the hub's REAL frames, renders what a
 // reload of the persisted rows renders.
 describe('step review 2: live reasoning (client lane + hub frames) == reload', () => {
   type Browser = { lane: ThinkingLane; messages: Msg[]; n: number };
@@ -1901,7 +1901,7 @@ describe('step review 2: live reasoning (client lane + hub frames) == reload', (
 
   it('SIGTERM partial + restart replay + live continuation (with and without the reconnect GET)', () => {
     for (const withGet of [false, true]) {
-      db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
+      db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
       const s = mkStream();
       const frames = capture(s);
       send(s, [delta(10, 'Let '), delta(11, 'me '), delta(12, 'check')]);
@@ -1923,7 +1923,7 @@ describe('step review 2: live reasoning (client lane + hub frames) == reload', (
   // replay re-broadcasts the block this browser already shows.
   it('hard crash mid-block: the replayed block is not shown twice (with and without the reconnect GET)', () => {
     for (const withGet of [false, true]) {
-      db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
+      db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
       const s = mkStream();
       const frames = capture(s);
       send(s, [delta(10, 'Let '), delta(11, 'me '), delta(12, 'check')]);
@@ -1947,7 +1947,7 @@ describe('step review 2: live reasoning (client lane + hub frames) == reload', (
   // cut) never left the process; the browser kept the block as open text.
   it('SIGTERM whose cut never reached the browser: the restart re-cuts the persisted block (no GET applied, or a dropped one)', () => {
     for (const droppedGet of [false, true]) {
-      db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, SID)).run();
+      db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
       const s = mkStream();
       const frames = capture(s);
       send(s, [delta(10, 'Let '), delta(11, 'me '), delta(12, 'check')]);
@@ -2104,8 +2104,8 @@ describe('step review 2: live reasoning (client lane + hub frames) == reload', (
 describe('step review 3: the SIGTERM flush has time to reach the browsers', () => {
   it('the exit waits SHUTDOWN_DRAIN_MS; meanwhile no agent event is dispatched and no cursor is written', async () => {
     const ops = await import('@/lib/server/agent/sessionOps');
-    const cursor = () => db.select({ c: schema.claudeSessions.lastSeenSeq }).from(schema.claudeSessions)
-      .where(eq(schema.claudeSessions.id, SHUT_SID)).get().c;
+    const cursor = () => db.select({ c: schema.agentSessions.lastSeenSeq }).from(schema.agentSessions)
+      .where(eq(schema.agentSessions.id, SHUT_SID)).get().c;
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const exit = vi.fn();
     const s = getOrCreateStream(SHUT_SID);
@@ -2144,7 +2144,7 @@ describe('step review 3: the SIGTERM flush has time to reach the browsers', () =
 // row. The cover now holds the cursor at the row's anchor − 1.
 describe('final review: a replay consuming a cover holds the durable cursor at the anchor', () => {
   const persistedCursor = (sid = SID) =>
-    db.select().from(schema.claudeSessions).all().find((r: any) => r.id === sid).lastSeenSeq;
+    db.select().from(schema.agentSessions).all().find((r: any) => r.id === sid).lastSeenSeq;
   const words = (from: number, to: number) =>
     Array.from({ length: to - from + 1 }, (_, i) => `w${from + i} `).join('');
   const deltas = (from: number, to: number, sid = SID) =>
@@ -2164,7 +2164,7 @@ describe('final review: a replay consuming a cover holds the durable cursor at t
     send(a, [...deltas(10, 20), toolUse(21)]);
     expect(thinkingRows().map((r: any) => [r.seq, r.text])).toEqual([[10, words(10, 20)]]);
     crash(a);
-    db.update(schema.claudeSessions).set({ lastSeenSeq: 9 }).where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ lastSeenSeq: 9 }).where(eq(schema.agentSessions.id, SID)).run();
     // Process B replays from 9; the cover consumes 11.. and the debounce fires.
     const b = mkStream({ lastSeenSeq: 9 });
     b._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 12 });
@@ -2204,7 +2204,7 @@ describe('final review: a replay consuming a cover holds the durable cursor at t
   it('gracefulShutdown variant: the SIGTERM partial [10..15], a replay cut by a debounce, a third process', async () => {
     const ops = await import('@/lib/server/agent/sessionOps');
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    db.update(schema.claudeSessions).set({ lastSeenSeq: 9 }).where(eq(schema.claudeSessions.id, SHUT_SID)).run();
+    db.update(schema.agentSessions).set({ lastSeenSeq: 9 }).where(eq(schema.agentSessions.id, SHUT_SID)).run();
     const exit = vi.fn();
     const s1 = getOrCreateStream(SHUT_SID);
     try {

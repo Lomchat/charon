@@ -113,7 +113,7 @@ describe('file paths written as plain text', () => {
   it('leaves words, ratios, routes and URLs alone', () => {
     for (const text of [
       'Next.js and Node.js', 'TCP/IP', 'read and/or write', 'about 1/2.5 of it', 'at 30 km/h',
-      'the /v1/models endpoint', 'GET /api/claude/sessions', 'on 2026/10/22', '/README.md',
+      'the /v1/models endpoint', 'GET /api/sessions', 'on 2026/10/22', '/README.md',
       'https://example.org/docs/a.html', 'github.com/org/repo/blob/x.md', 'a/b',
     ]) expect(paths(text), text).toEqual([]);
   });

@@ -17,7 +17,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   focusAnswers = [];
   browser = installFakeBrowser({
-    fetch: (url) => (url === '/api/claude/focus' ? focusAnswers.shift() ?? { ok: true } : { ok: true }),
+    fetch: (url) => (url === '/api/focus' ? focusAnswers.shift() ?? { ok: true } : { ok: true }),
   });
   gse = await import('@/app/globalEventStream');
 });
@@ -360,13 +360,13 @@ describe('globalEventStream', () => {
 
   // W4-review: attention proofs lost while the conn is not registered.
   const focusPosts = () => browser.fetch.mock.calls
-    .filter(([url]) => url === '/api/claude/focus')
+    .filter(([url]) => url === '/api/focus')
     .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
 
   it('a tab turning visible while its stream is down re-POSTs its attended focus once the new stream says hello', async () => {
     // A hub that applies every focus POST (no retry chain muddying the count).
     browser.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      const b = url === '/api/claude/focus' ? JSON.parse(String(init?.body)) : {};
+      const b = url === '/api/focus' ? JSON.parse(String(init?.body)) : {};
       return { status: 200, json: async () => ({ ok: true, focus: b.sessionId, focusSeq: b.focusSeq }) };
     });
     void gse.setFocus('S');

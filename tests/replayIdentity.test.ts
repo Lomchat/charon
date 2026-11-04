@@ -30,9 +30,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: (...a: any[]) => bgMocks.read(...a) }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: (...a: any[]) => bgMocks.read(...a) }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -60,14 +60,14 @@ let failNextMessageUpdates = 0;
 function mkStream(opts: { id?: string; kind?: string; lastSeenSeq?: number | null; effectiveModel?: string | null } = {}) {
   return new SessionStream({
     id: opts.id ?? SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: opts.kind ?? 'claude', lastSeenSeq: opts.lastSeenSeq ?? null,
     effectiveModel: opts.effectiveModel ?? null,
   }) as any;
 }
 
 function rows(sid = SID, role?: string) {
-  const all = db.select().from(schema.claudeSessionMessages).all().filter((r: any) => r.sessionId === sid);
+  const all = db.select().from(schema.sessionMessages).all().filter((r: any) => r.sessionId === sid);
   return role ? all.filter((r: any) => r.role === role) : all;
 }
 
@@ -97,9 +97,9 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   for (const id of [SID, FORK_SID, BIG_SID, RESUME_SID]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
   }
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
 
   // Capture every statement prepared on the shared handle (replayIdentity
   // prepares lazily, on its first lookup — always after this spy).
@@ -120,7 +120,7 @@ beforeAll(async () => {
   }) as any);
   const realUpdate = db.update.bind(db);
   vi.spyOn(db, 'update').mockImplementation(((table: any) => {
-    if (failNextMessageUpdates > 0 && table === schema.claudeSessionMessages) {
+    if (failNextMessageUpdates > 0 && table === schema.sessionMessages) {
       failNextMessageUpdates--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { set: () => ({ where: () => ({ run: boom }) }) };
@@ -137,21 +137,21 @@ afterEach(() => {
   failNextInserts = 0;
   failNextMessageUpdates = 0;
   for (const id of [SID, FORK_SID]) {
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, id)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, id)).run();
   }
-  db.delete(schema.claudePendingQuestions).run();
-  db.update(schema.claudeSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null, effectiveModel: null }).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.update(schema.agentSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null, effectiveModel: null }).run();
 });
 
 function countRows(sid: string): number {
-  return (sqlite.prepare('SELECT count(*) AS c FROM claude_session_messages WHERE session_id = ?').get(sid) as { c: number }).c;
+  return (sqlite.prepare('SELECT count(*) AS c FROM session_messages WHERE session_id = ?').get(sid) as { c: number }).c;
 }
 
 describe('indexed replay identity', () => {
   // Explicit timeout: most of the time is the 50 k-row setup (FTS triggers).
   it('replay_begin on 50 k stamped rows reads nothing session-wide; lookups use the seq index', { timeout: 30_000 }, () => {
     const insert = sqlite.prepare(
-      'INSERT INTO claude_session_messages (session_id, role, content, seq, ts_ms) VALUES (?, ?, ?, ?, ?)');
+      'INSERT INTO session_messages (session_id, role, content, seq, ts_ms) VALUES (?, ?, ?, ?, ?)');
     sqlite.transaction(() => {
       for (let i = 1; i <= 50_000; i++) {
         insert.run(BIG_SID, 'event', JSON.stringify({ type: 'thinking', text: `t${i}` }), i, T0 + i);
@@ -182,7 +182,7 @@ describe('indexed replay identity', () => {
     // Nothing touches the transcript table (the old 2.9 M-entry Set build).
     expect(executed.length).toBeGreaterThan(0); // the spy sees the pending-id reads
     const touched = [...preparedSql.slice(preparedBefore), ...executed]
-      .filter((q) => /claude_session_messages/.test(q));
+      .filter((q) => /session_messages/.test(q));
     expect(touched).toEqual([]);
 
     // Already-persisted events are skipped by a point lookup each.
@@ -195,21 +195,21 @@ describe('indexed replay identity', () => {
 
     // Every identity statement is an index SEARCH, never a scan or a sort.
     const identitySql = [...new Set(preparedSql.filter((q) =>
-      /claude_session_messages/.test(q) && /(@sid|seq IS NOT NULL LIMIT 1|seq IS NULL)/.test(q)))];
+      /session_messages/.test(q) && /(@sid|seq IS NOT NULL LIMIT 1|seq IS NULL)/.test(q)))];
     expect(identitySql.length).toBeGreaterThanOrEqual(2);
     for (const q of identitySql) {
       const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${q}`)
         .all(...(q.includes('@sid') ? [{ sid: BIG_SID, seq: 1, ts: null }] : [BIG_SID]))
         .map((r: any) => r.detail).join(' | ');
-      expect(plan, q).toMatch(/idx_claude_session_messages_session_seq/);
-      expect(plan, q).not.toMatch(/TEMP B-TREE|SCAN claude_session_messages/);
+      expect(plan, q).toMatch(/idx_session_messages_session_seq/);
+      expect(plan, q).not.toMatch(/TEMP B-TREE|SCAN session_messages/);
     }
-    sqlite.prepare('DELETE FROM claude_session_messages WHERE session_id = ?').run(BIG_SID);
+    sqlite.prepare('DELETE FROM session_messages WHERE session_id = ?').run(BIG_SID);
   });
 
   it('loads the legacy Sets lazily: first seq-less event / first replayed tool row of a fork-shaped session', () => {
     // Fork copy: every row has seq NULL.
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: FORK_SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 'old-t', name: 'Bash', input: {} }), tsMs: T0 },
       { sessionId: FORK_SID, role: 'tool_result', content: JSON.stringify({ type: 'tool_result', tool_use_id: 'old-t', content: 'x' }), tsMs: T0 },
       { sessionId: FORK_SID, role: 'event', content: JSON.stringify({ type: 'thinking', text: 'old thought' }), tsMs: T0 },
@@ -242,7 +242,7 @@ describe('indexed replay identity', () => {
   });
 
   it('a stamped session never loads the legacy Sets for a replayed new tool row', () => {
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       // Seq-NULL rows that are not tool rows (hub-written) do not count.
       { sessionId: SID, role: 'user', content: 'go', tsMs: T0 },
       { sessionId: SID, role: 'tool_use', seq: 1, tsMs: T0 + 1,
@@ -278,7 +278,7 @@ describe('indexed replay identity', () => {
 
   it('an old row with the same seq but another ts does not gate a new event; a NULL ts_ms matches on seq', () => {
     // Old epoch: the agent recreated its log, seq restarted at 1.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', seq: 5, tsMs: T0 - 3_600_000,
       content: JSON.stringify({ type: 'tool_use', id: 'old', name: 'Bash', input: {} }),
     }).run();
@@ -289,7 +289,7 @@ describe('indexed replay identity', () => {
     replay(s, SID, [ev(SID, 'tool_use', 5, T0, { id: 'new', name: 'Bash', input: {} })]);
     expect(rows(SID, 'tool_use')).toHaveLength(2);
     // A row without ts_ms, and an event without ts, match on seq alone.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_result', seq: 6, tsMs: null,
       content: JSON.stringify({ type: 'tool_result', tool_use_id: 'new', content: 'ok' }),
     }).run();
@@ -331,7 +331,7 @@ describe('assistant buffers across replays', () => {
   });
 
   it('a replay-started accumulation flushed LIVE extends its SIGTERM partial instead of duplicating it', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'Hello ', seq: 20, tsMs: T0 + 20, assistantFinal: 0,
     }).run();
     const s = mkStream({ lastSeenSeq: 19 });
@@ -347,7 +347,7 @@ describe('assistant buffers across replays', () => {
   it('a replay-opened buffer continued by LIVE deltas extends its SIGTERM partial', () => {
     // The usual hub restart: the cursor sits below the partial, the replay
     // re-delivers its first delta, the agent keeps streaming the same answer.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'Hello ', seq: 20, tsMs: T0 + 20, assistantFinal: 0,
     }).run();
     const s = mkStream({ lastSeenSeq: 19 });
@@ -360,7 +360,7 @@ describe('assistant buffers across replays', () => {
   });
 
   it('a failed extend of a SIGTERM partial restores the buffer and holds the cursor back', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'Hello ', seq: 20, tsMs: T0 + 20, assistantFinal: 0,
     }).run();
     const s = mkStream({ lastSeenSeq: 19 });
@@ -384,7 +384,7 @@ describe('assistant buffers across replays', () => {
   it('a gated replayed boundary keeps a buffer whose seq only matches an old-epoch row', () => {
     // The flush row of these deltas was never written (failed pre-crash); the
     // tool_use after them was. Seq 20 of the OLD epoch is another answer.
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: SID, role: 'assistant', content: 'Old answer', seq: 20, tsMs: T0 - 3_600_000, assistantFinal: 1 },
       { sessionId: SID, role: 'tool_use', seq: 22, tsMs: T0 + 22,
         content: JSON.stringify({ type: 'tool_use', id: 't22', name: 'Read', input: {} }) },
@@ -403,7 +403,7 @@ describe('assistant buffers across replays', () => {
   it('an in-window flush in an unstamped session is deduped by content, not by identity', () => {
     // Fork copy: no stamped row, so the flush's seq names nothing; the legacy
     // content check is the only signal and recognises the copied answer.
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: FORK_SID, role: 'assistant', content: 'Done.', tsMs: T0, assistantFinal: 1,
     }).run();
     const s = mkStream({ id: FORK_SID, lastSeenSeq: 4 });
@@ -423,7 +423,7 @@ describe('assistant buffers across replays', () => {
 
   it('a flush row matches on its first delta ts: an old-epoch row with the same seq gates nothing', () => {
     // The agent recreated its log: seq 20 of the old epoch is another answer.
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: SID, role: 'assistant', content: 'Old answer', seq: 20, tsMs: T0 - 3_600_000, assistantFinal: 1 },
       { sessionId: SID, role: 'assistant', content: 'Hello ', seq: 30, tsMs: T0 - 3_500_000, assistantFinal: 1 },
     ]).run();
@@ -451,7 +451,7 @@ describe('assistant buffers across replays', () => {
     ['a copied answer that is a prefix of it', 'Done. Also fixed X.'],
   ] as const) {
     it(`a replay-started buffer flushed LIVE in an unstamped session is inserted beside ${label}`, () => {
-      db.insert(schema.claudeSessionMessages).values({
+      db.insert(schema.sessionMessages).values({
         sessionId: FORK_SID, role: 'assistant', content: 'Done.', tsMs: T0, assistantFinal: 1,
       }).run();
       const s = mkStream({ id: FORK_SID, lastSeenSeq: 4 });
@@ -474,7 +474,7 @@ describe('assistant buffers across replays', () => {
   ];
 
   it('a replayed, already applied model switch keeps the old text apart and its label', () => {
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: SID, role: 'assistant', content: 'AB', model: 'M1', seq: 100, tsMs: T0 + 100, assistantFinal: 0 },
       // SIGTERM partial of the post-switch accumulation.
       { sessionId: SID, role: 'assistant', content: 'CD', model: 'M2', seq: 103, tsMs: T0 + 103, assistantFinal: 0 },
@@ -491,7 +491,7 @@ describe('assistant buffers across replays', () => {
   });
 
   it('a replay ending right after an applied switch: the live text opens a new row', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'AB', model: 'M1', seq: 100, tsMs: T0 + 100, assistantFinal: 0,
     }).run();
     const s = mkStream({ lastSeenSeq: 99, effectiveModel: 'M2' });
@@ -504,7 +504,7 @@ describe('assistant buffers across replays', () => {
   it('an unchanged model replayed where the live run did NOT flush keeps the buffer whole', () => {
     // The agent re-announces its model after a restart (its own state starts
     // empty) while the hub already holds it: no flush live, so the row runs on.
-    db.insert(schema.claudeSessionMessages).values([
+    db.insert(schema.sessionMessages).values([
       { sessionId: SID, role: 'assistant', content: 'ABCD', model: 'M2', seq: 100, tsMs: T0 + 100, assistantFinal: 0 },
       { sessionId: SID, role: 'tool_use', seq: 105, tsMs: T0 + 105,
         content: JSON.stringify({ type: 'tool_use', id: 't105', name: 'Read', input: {} }) },
@@ -522,7 +522,7 @@ describe('assistant buffers across replays', () => {
   });
 
   it('an unchanged model arriving LIVE does not split a replay-opened SIGTERM partial', () => {
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'assistant', content: 'AB', model: 'M2', seq: 100, tsMs: T0 + 100, assistantFinal: 0,
     }).run();
     const s = mkStream({ lastSeenSeq: 99, effectiveModel: 'M2' });
@@ -626,10 +626,10 @@ describe('replay windows and blocking errors', () => {
 
 describe('codex background reconcile', () => {
   it('skips the broadcast and keeps the task when the receipt cannot be persisted', async () => {
-    db.update(schema.claudeSessions).set({ kind: 'codex', claudeSessionId: 'thread-1' })
-      .where(eq(schema.claudeSessions.id, SID)).run();
+    db.update(schema.agentSessions).set({ kind: 'codex', nativeSessionId: 'thread-1' })
+      .where(eq(schema.agentSessions.id, SID)).run();
     const s = mkStream({ kind: 'codex' });
-    s.claudeSessionId = 'thread-1';
+    s.nativeSessionId = 'thread-1';
     s.attach();
     const now = Math.floor(Date.now() / 1000);
     s.bgRunning = new Map([['agent-1', now]]);
@@ -649,8 +649,8 @@ describe('codex background reconcile', () => {
     } finally {
       s.detach();
       bgMocks.read = async () => [];
-      db.update(schema.claudeSessions).set({ kind: 'claude', claudeSessionId: null })
-        .where(eq(schema.claudeSessions.id, SID)).run();
+      db.update(schema.agentSessions).set({ kind: 'claude', nativeSessionId: null })
+        .where(eq(schema.agentSessions.id, SID)).run();
     }
   });
 });
@@ -753,7 +753,7 @@ describe('AgentClient synthetic replay_end', () => {
     const tick = () => new Promise<void>((r) => setImmediate(r));
 
     const toolUse = (seq: number) => ev(SID, 'tool_use', seq, T0 + seq, { id: `t${seq}`, name: 'Read', input: {} });
-    db.insert(schema.claudeSessionMessages).values([11, 12].map((seq) => ({
+    db.insert(schema.sessionMessages).values([11, 12].map((seq) => ({
       sessionId: SID, role: 'tool_use', seq, tsMs: T0 + seq,
       content: JSON.stringify({ type: 'tool_use', id: `t${seq}`, name: 'Read', input: {} }),
     }))).run();

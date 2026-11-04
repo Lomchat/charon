@@ -21,7 +21,7 @@ const rpc = vi.hoisted(() => ({
 }));
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -61,7 +61,7 @@ beforeAll(async () => {
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test-vps', ip: '127.0.0.1', sshUser: 'root' })
     .onConflictDoNothing().run();
   for (const [id, kind] of [[CLAUDE_SID, 'claude'], [CODEX_SID, 'codex']] as const) {
-    db.insert(schema.claudeSessions).values({
+    db.insert(schema.agentSessions).values({
       id, vpsId: VPS_ID, name: kind, cwd: '/srv/app', kind, status: 'active',
       permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
     }).onConflictDoNothing().run();

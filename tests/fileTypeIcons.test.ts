@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { FILE_TYPES, fileType } from '../app/fileTypeIcons';
 import { isFileIconStyle, resolveFileIcons, DEFAULT_FILE_ICONS } from '../app/fileIconStyle';
-import { SETTINGS_WRITE_ALLOWLIST } from '../lib/server/claude/settingsKeys';
+import { SETTINGS_WRITE_ALLOWLIST } from '../lib/server/hub/settingsKeys';
 
 // The glyph a file gets in the `colored` / `mono` styles (`app.file_icons`).
 
@@ -64,7 +64,7 @@ describe('fileType', () => {
   it('every type has a hue rule or deliberately inherits the muted one', () => {
     // A type added to the set without a CSS line paints in --text-muted —
     // fine for neutral roles, a bug for a language. List the neutral ones.
-    const css = readFileSync(path.resolve(__dirname, '../app/claude.css'), 'utf8');
+    const css = readFileSync(path.resolve(__dirname, '../app/app.css'), 'utf8');
     const neutral = new Set(['config', 'lock', 'text', 'font', 'file', 'code']);
     for (const t of FILE_TYPES) {
       if (neutral.has(t)) continue;

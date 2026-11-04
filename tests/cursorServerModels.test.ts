@@ -19,18 +19,18 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({ call: mocks.call }),
 }));
-vi.mock('@/lib/server/claude/settings', () => ({
+vi.mock('@/lib/server/hub/settings', () => ({
   getSetting: (key: string) => mocks.store.get(key) || '',
   setSetting: (key: string, value: string) => mocks.store.set(key, value),
 }));
-vi.mock('@/lib/server/claude/cursorPricing', () => ({ getCursorPricing: async () => ({}) }));
+vi.mock('@/lib/server/hub/cursorPricing', () => ({ getCursorPricing: async () => ({}) }));
 vi.mock('@/lib/modelPricing', () => ({ priceFor: () => ({}) }));
 
 import {
   getCursorModelsForVps,
   invalidateCursorModels,
   refreshCursorModelsForVps,
-} from '@/lib/server/claude/cursorModels';
+} from '@/lib/server/hub/cursorModels';
 
 describe('server Cursor model cache', () => {
   beforeEach(() => {

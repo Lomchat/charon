@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { runAgentUpdateFlow } from '@/lib/server/claude/agentUpdate';
+import { runAgentUpdateFlow } from '@/lib/server/hub/agentUpdate';
 import { getBuiltPyzSha } from '@/lib/server/agent/builtPyzSha';
 import { PROVIDER_VERSION_COLUMNS } from '@/lib/vpsRuntimeFields';
 

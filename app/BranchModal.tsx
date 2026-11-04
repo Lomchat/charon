@@ -173,8 +173,8 @@ export default function BranchModal({ vpsId, cwd, repo, label, onClose }: Props)
   }
 
   return createPortal(
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal branches" role="dialog" aria-modal="true" aria-label="Branches">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="app-modal branches" role="dialog" aria-modal="true" aria-label="Branches">
         <button className="modal-close" onClick={onClose}>✕</button>
         <div className="bm-head">
           <span className="bm-title">Branches</span>

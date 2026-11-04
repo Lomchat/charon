@@ -37,12 +37,12 @@ import { isPanelClosed, sideTier } from './panelLayout';
 import { isPausedSession } from './pausedCleanup';
 
 // SessionListItem is defined in `lib/types/api.ts` (source of truth,
-// aligned with the GET /api/claude/sessions response). We re-export it
+// aligned with the GET /api/sessions response). We re-export it
 // here so we don't break the historical `import { SessionListItem }
 // from './Sidebar'` imports.
 export type { SessionListItem };
 
-// Re-export for consumers (ClaudePanel) that pass installs.
+// Re-export for consumers (HubPanel) that pass installs.
 export type { InstallInfo };
 
 const DETAILS_KEY = 'hub.claude.showDetails.v1';
@@ -155,7 +155,7 @@ export type ShellListItem = {
   exitCode: number | null;
   // Live activity (agent >= 0.9.0): 'busy' while the PTY streams output →
   // amber-pulse dot, like a "thinking" Claude session. Fed by the global SSE
-  // bus in ClaudePanel; undefined = idle/at-prompt. Structurally mirrors
+  // bus in HubPanel; undefined = idle/at-prompt. Structurally mirrors
   // ShellInfo so the two stay assignable.
   liveStatus?: 'active' | 'busy';
   /** Hub ms of its last finished activity (ShellInfo); orders the header nav. */
@@ -222,7 +222,7 @@ type Props = {
   onProviderLogin?: (vps: Vps, provider: AgentKind, profile?: AccountProfile) => void;
   onProviderContext?: (vps: Vps, provider: AgentKind, x: number, y: number, profile?: AccountProfile) => void;
   signingOutAccounts?: ReadonlySet<string>;
-  // Codex device-code sign-in (opens ClaudePanel's CodexLoginModal, §14.61).
+  // Codex device-code sign-in (opens HubPanel's CodexLoginModal, §14.61).
   onUpdateAgent?: (vps: Vps) => void;
   // Re-establish the agent connection (for a VPS shown as 'error' that is
   // actually healthy — the SSH transport just dropped). See
@@ -242,12 +242,12 @@ type Props = {
   updatingAgentVpsIds?: Set<string>;
   // VPSes for which a refresh (reconnect) is in progress (UI loading)
   refreshingAgentVpsIds?: Set<string>;
-  /** sessionId → addressable handle, unique per VPS. Computed by ClaudePanel
+  /** sessionId → addressable handle, unique per VPS. Computed by HubPanel
    *  over the FULL session list: deriving it here would let a display filter
    *  (hide paused) silently re-point `@name` at a different session. */
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   /** Browser-local transcript filter. The parent owns it because the switch
-   *  lives here while the filtered messages live in ClaudeSessionView. */
+   *  lives here while the filtered messages live in SessionView. */
   showTools: boolean;
   onToggleShowTools: () => void;
   /** Something opened FROM the peek is still in use (its context menu, an
@@ -531,7 +531,7 @@ export default function Sidebar({
   }
 
   // Width + closed state (desktop, app/panelLayout.ts). Narrow, the grid's
-  // `data-side` tier lays the cards out for it (claude.css); at the minimum
+  // `data-side` tier lays the cards out for it (app.css); at the minimum
   // the sidebar is CLOSED — icons only — and hovering PEEKS the full list at
   // its default width over the chat. Same DOM, so scroll, collapsed groups and
   // an open filter survive the round trip.
@@ -590,7 +590,7 @@ export default function Sidebar({
   return (
     <>
     <aside
-      className={`claude-sidebar${peeking ? ' peek' : ''}`}
+      className={`app-sidebar${peeking ? ' peek' : ''}`}
       ref={asideRef}
       data-tip-region
       onMouseEnter={closed ? peekEnter : undefined}
@@ -964,7 +964,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
               (the single `agent … · sdk …` line got ellipsis-cropped in the
               280px sidebar): each line goes amber for ITS OWN staleness; the
               tooltip carries the full status. Updates live via the `vps_status`
-              bus event (ClaudePanel patches v.agentVersion / v.sdkVersion). */}
+              bus event (HubPanel patches v.agentVersion / v.sdkVersion). */}
           <span className={`cs-vps-ver${agentOutOfDate ? ' outdated' : ''}`} title={agentTip}>
             {agentVersion
               ? `agent v${agentVersion}`

@@ -25,9 +25,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -57,7 +57,7 @@ let clock = Date.now() - 86_400_000;   // a day ago, 1 s per row
 
 function newSession(kind = 'claude'): string {
   const id = (++counter).toString(16).padStart(32, 'a');
-  db.insert(schema.claudeSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'v', status: 'sleeping', kind }).run();
+  db.insert(schema.agentSessions).values({ id, vpsId: VPS, cwd: '/tmp', name: 'v', status: 'sleeping', kind }).run();
   return id;
 }
 
@@ -65,7 +65,7 @@ function newSession(kind = 'claude'): string {
 function add(sid: string, role: string, content: unknown, extra: Record<string, unknown> = {}): number {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
   clock += 1000;
-  return Number(db.insert(schema.claudeSessionMessages).values({
+  return Number(db.insert(schema.sessionMessages).values({
     sessionId: sid, role, content: text, ...deriveMessageStorage(role, text), tsMs: clock, ...extra,
   }).run().lastInsertRowid);
 }
@@ -109,7 +109,7 @@ function allPages(sid: string, view: View, limit: number, before: number | null 
 }
 const chatOf = (pages: Page[]) => pages.flatMap((p) => p.messages).filter((m) => m.role !== 'edit_snapshot');
 function allRows(sid: string): Row[] {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === sid).sort(chrono);
 }
 
@@ -122,9 +122,9 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS, name: 'v', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
-  ({ loadMessageWindow } = await import('@/lib/server/claude/messageWindow') as any);
-  ({ deriveMessageStorage } = await import('@/lib/server/claude/messageWire') as any);
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  ({ loadMessageWindow } = await import('@/lib/server/hub/messageWindow') as any);
+  ({ deriveMessageStorage } = await import('@/lib/server/hub/messageWire') as any);
   ({ rebuildStateFromMessages } = await import('@/app/sessionRebuild'));
   ({ shouldShowChatRole } = await import('@/app/chatVisibility'));
   rows = await import('@/lib/transcriptRows');
@@ -165,7 +165,7 @@ describe('loadMessageWindow — conversation view', () => {
     add(sid, 'user', 'turn 1');
     add(sid, 'assistant', 'answer 1', { assistantFinal: 1 });
     const ins = rawSqlite().prepare(
-      'INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
+      'INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, ?, ?, ?)');
     const kinds: Array<[string, string]> = [
       ['tool_use', JSON.stringify({ type: 'tool_use', id: 'x', name: 'Read', input: {} })],
       ['tool_result', JSON.stringify({ type: 'tool_result', tool_use_id: 'x', content: 'r' })],
@@ -366,7 +366,7 @@ describe('keyset pages seek a chronological RANGE (EXPLAIN, both views)', () => 
     const captured: Array<{ sql: string; params: unknown[] }> = [];
     const spy = vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
       const stmt: any = realPrepare(source);
-      if (!/order by coalesce\("claude_session_messages"\."ts_ms"/i.test(source)) return stmt;
+      if (!/order by coalesce\("session_messages"\."ts_ms"/i.test(source)) return stmt;
       for (const m of ['all', 'get'] as const) {
         const orig = stmt[m].bind(stmt);
         stmt[m] = (...params: unknown[]) => { captured.push({ sql: source, params }); return orig(...params); };
@@ -386,7 +386,7 @@ describe('keyset pages seek a chronological RANGE (EXPLAIN, both views)', () => 
     const text = q.plan.join('\n');
     expect(text, q.sql).not.toMatch(/TEMP B-TREE|MULTI-INDEX|SCAN /);
     expect(text, q.sql).toMatch(
-      /SEARCH claude_session_messages USING INDEX idx_claude_session_messages_session_chrono_id \(session_id=\? AND <expr>[<>]\?/);
+      /SEARCH session_messages USING INDEX idx_session_messages_session_chrono_id \(session_id=\? AND <expr>[<>]\?/);
   }
 
   let sid = '';
@@ -418,7 +418,7 @@ describe('keyset pages seek a chronological RANGE (EXPLAIN, both views)', () => 
       for (const q of qs) expectRangeSeek(q);
       // The root window query (lower bound only) too.
       const rootQs = capturePlans(() => { loadMessageWindow(s, 20, null, view); });
-      const windowQ = rootQs.filter((q) => /order by coalesce\("claude_session_messages"\."ts_ms".*\) asc/i.test(q.sql));
+      const windowQ = rootQs.filter((q) => /order by coalesce\("session_messages"\."ts_ms".*\) asc/i.test(q.sql));
       expect(windowQ).toHaveLength(1);
       expectRangeSeek(windowQ[0]);
     }
@@ -433,15 +433,15 @@ describe('keyset pages seek a chronological RANGE (EXPLAIN, both views)', () => 
     seed();
     sqlite.exec('ANALYZE');
     try {
-      sqlite.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'claude_session_messages'");
-      const ins = sqlite.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('claude_session_messages', ?, ?)");
+      sqlite.exec("DELETE FROM sqlite_stat1 WHERE tbl = 'session_messages'");
+      const ins = sqlite.prepare("INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ('session_messages', ?, ?)");
       // Production values (same copy as peerReplyContext.test.ts).
       for (const [idx, stat] of [
-        ['idx_claude_session_messages_session_chrono_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
-        ['idx_claude_session_messages_session_seq', '347576 11986 1'],
-        ['idx_claude_session_messages_session_ts_id', '347576 11986 1 1'],
-        ['idx_claude_session_messages_session_id_id', '347576 11986 1'],
+        ['idx_session_messages_session_chrono_id', '347576 11986 1 1'],
+        ['idx_session_messages_snapshot_lookup', '347576 11986 2159 96 53 1'],
+        ['idx_session_messages_session_seq', '347576 11986 1'],
+        ['idx_session_messages_session_ts_id', '347576 11986 1 1'],
+        ['idx_session_messages_session_id_id', '347576 11986 1'],
       ]) ins.run(idx, stat);
       sqlite.exec('ANALYZE sqlite_schema');
       checkEveryPagedQuery();
@@ -539,8 +539,8 @@ describe('render property: rebuild(conversation) ≡ rebuild(full) without techn
 
 describe('window GET — view, toolCallCount, compact sources', () => {
   const get = async (sid: string, query = '') => {
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    return (await GET(new Request(`http://localhost/api/claude/sessions/${sid}${query}`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    return (await GET(new Request(`http://localhost/api/sessions/${sid}${query}`),
       { params: Promise.resolve({ id: sid }) })).json();
   };
   /** SQL prepared on the shared handle while `fn` runs. */
@@ -581,7 +581,7 @@ describe('window GET — view, toolCallCount, compact sources', () => {
 
   it('omits the open reasoning block in conversation view only', async () => {
     const sid = newSession('codex');
-    db.update(schema.claudeSessions).set({ status: 'active' }).where(eq(schema.claudeSessions.id, sid)).run();
+    db.update(schema.agentSessions).set({ status: 'active' }).where(eq(schema.agentSessions.id, sid)).run();
     add(sid, 'user', 'go');
     const s = getOrCreateStream(sid);
     const t = Date.now();
@@ -636,7 +636,7 @@ describe('window GET — view, toolCallCount, compact sources', () => {
     // More session rows than one synchronous fold slice: the first reader
     // finds the registry cold and the fold warms in the background.
     const filler = rawSqlite().prepare(
-      "INSERT INTO claude_session_messages (session_id, role, content, ts_ms) VALUES (?, 'event', '{\"type\":\"tool_activity\"}', ?)");
+      "INSERT INTO session_messages (session_id, role, content, ts_ms) VALUES (?, 'event', '{\"type\":\"tool_activity\"}', ?)");
     rawSqlite().transaction(() => {
       for (let i = 0; i < 20_500; i++) filler.run(sid, (clock += 1));
     })();
@@ -687,7 +687,7 @@ describe('window GET — view, toolCallCount, compact sources', () => {
   });
 
   describe('ExitPlan fallback (server-side plan text)', () => {
-    const pendingPlan = (sid: string, id: string, plan: string) => db.insert(schema.claudePendingQuestions).values({
+    const pendingPlan = (sid: string, id: string, plan: string) => db.insert(schema.sessionPendingQuestions).values({
       id, sessionId: sid, kind: 'exit_plan', payload: JSON.stringify({ plan }), status: 'pending',
     }).run();
 

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitPush } from '@/lib/server/claude/git';
+import { gitPush } from '@/lib/server/hub/git';
 
 // POST /api/vps/[id]/git/push  { cwd }
 // `git push` (or `push -u <remote> HEAD` on a branch with no upstream).

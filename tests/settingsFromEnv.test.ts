@@ -17,25 +17,25 @@ process.env.DATABASE_URL = path.join(
   fs.mkdtempSync(path.join(os.tmpdir(), 'charon-settings-env-test-')), 'test.db');
 vi.mock('server-only', () => ({}));
 
-let settings: typeof import('@/lib/server/claude/settings');
+let settings: typeof import('@/lib/server/hub/settings');
 let schema: typeof import('@/lib/db');
 
 beforeAll(async () => {
   schema = await import('@/lib/db');
   const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
   migrate(schema.db, { migrationsFolder: './drizzle' });
-  settings = await import('@/lib/server/claude/settings');
+  settings = await import('@/lib/server/hub/settings');
 });
 
 afterEach(() => {
   delete process.env.CHARON_CLAUDE_SETTING_SOURCES;
-  schema.db.delete(schema.claudeSettings).run();
+  schema.db.delete(schema.appSettings).run();
   // setSetting caches in a globalThis Map; drop it so each case starts cold.
-  (globalThis as any)._claudeSettingsCache?.clear();
+  (globalThis as any)._appSettingsCache?.clear();
 });
 
 function storedRow(key: string) {
-  return schema.db.select().from(schema.claudeSettings).all()
+  return schema.db.select().from(schema.appSettings).all()
     .find((r) => r.key === key) ?? null;
 }
 

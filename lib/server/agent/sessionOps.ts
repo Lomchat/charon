@@ -3,7 +3,7 @@ import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
 import { invalidateSessionRowCaches } from './sessionRowCache';
 import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
-import { adaptCursorEffortForVps } from '@/lib/server/claude/cursorModels';
+import { adaptCursorEffortForVps } from '@/lib/server/hub/cursorModels';
 import 'server-only';
 import { accountProfileId } from '@/lib/accountProfiles';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
@@ -11,20 +11,20 @@ import crypto from 'node:crypto';
 import { asyncQuestionReply } from '@/lib/asyncQuestions';
 import { and, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import {
-  db, claudeSessions, claudeSessionMessages,
-  claudePendingPermissions, claudePendingQuestions, claudeSessionLogs,
+  db, agentSessions, sessionMessages,
+  sessionPendingPermissions, sessionPendingQuestions, sessionLogs,
   vps as vpsTable,
 } from '@/lib/db';
-import type { PermissionMode } from '@/lib/server/claude/types';
-import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/claude/types';
+import type { PermissionMode } from '@/lib/server/hub/types';
+import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
 import type { AgentSessionInfo } from './types';
-import { sendPushToAll } from '@/lib/server/claude/webPush';
+import { sendPushToAll } from '@/lib/server/hub/webPush';
 import {
   sendPermissionToTelegram, sendQuestionToTelegram, markInteractionResolvedInTelegram,
   sendPlainToTelegram,
-} from '@/lib/server/claude/telegram';
-import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/claude/settings';
+} from '@/lib/server/hub/telegram';
+import { getSetting, getSettingBool, type SettingKey } from '@/lib/server/hub/settings';
 import type { AgentEvent, EffortLevel, AgentKind, AnyEffort, SessionMode } from './types';
 import type {
   ClaudeSessionConfig, CodexSessionConfig, CursorSessionConfig, ProviderSessionConfig,
@@ -41,22 +41,22 @@ import {
 import { classifySessionError, type SessionErrorPayload } from '@/lib/sessionError';
 import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
-import { purgeSessionBlobs } from '@/lib/server/claude/attachments';
-import { dropTabsForRef } from '@/lib/server/claude/tabs';
+import { purgeSessionBlobs } from '@/lib/server/hub/attachments';
+import { dropTabsForRef } from '@/lib/server/hub/tabs';
 import {
   clearSessionActivity, fileFromToolUse, noteActivity, type FileActivity,
-} from '@/lib/server/claude/fileActivity';
+} from '@/lib/server/hub/fileActivity';
 import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
-} from '@/lib/server/claude/messageWire';
+} from '@/lib/server/hub/messageWire';
 import {
   bgTaskIdsBeforeEventFromDb, bgTaskRunningInDb, bgTasksHiddenFromStopHook, isBgTaskDone, pruneStaleBgTasks,
   runningBgTasksFromDb, runningBgTasksIfWarm, runningBgTaskDetailsIfWarm,
-} from '@/lib/server/claude/bgTaskState';
-import { withBgTaskLaunchers } from '@/lib/server/claude/conversationSources';
-import { readScheduledTasks, recordScheduledTasks } from '@/lib/server/claude/scheduledTaskState';
+} from '@/lib/server/hub/bgTaskState';
+import { withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
+import { readScheduledTasks, recordScheduledTasks } from '@/lib/server/hub/scheduledTaskState';
 import { dueScheduledTask, fireKey, matchFiredTask, type ScheduledTask } from '@/lib/scheduledTasks';
-import { readCodexBgState } from '@/lib/server/claude/codexBgState';
+import { readCodexBgState } from '@/lib/server/hub/codexBgState';
 import { codexTerminalProcessId, type BgTask } from '@/app/bgTasks';
 import { allocateSessionHandle } from './sessionHandles';
 import {
@@ -102,7 +102,7 @@ const TOKEN_USAGE_BROADCAST_MS = 300;
 
 // Resolve the effective (model, fallback_model, effort) for a new session:
 // per-session opts win, otherwise fall back to the global defaults in
-// claudeSettings, otherwise null (= let the agent pass nothing → SDK default).
+// appSettings, otherwise null (= let the agent pass nothing → SDK default).
 // Empty string in settings is treated as "unset" so an admin can erase a
 // default from the SettingsModal without nuking the row.
 //
@@ -171,7 +171,7 @@ export function permissionGateExtras(reason: unknown, suggestions: unknown): Per
 /** Cap on a session's remembered "don't ask again" rules (newest kept). */
 const MAX_REMEMBERED_RULES = 256;
 
-/** The session's remembered rules (`claudeSessions.alwaysAllowTools`): CLI
+/** The session's remembered rules (`agentSessions.alwaysAllowTools`): CLI
  *  rule strings, or bare tool names from before the CLI's own suggestions —
  *  the same spelling for "the whole tool". Garbage reads as none. */
 export function rememberedRules(raw: string | null | undefined): string[] {
@@ -318,7 +318,7 @@ const streams: Map<string, SessionStream> = g._sessionStreams;
 // ALL events broadcast by the SessionStreams pass through this bus, tagged
 // with their sessionId. It is the sync bus (lib/server/sync/syncBus.ts,
 // CLAUDE.md §14.14): `publish` stamps `id: <epoch>.<rev>`, encodes once, keeps
-// a bounded ring and fans out — the multiplexed SSE `/api/claude/events`
+// a bounded ring and fans out — the multiplexed SSE `/api/events`
 // routes each frame by connection focus (`eventConnections.ts`,
 // `frameRouting.ts`). Persist then publish in the same synchronous tick.
 export type GlobalSessionEvent = WorkerEvent & { sessionId: string };
@@ -408,16 +408,16 @@ export function setSessionFocusChecker(fn: (sessionId: string, lastOutputAtMs?: 
 
 /**
  * Clear a session's durable "finished, unread" marker
- * (claudeSessions.unreadStop → 0) and mirror it live to every tab via the
+ * (agentSessions.unreadStop → 0) and mirror it live to every tab via the
  * `session_unread` bus event. Called when the user opens/focuses the session
- * (POST /api/claude/focus). Idempotent + cheap: only writes/emits when the row
+ * (POST /api/focus). Idempotent + cheap: only writes/emits when the row
  * was actually unread, so re-focusing or switching between already-read
  * sessions never spams the bus.
  */
 export function markSessionRead(sessionId: string): void {
   try {
-    const res = db.update(claudeSessions).set({ unreadStop: 0 })
-      .where(and(eq(claudeSessions.id, sessionId), eq(claudeSessions.unreadStop, 1)))
+    const res = db.update(agentSessions).set({ unreadStop: 0 })
+      .where(and(eq(agentSessions.id, sessionId), eq(agentSessions.unreadStop, 1)))
       .run();
     if (((res as { changes?: number }).changes ?? 0) > 0) {
       emitGlobalSession({ type: 'session_unread', unread: false, sessionId });
@@ -441,7 +441,7 @@ export function setSessionStatusLocal(
       const upd: { status: string; sleepRequested?: number; resumePending?: number } =
         status === 'sleeping' ? { status, sleepRequested: 0 } : { status };
       if (status === 'active' || status === 'thinking') upd.resumePending = 0;
-      db.update(claudeSessions).set(upd).where(eq(claudeSessions.id, sessionId)).run();
+      db.update(agentSessions).set(upd).where(eq(agentSessions.id, sessionId)).run();
     } catch (e) {
       console.error(`[sessionOps] ${sessionId} local status '${status}' write failed:`, (e as Error)?.message ?? e);
     }
@@ -467,7 +467,7 @@ export function emitGlobalVpsRuntimeFromDb(vpsId: string): void {
 
 /**
  * Announce that the SET of Claude sessions changed (created / imported /
- * deleted) so every connected browser refetches GET /api/claude/sessions and
+ * deleted) so every connected browser refetches GET /api/sessions and
  * updates its sidebar + tab bar live — across tabs AND devices (a session
  * started on a phone shows up on the desktop without the 15s poll or an F5).
  * Charon-internal synthetic event, routed LOW (frameRouting.ts § FRAME_CLASS) so it
@@ -601,7 +601,7 @@ export class SessionStream {
   readonly accountProfile: string;
   // Agent-type discriminator: 'claude' (default) | 'codex'. Determines config
   // resolution (which default_* keys), effort validity, sandbox-mode semantics
-  // and which start_session kind the agent gets. Persisted in claudeSessions.kind.
+  // and which start_session kind the agent gets. Persisted in agentSessions.kind.
   readonly kind: AgentKind = 'claude';
   status: WorkerStatus = 'starting';
   // For a Codex session this holds a sandbox mode ('read-only' |
@@ -609,7 +609,7 @@ export class SessionStream {
   // the Claude subset for the existing broadcast plumbing (BridgeEvent is
   // locked to PermissionMode) — codex values pass through at runtime.
   permissionMode: PermissionMode = 'normal';
-  claudeSessionId: string | null = null;
+  nativeSessionId: string | null = null;
   name: string | null = null;
   vpsName: string;
   cwd: string | null = null;
@@ -637,10 +637,10 @@ export class SessionStream {
   customEndpoint = false;
   // The model Anthropic actually used on the last AssistantMessage. Captured
   // from the `effective_model` event (agent >= 0.6.0), persisted in
-  // claude_sessions.effective_model (the agent only re-emits on CHANGE, so a
+  // agent_sessions.effective_model (the agent only re-emits on CHANGE, so a
   // Charon restart would otherwise lose it until the next model switch) and
   // hydrated back in getOrCreateStream. Stamped onto every flushed assistant
-  // message row (claude_session_messages.model) so each bubble can display
+  // message row (session_messages.model) so each bubble can display
   // the true speaking model. Distinct from the configured `model` above:
   // aliases resolve, fallback_model can kick in, SDK may pick a default.
   effectiveModel: string | null = null;
@@ -944,7 +944,7 @@ export class SessionStream {
   constructor(opts: {
     id: string; vpsId: string; vpsName: string; name: string | null;
     status: WorkerStatus; permissionMode: SessionMode;
-    claudeSessionId: string | null;
+    nativeSessionId: string | null;
     kind?: AgentKind;
     accountProfile?: string;
     cwd?: string | null;
@@ -965,7 +965,7 @@ export class SessionStream {
     this.accountProfile = opts.accountProfile ?? 'default';
     this.status = opts.status;
     this.permissionMode = opts.permissionMode as PermissionMode;
-    this.claudeSessionId = opts.claudeSessionId;
+    this.nativeSessionId = opts.nativeSessionId;
     this.lastSeenSeq = opts.lastSeenSeq ?? null;
     this.lastPersistedSeq = this.lastSeenSeq;
     this.lastStopNotifiedSeq = opts.lastStopNotifiedSeq ?? null;
@@ -1082,9 +1082,9 @@ export class SessionStream {
     if (cursor == null) return;
     if (cursor === this.lastPersistedSeq) return;
     try {
-      db.update(claudeSessions)
+      db.update(agentSessions)
         .set({ lastSeenSeq: cursor })
-        .where(eq(claudeSessions.id, this.id))
+        .where(eq(agentSessions.id, this.id))
         .run();
       this.lastPersistedSeq = cursor;
     } catch {
@@ -1345,9 +1345,9 @@ export class SessionStream {
   /** Newest row ts_ms of this session (the epoch-reset finish floor). */
   private _maxRowTsMs(): number | null {
     try {
-      const row = db.select({ maxTs: sql<number | null>`max(${claudeSessionMessages.tsMs})` })
-        .from(claudeSessionMessages)
-        .where(eq(claudeSessionMessages.sessionId, this.id)).get();
+      const row = db.select({ maxTs: sql<number | null>`max(${sessionMessages.tsMs})` })
+        .from(sessionMessages)
+        .where(eq(sessionMessages.sessionId, this.id)).get();
       return typeof row?.maxTs === 'number' ? row.maxTs : null;
     } catch { return null; }
   }
@@ -1542,8 +1542,8 @@ export class SessionStream {
         // (4) Persist them.
         if (this.persistSeqTimer) { clearTimeout(this.persistSeqTimer); this.persistSeqTimer = null; }
         try {
-          db.update(claudeSessions).set({ lastSeenSeq: 0, lastStopNotifiedSeq: null })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ lastSeenSeq: 0, lastStopNotifiedSeq: null })
+            .where(eq(agentSessions.id, this.id)).run();
           this.lastPersistedSeq = 0;
         } catch {}
         // (5) Replay the new log whole (ts-matched identity dedupes, §14.31).
@@ -1558,8 +1558,8 @@ export class SessionStream {
         if (client && !client.backpressuresReplay() && currentSeq > 0) {
           this.lastSeenSeq = currentSeq;
           try {
-            db.update(claudeSessions).set({ lastSeenSeq: currentSeq })
-              .where(eq(claudeSessions.id, this.id)).run();
+            db.update(agentSessions).set({ lastSeenSeq: currentSeq })
+              .where(eq(agentSessions.id, this.id)).run();
             this.lastPersistedSeq = currentSeq;
           } catch {}
           try { client.setAfterSeq(this.id, currentSeq); } catch {}
@@ -1625,8 +1625,8 @@ export class SessionStream {
           this.status = 'sleeping';
           this._broadcast({ type: 'status', status: 'sleeping' });
           try {
-            db.update(claudeSessions).set({ status: 'sleeping' })
-              .where(eq(claudeSessions.id, this.id)).run();
+            db.update(agentSessions).set({ status: 'sleeping' })
+              .where(eq(agentSessions.id, this.id)).run();
           } catch {}
           break;
         }
@@ -1681,8 +1681,8 @@ export class SessionStream {
             ev.status === 'sleeping' ? { status: ev.status, sleepRequested: 0 }
               : ev.status === 'killed' ? { status: 'sleeping' } : { status: ev.status };
           if (ev.status === 'active' || ev.status === 'thinking') upd.resumePending = 0;
-          db.update(claudeSessions).set(upd)
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set(upd)
+            .where(eq(agentSessions.id, this.id)).run();
         } catch (e) {
           // P7 (CLAUDE.md §14.45): surface instead of swallowing. _trackSeq
           // still advances the durable cursor, but the agent's post-replay
@@ -1714,10 +1714,10 @@ export class SessionStream {
         break;
       }
       case 'session_id':
-        this.claudeSessionId = ev.claude_session_id;
+        this.nativeSessionId = ev.claude_session_id;
         try {
-          db.update(claudeSessions).set({ claudeSessionId: ev.claude_session_id })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ nativeSessionId: ev.claude_session_id })
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'session_id', id: ev.claude_session_id });
         break;
@@ -2003,7 +2003,7 @@ export class SessionStream {
         // Claude — its own options, picked by index (lib/permissionSuggestions.ts).
         const gate = permissionGateExtras(ev.reason, ev.suggestions);
         try {
-          db.insert(claudePendingPermissions).values({
+          db.insert(sessionPendingPermissions).values({
             id: ev.id,
             sessionId: this.id,
             toolName: ev.tool,
@@ -2041,7 +2041,7 @@ export class SessionStream {
         const pendingKnown = this.isReplaying && this.replayKnownPendingIds.has(ev.id);
         if (!pendingKnown) {
           try {
-            db.insert(claudePendingQuestions).values({
+            db.insert(sessionPendingQuestions).values({
               id: ev.id, sessionId: this.id, kind: asynchronous ? 'async_question' : 'question',
               payload: JSON.stringify(ev.questions ?? []), status: 'pending',
               createdAt: Math.floor((this.currentEventTs ?? Date.now()) / 1000),
@@ -2085,7 +2085,7 @@ export class SessionStream {
         const pendingKnown = this.isReplaying && this.replayKnownPendingIds.has(ev.id);
         if (!pendingKnown) {
           try {
-            db.insert(claudePendingQuestions).values({
+            db.insert(sessionPendingQuestions).values({
               id: ev.id, sessionId: this.id, kind: 'exit_plan',
               payload: JSON.stringify({ plan: ev.plan ?? '' }), status: 'pending',
               expiresAt: ev.expires_at ?? null,
@@ -2119,20 +2119,20 @@ export class SessionStream {
         const resolvedAt = Math.floor(Date.now() / 1000);
         try {
           if (ev.kind === 'permission') {
-            db.update(claudePendingPermissions)
+            db.update(sessionPendingPermissions)
               .set({ status: ev.outcome, respondedAt: resolvedAt })
               .where(and(
-                eq(claudePendingPermissions.id, ev.id),
-                eq(claudePendingPermissions.sessionId, this.id),
-                eq(claudePendingPermissions.status, 'pending'),
+                eq(sessionPendingPermissions.id, ev.id),
+                eq(sessionPendingPermissions.sessionId, this.id),
+                eq(sessionPendingPermissions.status, 'pending'),
               )).run();
           } else {
-            db.update(claudePendingQuestions)
+            db.update(sessionPendingQuestions)
               .set({ status: ev.outcome, respondedAt: resolvedAt })
               .where(and(
-                eq(claudePendingQuestions.id, ev.id),
-                eq(claudePendingQuestions.sessionId, this.id),
-                eq(claudePendingQuestions.status, 'pending'),
+                eq(sessionPendingQuestions.id, ev.id),
+                eq(sessionPendingQuestions.sessionId, this.id),
+                eq(sessionPendingQuestions.status, 'pending'),
               )).run();
           }
         } catch {}
@@ -2222,8 +2222,8 @@ export class SessionStream {
       case 'mode_changed':
         this.permissionMode = ev.mode as PermissionMode;
         try {
-          db.update(claudeSessions).set({ permissionMode: ev.mode })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ permissionMode: ev.mode })
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'mode_changed', mode: this.permissionMode });
         break;
@@ -2234,9 +2234,9 @@ export class SessionStream {
         this.model = ev.model ?? null;
         this.fallbackModel = ev.fallback_model ?? null;
         try {
-          db.update(claudeSessions).set({
+          db.update(agentSessions).set({
             model: this.model, fallbackModel: this.fallbackModel,
-          }).where(eq(claudeSessions.id, this.id)).run();
+          }).where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this.pendingApply.model = !!ev.applied_at_next_start;
         this._broadcast({
@@ -2249,8 +2249,8 @@ export class SessionStream {
       case 'effort_changed':
         this.effort = isValidEffortForKind(ev.effort, this.kind, this.customEndpoint) ? (ev.effort as AnyEffort) : null;
         try {
-          db.update(claudeSessions).set({ effort: this.effort })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ effort: this.effort })
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this.pendingApply.effort = !!ev.applied_at_next_start;
         this._broadcast({
@@ -2279,8 +2279,8 @@ export class SessionStream {
           if (!this._flushAssistant()) break;
           this.effectiveModel = ev.model;
           try {
-            db.update(claudeSessions).set({ effectiveModel: ev.model })
-              .where(eq(claudeSessions.id, this.id)).run();
+            db.update(agentSessions).set({ effectiveModel: ev.model })
+              .where(eq(agentSessions.id, this.id)).run();
           } catch {}
           this._broadcast({ type: 'effective_model', model: ev.model });
         } else if (this.isReplaying && typeof ev.model === 'string' && ev.model.length > 0) {
@@ -2647,12 +2647,12 @@ export class SessionStream {
         if (synthActive) this.status = 'active';
         const writtenStatus: WorkerStatus | null = stopStatus ?? (synthActive ? 'active' : null);
         try {
-          db.update(claudeSessions).set({
+          db.update(agentSessions).set({
             lastUsedAt: Math.floor(Date.now() / 1000),
             ...(writtenStatus ? { status: writtenStatus } : {}),
             ...(synthActive ? { resumePending: 0 } : {}),
           })
-            .where(eq(claudeSessions.id, this.id)).run();
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'stop', subtype: ev.subtype, finalAssistantId });
         if (writtenStatus) {
@@ -2675,8 +2675,8 @@ export class SessionStream {
           const beingViewed = hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false;
           if (!beingViewed) {
             try {
-              db.update(claudeSessions).set({ unreadStop: 1 })
-                .where(eq(claudeSessions.id, this.id)).run();
+              db.update(agentSessions).set({ unreadStop: 1 })
+                .where(eq(agentSessions.id, this.id)).run();
             } catch {}
             this._broadcast({ type: 'session_unread', unread: true });
           }
@@ -2693,8 +2693,8 @@ export class SessionStream {
         if (stopSeq != null && (this.lastStopNotifiedSeq == null || stopSeq > this.lastStopNotifiedSeq)) {
           this.lastStopNotifiedSeq = stopSeq;
           try {
-            db.update(claudeSessions).set({ lastStopNotifiedSeq: stopSeq })
-              .where(eq(claudeSessions.id, this.id)).run();
+            db.update(agentSessions).set({ lastStopNotifiedSeq: stopSeq })
+              .where(eq(agentSessions.id, this.id)).run();
           } catch {}
         }
         // A turn finished → the account quota just moved; refresh the usage
@@ -2932,7 +2932,7 @@ export class SessionStream {
    * exists). Charon's _dispatchEvent handler does the DB write + broadcast.
    */
   async setModel(model: string | null, fallbackModel: string | null = null): Promise<void> {
-    const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+    const row = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, this.id)).get();
     const endpoint = connectionConfig(row?.config).customEndpoint;
     if (endpoint) {
       if (!model || model.length > 256) throw new Error('Enter a valid endpoint model ID.');
@@ -2968,10 +2968,10 @@ export class SessionStream {
     permId: string, allow: boolean, always = false, suggestion?: number,
   ): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
-    const [row] = db.select().from(claudePendingPermissions)
+    const [row] = db.select().from(sessionPendingPermissions)
       .where(and(
-        eq(claudePendingPermissions.id, permId),
-        eq(claudePendingPermissions.sessionId, this.id),
+        eq(sessionPendingPermissions.id, permId),
+        eq(sessionPendingPermissions.sessionId, this.id),
       )).all();
     if (!row) throw new Error('permission request not found for this session');
     if (row.status !== 'pending') {
@@ -2984,12 +2984,12 @@ export class SessionStream {
     const nowSeconds = Math.floor(Date.now() / 1000);
     if (row.expiresAt != null && row.expiresAt <= nowSeconds) {
       try {
-        db.update(claudePendingPermissions)
+        db.update(sessionPendingPermissions)
           .set({ status: 'expired', respondedAt: nowSeconds })
           .where(and(
-            eq(claudePendingPermissions.id, permId),
-            eq(claudePendingPermissions.sessionId, this.id),
-            eq(claudePendingPermissions.status, 'pending'),
+            eq(sessionPendingPermissions.id, permId),
+            eq(sessionPendingPermissions.sessionId, this.id),
+            eq(sessionPendingPermissions.status, 'pending'),
           )).run();
       } catch {}
       this.publishResolution('permission', permId, 'expired');
@@ -3024,19 +3024,19 @@ export class SessionStream {
       if (pick != null) {
         this._rememberAllowRules(allowRulesOf(parseSuggestions(row.suggestions)[pick]));
       }
-      db.update(claudePendingPermissions)
+      db.update(sessionPendingPermissions)
         .set({ status: allow ? 'allowed' : 'denied', respondedAt: Math.floor(Date.now() / 1000) })
         .where(and(
-          eq(claudePendingPermissions.id, permId),
-          eq(claudePendingPermissions.sessionId, this.id),
+          eq(sessionPendingPermissions.id, permId),
+          eq(sessionPendingPermissions.sessionId, this.id),
         )).run();
     } catch {}
     this.publishResolution('permission', permId, allow ? 'answered' : 'denied');
   }
 
   async respondQuestion(qid: string, answers: Record<string, string> | null): Promise<void> {
-    const row = db.select().from(claudePendingQuestions).where(and(
-      eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id),
+    const row = db.select().from(sessionPendingQuestions).where(and(
+      eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id),
     )).get();
     if (!row) throw new Error('Question not found in this session.');
     if (row.kind === 'async_question') {
@@ -3052,11 +3052,11 @@ export class SessionStream {
       this._retireRefusedGate('question', qid);
       throw new Error('This question has already expired or been cancelled.');
     }
-    db.update(claudePendingQuestions).set({
+    db.update(sessionPendingQuestions).set({
       status: answers ? 'answered' : 'cancelled',
       answers: answers ? JSON.stringify(answers) : null,
       respondedAt: Math.floor(Date.now() / 1000),
-    }).where(and(eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id))).run();
+    }).where(and(eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id))).run();
     this._broadcast({
       type: 'interaction_resolved', kind: 'question', id: qid,
       outcome: answers ? 'answered' : 'cancelled',
@@ -3072,8 +3072,8 @@ export class SessionStream {
     if (inflight) return inflight.answers === encodedAnswers ? inflight.task
       : Promise.reject(new Error('A response is already being delivered. Retry the same answers.'));
     const respond = async () => {
-      const row = db.select().from(claudePendingQuestions).where(and(
-        eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id),
+      const row = db.select().from(sessionPendingQuestions).where(and(
+        eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id),
       )).get();
       if (!row || row.kind !== 'async_question') throw new Error('Question not found.');
       if (row.status !== 'pending') {
@@ -3086,12 +3086,12 @@ export class SessionStream {
       if (row.answers != null && row.answers !== encodedAnswers) {
         throw new Error('A response is already being delivered. Retry the same answers.');
       }
-      db.update(claudePendingQuestions).set({ answers: encodedAnswers })
-        .where(and(eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id))).run();
+      db.update(sessionPendingQuestions).set({ answers: encodedAnswers })
+        .where(and(eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id))).run();
       const clientMessageId = `async-question:${qid}`;
-      const existing = db.select({ id: claudeSessionMessages.id }).from(claudeSessionMessages).where(and(
-        eq(claudeSessionMessages.sessionId, this.id), eq(claudeSessionMessages.cliUuid, clientMessageId),
-        eq(claudeSessionMessages.role, 'user'),
+      const existing = db.select({ id: sessionMessages.id }).from(sessionMessages).where(and(
+        eq(sessionMessages.sessionId, this.id), eq(sessionMessages.cliUuid, clientMessageId),
+        eq(sessionMessages.role, 'user'),
       )).get();
       if (!existing) {
         const answerRow = this._persist('user', content, { cliUuid: clientMessageId });
@@ -3106,9 +3106,9 @@ export class SessionStream {
       // already be streaming reasoning into an open block — persist it first
       // so its row precedes this one (I8).
       this.persistExternal(() => db.transaction(() => {
-        db.update(claudePendingQuestions).set({ status: outcome, respondedAt: Math.floor(Date.now() / 1000) })
-          .where(and(eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id))).run();
-        db.insert(claudeSessionMessages).values({ sessionId: this.id, role: 'event',
+        db.update(sessionPendingQuestions).set({ status: outcome, respondedAt: Math.floor(Date.now() / 1000) })
+          .where(and(eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id))).run();
+        db.insert(sessionMessages).values({ sessionId: this.id, role: 'event',
           content: JSON.stringify(event), tsMs: Date.now() }).run();
       }));
       this._broadcast(event);
@@ -3132,9 +3132,9 @@ export class SessionStream {
   }
 
   async respondExitPlan(qid: string, decision: 'approve' | 'reject', feedback = ''): Promise<void> {
-    const row = db.select({ status: claudePendingQuestions.status }).from(claudePendingQuestions).where(and(
-      eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id),
-      eq(claudePendingQuestions.kind, 'exit_plan'),
+    const row = db.select({ status: sessionPendingQuestions.status }).from(sessionPendingQuestions).where(and(
+      eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id),
+      eq(sessionPendingQuestions.kind, 'exit_plan'),
     )).get();
     if (!row) throw new Error('Plan review not found in this session.');
     if (row.status !== 'pending') {
@@ -3151,11 +3151,11 @@ export class SessionStream {
       throw new Error('This plan review has already expired or been cancelled.');
     }
     try {
-      db.update(claudePendingQuestions).set({
+      db.update(sessionPendingQuestions).set({
         status: 'answered',
         answers: JSON.stringify({ decision, feedback }),
         respondedAt: Math.floor(Date.now() / 1000),
-      }).where(and(eq(claudePendingQuestions.id, qid), eq(claudePendingQuestions.sessionId, this.id))).run();
+      }).where(and(eq(sessionPendingQuestions.id, qid), eq(sessionPendingQuestions.sessionId, this.id))).run();
     } catch {}
     this.publishResolution('exit_plan', qid, 'answered');
   }
@@ -3432,9 +3432,9 @@ export class SessionStream {
             // SIGTERM partial: the persisted row holds a strict prefix of
             // the re-accumulated text — extend it in place.
             try {
-              db.update(claudeSessionMessages)
+              db.update(sessionMessages)
                 .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
-                .where(eq(claudeSessionMessages.id, row.id))
+                .where(eq(sessionMessages.id, row.id))
                 .run();
             } catch (e: any) {
               // A failed extend is a failed persist (§14.31): the buffer was
@@ -3475,23 +3475,23 @@ export class SessionStream {
         }
         try {
           const lastRows = db.select({
-            id: claudeSessionMessages.id,
-            content: claudeSessionMessages.content,
-          }).from(claudeSessionMessages)
+            id: sessionMessages.id,
+            content: sessionMessages.content,
+          }).from(sessionMessages)
             .where(and(
-              eq(claudeSessionMessages.sessionId, this.id),
-              eq(claudeSessionMessages.role, 'assistant'),
+              eq(sessionMessages.sessionId, this.id),
+              eq(sessionMessages.role, 'assistant'),
             ))
-            .orderBy(desc(claudeSessionMessages.id))
+            .orderBy(desc(sessionMessages.id))
             .limit(1).all();
           if (lastRows.length > 0 &&
               finalContent.startsWith(lastRows[0].content) &&
               finalContent.length > lastRows[0].content.length) {
-            db.update(claudeSessionMessages)
+            db.update(sessionMessages)
               // Re-stamp the model too: the partial may predate the model column
               // (or a SIGTERM flush that raced the effective_model event).
               .set({ content: finalContent, ...(this.effectiveModel ? { model: this.effectiveModel } : {}) })
-              .where(eq(claudeSessionMessages.id, lastRows[0].id))
+              .where(eq(sessionMessages.id, lastRows[0].id))
               .run();
             legacy.assistantContents.delete(lastRows[0].content);
             legacy.assistantContents.add(finalContent);
@@ -3630,20 +3630,20 @@ export class SessionStream {
   private _rememberAllowRules(rules: string[]): void {
     if (!rules.length) return;
     try {
-      const row = db.select({ raw: claudeSessions.alwaysAllowTools }).from(claudeSessions)
-        .where(eq(claudeSessions.id, this.id)).get();
+      const row = db.select({ raw: agentSessions.alwaysAllowTools }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get();
       const current = rememberedRules(row?.raw);
       const next = [...current, ...rules.filter((r) => !current.includes(r))];
       if (next.length === current.length) return;
-      db.update(claudeSessions)
+      db.update(agentSessions)
         .set({ alwaysAllowTools: JSON.stringify(next.slice(-MAX_REMEMBERED_RULES)) })
-        .where(eq(claudeSessions.id, this.id)).run();
+        .where(eq(agentSessions.id, this.id)).run();
     } catch {}
   }
 
   private _flagProviderLoggedOut(): void {
     try {
-      const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+      const row = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, this.id)).get();
       if (connectionConfig(row?.config).customEndpoint) return;
       if (this.accountProfile !== 'default') {
         void import('./accountProfiles').then((p) => p.readProfileStatus(this.vpsId, this.kind, this.accountProfile, true)).catch(() => {});
@@ -3953,9 +3953,9 @@ export class SessionStream {
    *  holds). Same JSON key order as an insert. False on a DB failure. */
   private _extendThinkingRow(rowId: number, text: string): boolean {
     try {
-      db.update(claudeSessionMessages)
+      db.update(sessionMessages)
         .set({ content: JSON.stringify({ type: 'thinking', text }) })
-        .where(and(eq(claudeSessionMessages.id, rowId), eq(claudeSessionMessages.sessionId, this.id)))
+        .where(and(eq(sessionMessages.id, rowId), eq(sessionMessages.sessionId, this.id)))
         .run();
       return true;
     } catch (e: any) {
@@ -4068,17 +4068,17 @@ export class SessionStream {
 
   private async _reconcileCodexBgTasks(): Promise<void> {
     if (this.codexBgChecking || this.isReplaying || !this.attached
-      || !this.claudeSessionId || !this.codexBgChecks.size) return;
+      || !this.nativeSessionId || !this.codexBgChecks.size) return;
     this.codexBgChecking = true;
     const captured = new Map([...this.codexBgChecks].slice(0, 64));
     try {
       const vps = db.select().from(vpsTable).where(eq(vpsTable.id, this.vpsId)).get();
-      const row = db.select({ config: claudeSessions.codexConfig }).from(claudeSessions)
-        .where(eq(claudeSessions.id, this.id)).get();
+      const row = db.select({ config: agentSessions.providerConfig }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get();
       if (!vps || !row) return;
       let codexHome: string | undefined;
       try { codexHome = JSON.parse(row.config ?? '{}').env?.CODEX_HOME; } catch {}
-      const observations = await readCodexBgState(vps, this.claudeSessionId,
+      const observations = await readCodexBgState(vps, this.nativeSessionId,
         [...captured.keys()], typeof codexHome === 'string' ? codexHome : undefined);
       if (!this.attached || this.isReplaying) return;
       for (const observation of observations) {
@@ -4194,8 +4194,8 @@ export class SessionStream {
       if (!before && this.status === 'active') {
         this.status = 'background';
         try {
-          db.update(claudeSessions).set({ status: 'background', unreadStop: 0 })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ status: 'background', unreadStop: 0 })
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'status', status: 'background' });
         // The DB marker just went to 0: every tab hears it (no stale green).
@@ -4215,8 +4215,8 @@ export class SessionStream {
     if (this.status !== 'background') return;
     this.status = 'active';
     try {
-      db.update(claudeSessions).set({ status: 'active' })
-        .where(eq(claudeSessions.id, this.id)).run();
+      db.update(agentSessions).set({ status: 'active' })
+        .where(eq(agentSessions.id, this.id)).run();
     } catch {}
     this._broadcast({ type: 'status', status: 'active' });
     this._scheduleBgFinishNotice();
@@ -4277,8 +4277,8 @@ export class SessionStream {
       // Marked BEFORE the push: in-app green never trails a push (G6).
       if (!(hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false)) {
         try {
-          db.update(claudeSessions).set({ unreadStop: 1 })
-            .where(eq(claudeSessions.id, this.id)).run();
+          db.update(agentSessions).set({ unreadStop: 1 })
+            .where(eq(agentSessions.id, this.id)).run();
         } catch {}
         this._broadcast({ type: 'session_unread', unread: true });
       }
@@ -4302,15 +4302,15 @@ export class SessionStream {
    * Replies received by the requester still belong to its user-facing work.
    * Bound the lookup by event time so replay cannot borrow a newer input. */
   private _peerTurnFromHistory(): boolean {
-    const row = db.select({ role: claudeSessionMessages.role, content: claudeSessionMessages.content })
-      .from(claudeSessionMessages).where(and(
-        eq(claudeSessionMessages.sessionId, this.id),
-        or(eq(claudeSessionMessages.role, 'user'), and(
-          eq(claudeSessionMessages.role, 'event'),
-          sql`CASE WHEN json_valid(${claudeSessionMessages.content}) THEN json_extract(${claudeSessionMessages.content}, '$.type') END = 'external_message'`,
+    const row = db.select({ role: sessionMessages.role, content: sessionMessages.content })
+      .from(sessionMessages).where(and(
+        eq(sessionMessages.sessionId, this.id),
+        or(eq(sessionMessages.role, 'user'), and(
+          eq(sessionMessages.role, 'event'),
+          sql`CASE WHEN json_valid(${sessionMessages.content}) THEN json_extract(${sessionMessages.content}, '$.type') END = 'external_message'`,
         )),
-        ...(this.currentEventTs == null ? [] : [sql`${claudeSessionMessages.tsMs} <= ${this.currentEventTs}`]),
-      )).orderBy(desc(claudeSessionMessages.tsMs), desc(claudeSessionMessages.id)).limit(1).get();
+        ...(this.currentEventTs == null ? [] : [sql`${sessionMessages.tsMs} <= ${this.currentEventTs}`]),
+      )).orderBy(desc(sessionMessages.tsMs), desc(sessionMessages.id)).limit(1).get();
     if (row?.role !== 'event') return false;
     try {
       const input = JSON.parse(row.content);
@@ -4344,14 +4344,14 @@ export class SessionStream {
     this.legacyToolRows = null;
     this.replayKnownPendingIds.clear();
     try {
-      const perms = db.select({ id: claudePendingPermissions.id })
-        .from(claudePendingPermissions)
-        .where(eq(claudePendingPermissions.sessionId, this.id))
+      const perms = db.select({ id: sessionPendingPermissions.id })
+        .from(sessionPendingPermissions)
+        .where(eq(sessionPendingPermissions.sessionId, this.id))
         .all();
       for (const p of perms) this.replayKnownPendingIds.add(p.id);
-      const qs = db.select({ id: claudePendingQuestions.id })
-        .from(claudePendingQuestions)
-        .where(eq(claudePendingQuestions.sessionId, this.id))
+      const qs = db.select({ id: sessionPendingQuestions.id })
+        .from(sessionPendingQuestions)
+        .where(eq(sessionPendingQuestions.sessionId, this.id))
         .all();
       for (const q of qs) this.replayKnownPendingIds.add(q.id);
     } catch {}
@@ -4360,26 +4360,26 @@ export class SessionStream {
   private _finalizeAssistantTurn(): number | null {
     try {
       return db.transaction((tx) => {
-        const session = tx.select({ id: claudeSessions.pendingAssistantMessageId })
-          .from(claudeSessions).where(eq(claudeSessions.id, this.id)).get();
+        const session = tx.select({ id: agentSessions.pendingAssistantMessageId })
+          .from(agentSessions).where(eq(agentSessions.id, this.id)).get();
         const id = session?.id;
         if (id == null) return null;
-        const candidate = tx.select({ tsMs: claudeSessionMessages.tsMs })
-          .from(claudeSessionMessages).where(eq(claudeSessionMessages.id, id)).get();
+        const candidate = tx.select({ tsMs: sessionMessages.tsMs })
+          .from(sessionMessages).where(eq(sessionMessages.id, id)).get();
         // A replayed stop from an earlier turn must not promote text written
         // by a later turn while the hub was disconnected.
         if (this.currentEventTs != null && candidate?.tsMs != null && candidate.tsMs > this.currentEventTs) {
           return null;
         }
-        const changed = tx.update(claudeSessionMessages).set({ assistantFinal: 1 })
+        const changed = tx.update(sessionMessages).set({ assistantFinal: 1 })
           .where(and(
-            eq(claudeSessionMessages.id, id),
-            eq(claudeSessionMessages.sessionId, this.id),
-            eq(claudeSessionMessages.role, 'assistant'),
-            eq(claudeSessionMessages.assistantFinal, 0),
+            eq(sessionMessages.id, id),
+            eq(sessionMessages.sessionId, this.id),
+            eq(sessionMessages.role, 'assistant'),
+            eq(sessionMessages.assistantFinal, 0),
           )).run().changes;
-        tx.update(claudeSessions).set({ pendingAssistantMessageId: null })
-          .where(eq(claudeSessions.id, this.id)).run();
+        tx.update(agentSessions).set({ pendingAssistantMessageId: null })
+          .where(eq(agentSessions.id, this.id)).run();
         return changed ? id : null;
       });
     } catch (e: any) {
@@ -4434,27 +4434,27 @@ export class SessionStream {
         tsMs,
       };
       if (role !== 'assistant' && !turnDriver) {
-        return Number(db.insert(claudeSessionMessages).values(values).run().lastInsertRowid);
+        return Number(db.insert(sessionMessages).values(values).run().lastInsertRowid);
       }
       return db.transaction((tx) => {
-        const pendingId = tx.select({ id: claudeSessions.pendingAssistantMessageId })
-          .from(claudeSessions).where(eq(claudeSessions.id, this.id)).get()?.id;
-        const pendingTs = pendingId == null ? null : tx.select({ tsMs: claudeSessionMessages.tsMs })
-          .from(claudeSessionMessages).where(eq(claudeSessionMessages.id, pendingId)).get()?.tsMs;
+        const pendingId = tx.select({ id: agentSessions.pendingAssistantMessageId })
+          .from(agentSessions).where(eq(agentSessions.id, this.id)).get()?.id;
+        const pendingTs = pendingId == null ? null : tx.select({ tsMs: sessionMessages.tsMs })
+          .from(sessionMessages).where(eq(sessionMessages.id, pendingId)).get()?.tsMs;
         const isNewest = pendingTs == null || tsMs >= pendingTs;
         // This uses the same synchronous SQLite connection as tx and still
         // participates in its transaction. Keep the shared insert path so
         // injected DB failures exercise the flush holdback invariant.
-        const result = db.insert(claudeSessionMessages).values(values).run();
+        const result = db.insert(sessionMessages).values(values).run();
         const id = Number(result.lastInsertRowid);
         if (role === 'assistant' && isNewest) {
-          tx.update(claudeSessions).set({ pendingAssistantMessageId: id })
-            .where(eq(claudeSessions.id, this.id)).run();
+          tx.update(agentSessions).set({ pendingAssistantMessageId: id })
+            .where(eq(agentSessions.id, this.id)).run();
         } else if (isNewest && turnDriver) {
           // A fresh prompt cannot finalize a provisional answer from an
           // interrupted earlier turn.
-          tx.update(claudeSessions).set({ pendingAssistantMessageId: null })
-            .where(eq(claudeSessions.id, this.id)).run();
+          tx.update(agentSessions).set({ pendingAssistantMessageId: null })
+            .where(eq(agentSessions.id, this.id)).run();
         }
         return id;
       });
@@ -4474,7 +4474,7 @@ export class SessionStream {
 
   private _log(level: 'info' | 'warn' | 'error', event: string, detail?: any): void {
     try {
-      db.insert(claudeSessionLogs).values({
+      db.insert(sessionLogs).values({
         sessionId: this.id, level, event,
         detail: detail ? JSON.stringify(detail) : null,
       }).run();
@@ -4515,19 +4515,19 @@ export class SessionStream {
       const resolvedAt = Math.floor(Date.now() / 1000);
       try {
         const result = kind === 'permission'
-          ? db.update(claudePendingPermissions)
+          ? db.update(sessionPendingPermissions)
               .set({ status: 'expired', respondedAt: resolvedAt })
               .where(and(
-                eq(claudePendingPermissions.id, id),
-                eq(claudePendingPermissions.sessionId, this.id),
-                eq(claudePendingPermissions.status, 'pending'),
+                eq(sessionPendingPermissions.id, id),
+                eq(sessionPendingPermissions.sessionId, this.id),
+                eq(sessionPendingPermissions.status, 'pending'),
               )).run()
-          : db.update(claudePendingQuestions)
+          : db.update(sessionPendingQuestions)
               .set({ status: 'expired', respondedAt: resolvedAt })
               .where(and(
-                eq(claudePendingQuestions.id, id),
-                eq(claudePendingQuestions.sessionId, this.id),
-                eq(claudePendingQuestions.status, 'pending'),
+                eq(sessionPendingQuestions.id, id),
+                eq(sessionPendingQuestions.sessionId, this.id),
+                eq(sessionPendingQuestions.status, 'pending'),
               )).run();
         if (!result.changes) return;
       } catch {
@@ -4557,7 +4557,7 @@ export class SessionStream {
     flushSummaryNow(this.id);
     // `url` is the openWindow fallback used by the service worker when no
     // Charon tab is already open. The hub is a single responsive app at `/`
-    // — the ClaudePanel picks up `?session=…` via useSearchParams and
+    // — the HubPanel picks up `?session=…` via useSearchParams and
     // switches selectedId. When a tab IS already open, the SW prefers
     // focus+postMessage; the root layout handler (`NotificationClickHandler`)
     // then routes via Next router to `/?session=…`.
@@ -4580,7 +4580,7 @@ function _vpsName(vpsId: string): string {
  * Use for READ paths (status snapshot for SSE init, GET /sessions/[id])
  * where a null result is fine because the caller falls back to DB rows.
  *
- * Why this matters: every GET /api/claude/events used to call getStream()
+ * Why this matters: every GET /api/events used to call getStream()
  * for every session row, which materialized SessionStream wrappers for
  * sleeping/historical sessions that nobody was attached to. Harmless but
  * wasteful — `peek` makes the read paths zero-allocation in steady state.
@@ -4629,15 +4629,15 @@ export function broadcastSessionTokenUsage(sessionId: string, usage: SessionToke
 export function getOrCreateStream(sessionId: string): SessionStream | null {
   let s = streams.get(sessionId);
   if (s) return s;
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) return null;
   s = new SessionStream({
     id: row.id, vpsId: row.vpsId, vpsName: _vpsName(row.vpsId),
     name: row.name, status: row.status as WorkerStatus,
     kind: (row.kind as AgentKind) ?? 'claude',
-    accountProfile: accountProfileId(row.codexConfig),
+    accountProfile: accountProfileId(row.providerConfig),
     permissionMode: row.permissionMode as SessionMode,
-    claudeSessionId: row.claudeSessionId,
+    nativeSessionId: row.nativeSessionId,
     cwd: row.cwd,
     // Hydrate the durable-replay cursor from DB. On the next attach,
     // SessionStream will pass this as `afterSeq` to the agent so it
@@ -4648,7 +4648,7 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
     model: row.model ?? null,
     fallbackModel: row.fallbackModel ?? null,
     effort: row.effort ?? null,
-    customEndpoint: !!connectionConfig(row.codexConfig).customEndpoint,
+    customEndpoint: !!connectionConfig(row.providerConfig).customEndpoint,
     // Last API-confirmed model — needed right after a Charon restart so the
     // very next assistant flush is stamped correctly (the agent won't re-emit
     // `effective_model` unless it changes).
@@ -4734,11 +4734,11 @@ function cancelSessionBlockingGates(
 
 export function nextSessionPosition(vpsId: string): number {
   const [row] = db
-    .select({ max: sql<number | null>`max(${claudeSessions.position})` })
-    .from(claudeSessions)
+    .select({ max: sql<number | null>`max(${agentSessions.position})` })
+    .from(agentSessions)
     .where(and(
-      eq(claudeSessions.vpsId, vpsId),
-      eq(claudeSessions.archived, 0),
+      eq(agentSessions.vpsId, vpsId),
+      eq(agentSessions.archived, 0),
     ))
     .all();
   return (row?.max ?? -1) + 1;
@@ -4754,7 +4754,7 @@ export async function importExistingSession(opts: {
   accountProfile?: string;
   vpsId: string;
   cwd: string;
-  claudeSessionId: string;
+  nativeSessionId: string;
   name?: string | null;
   kind?: AgentKind;
   permissionMode?: SessionMode;
@@ -4773,15 +4773,15 @@ export async function importExistingSession(opts: {
   const { requireAccountProfile } = await import('./accountProfiles');
   const profile = requireAccountProfile(opts.vpsId, kind, opts.accountProfile);
   const providerConfig = resolveProviderConfig(kind, { accountProfile: profile.id, accountProfileNumber: profile.number }, vps);
-  db.insert(claudeSessions).values({
+  db.insert(agentSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
-    claudeSessionId: opts.claudeSessionId,
+    nativeSessionId: opts.nativeSessionId,
     cwd: opts.cwd,
     name: opts.name ?? null,
     handle,
     kind,
-    codexConfig: providerConfig ? JSON.stringify(providerConfig) : null,
+    providerConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     status: 'sleeping',
     permissionMode: opts.permissionMode ?? defaultMode,
     position: nextSessionPosition(opts.vpsId),
@@ -4812,7 +4812,7 @@ export async function startNewSession(opts: {
   effort?: string | null;
   sessionConfig?: ProviderSessionConfig | null;
   /** @deprecated internal compatibility while old callers migrate. */
-  codexConfig?: CodexSessionConfig | null;
+  providerConfig?: CodexSessionConfig | null;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
@@ -4829,7 +4829,7 @@ export async function startNewSession(opts: {
   const cfg = _resolveSessionConfig(kind, {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
-  let requestedConfig = opts.sessionConfig ?? opts.codexConfig ?? null;
+  let requestedConfig = opts.sessionConfig ?? opts.providerConfig ?? null;
   if (requestedConfig?.accountProfile) {
     const { requireAccountProfile, readProfileStatus } = await import('./accountProfiles');
     const profile = requireAccountProfile(opts.vpsId, kind, requestedConfig.accountProfile);
@@ -4855,7 +4855,7 @@ export async function startNewSession(opts: {
   });
 
   // Insert in DB first (status 'starting' until agent confirms)
-  db.insert(claudeSessions).values({
+  db.insert(agentSessions).values({
     id: sessionId,
     vpsId: opts.vpsId,
     cwd: opts.cwd,
@@ -4868,7 +4868,7 @@ export async function startNewSession(opts: {
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
     // Historical column name; the JSON is provider-neutral.
-    codexConfig: providerConfig ? JSON.stringify(providerConfig) : null,
+    providerConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
   }).run();
@@ -4880,7 +4880,7 @@ export async function startNewSession(opts: {
     kind,
     permissionMode,
     cwd: opts.cwd,
-    claudeSessionId: null,
+    nativeSessionId: null,
     model: cfg.model,
     fallbackModel: cfg.fallbackModel,
     effort: effortPersist,
@@ -4953,14 +4953,14 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
   }
   // Apply before owning the resume lock: applying an idle connection may itself
   // resume the session. Holding both promises would make them await each other.
-  const pendingRow = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).get();
-  if (pendingRow && !pendingRow.archived && connectionConfig(pendingRow.codexConfig).pendingConnection) {
+  const pendingRow = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
+  if (pendingRow && !pendingRow.archived && connectionConfig(pendingRow.providerConfig).pendingConnection) {
     await (await loadEndpointOps()).applyPendingEndpoint(sessionId);
     const concurrent = _resumeInflight.get(sessionId);
     if (concurrent) return concurrent;
   }
   const p = (async () => {
-    const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+    const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
     if (!row) throw new Error(`session ${sessionId} not found`);
     if (row.archived) throw new Error('session is archived; unarchive it before resuming');
     // Note: the `status === 'killed'` guard was removed with the kill→delete
@@ -4976,9 +4976,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         id: row.id, vpsId: row.vpsId, vpsName: vps.name,
         name: row.name, status: row.status as WorkerStatus,
         kind,
-        accountProfile: accountProfileId(row.codexConfig),
+        accountProfile: accountProfileId(row.providerConfig),
         permissionMode: row.permissionMode as SessionMode,
-        claudeSessionId: row.claudeSessionId,
+        nativeSessionId: row.nativeSessionId,
         cwd: row.cwd,
         lastSeenSeq: row.lastSeenSeq ?? null,
         lastStopNotifiedSeq: row.lastStopNotifiedSeq ?? null,
@@ -4986,16 +4986,16 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         fallbackModel: row.fallbackModel ?? null,
         effectiveModel: row.effectiveModel ?? null,
         effort: row.effort ?? null,
-        customEndpoint: !!connectionConfig(row.codexConfig).customEndpoint,
+        customEndpoint: !!connectionConfig(row.providerConfig).customEndpoint,
       });
       streams.set(sessionId, stream);
     } else {
     }
 
     const client = getAgentClientForVpsId(row.vpsId);
-    if (accountProfileId(row.codexConfig) !== 'default') {
+    if (accountProfileId(row.providerConfig) !== 'default') {
       const { readProfileStatus } = await import('./accountProfiles');
-      await readProfileStatus(row.vpsId, kind, accountProfileId(row.codexConfig));
+      await readProfileStatus(row.vpsId, kind, accountProfileId(row.providerConfig));
     }
     // ORDER: make sure the session exists on the agent side BEFORE subscribing
     // (otherwise the subscribe RPC throws session_not_found).
@@ -5016,7 +5016,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
         session_id: sessionId,
         handle: row.handle,
         cli_name: row.handle,
-        session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.codexConfig)), row.alwaysAllowTools),
+        session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools),
         model: row.model, fallback_model: row.fallbackModel, effort: row.effort,
       });
       const agentStatus = (rpcRes as { status?: string } | undefined)?.status;
@@ -5046,12 +5046,12 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           cwd: row.cwd,
           name: row.name,
           permission_mode: row.permissionMode,
-          claude_session_id: row.claudeSessionId,
+          claude_session_id: row.nativeSessionId,
           model: row.model ?? null,
           fallback_model: row.fallbackModel ?? null,
           effort: row.effort ?? null,
-          session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.codexConfig)), row.alwaysAllowTools),
-          codex_config: kind === 'codex' ? runtimeConnection(parseProviderConfig(row.codexConfig)) : null,
+          session_config: withRememberedRules(kind, runtimeConnection(parseProviderConfig(row.providerConfig)), row.alwaysAllowTools),
+          codex_config: kind === 'codex' ? runtimeConnection(parseProviderConfig(row.providerConfig)) : null,
           // Reassert both provider-neutral identity and Claude's native name.
           handle: row.handle,
           cli_name: row.handle,
@@ -5092,9 +5092,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     emitGlobalSession({ type: 'status', status: resolvedStatus, sessionId });
     // Startup is asynchronous: retain post-update intent until active/thinking
     // is confirmed. A queued start can still fail or stop (§14.62).
-    db.update(claudeSessions).set({ status: resolvedStatus, sleepRequested: 0,
+    db.update(agentSessions).set({ status: resolvedStatus, sleepRequested: 0,
       ...(resolvedStatus === 'starting' ? {} : { resumePending: 0 }) })
-      .where(eq(claudeSessions.id, sessionId)).run();
+      .where(eq(agentSessions.id, sessionId)).run();
     return stream;
   })();
   _resumeInflight.set(sessionId, p);
@@ -5106,15 +5106,15 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
 }
 
 export async function sleepSession(sessionId: string): Promise<void> {
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) return;
   // Record the DURABLE sleep intent alongside the status (cf. CLAUDE.md §14.46):
   // if the agent is down right now, this fire-and-forget sleep_session RPC may
   // never land; the agent would later restore the session as 'active' and
   // reconcileVpsAgentState would resurrect it. The flag lets reconcile honor
   // the user's intent and re-fire the sleep instead.
-  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
-    .where(eq(claudeSessions.id, sessionId)).run();
+  db.update(agentSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
+    .where(eq(agentSessions.id, sessionId)).run();
   // Optimistic broadcast: flip the status to 'sleeping' for ALL SSE clients
   // (sidebar badges + other tabs) right away. The acting tab already updated
   // locally; this covers everyone else. We deliberately do NOT wait for the
@@ -5158,7 +5158,7 @@ export async function sleepSession(sessionId: string): Promise<void> {
  * fallback and re-reads model/fallback/effort from DB).
  */
 export async function restartSession(sessionId: string): Promise<SessionStream> {
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) throw new Error(`session ${sessionId} not found`);
 
   const wasRunning = ['active', 'thinking', 'starting', 'failed', 'background'].includes(row.status);
@@ -5186,11 +5186,11 @@ export async function restartSession(sessionId: string): Promise<SessionStream> 
 }
 
 export async function forceStopSession(sessionId: string): Promise<void> {
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) return;
   // Durable stop intent — same rationale as sleepSession (CLAUDE.md §14.46).
-  db.update(claudeSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
-    .where(eq(claudeSessions.id, sessionId)).run();
+  db.update(agentSessions).set({ status: 'sleeping', sleepRequested: 1, resumePending: 0 })
+    .where(eq(agentSessions.id, sessionId)).run();
   const stream = streams.get(sessionId);
   if (stream) {
     try {
@@ -5234,7 +5234,7 @@ export async function forceStopSession(sessionId: string): Promise<void> {
  * row here would be a hub-side guess that the kill worked.
  */
 export async function stopBackgroundTask(sessionId: string, taskId: string): Promise<void> {
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) throw new Error('session not found');
   const client = getAgentClientForVpsId(row.vpsId);
   // `stop_bg_task` is the SDK's `stop_task` — Claude-only, and the agent
@@ -5295,7 +5295,7 @@ export async function stopBackgroundTask(sessionId: string, taskId: string): Pro
  *      before the stream is detached → don't miss the signal).
  *   2. Detach + remove the local SessionStream.
  *   3. DB cascade. The FK ON DELETE CASCADE covers messages/permissions/
- *      questions/logs from `claudeSessions`, but we explicitly delete
+ *      questions/logs from `agentSessions`, but we explicitly delete
  *      logs too as defense in depth (they existed outside the cascade
  *      historically in the code).
  *   4. Fire-and-forget `kill_session` on the agent so slow remote shutdown
@@ -5314,7 +5314,7 @@ export async function deleteSession(
   opts: { announce?: boolean } = {},
 ): Promise<{ deleted: boolean; tabsDropped: boolean }> {
   const announce = opts.announce ?? true;
-  const [row] = db.select().from(claudeSessions).where(eq(claudeSessions.id, sessionId)).all();
+  const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) return { deleted: false, tabsDropped: false };
   emitGlobalSession({ type: 'status', sessionId, status: 'killed' } as GlobalSessionEvent);
   const stream = streams.get(sessionId);
@@ -5328,15 +5328,15 @@ export async function deleteSession(
   db.transaction((tx) => {
     gates = deleteSessionGates(sessionId);
     const siblings = tx.select({
-      id: claudeSessions.id, cwd: claudeSessions.cwd,
-      position: claudeSessions.position, createdAt: claudeSessions.createdAt,
-      archived: claudeSessions.archived,
-    }).from(claudeSessions).where(eq(claudeSessions.vpsId, row.vpsId)).all();
+      id: agentSessions.id, cwd: agentSessions.cwd,
+      position: agentSessions.position, createdAt: agentSessions.createdAt,
+      archived: agentSessions.archived,
+    }).from(agentSessions).where(eq(agentSessions.vpsId, row.vpsId)).all();
     // Archived rows are absent from the sidebar and cannot anchor a path.
     const visibleSiblings = siblings.filter((sibling) => sibling.archived === 0);
     const order = sidebarOrderAfterDelete(visibleSiblings, sessionId);
-    tx.delete(claudeSessionLogs).where(eq(claudeSessionLogs.sessionId, sessionId)).run();
-    tx.delete(claudeSessions).where(eq(claudeSessions.id, sessionId)).run();
+    tx.delete(sessionLogs).where(eq(sessionLogs.sessionId, sessionId)).run();
+    tx.delete(agentSessions).where(eq(agentSessions.id, sessionId)).run();
     if (order) {
       const previousPositions = new Map(siblings.map((sibling) => [sibling.id, sibling.position]));
       const archivedOrder = siblings.filter((sibling) => sibling.archived !== 0 && sibling.id !== sessionId)
@@ -5344,7 +5344,7 @@ export async function deleteSession(
         .map((sibling) => sibling.id);
       [...order, ...archivedOrder].forEach((id, position) => {
         if (previousPositions.get(id) !== position) {
-          tx.update(claudeSessions).set({ position }).where(eq(claudeSessions.id, id)).run();
+          tx.update(agentSessions).set({ position }).where(eq(agentSessions.id, id)).run();
           repacked.push(id);
         }
       });
@@ -5400,8 +5400,8 @@ export async function deleteSession(
  * removed session ids.
  */
 export function deleteVpsSessions(vpsId: string, deleteRows: () => void): string[] {
-  const ids = db.select({ id: claudeSessions.id }).from(claudeSessions)
-    .where(eq(claudeSessions.vpsId, vpsId)).all().map((row) => row.id);
+  const ids = db.select({ id: agentSessions.id }).from(agentSessions)
+    .where(eq(agentSessions.vpsId, vpsId)).all().map((row) => row.id);
   for (const sessionId of ids) {
     emitGlobalSession({ type: 'status', sessionId, status: 'killed' } as GlobalSessionEvent);
     const stream = streams.get(sessionId);
@@ -5450,17 +5450,17 @@ export function deleteVpsSessions(vpsId: string, deleteRows: () => void): string
 //     start_session(claude_session_id=...) to recreate them SDK-side.
 export async function reconcileVpsAgentState(
   vpsId: string,
-  agentSessions: AgentSessionInfo[],
+  liveAgentSessions: AgentSessionInfo[],
 ): Promise<void> {
   const agentSidMap = new Map<string, AgentSessionInfo>();
-  for (const a of agentSessions) agentSidMap.set(a.session_id, a);
+  for (const a of liveAgentSessions) agentSidMap.set(a.session_id, a);
 
   // 1) Sessions alive on the agent side: attach a SessionStream + sync status.
   for (const [sid, info] of agentSidMap) {
-    let row: typeof claudeSessions.$inferSelect | undefined;
+    let row: typeof agentSessions.$inferSelect | undefined;
     try {
-      [row] = db.select().from(claudeSessions)
-        .where(eq(claudeSessions.id, sid)).all();
+      [row] = db.select().from(agentSessions)
+        .where(eq(agentSessions.id, sid)).all();
     } catch { continue; }
     if (!row) continue;            // session unknown to Charon, we don't invent
     if (row.archived) {
@@ -5502,8 +5502,8 @@ export async function reconcileVpsAgentState(
       }
       if (row.status !== 'sleeping') {
         try {
-          db.update(claudeSessions).set({ status: 'sleeping' })
-            .where(eq(claudeSessions.id, sid)).run();
+          db.update(agentSessions).set({ status: 'sleeping' })
+            .where(eq(agentSessions.id, sid)).run();
         } catch {}
       }
       continue;
@@ -5517,14 +5517,14 @@ export async function reconcileVpsAgentState(
       resumeSession(sid)
         .then(() => {
           try {
-            db.insert(claudeSessionLogs).values({
+            db.insert(sessionLogs).values({
               sessionId: sid, level: 'info', event: 'resume_pending_recovered', detail: null,
             }).run();
           } catch {}
         })
         .catch((e) => {
           try {
-            db.insert(claudeSessionLogs).values({
+            db.insert(sessionLogs).values({
               sessionId: sid, level: 'warn', event: 'resume_pending_recovered',
               detail: JSON.stringify({ err: e?.message ?? String(e) }),
             }).run();
@@ -5538,8 +5538,8 @@ export async function reconcileVpsAgentState(
     if (row.resumePending &&
         (agentStatus === 'active' || agentStatus === 'thinking')) {
       try {
-        db.update(claudeSessions).set({ resumePending: 0 })
-          .where(eq(claudeSessions.id, sid)).run();
+        db.update(agentSessions).set({ resumePending: 0 })
+          .where(eq(agentSessions.id, sid)).run();
       } catch {}
     }
     // A synthetic Claude API/auth failure leaves the remote SDK client idle.
@@ -5567,8 +5567,8 @@ export async function reconcileVpsAgentState(
     // would never be corrected on reconnect. See CLAUDE.md §14 gotcha 36.
     if (agentStatus !== 'killed' && (agentStatus !== row.status || agentStatus !== stream.status)) {
       try {
-        db.update(claudeSessions).set({ status: agentStatus })
-          .where(eq(claudeSessions.id, sid)).run();
+        db.update(agentSessions).set({ status: agentStatus })
+          .where(eq(agentSessions.id, sid)).run();
       } catch {}
       stream.status = agentStatus as WorkerStatus;
       // Emit on the bus so SSE clients see the right status immediately
@@ -5588,15 +5588,15 @@ export async function reconcileVpsAgentState(
   //    intent (§14.62) that the agent doesn't know at all (state lost).
   let dbRows: { id: string; status: string }[] = [];
   try {
-    dbRows = db.select({ id: claudeSessions.id, status: claudeSessions.status })
-      .from(claudeSessions)
+    dbRows = db.select({ id: agentSessions.id, status: agentSessions.status })
+      .from(agentSessions)
       .where(and(
-        eq(claudeSessions.vpsId, vpsId),
-        eq(claudeSessions.archived, 0),
-        eq(claudeSessions.sleepRequested, 0),
+        eq(agentSessions.vpsId, vpsId),
+        eq(agentSessions.archived, 0),
+        eq(agentSessions.sleepRequested, 0),
         or(
-          inArray(claudeSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
-          eq(claudeSessions.resumePending, 1),
+          inArray(agentSessions.status, ['active', 'thinking', 'starting', 'failed', 'background']),
+          eq(agentSessions.resumePending, 1),
         ),
       ))
       .all() as { id: string; status: string }[];
@@ -5608,7 +5608,7 @@ export async function reconcileVpsAgentState(
     resumeSession(row.id)
       .then(() => {
         try {
-          db.insert(claudeSessionLogs).values({
+          db.insert(sessionLogs).values({
             sessionId: row.id, level: 'info', event: 'auto_resume',
             detail: JSON.stringify({ trigger: 'reconcile', wasStatus: row.status }),
           }).run();
@@ -5616,7 +5616,7 @@ export async function reconcileVpsAgentState(
       })
       .catch((e) => {
         try {
-          db.insert(claudeSessionLogs).values({
+          db.insert(sessionLogs).values({
             sessionId: row.id, level: 'warn', event: 'auto_resume',
             detail: JSON.stringify({
               trigger: 'reconcile', wasStatus: row.status,

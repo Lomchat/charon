@@ -4,7 +4,7 @@
 // `useSyncExternalStore` with referentially stable snapshots.
 //
 // Fed by the transport at MODULE EVALUATION in the browser (every page that
-// imports this module is fed — ClaudePanel and /desk alike); pages only seed
+// imports this module is fed — HubPanel and /desk alike); pages only seed
 // it from their SSR props and the DEFAULT list GET:
 //   - `session_summary` frame  → applySummaryFrame (null = deleted/archived)
 //   - `sync_summaries` (resync) → seedSummaries(…, R, complete)
@@ -23,7 +23,7 @@
 // reverts; 30 s cap.
 import { useSyncExternalStore } from 'react';
 import type { SessionSummary } from '@/lib/sessionSummary';
-import type { ClaudeSessionListQuery, ClaudeSessionsListResponse, VpsRuntimeSnapshot } from '@/lib/types/api';
+import type { AgentSessionListQuery, AgentSessionsListResponse, VpsRuntimeSnapshot } from '@/lib/types/api';
 import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { cmpRev, type SyncRev } from '@/lib/sync/rev';
 import { getSyncPosition, noteHttpSync, subscribeSyncFrames, type SyncFrame, type SyncFrameInfo } from '../globalEventStream';
@@ -125,7 +125,7 @@ export function applySummaryFrame(id: string, summary: SessionSummary | null, re
  * never touches the store (ResumeModal's call stays store-neutral). An answer
  * from an older hub process is ignored.
  */
-export function seedFromListResponse(r: ClaudeSessionsListResponse, q?: ClaudeSessionListQuery): boolean {
+export function seedFromListResponse(r: AgentSessionsListResponse, q?: AgentSessionListQuery): boolean {
   if (q && (q.vpsId || q.status || q.includeArchived)) return false;
   if (noteHttpSync(r.sync) === 'older') return false;
   const rows = (r.sessions ?? []).filter((s) => !(s as { archived?: unknown }).archived) as SessionSummary[];

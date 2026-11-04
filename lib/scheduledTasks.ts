@@ -5,7 +5,7 @@
 // resumes, and its Stop hook lists them at every turn end — the agent forwards
 // that list with each task's next fire computed the CLI's way
 // (agent/charon_agent/crons.py). The hub keeps the latest list per session
-// (`claude_sessions.scheduled_tasks`, scheduledTaskState.ts) and ships it in
+// (`agent_sessions.scheduled_tasks`, scheduledTaskState.ts) and ships it in
 // the session summary (§14.108). A task fires only while the CLI runs: a
 // sleeping session's list is dormant, not gone.
 

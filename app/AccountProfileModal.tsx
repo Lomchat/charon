@@ -34,8 +34,8 @@ export default function AccountProfileModal({ vps, provider, profile, onClose, o
       }
     } catch (e) { setError((e as Error).message); setBusy(false); }
   }
-  return createPortal(<div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-    <form className="claude-modal account-profile-modal" role="dialog" aria-modal="true" aria-labelledby="account-profile-title"
+  return createPortal(<div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <form className="app-modal account-profile-modal" role="dialog" aria-modal="true" aria-labelledby="account-profile-title"
       onSubmit={(e) => { e.preventDefault(); void save(); }}>
       <div className="fork-head"><h2 id="account-profile-title"><AgentLogo kind={provider} profileNumber={profile?.number} size={22} /> {profile ? 'Name account' : `Add ${providerName(provider)} account`}</h2>
         <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>×</button></div>

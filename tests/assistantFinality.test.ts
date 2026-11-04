@@ -9,7 +9,7 @@ process.env.DATABASE_URL = path.join(
 );
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -33,7 +33,7 @@ let SessionStream: any;
 function stream() {
   return new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test', name: 'chat',
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: 'claude',
   }) as any;
 }
@@ -43,7 +43,7 @@ function event(streamInstance: any, seq: number, name: string, extra: Record<str
 }
 
 function assistantRows() {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((row: any) => row.role === 'assistant');
 }
 
@@ -55,14 +55,14 @@ beforeAll(async () => {
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
 });
 
 beforeEach(() => {
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudeSessions).run();
-  db.insert(schema.claudeSessions).values({
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.agentSessions).run();
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active',
   }).run();
 });

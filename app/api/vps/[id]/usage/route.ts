@@ -6,7 +6,7 @@ import {
   PROVIDER_USAGE, USAGE_STALE_MS,
   getAccountProfileUsage, pollAccountProfileUsage,
 } from '@/lib/server/agent/usagePoll';
-import type { AccountUsage } from '@/lib/server/claude/types';
+import type { AccountUsage } from '@/lib/server/hub/types';
 import type { VpsUsageResponse } from '@/lib/types/api';
 import {
   PROVIDERS, SESSION_PROVIDERS, providerBackendState, type SessionProvider,

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitCheckout, gitDeleteBranch } from '@/lib/server/claude/git';
+import { gitCheckout, gitDeleteBranch } from '@/lib/server/hub/git';
 import type { GitCheckoutBody } from '@/lib/types/api';
 
 // POST   /api/vps/[id]/git/checkout  { cwd, repo?, branch, create?, startPoint?, push? }

@@ -88,7 +88,7 @@ export default function PendingZone({ id, kind, children }: {
         )}
       </button>
       {/* Hidden, not unmounted: a half-filled answer survives the fold. */}
-      <div className="claude-pending-zone" hidden={collapsed}>{children}</div>
+      <div className="app-pending-zone" hidden={collapsed}>{children}</div>
     </div>
   );
 }

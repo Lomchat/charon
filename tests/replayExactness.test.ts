@@ -56,14 +56,14 @@ let skipInserts = 0;
 function mkStream(lastSeenSeq: number | null) {
   const s = new SessionStream({
     id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     lastSeenSeq,
   });
   return s as any;
 }
 
 function rows(role?: string) {
-  const all = db.select().from(schema.claudeSessionMessages).all()
+  const all = db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === SID);
   return role ? all.filter((r: any) => r.role === role) : all;
 }
@@ -75,21 +75,21 @@ function replayThrough(s: any, evs: any[]) {
 }
 
 function persistedCursor(): number | null {
-  const [r] = db.select().from(schema.claudeSessions).all()
+  const [r] = db.select().from(schema.agentSessions).all()
     .filter((x: any) => x.id === SID);
   return r?.lastSeenSeq ?? null;
 }
 
 it('preserves endpoint parameter sets on hydration and replay without widening native efforts', () => {
   const opts = { id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     model: 'deepseek', effort: 'effort=max', customEndpoint: true };
   for (const kind of ['claude', 'codex']) {
     const stream = new SessionStream({ ...opts, kind });
     expect(stream.effort).toBe('effort=max');
     stream._onAgentEvent({ event: 'effort_changed', session_id: SID, effort: 'thinking=false', applied_at_next_start: false });
     expect(stream.effort).toBe('thinking=false');
-    expect(db.select().from(schema.claudeSessions).all().find((r: any) => r.id === SID).effort).toBe('thinking=false');
+    expect(db.select().from(schema.agentSessions).all().find((r: any) => r.id === SID).effort).toBe('thinking=false');
     const native = new SessionStream({ ...opts, kind, customEndpoint: false });
     expect(native.effort).toBeNull();
   }
@@ -106,10 +106,10 @@ beforeAll(async () => {
   // OFF so stop events don't reach for VAPID/web-push.
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
-  db.insert(schema.claudeSessions).values({
+  db.insert(schema.agentSessions).values({
     id: SID, vpsId: VPS_ID, cwd: '/tmp', status: 'active',
   }).onConflictDoNothing().run();
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
 
   // Failure injection: patch db.insert — `failNextInserts = k` makes the
   // next k row inserts throw, everything after goes through untouched.
@@ -130,15 +130,15 @@ beforeAll(async () => {
   }) as any);
 
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
-  ({ orderChronologically } = await import('@/lib/server/claude/messageOrder'));
+  ({ orderChronologically } = await import('@/lib/server/hub/messageOrder'));
 });
 
 afterEach(() => {
   failNextInserts = 0;
   skipInserts = 0;
-  db.delete(schema.claudeSessionMessages).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.update(schema.claudeSessions).set({ lastSeenSeq: null }).run();
+  db.delete(schema.sessionMessages).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.update(schema.agentSessions).set({ lastSeenSeq: null }).run();
 });
 
 describe('durable asynchronous questions', () => {
@@ -152,15 +152,15 @@ describe('durable asynchronous questions', () => {
     replayThrough(mkStream(null), [event]);
     expect(rows('async_question')).toHaveLength(1);
     expect(rows('assistant')).toHaveLength(0);
-    const [pending] = db.select().from(schema.claudePendingQuestions).all();
+    const [pending] = db.select().from(schema.sessionPendingQuestions).all();
     expect(pending).toMatchObject({ kind: 'async_question', status: 'pending', expiresAt: null });
     // Never swept (no deadline), and a live sleep never cancels it either:
     // answering it later resumes the session (C07, §14.96).
     const { sweepExpiredInteractions } = await import('@/lib/server/agent/sessionOps');
     expect(sweepExpiredInteractions(2_000_000_000)).toBe(0);
     stream._onAgentEvent({ event: 'status', session_id: SID, status: 'sleeping' });
-    expect(db.select().from(schema.claudePendingQuestions).get().status).toBe('pending');
-    db.update(schema.claudeSessions).set({ status: 'active' }).run();
+    expect(db.select().from(schema.sessionPendingQuestions).get().status).toBe('pending');
+    db.update(schema.agentSessions).set({ status: 'active' }).run();
   });
 
   it('sends ordinary input once on concurrent validation and retains the resolved form', async () => {
@@ -187,12 +187,12 @@ describe('durable asynchronous questions', () => {
     replayThrough(stream, [event]);
     stream.sendUserMessage = vi.fn(async () => { throw new Error('transport unavailable'); });
     await expect(stream.respondQuestion('async-q', answers)).rejects.toThrow('transport unavailable');
-    expect(db.select().from(schema.claudePendingQuestions).get().status).toBe('pending');
+    expect(db.select().from(schema.sessionPendingQuestions).get().status).toBe('pending');
     const restored = mkStream(null);
     restored.sendUserMessage = vi.fn(async () => {});
     await restored.respondQuestion('async-q', answers);
     expect(rows('user')).toHaveLength(1);
-    expect(db.select().from(schema.claudePendingQuestions).get().status).toBe('answered');
+    expect(db.select().from(schema.sessionPendingQuestions).get().status).toBe('answered');
     expect(restored.sendUserMessage.mock.calls[0][2].clientMessageId).toBe(stream.sendUserMessage.mock.calls[0][2].clientMessageId);
   });
 
@@ -421,7 +421,7 @@ describe('replay exactness under injected faults', () => {
     s1._onAgentEvent({ event: 'user_question', session_id: SID, id: 'q2', questions: [{ question: 'go?' }], seq: 50 });
     s1._persistSeqNow();
 
-    const pendings = db.select().from(schema.claudePendingQuestions).all()
+    const pendings = db.select().from(schema.sessionPendingQuestions).all()
       .filter((r: any) => r.sessionId === SID);
     expect(pendings).toHaveLength(1);           // pending survived
     expect(rows('user_question')).toHaveLength(0); // row did not
@@ -434,7 +434,7 @@ describe('replay exactness under injected faults', () => {
     ]);
     s2._persistSeqNow();
 
-    const pendings2 = db.select().from(schema.claudePendingQuestions).all()
+    const pendings2 = db.select().from(schema.sessionPendingQuestions).all()
       .filter((r: any) => r.sessionId === SID);
     expect(pendings2).toHaveLength(1);            // still exactly one pending
     expect(rows('user_question')).toHaveLength(1); // row REPAIRED
@@ -455,7 +455,7 @@ describe('replay exactness under injected faults', () => {
       { event: 'exit_plan_request', id: 'p1', plan: 'the plan', seq: 60 },
     ]);
     s2._persistSeqNow();
-    const pendings = db.select().from(schema.claudePendingQuestions).all()
+    const pendings = db.select().from(schema.sessionPendingQuestions).all()
       .filter((r: any) => r.sessionId === SID);
     expect(pendings).toHaveLength(1);
     expect(rows('exit_plan_request')).toHaveLength(1);
@@ -490,7 +490,7 @@ describe('replay exactness under injected faults', () => {
     s1._persistSeqNow();
 
     // Break-on-failure: no pending, no message row, cursor pinned below 40.
-    const pendings = db.select().from(schema.claudePendingQuestions).all()
+    const pendings = db.select().from(schema.sessionPendingQuestions).all()
       .filter((r: any) => r.sessionId === SID);
     expect(pendings).toHaveLength(0);
     expect(rows('user_question')).toHaveLength(0);
@@ -502,7 +502,7 @@ describe('replay exactness under injected faults', () => {
     ]);
     s2._persistSeqNow();
 
-    const pendings2 = db.select().from(schema.claudePendingQuestions).all()
+    const pendings2 = db.select().from(schema.sessionPendingQuestions).all()
       .filter((r: any) => r.sessionId === SID);
     expect(pendings2).toHaveLength(1);
     expect(rows('user_question')).toHaveLength(1);

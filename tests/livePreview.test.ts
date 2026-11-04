@@ -5,7 +5,7 @@ import {
 } from '../lib/livePreview';
 import {
   deriveLivePreviewKey, signLivePreviewToken, verifyLivePreviewToken,
-} from '../lib/server/claude/livePreviewToken';
+} from '../lib/server/hub/livePreviewToken';
 
 // §14.110: an HTML file's live view runs its scripts in an opaque origin and
 // is authorized by its URL. These pin the three boundaries: what the URL can
@@ -173,7 +173,7 @@ describe('live preview: the routes', () => {
     db.insert(schema.sessions).values({ id: 'sess-old', userId: u.id, expiresAt: Math.floor(Date.now() / 1000) - 10 }).run();
     ({ GET } = await import('@/app/api/preview/[token]/[[...path]]/route'));
     ({ POST: MINT } = await import('@/app/api/vps/[id]/fs/preview/route'));
-    key = (await import('@/lib/server/claude/livePreviewAuth')).livePreviewKey();
+    key = (await import('@/lib/server/hub/livePreviewAuth')).livePreviewKey();
   });
 
   beforeEach(() => {

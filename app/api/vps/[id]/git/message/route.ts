@@ -3,8 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getSetting } from '@/lib/server/claude/settings';
-import { getGitDiff, getGitWorkspace } from '@/lib/server/claude/git';
+import { getSetting } from '@/lib/server/hub/settings';
+import { getGitDiff, getGitWorkspace } from '@/lib/server/hub/git';
 import type { GitMessageResponse } from '@/lib/types/api';
 
 // POST /api/vps/[id]/git/message  { cwd, paths[] | all }

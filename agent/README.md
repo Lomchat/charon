@@ -86,5 +86,5 @@ Python 3.10 and 3.13.
 - Python ≥ 3.10; systemd ≥ 230 for `--user` mode (else `nohup setsid` + cron).
 - A venv at `~/.charon/venv` with the provider SDKs (never `pip install --user`,
   PEP 668), Pillow for image compression, and the Codex native CLI under
-  `venv/codex-cli`. The hub creates and updates it (`lib/server/claude/bootstrap.ts`).
+  `venv/codex-cli`. The hub creates and updates it (`lib/server/hub/bootstrap.ts`).
 - One sign-in per provider and VPS, driven from the hub UI.

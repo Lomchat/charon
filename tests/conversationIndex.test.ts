@@ -20,12 +20,12 @@ beforeAll(async () => {
   migrate(dbMod.db, { migrationsFolder: './drizzle' });
   raw = dbMod.rawSqlite();
   ci = await import('@/lib/db/conversationIndex');
-  ({ loadMessageWindow } = await import('@/lib/server/claude/messageWindow'));
+  ({ loadMessageWindow } = await import('@/lib/server/hub/messageWindow'));
   raw.prepare("INSERT OR IGNORE INTO vps_folders (id, name, position) VALUES ('default', 'default', 0)").run();
   raw.prepare("INSERT OR IGNORE INTO vps (id, name, ip, ssh_user) VALUES ('civps', 'v', '127.0.0.1', 'root')").run();
-  raw.prepare("INSERT INTO claude_sessions (id, vps_id, cwd, name, status) VALUES (?, 'civps', '/tmp', 'n', 'sleeping')").run(SID);
+  raw.prepare("INSERT INTO agent_sessions (id, vps_id, cwd, name, status) VALUES (?, 'civps', '/tmp', 'n', 'sleeping')").run(SID);
   // 60 turns, each: user, 300 tool rows, a thinking event, a bg_task event, assistant.
-  const ins = raw.prepare('INSERT INTO claude_session_messages (session_id, role, content, ts_ms, created_at) VALUES (?, ?, ?, ?, ?)');
+  const ins = raw.prepare('INSERT INTO session_messages (session_id, role, content, ts_ms, created_at) VALUES (?, ?, ?, ?, ?)');
   let t = Date.now() - 86_400_000;
   raw.transaction(() => {
     for (let turn = 0; turn < 60; turn++) {

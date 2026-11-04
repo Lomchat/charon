@@ -65,8 +65,8 @@ export default function OpenFolderModal({ vps, vpsPaths, inUse, onOpen, onClose 
   }
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal wizard open-folder" role="dialog" aria-label="open a folder">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="app-modal wizard open-folder" role="dialog" aria-label="open a folder">
         <button className="modal-close" onClick={onClose}>✕</button>
         <div className="wiz-head">
           <span className="wiz-kind"><IconFolderPlus /> Open a folder</span>

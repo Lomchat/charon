@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/db', () => ({}));
 
-import { CHARON_DIRNAME, CHARON_FORK_DIR, CHARON_UPLOADS_DIR, charonDirCommand } from '@/lib/server/claude/charonDir';
+import { CHARON_DIRNAME, CHARON_FORK_DIR, CHARON_UPLOADS_DIR, charonDirCommand } from '@/lib/server/hub/charonDir';
 
 // The real shell, run against real repos: `.charon/` is excluded only when the
 // command itself created it, never when the user already had one.

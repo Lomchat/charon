@@ -26,7 +26,7 @@ describe('chat order is immune to agent seq resets', () => {
   const T = 1_700_000_000_000;
 
   const load = async () => {
-    ({ chronologicalKeys, orderChronologically } = await import('@/lib/server/claude/messageOrder'));
+    ({ chronologicalKeys, orderChronologically } = await import('@/lib/server/hub/messageOrder'));
   };
 
   it('a seq reset changes nothing — ts keeps the real order', async () => {

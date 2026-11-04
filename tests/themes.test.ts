@@ -14,7 +14,7 @@ import { THEMES, DEFAULT_THEME_ID, resolveTheme, isThemeId } from '../app/themes
  *     :root value, so a light theme keeps a handful of dark surfaces;
  *   · a stylesheet using a token no theme defines — `var(--muted)` with no
  *     fallback is not an error, the declaration is just dropped (that is
- *     exactly what three rules in claude.css were doing before the tokens).
+ *     exactly what three rules in app.css were doing before the tokens).
  *
  * Both are caught here rather than by looking at the app.
  */
@@ -24,7 +24,7 @@ const read = (rel: string) => readFileSync(path.join(root, rel), 'utf8');
 // Comments stripped before any block lookup: the header names the selectors
 // it tells you to copy, and indexOf would find those first.
 const THEME_CSS = read('app/themes.css').replace(/\/\*[\s\S]*?\*\//g, '');
-const SHEETS = ['app/claude.css', 'app/globals.css', 'app/agent-ui.css'];
+const SHEETS = ['app/app.css', 'app/globals.css', 'app/agent-ui.css'];
 
 /** The declarations of one `<selector> { … }` block, by first selector match. */
 function blockOf(css: string, selector: string): string {

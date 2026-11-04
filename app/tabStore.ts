@@ -343,7 +343,7 @@ registerUnsavedSource(hasDirtyTabs);
 /**
  * A dirty tab must not vanish silently — the buffer only exists in this
  * browser, so closing the tab is the moment the work is lost. The ASKING is
- * the caller's (ClaudePanel renders `<ConfirmModal>`; a store can't render,
+ * the caller's (HubPanel renders `<ConfirmModal>`; a store can't render,
  * and `confirm()` is out for the reasons in §14.80), this only answers
  * "would anything be lost". Closing then discards by construction: the buffer
  * dies with the editor that owned it.

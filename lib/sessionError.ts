@@ -1,7 +1,7 @@
 import { isSessionProvider, type SessionProvider } from './sessionCapabilities';
 
 // Durable, provider-neutral description of a blocking session error. Stored in
-// claude_session_messages with role='error': the historical table name is a
+// session_messages with role='error': the historical table name is a
 // compatibility detail, while this payload is shared by Claude and Codex.
 export type SessionErrorKind = 'authentication' | 'rate_limit' | 'transport' | 'api';
 export type SessionErrorAction = 'sign_in' | 'continue' | null;

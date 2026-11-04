@@ -7,10 +7,10 @@ import { frameReaches } from '@/lib/server/sync/frameRouting';
 
 // eventConnections
 // ─────────────────────────────────────────────────────────────────────────────
-// Registry of multiplexed SSE connections (/api/claude/events). Each browser
+// Registry of multiplexed SSE connections (/api/events). Each browser
 // client opens ONE persistent SSE on mount, identified by a connId (UUID
 // generated on the client side). The focus (sessionId currently being
-// watched) is mutable via POST /api/claude/focus — no close/reopen on switch.
+// watched) is mutable via POST /api/focus — no close/reopen on switch.
 //
 // Fan-out = ONE router on the sync bus (lib/server/sync/syncBus.ts), installed
 // once per process: every frame is encoded once at publish and the SAME
@@ -29,7 +29,7 @@ import { frameReaches } from '@/lib/server/sync/frameRouting';
 //
 // When a client switches focus:
 //   1. Client POST /focus { conn, sessionId } → updates the focus
-//   2. Client GET /api/claude/sessions/[id] → reloads the persisted history
+//   2. Client GET /api/sessions/[id] → reloads the persisted history
 //   3. SSE continues flowing — from now on the high-volume events of the
 //      new session arrive
 

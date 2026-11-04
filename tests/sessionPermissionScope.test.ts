@@ -11,7 +11,7 @@ process.env.DATABASE_URL = path.join(
 const agentMocks = vi.hoisted(() => ({ call: vi.fn() }));
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}),
   sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}),
@@ -40,7 +40,7 @@ let sweepExpiredInteractions: any;
 let subscribeGlobalSessionEvents: any;
 
   function insertSession(id: string, kind: 'claude' | 'codex') {
-  db.insert(schema.claudeSessions).values({
+  db.insert(schema.agentSessions).values({
     id, vpsId: VPS_ID, cwd: '/tmp/project', name: 'permissions',
     kind, status: 'active', permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
   }).run();
@@ -50,7 +50,7 @@ function stream(id: string, kind: 'claude' | 'codex') {
   return new SessionStream({
     id, vpsId: VPS_ID, vpsName: 'test-vps', name: 'permissions',
     status: 'active', permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
-    claudeSessionId: null, kind, cwd: '/tmp/project',
+    nativeSessionId: null, kind, cwd: '/tmp/project',
   }) as any;
 }
 
@@ -69,14 +69,14 @@ beforeAll(async () => {
     SessionStream, startNewSession, sweepExpiredInteractions, subscribeGlobalSessionEvents,
   } = await import('@/lib/server/agent/sessionOps'));
   ({ expireStalePendingInteractions } = await import('@/lib/server/agent/pendingInteractions'));
-  ({ setSetting } = await import('@/lib/server/claude/settings'));
+  ({ setSetting } = await import('@/lib/server/hub/settings'));
 });
 
 beforeEach(() => {
   agentMocks.call.mockReset();
   agentMocks.call.mockResolvedValue({ ok: true, status: 'active' });
-  db.delete(schema.claudePendingPermissions).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.delete(schema.agentSessions).run();
   setSetting('codex.default_approvals_reviewer', 'user');
   setSetting('claude.default_permission_mode', 'normal');
   setSetting('codex.default_permission_mode', 'workspace-write');
@@ -87,7 +87,7 @@ describe('provider-aware permission scope', () => {
   it('never answers a Codex card itself, nor replays an old broad Codex allow rule', async () => {
     const id = '1'.repeat(32);
     insertSession(id, 'codex');
-    db.update(schema.claudeSessions).set({ alwaysAllowTools: JSON.stringify(['Codex command']) }).run();
+    db.update(schema.agentSessions).set({ alwaysAllowTools: JSON.stringify(['Codex command']) }).run();
     const { withRememberedRules } = await import('@/lib/server/agent/sessionOps');
     expect(withRememberedRules('codex', { model: 'x' }, JSON.stringify(['Codex command'])))
       .toEqual({ model: 'x' });
@@ -99,14 +99,14 @@ describe('provider-aware permission scope', () => {
     });
 
     expect(agentMocks.call).not.toHaveBeenCalled();
-    expect(db.select().from(schema.claudePendingPermissions).all())
+    expect(db.select().from(schema.sessionPendingPermissions).all())
       .toEqual([expect.objectContaining({ id: 'perm-codex', status: 'pending' })]);
   });
 
   it('keeps the card pending when the provider rejects the response RPC', async () => {
     const id = '2'.repeat(32);
     insertSession(id, 'codex');
-    db.insert(schema.claudePendingPermissions).values({
+    db.insert(schema.sessionPendingPermissions).values({
       id: 'perm-offline', sessionId: id, toolName: 'Codex command',
       toolInput: '{}', status: 'pending',
     }).run();
@@ -115,14 +115,14 @@ describe('provider-aware permission scope', () => {
     await expect(stream(id, 'codex').respondPermission('perm-offline', true, true))
       .rejects.toThrow('agent offline');
 
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status).toBe('pending');
-    expect(db.select().from(schema.claudeSessions).all()[0].alwaysAllowTools).toBeNull();
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status).toBe('pending');
+    expect(db.select().from(schema.agentSessions).all()[0].alwaysAllowTools).toBeNull();
   });
 
   it('does not report a late approval as accepted after provider expiry', async () => {
     const id = '7'.repeat(32);
     insertSession(id, 'codex');
-    db.insert(schema.claudePendingPermissions).values({
+    db.insert(schema.sessionPendingPermissions).values({
       id: 'perm-too-late', sessionId: id, toolName: 'Codex command',
       toolInput: '{}', status: 'pending',
     }).run();
@@ -133,7 +133,7 @@ describe('provider-aware permission scope', () => {
 
     // Never `allowed`: the provider's refusal says the gate is gone, so the
     // row is retired (`cancelled`, published) instead of staying a dead card.
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status)
       .toBe('cancelled');
   });
 
@@ -148,7 +148,7 @@ describe('provider-aware permission scope', () => {
       tool: 'Codex command', input: { command: 'npm test' },
       expires_at: expiresAt, seq: 3,
     });
-    expect(db.select().from(schema.claudePendingPermissions).all()[0])
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0])
       .toEqual(expect.objectContaining({
         id: 'perm-expiring', status: 'pending', expiresAt,
       }));
@@ -157,14 +157,14 @@ describe('provider-aware permission scope', () => {
       event: 'interaction_resolved', session_id: id, id: 'perm-expiring',
       kind: 'permission', outcome: 'expired', seq: 4,
     });
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status)
       .toBe('expired');
   });
 
   it('sweeps a provider deadline missed while the hub was offline', () => {
     const id = '6'.repeat(32);
     insertSession(id, 'claude');
-    db.insert(schema.claudePendingPermissions).values({
+    db.insert(schema.sessionPendingPermissions).values({
       id: 'perm-missed', sessionId: id, toolName: 'Bash', toolInput: '{}',
       status: 'pending', expiresAt: Math.floor(Date.now() / 1000) - 1,
     }).run();
@@ -173,14 +173,14 @@ describe('provider-aware permission scope', () => {
     expect(expireStalePendingInteractions())
       .toEqual([{ kind: 'permission', id: 'perm-missed', sessionId: id }]);
 
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status)
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status)
       .toBe('expired');
   });
 
   it('publishes the sweep and the late answer to an expired approval', async () => {
     const id = '8'.repeat(32);
     insertSession(id, 'claude');
-    db.insert(schema.claudePendingPermissions).values({
+    db.insert(schema.sessionPendingPermissions).values({
       id: 'perm-swept', sessionId: id, toolName: 'Bash', toolInput: '{}',
       status: 'pending', expiresAt: Math.floor(Date.now() / 1000) - 1,
     }).run();
@@ -211,13 +211,13 @@ describe('provider-aware permission scope', () => {
 
   function claudeCard(id: string, permId: string) {
     insertSession(id, 'claude');
-    db.update(schema.claudeSessions).set({ alwaysAllowTools: JSON.stringify(['Edit']) }).run();
-    db.insert(schema.claudePendingPermissions).values({
+    db.update(schema.agentSessions).set({ alwaysAllowTools: JSON.stringify(['Edit']) }).run();
+    db.insert(schema.sessionPendingPermissions).values({
       id: permId, sessionId: id, toolName: 'Bash',
       toolInput: '{}', status: 'pending', suggestions: CLI_OPTIONS,
     }).run();
   }
-  const remembered = () => JSON.parse(db.select().from(schema.claudeSessions).all()[0].alwaysAllowTools);
+  const remembered = () => JSON.parse(db.select().from(schema.agentSessions).all()[0].alwaysAllowTools);
 
   it('a Claude answer picks a CLI option by index; its rule is remembered once the provider accepts', async () => {
     const id = '3'.repeat(32);
@@ -228,7 +228,7 @@ describe('provider-aware permission scope', () => {
     expect(agentMocks.call).toHaveBeenCalledWith('respond_permission', {
       session_id: id, perm_id: 'perm-claude', allow: true, always: false, suggestion: 1,
     });
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status).toBe('allowed');
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status).toBe('allowed');
     expect(remembered()).toEqual(['Edit', 'Bash(npm test:*)']);
   });
 
@@ -251,7 +251,7 @@ describe('provider-aware permission scope', () => {
     agentMocks.call.mockRejectedValueOnce(new Error('agent offline'));
     await expect(s.respondPermission('perm-bad', true, false, 1)).rejects.toThrow('agent offline');
     expect(remembered()).toEqual(['Edit']);
-    expect(db.select().from(schema.claudePendingPermissions).all()[0].status).toBe('pending');
+    expect(db.select().from(schema.sessionPendingPermissions).all()[0].status).toBe('pending');
   });
 
   it('a mode-switch option is the agent\'s to apply: nothing is remembered hub-side', async () => {
@@ -278,10 +278,10 @@ describe('provider-aware permission scope', () => {
       vpsId: VPS_ID, cwd: '/tmp/project', kind: 'codex',
       permissionMode: 'workspace-write',
     });
-    const row = db.select().from(schema.claudeSessions).all()
+    const row = db.select().from(schema.agentSessions).all()
       .find((candidate: any) => candidate.id === created.id);
 
-    expect(JSON.parse(row.codexConfig).approvalsReviewer).toBe('auto_review');
+    expect(JSON.parse(row.providerConfig).approvalsReviewer).toBe('auto_review');
     expect(agentMocks.call).toHaveBeenCalledWith('start_session', expect.objectContaining({
       session_id: created.id,
       codex_config: expect.objectContaining({ approvalsReviewer: 'auto_review' }),
@@ -293,16 +293,16 @@ describe('provider-aware permission scope', () => {
       vpsId: VPS_ID, cwd: '/tmp/project', kind: 'cursor', permissionMode: 'force',
       sessionConfig: { autoReview: null },
     });
-    const inheritedConfig = JSON.parse(db.select().from(schema.claudeSessions).all()
-      .find((candidate: any) => candidate.id === inherited.id).codexConfig);
+    const inheritedConfig = JSON.parse(db.select().from(schema.agentSessions).all()
+      .find((candidate: any) => candidate.id === inherited.id).providerConfig);
     expect(inheritedConfig).not.toHaveProperty('autoReview');
 
     const explicit = await startNewSession({
       vpsId: VPS_ID, cwd: '/tmp/project', kind: 'cursor', permissionMode: 'force',
       sessionConfig: { autoReview: false },
     });
-    const explicitConfig = JSON.parse(db.select().from(schema.claudeSessions).all()
-      .find((candidate: any) => candidate.id === explicit.id).codexConfig);
+    const explicitConfig = JSON.parse(db.select().from(schema.agentSessions).all()
+      .find((candidate: any) => candidate.id === explicit.id).providerConfig);
     expect(explicitConfig.autoReview).toBe(false);
   });
 
@@ -314,7 +314,7 @@ describe('provider-aware permission scope', () => {
     const created = await startNewSession({
       vpsId: VPS_ID, cwd: '/tmp/project', kind,
     });
-    const row = db.select().from(schema.claudeSessions).all()
+    const row = db.select().from(schema.agentSessions).all()
       .find((candidate: any) => candidate.id === created.id);
 
     expect(row.permissionMode).toBe(mode);

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { getGitDiff } from '@/lib/server/claude/git';
+import { getGitDiff } from '@/lib/server/hub/git';
 
 // GET /api/vps/[id]/git/diff?cwd=<path>&path=<repo-relative file>
 //

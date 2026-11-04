@@ -167,15 +167,15 @@ describe('pulse phase lock', () => {
   });
 
   it('the account button shares the trigger\'s pulse rules', () => {
-    const css = readFileSync(path.resolve(__dirname, '../app/claude.css'), 'utf8');
+    const css = readFileSync(path.resolve(__dirname, '../app/app.css'), 'utf8');
     const rule = (sel: string) => {
       const at = css.indexOf(sel);
       expect(at, sel).toBeGreaterThan(-1);
       return css.slice(at, css.indexOf('}', at));
     };
-    expect(rule('.claude-head .hnav-trigger.has-unread, .claude-head .acct-nav-item.has-unread {'))
+    expect(rule('.app-head .hnav-trigger.has-unread, .app-head .acct-nav-item.has-unread {'))
       .toContain('animation: row-pulse-green ');
-    expect(rule('.claude-head .hnav-trigger.has-waiting, .claude-head .acct-nav-item.has-waiting {'))
+    expect(rule('.app-head .hnav-trigger.has-waiting, .app-head .acct-nav-item.has-waiting {'))
       .toContain('animation: row-pulse ');
   });
 });

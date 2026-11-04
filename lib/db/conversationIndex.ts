@@ -10,14 +10,14 @@
 // generated from lib/transcriptRows.ts (classify a new role THERE).
 //
 // No migration builds it (SPEC I12: the build migrates the LIVE DB and must
-// never scan claude_session_messages): boot creates it only while the table
+// never scan session_messages): boot creates it only while the table
 // is small (`ensureConversationIndex`), a large DB gets it OFFLINE from
 // `scripts/compact-thinking.mjs --offline --vacuum` (same SQL, test-pinned).
 // Missing, the queries are still correct — only the plan is the slow one.
 import type Database from 'better-sqlite3';
 import { CONVERSATION_EVENT_TYPES, RENDER_NULL_ROLES, TECHNICAL_ROLES } from '@/lib/transcriptRows';
 
-export const CONVERSATION_INDEX_NAME = 'idx_claude_session_messages_conversation_chrono';
+export const CONVERSATION_INDEX_NAME = 'idx_session_messages_conversation_chrono';
 
 /** Roles that never take a conversation slot (side channels, technical,
  *  render-null). */
@@ -41,7 +41,7 @@ export function conversationPredicates(role: string, content: string): { slot: s
   return { slot, page };
 }
 
-export const CONVERSATION_INDEX_SQL = `CREATE INDEX IF NOT EXISTS ${CONVERSATION_INDEX_NAME} ON claude_session_messages `
+export const CONVERSATION_INDEX_SQL = `CREATE INDEX IF NOT EXISTS ${CONVERSATION_INDEX_NAME} ON session_messages `
   + `(session_id, coalesce(ts_ms, created_at * 1000), id) WHERE ${conversationPredicates('role', 'content').page}`;
 
 /** Boot creates the index only below this many rows (max rowid: O(log n),
@@ -57,7 +57,7 @@ export function ensureConversationIndex(
   db: Database.Database, maxRows = CONVERSATION_INDEX_ONLINE_MAX_ROWS,
 ): EnsureIndexResult {
   const has = (name: string) => !!db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(name);
-  if (!has('claude_session_messages')) return 'no-table';
+  if (!has('session_messages')) return 'no-table';
   const stored = db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(CONVERSATION_INDEX_NAME) as
     { sql: string | null } | undefined;
   if (stored?.sql === CONVERSATION_INDEX_STORED_SQL) return 'exists';
@@ -65,7 +65,7 @@ export function ensureConversationIndex(
   // longer carry its predicate, so SQLite would never use it again. Dropping
   // reads no table row; the new one follows the same online/offline rule.
   if (stored) db.exec(`DROP INDEX ${CONVERSATION_INDEX_NAME}`);
-  const top = db.prepare('SELECT max(rowid) AS n FROM claude_session_messages').get() as { n: number | null };
+  const top = db.prepare('SELECT max(rowid) AS n FROM session_messages').get() as { n: number | null };
   if ((top?.n ?? 0) > maxRows) return 'deferred';
   db.exec(CONVERSATION_INDEX_SQL);
   return 'created';

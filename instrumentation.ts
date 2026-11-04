@@ -16,7 +16,7 @@
 // notifications didn't fire until a human opened a browser.
 //
 // Arming seed here makes the agents connect (and reconcile) at process boot.
-// The GET /api/claude/events route ALSO calls seedInitialData() as a guaranteed
+// The GET /api/events route ALSO calls seedInitialData() as a guaranteed
 // fallback for any surviving tab (belt and suspenders).
 //
 // register() runs in BOTH the nodejs and edge runtimes; we only seed in nodejs

@@ -4,10 +4,10 @@ import { db, vps, type Vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import { AgentRpcError } from '@/lib/server/agent/types';
-import { previewMimeFor } from '@/lib/server/claude/attachmentNames';
+import { previewMimeFor } from '@/lib/server/hub/attachmentNames';
 import {
   FILE_STREAM_AGENT_VERSION, openRemoteFileStream, openRemoteZipStream,
-} from '@/lib/server/claude/fsByteStream';
+} from '@/lib/server/hub/fsByteStream';
 import { compareVersions } from '@/lib/version';
 import { parseByteRange } from '@/lib/fileRange';
 import type { FsLinkInfo, FsListResponse, FsReadResponse, FsStatResponse } from '@/lib/types/api';

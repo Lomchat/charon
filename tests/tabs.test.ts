@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-// ── The workspace layout (lib/server/claude/tabs.ts, §14.78) ───────────────
+// ── The workspace layout (lib/server/hub/tabs.ts, §14.78) ───────────────
 //
 // The rules that carry the feel of the thing, and would each break silently:
 //   * ONE temporary tab per (vpsId, path) — that's what stops browsing a tree
@@ -24,7 +24,7 @@ vi.mock('server-only', () => ({}));
 
 let db: any;
 let S: any;
-let T: typeof import('@/lib/server/claude/tabs');
+let T: typeof import('@/lib/server/hub/tabs');
 let TabStore: typeof import('@/app/tabStore');
 
 const VPS = 'vps1';
@@ -47,7 +47,7 @@ beforeAll(async () => {
       folderId: 'default', position: 0,
     }).run();
   }
-  T = await import('@/lib/server/claude/tabs');
+  T = await import('@/lib/server/hub/tabs');
   TabStore = await import('@/app/tabStore');
 });
 
@@ -238,12 +238,12 @@ describe('closing', () => {
 
   it('closing a session tab does NOT delete the session', () => {
     // The whole point of the refactor: a tab is a view, not the thing.
-    db.insert(S.claudeSessions).values({
+    db.insert(S.agentSessions).values({
       id: 's1', vpsId: VPS, cwd: P, status: 'active', permissionMode: 'auto',
     }).run();
     const t = T.openTab({ vpsId: VPS, path: P, kind: 'session', ref: 's1', pin: true });
     T.closeTab(t.id);
-    expect(db.select().from(S.claudeSessions).all()).toHaveLength(1);
+    expect(db.select().from(S.agentSessions).all()).toHaveLength(1);
   });
 
   it('bulk close respects its filter and keeps one tab active', () => {
@@ -267,14 +267,14 @@ describe('closing', () => {
 
 describe('reconcile & seed', () => {
   it('drops tabs whose session is gone, keeps the ones that exist', () => {
-    db.insert(S.claudeSessions).values({
+    db.insert(S.agentSessions).values({
       id: 'alive', vpsId: VPS, cwd: P, status: 'active', permissionMode: 'auto',
     }).run();
     T.openTab({ vpsId: VPS, path: P, kind: 'session', ref: 'alive', pin: true });
     T.openTab({ vpsId: VPS, path: P, kind: 'session', ref: 'ghost', pin: true });
     expect(T.reconcileTabs()).toBe(1);
     expect(kinds(T.listTabs())).toEqual(['session:alive']);
-    db.delete(S.claudeSessions).run();
+    db.delete(S.agentSessions).run();
   });
 
   it('always drops install tabs — installs never survive a restart', () => {
@@ -310,7 +310,7 @@ describe('reconcile & seed', () => {
   });
 
   it('seeds one pinned tab per live session, once', () => {
-    db.insert(S.claudeSessions).values([
+    db.insert(S.agentSessions).values([
       { id: 'a', vpsId: VPS, cwd: P, status: 'active', permissionMode: 'auto' },
       { id: 'b', vpsId: VPS, cwd: Q, status: 'thinking', permissionMode: 'auto' },
       { id: 'c', vpsId: VPS, cwd: P, status: 'sleeping', permissionMode: 'auto' },
@@ -319,6 +319,6 @@ describe('reconcile & seed', () => {
     expect(T.listTabs().every((t) => t.pinned)).toBe(true);
     expect(T.getActiveTab()).not.toBeNull();
     expect(T.seedTabsIfEmpty()).toBe(0);          // never runs against a non-empty table
-    db.delete(S.claudeSessions).run();
+    db.delete(S.agentSessions).run();
   });
 });

@@ -9,7 +9,7 @@
 //
 // "Tools hidden" in the browser (`app/chatVisibility.ts`) asks the session GET
 // for `view=conversation`, whose window counts and returns conversation rows
-// only (lib/server/claude/messageWindow.ts builds its SQL from these lists).
+// only (lib/server/hub/messageWindow.ts builds its SQL from these lists).
 import type { KnownFrameType } from '@/lib/server/sync/frameRouting';
 
 export type TranscriptView = 'full' | 'conversation';

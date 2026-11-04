@@ -76,7 +76,7 @@ type Props = {
   // turn is running. MUST be a stable reference (memo, §14.38).
   onContinue?: () => void;
   // The SELECTED model, set only on a bubble answered by the model the provider
-  // substituted for it (`substitutedModel` in ClaudeSessionView): the chip
+  // substituted for it (`substitutedModel` in SessionView): the chip
   // turns red like the runtime cell.
   substitutedFor?: string | null;
   onScheduleResume?: () => Promise<void>;

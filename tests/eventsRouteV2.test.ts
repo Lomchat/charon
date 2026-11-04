@@ -55,16 +55,16 @@ beforeAll(async () => {
   const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
   migrate(db, { migrationsFolder: './drizzle' });
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
-  ({ GET } = await import('@/app/api/claude/events/route'));
+  ({ GET } = await import('@/app/api/events/route'));
 });
 
 beforeEach(() => {
   h.streams.clear();
   h.installs = [];
   h.summariesThrow = false;
-  db.delete(schema.claudePendingPermissions).run();
-  db.delete(schema.claudePendingQuestions).run();
-  db.delete(schema.claudeSessions).run();
+  db.delete(schema.sessionPendingPermissions).run();
+  db.delete(schema.sessionPendingQuestions).run();
+  db.delete(schema.agentSessions).run();
   db.delete(schema.vps).run();
 });
 
@@ -79,7 +79,7 @@ afterEach(async () => {
 
 async function connect(conn: string, query = '', headers: Record<string, string> = {}) {
   const ac = new AbortController();
-  const res = await GET(new Request(`http://localhost/api/claude/events?conn=${conn}&proto=2${query}`, {
+  const res = await GET(new Request(`http://localhost/api/events?conn=${conn}&proto=2${query}`, {
     signal: ac.signal, headers,
   }));
   const reader = res.body!.getReader();
@@ -125,11 +125,11 @@ const sinceNow = () => `${epoch()}.${currentRev().rev}`;
 describe('resync (first connect)', () => {
   it('hello → summaries → vps → installs → notices → E.R + snapshot_end, no id before it, then a heartbeat', async () => {
     db.insert(schema.vps).values({ id: 'vps-1', name: 'one', ip: '127.0.0.1', sshUser: 'root', agentStatus: 'ok', agentVersion: '0.103.0' }).run();
-    db.insert(schema.claudeSessions).values([
+    db.insert(schema.agentSessions).values([
       { id: 'S-a', vpsId: 'vps-1', cwd: '/tmp', name: 'a', status: 'active', unreadStop: 1 },
       { id: 'S-arch', vpsId: 'vps-1', cwd: '/tmp', name: 'arch', status: 'sleeping', archived: 1 },
     ]).run();
-    db.insert(schema.claudePendingQuestions).values(
+    db.insert(schema.sessionPendingQuestions).values(
       { id: 'q-1', sessionId: 'S-a', kind: 'async_question', payload: '[]' },
     ).run();
     h.installs = [
@@ -154,7 +154,7 @@ describe('resync (first connect)', () => {
     expect(sessions.map((s: any) => s.id)).toEqual(['S-a']);
     expect(sessions[0]).toMatchObject({ id: 'S-a', liveStatus: 'active', pendingAsync: 1, pendingBlocking: 0, attention: 'question' });
     expect(Array.isArray(sessions[0].gates)).toBe(true);
-    expect(sessions[0]).not.toHaveProperty('codexConfig');
+    expect(sessions[0]).not.toHaveProperty('providerConfig');
     expect(frames[2].data.vps).toEqual([expect.objectContaining({ id: 'vps-1', agentStatus: 'ok', agentVersion: '0.103.0' })]);
     expect(frames[2].data.vps[0]).not.toHaveProperty('ip');
     expect(frames[3].data.running).toEqual([{ installId: 'i-run', vpsId: 'vps-1', vpsName: 'one', status: 'running' }]);
@@ -165,9 +165,9 @@ describe('resync (first connect)', () => {
 
   it('the snapshot reflects every frame ≤ R; a frame published after it arrives live with rev > R', async () => {
     db.insert(schema.vps).values({ id: 'vps-2', name: 'two', ip: '127.0.0.1', sshUser: 'root' }).run();
-    db.insert(schema.claudeSessions).values({ id: 'S-b', vpsId: 'vps-2', cwd: '/tmp', name: 'b', status: 'active' }).run();
+    db.insert(schema.agentSessions).values({ id: 'S-b', vpsId: 'vps-2', cwd: '/tmp', name: 'b', status: 'active' }).run();
     // Persist then publish (I1): the frame's rev is ≤ the snapshot's R.
-    db.update(schema.claudeSessions).set({ status: 'sleeping' }).run();
+    db.update(schema.agentSessions).set({ status: 'sleeping' }).run();
     const before = publish({ type: 'status', sessionId: 'S-b', status: 'sleeping' });
     const c = await connect('v2-first-conn-2', '&focus=S-b&focusSeq=1');
     await read(c, type('heartbeat'));
@@ -315,7 +315,7 @@ describe('explicit resync reasons', () => {
 
   it('no proto=2 ⇒ the legacy body (no sync_hello)', async () => {
     const ac = new AbortController();
-    const res = await GET(new Request('http://localhost/api/claude/events?conn=v2-legacy-conn-1&since=1.1', { signal: ac.signal }));
+    const res = await GET(new Request('http://localhost/api/events?conn=v2-legacy-conn-1&since=1.1', { signal: ac.signal }));
     const c = { reader: res.body!.getReader(), buf: '', frames: [] as RawFrame[] };
     open.push({ ac, reader: c.reader });
     await read(c, type('heartbeat'));

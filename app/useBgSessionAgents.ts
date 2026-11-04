@@ -19,7 +19,7 @@ export function useBgSessionAgents(sessionId: string, provider: SessionProvider)
       let delay = 15000;
       try {
         if (document.visibilityState !== 'visible') return;
-        const response = await fetch(`/api/claude/sessions/${sessionId}/subagents`, { signal: controller.signal });
+        const response = await fetch(`/api/sessions/${sessionId}/subagents`, { signal: controller.signal });
         const data = await response.json();
         if (stopped) return;
         if (data.reason === 'loading') { delay = 1000; return; }

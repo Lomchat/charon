@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const settings = vi.hoisted(() => new Map<string, string>());
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/settings', () => ({
+vi.mock('@/lib/server/hub/settings', () => ({
   getSetting: (key: string) => settings.get(key) ?? '',
   setSetting: (key: string, value: string) => { settings.set(key, value); },
 }));
 
-import { getModelNotices, markModelsSeen, observeModels, subscribeModelNotices } from '@/lib/server/claude/modelNotices';
-import { getMergedModels, refreshModels } from '@/lib/server/claude/modelSync';
+import { getModelNotices, markModelsSeen, observeModels, subscribeModelNotices } from '@/lib/server/hub/modelNotices';
+import { getMergedModels, refreshModels } from '@/lib/server/hub/modelSync';
 
 const model = (id: string) => ({ id, label: id });
 
@@ -62,7 +62,7 @@ describe('global model release notices', () => {
     observeModels('codex', [model('gpt-new')]);
     markModelsSeen('codex', ['gpt-new']);
     vi.resetModules();
-    const restarted = await import('@/lib/server/claude/modelNotices');
+    const restarted = await import('@/lib/server/hub/modelNotices');
     restarted.observeModels('codex', [model('gpt-new')]);
     expect(restarted.getModelNotices().codex).toEqual([]);
     restarted.observeModels('codex', [model('gpt-next')]);

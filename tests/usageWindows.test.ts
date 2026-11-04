@@ -12,7 +12,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({ status: 'connected', call: fake.call }),
 }));
-vi.mock('@/lib/server/claude/settings', () => ({ getSetting: () => '', setSetting: fake.setSetting }));
+vi.mock('@/lib/server/hub/settings', () => ({ getSetting: () => '', setSetting: fake.setSetting }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalAccountUsage: fake.emit,
   setUsagePollTrigger: vi.fn(), setCodexUsagePollTrigger: vi.fn(),

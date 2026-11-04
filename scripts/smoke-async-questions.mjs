@@ -5,15 +5,15 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
   const db = new Database(dbPath);
   const sid = 'smoke-async-questions';
   const now = Math.floor(Date.now() / 1000);
-  const vpsId = db.prepare('SELECT vps_id FROM claude_sessions LIMIT 1').get().vps_id;
-  db.prepare(`INSERT INTO claude_sessions (id,vps_id,cwd,name,status,kind,permission_mode)
+  const vpsId = db.prepare('SELECT vps_id FROM agent_sessions LIMIT 1').get().vps_id;
+  db.prepare(`INSERT INTO agent_sessions (id,vps_id,cwd,name,status,kind,permission_mode)
     VALUES (?,?,?,'async question smoke','active','codex','read-only')`).run(sid, vpsId, '/tmp');
   const questions = [{ question: 'Which colour?', options: [{ label: 'Orange' }, { label: 'Purple' }] },
     { question: 'Anything else?', options: [] }];
-  const insert = db.prepare(`INSERT INTO claude_session_messages (session_id,role,content,created_at,ts_ms)
+  const insert = db.prepare(`INSERT INTO session_messages (session_id,role,content,created_at,ts_ms)
     VALUES (?,?,?,?,?)`);
   const form = (id, at) => {
-    db.prepare(`INSERT INTO claude_pending_questions (id,session_id,kind,payload,status,created_at)
+    db.prepare(`INSERT INTO session_pending_questions (id,session_id,kind,payload,status,created_at)
       VALUES (?,?,'async_question',?,'pending',?)`).run(id, sid, JSON.stringify(questions), at);
     insert.run(sid, 'async_question', JSON.stringify({ id, questions }), at, at * 1000);
   };
@@ -25,7 +25,7 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
   const errors = [];
   const onError = (e) => errors.push(e.message);
   page.on('pageerror', onError);
-  await page.route(`**/api/claude/sessions/${sid}/question`, async (route) => {
+  await page.route(`**/api/sessions/${sid}/question`, async (route) => {
     attempts++;
     if (failNext) {
       failNext = false;
@@ -33,7 +33,7 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
       return;
     }
     const { id, answers } = route.request().postDataJSON();
-    db.prepare('UPDATE claude_pending_questions SET status=?,answers=?,responded_at=? WHERE id=? AND session_id=?')
+    db.prepare('UPDATE session_pending_questions SET status=?,answers=?,responded_at=? WHERE id=? AND session_id=?')
       .run(answers ? 'answered' : 'cancelled', JSON.stringify(answers), now, id, sid);
     insert.run(sid, 'event', JSON.stringify({ type: 'interaction_resolved', kind: 'question', id,
       outcome: answers ? 'answered' : 'cancelled', answers }), now, Date.now());
@@ -45,8 +45,8 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
     // the strip above the composer (AsyncQuestionStrip.tsx, sync refonte C09).
     const strip = page.locator('[data-async-strip]');
     const stripForm = (id) => strip.locator(`[data-question-id="${id}"]`);
-    const newBubble = page.locator('.claude-chat [data-question-id="smoke-new-question"]');
-    const oldBubble = page.locator('.claude-chat [data-question-id="smoke-old-question"]');
+    const newBubble = page.locator('.app-chat [data-question-id="smoke-new-question"]');
+    const oldBubble = page.locator('.app-chat [data-question-id="smoke-old-question"]');
     const showInTranscript = strip.getByRole('button', { name: /show in transcript/ });
     const assertReadOnly = async (bubble, label) => {
       if (await bubble.locator('input:enabled, textarea:enabled').count()) throw new Error(`${label} bubble editable while pending`);
@@ -55,10 +55,10 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
     await assertAsync('ASYNC: strip sits above a usable composer, the bubble is read-only, both survive reload', async () => {
       await newBubble.waitFor();
       await stripForm('smoke-old-question').waitFor();
-      await page.locator('.claude-input-bar textarea').waitFor();
-      if (await page.locator('.claude-pending-zone:not([data-async-strip] *)').count()) throw new Error('async form replaced composer');
+      await page.locator('.app-input-bar textarea').waitFor();
+      if (await page.locator('.app-pending-zone:not([data-async-strip] *)').count()) throw new Error('async form replaced composer');
       const above = await page.evaluate(() => {
-        const s = document.querySelector('[data-async-strip]'), c = document.querySelector('.claude-input-bar');
+        const s = document.querySelector('[data-async-strip]'), c = document.querySelector('.app-input-bar');
         return !!s && !!c && !!(s.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING);
       });
       if (!above) throw new Error('strip is not above the composer');
@@ -74,7 +74,7 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
       await oldBubble.waitFor();
       await page.waitForFunction(() => document.activeElement?.getAttribute('data-question-id') === 'smoke-old-question');
       const visible = await oldBubble.evaluate((el) => {
-        const box = el.getBoundingClientRect(), chat = el.closest('.claude-chat').getBoundingClientRect();
+        const box = el.getBoundingClientRect(), chat = el.closest('.app-chat').getBoundingClientRect();
         return box.top >= chat.top && box.top < chat.bottom;
       });
       if (!visible) throw new Error('show in transcript did not reveal the question');
@@ -113,7 +113,7 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
     await assertAsync('ASYNC: resolved forms hydrate across history pages without browser exceptions', async () => {
       // Reload may paint the already-paginated browser cache immediately.
       if (!(await oldBubble.count())) {
-        await page.locator('.claude-chat').evaluate((el) => { el.scrollTop = -el.scrollHeight; });
+        await page.locator('.app-chat').evaluate((el) => { el.scrollTop = -el.scrollHeight; });
       }
       await oldBubble.locator('.uq-state').filter({ hasText: 'answered' }).waitFor();
       if (!(await oldBubble.innerText()).includes('Custom orange, with a comma')) throw new Error('old answer not hydrated');
@@ -121,7 +121,7 @@ export async function smokeAsyncQuestions({ page, open, dbPath, assertAsync }) {
     });
   } finally {
     page.off('pageerror', onError);
-    await page.unroute(`**/api/claude/sessions/${sid}/question`);
+    await page.unroute(`**/api/sessions/${sid}/question`);
     db.close();
   }
 }

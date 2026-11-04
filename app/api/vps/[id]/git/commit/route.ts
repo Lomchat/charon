@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { gitCommit } from '@/lib/server/claude/git';
+import { gitCommit } from '@/lib/server/hub/git';
 import type { GitCommitBody } from '@/lib/types/api';
 
 // POST /api/vps/[id]/git/commit  { cwd, message, paths[] | all, push? }

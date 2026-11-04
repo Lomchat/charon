@@ -29,9 +29,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => pool.client,
   dropAgentClient: async () => {},
 }));
-vi.mock('@/lib/server/claude/codexBgState', () => ({ readCodexBgState: async () => [] }));
-vi.mock('@/lib/server/claude/webPush', () => ({ sendPushToAll: async () => {} }));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/codexBgState', () => ({ readCodexBgState: async () => [] }));
+vi.mock('@/lib/server/hub/webPush', () => ({ sendPushToAll: async () => {} }));
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: async () => {},
   sendQuestionToTelegram: async () => {},
   markInteractionResolvedInTelegram: async () => {},
@@ -47,13 +47,13 @@ let db: any;
 let schema: any;
 let SessionStream: any;
 let getOrCreateStream: any;
-// Fail the next N INSERTs into claude_session_messages.
+// Fail the next N INSERTs into session_messages.
 let failMessageInserts = 0;
 
 function mkStream(lastSeenSeq: number | null = null, id = SID) {
   return new SessionStream({
     id, vpsId: VPS_ID, vpsName: 'test', name: null,
-    status: 'active', permissionMode: 'normal', claudeSessionId: null,
+    status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: 'claude', lastSeenSeq,
   }) as any;
 }
@@ -69,7 +69,7 @@ function send(s: any, events: any[]) {
 }
 
 function assistantRows(sid = SID) {
-  return db.select().from(schema.claudeSessionMessages).all()
+  return db.select().from(schema.sessionMessages).all()
     .filter((r: any) => r.sessionId === sid && r.role === 'assistant')
     .sort((a: any, b: any) => a.id - b.id);
 }
@@ -98,12 +98,12 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'test', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   for (const id of [SID, GET_SID]) {
-    db.insert(schema.claudeSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
+    db.insert(schema.agentSessions).values({ id, vpsId: VPS_ID, cwd: '/tmp', status: 'active' }).onConflictDoNothing().run();
   }
-  db.insert(schema.claudeSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
+  db.insert(schema.appSettings).values({ key: 'notif.global_enabled', value: 'false' }).onConflictDoNothing().run();
   const realInsert = db.insert.bind(db);
   vi.spyOn(db, 'insert').mockImplementation(((table: any) => {
-    if (failMessageInserts > 0 && table === schema.claudeSessionMessages) {
+    if (failMessageInserts > 0 && table === schema.sessionMessages) {
       failMessageInserts--;
       const boom = () => { throw new Error('injected DB failure'); };
       return { values: () => ({ run: boom, onConflictDoNothing: () => ({ run: boom }) }) };
@@ -116,9 +116,9 @@ beforeAll(async () => {
 afterEach(() => {
   failMessageInserts = 0;
   for (const id of [SID, GET_SID]) {
-    db.delete(schema.claudeSessionMessages).where(eq(schema.claudeSessionMessages.sessionId, id)).run();
+    db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, id)).run();
   }
-  db.update(schema.claudeSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null }).run();
+  db.update(schema.agentSessions).set({ lastSeenSeq: null, pendingAssistantMessageId: null }).run();
 });
 
 describe('a replay extending a SIGTERM partial row', () => {
@@ -160,7 +160,7 @@ describe('a replay extending a SIGTERM partial row', () => {
   it('a replay that stops short of X then reaches a gated boundary drops it as duplicate, no text', () => {
     const x = sigtermPartial();
     // The boundary's row already exists (the live run wrote it before dying).
-    db.insert(schema.claudeSessionMessages).values({
+    db.insert(schema.sessionMessages).values({
       sessionId: SID, role: 'tool_use', content: JSON.stringify({ type: 'tool_use', id: 't12', name: 'Read', input: {} }),
       seq: 12, tsMs: T0 + 12,
     }).run();
@@ -265,8 +265,8 @@ describe('a replay extending a SIGTERM partial row', () => {
 
 describe('session GET during the replay', () => {
   const get = async () => {
-    const { GET } = await import('@/app/api/claude/sessions/[id]/route');
-    return (await GET(new Request(`http://localhost/api/claude/sessions/${GET_SID}?open=1`),
+    const { GET } = await import('@/app/api/sessions/[id]/route');
+    return (await GET(new Request(`http://localhost/api/sessions/${GET_SID}?open=1`),
       { params: Promise.resolve({ id: GET_SID }) })).json();
   };
 
@@ -306,7 +306,7 @@ describe('a hub-only cut the restart replay cannot reproduce (`plan_progress` is
   function codexStream(lastSeenSeq: number | null) {
     return new SessionStream({
       id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
-      status: 'active', permissionMode: 'normal', claudeSessionId: null,
+      status: 'active', permissionMode: 'normal', nativeSessionId: null,
       kind: 'codex', lastSeenSeq,
     }) as any;
   }

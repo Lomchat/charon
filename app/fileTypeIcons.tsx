@@ -10,7 +10,7 @@
  *    padlock, a database.
  *
  * No colour lives here. Each glyph paints with `--fi-hue`, set per type in
- * claude.css from the theme's semantic tokens (§14.99); `mono` sets it to
+ * app.css from the theme's semantic tokens (§14.99); `mono` sets it to
  * `currentColor`, so the icon then follows the row (git status included).
  * Letters are cut out of a badge with `--bg`, the surface behind the row.
  */

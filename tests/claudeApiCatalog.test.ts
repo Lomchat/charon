@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const settings = vi.hoisted(() => new Map<string, string>());
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/settings', () => ({
+vi.mock('@/lib/server/hub/settings', () => ({
   getSetting: (key: string) => settings.get(key) ?? '',
   setSetting: (key: string, value: string) => { settings.set(key, value); },
 }));
 
-import { fetchLiveModels, getMergedModels, getModelsAndEfforts, refreshModels } from '@/lib/server/claude/modelSync';
-import { getModelNotices } from '@/lib/server/claude/modelNotices';
+import { fetchLiveModels, getMergedModels, getModelsAndEfforts, refreshModels } from '@/lib/server/hub/modelSync';
+import { getModelNotices } from '@/lib/server/hub/modelNotices';
 
 beforeEach(() => { settings.clear(); vi.restoreAllMocks(); });
 

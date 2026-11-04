@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseVerifyOutput, isVenvPython } from '../lib/server/claude/verifyParse';
+import { parseVerifyOutput, isVenvPython } from '../lib/server/hub/verifyParse';
 
 // ── The bootstrap verify probe must never false-positive (§14.67) ───────────
 // A FALSE POSITIVE here is the expensive direction: it makes the bootstrap

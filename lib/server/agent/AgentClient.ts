@@ -3,7 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { eq } from 'drizzle-orm';
 import { db, vps as vpsTable } from '@/lib/db';
 import type { Vps } from '@/lib/db/schema';
-import { getSetting } from '@/lib/server/claude/settings';
+import { getSetting } from '@/lib/server/hub/settings';
 import {
   AgentClientStatus,
   AgentEvent,

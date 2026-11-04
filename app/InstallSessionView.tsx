@@ -5,7 +5,7 @@ import type { InstallStatus } from '@/lib/types/api';
 import { IconTools, IconRobot } from './icons';
 
 // Local mirror of BootstrapEvent (defined server-side in
-// `lib/server/claude/bootstrap.ts`). We redeclare it to avoid importing a
+// `lib/server/hub/bootstrap.ts`). We redeclare it to avoid importing a
 // 'server-only' module on the client side.
 export type BootstrapEvent = {
   phase: 'verify' | 'detect_os' | 'install_python' | 'install_sdk'
@@ -25,7 +25,7 @@ type Props = {
   onClosed: () => void;
   /** Callback when the install finishes OK and we need to offer "Setup login".
    *  The component doesn't know how to open the Claude login modal — that's the
-   *  parent ClaudePanel's job. */
+   *  parent HubPanel's job. */
   onSetupLogin?: () => void;
   /** Callback when the agent is OK, to signal that the user wants to "close
    *  + open a Claude session" (pleasant post-install UX). */
@@ -60,7 +60,7 @@ const STATUS_GLYPH: Record<BootstrapEvent['status'], string> = {
 };
 
 /**
- * Full-screen view (occupies `claude-main`) that displays the log of an
+ * Full-screen view (occupies `app-main`) that displays the log of an
  * agent install session. SSE stream from `/api/installs/[id]/stream`,
  * ring buffer replayed at mount, then live.
  *
@@ -193,7 +193,7 @@ export default function InstallSessionView({
   const needsLogin = status === 'success' && needsClaudeLogin;
 
   return (
-    <main className="claude-main install-main">
+    <main className="app-main install-main">
       <header className={`install-head install-status-${status}`}>
         <span className="install-icon"><IconTools /></span>
         <div className="install-titles">
@@ -257,7 +257,7 @@ export default function InstallSessionView({
             ✓ the agent is installed and operational on <strong>{vpsName}</strong>.
             {needsLogin
               ? <> Finish by running <em>claude login</em> via the button above.</>
-              : <> You can now open a Claude session from the sidebar.</>}
+              : <> You can now open a session from the sidebar.</>}
           </li>
         )}
         {status === 'error' && (

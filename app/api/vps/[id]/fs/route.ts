@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db, vps } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
-import { sshExec, shQuote, openSshSession, type SshSession } from '@/lib/server/claude/sshExec';
+import { sshExec, shQuote, openSshSession, type SshSession } from '@/lib/server/hub/sshExec';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
 import type { VpsFsListResponse } from '@/lib/types/api';
 import type { Vps } from '@/lib/db/schema';
-import { checkSessionPath } from '@/lib/server/claude/sessionPath';
+import { checkSessionPath } from '@/lib/server/hub/sessionPath';
 
 // GET /api/vps/[id]/fs?path=<dir> — list the DIRECTORIES directly under
 // `path` on the VPS. Backend of the NewSessionWizard path autocomplete: the

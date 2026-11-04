@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { emitGlobalTabsChanged } from '@/lib/server/agent/sessionOps';
-import { listTabs, reorderGroups, reorderTabs, reorderVps } from '@/lib/server/claude/tabs';
+import { listTabs, reorderGroups, reorderTabs, reorderVps } from '@/lib/server/hub/tabs';
 import type { ReorderTabsBody } from '@/lib/types/api';
 
 // POST /api/tabs/reorder — one row of the strip at a time.

@@ -4,7 +4,7 @@
 // the green cue, so the same session never reads "come and see" and "needs
 // you" at once.
 //
-// The MARKER is durable and server-owned (`claudeSessions.unreadStop`, cleared
+// The MARKER is durable and server-owned (`agentSessions.unreadStop`, cleared
 // by an attended focus). This is only about DRAWING it.
 import { attentionForRow } from '@/lib/sessionAttention';
 

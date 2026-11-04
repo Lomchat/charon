@@ -57,7 +57,7 @@ describe('session-id hashing migration', () => {
     expect(await auth.getSession(RAW_2)).not.toBeNull();
     expect(await auth.getSession('f'.repeat(64))).toBeNull();
 
-    const [marker] = db.select().from(schema.claudeSettings).all()
+    const [marker] = db.select().from(schema.appSettings).all()
       .filter((r: any) => r.key === 'auth.session_ids_hashed');
     expect(marker?.value).toBe('1');
   });

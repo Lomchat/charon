@@ -95,7 +95,7 @@ export default function AsyncQuestionStrip({ questions, onRespond, onShowInTrans
         )}
       </button>
       {/* Hidden, not unmounted: a half-filled answer survives the fold. */}
-      <div className="claude-pending-zone" hidden={collapsed}>
+      <div className="app-pending-zone" hidden={collapsed}>
         <header className="uq-card-head">
           <span className="uq-tag">{asyncQuestionCountLabel(n)}</span>
           <span className="uq-sub">{delivering ? 'sending…' : asyncQuestionTitle(oldest)}</span>

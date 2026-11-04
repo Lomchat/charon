@@ -1,13 +1,13 @@
 import 'server-only';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, accountProfiles, claudeSessions, vps } from '@/lib/db';
+import { db, accountProfiles, agentSessions, vps } from '@/lib/db';
 import { DEFAULT_ACCOUNT_PROFILE, type AccountProfile } from '@/lib/accountProfiles';
 import { providerBackendState, providerLoginPatch, type SessionProvider } from '@/lib/sessionCapabilities';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { sshExec, shQuote } from '@/lib/server/claude/sshExec';
+import { sshExec, shQuote } from '@/lib/server/hub/sshExec';
 import { AGENT_DIR_NAME } from './agentPaths.js';
-import { getSetting, setSetting } from '@/lib/server/claude/settings';
+import { getSetting, setSetting } from '@/lib/server/hub/settings';
 import { emitGlobalAccountProfiles, emitGlobalVpsRuntimeFromDb } from './sessionOps';
 import { cursorIdentities, identityChecked, profileStatuses, statusKey } from './accountProfileState';
 export { profileStatuses, statusKey } from './accountProfileState';
@@ -172,7 +172,7 @@ async function acceptProfileStatus(vpsId: string, st: ProfileStatus): Promise<vo
     emitGlobalVpsRuntimeFromDb(vpsId);
   }
   if (st.provider === 'codex') {
-    const models = await import('../claude/codexModels');
+    const models = await import('../hub/codexModels');
     models.invalidateCodexAccountModels(vpsId, st.account_profile);
   }
   const usage = await import('./usagePoll');
@@ -239,9 +239,9 @@ export async function signOutAccountProfile(vpsId: string, provider: SessionProv
 export async function removeAccountProfile(vpsId: string, provider: SessionProvider, id: string): Promise<void> {
   requireAccountProfile(vpsId, provider, id);
   if (id === DEFAULT_ACCOUNT_PROFILE) throw new Error('The default profile cannot be renamed or removed');
-  const used = db.select({ id: claudeSessions.id }).from(claudeSessions).where(and(
-    eq(claudeSessions.vpsId, vpsId), eq(claudeSessions.kind, provider),
-    sql`json_extract(${claudeSessions.codexConfig}, '$.accountProfile') = ${id}`,
+  const used = db.select({ id: agentSessions.id }).from(agentSessions).where(and(
+    eq(agentSessions.vpsId, vpsId), eq(agentSessions.kind, provider),
+    sql`json_extract(${agentSessions.providerConfig}, '$.accountProfile') = ${id}`,
   )).get();
   if (used) throw new Error('Delete this profile’s sessions before removing it');
   let status: ProfileStatus;

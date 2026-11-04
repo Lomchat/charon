@@ -10,7 +10,7 @@ import path from 'node:path';
 process.env.DATABASE_URL = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'charon-usage-routing-')), 'test.db');
 
 vi.mock('server-only', () => ({}));
-vi.mock('@/lib/server/claude/telegram', () => ({
+vi.mock('@/lib/server/hub/telegram', () => ({
   sendPermissionToTelegram: vi.fn(async () => {}), sendQuestionToTelegram: vi.fn(async () => {}),
   markInteractionResolvedInTelegram: vi.fn(async () => {}), sendPlainToTelegram: vi.fn(async () => {}),
 }));
@@ -36,7 +36,7 @@ beforeAll(async () => {
 
 function stream(id: string, kind: 'claude' | 'codex', accountProfile?: string) {
   return new SessionStream({ id, vpsId: VPS_ID, vpsName: 'test', name: 'chat', status: 'active',
-    permissionMode: 'normal', claudeSessionId: null, kind, accountProfile }) as any;
+    permissionMode: 'normal', nativeSessionId: null, kind, accountProfile }) as any;
 }
 const windows = { five_hour: { utilization: 0.25, resets_at: Date.now() / 1000 + 3600 } };
 

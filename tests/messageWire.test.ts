@@ -2,11 +2,11 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-let deriveMessageStorage: typeof import('@/lib/server/claude/messageWire').deriveMessageStorage;
-let compactToolInputForWire: typeof import('@/lib/server/claude/messageWire').compactToolInputForWire;
+let deriveMessageStorage: typeof import('@/lib/server/hub/messageWire').deriveMessageStorage;
+let compactToolInputForWire: typeof import('@/lib/server/hub/messageWire').compactToolInputForWire;
 
 beforeAll(async () => {
-  ({ deriveMessageStorage, compactToolInputForWire } = await import('@/lib/server/claude/messageWire'));
+  ({ deriveMessageStorage, compactToolInputForWire } = await import('@/lib/server/hub/messageWire'));
 });
 
 describe('message wire projection', () => {

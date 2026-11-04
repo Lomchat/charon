@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-import { isPlausibleModelId, CLAUDE_MODEL_ALIASES } from '@/lib/server/claude/knownModels';
+import { isPlausibleModelId, CLAUDE_MODEL_ALIASES } from '@/lib/server/hub/knownModels';
 
 // CLAUDE.md §14.43: "Do NOT allowlist families (an `opus|sonnet|haiku` regex
 // once silently dropped `claude-fable-5` — accept any `^claude-`)."

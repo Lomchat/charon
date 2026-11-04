@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// ── Hub-side git service (lib/server/claude/git.ts), §14.76 / §14.82.
+// ── Hub-side git service (lib/server/hub/git.ts), §14.76 / §14.82.
 //
 // The module is a thin bridge, so the only logic worth pinning is the part
 // that isn't the agent's: how it caches, when it refuses to cache, and how it
@@ -26,7 +26,7 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClientForVpsId: () => ({ get status() { return clientStatus.value; }, call, ready }),
 }));
 
-const { getGitWorkspace, invalidateGitStatus } = await import('@/lib/server/claude/git');
+const { getGitWorkspace, invalidateGitStatus } = await import('@/lib/server/hub/git');
 const { AgentRpcError } = await import('@/lib/server/agent/types');
 
 const CWD = '/srv/charon';

@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api';
-import type { ClaudeSession } from '@/lib/db/schema';
+import type { AgentSession } from '@/lib/db/schema';
 
 type Result = {
   messageId: number;
@@ -9,7 +9,7 @@ type Result = {
   role: string;
   snippet: string;
   createdAt: number;
-  session: (ClaudeSession & { vpsName?: string | null }) | null;
+  session: (AgentSession & { vpsName?: string | null }) | null;
 };
 
 type Props = {
@@ -37,7 +37,7 @@ export default function SearchModal({ onClose, onPick }: Props) {
     const t = setTimeout(async () => {
       setLoading(true);
       try {
-        const r = await api.searchClaude(q);
+        const r = await api.searchSessions(q);
         if (!stale) setResults(r.results ?? []);
       } finally {
         if (!stale) setLoading(false);
@@ -47,8 +47,8 @@ export default function SearchModal({ onClose, onPick }: Props) {
   }, [q]);
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal search">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="app-modal search">
         <button className="modal-close" onClick={onClose}>✕</button>
         <h2>search</h2>
         <input

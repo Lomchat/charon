@@ -20,13 +20,13 @@ async function run(label, css) {
   await ctx.addCookies([{ name: 'charon_session', value: TOKEN, domain: '127.0.0.1', path: '/' }]);
   const page = await ctx.newPage();
   await page.goto(`${BASE}/?session=${SID}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.claude-chat .bubble', { timeout: 30_000 });
+  await page.waitForSelector('.app-chat .bubble', { timeout: 30_000 });
   if (css) await page.addStyleTag({ content: css });
   await page.waitForTimeout(2000);
 
   // Pull in a deep history first — content-visibility only claims to matter
   // once the list is long.
-  const box = await page.locator('.claude-chat').boundingBox();
+  const box = await page.locator('.app-chat').boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   for (let i = 0; i < PAGES * 30; i++) {
     await page.mouse.wheel(0, -900);
@@ -34,7 +34,7 @@ async function run(label, css) {
   }
   await page.waitForTimeout(1500);
 
-  const bubbles = await page.evaluate(() => document.querySelectorAll('.claude-chat .bubble').length);
+  const bubbles = await page.evaluate(() => document.querySelectorAll('.app-chat .bubble').length);
 
   // Frame times over a sustained scroll, sampled in-page.
   await page.evaluate(() => {
@@ -60,7 +60,7 @@ async function run(label, css) {
 
   // Cost of a full forced layout over the whole list.
   const layoutMs = await page.evaluate(() => {
-    const el = document.querySelector('.claude-chat');
+    const el = document.querySelector('.app-chat');
     const t0 = performance.now();
     for (let i = 0; i < 20; i++) {
       el.style.paddingTop = `${18 + (i % 2)}px`;

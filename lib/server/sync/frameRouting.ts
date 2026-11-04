@@ -14,7 +14,7 @@
 // `WorkerEvent['type'] | HubSyntheticType`, so a new union member fails the
 // build until it has a route. An unknown type at runtime routes 'focused'
 // (today's default: anything not low-volume is focus-filtered).
-import type { WorkerEvent } from '@/lib/server/claude/types';
+import type { WorkerEvent } from '@/lib/server/hub/types';
 
 /** Bus frame types published outside the `WorkerEvent` union: other buses
  *  (installs, model notices), the explorer's file activity, and the sync

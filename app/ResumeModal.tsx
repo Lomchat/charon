@@ -2,7 +2,7 @@
 import PickerControl from './PickerControl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import type { Vps, ClaudeSession } from '@/lib/db/schema';
+import type { Vps, AgentSession } from '@/lib/db/schema';
 import type { AgentKind, ScanVpsSessionsResponse, ScannedSession } from '@/lib/types/api';
 import { useAccountProfiles } from './accountProfileStore';
 import { accountProfileId, profileLabel } from '@/lib/accountProfiles';
@@ -15,14 +15,14 @@ import { appendScanPage, continuationQuery, scanPage } from './resumeScan';
 // "Scan existing sessions" — one modal, one tab PER DECLARED BACKEND.
 //
 // Every half is symmetric on purpose (§14.59/§14.74): each scan route answers
-// the same row shape, `claudeSessionId` carries whatever native id that
+// the same row shape, `nativeSessionId` carries whatever native id that
 // backend resumes by, and the import route dispatches the history fetch on
 // `kind`. So the whole list/card rendering below is shared and only three
 // things branch: the scan endpoint, the DB-list filter, and the
 // availability gate — all three by `kind`, none by a hard-coded list.
 type Props = {
   vpsList: Vps[];
-  dbSessions: ClaudeSession[];
+  dbSessions: AgentSession[];
   initialVpsId?: string;
   onClose: () => void;
   // vpsId + cwd travel with the id: the caller opens its tab immediately and
@@ -46,7 +46,7 @@ export default function ResumeModal({
   const profiles = useAccountProfiles(vpsId);
   const choices = profiles.filter((p) => p.provider === kind);
   const [showArchivedCodex, setShowArchivedCodex] = useState(false);
-  const [archivedDb, setArchivedDb] = useState<ClaudeSession[]>([]);
+  const [archivedDb, setArchivedDb] = useState<AgentSession[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
   // Scans are cached per VPS/provider/archive/folder scope so flipping tabs or
   // folder filters does not repeat an expensive remote scan.
@@ -86,7 +86,7 @@ export default function ResumeModal({
     (s) => s.vpsId === vpsId && ((s.kind ?? 'claude') === kind) && accountProfileId(s) === profile,
   );
   const dbKnownIds = useMemo(
-    () => new Set(dbForVps.map((s) => s.claudeSessionId).filter(Boolean) as string[]),
+    () => new Set(dbForVps.map((s) => s.nativeSessionId).filter(Boolean) as string[]),
     [dbForVps],
   );
   const archivedInDb = dbForVps.filter((s) => s.archived === 1);
@@ -145,7 +145,7 @@ export default function ResumeModal({
   useEffect(() => {
     let cancelled = false;
     if (!vpsId) { setArchivedDb([]); return; }
-    api.listClaudeSessions({ vpsId, includeArchived: true }).then((r) => {
+    api.listSessions({ vpsId, includeArchived: true }).then((r) => {
       if (!cancelled) setArchivedDb(r.sessions.filter(
         (s) => (s.kind ?? 'claude') === kind && s.archived === 1,
       ));
@@ -157,8 +157,8 @@ export default function ResumeModal({
     setBusy(s.sessionId);
     try {
       const title = s.aiTitle || s.summary || s.firstUserText;
-      const r = await api.importClaudeSession({
-        vpsId, kind, accountProfile: profile, claudeSessionId: s.sessionId, cwd: s.cwd,
+      const r = await api.importSession({
+        vpsId, kind, accountProfile: profile, nativeSessionId: s.sessionId, cwd: s.cwd,
         name: title ? title.slice(0, 60) : null,
       });
       // An SDK archived scan returns native archived threads. Import the
@@ -174,7 +174,7 @@ export default function ResumeModal({
   async function resumeOne(id: string) {
     setBusy(id);
     try {
-      await api.resumeClaudeSession(id);
+      await api.resumeSession(id);
       onResumed(id);
     } catch (e: any) {
       alert('resume: ' + (e?.message ?? e));
@@ -215,8 +215,8 @@ export default function ResumeModal({
   }
 
   return (
-    <div className="claude-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="claude-modal resume">
+    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="app-modal resume">
         <button className="modal-close" onClick={onClose}>✕</button>
         <h2>resumable sessions</h2>
 
