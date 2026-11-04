@@ -14,6 +14,7 @@ import { providerText } from '@/lib/providerText';
 import type { AccountUsage, AccountUsageLimit } from '@/lib/server/hub/types';
 import AgentLogo from './AgentLogo';
 import { accountUsageReadAt } from './accountUsageState';
+import UsageAccountSwitch, { type AccountSwitchTarget } from './UsageAccountSwitch';
 
 function sevClass(severity: string | undefined, percent: number | null): string {
   if (severity === 'critical') return 'crit';
@@ -90,8 +91,6 @@ function paceFraction(resetsAt: string | null | undefined, windowMs: number | nu
   if (left <= 0 || left > windowMs) return null;
   return 1 - left / windowMs;
 }
-
-const PACE_LEGEND = 'The arrow is how much of the window has elapsed: a gauge filled past it is using the quota faster than a pace that lasts until the reset.';
 
 /** Wall clock for the pace marks that stay on screen, ticking each minute. 0
  *  until mounted, so the server render and the first client one agree. */
@@ -293,8 +292,6 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
       {usage.extraUsage?.isEnabled ? (
         <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
       ) : null}
-      {/* The only place a phone can read what the mark means — no hover. */}
-      {paces.some((p) => p != null) ? <div className="um-legend"><svg className="um-legend-mark" viewBox="0 0 10 10" aria-hidden="true"><polygon points="1.5 9 8.5 9 5 2" /></svg>{PACE_LEGEND}</div> : null}
       {/* Live 5h/7d windows outdate the poll; a failing poll then only
           stales the per-model caps. §14.72 */}
       <div className={`um-foot${usage.degraded && !live ? ' um-foot-stale' : ''}`}>
@@ -305,9 +302,23 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
   );
 }
 
-export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel }: {
+/** An account's 5h / 7d as the session header draws them (10px pills). */
+function CompactGauges({ usage }: { usage: AccountUsage | null }) {
+  const now = Date.now();
+  const cells = usageCells(usage?.ok ? usage : null).filter((c) => !c.scoped);
+  return <>{cells.map((c) => {
+    const pace = paceFraction(c.resetsAt, c.windowMs, now);
+    return <UsagePill key={c.k} className="um-switch-pill" h={10} title={cellTitle(c, pace)}
+                      label={c.k} pct={c.pct} cls={sevClass(c.sev, c.pct)} pace={pace} />;
+  })}</>;
+}
+
+export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel, switchTarget, onClose }: {
   usage: AccountUsage | null; vpsName?: string | null; onRefresh?: () => void;
   provider: AgentKind; accountLabel: string | null;
+  /** A SESSION's gauges: also offer its provider's other accounts (§14.115). */
+  switchTarget?: AccountSwitchTarget | null;
+  onClose?: () => void;
 }) {
   const label = accountLabel;
   return (
@@ -316,12 +327,16 @@ export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel
         <UsageAccount accountLabel={accountLabel} />
         <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>
       </>}
+      {switchTarget ? <UsageAccountSwitch target={switchTarget} provider={provider}
+        renderGauges={(u) => <CompactGauges usage={u} />} onDone={() => onClose?.()} /> : null}
     </div>
   );
 }
 
-export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh, kind, accountLabel }: {
+export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh, kind, accountLabel, switchTarget }: {
   usage: AccountUsage | null;
+  /** A session's meter: its popover offers the other accounts. */
+  switchTarget?: AccountSwitchTarget | null;
   vpsName?: string | null;
   /** The account these gauges belong to (`usageAccountLabel`); required so a
    *  surface cannot silently drop it. */
@@ -403,7 +418,8 @@ export default function UsageMeter({ usage, vpsName, runtime = false, onRefresh,
           </Fragment>
         ))}
       </button>)}
-      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} provider={provider} accountLabel={accountLabel} /> : null}
+      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} provider={provider} accountLabel={accountLabel}
+        switchTarget={switchTarget} onClose={() => setOpen(false)} /> : null}
     </div>
   );
 }
@@ -448,8 +464,10 @@ function Ring({ cell, label, now }: { cell: UsageCell; label: string; now: numbe
  *  cell's reading, drawn round) and coloured by the same thresholds, with the
  *  same pace mark. A tap opens the same detail as the desktop cell. A provider
  *  with no usage API gets its dashboard link. */
-export function UsageRings({ usage, vpsName, onRefresh, kind, accountLabel, lead, className, title, open: openProp, onOpenChange, onTriggerClick, onTriggerEnter, onTriggerLeave }: {
+export function UsageRings({ usage, vpsName, onRefresh, kind, accountLabel, lead, className, title, open: openProp, onOpenChange, onTriggerClick, onTriggerEnter, onTriggerLeave, switchTarget }: {
   usage: AccountUsage | null;
+  /** A session's rings: the popover offers the other accounts (§14.115). */
+  switchTarget?: AccountSwitchTarget | null;
   vpsName?: string | null;
   accountLabel: string | null;
   onRefresh?: () => void;
@@ -514,7 +532,8 @@ export function UsageRings({ usage, vpsName, onRefresh, kind, accountLabel, lead
           <Ring key={c.k} cell={c} label={labels[i]} now={now} />
         ))}
       </button>
-      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} provider={provider} accountLabel={accountLabel} /> : null}
+      {open ? <UsagePopover usage={usage} vpsName={vpsName} onRefresh={onRefresh} provider={provider} accountLabel={accountLabel}
+        switchTarget={switchTarget} onClose={() => setOpen(false)} /> : null}
     </div>
   );
 }

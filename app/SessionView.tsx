@@ -2,6 +2,7 @@
 import { api } from '@/lib/api';
 import PickerControl from './PickerControl';
 import SessionAccountChoice from './SessionAccountChoice';
+import type { AccountSwitchTarget } from './UsageAccountSwitch';
 import dynamic from 'next/dynamic';
 import { useSessionEndpoint } from './useSessionEndpoint';
 import { endpointParameters, supportsCustomEndpoint, type EndpointState } from '@/lib/customEndpoints';
@@ -510,6 +511,11 @@ export default function SessionView({
     return null;
   }, [messages]);
   const currentAccount = accountProfileId(selected);
+  // The usage popovers offer the provider's other accounts (§14.115); a turn
+  // in flight makes the switch (a restart) wait.
+  const accountSwitch = useMemo(() => ({
+    sessionId, current: currentAccount, busy: status === 'thinking' || status === 'starting',
+  }), [sessionId, currentAccount, status]);
   const continueWithAccount = useCallback(async (accountId: string) => {
     await api.switchSessionAccount(sessionId, accountId);
     void streamSend('Continue');
@@ -839,11 +845,11 @@ export default function SessionView({
                 panel drops its usage cell). A custom endpoint bills per token
                 instead, and the runtime panel already shows those. */}
             {!endpoint.active && <UsageRings usage={usage ?? null} vpsName={selectedVps?.name}
-              onRefresh={onUsageRefresh} kind={sessionKind} accountLabel={usageAccountLabel} />}
+              onRefresh={onUsageRefresh} kind={sessionKind} accountLabel={usageAccountLabel} switchTarget={accountSwitch} />}
           </div>
           <SessionRuntimePanel
             usage={usage ?? null} tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
-            usageAccountLabel={usageAccountLabel}
+            usageAccountLabel={usageAccountLabel} accountSwitch={accountSwitch}
             kind={sessionKind} accountProfile={accountProfileId(selected)} profileNumber={profileNumber} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
@@ -1990,8 +1996,9 @@ function substitutedModel(kind: AgentKind, model: string | null, effectiveModel:
 function SessionRuntimePanel({
   usage, tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
   modelPendingApply, effortPendingApply, effectiveModel, nativeSessionId,
-  onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context,
+  onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
 }: {
+  accountSwitch: AccountSwitchTarget;
   profileNumber?: number;
   accountProfile?: string;
   sessionId: string; endpoint: EndpointState; onEndpointChanged: () => void;
@@ -2179,7 +2186,7 @@ function SessionRuntimePanel({
           }}>↻ Apply pending changes</button>}
         </div>}
       </div>
-      {endpoint.active ? <SessionTokenMeter usage={tokenUsage} usageUrl={endpoint.active.usageUrl} /> : <UsageMeter usage={usage} vpsName={vpsName} runtime onRefresh={onUsageRefresh} kind={kind} accountLabel={usageAccountLabel} />}
+      {endpoint.active ? <SessionTokenMeter usage={tokenUsage} usageUrl={endpoint.active.usageUrl} /> : <UsageMeter usage={usage} vpsName={vpsName} runtime onRefresh={onUsageRefresh} kind={kind} accountLabel={usageAccountLabel} switchTarget={accountSwitch} />}
       {context}
       {endpointOpen && supportsCustomEndpoint(kind) && <CustomEndpointModal sessionId={sessionId} engine={kind} vpsId={vpsId} initial={endpoint.active} onClose={() => setEndpointOpen(false)} onApplied={onEndpointChanged} />}
     </div>

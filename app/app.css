@@ -5598,12 +5598,44 @@
 .um-pace { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .um-pace-notch { fill: var(--um-surface, var(--bg)); }
 .um-pace-point { fill: var(--text); }
-.um-legend { display: flex; align-items: flex-start; gap: 7px; font-size: 9px; line-height: 1.4; color: var(--text-muted); }
-.um-legend-mark { flex: none; width: 9px; height: 9px; margin-top: 2px; fill: var(--text); }
 .um-foot { font-size: 9px; color: var(--text-muted); text-align: right; margin-top: 2px; }
 /* Gauges are real but the last refresh failed (throttled / token stale) — the
    numbers stay on screen, the footer says why they're older. §14.72. */
 .um-foot-stale { color: var(--warning); opacity: .85; }
+
+/* A session's popover: its provider's other accounts (§14.115), one row
+   each — who, then their 5h/7d pills (the session header's size) — most
+   headroom first; a click moves the session there. */
+.um-switch { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.um-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  font: 600 10px/1.2 var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.um-switch-row {
+  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.um-switch-row:hover:not(:disabled), .um-switch-row:focus-visible {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.um-switch-row:disabled { cursor: default; }
+.um-switch-row.is-off { opacity: .55; }
+.um-switch-who { display: flex; align-items: center; gap: 6px; min-width: 0; font: 500 12px/1.2 var(--body); color: var(--text); }
+.um-switch-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-switch-tag {
+  flex: none; padding: 1px 6px; border-radius: var(--chip-radius);
+  font: 600 9px/1.4 var(--body); text-transform: uppercase; letter-spacing: .05em;
+  color: var(--success); background: var(--success-soft);
+}
+.um-switch-gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 10px; }
+.um-switch-pill.um-gauge { gap: 5px; }
+.um-switch-pill .um-pill {
+  height: 10px; padding: 0 6px; font: 500 8.5px/1 var(--mono);
+  --um-track: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.um-switch-pill .um-pill-pct { font: 500 9px/1 var(--mono); }
+.um-switch-row :is(.um-switch-who, .um-pill-label, .um-pill-pct) { text-transform: none; letter-spacing: 0; }
+.um-switch-note { font: 400 10px/1.2 var(--body); color: var(--text-muted); text-transform: none; letter-spacing: 0; }
+.um-switch-error { font-size: 11px; color: var(--danger); }
 
 .um-ok   { color: var(--success); }
 .um-warn { color: var(--warning); }
@@ -9418,7 +9450,10 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 
 .accounts-banner {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 12px; font-size: 12px;
-  border-bottom: 1px solid var(--border); background: var(--warning-soft); color: var(--text);
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  /* A tint OF the page, not a light chip: --warning-soft is pale in dark
+     themes and the text vanished on it. */
+  background: color-mix(in srgb, var(--warning) 14%, var(--bg)); color: var(--text);
 }
 .accounts-banner-text { flex: 1; min-width: 12em; }
 .accounts-banner .wiz-btn { padding: 3px 10px; font-size: 12px; }
