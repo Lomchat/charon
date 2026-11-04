@@ -20,6 +20,7 @@ import { findTextLinks, messageFileTarget, remarkCodeUrls, remarkFilePaths } fro
 import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
 import { peerRequestTarget } from './peerMessageLinks';
+import { splitQuotedLines } from './chatQuote';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -201,7 +202,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             <MessageMarkdown content={m.content} vpsId={vpsId} cwd={cwd} />
           )
         ) : (
-          <span><LinkifiedText text={m.content} vpsId={vpsId} cwd={cwd} /></span>
+          <span><QuotedText text={m.content} vpsId={vpsId} cwd={cwd} /></span>
         )}
       </div>
       {isPeerStatus && m.peerError && (
@@ -283,6 +284,17 @@ export function MessageMarkdown({ content, vpsId, cwd }: {
 
 /** Plain text (your bubble, a peer's, an agent's question): web URLs, and file
  *  paths where a VPS can open them. */
+/** Plain-text bubble body where `> ` lines (a quote made from the chat,
+ *  chatQuote.ts) render as a quote block. Spans only: this sits inside the
+ *  bubble's inline wrapper; `.msg-quote` is display:block. */
+function QuotedText({ text, vpsId, cwd }: { text: string; vpsId?: string; cwd?: string | null }) {
+  const segs = useMemo(() => splitQuotedLines(text), [text]);
+  if (!segs.some((x) => x.quote)) return <LinkifiedText text={text} vpsId={vpsId} cwd={cwd} />;
+  return <>{segs.map((x, i) => x.quote
+    ? <span key={i} className="msg-quote"><LinkifiedText text={x.text} vpsId={vpsId} cwd={cwd} /></span>
+    : <LinkifiedText key={i} text={x.text} vpsId={vpsId} cwd={cwd} />)}</>;
+}
+
 export function LinkifiedText({ text, vpsId, cwd }: { text: string; vpsId?: string; cwd?: string | null }) {
   const parts = useMemo(() => {
     const hits = findTextLinks(text, vpsId ? (href) => !!messageFileTarget(href, vpsId, cwd) : undefined);

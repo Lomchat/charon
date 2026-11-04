@@ -2856,6 +2856,35 @@
 .bubble .content.md a:hover { text-decoration-color: var(--accent); }
 /* A `code` path that opens in the explorer reads as the link it is. */
 .bubble .content.md a.file-path-link code { color: inherit; }
+.bubble .content .msg-quote {
+  display: block;
+  border-left: 2px solid var(--border-strong);
+  padding: 2px 10px; margin: 4px 0;
+  color: var(--text-muted);
+}
+
+/* "Quote" over a selection in the chat (QuoteSelectionButton.tsx). Fixed and
+   portaled to <body>; (left, top) = the selection's top centre, or its bottom
+   centre with .is-below (touch, where the OS menu takes the top). */
+.chat-quote-btn {
+  position: fixed; z-index: 60;
+  transform: translate(-50%, -100%);
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent);
+  background: var(--bg-elevated);
+  color: var(--accent-strong);
+  font: inherit; font-size: 12px; line-height: 1.2;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--shadow-color) 45%, transparent);
+  cursor: pointer;
+  user-select: none; -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.chat-quote-btn.is-below { transform: translate(-50%, 0); }
+.chat-quote-btn:hover { background: var(--bg-high); border-color: var(--accent-strong); }
+.chat-quote-btn span { font-size: 14px; line-height: 1; }
+
 .bubble .content.md blockquote {
   border-left: 2px solid var(--border);
   padding: 4px 12px; margin: 6px 0;

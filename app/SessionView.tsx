@@ -57,6 +57,8 @@ import {
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
+import { formatQuote, insertQuoteBlock } from './chatQuote';
+import QuoteSelectionButton from './QuoteSelectionButton';
 import ComposerGrip from './ComposerGrip';
 import PendingZone from './PendingZone';
 import { isPathDrag, readPathDrag } from './pathDrag';
@@ -265,9 +267,15 @@ export default function SessionView({
   // "Insert this path into the message" from the Files tab. Carries a nonce so
   // inserting the SAME path twice in a row still fires (a plain string would
   // be === the previous value and the drain effect would skip it).
-  const [insertRequest, setInsertRequest] = useState<{ text: string; nonce: number } | null>(null);
+  // `block` = a quote from the chat (chatQuote.ts): spliced on its own lines
+  // with the caret below it, where a path is spliced inline.
+  const [insertRequest, setInsertRequest] = useState<InsertRequest | null>(null);
   const requestInsertPath = useCallback((text: string) => {
     setInsertRequest({ text, nonce: Date.now() });
+  }, []);
+  const requestQuote = useCallback((text: string) => {
+    const quote = formatQuote(text);
+    if (quote) setInsertRequest({ text: quote, nonce: Date.now(), block: true });
   }, []);
   const clearInsertRequest = useCallback(() => setInsertRequest(null), []);
 
@@ -914,6 +922,7 @@ export default function SessionView({
         )}
 
         <div className="app-chat-wrap">
+          <QuoteSelectionButton chatRef={chatBodyRef} onQuote={requestQuote} />
           <div className="app-chat" ref={chatBodyRef} onScroll={handleChatScroll}>
             {isLoadingHistory && messages.length === 0 ? (
               // Placeholder during the 1st refetch — differentiates "empty
@@ -1270,6 +1279,8 @@ const MessageHistory = memo(function MessageHistory({
 // long sessions lagged by seconds. Memoized too, so a parent re-render
 // (new message, status change) doesn't needlessly re-render it either.
 // See CLAUDE.md §11 / §14.
+type InsertRequest = { text: string; nonce: number; block?: boolean };
+
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
   pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings,
@@ -1287,7 +1298,7 @@ const ChatInputBar = memo(function ChatInputBar({
   // "Insert this path" request coming from the Files tab. Same drain pattern as
   // prefillInput: the parent holds it until this bar is mounted to consume it,
   // so clicking + in the tab while a permission card is showing isn't lost.
-  insertRequest: { text: string; nonce: number } | null;
+  insertRequest: InsertRequest | null;
   clearInsertRequest: () => void;
   /** Other sessions on the same machine, for the `@` menu. `confirmed:false`
    *  = the handle is predicted, not yet what the CLI answers to. */
@@ -1405,6 +1416,24 @@ const ChatInputBar = memo(function ChatInputBar({
     });
   }, [setInput]);
 
+  /** A quote: on its own lines, the caret on the empty line below it. */
+  const insertBlockAtCaret = useCallback((block: string) => {
+    const { next, caret } = insertQuoteBlock(inputRef.current, caretRef.current ?? inputRef.current.length, block);
+    inputRef.current = next;
+    revealComposer();
+    setInput(next);
+    caretRef.current = caret;
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      try { ta.setSelectionRange(caret, caret); } catch { /* detached */ }
+      // A long quote appended at the end: keep the caret, not the top of
+      // the quote, in view (setSelectionRange does not scroll everywhere).
+      if (caret === next.length) ta.scrollTop = ta.scrollHeight;
+    });
+  }, [setInput]);
+
   // ── `@` mention menu ────────────────────────────────────────────────────
   // Naming a session is only half of addressing it: you also have to know what
   // the others are called. Typing `@` lists the sessions on THIS machine — the
@@ -1451,12 +1480,13 @@ const ChatInputBar = memo(function ChatInputBar({
     });
   }, [mention, setInput]);
 
-  // Drain "insert this path" from the Files tab.
+  // Drain "insert this path" (Files tab) and "quote this" (chat selection).
   useEffect(() => {
     if (!insertRequest) return;
-    insertAtCaret(insertRequest.text);
+    if (insertRequest.block) insertBlockAtCaret(insertRequest.text);
+    else insertAtCaret(insertRequest.text);
     clearInsertRequest();
-  }, [insertRequest, insertAtCaret, clearInsertRequest]);
+  }, [insertRequest, insertAtCaret, insertBlockAtCaret, clearInsertRequest]);
 
   const handleFiles = useCallback((files: File[]) => {
     if (files.length === 0) return;
