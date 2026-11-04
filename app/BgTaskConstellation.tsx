@@ -5,6 +5,7 @@ import type { SessionProvider } from '@/lib/sessionCapabilities';
 import { codexTerminalProcessId, type BgAgent, type BgTask, type BgTaskStatus } from './bgTasks';
 import { fmtDuration } from './taskTime';
 import BgTaskOutput from './BgTaskOutput';
+import { useBgWorkflowAgents } from './useBgWorkflowAgents';
 import { useBgSessionAgents } from './useBgSessionAgents';
 
 export function bgAgentStatus(agent: BgAgent): BgTaskStatus | 'unknown' {
@@ -29,7 +30,9 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
   const inventory = useBgSessionAgents(sessionId, provider);
   const nativeAgent = inventory.agents.find((a) => a.id === nativeSelection);
   const [view, setView] = useState<'graph' | 'list'>('graph');
-  const agents = (task.agents ?? []).map((agent, i) => ({ agent, key: `${agent.index ?? i}:${agent.label ?? ''}` }));
+  const saved = useBgWorkflowAgents(sessionId, provider === 'claude' && task.agents == null && !!task.workflowName ? task.taskId : undefined);
+  const taskAgents = task.agents ?? saved.agents;
+  const agents = (taskAgents ?? []).map((agent, i) => ({ agent, key: `${agent.index ?? i}:${agent.label ?? ''}` }));
   const selected = agents.find((a) => a.key === selection)?.agent;
   const selectedKey = selected ? selection : null;
   const inspectingChild = !!nativeAgent || !!selected;
@@ -50,10 +53,10 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
       <div className="bgc-switch"><button type="button" aria-pressed={view === 'graph'} onClick={() => setView('graph')}>{text.graph}</button><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>{text.list}</button></div>
     </div>
     <div className="bgc-workspace"><div className="bgc-map">
-      <div className="bgc-map-head"><span>{text.agents} · {task.agents == null ? text.detailsUnknown : `${countDone}/${agents.length} done`}</span><span>{label(status)}</span></div>
+      <div className="bgc-map-head"><span>{text.agents} · {taskAgents == null ? text.detailsUnknown : `${countDone}/${agents.length} done`}</span><span>{label(status)}</span></div>
       <div className={`bgc-canvas ${view}`}>
         {rootNode()}
-        {task.agents == null && task.workflowName && <p className="bgc-missing-progress">{text.missingProgress}</p>}
+        {taskAgents == null && task.workflowName && <p className="bgc-missing-progress">{saved.error || (saved.loading ? text.inventoryLoading : text.missingProgress)}</p>}
         {agents.length > 0 && <div className="bgc-children">{agents.map(({ agent, key }, i) => <div className={`bgc-branch ${bgAgentStatus(agent)}`} key={key}>
           <button type="button" className={`bgc-node ${bgAgentStatus(agent)} ${selectedKey === key ? 'selected' : ''}`}
             onClick={() => { setSelection(key); setNativeSelection(null); }} aria-pressed={selectedKey === key}>
@@ -76,7 +79,7 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
           </button>)}</div>
         </section>}
       </div>
-      <div className="bgc-map-foot"><code>{task.taskId}</code><span>{task.agents == null ? text.detailsUnknown : `${agents.length} ${text.agents.toLowerCase()}`}</span></div>
+      <div className="bgc-map-foot"><code>{task.taskId}</code><span>{taskAgents == null ? text.detailsUnknown : `${agents.length} ${text.agents.toLowerCase()}`}</span></div>
     </div><aside className="bgc-inspector">
       <div className="bgc-inspector-head"><span>{nativeAgent ? text.sessionAgents : selected ? text.agents : task.workflowName ? text.workflow : text.task}</span><Pill status={selectedStatus} /></div>
       <div className="bgc-inspector-title"><h3>{title}</h3>{!inspectingChild && status === 'running' && (stoppable ?
@@ -87,9 +90,11 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
       {selected && <p className="bgc-stop-hint">{text.parentStop}</p>}
       {killing && killing !== 'pending' && !inspectingChild && <div className="tm-error">{killing}</div>}
       <dl className="bgc-stats"><div><dt>{text.tokens}</dt><dd>{tokens(nativeAgent ? null : selected ? selected.tokens : task.usage?.tokens)}</dd></div><div><dt>{text.elapsed}</dt><dd>{nativeAgent ? '—' : selected ? selected.durationMs == null ? '—' : fmtDuration(selected.durationMs) : fmtDuration(((task.endedAt ?? nowS) - task.startedAt) * 1000)}</dd></div></dl>
-      <BgTaskOutput key={`${task.taskId}:${task.startedAt}:${nativeAgent?.id ?? selectedKey ?? 'root'}`} sessionId={sessionId} nativeAgentId={nativeAgent?.id} vpsId={vpsId} cwd={cwd}
+      <BgTaskOutput key={`${task.taskId}:${task.startedAt}:${nativeAgent?.id ?? selectedKey ?? 'root'}`} sessionId={sessionId} nativeAgentId={nativeAgent?.id}
+        workflowTask={selected && provider === 'claude' && selected.label ? task.taskId : undefined}
+        workflowLabel={selected?.label || undefined} workflowPhase={selected?.phaseTitle || undefined} vpsId={vpsId} cwd={cwd}
         outputFile={inspectingChild ? null : task.outputFile} preview={nativeAgent ? nativeAgent.preview : selected ? selected.resultPreview : task.summary}
-        running={selectedStatus === 'running'} />
+        running={selectedStatus === 'running' || (selectedStatus === 'unknown' && status === 'running')} />
       {!inspectingChild && task.outputFile && <div className="tm-path" title={task.outputFile}><span>output</span><code>{task.outputFile}</code></div>}
     </aside></div>
   </section>;

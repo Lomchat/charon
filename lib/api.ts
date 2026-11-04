@@ -8,6 +8,7 @@ import type { CustomEndpoint, EndpointState } from '@/lib/customEndpoints';
 
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import type {
+  WorkflowOutputQuery, WorkflowOutputResponse, WorkflowAgentsResponse,
   EndpointProbeBody, EndpointProbeResponse, EndpointSaveBody, SessionEndpointBody,
   EndpointBatchBody, EndpointBatchResponse,
   Vps, VpsFolder, VpsPath, ClaudeSession, PermissionMode, ShellInfo,
@@ -206,6 +207,13 @@ async function readSearchStream(path: string, body: FsSearchQuery, opts: {
 }
 
 export const api = {
+  getWorkflowAgents: (id: string, task: string, signal?: AbortSignal) =>
+    send<WorkflowAgentsResponse>('GET', `/api/claude/sessions/${id}/subagents?${new URLSearchParams({ task })}`, undefined, { signal }),
+  getWorkflowOutput: (id: string, query: WorkflowOutputQuery, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) if (value != null) params.set(key, String(value));
+    return send<WorkflowOutputResponse>('GET', `/api/claude/sessions/${id}/subagents?${params}`, undefined, { signal });
+  },
   listCustomEndpoints: () => send<{ endpoints: CustomEndpoint[] }>('GET', '/api/custom-endpoints'),
   saveCustomEndpoint: (body: EndpointSaveBody) => send<{ endpoint: CustomEndpoint }>('POST', '/api/custom-endpoints', body),
   deleteCustomEndpoint: (id: string) => send<{ ok: boolean }>('DELETE', '/api/custom-endpoints', { id }),

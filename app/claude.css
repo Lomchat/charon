@@ -9298,3 +9298,5 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgc-native-agents > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .bgc-native-agents .bgc-node-head strong { font: 11px var(--mono); }
 @media(max-width: 540px) { .bgc-native-agents > div { grid-template-columns: 1fr; } }
+
+.bgc-output-earlier { flex: none; align-self: center; padding: 6px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--accent-strong); font: 11px var(--mono); }

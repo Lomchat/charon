@@ -1,3 +1,4 @@
+import { readWorkflowTranscript } from '@/lib/server/claude/workflowTranscript';
 import { NextResponse } from 'next/server';
 import { requireApiSession } from '@/lib/server/session';
 import { callSessionRpc } from '@/lib/server/claude/sessionRpc';
@@ -15,7 +16,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const auth = await requireApiSession();
   if (auth instanceof Response) return auth;
   const { id } = await params;
-  const agent = new URL(req.url).searchParams.get('agent');
+  const query = new URL(req.url).searchParams;
+  const task = query.get('task');
+  if (task) {
+    const rawBefore = query.get('before');
+    const before = rawBefore == null ? undefined : Number(rawBefore);
+    if (before != null && (!Number.isSafeInteger(before) || before <= 0))
+      return NextResponse.json({ ok: false, error: 'Invalid transcript cursor.' }, { status: 400 });
+    return NextResponse.json(await readWorkflowTranscript(id, task, query.get('label') || '', query.get('phase') || '', before, query.get('expectedAgent') || undefined));
+  }
+  const agent = query.get('agent');
   if (agent) {
     return NextResponse.json(
       await recoverSubagentTranscript(id, agent, await callSessionRpc(id, 'get_subagent_messages', { agent_id: agent })));

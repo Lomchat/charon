@@ -1744,3 +1744,13 @@ export type EndpointBatch = {
 };
 export type EndpointBatchResponse = { batch: EndpointBatch | null };
 export type SessionEndpointBody = { endpoint?: import('@/lib/customEndpoints').EndpointInput | null; saveForReuse?: boolean; cancelPending?: boolean };
+
+/** Workflow output is resolved from the persisted task receipt and native journal. */
+export type WorkflowOutputQuery = { task: string; label: string; phase?: string; before?: number; expectedAgent?: string };
+export type WorkflowOutputResponse =
+  | { ok: true; agentId: string; blocks: string[]; nextBefore: number | null; source: 'workflow_transcript' }
+  | { ok: false; error: string; reason?: string };
+
+export type WorkflowAgentsResponse =
+  | { ok: true; agents: SessionBackgroundTaskAgent[] }
+  | { ok: false; error: string; reason?: string };
