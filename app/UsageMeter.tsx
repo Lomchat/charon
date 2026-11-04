@@ -257,23 +257,7 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
       </div>
     );
   }
-  // Prefer the endpoint's rich limits[]; fall back to the plain 5h/7d windows.
-  const limits: Array<Omit<AccountUsageLimit, 'percent'> & { percent: number | null }> = usage.limits && usage.limits.length
-    ? usage.limits
-    : [
-        ...(usage.fiveHour ? [{ kind: 'session', percent: usage.fiveHour.utilization, severity: 'normal', resetsAt: usage.fiveHour.resetsAt }] : []),
-        ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization, severity: 'normal', resetsAt: usage.sevenDay.resetsAt }] : []),
-      ];
   const live = (usage.windowsAt ?? 0) > usage.fetchedAt;
-  // Read at render, like the reset countdowns beside them: the popover is
-  // short-lived, and every reopen is a fresh render.
-  const now = Date.now();
-  const paces = limits.map((l) => paceFraction(l.resetsAt, windowMsOf(l.kind, l.group), now));
-  const kindLabel = (l: Omit<AccountUsageLimit, 'percent'>): string =>
-    l.kind === 'session' || l.group === 'session' ? '5-hour session'
-    : l.kind === 'weekly_all' ? 'Weekly (all)'
-    : l.kind === 'weekly_scoped' ? 'Weekly'
-    : l.kind || 'Limit';
   return (
     <div className="um-detail">
       <div className="um-head">
@@ -285,13 +269,7 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
         {onRefresh ? <button className="um-refresh" onClick={onRefresh} title="Refresh">↻</button> : null}
       </div>
       <UsageAccount accountLabel={accountLabel} />
-      {limits.map((l, i) => (
-        <Bar key={i} label={kindLabel(l)} sub={l.scopeModel} pct={l.percent}
-             severity={l.severity} reset={l.resetsAt} pace={paces[i]} />
-      ))}
-      {usage.extraUsage?.isEnabled ? (
-        <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
-      ) : null}
+      <UsageBars usage={usage} />
       {/* Live 5h/7d windows outdate the poll; a failing poll then only
           stales the per-model caps. §14.72 */}
       <div className={`um-foot${usage.degraded && !live ? ' um-foot-stale' : ''}`}>
@@ -302,15 +280,39 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
   );
 }
 
-/** An account's 5h / 7d as the session header draws them (10px pills). */
-function CompactGauges({ usage }: { usage: AccountUsage | null }) {
+/** An account's windows as full bars: the endpoint's rich limits[], else the
+ *  plain 5h/7d. ONE renderer for the session's account and the others listed
+ *  under it, so their gauges compare at the same size. */
+function UsageBars({ usage }: { usage: AccountUsage }) {
+  const limits: Array<Omit<AccountUsageLimit, 'percent'> & { percent: number | null }> = usage.limits && usage.limits.length
+    ? usage.limits
+    : [
+        ...(usage.fiveHour ? [{ kind: 'session', percent: usage.fiveHour.utilization, severity: 'normal', resetsAt: usage.fiveHour.resetsAt }] : []),
+        ...(usage.sevenDay ? [{ kind: 'weekly_all', percent: usage.sevenDay.utilization, severity: 'normal', resetsAt: usage.sevenDay.resetsAt }] : []),
+      ];
+  // Read at render, like the reset countdowns beside them: the popover is
+  // short-lived, and every reopen is a fresh render.
   const now = Date.now();
-  const cells = usageCells(usage?.ok ? usage : null).filter((c) => !c.scoped);
-  return <>{cells.map((c) => {
-    const pace = paceFraction(c.resetsAt, c.windowMs, now);
-    return <UsagePill key={c.k} className="um-switch-pill" h={10} title={cellTitle(c, pace)}
-                      label={c.k} pct={c.pct} cls={sevClass(c.sev, c.pct)} pace={pace} />;
-  })}</>;
+  const kindLabel = (l: Omit<AccountUsageLimit, 'percent'>): string =>
+    l.kind === 'session' || l.group === 'session' ? '5-hour session'
+    : l.kind === 'weekly_all' ? 'Weekly (all)'
+    : l.kind === 'weekly_scoped' ? 'Weekly'
+    : l.kind || 'Limit';
+  return <>
+    {limits.map((l, i) => (
+      <Bar key={i} label={kindLabel(l)} sub={l.scopeModel} pct={l.percent} severity={l.severity} reset={l.resetsAt}
+           pace={paceFraction(l.resetsAt, windowMsOf(l.kind, l.group), now)} />
+    ))}
+    {usage.extraUsage?.isEnabled ? (
+      <Bar label="Extra usage" pct={usage.extraUsage.utilization ?? null} severity="normal" />
+    ) : null}
+  </>;
+}
+
+/** Another account's gauges in the switch list: the session's own bars. */
+function SwitchGauges({ usage }: { usage: AccountUsage | null }) {
+  if (!usage?.ok) return <div className="um-empty">No usage reading yet.</div>;
+  return <div className="um-switch-bars"><UsageBars usage={usage} /></div>;
 }
 
 export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel, switchTarget, onClose }: {
@@ -328,7 +330,7 @@ export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel
         <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>
       </>}
       {switchTarget ? <UsageAccountSwitch target={switchTarget} provider={provider}
-        renderGauges={(u) => <CompactGauges usage={u} />} onDone={() => onClose?.()} /> : null}
+        renderGauges={(u) => <SwitchGauges usage={u} />} onDone={() => onClose?.()} /> : null}
     </div>
   );
 }

@@ -26,13 +26,14 @@ export function accountLoad(u: AccountUsage | null | undefined): number | null {
 
 /**
  * "Switch account" under a session's usage gauges (§14.115): the provider's
- * other hub accounts with THEIR 5h/7d, most headroom first, one click to move
- * the session (shared history ⇒ same conversation; a restart of a few seconds).
+ * other hub accounts with THEIR gauges — the same bars, same size, as the
+ * session's own — most headroom first, one click to move the session (shared
+ * history ⇒ same conversation; a restart of a few seconds).
  */
 export default function UsageAccountSwitch({ target, provider, renderGauges, onDone }: {
   target: AccountSwitchTarget;
   provider: AgentKind;
-  /** The compact 5h/7d pills, drawn by the meter so they match it exactly. */
+  /** The account's bars, drawn by the meter so they match the session's exactly. */
   renderGauges: (usage: AccountUsage | null) => ReactNode;
   onDone: () => void;
 }) {
@@ -44,9 +45,6 @@ export default function UsageAccountSwitch({ target, provider, renderGauges, onD
   if (!others.length) return null;
   const rank = (id: string, expired: boolean) => expired ? Infinity : accountLoad(data.usage[id]) ?? 50;
   others.sort((a, b) => rank(a.id, a.status === 'expired') - rank(b.id, b.status === 'expired'));
-  const currentLoad = accountLoad(data.usage[target.current]);
-  const best = others[0];
-  const bestLoad = best && best.status !== 'expired' ? accountLoad(data.usage[best.id]) : null;
 
   return (
     <div className="um-switch" role="group" aria-label="Switch this session to another account">
@@ -59,7 +57,6 @@ export default function UsageAccountSwitch({ target, provider, renderGauges, onD
         // The provider is the popover's own; the row names the login only.
         const who = a.name?.trim() || a.email?.trim() || a.displayName?.trim() || label;
         const expired = a.status === 'expired';
-        const roomiest = a === best && bestLoad != null && currentLoad != null && bestLoad < currentLoad;
         return (
           <button key={a.id} type="button" className={`um-switch-row${expired ? ' is-off' : ''}`}
             disabled={expired || target.busy || !!busyId}
@@ -72,13 +69,10 @@ export default function UsageAccountSwitch({ target, provider, renderGauges, onD
             <span className="um-switch-who">
               <AgentLogo kind={provider} profileNumber={a.number} size={14} title="" />
               <span className="um-switch-label">{who}</span>
-              {roomiest && <span className="um-switch-tag">most room</span>}
             </span>
-            <span className="um-switch-gauges">
-              {busyId === a.id ? <span className="um-switch-note">switching…</span>
-                : expired ? <span className="um-switch-note">signed out</span>
-                : renderGauges(data.usage[a.id] ?? null)}
-            </span>
+            {busyId === a.id ? <span className="um-switch-note">switching…</span>
+              : expired ? <span className="um-switch-note">signed out</span>
+              : renderGauges(data.usage[a.id] ?? null)}
           </button>
         );
       })}

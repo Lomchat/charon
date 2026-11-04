@@ -5545,7 +5545,7 @@
 
 .usage-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 70;
-  width: 288px; max-width: 86vw;
+  width: 288px; max-width: 86vw; max-height: 80dvh; overflow-y: auto; overscroll-behavior: contain;
   background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: var(--radius-lg); box-shadow: 0 14px 40px color-mix(in srgb, var(--shadow-color) 50%, transparent);
   padding: 12px;
@@ -5604,38 +5604,32 @@
 .um-foot-stale { color: var(--warning); opacity: .85; }
 
 /* A session's popover: its provider's other accounts (§14.115), one row
-   each — who, then their 5h/7d pills (the session header's size) — most
-   headroom first; a click moves the session there. */
-.um-switch { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.um-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+   each — who, then THE SAME bars as the session's own (`UsageBars`), at the
+   same width: rows bleed to the popover's padding so nothing narrows them.
+   Most headroom first; a click moves the session there. */
+.um-switch { display: flex; flex-direction: column; margin-top: 12px; border-top: 1px solid var(--border); }
+.um-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 0 2px;
   font: 600 10px/1.2 var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
 .um-switch-row {
-  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; cursor: pointer;
-  text-transform: none; letter-spacing: 0;
-  border: 1px solid var(--border); border-radius: var(--radius-md);
+  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
+  margin: 0 -12px; padding: 10px 12px; cursor: pointer; text-transform: none; letter-spacing: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
+/* Only a top rule: a generic button border on the sides narrowed the bars. */
+.usage-pop .um-switch-row { border-width: 1px 0 0; }
+.usage-pop .um-switch-head + .um-switch-row { border-top-width: 0; }
 .um-switch-row:hover:not(:disabled), .um-switch-row:focus-visible {
-  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent);
+  --um-surface: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
+  background: var(--um-surface);
 }
 .um-switch-row:disabled { cursor: default; }
 .um-switch-row.is-off { opacity: .55; }
-.um-switch-who { display: flex; align-items: center; gap: 6px; min-width: 0; font: 500 12px/1.2 var(--body); color: var(--text); }
+.um-switch-who { display: flex; align-items: center; gap: 6px; min-width: 0; font: 600 12px/1.2 var(--body); color: var(--text); }
 .um-switch-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.um-switch-tag {
-  flex: none; padding: 1px 6px; border-radius: var(--chip-radius);
-  font: 600 9px/1.4 var(--body); text-transform: uppercase; letter-spacing: .05em;
-  color: var(--success); background: var(--success-soft);
-}
-.um-switch-gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 10px; }
-.um-switch-pill.um-gauge { gap: 5px; }
-.um-switch-pill .um-pill {
-  height: 10px; padding: 0 6px; font: 500 8.5px/1 var(--mono);
-  --um-track: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.um-switch-pill .um-pill-pct { font: 500 9px/1 var(--mono); }
-.um-switch-row :is(.um-switch-who, .um-pill-label, .um-pill-pct) { text-transform: none; letter-spacing: 0; }
+.um-switch-bars { display: flex; flex-direction: column; gap: 10px; }
+.um-switch-row :is(.um-switch-who, .um-pill-label, .um-pill-pct, .um-reset) { text-transform: none; letter-spacing: 0; }
 .um-switch-note { font: 400 10px/1.2 var(--body); color: var(--text-muted); text-transform: none; letter-spacing: 0; }
-.um-switch-error { font-size: 11px; color: var(--danger); }
+.um-switch-error { font-size: 11px; color: var(--danger); padding-top: 6px; }
 
 .um-ok   { color: var(--success); }
 .um-warn { color: var(--warning); }
