@@ -65,8 +65,8 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
             <span className="bgc-node-meta">{agent.model || '—'}<span>{tokens(agent.tokens)} tokens</span></span>
           </button>
         </div>)}</div>}
-        {inventory.enabled && <section className="bgc-native-agents">
-          <h4>{text.sessionAgents} {inventory.agents.length > 0 && <span>· {inventory.agents.length}</span>}</h4>
+        {inventory.enabled && <details className="bgc-native-agents">
+          <summary>{text.sessionAgents} {inventory.agents.length > 0 && <span>· {inventory.agents.length}</span>}</summary>
           <p>{text.inventoryHint}</p>
           {inventory.loading && <p>{text.inventoryLoading}</p>}
           {inventory.error && <p className="tm-error">{inventory.error}</p>}
@@ -77,7 +77,7 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
             <span className="bgc-node-head"><strong>{agent.name || agent.role || agent.id}</strong></span>
             <span className="bgc-node-meta">{text.transcript}</span>
           </button>)}</div>
-        </section>}
+        </details>}
       </div>
       <div className="bgc-map-foot"><code>{task.taskId}</code><span>{taskAgents == null ? text.detailsUnknown : `${agents.length} ${text.agents.toLowerCase()}`}</span></div>
     </div><aside className="bgc-inspector">
@@ -85,16 +85,16 @@ export default function BgTaskConstellation({ task, status, vpsId, cwd, provider
       <div className="bgc-inspector-title"><h3>{title}</h3>{!inspectingChild && status === 'running' && (stoppable ?
         <button type="button" className="tm-stop" disabled={killing === 'pending'} onClick={() => onStop(task.taskId)} title={text.stopHint}>{killing === 'pending' ? text.stopping : text.stop}</button>
         : <span className="tm-nostop" title={providerText.noPerItemStop(provider)}>no per-item stop</span>)}</div>
-      {selected?.model && <div className="bgc-model">{selected.model}</div>}
-      {selected?.phaseTitle && <p className="bgc-phase">{selected.phaseTitle}</p>}
+      {provider !== 'claude' && selected?.model && <div className="bgc-model">{selected.model}</div>}
+      {provider !== 'claude' && selected?.phaseTitle && <p className="bgc-phase">{selected.phaseTitle}</p>}
       {selected && <p className="bgc-stop-hint">{text.parentStop}</p>}
       {killing && killing !== 'pending' && !inspectingChild && <div className="tm-error">{killing}</div>}
       <dl className="bgc-stats"><div><dt>{text.tokens}</dt><dd>{tokens(nativeAgent ? null : selected ? selected.tokens : task.usage?.tokens)}</dd></div><div><dt>{text.elapsed}</dt><dd>{nativeAgent ? '—' : selected ? selected.durationMs == null ? '—' : fmtDuration(selected.durationMs) : fmtDuration(((task.endedAt ?? nowS) - task.startedAt) * 1000)}</dd></div></dl>
-      <BgTaskOutput key={`${task.taskId}:${task.startedAt}:${nativeAgent?.id ?? selectedKey ?? 'root'}`} sessionId={sessionId} nativeAgentId={nativeAgent?.id}
+      <BgTaskOutput key={`${task.taskId}:${task.startedAt}:${nativeAgent?.id ?? selectedKey ?? 'root'}`} sessionId={sessionId} nativeAgentId={nativeAgent?.id} richNative={provider === 'claude'} identity={`${task.taskId}:${task.startedAt}`} mission={nativeAgent ? null : task.description}
         workflowTask={selected && provider === 'claude' && selected.label ? task.taskId : undefined}
         workflowLabel={selected?.label || undefined} workflowPhase={selected?.phaseTitle || undefined} vpsId={vpsId} cwd={cwd}
         outputFile={inspectingChild ? null : task.outputFile} preview={nativeAgent ? nativeAgent.preview : selected ? selected.resultPreview : task.summary}
-        running={selectedStatus === 'running' || (selectedStatus === 'unknown' && status === 'running')} />
+        running={!!nativeAgent || selectedStatus === 'running' || (selectedStatus === 'unknown' && status === 'running')} />
       {!inspectingChild && task.outputFile && <div className="tm-path" title={task.outputFile}><span>output</span><code>{task.outputFile}</code></div>}
     </aside></div>
   </section>;

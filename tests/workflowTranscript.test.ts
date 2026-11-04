@@ -69,3 +69,36 @@ describe('bounded transcript pagination', () => {
     expect(page.blocks).toEqual(['first']);
   });
 });
+
+describe('incremental activity cursor', () => {
+  it('reads only new bytes, keeps partial UTF-8 records behind the cursor, and joins results', async () => {
+    let raw = record([{type:'tool_use',id:'read1',name:'Read',input:{file_path:'/a'}}]);
+    const read = vi.fn(async (q: {offset:number;length:number}) => ({...await reader(raw)(q),version:'dev:inode:size:mtime'}));
+    const first = await readWorkflowTranscriptPage(read,'root','a','session1','agent1');
+    expect(first.entries[0]).toMatchObject({kind:'tool',file:'/a'});
+    const result = JSON.stringify({type:'user',sessionId:'session1',agentId:'agent1',timestamp:'2026-01-01T00:00:00Z',message:{content:[{type:'tool_result',tool_use_id:'read1',content:'été'}]}})+'\n';
+    raw += result.slice(0,-8);
+    const options={after:first.nextAfter,cursor:first.cursor,fileId:first.fileId};
+    const partial=await readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,options);
+    expect(partial.nextAfter).toBe(first.nextAfter); expect(partial.entries).toEqual([]);
+    raw=raw.slice(0,-(result.length-8))+result;
+    const delta=await readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,options);
+    expect(delta.entries).toHaveLength(1);
+    expect(delta.entries[0]).toMatchObject({kind:'tool_result',toolId:'read1',content:'été'});
+    expect(read.mock.calls.at(-1)?.[0].offset).toBe(first.nextAfter-64);
+    const unchanged=await readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,{after:delta.nextAfter,cursor:delta.cursor,fileId:delta.fileId});
+    expect(unchanged.entries).toEqual([]); expect(unchanged.nextAfter).toBe(delta.nextAfter);
+  });
+  it('detects replacement, truncation and same-inode rewrites rather than merging epochs', async () => {
+    let raw=record('initial'); let version='dev:inode:1:1';
+    const read=async(q:any)=>({...await reader(raw)(q),version});
+    const first=await readWorkflowTranscriptPage(read,'root','a','session1','agent1');
+    const options={after:first.nextAfter,cursor:first.cursor,fileId:first.fileId};
+    version='dev:new-inode:1:1';
+    await expect(readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,options)).rejects.toThrow('changed');
+    version='dev:inode:1:1';raw='';
+    await expect(readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,options)).rejects.toThrow('changed');
+    raw=record('changed');
+    await expect(readWorkflowTranscriptPage(read,'root','a','session1','agent1',undefined,options)).rejects.toThrow('changed');
+  });
+});

@@ -1746,9 +1746,9 @@ export type EndpointBatchResponse = { batch: EndpointBatch | null };
 export type SessionEndpointBody = { endpoint?: import('@/lib/customEndpoints').EndpointInput | null; saveForReuse?: boolean; cancelPending?: boolean };
 
 /** Workflow output is resolved from the persisted task receipt and native journal. */
-export type WorkflowOutputQuery = { task: string; label: string; phase?: string; before?: number; expectedAgent?: string };
+export type WorkflowOutputQuery = { task?: string; label?: string; phase?: string; agent?: string; activity?: '1'; before?: number; after?: number; expectedAgent?: string; fileId?: string; cursor?: string };
 export type WorkflowOutputResponse =
-  | { ok: true; agentId: string; blocks: string[]; nextBefore: number | null; source: 'workflow_transcript' }
+  | { ok: true; agentId: string; blocks: string[]; entries: import('@/lib/subagentActivity').AgentActivity[]; info?: import('@/lib/subagentActivity').AgentTranscriptInfo; nextBefore: number | null; nextAfter: number; moreAfter: boolean; fileId: string; cursor: string; source: 'workflow_transcript' }
   | { ok: false; error: string; reason?: string };
 
 export type WorkflowAgentsResponse =

@@ -18,12 +18,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   const { id } = await params;
   const query = new URL(req.url).searchParams;
   const task = query.get('task');
-  if (task) {
-    const rawBefore = query.get('before');
+  if (task || (query.get('activity') === '1' && query.get('agent'))) {
+    const rawBefore = query.get('before'), rawAfter = query.get('after');
     const before = rawBefore == null ? undefined : Number(rawBefore);
-    if (before != null && (!Number.isSafeInteger(before) || before <= 0))
+    const after = rawAfter == null ? undefined : Number(rawAfter);
+    if ((before != null && (!Number.isSafeInteger(before) || before <= 0))
+      || (after != null && (!Number.isSafeInteger(after) || after < 0)) || (before != null && after != null))
       return NextResponse.json({ ok: false, error: 'Invalid transcript cursor.' }, { status: 400 });
-    return NextResponse.json(await readWorkflowTranscript(id, task, query.get('label') || '', query.get('phase') || '', before, query.get('expectedAgent') || undefined));
+    return NextResponse.json(await readWorkflowTranscript(id, task || '', query.get('label') || '', query.get('phase') || '', before,
+      query.get('expectedAgent') || undefined, { after, fileId: query.get('fileId') || undefined, cursor: query.get('cursor') || undefined,
+        nativeAgent: task ? undefined : query.get('agent') || undefined }));
   }
   const agent = query.get('agent');
   if (agent) {

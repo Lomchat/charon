@@ -229,6 +229,18 @@ export const MODE_SWITCH_META: Record<string, { glyph: string; label: string; ti
 
 /** Background-work constellation: shared copy for all providers. */
 export const backgroundWorkText = {
+  activity: 'Activity', agentDetails: 'Agent details', outputResult: 'Output / result', savedActivity: 'Saved activity',
+  mission: 'Mission', workflowMission: 'Workflow mission', missionExcerpt: 'Mission excerpt', model: 'Model', phase: 'Phase',
+  lastActivity: 'Last activity', action: 'action', file: 'file', error: 'error', actions: 'actions', files: 'files', errors: 'errors', loadedHistory: 'Loaded history', partialHistory: 'Loaded portion of history',
+  fileModified: 'Modified', fileRead: 'Read', filePending: 'Result not loaded', noFiles: 'No file operations in the loaded history.',
+  earlierActivity: 'Earlier activity ↑', noActivity: 'No tool activity in the loaded history.', retry: 'Retry',
+  followingActivity: 'Following latest activity', newActivities: 'new events ↓', newOutputs: 'new messages ↓',
+  noWrittenOutput: 'No written result in this part of the transcript. Tool activity is shown above.', jsonFormatted: 'JSON formatted',
+  command: 'Command', arguments: 'Details', toolResult: 'Tool result', earlierToolResult: 'Result of an earlier call',
+  toolSucceeded: 'Succeeded', toolFailed: 'Failed', resultNotLoaded: 'No result in the loaded history', emptyToolResult: 'Completed without textual output.',
+  noToolTarget: 'No readable description is available.', toResult: 'to result',
+  toolActions: { Read: 'Read file', Write: 'Write file', Edit: 'Edit file', MultiEdit: 'Edit file', NotebookEdit: 'Edit notebook',
+    Bash: 'Run command', Monitor: 'Monitor command', TaskStop: 'Stop task', TaskOutput: 'Read task output', ToolSearch: 'Find tools', TodoWrite: 'Update checklist', Grep: 'Search content', Glob: 'Find files', WebFetch: 'Read webpage', WebSearch: 'Search the web', Agent: 'Delegate task', Task: 'Delegate task' },
   graph: 'Graph', list: 'List', inspect: 'Inspect', output: 'Output', preview: 'Provider preview',
   fileOutput: 'Task output', latest: 'Latest output', reading: 'Reading earlier output',
   latestAction: 'Latest output ↓', waiting: 'No output has been reported yet.',

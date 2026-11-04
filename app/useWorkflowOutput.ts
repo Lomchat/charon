@@ -1,50 +1,82 @@
 'use client';
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { WorkflowOutputQuery } from '@/lib/types/api';
-import { prettyOutputJson } from './backgroundOutput';
-import { backgroundWorkText as text } from '@/lib/providerText';
+import { getActivityEntry, mergeActivityPage, newActivityEntry, saveActivityEntry, type ActivityCacheEntry } from './workflowActivityCache';
 
-/** The selected workflow child alone is read; polls pause while reading history.
- * Earlier pages use stable byte boundaries and are prepended chronologically. */
-export function useWorkflowOutput(sessionId: string, task: string | undefined, label: string | undefined,
-  phase: string | undefined, running: boolean, follow: MutableRefObject<boolean>) {
-  const [state, setState] = useState({ content: '', error: '', loading: !!task, readingEarlier: false, linked: false, hasMore: false });
-  const active = useRef(running);
-  active.current = running;
-  const request = useRef<((older?: boolean, force?: boolean) => Promise<void>) | null>(null);
+/** A selected node owns one sequential reader. Cached pages survive remounts;
+ * periodic checks request only bytes after the last complete native record. */
+export function useWorkflowOutput(sessionId: string, query: WorkflowOutputQuery, running: boolean, identity: string) {
+  const key = JSON.stringify([sessionId, identity, query.task, query.label, query.phase, query.agent]);
+  const [initial] = useState(() => getActivityEntry(key));
+  const entry = useRef<ActivityCacheEntry>(initial);
+  const [state, setState] = useState(() => ({ ...entry.current, loading: !entry.current.linked, readingEarlier: false, error: '', notice: '' }));
+  const active = useRef(running); active.current = running;
+  const previousRunning = useRef(running);
+  const request = useRef<((older?: boolean) => Promise<void>) | null>(null);
+  const queryRef = useRef(query); queryRef.current = query;
   useEffect(() => {
-    if (!task || !label) return;
-    let disposed = false, busy = false, nextBefore: number | null = null, agentId = '', content = '', linked = false;
+    let disposed = false, busy = false, queuedOlder = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
-    const load = async (older = false, force = false) => {
-      if (disposed || busy || document.visibilityState !== 'visible') return;
-      if (older && nextBefore == null) return;
-      if (!older && !force && linked && !active.current) { timer = setTimeout(load, 5000); return; }
-      if (!older && !follow.current) { timer = setTimeout(load, 3000); return; }
+    const publish = (patch = {}) => {
+      saveActivityEntry(key, entry.current);
+      if (!disposed) setState(s => ({ ...s, ...entry.current, ...patch }));
+    };
+    const load = async (older = false) => {
+      if (disposed || document.visibilityState !== 'visible') return;
+      if (busy) { queuedOlder ||= older; return; }
+      const item = entry.current;
+      if (older && item.before == null) return;
       clearTimeout(timer); busy = true;
-      if (older) setState(s => ({ ...s, readingEarlier: true }));
+      publish({ readingEarlier: older, error: '' });
+      let soon = false;
       try {
-        const query: WorkflowOutputQuery = { task, label, phase: phase || '' };
-        if (older) { query.before = nextBefore!; query.expectedAgent = agentId; }
-        const data = await api.getWorkflowOutput(sessionId, query, controller.signal);
-        if (data.ok !== true) throw new Error(data.error || text.outputError);
-        if (disposed || (!older && !follow.current)) return;
-        const page = data.blocks.map((s: string) => prettyOutputJson(s)).join('\n\n');
-        content = older ? [page, content].filter(Boolean).join('\n\n') : page;
-        linked = true; nextBefore = data.nextBefore; agentId = data.agentId;
-        setState({ content, error: '', loading: false, readingEarlier: false, linked, hasMore: nextBefore != null });
+        const q: WorkflowOutputQuery = { ...queryRef.current };
+        if (item.linked) {
+          q.expectedAgent = item.agentId; q.fileId = item.fileId;
+          if (older) q.before = item.before!;
+          else { q.after = item.after; q.cursor = item.cursor; }
+        }
+        const data = await api.getWorkflowOutput(sessionId, q, controller.signal);
+        if (disposed) return;
+        if (!data.ok) {
+          if (data.reason === 'reset') {
+            entry.current = newActivityEntry();
+            publish({ loading: true, notice: data.error }); soon = true; return;
+          }
+          throw new Error(data.error);
+        }
+        const firstPage = !item.linked;
+        mergeActivityPage(item, data, older);
+        // Native logs contain whole pages of provider bookkeeping/thinking.
+        // Continue the requested history read until there is public activity.
+        if ((older || firstPage || !item.entries.length) && !data.entries.length && item.before != null) queuedOlder = true;
+        publish({ loading: false });
+        soon = !older && data.moreAfter;
       } catch (err) {
-        if (!disposed) setState(s => ({ ...s, error: err instanceof Error ? err.message : text.outputError, loading: false, readingEarlier: false }));
+        if (!disposed) publish({ error: err instanceof Error ? err.message : String(err), loading: false });
       } finally {
         busy = false;
-        if (!disposed) timer = setTimeout(load, 5000);
+        if (!disposed) {
+          publish({ readingEarlier: false });
+          if (queuedOlder) { queuedOlder = false; timer = setTimeout(() => void load(true), 150); }
+          else if (soon || active.current || !entry.current.linked) timer = setTimeout(() => void load(), soon ? 150 : 5000);
+        }
       }
     };
     request.current = load;
+    const wake = () => { if (document.visibilityState === 'visible') void load(); };
+    document.addEventListener('visibilitychange', wake);
+    // Reopen instantly from cache, then check the cursor (no tail refetch).
     void load();
-    return () => { disposed = true; controller.abort(); clearTimeout(timer); request.current = null; };
-  }, [sessionId, task, label, phase, follow]);
-  return { ...state, loadEarlier: () => request.current?.(true), latest: () => request.current?.(false, true) };
+    return () => {
+      disposed = true; controller.abort(); clearTimeout(timer); request.current = null;
+      document.removeEventListener('visibilitychange', wake); saveActivityEntry(key, entry.current);
+    };
+  }, [sessionId, key]);
+  useEffect(() => {
+    if (previousRunning.current !== running) { previousRunning.current = running; void request.current?.(); }
+  }, [running]);
+  return { ...state, view: entry.current.view, loadEarlier: () => request.current?.(true), refresh: () => request.current?.(false) };
 }
