@@ -109,10 +109,17 @@ function candidates(): Candidate[] {
   return out;
 }
 
+/** A box whose agent predates hub accounts would read the account id as an
+ *  unknown legacy profile (no login): nothing moves there until it updates. */
+export function agentTakesAccounts(vpsId: string): boolean {
+  const client = getAgentClientForVpsId(vpsId);
+  return client.status === 'connected' && !!client.hello?.global_accounts;
+}
+
 async function ensureHistory(c: Candidate): Promise<boolean> {
+  if (!agentTakesAccounts(c.vpsId)) return false;
   if (c.provider !== 'claude') return true;
   const client = getAgentClientForVpsId(c.vpsId);
-  if (client.status !== 'connected' || !client.hello?.global_accounts) return false;
   if (c.profile !== 'default') {
     const key = `${c.vpsId}:${c.profile}`;
     if (!state.merged.has(key)) {
@@ -182,6 +189,7 @@ export async function switchSessionAccount(sessionId: string, accountId: string)
   if (config.customEndpoint) throw new Error('This session runs on a custom endpoint');
   if (config.accountProfile === accountId) return { restarted: false };
   if (row.status === 'thinking' || row.status === 'starting') throw Object.assign(new Error('Wait for the current turn to finish'), { status: 409 });
+  if (!agentTakesAccounts(row.vpsId)) throw Object.assign(new Error("Update this VPS's agent first (it predates hub accounts)"), { status: 409 });
   if (provider === 'claude') {
     const c: Candidate = { id: row.id, vpsId: row.vpsId, provider, status: row.status, nativeId: row.nativeSessionId, config, target: account,
       profile: typeof config.accountProfile === 'string' ? config.accountProfile : 'default' };

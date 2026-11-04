@@ -4835,6 +4835,14 @@ export async function startNewSession(opts: {
     const { requireAccountProfile, readProfileStatus } = await import('./accountProfiles');
     const profile = requireAccountProfile(opts.vpsId, kind, requestedConfig.accountProfile);
     if (profile.loggedIn === false) throw new Error('This account must be signed in again (Accounts).');
+    if ((await import('@/lib/server/accounts/store')).isGlobalAccountId(profile.id)) {
+      // An agent predating hub accounts would read the id as an unknown local
+      // profile and run signed out (§14.115).
+      const client = getAgentClientForVpsId(opts.vpsId);
+      if (client.status === 'connected' && client.hello && !client.hello.global_accounts) {
+        throw new Error("Update this VPS's agent first — it predates hub accounts.");
+      }
+    }
     if (profile.number > 1 && !(await import('@/lib/server/accounts/store')).isGlobalAccountId(profile.id)) {
       const auth = await readProfileStatus(opts.vpsId, kind, profile.id);
       if (!auth.logged_in) throw new Error('Sign in to this account profile first');

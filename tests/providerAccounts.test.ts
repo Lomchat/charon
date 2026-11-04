@@ -221,6 +221,20 @@ describe('sessions on hub accounts', () => {
     expect(fake.restart).not.toHaveBeenCalled();
   });
 
+  it('never moves a session onto a box whose agent predates hub accounts', async () => {
+    db.insert(schema.providerAccounts).values({ id: 'cccccccccccccccc', provider: 'codex', credentials: 'x', accountKey: 'codex-key', status: 'ok' }).run();
+    const { setSetting } = await import('@/lib/server/hub/settings');
+    setSetting('accounts.default_keys', JSON.stringify({ 'a:codex:default': 'codex-key' }));
+    db.insert(schema.agentSessions).values({ id: 'c1', vpsId: 'a', cwd: '/srv/app', status: 'sleeping', kind: 'codex', providerConfig: '{}' }).run();
+    fake.clients = [{ vps: { id: 'a' }, status: 'connected', hello: {}, call: vi.fn() }];
+    const { runMigration } = await import('@/lib/server/accounts/migration');
+    await runMigration();
+    expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBeUndefined();
+    fake.clients = [{ vps: { id: 'a' }, status: 'connected', hello: { global_accounts: true }, call: vi.fn() }];
+    await runMigration();
+    expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBe('cccccccccccccccc');
+  });
+
   it('switches a session to another account of its provider, refusing mid-turn', async () => {
     claudeRow('aaaaaaaaaaaaaaaa');
     claudeRow('bbbbbbbbbbbbbbbb');
@@ -229,6 +243,10 @@ describe('sessions on hub accounts', () => {
     const { switchSessionAccount } = await import('@/lib/server/accounts/migration');
     await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).rejects.toThrow(/current turn/);
     db.update(schema.agentSessions).set({ status: 'active' }).run();
+    // An agent predating hub accounts would run it signed out: refused.
+    fake.clients = [{ vps: { id: 'a' }, status: 'connected', hello: {}, call: vi.fn() }];
+    await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).rejects.toThrow(/Update this VPS/);
+    fake.clients = [{ vps: { id: 'a' }, status: 'connected', hello: { global_accounts: true }, call: vi.fn(async () => ({ ok: true, found: {} })) }];
     await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).resolves.toEqual({ restarted: true });
     expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBe('bbbbbbbbbbbbbbbb');
     expect(fake.restart).toHaveBeenCalledWith('s1');
