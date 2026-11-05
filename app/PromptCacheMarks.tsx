@@ -137,7 +137,7 @@ export function CacheGaugeMark({ reading }: { reading: CacheReading | null }) {
       : `${reading.approx ? '≈' : ''}${fmtSpanShort(reading.remainingMs)}`;
   return (
     <span className={`bar-context-cache cs-cache-${reading.phase}`} style={{ color: cacheHeat(reading) }}
-      title={lines[0]} {...tipAttrs({ detail: lines.slice(1) })}>
+      title={lines[0]} data-tip-instant="" {...tipAttrs({ detail: lines.slice(1) })}>
       <CacheSymbol reading={reading} />{text}
     </span>
   );
@@ -218,7 +218,7 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
   ];
   return (
-    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} {...tipAttrs({ detail: tip.lines })}>
+    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} data-tip-instant="" {...tipAttrs({ detail: tip.lines })}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />

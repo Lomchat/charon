@@ -21,7 +21,8 @@ export type { HoverTipContent, TipAction } from './tooltipText';
  *    the element and what it contains (a list's rows); sideways inside a
  *    `data-tip-region` (a sidebar column) it clears the whole column, level
  *    with the row, never over the list's neighbours;
- *    `data-tip="native"` opts an element out; an EMPTY title is transparent
+ *    `data-tip="native"` opts an element out; `data-tip-instant` skips the
+ *    open delay (a readout whose only purpose is its tooltip); an EMPTY title is transparent
  *    (an icon inside a row lets the row speak).
  *
  * Portaled to <body> and placed beside the control on the side that fits
@@ -303,7 +304,7 @@ export function TooltipLayer() {
         up.removeAttribute('title');
         watched.observe(up, { attributes: true, attributeFilter: ['title'] });
       }
-      if (Date.now() < warm.until) open();
+      if (Date.now() < warm.until || (el as HTMLElement).dataset?.tipInstant !== undefined) open();
       else timer = setTimeout(open, OPEN_DELAY_MS);
     };
 

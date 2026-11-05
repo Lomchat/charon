@@ -2571,14 +2571,14 @@
 .cs-chip-warm .cs-chip-face .cache-icon { width: 12px; height: 12px; color: var(--attention); }
 .app-bar .bar-context-cache {
   display: inline-flex; align-items: center; gap: 3px; flex: none;
-  font-weight: 600; white-space: nowrap; cursor: help;
+  font-weight: 600; white-space: nowrap;
 }
 .app-bar .bar-context-cache .cache-icon { width: 10px; height: 10px; }
 /* The turn's ledger, its own line under the bubble header: mini-bar, %,
    read, out, cost, duration, then every other detail. Wraps when narrow. */
 .bubble .turn-ledger {
   display: flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; margin: 2px 0 4px;
-  cursor: help; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em;
   color: var(--text-muted); opacity: 0.85;
 }
 .turn-ledger > span { white-space: nowrap; }
