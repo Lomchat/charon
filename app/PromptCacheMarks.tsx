@@ -171,7 +171,8 @@ function pctText(x: number): string {
 export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
   const ctxWindow = useContext(ContextWindowContext);
   // The popover (proposal 2): open on hover, at once — the line's own anchor.
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  // `x` = the pointer: the card opens under it and follows it along the line.
+  const [anchor, setAnchor] = useState<{ rect: DOMRect; x: number } | null>(null);
   const popId = `ledger${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
@@ -208,14 +209,19 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
   ];
   return (
-    <div className={`turn-ledger${cold ? ' cold' : ''}`} onMouseEnter={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}
+    <div className={`turn-ledger${cold ? ' cold' : ''}`}
+      onMouseEnter={(e) => setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX })}
+      onMouseMove={(e) => {
+        const x = e.clientX;
+        setAnchor((a) => (a && Math.abs(a.x - x) < 6 ? a : { rect: e.currentTarget.getBoundingClientRect(), x }));
+      }}
       onMouseLeave={() => setAnchor(null)} aria-describedby={anchor ? popId : undefined}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />
       </span>
       {items.filter(Boolean)}
-      {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor} onGone={() => setAnchor(null)} />}
+      {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor.rect} pointerX={anchor.x} onGone={() => setAnchor(null)} />}
     </div>
   );
 }
@@ -258,10 +264,10 @@ function Donut({ parts }: { parts: [frac: number, color: string][] }) {
   );
 }
 
-/** Below the line (above when the bottom is short), clamped to the viewport.
+/** Under the pointer, below the line (above when the bottom is short), clamped to the viewport.
  *  Informational only: no pointer events, gone on scroll. */
-function LedgerPopover({ id, ledger, ctxWindow, anchor, onGone }: {
-  id: string; ledger: TurnLedger; ctxWindow: number | null; anchor: DOMRect; onGone: () => void;
+function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, onGone }: {
+  id: string; ledger: TurnLedger; ctxWindow: number | null; anchor: DOMRect; pointerX: number; onGone: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState<number | null>(null);
@@ -282,7 +288,8 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, onGone }: {
   const cold = misses > 0;
   const ctx = ledger.promptTokens != null && ctxWindow ? ledger.promptTokens / ctxWindow : null;
   const toolsMs = ledger.apiMs != null && ledger.durMs != null ? Math.max(0, ledger.durMs - ledger.apiMs) : null;
-  const left = Math.min(window.innerWidth - POP_W - 8, Math.max(8, anchor.left - 8));
+  // Under the pointer (its arrow-side quarter), clamped to the viewport.
+  const left = Math.min(window.innerWidth - POP_W - 8, Math.max(8, pointerX - POP_W / 4));
   const tile = (ring: React.ReactNode, value: React.ReactNode, lines: (React.ReactNode | null)[], valueColor?: string) => (
     <div className="ledger-tile">
       {ring}
