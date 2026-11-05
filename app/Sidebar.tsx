@@ -1702,9 +1702,6 @@ const SessionRow = memo(function SessionRow({
             <IconAlarm />
           </span>
         )}
-        {unread && (
-          <span className="cs-unread" title="finished — unread (open to clear)">✓</span>
-        )}
         {/* 🔒 = BLOCKING gates only: an async question never blocks (§14.96);
             its QUESTION state chip already says so. */}
         {blocking > 0 && (
@@ -1777,9 +1774,6 @@ const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, o
         <span className={`dot ${dotClass}`} />
         <span className="cs-card-glyph shell"><IconTerminal /></span>
         <span className="cs-card-name">{headline}</span>
-        {unread && (
-          <span className="cs-unread" title="finished — unread (open to clear)">✓</span>
-        )}
         <span className={`cs-state ${sh.exited ? 'sleeping' : sh.liveStatus === 'busy' ? 'thinking' : 'active'}`}>
           {sh.exited ? 'ended' : sh.liveStatus === 'busy' ? 'busy' : 'idle'}
         </span>
