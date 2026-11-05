@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { backgroundOutputPath, backgroundOutputText, subagentOutputText, prettyOutputJson, visibleSubagentBlocks } from '@/app/backgroundOutput';
+import { backgroundOutputPath, backgroundOutputText, commandOutputText, subagentOutputText, prettyOutputJson, visibleSubagentBlocks } from '@/app/backgroundOutput';
+import { bgTaskOwnAgent } from '@/app/bgTasks';
 import { bgAgentStatus } from '@/app/BgTaskConstellation';
 import type { BgAgent } from '@/app/bgTasks';
 
@@ -17,6 +18,16 @@ describe('background output presentation', () => {
   });
   it('does not leak an incomplete native record while the file is being written', () => {
     expect(backgroundOutputText('{"type":"assistant","message":{"content":')).toBe('');
+  });
+  it('shows a command output verbatim: JSON logs stay, carriage returns rewrite their line', () => {
+    const raw = '{"level":"info","message":"listening"}\n{"type":"progress","pct":3}\n10%\r50%\r100%\r\n\u001b[31mfail\u001b[0m\n[1,2]';
+    expect(commandOutputText(raw)).toBe('{"level":"info","message":"listening"}\n{"type":"progress","pct":3}\n100%\nfail\n[1,2]');
+  });
+  it('binds only a Claude local_agent task to its own transcript', () => {
+    expect(bgTaskOwnAgent({ taskId: 'ada49859aaa5aa693', taskType: 'local_agent' }, 'claude')).toBe('ada49859aaa5aa693');
+    expect(bgTaskOwnAgent({ taskId: 'ada49859aaa5aa693', taskType: 'local_agent' }, 'codex')).toBeNull();
+    expect(bgTaskOwnAgent({ taskId: 'b1', taskType: 'local_bash' }, 'claude')).toBeNull();
+    expect(bgTaskOwnAgent({ taskId: '../x', taskType: 'local_agent' }, 'claude')).toBeNull();
   });
   it('resolves absolute task files independently of the workspace', () => {
     expect(backgroundOutputPath('/tmp/tasks/a.output', '/srv/app')).toEqual({ root: '/', path: 'tmp/tasks/a.output' });

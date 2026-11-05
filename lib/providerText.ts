@@ -261,6 +261,8 @@ export const backgroundWorkText = {
   detailsUnknown: 'Details not received', noAgents: 'No saved sub-agent transcripts were found.',
   nativeHint: 'Saved assistant output and tool activity · bounded provider transcript.',
   noTaskOutput: 'This task has not reported an output file or a result yet. Select a saved sub-agent to read its transcript.',
+  backgroundCommand: 'Background command', backgroundAgent: 'Background agent', commandUnknown: 'The command line is not in the loaded history.',
+  noCommandOutput: 'This command has not reported its output file yet.',
   sourceUnavailable: 'No output source reported',
 
 };

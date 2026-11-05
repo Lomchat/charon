@@ -57,6 +57,8 @@ function isWorkflow(t: BgTask): boolean {
 //     never contributes to the typing/streaming hot path (§14.38).
 
 const ENDED_GRACE_S = 600; // keep the bar 10min after the last task ended
+// A stop the CLI never answers must not leave the button disabled for good.
+const STOP_RETRY_MS = 20_000;
 
 const STATUS_META: Record<BgTaskStatus, { label: string; cls: string; hint?: string }> = {
   running: { label: 'running', cls: 'running' },
@@ -106,6 +108,10 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
     setKilling((k) => ({ ...k, [taskId]: 'pending' }));
     try {
       await sessionApi.stopBackgroundTask(sessionId, taskId);
+      setTimeout(() => setKilling((k) => {
+        if (k[taskId] !== 'pending') return k;
+        const next = { ...k }; delete next[taskId]; return next;
+      }), STOP_RETRY_MS);
     } catch (e: any) {
       setKilling((k) => ({ ...k, [taskId]: e?.message ?? 'failed' }));
     }
@@ -203,13 +209,16 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
     return () => clearInterval(iv);
   }, [running.length, open]);
 
-  const selectedTask = taskView.find(({ t }) => t.taskId === selectedTaskId)
-    ?? runningRows[runningRows.length - 1] ?? ended[0];
+  const defaultTask = runningRows[runningRows.length - 1] ?? ended[0];
+  const selectedTask = taskView.find(({ t }) => t.taskId === selectedTaskId) ?? defaultTask;
+  // Session sub-agents are listed by native id; a `local_agent` task id IS it.
+  const agentLabels = useMemo(() => new Map(tasks.flatMap((t) => t.description ? [[t.taskId, t.description] as const] : [])), [tasks]);
 
   const close = useCallback(() => setOpen(false), []);
 
   const runningCount = running.length + terminals.length;
-  const visible = runningCount > 0
+  // An open modal never vanishes under its reader when the grace runs out.
+  const visible = open || runningCount > 0
     || (tasks.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
   if (!visible) return null;
 
@@ -289,7 +298,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
           </div>
         )}
         {t.outputFile && (
-          <div className="tm-path" title="Output file on the VPS: ask the session to read it for the live output">
+          <div className="tm-path" title="Output file on the VPS">
             <span>output</span><code>{t.outputFile}</code>
           </div>
         )}
@@ -331,7 +340,8 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
       <button
         type="button"
         className={`bgtasks-bar${runningCount > 0 ? ' active' : ''}`}
-        onClick={() => setOpen(true)}
+        // Pin the task shown at opening: a later launch must not swap it out.
+        onClick={() => { setSelectedTaskId(defaultTask?.t.taskId ?? null); setOpen(true); }}
         title="click for background task details"
       >
         <span className={`bgtasks-dot ${runningCount > 0 ? 'running' : 'done'}`} aria-hidden />
@@ -375,7 +385,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
               </select>
             </div>
             <BgTaskConstellation key={`${selectedTask.t.taskId}:${selectedTask.t.startedAt}`} task={selectedTask.t} status={selectedTask.status}
-              sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} />
+              sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} agentLabels={agentLabels} />
           </>}
           <TaskGroup label="Processes" count={terminals.length}>{terminals.map(renderTerminal)}</TaskGroup>
           {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}

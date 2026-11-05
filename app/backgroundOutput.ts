@@ -24,6 +24,17 @@ export function backgroundOutputText(raw: string): string {
   }).filter(Boolean).join('\n'));
 }
 
+/** A shell command's output is the program's own bytes, never a transcript:
+ * parsing it as one dropped every JSON log line with a `message` or `type`
+ * key. Only ANSI goes, and a carriage return rewrites its line (progress bars)
+ * the way a terminal does. */
+export function commandOutputText(raw: string): string {
+  return stripAnsi(raw).split('\n').map((line) => {
+    const body = line.endsWith('\r') ? line.slice(0, -1) : line;
+    return body.slice(body.lastIndexOf('\r') + 1);
+  }).join('\n');
+}
+
 export function backgroundOutputPath(path: string, cwd: string | null): { root: string; path: string } | null {
   if (path.startsWith('/')) return { root: '/', path: path.slice(1) };
   return cwd?.startsWith('/') ? { root: cwd, path } : null;

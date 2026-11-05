@@ -189,6 +189,22 @@ def _num(v: Any) -> float:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
 
 
+# Started tasks still waiting for their launcher's tool_result (§14.91).
+_BG_OUTPUT_WATCH_MAX = 64
+
+
+def _task_output_path(text: Any, task_id: str) -> str | None:
+    """The live output file a background launch names in its tool_result.
+
+    TaskStartedMessage carries no path (only the final notification does), so
+    a running command would show nothing. Anchored on THIS task's
+    `<task_id>.output` rather than on the CLI's English sentence."""
+    if not isinstance(text, str) or not task_id:
+        return None
+    m = re.search(r"(?<!\S)(/\S*?/" + re.escape(task_id) + r"\.output)(?=[.;,)]?(?:\s|$))", text)
+    return m.group(1) if m else None
+
+
 _TURN_OPENERS = ("AssistantMessage", "StreamEvent", "UserMessage")
 _LOCAL_COMMAND_ECHO = re.compile(r"\s*<local-command-(?:stdout|stderr)>")
 INTERRUPT_TIMEOUT_SECONDS = 5.0
@@ -563,6 +579,8 @@ class AgentSession:
         # A background task reported its end since the last turn: the next
         # turn the CLI opens by itself is that wake-up (_note_unprompted_turn).
         self._bg_notified = False
+        # launcher tool_use_id → task_id of a started task with no output file.
+        self._bg_output_watch: dict[str, str] = {}
         self._session_id_emitted = False
         self._current_assistant = ""
         # The model Anthropic actually used on the last AssistantMessage.
@@ -1761,6 +1779,18 @@ class AgentSession:
                         payload["terminal"] = st.lower() in TERMINAL_TASK_STATUSES
                     elif kind == "finished" and not isinstance(st, str):
                         payload["terminal"] = True
+                    # The launcher's tool_result names the live output file
+                    # (Bash `run_in_background`); watch for it.
+                    watch = getattr(self, "_bg_output_watch", None)
+                    launcher = payload.get("tool_use_id")
+                    if isinstance(watch, dict) and isinstance(launcher, str) and launcher:
+                        if kind == "started" and not payload.get("output_file"):
+                            watch.pop(launcher, None)
+                            watch[launcher] = payload["task_id"]
+                            while len(watch) > _BG_OUTPUT_WATCH_MAX:
+                                watch.pop(next(iter(watch)))
+                        elif kind == "finished":
+                            watch.pop(launcher, None)
                     out.append({"event": "bg_task", **payload})
             elif ev_type == "TaskProgressMessage" or (
                 ev_type == "SystemMessage"
@@ -1878,12 +1908,21 @@ class AgentSession:
                                 else:
                                     parts.append(getattr(b, "text", str(b)))
                             content = "".join(parts)
+                        tool_use_id = getattr(block, "tool_use_id", "")
                         out.append({
                             "event": "tool_result",
-                            "tool_use_id": getattr(block, "tool_use_id", ""),
+                            "tool_use_id": tool_use_id,
                             "content": content if isinstance(content, str) else json.dumps(content),
                             "is_error": bool(getattr(block, "is_error", False)),
                         })
+                        watch = getattr(self, "_bg_output_watch", None)
+                        task_id = watch.pop(tool_use_id, None) if isinstance(watch, dict) and tool_use_id else None
+                        output_file = _task_output_path(content, task_id) if task_id else None
+                        if output_file:
+                            out.append({
+                                "event": "bg_task", "kind": "updated", "task_id": task_id,
+                                "tool_use_id": tool_use_id, "output_file": output_file,
+                            })
             elif ev_type == "StreamEvent":
                 # Raw Anthropic stream events (include_partial_messages=True) carry
                 # the LIVE token counter: message_start → input tokens; message_delta

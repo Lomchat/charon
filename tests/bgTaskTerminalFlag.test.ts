@@ -64,3 +64,16 @@ describe('bg task terminal-ness prefers the SDK verdict', () => {
     expect(isBgTaskDone({ kind: 'finished', terminal: false })).toBe(true);
   });
 });
+
+// A launch's tool_result names the live output file (agent ≥ 0.122.0): an
+// `updated` with no status. It fills the path, never changes the lifecycle.
+describe('output-file-only update', () => {
+  const path = '/tmp/claude-0/-srv-x/s/tasks/b1.output';
+  it('keeps a running command running, with its output file', () => {
+    const map = new Map<string, BgTask>();
+    applyBgTaskEvent(map, { kind: 'started', taskId: 'b1', toolUseId: 't1', taskType: 'local_bash' }, 100);
+    applyBgTaskEvent(map, { kind: 'updated', taskId: 'b1', toolUseId: 't1', outputFile: path }, 101);
+    expect(map.get('b1')).toMatchObject({ status: 'running', outputFile: path, endedAt: null, startedAt: 100 });
+    expect(isBgTaskDone({ kind: 'updated' })).toBe(false);
+  });
+});

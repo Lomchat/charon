@@ -5,8 +5,8 @@ import { backgroundWorkText as text } from '@/lib/providerText';
 
 export type NativeBgAgent = { id: string; name?: string | null; role?: string | null; status?: string; preview?: string };
 /** Session inventory, never inferred to be children of the selected workflow. */
-export function useBgSessionAgents(sessionId: string, provider: SessionProvider) {
-  const enabled = sessionCapabilities(provider).subagents !== 'none';
+export function useBgSessionAgents(sessionId: string, provider: SessionProvider, wanted = true) {
+  const enabled = wanted && sessionCapabilities(provider).subagents !== 'none';
   const [agents, setAgents] = useState<NativeBgAgent[]>([]);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState('');

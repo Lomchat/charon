@@ -4,14 +4,14 @@ import { api } from '@/lib/api';
 import { backgroundWorkText as text } from '@/lib/providerText';
 import { fromBase64, cutToLineStart } from './byteText';
 import BgAgentActivity from './BgAgentActivity';
-import { backgroundOutputPath, backgroundOutputText, subagentOutputText, prettyOutputJson } from './backgroundOutput';
+import { backgroundOutputPath, backgroundOutputText, commandOutputText, subagentOutputText, prettyOutputJson } from './backgroundOutput';
 
 const TAIL_BYTES = 128 * 1024;
 
 /** Mounted only for the inspected node. One bounded read at a time, through
  * the existing agent channel; no file polling while reading earlier output. */
-function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionId, nativeAgentId, workflowTask, workflowLabel, workflowPhase }: {
-  sessionId: string; nativeAgentId?: string; workflowTask?: string; workflowLabel?: string; workflowPhase?: string;
+function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionId, nativeAgentId, emptyHint, plain }: {
+  sessionId: string; emptyHint?: string; plain?: boolean; nativeAgentId?: string; workflowTask?: string; workflowLabel?: string; workflowPhase?: string;
   vpsId: string; cwd: string | null; outputFile?: string | null; preview?: string | null; running: boolean;
 }) {
   const [fileText, setFileText] = useState('');
@@ -46,8 +46,11 @@ function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionI
           const result = await api.fsReadRange(vpsId, at!.root, at!.path, -TAIL_BYTES, TAIL_BYTES);
           if (!result.ok || result.data == null) throw new Error(result.error || text.outputError);
           const bytes = fromBase64(result.data);
-          const window = (result.offset ?? 0) > 0 ? cutToLineStart(bytes).bytes : bytes;
-          next = backgroundOutputText(new TextDecoder().decode(window));
+          const cut = (result.offset ?? 0) > 0 ? cutToLineStart(bytes).bytes : bytes;
+          // One endless line (a progress bar) still shows its tail.
+          const window = plain && !cut.length ? bytes : cut;
+          const decoded = new TextDecoder().decode(window);
+          next = plain ? commandOutputText(decoded) : backgroundOutputText(decoded);
         }
         if (disposed) return;
         // A request finishing while the reader scrolls must not replace it.
@@ -63,8 +66,8 @@ function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionI
     wake.current = () => void poll();
     void poll();
     return () => { disposed = true; controller.abort(); clearTimeout(timer); wake.current = null; };
-  }, [vpsId, cwd, outputFile, running, sessionId, nativeAgentId]);
-  const content = fileText || prettyOutputJson(preview || '');
+  }, [vpsId, cwd, outputFile, running, sessionId, nativeAgentId, plain]);
+  const content = fileText || (plain ? preview || '' : prettyOutputJson(preview || ''));
   useLayoutEffect(() => {
     if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [content]);
@@ -80,7 +83,7 @@ function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionI
     {error && <div className="tm-error">{text.outputError}: {error}</div>}
     <div className="bgc-output-scroll" ref={scroll} tabIndex={0} role="region" aria-label={text.output}
       onScroll={() => { const el = scroll.current!; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 32; setFollowing(follow.current); }}>
-      <pre>{content || (loading ? text.loading : !nativeAgentId && !outputFile && !preview ? text.noTaskOutput : text.waiting)}</pre>
+      <pre>{content || (loading ? text.loading : !nativeAgentId && !outputFile && !preview ? emptyHint ?? text.noTaskOutput : text.waiting)}</pre>
     </div>
     <footer><span>{following ? text.tailHint : text.reading}</span>
       {!following && <button type="button" onClick={() => {

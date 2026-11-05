@@ -153,7 +153,9 @@ async function transcriptInfo(read: Reader, root: string, path: string, sessionI
 
 export async function readWorkflowTranscript(sessionId: string, taskId: string, label: string, phase: string,
   before?: number, expectedAgent?: string, options: TranscriptCursor = {}) {
-  const unavailable = { ok: false, reason: 'unavailable', error: 'This workflow node could not be linked to a saved transcript. Preview only.' };
+  const unavailable = { ok: false, reason: 'unavailable', error: options.nativeAgent
+    ? 'This sub-agent has no saved transcript yet.'
+    : 'This workflow node could not be linked to a saved transcript. Preview only.' };
   if ((!options.nativeAgent && !safeId.test(taskId)) || (options.nativeAgent && !safeId.test(options.nativeAgent)) || label.length > 500 || phase.length > 500) return unavailable;
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row || row.kind !== 'claude' || !row.nativeSessionId || !/^[a-f0-9-]+$/i.test(row.nativeSessionId)) return unavailable;

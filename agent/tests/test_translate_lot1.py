@@ -280,6 +280,70 @@ class SystemMessageTranslation(unittest.TestCase):
         self.assertIsNone(fake._blocking_turn_error)
 
 
+class BackgroundOutputFile(unittest.TestCase):
+    """A running Bash task's output file is only named by its launcher's
+    tool_result; the SDK sends the path at the END. Forward it at once."""
+
+    PATH = "/tmp/claude-0/-srv-x/0e26/tasks/b3pzwg55z.output"
+    RESULT = (f"Command running in background with ID: b3pzwg55z. Output is being written to: {PATH}. "
+              "You will be notified when it completes.")
+
+    def _result(self, fake, text, tool_use_id="toolu_1"):
+        return AgentSession._translate(fake, _ev("UserMessage", content=[
+            _ev("ToolResultBlock", tool_use_id=tool_use_id, content=text, is_error=False)]))
+
+    def _started(self, fake, **attrs):
+        return AgentSession._translate(fake, _ev("TaskStartedMessage", task_id="b3pzwg55z",
+                                                 task_type="local_bash", description="deploy",
+                                                 tool_use_id="toolu_1", data={}, **attrs))
+
+    def test_launch_result_reports_the_output_file(self):
+        fake = _fake_self()
+        fake._bg_output_watch = {}
+        self._started(fake)
+        events = self._result(fake, self.RESULT)
+        self.assertIsNotNone(one(events, "tool_result"))
+        self.assertEqual(one(events, "bg_task"), {
+            "event": "bg_task", "kind": "updated", "task_id": "b3pzwg55z",
+            "tool_use_id": "toolu_1", "output_file": self.PATH,
+        })
+        self.assertEqual(fake._bg_output_watch, {})
+        # Once only: a later result for the same id names nothing new.
+        self.assertIsNone(one(self._result(fake, self.RESULT), "bg_task"))
+
+    def test_other_results_and_other_tasks_name_nothing(self):
+        fake = _fake_self()
+        fake._bg_output_watch = {}
+        self._started(fake)
+        self.assertIsNone(one(self._result(fake, self.RESULT, "toolu_2"), "bg_task"))
+        other = self.RESULT.replace("b3pzwg55z.output", "bzzzzzzzz.output")
+        self.assertIsNone(one(self._result(fake, other), "bg_task"))
+
+    def test_block_list_content_and_finished_cleanup(self):
+        fake = _fake_self()
+        fake._bg_output_watch = {}
+        self._started(fake)
+        events = self._result(fake, [{"type": "text", "text": self.RESULT}])
+        self.assertEqual(one(events, "bg_task")["output_file"], self.PATH)
+        self._started(fake)
+        AgentSession._translate(fake, _ev("TaskNotificationMessage", task_id="b3pzwg55z",
+                                          tool_use_id="toolu_1", status="completed",
+                                          output_file=self.PATH, data={}))
+        self.assertEqual(fake._bg_output_watch, {})
+
+    def test_watch_is_bounded(self):
+        fake = _fake_self()
+        fake._bg_output_watch = {}
+        for i in range(100):
+            AgentSession._translate(fake, _ev("TaskStartedMessage", task_id=f"b{i}",
+                                              tool_use_id=f"t{i}", data={}))
+        self.assertEqual(len(fake._bg_output_watch), 64)
+        self.assertNotIn("t0", fake._bg_output_watch)
+
+    def test_a_session_double_without_the_watch_still_translates(self):
+        self.assertIsNotNone(one(self._result(_fake_self(), self.RESULT), "tool_result"))
+
+
 class PromptHookSafety(unittest.TestCase):
     def test_user_prompt_submit_callback_is_not_registered(self):
         # The provider-neutral peer bus emits external_message itself. Putting

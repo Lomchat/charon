@@ -357,6 +357,19 @@ export function bgTasksAfterWindowAnswer(
   return bgTasksToArray(next);
 }
 
+/** A background SHELL command: no sub-agents and no tokens; its command line
+ *  and output file are the whole story. */
+export function isBgCommandTask(t: Pick<BgTask, 'taskType'>): boolean {
+  return t.taskType === 'local_bash';
+}
+
+/** The native sub-agent a Claude `local_agent` task IS: the CLI names its
+ *  transcript `subagents/agent-<taskId>.jsonl`, so its tool calls and output
+ *  are readable while it runs (§14.91). Null for every other task. */
+export function bgTaskOwnAgent(t: Pick<BgTask, 'taskType' | 'taskId'>, provider: string): string | null {
+  return provider === 'claude' && t.taskType === 'local_agent' && /^[A-Za-z0-9_-]+$/.test(t.taskId) ? t.taskId : null;
+}
+
 /** True when the tool_use is a background launch we should keep as a
  *  command-string candidate for the next 'started' event. */
 export function isBgLaunchToolUse(name: string | undefined, input: any): boolean {
