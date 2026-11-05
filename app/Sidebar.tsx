@@ -14,6 +14,7 @@ import { providerText, providerName } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
 import SidebarOffscreenPills, { CollapsedAttention } from './SidebarOffscreenPills';
 import { buildOffscreenTargets, collapsedAttentionCounts, type OffscreenTarget } from './sidebarOffscreen';
+import { REVEAL_TTL_MS, revealScrollDelta } from './sidebarReveal';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { useStableCallback, useStableOptionalCallback } from './useStable';
@@ -390,9 +391,14 @@ export default function Sidebar({
 
   // ── Auto-scroll to the selected entity (VSCode-style "reveal in
   // explorer"). On any change to the selection, expand the parent folder if
-  // needed, then scroll the row into view.
+  // needed, then scroll the row into view: the LEAST scroll that shows a
+  // half-cut row (a click on a card must not recentre the list), centred only
+  // when it is entirely out of sight. A reveal that finds no row within
+  // REVEAL_TTL_MS is dropped — kept armed, it fired on some later fold or SSE
+  // update, long after the navigation it belonged to.
   const asideRef = useRef<HTMLElement | null>(null);
-  const pendingRevealId = useRef<string | null>(null);
+  const pendingReveal = useRef<{ id: string; until: number } | null>(null);
+  const revealedOnce = useRef(false);
   const activeTabId = selectedId ?? selectedShellId ?? selectedInstallId ?? null;
   const parentVpsId = useMemo(() => {
     if (!activeTabId) return null;
@@ -414,7 +420,7 @@ export default function Sidebar({
     ? pathCollapseKey(selectedPathEntity.vpsId, selectedPathEntity.cwd) : null;
 
   useEffect(() => {
-    pendingRevealId.current = activeTabId;
+    pendingReveal.current = activeTabId ? { id: activeTabId, until: Date.now() + REVEAL_TTL_MS } : null;
     if (!parentVpsId) return;
     setVpsCollapsed(parentVpsId, false);
     if (parentPathKey) setPathCollapsed(parentPathKey, false);
@@ -430,26 +436,36 @@ export default function Sidebar({
   useEffect(() => {
     // Ancestor expansion can arrive in a later render (folder state is remote).
     // Retry only a pending navigation, never recenter on manual collapse or SSE.
-    if (!activeTabId || pendingRevealId.current !== activeTabId) return;
+    const pending = pendingReveal.current;
+    if (!activeTabId || pending?.id !== activeTabId) return;
     const aside = asideRef.current;
     if (!aside) return;
     const raf = requestAnimationFrame(() => {
-      if (pendingRevealId.current !== activeTabId) return;
+      if (pendingReveal.current !== pending) return;
+      if (Date.now() > pending.until) { pendingReveal.current = null; return; }
       const viewport = aside.querySelector<HTMLElement>('.cs-scroll');
       const row = aside.querySelector<HTMLElement>(`[data-tab-id="${CSS.escape(activeTabId)}"]`);
       if (!viewport || !row) return;
-      pendingRevealId.current = null;
+      pendingReveal.current = null;
       const vRect = viewport.getBoundingClientRect();
       const rRect = row.getBoundingClientRect();
-      // A row under its VPS's sticky head is covered, not visible.
-      const head = row.closest('.cs-vps')?.querySelector<HTMLElement>('.cs-vps-head');
-      const coveredTop = head ? Math.max(vRect.top, head.getBoundingClientRect().bottom) : vRect.top;
-      const isFullyVisible = rRect.top >= coveredTop && rRect.bottom <= vRect.bottom;
-      if (isFullyVisible) return;
-      viewport.scrollTo({
-        top: viewport.scrollTop + rRect.top - vRect.top - (vRect.height - rRect.height) / 2,
-        behavior: 'smooth',
+      // Closed drawer / hidden sidebar: nothing laid out, nothing to reveal.
+      if (vRect.height === 0 || rRect.height === 0) return;
+      // A row under the PINNED server head is covered, not visible (a head
+      // further down is just a row of the list).
+      let bandTop = vRect.top;
+      for (const head of viewport.querySelectorAll<HTMLElement>('.cs-vps-head')) {
+        const h = head.getBoundingClientRect();
+        if (h.top <= vRect.top + 1 && h.bottom > vRect.top) bandTop = Math.max(bandTop, h.bottom);
+      }
+      const delta = revealScrollDelta({
+        bandTop, bandBottom: vRect.bottom, rowTop: rRect.top, rowBottom: rRect.bottom,
       });
+      // The page's first reveal jumps: a page load starts the list at its top,
+      // and gliding down from there read as "back to the top, then down".
+      const behavior = revealedOnce.current ? 'smooth' : 'auto';
+      revealedOnce.current = true;
+      if (delta !== 0) viewport.scrollTo({ top: viewport.scrollTop + delta, behavior });
     });
     return () => cancelAnimationFrame(raf);
   }, [activeTabId, parentVpsId, parentFolderId, parentPathKey, vpsFolders, collapsedVps, collapsedPaths]);

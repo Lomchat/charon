@@ -11,6 +11,7 @@ import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPy
 import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/hub/sdkSync';
 import { ssrSummaries } from '@/lib/server/sync/ssrSummaries';
 import { PANEL_LAYOUT_COOKIE, parsePanelLayout } from './panelLayout';
+import { parseTabFocus, projectTabFocus, TAB_FOCUS_COOKIE } from './tabFocusCookie';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,9 +42,12 @@ export default async function CharonPage() {
   // package is served to the browser the day it is declared (§14.102).
   const staleness = latestVersionsByKey();
   refreshAllLatestsIfStale();
-  const initialTabs = listTabs();
+  const jar = await cookies();
+  // This browser's focused tab, not the shared layout's legacy `active`: the
+  // first paint opens the tab the client is about to restore anyway.
+  const initialTabs = projectTabFocus(listTabs(), parseTabFocus(jar.get(TAB_FOCUS_COOKIE)?.value));
   // Browser-local column widths/folds, rendered in the first paint.
-  const initialPanels = parsePanelLayout((await cookies()).get(PANEL_LAYOUT_COOKIE)?.value);
+  const initialPanels = parsePanelLayout(jar.get(PANEL_LAYOUT_COOKIE)?.value);
 
   return (
     <HubPanel

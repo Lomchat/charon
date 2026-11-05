@@ -21,6 +21,7 @@ import type { ReorderTabsBody, TabDTO, TabKind, TabsResponse } from '@/lib/types
 import type { SyncRev } from '@/lib/sync/rev';
 import { createRevResource } from './sync/revResource';
 import { registerUnsavedSource } from './inputDraftStore';
+import { serializeTabFocus, TAB_FOCUS_COOKIE } from './tabFocusCookie';
 
 type State = {
   tabs: TabDTO[];
@@ -115,6 +116,10 @@ export function projectLocalTabFocus(tabs: TabDTO[], activeId: string | null): T
 function persistActiveId(activeId: string | null) {
   if (typeof window === 'undefined') return;
   try { localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, JSON.stringify(activeId)); } catch {}
+  // The SSR's copy (tabFocusCookie.ts): the next page load paints this tab.
+  try {
+    document.cookie = `${TAB_FOCUS_COOKIE}=${serializeTabFocus(activeId)}; path=/; max-age=31536000; samesite=lax`;
+  } catch {}
 }
 
 function setTabs(tabs: TabDTO[], requestedActiveId?: string | null) {
@@ -189,7 +194,8 @@ export function restoreLocalTabFocus(): void {
     ? (stored && state.tabs.some((t) => t.id === stored) ? stored : null)
     : state.activeId;
   setTabs(state.tabs, activeId);
-  if (!found) persistActiveId(activeId);
+  // Unconditionally: also seeds the cookie of a browser that only had storage.
+  persistActiveId(activeId);
 }
 
 // Optimistic updates make clicks immediate, while serializing the actual
@@ -202,14 +208,39 @@ function runMutation<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
+// Mutations whose answer is still awaited. Each one's optimistic state is
+// already on screen, so ANY full layout read before it — a refetch triggered
+// by the previous click's own `tabs_changed`, or an earlier mutation's answer
+// — lacks its provisional row: applied, focus fell back to a neighbour and the
+// pane (and the sidebar's reveal) went A → B → elsewhere → B. The serializer
+// makes the LAST answer the newest complete layout: only it applies.
+let mutationsInFlight = 0;
+
+async function mutate<R extends { tabs: TabDTO[] }>(
+  request: () => Promise<R>, apply: (r: R) => void,
+): Promise<R | null> {
+  mutationsInFlight += 1;
+  let r: R;
+  try {
+    r = await runMutation(request);
+  } catch {
+    mutationsInFlight -= 1;
+    void refreshTabs();
+    return null;
+  }
+  mutationsInFlight -= 1;
+  if (mutationsInFlight === 0) apply(r);
+  return r;
+}
+
 // The layout GET is revision-guarded (app/sync/revResource.ts): a
 // `tabs_changed` frame at rev R is only satisfied by an answer whose `sync ≥
 // R` (one rerun otherwise), one GET at a time, and it is queued BEHIND the
 // pending mutations — an older layout can never land after a mutation's
-// answer (R3 F14).
+// answer (R3 F14). Nor over a mutation still in flight (`mutate`).
 const tabsResource = createRevResource<TabsResponse>({
   fetch: () => api.listTabs(),
-  apply: (r) => setTabs(r.tabs),
+  apply: (r) => { if (mutationsInFlight === 0) setTabs(r.tabs); },
   run: runMutation,
 });
 
@@ -266,16 +297,14 @@ export async function openTab(input: {
       !input.pin && t.vpsId === input.vpsId && t.path === input.path && !t.pinned));
     setTabs([...kept, provisional], provisional.id);
   }
-  try {
-    const r = await runMutation(() => api.openTab(input));
+  const openedAt = state.activeId;
+  const r = await mutate(() => api.openTab(input), (res) => {
     // Replace the provisional id with the durable one without letting the
-    // server response's shared/legacy active bit choose for this browser.
-    setTabs(r.tabs, r.tab.id);
-    return r.tab;
-  } catch {
-    void refreshTabs();
-    return null;
-  }
+    // server response's shared/legacy active bit choose for this browser —
+    // nor this answer pull focus back if the browser has since moved on.
+    setTabs(res.tabs, state.activeId === openedAt ? res.tab.id : undefined);
+  });
+  return r?.tab ?? null;
 }
 
 export async function activateTab(id: string): Promise<void> {
@@ -285,9 +314,7 @@ export async function activateTab(id: string): Promise<void> {
 
 export async function pinTab(id: string): Promise<void> {
   setTabs(state.tabs.map((t) => (t.id === id ? { ...t, pinned: true } : t)), id);
-  try {
-    setTabs((await runMutation(() => api.updateTab(id, { pin: true, activate: false }))).tabs, id);
-  } catch { void refreshTabs(); }
+  await mutate(() => api.updateTab(id, { pin: true, activate: false }), (res) => setTabs(res.tabs));
 }
 
 export async function closeTab(id: string): Promise<void> {
@@ -297,9 +324,7 @@ export async function closeTab(id: string): Promise<void> {
   // it stays in-group, otherwise the row's left/right geometry.
   const next = wasActive && closing ? nextFocusAfterClosing(closing) : null;
   setTabs(state.tabs.filter((t) => t.id !== id), wasActive ? next : state.activeId);
-  try {
-    setTabs((await runMutation(() => api.closeTab(id, next ?? undefined))).tabs);
-  } catch { void refreshTabs(); }
+  await mutate(() => api.closeTab(id, next ?? undefined), (res) => setTabs(res.tabs));
 }
 
 /**
@@ -320,11 +345,11 @@ export async function reorderTabs(body: ReorderTabsBody): Promise<void> {
   } else {
     setTabs(state.tabs.map((t) => ({ ...t, vpsPos: rank(body.vpsIds, t.vpsId) })));
   }
-  try { setTabs((await runMutation(() => api.reorderTabs(body))).tabs); } catch { void refreshTabs(); }
+  await mutate(() => api.reorderTabs(body), (res) => setTabs(res.tabs));
 }
 
 export async function closeTabsWhere(q: { vpsId?: string; path?: string; exceptId?: string }): Promise<void> {
-  try { setTabs((await runMutation(() => api.closeTabsWhere(q))).tabs); } catch { void refreshTabs(); }
+  await mutate(() => api.closeTabsWhere(q), (res) => setTabs(res.tabs));
 }
 
 // ── Dirty tracking (local) ──────────────────────────────────────────────────
