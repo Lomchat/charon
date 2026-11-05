@@ -90,6 +90,11 @@ export function useReorder(
   // actually on screen now.
   const idsRef = useRef(ids);
   idsRef.current = ids;
+  // Read at drop time: callers pass an inline closure every render.
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  const axisRef = useRef(axis);
+  axisRef.current = axis;
 
   const finish = useCallback(() => {
     draggingRef.current = null;
@@ -98,57 +103,80 @@ export function useReorder(
     setOver(null);
   }, []);
 
-  /** Is the pointer past the midpoint of the row it is over? */
-  const isAfter = useCallback((e: React.DragEvent) => {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    return axis === 'y'
-      ? e.clientY > r.top + r.height / 2
-      : e.clientX > r.left + r.width / 2;
-  }, [axis]);
+  // ONE props object per id while its drag state is unchanged: the handlers
+  // read everything through refs, so a memoized row (a sidebar card) keeps
+  // its identity across renders and only the rows the drag touches redraw.
+  const cache = useRef(new Map<string, { handlers: Omit<ReorderItemProps, 'data-dragging' | 'data-over'>; state: string; props: ReorderItemProps }>());
+  if (cache.current.size > 2 * ids.length + 16) {
+    const live = new Set(ids);
+    for (const key of cache.current.keys()) if (!live.has(key)) cache.current.delete(key);
+  }
 
-  const itemProps = useCallback((id: string) => ({
-    draggable: true as const,
-    onDragStart: (e: React.DragEvent) => {
-      draggingRef.current = id;
-      setDraggingId(id);
-      e.dataTransfer.effectAllowed = 'move';
-      // Firefox refuses to start a drag without some payload.
-      try { e.dataTransfer.setData('text/plain', id); } catch { /* ignore */ }
-    },
-    onDragOver: (e: React.DragEvent) => {
-      if (!draggingRef.current) return;
-      // Without preventDefault the browser never fires `drop`.
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const after = isAfter(e);
-      const cur = overRef.current;
-      if (cur?.id === id && cur.after === after) return;   // no re-render per pixel
-      overRef.current = { id, after };
-      setOver({ id, after });
-    },
-    onDrop: (e: React.DragEvent) => {
-      const from = draggingRef.current;
-      // Not this list's drag: stay transparent so it reaches whatever is
-      // listening outside. A session card sits INSIDE the path group that is
-      // the drop target for a heading drag, and swallowing the event here is
-      // exactly how that drop would silently do nothing.
-      if (!from) { finish(); return; }
-      e.preventDefault();
-      e.stopPropagation();
-      // The drop side comes from this event, not from the last dragover: a
-      // pointer can move between the two, and the indicator the user saw must
-      // be the one that lands.
-      const after = isAfter(e);
-      finish();
-      const next = insertRelative(idsRef.current, from, id, after);
-      if (next) onCommit(next);
-    },
-    onDragEnd: finish,
-    ...(draggingId === id ? { 'data-dragging': 'true' } : {}),
-    ...(over?.id === id && over.id !== draggingId
-      ? { 'data-over': over.after ? 'after' : 'before' }
-      : {}),
-  }), [draggingId, over, finish, onCommit, isAfter]);
+  const itemProps = useCallback((id: string): ReorderItemProps => {
+    let entry = cache.current.get(id);
+    if (!entry) {
+      /** Is the pointer past the midpoint of the row it is over? */
+      const isAfter = (e: React.DragEvent) => {
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        return axisRef.current === 'y'
+          ? e.clientY > r.top + r.height / 2
+          : e.clientX > r.left + r.width / 2;
+      };
+      const handlers = {
+        draggable: true as const,
+        onDragStart: (e: React.DragEvent) => {
+          draggingRef.current = id;
+          setDraggingId(id);
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox refuses to start a drag without some payload.
+          try { e.dataTransfer.setData('text/plain', id); } catch { /* ignore */ }
+        },
+        onDragOver: (e: React.DragEvent) => {
+          if (!draggingRef.current) return;
+          // Without preventDefault the browser never fires `drop`.
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          const after = isAfter(e);
+          const cur = overRef.current;
+          if (cur?.id === id && cur.after === after) return;   // no re-render per pixel
+          overRef.current = { id, after };
+          setOver({ id, after });
+        },
+        onDrop: (e: React.DragEvent) => {
+          const from = draggingRef.current;
+          // Not this list's drag: stay transparent so it reaches whatever is
+          // listening outside. A session card sits INSIDE the path group that is
+          // the drop target for a heading drag, and swallowing the event here is
+          // exactly how that drop would silently do nothing.
+          if (!from) { finish(); return; }
+          e.preventDefault();
+          e.stopPropagation();
+          // The drop side comes from this event, not from the last dragover: a
+          // pointer can move between the two, and the indicator the user saw must
+          // be the one that lands.
+          const after = isAfter(e);
+          finish();
+          const next = insertRelative(idsRef.current, from, id, after);
+          if (next) onCommitRef.current(next);
+        },
+        onDragEnd: finish,
+      };
+      entry = { handlers, state: '', props: handlers };
+      cache.current.set(id, entry);
+    }
+    const dragging = draggingId === id;
+    const overSide = over?.id === id && over.id !== draggingId ? (over.after ? 'after' : 'before') : null;
+    const state = `${dragging ? 'd' : ''}${overSide ?? ''}`;
+    if (entry.state !== state) {
+      entry.state = state;
+      entry.props = {
+        ...entry.handlers,
+        ...(dragging ? { 'data-dragging': 'true' } : {}),
+        ...(overSide ? { 'data-over': overSide } : {}),
+      };
+    }
+    return entry.props;
+  }, [draggingId, over, finish]);
 
   return { draggingId, overId: over?.id ?? null, itemProps };
 }

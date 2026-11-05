@@ -210,11 +210,13 @@ function planLabel(plan: string): string {
 /** The group's gauges: the newest reading over its members. A reading stamped
  *  with ANOTHER login never shows (§14.58); a good reading outranks a failure. */
 export function accountGroupUsage(
-  group: AccountGroup, usageByKey: Readonly<Record<string, AccountUsage | undefined>>,
+  group: AccountGroup,
+  /** The member's gauges (app/usageStore.ts § readUsage: the account's, else the VPS's). */
+  usageOf: (member: AccountMember, provider: SessionProvider) => AccountUsage | null | undefined,
 ): AccountUsage | null {
   let best: AccountUsage | null = null;
   for (const m of group.members) {
-    const u = usageByKey[m.usageKey];
+    const u = usageOf(m, group.provider);
     if (!u) continue;
     const expected = group.accountKey ?? m.profile?.accountKey ?? null;
     if (expected && u.accountKey && u.accountKey !== expected) continue;

@@ -10,7 +10,6 @@ import {
 import { providerName } from '@/lib/providerText';
 import { PROVIDER_LOGIN } from './loginModals';
 import type { Vps, VpsFolder, VpsPath, AgentSession } from '@/lib/db/schema';
-import type { AccountUsage } from '@/lib/server/hub/types';
 import type { AgentKind, TabDTO, VpsStalenessBaselines } from '@/lib/types/api';
 import Sidebar, { type SessionListItem, type ShellListItem, type InstallInfo } from './Sidebar';
 import SidebarPathFilter from './SidebarPathFilter';
@@ -52,7 +51,7 @@ import { applyDensity } from './density';
 import { applyFileIcons } from './fileIconStyle';
 import SessionContextMenu from './SessionContextMenu';
 import ProviderAccountMenu from './ProviderAccountMenu';
-import { useAccounts } from './accountsStore';
+import { useAccountList } from './accountsStore';
 import AccountsBanner, { accountsNeedAttention } from './AccountsBanner';
 const AccountsModal = dynamic(() => import('./AccountsModal'), { ssr: false });
 const AccountLoginModal = dynamic(() => import('./AccountLoginModal'), { ssr: false });
@@ -63,9 +62,10 @@ import { useModelNotices } from './useModelNotices';
 import SessionView from './SessionView';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
-import { accountGroupRepresentative, accountGroupUsage, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
+import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
 import { useShowPaused } from './showPaused';
-import { newestAccountUsage } from './accountUsageState';
+import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
+import { useStableCallback } from './useStable';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
 import {
   AGENT_KINDS, ALL_BACKENDS_ENABLED, enabledBackendsFromSettings, sameBackends,
@@ -140,6 +140,7 @@ type Props = {
 // lives in `useSessionStream` (consumed by `<SessionView>`).
 
 const emptyEdits: Map<string, EditSnapshot> = new Map();
+const NOOP = () => {};
 /** List GET cadence (§11): 60 s, 15 s against an older hub (degraded). */
 const LIST_POLL_MS = 60_000;
 const LIST_POLL_DEGRADED_MS = 15_000;
@@ -343,7 +344,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // (opened from the panel/banner, where no VPS is involved).
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [hubLogin, setHubLogin] = useState<{ provider: AgentKind; accountId: string | null } | null>(null);
-  const accountsState = useAccounts();
+  // The list only: a usage reading must not re-render the hub (usageStore.ts).
+  const accountsState = useAccountList();
   /** Open a provider's sign-in surface. Closing the wizard is the surface's own
    *  declared behaviour, not the caller's guess. */
   const openProviderLogin = useCallback((v: Vps, provider: AgentKind, profile?: AccountProfile) => {
@@ -489,12 +491,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // CSS variable and its tier as `data-side`/`data-tools`, which lay the
   // column's contents out for it. Drawers below the breakpoints ignore both.
   const panels = usePanelLayoutRoot(initialPanels);
-  // Account-usage gauges per VPS AND per provider (the `/usage` widget). A VPS
-  // can run BOTH Claude and Codex, each with its own account/quota — the header
-  // shows the one matching the CURRENT session's kind. Fed by the LOW_VOLUME
-  // `account_usage` SSE event (carries `provider`) + hydrated on session-select
-  // via GET /api/vps/[id]/usage ({ usage, codexUsage }). §14.58 / §14.59.
-  const [usageByVps, setUsageByVps] = useState<Record<string, AccountUsage>>({});
+  // Account-usage gauges (the `/usage` widgets) live in app/usageStore.ts, NOT
+  // in this component's state: only the gauges subscribe, so a reading never
+  // re-renders the hub (and with it the sidebar and the whole chat). Fed by
+  // the LOW_VOLUME `account_usage` SSE event + hydrated here on session-select
+  // via GET /api/vps/[id]/usage. §14.58 / §14.59 / §14.115.
+  useUsageFeed();
   // Every (VPS, provider, profile) gauge this tab has displayed: a resync
   // refetches them all (account_usage frames missed beyond the ring, R3 A4).
   // Value = cache-only: the header account buttons hydrate every login from
@@ -508,24 +510,19 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     api.getVpsUsage(vpsId, provider, profile, force, cachedOnly && !force).then((r) => {
       const fresh = r.byProvider?.[provider] ?? (provider === 'claude' ? r.usage : r.codexUsage);
       const currentProfile = profileState.current.find((p) => p.vpsId === vpsId && p.provider === provider && p.id === profile);
-      const key = profileUsageKey(vpsId, provider, profile);
+      const sessionProvider = asSessionProvider(provider);
       if (!fresh) {
         // No snapshot yet for the current login: gauges stamped with ANOTHER
         // login (changed while the hub was down) must not stay on screen.
         const now = currentProfile?.accountKey;
-        if (now) setUsageByVps((prev) => {
-          const held = prev[key]?.accountKey;
-          if (!held || held === now) return prev;
-          const next = { ...prev }; delete next[key]; return next;
-        });
+        if (now) dropOtherLoginUsage(vpsId, sessionProvider, profile, now);
         return;
       }
       if (currentProfile?.accountKey && fresh.accountKey && currentProfile.accountKey !== fresh.accountKey) return;
-      setUsageByVps((prev) => ({ ...prev, [key]: newestAccountUsage(prev[key], fresh) }));
+      // Keyed by what was ASKED (a reading names its account, §14.115).
+      putUsage(vpsId, { ...fresh, provider: sessionProvider, accountProfile: profile });
     }).catch(() => {});
   }, []);
-  const usageFor = useCallback((vpsId: string | null | undefined, kind: AgentKind | null | undefined, profile = 'default'): AccountUsage | null =>
-    vpsId ? usageByVps[profileUsageKey(vpsId, asSessionProvider(kind), profile)] ?? null : null, [usageByVps]);
 
   // Load the shells list at mount + refresh when a selector changes
   useEffect(() => {
@@ -665,27 +662,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     mergedRuntime.current = vpsRuntime;
     if (changed.length) setVpsList((prev) => mergeRuntimeSlices(prev, changed));
   }, [vpsRuntime]);
-
-  // Live account-usage gauges (§14.58). The hub polls get_usage once per
-  // ACCOUNT (§14.72 — the endpoint is throttled per source IP) and fans one
-  // `account_usage` event per VPS on that account (LOW_VOLUME → every tab;
-  // sessionId = vpsId). Keep the latest snapshot per VPS so the header widget
-  // follows the current session's account live, across tabs/devices, no F5.
-  useEffect(() => {
-    const unsub = subscribeAll((ev) => {
-      if (ev.type !== 'account_usage') return;
-      const vpsId = ev.sessionId;
-      if (!vpsId) return;
-      // ev is the account_usage variant = AccountUsage + {type, sessionId}; the
-      // extra two keys are harmless (UsageMeter only reads AccountUsage fields).
-      // Store under the event's provider (Claude default) so a VPS running both
-      // backends keeps both gauges live.
-      const provider = asSessionProvider((ev as AccountUsage).provider);
-      const key = profileUsageKey(vpsId, provider, ev.accountProfile ?? 'default');
-      setUsageByVps((prev) => ({ ...prev, [key]: newestAccountUsage(prev[key], ev as AccountUsage) }));
-    });
-    return () => unsub();
-  }, []);
 
   // Background-task counts, "finished, unread" markers and live statuses all
   // ride the session summary now (§14.108): no per-field patchers (R3
@@ -965,10 +941,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const accountGroups = useMemo(
     () => profilesLoaded ? buildAccountGroups({ sessions, profiles, enabled: backends, vpsName: vpsNameOf }) : [],
     [profilesLoaded, sessions, profiles, backends, vpsNameOf],
-  );
-  const accountUsage = useMemo(
-    () => new Map(accountGroups.map((g) => [g.key, accountGroupUsage(g, usageByVps)] as const)),
-    [accountGroups, usageByVps],
   );
   const vpsReachable = useCallback(
     (id: string) => vpsList.find((v) => v.id === id)?.agentStatus === 'ok',
@@ -1937,6 +1909,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     return out;
   }, [mountedFileKeys, selectedFileKey, fileTabsByKey, selectedFile]);
 
+  // Stable for the memoized ToolPanel beside a file or a shell (§14.38).
+  const openSessionFromPanel = useStableCallback((id: string) => openSessionById(id, false));
+  const revealTools = useCallback(() => setToolsOpen(true), []);
+
   return (
     <PanelLayoutProvider value={initialPanels}>
     <div
@@ -2004,7 +1980,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         {/* One button per login: its usage, its sessions, its attention. */}
         <AccountNav
           groups={accountGroups}
-          usage={accountUsage}
           onRefreshUsage={refreshAccountGroupUsage}
           vpsName={vpsNameOf}
           selectedId={selectedId}
@@ -2257,13 +2232,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           sessionId={null}
           toolCalls={[]}
           edits={emptyEdits}
-          onRevert={() => {}}
+          onRevert={NOOP}
           vpsId={selectedFile.vpsId}
           cwd={selectedFile.path}
-          onOpenSession={(id) => openSessionById(id, false)}
+          onOpenSession={openSessionFromPanel}
           onOpenFolder={openFolderPicker}
           onNewSessionIn={newSessionIn}
-          onReveal={() => setToolsOpen(true)}
+          onReveal={revealTools}
         />
         </>
       ) : selectedInstallId ? (() => {
@@ -2308,13 +2283,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
               workspaceOnly
               toolCalls={[]}
               edits={emptyEdits}
-              onRevert={() => {}}
+              onRevert={NOOP}
               vpsId={selectedShell!.vpsId}
               cwd={selectedShellWorkspaceRoot}
-              onOpenSession={(id) => openSessionById(id, false)}
+              onOpenSession={openSessionFromPanel}
               onOpenFolder={openFolderPicker}
               onNewSessionIn={newSessionIn}
-              onReveal={() => setToolsOpen(true)}
+              onReveal={revealTools}
             />
           ) : (
             <main className="app-main"><div className="bar-empty">shell not found</div></main>
@@ -2350,12 +2325,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           selectedVps={selectedVps}
           profileNumber={accountProfileNumber(selected)}
           usageAccountLabel={selectedUsageLabel}
-          usage={usageFor(selectedVps?.id, selected.kind as AgentKind | undefined, accountProfileId(selected))}
           onUsageRefresh={() => refreshUsage(selectedVps?.id, asSessionProvider(selected.kind), accountProfileId(selected), true)}
           onReauth={reauthSelectedVps}
           // The git chip lives in the chat header but points at the ToolPanel,
           // which is a drawer <=1100px — it has to be able to reveal it.
-          onOpenTools={() => setToolsOpen(true)}
+          onOpenTools={revealTools}
           onOpenSession={(id, hint, pin) => openSessionById(id, pin ?? false, hint)}
           // No agentKind: the wizard asks which backend — or a shell — then
           // the name; the VPS and path are this session's (NewSessionWizard §

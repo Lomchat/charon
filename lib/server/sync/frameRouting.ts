@@ -86,7 +86,8 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   // Workspace layout + settings: shared across devices (§14.78).
   tabs_changed: LOW,
   settings_changed: LOW,
-  // Account gauges/profiles (sessionId = vpsId): ACCOUNT-scoped (§14.58).
+  // Account gauges/profiles: ACCOUNT-scoped (§14.115). A hub account's reading
+  // is ONE frame (sessionId `accounts`), a legacy one sessionId = vpsId.
   account_usage: LOW,
   account_profiles_changed: LOW,
   // Who touches which file (sessionId = vpsId): the point is seeing OTHER

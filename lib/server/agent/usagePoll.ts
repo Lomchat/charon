@@ -1030,5 +1030,5 @@ function globalAccountUsage(id: string): AccountUsage | null {
   const last = (globalThis as unknown as { _accountsEngine?: { usage: Map<string, { last: AccountUsage | null }> } })
     ._accountsEngine?.usage.get(id)?.last;
   const row = getAccountRow(id);
-  return row && last ? { ...last, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey } : null;
+  return row && last ? { ...last, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey, scope: 'account' } : null;
 }

@@ -523,6 +523,12 @@ export function emitGlobalAccountUsage(vpsId: string, usage: AccountUsage): void
   emitGlobalSession({ type: 'account_usage', sessionId: vpsId, ...usage } as GlobalSessionEvent);
 }
 
+/** A hub account's reading (`scope:'account'`, accounts engine): ONE frame,
+ *  whatever the number of VPSes — the browser keys it by account. §14.115. */
+export function emitGlobalHubAccountUsage(usage: AccountUsage & { scope: 'account' }): void {
+  emitGlobalSession({ type: 'account_usage', sessionId: 'accounts', ...usage } as GlobalSessionEvent);
+}
+
 export function emitGlobalAccountProfiles(vpsId: string): void {
   emitGlobalSession({ type: 'account_profiles_changed', sessionId: vpsId });
 }

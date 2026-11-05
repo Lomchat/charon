@@ -194,6 +194,10 @@ export type AccountUsageLimit = {
 export type AccountUsage = {
   accountProfile?: string;
   accountKey?: string | null;
+  /** 'account' = a hub account's reading (§14.115): VPS-independent, ONE
+   *  `account_usage` frame per reading (sessionId `accounts`), stored under the
+   *  account, never per VPS. Absent = a legacy per-VPS reading (sessionId = vpsId). */
+  scope?: 'account';
   ok: boolean;
   fetchedAt: number;           // hub Date.now() (ms) — for "updated Ns ago"
   // Which coding-agent account these gauges belong to. 'claude' (default when
@@ -344,10 +348,10 @@ export type SyntheticEvent =
   // regardless of which session it is focused on. §14.78.
   | { type: 'tabs_changed' }
   | { type: 'settings_changed' }
-  // Account usage gauges fanned onto the global bus (sessionId = vpsId). Polled
-  // from the agent's get_usage RPC by usagePoll.ts (60s + after each stop);
-  // LOW_VOLUME → every tab. The header widget shows the CURRENT session's VPS
-  // account. cf. CLAUDE.md §14.58.
+  // Account usage gauges on the global bus, LOW_VOLUME → every tab. A hub
+  // account's reading = ONE frame (sessionId `accounts`, `scope:'account'`,
+  // accounts engine); a legacy per-VPS reading = sessionId = vpsId
+  // (usagePoll.ts). Browser: app/usageStore.ts. cf. CLAUDE.md §14.72/§14.115.
   | { type: 'account_profiles_changed' }
   | ({ type: 'account_usage' } & AccountUsage);
 

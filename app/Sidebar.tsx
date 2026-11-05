@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
@@ -14,6 +14,7 @@ import { providerText, providerName } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
+import { useStableCallback, useStableOptionalCallback } from './useStable';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, backendLauncher, parseAgentLastError, type BackendLauncher } from './vpsHealth';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
@@ -109,6 +110,29 @@ function formatAge(unixSeconds: number | null | undefined): string {
   // ONE formatter for every card (toLocaleDateString builds one per call).
   ageDateFormat ??= new Intl.DateTimeFormat('en-US', { day: '2-digit', month: 'short' });
   return ageDateFormat.format(new Date(unixSeconds * 1000));
+}
+
+// One shared minute clock for the cards' ages ("5min", "3h"): a memoized card
+// (§14.38) has no other reason to redraw while nothing about it changes.
+let minuteNow = 0;
+const minuteSubs = new Set<() => void>();
+let minuteTimer: ReturnType<typeof setInterval> | null = null;
+function subscribeMinute(cb: () => void): () => void {
+  minuteSubs.add(cb);
+  if (!minuteTimer) {
+    minuteNow = Math.floor(Date.now() / 60_000);
+    minuteTimer = setInterval(() => {
+      minuteNow = Math.floor(Date.now() / 60_000);
+      for (const f of minuteSubs) f();
+    }, 60_000);
+  }
+  return () => {
+    minuteSubs.delete(cb);
+    if (!minuteSubs.size && minuteTimer) { clearInterval(minuteTimer); minuteTimer = null; }
+  };
+}
+function useMinuteTick(): number {
+  return useSyncExternalStore(subscribeMinute, () => minuteNow, () => 0);
 }
 
 /** `formatAge` as a phrase: "created 3h ago", "created just now", "created Oct 02". */
@@ -526,6 +550,17 @@ export default function Sidebar({
     if (targets.length) onContext?.(targets, x, y);
   }
 
+  // ONE identity per handler for the memoized cards (SessionRow/ShellRow,
+  // §14.38): rebuilt each render, every card redrew on every hub update.
+  // Called from event handlers only, so they always run the latest closure.
+  const selectStable = useStableCallback(onSelect);
+  const selectShellStable = useStableCallback(onSelectShell);
+  const selectionGestureStable = useStableCallback(selectSessionGesture);
+  const sessionContextStable = useStableCallback(openSessionContext);
+  const shellContextStable = useStableOptionalCallback(onContextShell);
+  const renameSubmitStable = useStableOptionalCallback(onRenameSubmit);
+  const renameCancelStable = useStableOptionalCallback(onRenameCancel);
+
   // "Agent out of date" = this hub SHIPS a strictly newer `__version__` than
   // the VPS runs (§14.6). Deliberately NOT a sha comparison: an equal version
   // with a different sha is ignored (bump `__version__` to propagate), and a
@@ -797,12 +832,12 @@ export default function Sidebar({
                     selectedId, selectedShellId, selectedInstallId,
                     activeWorkspace,
                     deletingSessionIds,
-                    onSelect, onSelectShell, onSelectInstall, onReorderSessions,
-                    selectedSessionIds, onSessionSelectionGesture: selectSessionGesture,
+                    onSelect: selectStable, onSelectShell: selectShellStable, onSelectInstall, onReorderSessions,
+                    selectedSessionIds, onSessionSelectionGesture: selectionGestureStable,
                     enabledBackends,
                     onNew, onNewShell, onScan,
-                    onContext: openSessionContext, onContextShell, onContextInstall,
-                    editingId, onRenameSubmit, onRenameCancel,
+                    onContext: sessionContextStable, onContextShell: shellContextStable, onContextInstall,
+                    editingId, onRenameSubmit: renameSubmitStable, onRenameCancel: renameCancelStable,
                     onInstallAgent, onProviderLogin, onProviderContext, signingOutAccounts,
                     onUpdateAgent, onRefreshAgent,
                     updatingAgentVpsIds, refreshingAgentVpsIds,
@@ -1472,7 +1507,7 @@ function SessionPathGroup({
           key={s.id} s={s}
           deleting={deletingSessionIds.has(s.id)}
           multiSelected={selectedSessionIds.has(s.id)}
-          handle={sessionHandles?.get(s.id) ?? null}
+          handle={sessionHandles?.get(s.id)?.handle ?? null}
           selected={s.id === selectedId}
           showDetails={showDetails}
           onSelect={onSelect}
@@ -1498,13 +1533,16 @@ function SessionPathGroup({
   );
 }
 
-function SessionRow({
+// Memoized (§14.38): every prop is a primitive, the row's own summary object
+// (kept by the store until it changes), a stable handler or the per-id drag
+// props (`useReorder`) — so a hub update redraws only the cards it touched.
+const SessionRow = memo(function SessionRow({
   s, handle, selected, multiSelected, deleting, showDetails,
   onSelect, onSelectionGesture, onContext, editing, onRenameSubmit, onRenameCancel, dnd,
 }: {
   s: SessionListItem;
   /** Stable provider-neutral Charon handle on this VPS. */
-  handle?: { handle: string; confirmed: boolean } | null;
+  handle?: string | null;
   selected: boolean;
   multiSelected: boolean;
   deleting: boolean;
@@ -1520,6 +1558,7 @@ function SessionRow({
   // Touch long-press → context menu (mobile has no right-click). Must run
   // before the `editing` early-return to keep hook order stable. §11.
   const lp = useLongPress((c) => { if (!deleting) onContext?.(s, c.x, c.y); });
+  useMinuteTick(); // the age below
   const hasDraft = useHasDraft(s.id);
   const pressedSelection = useRef<TreeSelectionModifiers | null>(null);
   const lastClickWasSelectionOnly = useRef(false);
@@ -1558,7 +1597,7 @@ function SessionRow({
   const tooltip = tipAttrs({
     detail: [
       [agentLogoLabel(s.kind as AgentKind, accountProfileNumber(s), s.endpoint?.active?.name),
-        handle ? `@${handle.handle}` : null].filter(Boolean).join(' · '),
+        handle ? `@${handle}` : null].filter(Boolean).join(' · '),
       s.cwd,
       age ? agePhrase('created', age) : null,
       draft ? 'Unsent draft' : null,
@@ -1683,7 +1722,7 @@ function SessionRow({
               className="cs-card-handle"
               title={`Stable Charon address on this machine (${s.addressable ? 'currently reachable' : 'not currently reachable'})`}
             >
-              @{handle.handle}
+              @{handle}
             </span>
           )}
           <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
@@ -1693,9 +1732,9 @@ function SessionRow({
       )}
     </button>
   );
-}
+});
 
-function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
+const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
   sh: ShellListItem;
   selected: boolean;
   showDetails: boolean;
@@ -1703,6 +1742,7 @@ function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
   onContext?: (sh: ShellListItem, x: number, y: number) => void;
 }) {
   const lp = useLongPress((c) => { onContext?.(sh, c.x, c.y); });
+  useMinuteTick(); // the age below
   const age = formatAge(Math.floor(sh.startedAt / 1000));
   const cwdShort = sh.cwd ? cwdTail(sh.cwd, 30) : '~';
   const headline = sh.name ?? `shell · ${sh.cwd ? cwdTail(sh.cwd, 16) : '~'}`;
@@ -1746,7 +1786,7 @@ function ShellRow({ sh, selected, showDetails, onSelect, onContext }: {
       )}
     </button>
   );
-}
+});
 
 function RenameInput({ initial, onSubmit, onCancel }: {
   initial: string;

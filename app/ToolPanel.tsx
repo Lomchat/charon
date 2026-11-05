@@ -797,7 +797,9 @@ function summarizeInput(name: string, input: any): string {
   }
 }
 
+// ONE formatter for the whole list (toLocaleTimeString builds one per call).
+let callTimeFormat: Intl.DateTimeFormat | null = null;
 function fmtTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  callTimeFormat ??= new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return callTimeFormat.format(new Date(ts * 1000));
 }

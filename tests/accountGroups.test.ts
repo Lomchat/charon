@@ -210,15 +210,23 @@ describe('accountGroupUsage / representative', () => {
     prof({ vpsId: 'b', id: 'p2', number: 2, accountKey: 'K' }),
   ]);
 
+  const by = (map: Record<string, AccountUsage>) => (m: { usageKey: string }) => map[m.usageKey];
+
   it('newest good reading across members; another login\'s reading never shows', () => {
-    expect(accountGroupUsage(group, {})).toBeNull();
+    expect(accountGroupUsage(group, by({}))).toBeNull();
     const older = u({ fetchedAt: 10, accountKey: 'K' });
     const newer = u({ fetchedAt: 20, accountKey: 'K' });
-    expect(accountGroupUsage(group, { 'a:claude:default': older, 'b:claude:p2': newer })).toBe(newer);
+    expect(accountGroupUsage(group, by({ 'a:claude:default': older, 'b:claude:p2': newer }))).toBe(newer);
     const foreign = u({ fetchedAt: 99, accountKey: 'OTHER' });
-    expect(accountGroupUsage(group, { 'a:claude:default': foreign, 'b:claude:p2': older })).toBe(older);
+    expect(accountGroupUsage(group, by({ 'a:claude:default': foreign, 'b:claude:p2': older }))).toBe(older);
     const failed = u({ ok: false, fetchedAt: 50, accountKey: 'K' });
-    expect(accountGroupUsage(group, { 'a:claude:default': failed, 'b:claude:p2': older })).toBe(older);
+    expect(accountGroupUsage(group, by({ 'a:claude:default': failed, 'b:claude:p2': older }))).toBe(older);
+  });
+
+  it('the lookup is asked with the group\'s provider for every member', () => {
+    const asked: string[] = [];
+    accountGroupUsage(group, (m, provider) => { asked.push(`${m.vpsId}:${provider}:${m.profileId}`); return null; });
+    expect(asked.sort()).toEqual(['a:claude:default', 'b:claude:p2']);
   });
 
   it('the representative is a member with sessions', () => {

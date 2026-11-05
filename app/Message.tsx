@@ -265,7 +265,9 @@ function PeerRequestLink({ requestId, onHover, onJump }: {
     onBlur={() => onHover?.(null)} onClick={() => onJump?.(requestId)}>replied</button>;
 }
 
-export function MessageMarkdown({ content, vpsId, cwd }: {
+// Memoized on its three strings: a bubble re-render (a new prop on <Message>)
+// must not re-run remark/rehype + language detection on unchanged text.
+export const MessageMarkdown = memo(function MessageMarkdown({ content, vpsId, cwd }: {
   content: string; vpsId?: string; cwd?: string | null;
 }) {
   // Bare paths become explorer links too — only where a VPS can open them.
@@ -291,7 +293,7 @@ export function MessageMarkdown({ content, vpsId, cwd }: {
       {content}
     </ReactMarkdown>
   );
-}
+});
 
 /** YOUR bubble's body, where `> ` lines (a quote made from the chat,
  *  chatQuote.ts) render as a quote block. Peers' text stays literal. Spans

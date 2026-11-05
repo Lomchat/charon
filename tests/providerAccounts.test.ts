@@ -7,7 +7,7 @@ import * as schema from '@/lib/db/schema';
 // Hub-owned provider accounts (CLAUDE.md §14.115).
 
 const fake = vi.hoisted(() => ({
-  call: vi.fn(), emitProfiles: vi.fn(), emitUsage: vi.fn(), emitRuntime: vi.fn(), restart: vi.fn(), listChanged: vi.fn(),
+  call: vi.fn(), emitProfiles: vi.fn(), emitUsage: vi.fn(), emitHubUsage: vi.fn(), emitRuntime: vi.fn(), restart: vi.fn(), listChanged: vi.fn(),
   clients: [] as { vps: { id: string }; status: string; hello: Record<string, unknown> | null; call: (...a: any[]) => unknown }[],
 }));
 vi.mock('server-only', () => ({}));
@@ -25,8 +25,11 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   listAgentClients: () => fake.clients,
 }));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
-  emitGlobalAccountProfiles: fake.emitProfiles, emitGlobalAccountUsage: fake.emitUsage,
+  emitGlobalAccountProfiles: fake.emitProfiles, emitGlobalAccountUsage: fake.emitUsage, emitGlobalHubAccountUsage: fake.emitHubUsage,
   emitGlobalVpsRuntimeFromDb: fake.emitRuntime, emitGlobalSessionListChanged: fake.listChanged, restartSession: fake.restart,
+  // usagePoll.ts registers its hooks at import (the usage path loads it).
+  setUsagePollTrigger: () => {}, setCodexUsagePollTrigger: () => {}, setCodexUsagePushHandler: () => {},
+  setUsageWindowsHandler: () => {}, setUsageResetResolver: () => {},
 }));
 vi.mock('@/lib/server/hub/bgTaskState', () => ({ runningBgTasksIfWarm: () => [], pruneStaleBgTasks: () => false }));
 
@@ -49,7 +52,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 
 beforeEach(() => {
   vi.useRealTimers();
-  fake.call.mockReset(); fake.emitProfiles.mockReset(); fake.emitUsage.mockReset(); fake.emitRuntime.mockReset();
+  fake.call.mockReset(); fake.emitProfiles.mockReset(); fake.emitUsage.mockReset(); fake.emitHubUsage.mockReset(); fake.emitRuntime.mockReset();
   fake.restart.mockReset(); fake.listChanged.mockReset();
   fake.clients = [];
   db.delete(schema.agentSessions).run();
@@ -250,5 +253,26 @@ describe('sessions on hub accounts', () => {
     await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).resolves.toEqual({ restarted: true });
     expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBe('bbbbbbbbbbbbbbbb');
     expect(fake.restart).toHaveBeenCalledWith('s1');
+  });
+});
+
+describe('usage gauges', () => {
+  it('ONE account_usage frame per reading, keyed by the account — never one per VPS row', async () => {
+    claudeRow('aaaaaaaaaaaaaaaa');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(200, {
+      five_hour: { utilization: 12, resets_at: null }, seven_day: { utilization: 34, resets_at: null },
+    }));
+    const engine = await import('@/lib/server/accounts/engine');
+    const usage = await engine.pollAccountUsage('aaaaaaaaaaaaaaaa', { force: true });
+    // Two VPS rows exist (beforeEach): still a single frame.
+    expect(fake.emitHubUsage).toHaveBeenCalledTimes(1);
+    expect(fake.emitUsage).not.toHaveBeenCalled();
+    expect(fake.emitHubUsage.mock.calls[0][0]).toMatchObject({
+      ok: true, scope: 'account', provider: 'claude', accountProfile: 'aaaaaaaaaaaaaaaa', accountKey: 'key-aaaaaaaaaaaaaaaa',
+    });
+    expect(usage?.scope).toBe('account');
+    // The hydration path (GET) carries the same scope.
+    expect(engine.accountUsage('aaaaaaaaaaaaaaaa')).toMatchObject({ scope: 'account', accountProfile: 'aaaaaaaaaaaaaaaa' });
+    fetchSpy.mockRestore();
   });
 });

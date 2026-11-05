@@ -8,7 +8,7 @@ import type { AccountLoginAttempt, ProviderAccount } from '@/lib/providerAccount
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 import { getAgentClientForVpsId, listAgentClients } from '@/lib/server/agent/AgentClientPool';
 import { providerName } from '@/lib/providerText';
-import { emitGlobalAccountProfiles, emitGlobalAccountUsage, emitGlobalVpsRuntimeFromDb } from '@/lib/server/agent/sessionOps';
+import { emitGlobalAccountProfiles, emitGlobalHubAccountUsage, emitGlobalVpsRuntimeFromDb } from '@/lib/server/agent/sessionOps';
 import {
   accountKeyFor, agentAccount, getAccountRow, listAccountRows, newAccountId, openSecret, publicAccounts, sealSecret,
   type AccountRow, type ClaudeSecret, type CodexSecret, type CursorSecret,
@@ -458,7 +458,7 @@ export function syncVpsLoginColumns(): void {
   }
 }
 
-// ── Usage gauges (one reading per ACCOUNT, fanned to every VPS) ──────────────
+// ── Usage gauges (one reading per ACCOUNT, one frame per reading) ────────────
 
 function usageState(id: string): UsageState {
   let st = state.usage.get(id);
@@ -466,18 +466,23 @@ function usageState(id: string): UsageState {
   return st;
 }
 
+/** A reading as the browser keys it: by ACCOUNT (`scope`), whatever VPS asks. */
+export function stampAccountUsage(row: Pick<AccountRow, 'id' | 'provider' | 'accountKey'>, usage: AccountUsage): AccountUsage & { scope: 'account' } {
+  return { ...usage, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey, scope: 'account' };
+}
+
+/** ONE frame per reading: every tab stores it under the account, never per VPS
+ *  (a frame per VPS row re-rendered every tab N times per reading). */
 function fan(row: Pick<AccountRow, 'id' | 'provider' | 'accountKey'>, usage: AccountUsage): AccountUsage {
-  const out: AccountUsage = { ...usage, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey };
-  for (const v of db.select({ id: vpsTable.id }).from(vpsTable).all()) {
-    try { emitGlobalAccountUsage(v.id, out); } catch { /* best-effort */ }
-  }
+  const out = stampAccountUsage(row, usage);
+  try { emitGlobalHubAccountUsage(out); } catch { /* best-effort */ }
   return out;
 }
 
 export function accountUsage(id: string): AccountUsage | null {
   const row = getAccountRow(id);
   const last = state.usage.get(id)?.last;
-  return row && last ? { ...last, provider: row.provider as SessionProvider, accountProfile: row.id, accountKey: row.accountKey } : null;
+  return row && last ? stampAccountUsage(row, last) : null;
 }
 
 export function pollAccountUsage(id: string, opts: { force?: boolean; steady?: boolean } = {}): Promise<AccountUsage | null> {

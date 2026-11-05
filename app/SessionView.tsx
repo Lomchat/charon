@@ -15,7 +15,6 @@ import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } fr
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Vps } from '@/lib/db/schema';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
-import type { AccountUsage } from '@/lib/server/hub/types';
 import {
   asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
   showsTurnCost, supportsSessionCapability,
@@ -58,6 +57,8 @@ import {
   extendWithOlder as extendCacheWithOlder,
 } from './sessionCache';
 import { useInputDraft } from './inputDraftStore';
+import { useStableOptionalCallback, useStableValue, shallowEqualRows } from './useStable';
+import { useUsage } from './usageStore';
 import { COMPOSER_MAX_VIEWPORT_SHARE, revealComposer, useComposerSize, type ComposerSize } from './composerSize';
 import { formatQuote, insertQuoteBlock } from './chatQuote';
 import QuoteSelectionButton from './QuoteSelectionButton';
@@ -118,9 +119,8 @@ type Props = {
   onKilled: () => void;
   // After reverting a file edit → refresh parent's sessions list.
   onAfterRevert?: () => void;
-  // Account-usage gauges for this session's VPS account (the header `/usage`
-  // widget). Subscribed/held in HubPanel (account-scoped, LOW_VOLUME). §14.58.
-  usage?: AccountUsage | null;
+  // The header `/usage` gauges read app/usageStore.ts themselves (`useUsage`,
+  // in the leaves that draw them): a reading never re-renders this view.
   onUsageRefresh?: () => void;
   /** Whose gauges these are, shown when the usage detail opens. */
   usageAccountLabel: string | null;
@@ -165,14 +165,28 @@ const CustomEndpointModal = dynamic(() => import('./CustomEndpointModal'), { ssr
 const SYNC_CUE_DELAY_MS = 400;
 
 export default function SessionView({
-  sessionId, selected, showTools, showToolsReady, selectedVps, handle, handleConfirmed, siblings,
-  onImportError, onKilled, onAfterRevert, usage, onUsageRefresh, usageAccountLabel, onReauth, profileNumber,
-  onOpenTools,
-  onOpenSession,
+  sessionId, selected, showTools, showToolsReady, selectedVps, handle, handleConfirmed, siblings: siblingsProp,
+  onImportError, onKilled, onAfterRevert: onAfterRevertProp, onUsageRefresh: onUsageRefreshProp, usageAccountLabel,
+  onReauth: onReauthProp, profileNumber,
+  onOpenTools: onOpenToolsProp,
+  onOpenSession: onOpenSessionProp,
   onNewAgentHere,
-  onOpenFolder,
-  onNewSessionIn,
+  onOpenFolder: onOpenFolderProp,
+  onNewSessionIn: onNewSessionInProp,
 }: Props) {
+  // The parent passes inline arrows and a freshly mapped `siblings` on every
+  // render; below this line they keep ONE identity, so memo(MessageHistory),
+  // memo(Message), memo(ToolPanel) and memo(ChatInputBar) hold (§14.38). An
+  // unstable prop here re-rendered — and re-parsed — every bubble per frame.
+  const onOpenSession = useStableOptionalCallback(onOpenSessionProp);
+  const onReauth = useStableOptionalCallback(onReauthProp);
+  const onOpenTools = useStableOptionalCallback(onOpenToolsProp);
+  const onOpenFolder = useStableOptionalCallback(onOpenFolderProp);
+  const onNewSessionIn = useStableOptionalCallback(onNewSessionInProp);
+  const onAfterRevert = useStableOptionalCallback(onAfterRevertProp);
+  const onUsageRefresh = useStableOptionalCallback(onUsageRefreshProp);
+  const siblings = useStableValue(siblingsProp, shallowEqualRows);
+  const usageProfile = accountProfileId(selected);
   const [endpoint, refreshEndpoint] = useSessionEndpoint(sessionId, selected.endpoint);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
   const closeSessionSettings = useCallback(() => setSessionSettingsOpen(false), []);
@@ -849,13 +863,13 @@ export default function SessionView({
             {/* The phone's account usage (CSS-gated ≤820px, where the runtime
                 panel drops its usage cell). A custom endpoint bills per token
                 instead, and the runtime panel already shows those. */}
-            {!endpoint.active && <UsageRings usage={usage ?? null} vpsName={selectedVps?.name}
+            {!endpoint.active && <LiveUsageRings vpsId={vpsId} profile={usageProfile} vpsName={selectedVps?.name}
               onRefresh={onUsageRefresh} kind={sessionKind} accountLabel={usageAccountLabel} switchTarget={accountSwitch} />}
           </div>
           <SessionRuntimePanel
-            usage={usage ?? null} tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
+            tokenUsage={tokenUsage} vpsName={selectedVps?.name} onUsageRefresh={onUsageRefresh}
             usageAccountLabel={usageAccountLabel} accountSwitch={accountSwitch}
-            kind={sessionKind} accountProfile={accountProfileId(selected)} profileNumber={profileNumber} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
+            kind={sessionKind} accountProfile={usageProfile} profileNumber={profileNumber} vpsId={vpsId} sessionId={sessionId} endpoint={endpoint} onEndpointChanged={refreshEndpoint}
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
@@ -1998,9 +2012,18 @@ function substitutedModel(kind: AgentKind, model: string | null, effectiveModel:
     && !['opus', 'sonnet', 'haiku'].includes(model) ? effectiveModel : null;
 }
 
+/** The phone header's gauges, reading the usage store themselves: a reading
+ *  re-renders these rings only (app/usageStore.ts). */
+function LiveUsageRings({ vpsId, profile, kind, ...rest }: {
+  vpsId: string; profile: string; kind: AgentKind;
+} & Omit<React.ComponentProps<typeof UsageRings>, 'usage' | 'kind'>) {
+  const usage = useUsage(vpsId, asSessionProvider(kind), profile);
+  return <UsageRings usage={usage} kind={kind} {...rest} />;
+}
+
 /** Direct choices use the same provider catalogs as the creation/settings forms. */
 function SessionRuntimePanel({
-  usage, tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
+  tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
   modelPendingApply, effortPendingApply, effectiveModel, nativeSessionId,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
 }: {
@@ -2012,7 +2035,6 @@ function SessionRuntimePanel({
    *  than the reading itself: the gauge owns when it has nothing to say, and
    *  renders NOTHING then, so the panel keeps its three-cell height. */
   context?: React.ReactNode;
-  usage: AccountUsage | null;
   tokenUsage: SessionTokenUsage | null;
   vpsName?: string | null;
   onUsageRefresh?: () => void;
@@ -2030,6 +2052,8 @@ function SessionRuntimePanel({
   onSetEffort: (e: string | null) => Promise<void>;
   onApplyNow?: () => Promise<void> | void;
 }) {
+  // The account gauges come from the usage store HERE (app/usageStore.ts).
+  const usage = useUsage(vpsId, asSessionProvider(kind), accountProfile);
   const [endpointOpen, setEndpointOpen] = useState(false);
   const [open, setOpen] = useState<'model' | 'effort' | null>(null);
   const [saving, setSaving] = useState(false);

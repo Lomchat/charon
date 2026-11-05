@@ -13,14 +13,19 @@ import { useSyncExternalStore } from 'react';
  * relabels yesterday's "Today" without a reload.
  */
 
+// ONE formatter: `toLocaleTimeString(…, options)` builds a new Intl formatter
+// per call, the costliest line of a bubble render (one per message).
+// `hourCycle: 'h23'`, not `hour12: false`: the latter prints 00:05 as 24:05.
+let timeFormat: Intl.DateTimeFormat | null = null;
+
 /** `todayStartMs` = local midnight of the reference day (`useTodayStart`). */
 export function formatMessageTime(tsSec: number, todayStartMs: number): string {
   const d = new Date(tsSec * 1000);
   const today = new Date(todayStartMs);
-  // `hourCycle: 'h23'`, not `hour12: false`: the latter prints 00:05 as 24:05.
-  const time = d.toLocaleTimeString('en-US', {
+  timeFormat ??= new Intl.DateTimeFormat('en-US', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
   });
+  const time = timeFormat.format(d);
   if (d.getFullYear() === today.getFullYear()
     && d.getMonth() === today.getMonth()
     && d.getDate() === today.getDate()) {

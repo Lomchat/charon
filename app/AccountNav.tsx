@@ -17,13 +17,14 @@
 // as a vertical menu under the header (`.acct-nav-menu`), closed by ×, Escape,
 // an outside press or opening a session. Desktop CSS ignores the fold and
 // hides the toggle.
-import { memo, useCallback, useEffect, useRef, useState, type WheelEvent } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
 import type { AccountUsage } from '@/lib/server/hub/types';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
-import type { AccountGroup } from '@/lib/accountGroups';
+import { accountGroupUsage, type AccountGroup } from '@/lib/accountGroups';
 import { providerText } from '@/lib/providerText';
 import AgentLogo from './AgentLogo';
 import { UsageRings } from './UsageMeter';
+import { readUsage, useUsageMap } from './usageStore';
 import {
   NavSections, navAttentionClass, navSections, useHoverPanels, useNavRows, usePulsePhase,
 } from './HeaderSessionNav';
@@ -141,15 +142,21 @@ export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRef
 
 type Props = {
   groups: readonly AccountGroup[];
-  /** Per group key (memoized by the caller: stable entries keep items memo-hit). */
-  usage: ReadonlyMap<string, AccountUsage | null>;
   onRefreshUsage: (g: AccountGroup) => void;
   vpsName: (vpsId: string) => string;
   selectedId: string | null;
   onOpen: (id: string) => void;
 };
 
-export default function AccountNav({ groups, usage, onRefreshUsage, vpsName, selectedId, onOpen }: Props) {
+export default function AccountNav({ groups, onRefreshUsage, vpsName, selectedId, onOpen }: Props) {
+  // The gauges come from the usage store HERE, not from the hub root: a
+  // reading re-renders this strip only (app/usageStore.ts). The stored
+  // readings keep their identity, so unchanged items stay memo-hit.
+  const usageMap = useUsageMap();
+  const usage = useMemo(
+    () => new Map(groups.map((g) => [g.key, accountGroupUsage(g, (m, provider) => readUsage(usageMap, m.vpsId, provider, m.profileId))] as const)),
+    [groups, usageMap],
+  );
   const stripRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // The phone's unfolded menu closes like one: Escape or a press outside the

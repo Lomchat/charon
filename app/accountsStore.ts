@@ -10,17 +10,30 @@ import { newestAccountUsage } from './accountUsageState';
 
 // Hub-owned provider accounts (§14.115), one store per tab: the list from
 // GET /api/accounts, refetched on `account_profiles_changed`, gauges kept live
-// from `account_usage` frames (the engine fans one per VPS — same reading).
+// from `account_usage` frames (one per hub-account reading, §14.115).
 
 type Snapshot = { loaded: boolean; data: AccountsResponse };
+/** The accounts WITHOUT their gauges: what the hub root reads, so a usage
+ *  reading never re-renders it (§14.115, app/usageStore.ts). */
+export type AccountList = Omit<AccountsResponse, 'usage'>;
+type ListSnapshot = { loaded: boolean; data: AccountList };
 const EMPTY: AccountsResponse = { accounts: [], usage: {}, migration: { waiting: 0, unmatched: 0 } };
 let snapshot: Snapshot = { loaded: false, data: EMPTY };
+let listSnapshot: ListSnapshot = { loaded: false, data: { accounts: EMPTY.accounts, migration: EMPTY.migration } };
+let listKey = '';
 const listeners = new Set<() => void>();
 let unsubscribe: (() => void) | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
 
 function publish(next: Snapshot): void {
   snapshot = next;
+  // A new list object only when the list itself changed (the 60s refetch
+  // returns equal contents most of the time).
+  const key = JSON.stringify([next.loaded, next.data.accounts, next.data.migration]);
+  if (key !== listKey) {
+    listKey = key;
+    listSnapshot = { loaded: next.loaded, data: { accounts: next.data.accounts, migration: next.data.migration } };
+  }
   for (const l of listeners) l();
 }
 
@@ -75,6 +88,11 @@ function subscribe(listener: () => void): () => void {
 
 export function useAccounts(): Snapshot {
   return useSyncExternalStore(subscribe, () => snapshot, () => snapshot);
+}
+
+/** The list only (no gauges): re-renders on an account change, never on a reading. */
+export function useAccountList(): ListSnapshot {
+  return useSyncExternalStore(subscribe, () => listSnapshot, () => listSnapshot);
 }
 
 export function useProviderAccounts(provider?: SessionProvider): ProviderAccount[] {

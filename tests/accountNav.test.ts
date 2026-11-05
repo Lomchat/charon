@@ -69,7 +69,7 @@ describe('AccountNavItem', () => {
 describe('AccountNav', () => {
   it('renders nothing without accounts', () => {
     expect(renderToStaticMarkup(createElement(AccountNav, {
-      groups: [], usage: new Map(), onRefreshUsage: () => {}, vpsName, selectedId: null, onOpen: () => {},
+      groups: [], onRefreshUsage: () => {}, vpsName, selectedId: null, onOpen: () => {},
     }))).toBe('');
   });
 });

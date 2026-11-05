@@ -2,14 +2,15 @@
 import { useState } from 'react';
 import { SESSION_PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
-import { loginDaysLeft, providerAccountLabel, LOGIN_EXPIRY_WARN_DAYS, type AccountsResponse } from '@/lib/providerAccounts';
+import { loginDaysLeft, providerAccountLabel, LOGIN_EXPIRY_WARN_DAYS } from '@/lib/providerAccounts';
+import type { AccountList } from './accountsStore';
 
 /** What the hub's accounts need from the user (§14.115), most urgent first:
  *  a signed-out account, a sign-in ending soon, an enabled backend with no
  *  account at all. */
 type Need = { key: string; text: string; action: string; provider: SessionProvider; accountId: string | null };
 
-function needs(data: AccountsResponse, enabled: Record<SessionProvider, boolean>): Need[] {
+function needs(data: AccountList, enabled: Record<SessionProvider, boolean>): Need[] {
   const out: Need[] = [];
   for (const a of data.accounts) {
     if (!enabled[a.provider]) continue;
@@ -28,12 +29,12 @@ function needs(data: AccountsResponse, enabled: Record<SessionProvider, boolean>
   return out;
 }
 
-export function accountsNeedAttention(data: AccountsResponse, enabled: Record<SessionProvider, boolean>): boolean {
+export function accountsNeedAttention(data: AccountList, enabled: Record<SessionProvider, boolean>): boolean {
   return needs(data, enabled).length > 0;
 }
 
 export default function AccountsBanner({ data, loaded, enabled, hasVps, onOpen, onLogin }: {
-  data: AccountsResponse; loaded: boolean; enabled: Record<SessionProvider, boolean>; hasVps: boolean;
+  data: AccountList; loaded: boolean; enabled: Record<SessionProvider, boolean>; hasVps: boolean;
   onOpen: () => void; onLogin: (provider: SessionProvider, accountId: string | null) => void;
 }) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
