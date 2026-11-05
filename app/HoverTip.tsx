@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { isCodeLike, tipFromAttrs, tipFromTitle, type HoverTipContent } from './tooltipText';
+import { isCodeLike, splitTipLabel, tipFromAttrs, tipFromTitle, type HoverTipContent } from './tooltipText';
 
 export type { HoverTipContent, TipAction } from './tooltipText';
 
@@ -121,7 +121,11 @@ function TipCard({ id, rect, content, side }: Shown & { id: string }) {
       )}
       {content.lines && (
         <div className="hover-tip-lines">
-          {content.lines.map((line, i) => <div key={i} className={isCodeLike(line) ? 'mono' : undefined}>{line}</div>)}
+          {content.lines.map((line, i) => {
+            const labeled = content.labeled ? splitTipLabel(line) : null;
+            if (labeled) return <div key={i}><b className="hover-tip-label">{labeled[0]}:</b> {labeled[1]}</div>;
+            return <div key={i} className={isCodeLike(line) ? 'mono' : undefined}>{line}</div>;
+          })}
         </div>
       )}
       {content.quote && <div className="hover-tip-quote">{content.quote}</div>}
@@ -230,7 +234,7 @@ export function TooltipLayer() {
       const data = (anchor as HTMLElement).dataset ?? {};
       const text = borrowed.get(anchor);
       const content = data.tipDetail !== undefined
-        ? tipFromAttrs(text, data.tipDetail, data.tipQuote, data.tipActions)
+        ? tipFromAttrs(text, data.tipDetail, data.tipQuote, data.tipActions, data.tipLabels !== undefined)
         : tipFromTitle(text);
       if (!content) return;
       const sided = anchor.closest<HTMLElement>('[data-tip-side]');

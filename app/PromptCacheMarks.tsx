@@ -157,22 +157,22 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; l
   const rel = ledgerRelativeCost(l);
   const warm = ledgerWarmCost(l);
   const x = (v: number | null | undefined) => (v == null ? '' : ` (${v}×)`);
+  // "Label: value" rows, in the line's order (bold labels: `tipAttrs({labels})`).
   const lines: (string | null)[] = [
     `Read from the cache: ${fmtTokens(l.read)} tokens${x(l.readX)}`,
     `Written to the cache: ${fmtTokens(l.write)} tokens${x(l.writeX)}`,
     `Uncached input: ${fmtTokens(l.uncached)} tokens`,
     `Output: ${fmtTokens(l.out)} tokens`,
-    l.requests != null
-      ? `${l.requests} request${l.requests === 1 ? '' : 's'} · ${l.hits ?? 0} hit${l.hits === 1 ? '' : 's'}`
-        + (misses ? ` · ${misses} miss${misses === 1 ? '' : 'es'} (re-wrote ${fmtTokens(l.missWrite ?? 0)})` : '')
-      : null,
     rel != null ? `Input cost: ${pctText(rel)} of full price` : null,
-    rel != null && warm != null && misses > 0 && warm > 0 ? `≈ ${(rel / warm).toFixed(1)}× the input cost of a warm turn` : null,
     l.durMs != null ? `Duration: ${fmtDuration(l.durMs)} since the agent got the message` : null,
+    l.requests != null ? `Requests: ${l.requests}` : null,
+    l.requests != null ? `Cache hits: ${l.hits ?? 0}` : null,
+    misses ? `Cache misses: ${misses} (re-wrote ${fmtTokens(l.missWrite ?? 0)} tokens)` : null,
+    rel != null && warm != null && misses > 0 && warm > 0 ? `Vs a warm turn: ≈ ${(rel / warm).toFixed(1)}× the input cost` : null,
     l.apiMs != null ? `Model API time: ${fmtDuration(l.apiMs)}` : null,
     l.apiMs != null && l.durMs != null && l.durMs > l.apiMs ? `Tools and waiting: ${fmtDuration(l.durMs - l.apiMs)}` : null,
     l.apiMs != null && l.apiMs > 0 && l.out > 0 ? `Output speed: ${Math.round(l.out / (l.apiMs / 1000))} tokens/s` : null,
-    l.promptTokens != null ? `Prompt at the end of the turn: ${fmtTokens(l.promptTokens)} tokens` : null,
+    l.promptTokens != null ? `Prompt at the end: ${fmtTokens(l.promptTokens)} tokens` : null,
     l.ttlS != null ? `Cache lifetime: ${fmtSpan(l.ttlS * 1000)}` : null,
     showsTurnCost(provider) && l.costUsd != null ? `Cost: $${l.costUsd < 0.1 ? l.costUsd.toFixed(3) : l.costUsd.toFixed(2)}` : null,
   ];
@@ -182,7 +182,7 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; l
 }
 
 /** The turn's ledger, on its own line under the bubble header: mini-bar, %,
- *  tokens read, output, relative cost, duration — then every other detail.
+ *  read, written, uncached, output, relative cost, duration — then the rest.
  *  Wraps on a narrow bubble; the tooltip repeats it with labels. */
 export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
   const input = ledgerInput(ledger);
@@ -197,11 +197,11 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   const items: (React.ReactNode | null)[] = [
     pct != null ? <span key="pct" className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span> : null,
     <span key="read">{fmtTokens(ledger.read)} read</span>,
+    <span key="write" className={cold ? 'turn-ledger-cold' : undefined}>{fmtTokens(ledger.write)} written</span>,
+    <span key="uncached">{fmtTokens(ledger.uncached)} uncached</span>,
     <span key="out">{fmtTokens(ledger.out)} out</span>,
     rel != null ? <span key="cost" className="turn-ledger-cost">cost {pctText(rel)}</span> : null,
     ledger.durMs != null ? <span key="dur">{fmtDuration(ledger.durMs)}</span> : null,
-    <span key="write" className={cold ? 'turn-ledger-cold' : undefined}>{fmtTokens(ledger.write)} written</span>,
-    <span key="uncached">{fmtTokens(ledger.uncached)} uncached</span>,
     ledger.requests != null
       ? <span key="hits">{ledger.hits ?? 0}/{ledger.requests} hit{ledger.requests === 1 ? '' : 's'}</span> : null,
     cold ? <span key="miss" className="turn-ledger-cold">{misses} miss · {fmtTokens(ledger.missWrite ?? 0)} rewritten</span> : null,
@@ -218,7 +218,7 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
   ];
   return (
-    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} data-tip-instant="" {...tipAttrs({ detail: tip.lines })}>
+    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} data-tip-instant="" {...tipAttrs({ detail: tip.lines, labels: true })}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />

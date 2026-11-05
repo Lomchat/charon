@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isCodeLike, tipAttrs, tipFromAttrs, tipFromTitle } from '@/app/tooltipText';
+import { isCodeLike, splitTipLabel, tipAttrs, tipFromAttrs, tipFromTitle } from '@/app/tooltipText';
 
 describe('tipFromTitle', () => {
   it('ignores an empty title', () => {
@@ -105,5 +105,18 @@ describe('object tooltips', () => {
   it('survives a malformed gesture list', () => {
     expect(tipFromAttrs('x', '', undefined, '{oops')?.actions).toBeUndefined();
     expect(tipFromAttrs('x', '', undefined, '[["Click"],["Drag", 3],["Click","open"]]')?.actions).toEqual([['Click', 'open']]);
+  });
+});
+
+describe('labelled rows', () => {
+  it('opts in through tipAttrs and splits "Label: value" rows only', () => {
+    const attrs = tipAttrs({ detail: ['Output: 900 tokens'], labels: true });
+    expect(attrs['data-tip-labels']).toBe('');
+    expect(tipAttrs({ detail: ['a'] })['data-tip-labels']).toBeUndefined();
+    expect(tipFromAttrs('Turn', attrs['data-tip-detail'], undefined, undefined, true)?.labeled).toBe(true);
+    expect(tipFromAttrs('Turn', attrs['data-tip-detail'], undefined, undefined)?.labeled).toBeUndefined();
+    expect(splitTipLabel('Input cost: 43% of full price')).toEqual(['Input cost', '43% of full price']);
+    expect(splitTipLabel('https://example.com/x')).toBeNull();
+    expect(splitTipLabel('no label here')).toBeNull();
   });
 });

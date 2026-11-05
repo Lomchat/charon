@@ -39,7 +39,15 @@ export type HoverTipContent = {
   keys?: string[];
   /** A muted last line: what clicking does right now. */
   hint?: string;
+  /** Rows read "Label: value": the label renders bold (`tipAttrs({labels})`). */
+  labeled?: boolean;
 };
+
+/** "Label: value" → its two parts; null when the row has no short label. */
+export function splitTipLabel(line: string): [label: string, value: string] | null {
+  const m = /^([^:]{1,40}):\s(.+)$/.exec(line);
+  return m ? [m[1], m[2]] : null;
+}
 
 /** A trailing "(Ctrl+S)", "(Esc)", "(Alt+↑)", "(Shift+F8)". */
 const SHORTCUT = /\s*\(((?:Ctrl|Cmd|⌘|Alt|Option|Shift|Esc|Enter|Tab|Space|Del|F\d{1,2}|[↑↓←→])(?:\s*\+\s*[^()+]+?)*)\)\s*$/;
@@ -102,14 +110,18 @@ export function tipFromTitle(raw: string | null | undefined): HoverTipContent | 
   };
 }
 
-type TipAttrs = { 'data-tip-detail'?: string; 'data-tip-quote'?: string; 'data-tip-actions'?: string };
+type TipAttrs = {
+  'data-tip-detail'?: string; 'data-tip-quote'?: string; 'data-tip-actions'?: string; 'data-tip-labels'?: string;
+};
 
 /** The attributes an object's element spreads beside its `title` (= its name).
  *  Falsy entries are skipped, so conditions read inline. */
-export function tipAttrs({ detail, quote, actions }: {
+export function tipAttrs({ detail, quote, actions, labels }: {
   detail?: (string | null | false | undefined)[];
   quote?: string | null | false;
   actions?: (TipAction | null | false | undefined)[];
+  /** Detail rows read "Label: value": render the labels bold. */
+  labels?: boolean;
 }): TipAttrs {
   const lines = (detail ?? []).filter((l): l is string => !!l && !!l.trim());
   const acts = (actions ?? []).filter((a): a is TipAction => !!a);
@@ -118,12 +130,14 @@ export function tipAttrs({ detail, quote, actions }: {
     'data-tip-detail': lines.join('\n'),
     'data-tip-quote': quote ? quote : undefined,
     'data-tip-actions': acts.length ? JSON.stringify(acts) : undefined,
+    'data-tip-labels': labels ? '' : undefined,
   };
 }
 
 /** The tooltip of an element carrying `tipAttrs`: its title stays a name. */
 export function tipFromAttrs(
   title: string | null | undefined, detail: string | undefined, quote: string | undefined, actions: string | undefined,
+  labeled = false,
 ): HoverTipContent | null {
   const name = (title ?? '').trim();
   const lines = (detail ?? '').split('\n').flatMap(facts);
@@ -142,5 +156,6 @@ export function tipFromAttrs(
     lines: lines.length ? lines : undefined,
     quote: q,
     actions: acts?.length ? acts : undefined,
+    ...(labeled && lines.length ? { labeled: true } : {}),
   };
 }

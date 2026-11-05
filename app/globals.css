@@ -145,6 +145,8 @@ a { color: inherit; }
   margin-top: 4px; color: var(--text-muted); font-size: 11.5px;
   max-height: 50vh; overflow: hidden;
 }
+/* "Label: value" rows (`tipAttrs({ labels })`): the label carries the weight. */
+.hover-tip-label { color: var(--text); font-weight: 600; }
 /* An excerpt of the object (a session's first message): quoted, clamped. */
 .hover-tip-quote {
   margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border-strong);
