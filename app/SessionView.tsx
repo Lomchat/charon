@@ -74,7 +74,7 @@ import { shouldShowChatRole, transcriptViewFor } from './chatVisibility';
 import { canCompactSession } from './sessionInsightState';
 import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
-import { useSessionCacheReading } from './PromptCacheMarks';
+import { ContextWindowContext, useSessionCacheReading } from './PromptCacheMarks';
 import { peerAssistantReplies, peerSessionTarget } from './peerMessageLinks';
 import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 
@@ -244,6 +244,8 @@ export default function SessionView({
   const compactAllowed = canCompactSession(status, sessionKind);
   // The prompt cache the last turn left, on the shared 30 s clock (§ prompt cache).
   const promptCache = useSessionCacheReading(selected);
+  // The model's window, for the turn ledgers' "context N%" (PromptCacheMarks).
+  const contextWindowTokens = Number(sessionContext?.max_tokens) > 0 ? Number(sessionContext?.max_tokens) : null;
 
   // The git refresh on a finished turn lives in gitStore's summary watcher:
   // it fires for EVERY session, not only the one on screen.
@@ -803,7 +805,7 @@ export default function SessionView({
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <>
+    <ContextWindowContext.Provider value={contextWindowTokens}>
       {sessionSettingsOpen && <SessionSettingsModal session={selected} onClose={closeSessionSettings} />}
       <main className="app-main">
         <div className={`app-bar${barExpanded ? ' is-expanded' : ''}`}>
@@ -1234,7 +1236,7 @@ export default function SessionView({
         provider={providerName(sessionKind)} busy={rewinding} error={rewindError}
         onConfirm={(messageId) => { void doRewind(messageId); }}
         onClose={() => { if (!rewinding) setRewindOpen(false); }} />}
-    </>
+    </ContextWindowContext.Provider>
   );
 }
 

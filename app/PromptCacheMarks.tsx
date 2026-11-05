@@ -4,7 +4,7 @@
 // the TTL, the sidebar card mark, the context-row marker and the bubble-header
 // ledger. Colour = `cacheHeat` (attention cooling to info, theme tokens only);
 // shape = the TTL quarter, so four levels read apart at 12 px.
-import React, { useId, useSyncExternalStore } from 'react';
+import React, { createContext, useContext, useId, useSyncExternalStore } from 'react';
 import {
   cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
   ledgerCachedPct, ledgerInput, ledgerRelativeCost, ledgerWarmCost,
@@ -145,13 +145,17 @@ export function CacheGaugeMark({ reading }: { reading: CacheReading | null }) {
 
 // ── Bubble header ledger ────────────────────────────────────────────────────
 
+/** The open session's context window in tokens (its context gauge's reading),
+ *  so a ledger can say how full the context was; null = unknown. */
+export const ContextWindowContext = createContext<number | null>(null);
+
 /** "8% of full price", "0.4%": a relative cost that reads at a glance. */
 function pctText(x: number): string {
   const p = x * 100;
   return p >= 10 ? `${Math.round(p)}%` : p >= 1 ? `${p.toFixed(1)}%` : `${p.toFixed(2)}%`;
 }
 
-function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; lines: string[] } {
+function ledgerTip(l: TurnLedger, provider: SessionProvider, ctxWindow: number | null): { title: string; lines: string[] } {
   const pct = ledgerCachedPct(l);
   const misses = l.misses ?? 0;
   const rel = ledgerRelativeCost(l);
@@ -172,7 +176,10 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; l
     l.apiMs != null ? `Model API time: ${fmtDuration(l.apiMs)}` : null,
     l.apiMs != null && l.durMs != null && l.durMs > l.apiMs ? `Tools and waiting: ${fmtDuration(l.durMs - l.apiMs)}` : null,
     l.apiMs != null && l.apiMs > 0 && l.out > 0 ? `Output speed: ${Math.round(l.out / (l.apiMs / 1000))} tokens/s` : null,
-    l.promptTokens != null ? `Prompt at the end: ${fmtTokens(l.promptTokens)} tokens` : null,
+    l.promptTokens != null
+      ? ctxWindow ? `Context at the end: ${fmtTokens(l.promptTokens)} of ${fmtTokens(ctxWindow)} tokens (${Math.round((l.promptTokens / ctxWindow) * 100)}%)`
+        : `Context at the end: ${fmtTokens(l.promptTokens)} tokens`
+      : null,
     l.ttlS != null ? `Cache lifetime: ${fmtSpan(l.ttlS * 1000)}` : null,
     showsTurnCost(provider) && l.costUsd != null ? `Cost: $${l.costUsd < 0.1 ? l.costUsd.toFixed(3) : l.costUsd.toFixed(2)}` : null,
   ];
@@ -185,6 +192,7 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; l
  *  read, written, uncached, output, relative cost, duration — then the rest.
  *  Wraps on a narrow bubble; the tooltip repeats it with labels. */
 export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
+  const ctxWindow = useContext(ContextWindowContext);
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
   const pct = ledgerCachedPct(ledger);
@@ -192,7 +200,7 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   const warm = ledgerWarmCost(ledger);
   const misses = ledger.misses ?? 0;
   const cold = misses > 0;
-  const tip = ledgerTip(ledger, provider);
+  const tip = ledgerTip(ledger, provider, ctxWindow);
   const w = (n: number) => `${((n / input) * 100).toFixed(1)}%`;
   const items: (React.ReactNode | null)[] = [
     pct != null ? <span key="pct" className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span> : null,
@@ -212,7 +220,9 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="tools">tools {fmtDuration(ledger.durMs - ledger.apiMs)}</span> : null,
     ledger.apiMs != null && ledger.apiMs > 0 && ledger.out > 0
       ? <span key="speed">{Math.round(ledger.out / (ledger.apiMs / 1000))} tok/s</span> : null,
-    ledger.promptTokens != null ? <span key="prompt">prompt {fmtTokens(ledger.promptTokens)}</span> : null,
+    ledger.promptTokens != null
+      ? <span key="context">context {ctxWindow ? `${Math.round((ledger.promptTokens / ctxWindow) * 100)}% (${fmtTokens(ledger.promptTokens)})` : fmtTokens(ledger.promptTokens)}</span>
+      : null,
     ledger.ttlS != null ? <span key="ttl">TTL {fmtSpan(ledger.ttlS * 1000)}</span> : null,
     showsTurnCost(provider) && ledger.costUsd != null
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
