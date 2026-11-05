@@ -312,7 +312,7 @@ export function fmtClock(ms: number): string {
 export function cacheTipLines(r: CacheReading): string[] {
   const ax = r.approx ? '≈' : '';
   const size = `${fmtTokens(r.promptTokens)} tokens of context`;
-  if (r.phase === 'live') return ['Prompt cache live — the running turn keeps it warm', size];
+  if (r.phase === 'live') return ['Prompt cache live', size];
   if (r.phase === 'warm') {
     return [
       `Prompt cache warm · ${ax}${fmtSpan(r.remainingMs)} left`,

@@ -172,6 +172,8 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   // The popover (proposal 2): open on hover, at once — the line's own anchor.
   // `x` = the pointer: the card opens under it and follows it along the line.
   const [anchor, setAnchor] = useState<{ rect: DOMRect; x: number } | null>(null);
+  // The last x the card was placed at, read synchronously by the handler.
+  const placedX = useRef<number | null>(null);
   const popId = `ledger${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
@@ -209,18 +211,26 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   ];
   return (
     <div className={`turn-ledger${cold ? ' cold' : ''}`}
-      onMouseEnter={(e) => setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX })}
-      onMouseMove={(e) => {
-        const x = e.clientX;
-        setAnchor((a) => (a && Math.abs(a.x - x) < 6 ? a : { rect: e.currentTarget.getBoundingClientRect(), x }));
+      onMouseEnter={(e) => {
+        placedX.current = e.clientX;
+        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX });
       }}
-      onMouseLeave={() => setAnchor(null)} aria-describedby={anchor ? popId : undefined}>
+      onMouseMove={(e) => {
+        // Everything the event gives is read HERE: React nulls `currentTarget`
+        // once the handler returns, and a queued state updater runs later.
+        if (placedX.current != null && Math.abs(placedX.current - e.clientX) < 6) return;
+        placedX.current = e.clientX;
+        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX });
+      }}
+      onMouseLeave={() => { placedX.current = null; setAnchor(null); }}
+      aria-describedby={anchor ? popId : undefined}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />
       </span>
       {items.filter(Boolean)}
-      {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor.rect} pointerX={anchor.x} onGone={() => setAnchor(null)} />}
+      {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor.rect} pointerX={anchor.x}
+        onGone={() => { placedX.current = null; setAnchor(null); }} />}
     </div>
   );
 }
