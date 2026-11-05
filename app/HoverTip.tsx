@@ -1,7 +1,17 @@
 'use client';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { isCodeLike, splitTipLabel, tipFromAttrs, tipFromTitle, type HoverTipContent } from './tooltipText';
+import { CacheFlame, IconSnow } from './PromptCacheMarks';
+
+/** Icons a tooltip section's headline may carry, by name (JSON-safe). */
+const TIP_ICONS: Record<string, () => ReactNode> = {
+  'flame-1': () => <CacheFlame level={1} />,
+  'flame-2': () => <CacheFlame level={2} />,
+  'flame-3': () => <CacheFlame level={3} />,
+  'flame-4': () => <CacheFlame level={4} />,
+  snow: () => <IconSnow />,
+};
 
 export type { HoverTipContent, TipAction } from './tooltipText';
 
@@ -129,6 +139,14 @@ function TipCard({ id, rect, content, side }: Shown & { id: string }) {
         </div>
       )}
       {content.quote && <div className="hover-tip-quote">{content.quote}</div>}
+      {content.section && (
+        <div className="hover-tip-section">
+          <div className="hover-tip-section-head" style={content.section.color ? { color: content.section.color } : undefined}>
+            {content.section.icon && TIP_ICONS[content.section.icon]?.()}{content.section.lines[0]}
+          </div>
+          {content.section.lines.slice(1).map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
       {content.hint && <div className="hover-tip-hint">{content.hint}</div>}
       {content.actions && (
         <div className="hover-tip-actions">
@@ -234,7 +252,7 @@ export function TooltipLayer() {
       const data = (anchor as HTMLElement).dataset ?? {};
       const text = borrowed.get(anchor);
       const content = data.tipDetail !== undefined
-        ? tipFromAttrs(text, data.tipDetail, data.tipQuote, data.tipActions, data.tipLabels !== undefined)
+        ? tipFromAttrs(text, data.tipDetail, data.tipQuote, data.tipActions, data.tipLabels !== undefined, data.tipSection)
         : tipFromTitle(text);
       if (!content) return;
       const sided = anchor.closest<HTMLElement>('[data-tip-side]');

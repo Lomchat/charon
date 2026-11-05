@@ -41,7 +41,26 @@ export type HoverTipContent = {
   hint?: string;
   /** Rows read "Label: value": the label renders bold (`tipAttrs({labels})`). */
   labeled?: boolean;
+  /** A status block under the excerpt: its first row is a coloured headline
+   *  with an icon (HoverTip § TIP_ICONS), the next ones muted facts. */
+  section?: TipSection;
 };
+
+export type TipSection = { lines: string[]; color?: string; icon?: string };
+
+function parseTipSection(raw: string | undefined): TipSection | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw) as Partial<TipSection>;
+    const lines = Array.isArray(v.lines) ? v.lines.filter((l): l is string => typeof l === 'string' && !!l.trim()) : [];
+    if (!lines.length) return undefined;
+    return {
+      lines,
+      ...(typeof v.color === 'string' ? { color: v.color } : {}),
+      ...(typeof v.icon === 'string' ? { icon: v.icon } : {}),
+    };
+  } catch { return undefined; }
+}
 
 /** "Label: value" → its two parts; null when the row has no short label. */
 export function splitTipLabel(line: string): [label: string, value: string] | null {
@@ -112,16 +131,19 @@ export function tipFromTitle(raw: string | null | undefined): HoverTipContent | 
 
 type TipAttrs = {
   'data-tip-detail'?: string; 'data-tip-quote'?: string; 'data-tip-actions'?: string; 'data-tip-labels'?: string;
+  'data-tip-section'?: string;
 };
 
 /** The attributes an object's element spreads beside its `title` (= its name).
  *  Falsy entries are skipped, so conditions read inline. */
-export function tipAttrs({ detail, quote, actions, labels }: {
+export function tipAttrs({ detail, quote, actions, labels, section }: {
   detail?: (string | null | false | undefined)[];
   quote?: string | null | false;
   actions?: (TipAction | null | false | undefined)[];
   /** Detail rows read "Label: value": render the labels bold. */
   labels?: boolean;
+  /** A status block under the excerpt (coloured headline + facts). */
+  section?: TipSection | null | false;
 }): TipAttrs {
   const lines = (detail ?? []).filter((l): l is string => !!l && !!l.trim());
   const acts = (actions ?? []).filter((a): a is TipAction => !!a);
@@ -131,6 +153,7 @@ export function tipAttrs({ detail, quote, actions, labels }: {
     'data-tip-quote': quote ? quote : undefined,
     'data-tip-actions': acts.length ? JSON.stringify(acts) : undefined,
     'data-tip-labels': labels ? '' : undefined,
+    'data-tip-section': section && section.lines.length ? JSON.stringify(section) : undefined,
   };
 }
 
@@ -138,6 +161,7 @@ export function tipAttrs({ detail, quote, actions, labels }: {
 export function tipFromAttrs(
   title: string | null | undefined, detail: string | undefined, quote: string | undefined, actions: string | undefined,
   labeled = false,
+  sectionRaw?: string,
 ): HoverTipContent | null {
   const name = (title ?? '').trim();
   const lines = (detail ?? '').split('\n').flatMap(facts);
@@ -150,12 +174,14 @@ export function tipFromAttrs(
     }
   } catch { /* a malformed list shows no actions */ }
   const q = quote?.trim() || undefined;
-  if (!name && !lines.length && !q) return null;
+  const section = parseTipSection(sectionRaw);
+  if (!name && !lines.length && !q && !section) return null;
   return {
     title: name || undefined,
     lines: lines.length ? lines : undefined,
     quote: q,
     actions: acts?.length ? acts : undefined,
     ...(labeled && lines.length ? { labeled: true } : {}),
+    ...(section ? { section } : {}),
   };
 }

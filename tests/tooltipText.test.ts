@@ -120,3 +120,15 @@ describe('labelled rows', () => {
     expect(splitTipLabel('no label here')).toBeNull();
   });
 });
+
+describe('status section', () => {
+  it('rides as JSON and comes back under the excerpt, refusing garbage', () => {
+    const attrs = tipAttrs({ section: { lines: ['Prompt cache cold since 09:37', '640k tokens'], color: 'var(--info)', icon: 'snow' } });
+    const tip = tipFromAttrs('s', attrs['data-tip-detail'], 'first message', undefined, false, attrs['data-tip-section']);
+    expect(tip?.section).toEqual({ lines: ['Prompt cache cold since 09:37', '640k tokens'], color: 'var(--info)', icon: 'snow' });
+    expect(tipAttrs({ section: null })['data-tip-section']).toBeUndefined();
+    expect(tipFromAttrs('s', '', undefined, undefined, false, '{oops')?.section).toBeUndefined();
+    expect(tipFromAttrs('s', '', undefined, undefined, false, '{"lines":[]}')?.section).toBeUndefined();
+  });
+});
+

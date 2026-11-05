@@ -147,6 +147,15 @@ a { color: inherit; }
 }
 /* "Label: value" rows (`tipAttrs({ labels })`): the label carries the weight. */
 .hover-tip-label { color: var(--text); font-weight: 600; }
+/* A status block under the excerpt (`tipAttrs({ section })`): a coloured
+   headline with its icon, then muted facts. */
+.hover-tip-section {
+  display: flex; flex-direction: column; gap: 1px;
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border);
+  color: var(--text-muted); font-size: 11.5px;
+}
+.hover-tip-section-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
+.hover-tip-section-head .cache-icon { width: 12px; height: 12px; }
 /* An excerpt of the object (a session's first message): quoted, clamped. */
 .hover-tip-quote {
   margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border-strong);

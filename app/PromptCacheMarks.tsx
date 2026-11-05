@@ -11,7 +11,7 @@ import {
   type CacheReading, type PromptCacheState, type TurnLedger,
 } from '@/lib/promptCache';
 import { showsTurnCost, type SessionProvider } from '@/lib/sessionCapabilities';
-import { tipAttrs } from './tooltipText';
+import { tipAttrs, type TipSection } from './tooltipText';
 
 // ── Clock ───────────────────────────────────────────────────────────────────
 // One shared 30 s interval, alive only while a warm (or just expired) cache is
@@ -118,6 +118,16 @@ export function SessionCacheMark({ reading }: { reading: CacheReading | null }) 
   );
 }
 
+/** The cache block of a tooltip: the headline in the reading's colour with
+ *  its symbol, then the facts (cacheTipLines). */
+export function cacheTipSection(reading: CacheReading): TipSection {
+  return {
+    lines: cacheTipLines(reading),
+    color: cacheHeat(reading),
+    icon: reading.phase === 'cold' || reading.phase === 'small' ? 'snow' : `flame-${reading.level}`,
+  };
+}
+
 /** The time on the card's details line: "48m left", "193k to re-read". */
 export function sessionCacheFootText(reading: CacheReading | null): string | null {
   if (!reading || reading.phase === 'small') return null;
@@ -131,13 +141,12 @@ export function sessionCacheFootText(reading: CacheReading | null): string | nul
 /** After the token count: the symbol + time left, "live" or "cold". */
 export function CacheGaugeMark({ reading }: { reading: CacheReading | null }) {
   if (!reading || reading.phase === 'small') return null;
-  const lines = cacheTipLines(reading);
   const text = reading.phase === 'live' ? 'live'
     : reading.phase === 'cold' ? 'cold'
       : `${reading.approx ? '≈' : ''}${fmtSpanShort(reading.remainingMs)}`;
   return (
     <span className={`bar-context-cache cs-cache-${reading.phase}`} style={{ color: cacheHeat(reading) }}
-      title={lines[0]} data-tip-instant="" {...tipAttrs({ detail: lines.slice(1) })}>
+      title="Prompt cache" data-tip-instant="" {...tipAttrs({ section: cacheTipSection(reading) })}>
       <CacheSymbol reading={reading} />{text}
     </span>
   );

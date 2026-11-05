@@ -33,8 +33,8 @@ import { focusAdmits, focusEmptyText, sessionFocusFacts, shellFocusFacts } from 
 import PanelResizer from './PanelResizer';
 import { usePanelLayout } from './panelLayoutStore';
 import { tipAttrs } from './tooltipText';
-import { CacheFlame, SessionCacheMark, cacheClockActive, sessionCacheFootText, useCacheTick, useSessionCacheReading } from './PromptCacheMarks';
-import { cacheHeat, cacheTipLines } from '@/lib/promptCache';
+import { CacheFlame, SessionCacheMark, cacheClockActive, cacheTipSection, sessionCacheFootText, useCacheTick, useSessionCacheReading } from './PromptCacheMarks';
+import { cacheHeat } from '@/lib/promptCache';
 import { isPanelClosed, sideTier } from './panelLayout';
 import { isPausedSession } from './pausedCleanup';
 
@@ -98,6 +98,7 @@ function useCollapsedGroups(storageKey: string) {
   return [collapsed, update] as const;
 }
 
+let ageDateFormat: Intl.DateTimeFormat | null = null;
 function formatAge(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return '';
   const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
@@ -105,8 +106,9 @@ function formatAge(unixSeconds: number | null | undefined): string {
   if (diff < 3600) return Math.floor(diff / 60) + 'min';
   if (diff < 86400) return Math.floor(diff / 3600) + 'h';
   if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'd';
-  const d = new Date(unixSeconds * 1000);
-  return d.toLocaleDateString('en-US', { day: '2-digit', month: 'short' });
+  // ONE formatter for every card (toLocaleDateString builds one per call).
+  ageDateFormat ??= new Intl.DateTimeFormat('en-US', { day: '2-digit', month: 'short' });
+  return ageDateFormat.format(new Date(unixSeconds * 1000));
 }
 
 /** `formatAge` as a phrase: "created 3h ago", "created just now", "created Oct 02". */
@@ -1560,9 +1562,10 @@ function SessionRow({
       s.cwd,
       age ? agePhrase('created', age) : null,
       draft ? 'Unsent draft' : null,
-      ...(cache && cache.phase !== 'small' && !deleting ? cacheTipLines(cache) : []),
     ],
     quote: preview && preview !== headline ? preview : null,
+    // The prompt cache, under the excerpt: coloured headline + facts.
+    section: cache && cache.phase !== 'small' && !deleting ? cacheTipSection(cache) : null,
     actions: deleting ? [] : [
       ['Click', 'open'],
       ['Double-click', 'keep the tab open'],
