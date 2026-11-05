@@ -1613,7 +1613,6 @@ const SessionRow = memo(function SessionRow({
     section: cache && cache.phase !== 'small' && !deleting ? cacheTipSection(cache) : null,
     actions: deleting ? [] : [
       ['Click', 'open'],
-      ['Double-click', 'keep the tab open'],
       !!dnd && ['Drag', 'reorder'],
       ['Right-click', 'actions'],
       ['Ctrl/Shift-click', 'select'],
@@ -1765,7 +1764,7 @@ const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, o
       title={headline}
       {...tipAttrs({
         detail: [sh.exited ? 'SSH shell · ended' : 'SSH shell', sh.cwd ?? '~', age ? agePhrase('started', age) : null],
-        actions: [['Click', 'open'], ['Double-click', 'keep the tab open'], ['Right-click', 'actions']],
+        actions: [['Click', 'open'], ['Right-click', 'actions']],
       })}
       style={sh.color ? { ['--c' as any]: colorToCss(sh.color) } : undefined}
     >
