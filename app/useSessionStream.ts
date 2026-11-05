@@ -113,7 +113,7 @@ export type SessionStreamState = {
   effortPendingApply: boolean;
   effectiveModel: string | null;
   tokenUsage: SessionTokenUsage | null;
-  liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null } | null;
+  liveUsage: { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null; tools?: number } | null;
   responseSpeed: ResponseSpeedSnapshot | null;
   toolCalls: ToolCallEntry[];
   /** `tool_use` rows of the whole session (window GET), null before it / older hubs. */

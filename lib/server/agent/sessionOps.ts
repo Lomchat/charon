@@ -1904,9 +1904,11 @@ export class SessionStream {
             if (fresh) emitGlobalFileActivity(fresh);
           }
         }
+        if (!this.isReplaying) this.turnTools = this._turnToolCount();
         this._broadcast(withRowId({
           type: 'tool_use', id: ev.id, name: ev.name,
           input: compactToolInputForWire(ev.input),
+          ...(this.turnTools != null ? { turnTools: this.turnTools } : {}),
         } as WorkerEvent, toolUseRow));
         // Only a LOADED Set needs the id; a later load reads the DB itself.
         if (this.isReplaying) this.legacyReplay?.toolUseIds.add(String(ev.id));
@@ -2352,6 +2354,7 @@ export class SessionStream {
           // Whole-tree totals (agent >= 0.36.0): the flat fields above are the
           // main thread only, so a Workflow session's real spend was invisible.
           tree: ev.tree,
+          ...(!this.isReplaying ? { turn_tools: this.turnTools ??= this._turnToolCount() } : {}),
         });
         break;
       case 'compaction': {
@@ -4398,6 +4401,7 @@ export class SessionStream {
       }
       const ledger = ledgerFromUsage(kind, ev, {
         model: row.effectiveModel ?? row.model ?? null, ttlS: state?.ttlS ?? previous?.ttlS ?? null,
+        tools: this._turnToolCount(),
       });
       const late = this.awaitingTurnLedger;
       this.awaitingTurnLedger = null;
@@ -4420,6 +4424,7 @@ export class SessionStream {
     const ledger = this.pendingTurnLedger;
     this.pendingTurnLedger = null;
     this.awaitingTurnLedger = null;
+    this.turnTools = null;
     if (finalAssistantId == null) return null;
     if (!ledger) {
       this.awaitingTurnLedger = { rowId: finalAssistantId, at: Date.now() };
@@ -4432,6 +4437,30 @@ export class SessionStream {
     } catch (e: any) {
       this._log('warn', 'sdk_error', { msg: 'turn ledger write failed', err: e?.message ?? String(e) });
       return null;
+    }
+  }
+
+  /** Tool calls of the turn in progress: tool_use rows after the last user
+   *  message or the previous turn's final answer (an indexed walk back over
+   *  one turn). Codex hook/auto-review rows are not the model's calls. */
+  private _turnToolCount(): number {
+    try {
+      const start = db.select({ id: sessionMessages.id }).from(sessionMessages)
+        .where(and(
+          eq(sessionMessages.sessionId, this.id),
+          or(eq(sessionMessages.role, 'user'), eq(sessionMessages.assistantFinal, 1)),
+        ))
+        .orderBy(desc(sessionMessages.id)).limit(1).get()?.id ?? 0;
+      const row = db.select({ n: sql<number>`count(*)` }).from(sessionMessages)
+        .where(and(
+          eq(sessionMessages.sessionId, this.id),
+          sql`${sessionMessages.id} > ${start}`,
+          eq(sessionMessages.role, 'tool_use'),
+          sql`coalesce(json_extract(${sessionMessages.content}, '$.name'), '') NOT IN ('codex_hook', 'auto_review')`,
+        )).get();
+      return Number(row?.n ?? 0);
+    } catch {
+      return 0;
     }
   }
 

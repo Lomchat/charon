@@ -28,7 +28,8 @@ export type BridgeEvent =
   | { type: 'structured_output'; value: unknown; truncated?: boolean; rowId?: number }
   | { type: 'thinking'; text: string; replay?: boolean; rowId?: number }
   | { type: 'generation_progress'; characters: number }
-  | { type: 'tool_use'; id: string; name: string; input: any; rowId?: number }
+  // `turnTools` = tool calls of the current turn so far (thinking bar).
+  | { type: 'tool_use'; id: string; name: string; input: any; rowId?: number; turnTools?: number }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean; rowId?: number }
   | { type: 'tool_progress'; tool_use_id: string; delta: string }
   | { type: 'edit_progress'; tool_use_id: string; file_path: string; diff: string; size: number; truncated: boolean }
@@ -100,6 +101,8 @@ export type BridgeEvent =
       cache_read_tokens?: number; cache_write_tokens?: number;
       final?: boolean; duration_ms?: number; cost_usd?: number | null;
       sdk_throughput?: { output_tokens: number; elapsed_ms: number };
+      // Tool calls of the current turn so far (hub-counted, thinking bar).
+      turn_tools?: number;
       tree?: {
         input_tokens: number; output_tokens: number;
         cache_read_tokens: number; cache_write_tokens: number;

@@ -178,6 +178,7 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider, ctxWindow: number |
     `Output: ${fmtTokens(l.out)} tokens`,
     rel != null ? `Input cost: ${pctText(rel)} of full price` : null,
     l.durMs != null ? `Duration: ${fmtDuration(l.durMs)} since the agent got the message` : null,
+    l.tools != null ? `Tools: ${l.tools} call${l.tools === 1 ? '' : 's'}` : null,
     l.requests != null ? `Requests: ${l.requests}` : null,
     l.requests != null ? `Cache hits: ${l.hits ?? 0}` : null,
     misses ? `Cache misses: ${misses} (re-wrote ${fmtTokens(l.missWrite ?? 0)} tokens)` : null,
@@ -219,6 +220,7 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
     <span key="out">{fmtTokens(ledger.out)} out</span>,
     rel != null ? <span key="cost" className="turn-ledger-cost">cost {pctText(rel)}</span> : null,
     ledger.durMs != null ? <span key="dur">{fmtDuration(ledger.durMs)}</span> : null,
+    ledger.tools != null ? <span key="tools-n">{ledger.tools} tool{ledger.tools === 1 ? '' : 's'}</span> : null,
     ledger.requests != null
       ? <span key="hits">{ledger.hits ?? 0}/{ledger.requests} hit{ledger.requests === 1 ? '' : 's'}</span> : null,
     cold ? <span key="miss" className="turn-ledger-cold">{misses} miss · {fmtTokens(ledger.missWrite ?? 0)} rewritten</span> : null,

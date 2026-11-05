@@ -424,7 +424,11 @@ export type TranscriptMeta = {
   effectiveModel: string | null;
 };
 
-export type LiveUsage = { output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null };
+export type LiveUsage = {
+  output: number; input?: number; final?: boolean; durationMs?: number; costUsd?: number | null;
+  /** Tool calls of the current turn so far (hub-counted). */
+  tools?: number;
+};
 
 export type TranscriptState = {
   sessionId: string;
@@ -667,6 +671,8 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
         st = { ...st, bgLaunches };
       }
       if (!technical) st = { ...st, messages: reduceRowIdRename(st.messages, ev, nowMs) };
+      // The turn's running tool count (thinking bar), whatever the view.
+      if (typeof ev.turnTools === 'number') st = { ...st, liveUsage: { ...(st.liveUsage ?? { output: 0 }), tools: ev.turnTools } };
       if (!st.toolCallIdsSince.has(ev.id)) st = { ...st, toolCallIdsSince: new Set(st.toolCallIdsSince).add(ev.id) };
       if (!st.toolCalls.some((c) => c.id === ev.id)) {
         st = { ...st, toolCalls: capToolCalls([...st.toolCalls, { id: ev.id, name: ev.name, input: ev.input, startedAt: nowS }], ctx.view) };
@@ -960,7 +966,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
     case 'usage':
       if (ev.final) st = { ...st, messages: closeThinkingMessage(st.messages) };
       st = { ...st, liveUsage: { output: ev.output_tokens, input: ev.input_tokens, final: ev.final,
-        durationMs: ev.duration_ms, costUsd: ev.cost_usd } };
+        durationMs: ev.duration_ms, costUsd: ev.cost_usd, tools: ev.turn_tools ?? st.liveUsage?.tools } };
       break;
     case 'transcript_reset':
       effects.push({ kind: 'window', reason: 'reset' });

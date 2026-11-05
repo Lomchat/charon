@@ -138,6 +138,8 @@ export type TurnLedger = {
    *  the model API (Claude only). */
   durMs?: number;
   apiMs?: number;
+  /** Tool calls the turn made (hub-counted from its rows). */
+  tools?: number;
   ttlS?: number | null;
   /** Price multipliers vs plain input used for the relative cost. */
   readX?: number | null;
@@ -160,7 +162,7 @@ export function parseTurnLedger(raw: unknown): TurnLedger | null {
   return {
     read, write, uncached, out,
     ...opt('requests'), ...opt('hits'), ...opt('misses'), ...opt('missWrite'),
-    ...opt('durMs'), ...opt('apiMs'), ...opt('ttlS'), ...opt('readX'), ...opt('writeX'),
+    ...opt('durMs'), ...opt('apiMs'), ...opt('tools'), ...opt('ttlS'), ...opt('readX'), ...opt('writeX'),
     ...opt('costUsd'), ...opt('promptTokens'),
   } as TurnLedger;
 }
@@ -211,7 +213,7 @@ type FinalUsage = {
  *  usable cache counters (registry `promptCache: null`, or an old agent whose
  *  flat fields do not follow the uncached-input convention). */
 export function ledgerFromUsage(
-  provider: SessionProvider, ev: FinalUsage, opts: { model: string | null; ttlS: number | null },
+  provider: SessionProvider, ev: FinalUsage, opts: { model: string | null; ttlS: number | null; tools?: number | null },
 ): TurnLedger | null {
   const pc = PROVIDERS[provider].promptCache;
   if (!pc) return null;
@@ -240,6 +242,7 @@ export function ledgerFromUsage(
     ...ledger,
     ...(finite(ev.duration_ms) ? { durMs: n(ev.duration_ms) } : {}),
     ...(finite(ev.duration_api_ms) ? { apiMs: n(ev.duration_api_ms) } : {}),
+    ...(finite(opts.tools) != null ? { tools: opts.tools as number } : {}),
     ttlS: ttlS ?? null,
     readX: x.read, writeX: x.write,
     ...(finite(ev.cost_usd) != null ? { costUsd: ev.cost_usd as number } : {}),

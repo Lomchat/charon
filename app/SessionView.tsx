@@ -1097,7 +1097,7 @@ export default function SessionView({
             label={providerText.thinking(sessionKind)}
             onInterrupt={interrupt}
             currentTool={showTools ? currentTool : null}
-            stepCount={showTools ? stepCount : 0}
+            toolCount={liveUsage?.tools ?? (showTools ? stepCount : 0)}
             startedAt={turnStartedAt}
             tokens={showTools ? (liveUsage?.output ?? null) : null}
             responseSpeed={responseSpeed}
@@ -1928,10 +1928,11 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 function ThinkingBar({
-  currentTool, stepCount, startedAt, tokens, responseSpeed, onInterrupt, label,
+  currentTool, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label,
 }: {
   currentTool: ToolCallEntry | null;
-  stepCount: number;
+  /** Tool calls of this turn so far (hub-counted; tools shown or not). */
+  toolCount: number;
   startedAt: number | null;
   tokens: number | null;
   responseSpeed: ResponseSpeedSnapshot | null;
@@ -1972,7 +1973,7 @@ function ThinkingBar({
             ? `${responseSpeed.tokensPerSecond.toFixed(1)} tok/s avg${(responseSpeed.sdkAgeSeconds ?? 0) >= 3 ? ` (${fmtElapsed(responseSpeed.sdkAgeSeconds!)} ago)` : ''}`
             : 'tok/s pending'}
         </span>
-        {stepCount > 0 && <span className="t-step"><span className="sep">·</span> step {stepCount}</span>}
+        {toolCount > 0 && <span className="t-step"><span className="sep">·</span> ⚒ {toolCount} tool{toolCount === 1 ? '' : 's'}</span>}
         {elapsed != null && <><span className="sep">·</span> {fmtElapsed(elapsed)}</>}
         {tokens != null && tokens > 0 && <span className="t-count"><span className="sep">·</span> ↑ {fmtTokens(tokens)} tokens</span>}
       </span>

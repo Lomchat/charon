@@ -64,8 +64,13 @@ describe('ledgerFromUsage', () => {
     expect(rel / ledgerWarmCost(l)!).toBeGreaterThan(4.5);
   });
 
+  it('carries the hub-counted tool calls', () => {
+    expect(ledgerFromUsage('claude', usage, { model: null, ttlS: null, tools: 12 })?.tools).toBe(12);
+    expect(ledgerFromUsage('claude', usage, { model: null, ttlS: null })?.tools).toBeUndefined();
+  });
+
   it('round-trips through JSON and refuses garbage', () => {
-    const l = ledgerFromUsage('claude', usage, { model: 'claude-opus-5-5', ttlS: null })!;
+    const l = ledgerFromUsage('claude', usage, { model: 'claude-opus-5-5', ttlS: null, tools: 3 })!;
     expect(parseTurnLedger(JSON.stringify(l))).toEqual(l);
     expect(parseTurnLedger('{"read":1}')).toBeNull();
     expect(parseTurnLedger('nope')).toBeNull();
