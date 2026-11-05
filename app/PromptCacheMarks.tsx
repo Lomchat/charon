@@ -4,7 +4,8 @@
 // the TTL, the sidebar card mark, the context-row marker and the bubble-header
 // ledger. Colour = `cacheHeat` (attention cooling to info, theme tokens only);
 // shape = the TTL quarter, so four levels read apart at 12 px.
-import React, { createContext, useContext, useId, useSyncExternalStore } from 'react';
+import React, { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import {
   cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
   ledgerCachedPct, ledgerInput, ledgerRelativeCost, ledgerWarmCost,
@@ -164,45 +165,14 @@ function pctText(x: number): string {
   return p >= 10 ? `${Math.round(p)}%` : p >= 1 ? `${p.toFixed(1)}%` : `${p.toFixed(2)}%`;
 }
 
-function ledgerTip(l: TurnLedger, provider: SessionProvider, ctxWindow: number | null): { title: string; lines: string[] } {
-  const pct = ledgerCachedPct(l);
-  const misses = l.misses ?? 0;
-  const rel = ledgerRelativeCost(l);
-  const warm = ledgerWarmCost(l);
-  const x = (v: number | null | undefined) => (v == null ? '' : ` (${v}×)`);
-  // "Label: value" rows, in the line's order (bold labels: `tipAttrs({labels})`).
-  const lines: (string | null)[] = [
-    `Read from the cache: ${fmtTokens(l.read)} tokens${x(l.readX)}`,
-    `Written to the cache: ${fmtTokens(l.write)} tokens${x(l.writeX)}`,
-    `Uncached input: ${fmtTokens(l.uncached)} tokens`,
-    `Output: ${fmtTokens(l.out)} tokens`,
-    rel != null ? `Input cost: ${pctText(rel)} of full price` : null,
-    l.durMs != null ? `Duration: ${fmtDuration(l.durMs)} since the agent got the message` : null,
-    l.tools != null ? `Tools: ${l.tools} call${l.tools === 1 ? '' : 's'}` : null,
-    l.requests != null ? `Requests: ${l.requests}` : null,
-    l.requests != null ? `Cache hits: ${l.hits ?? 0}` : null,
-    misses ? `Cache misses: ${misses} (re-wrote ${fmtTokens(l.missWrite ?? 0)} tokens)` : null,
-    rel != null && warm != null && misses > 0 && warm > 0 ? `Vs a warm turn: ≈ ${(rel / warm).toFixed(1)}× the input cost` : null,
-    l.apiMs != null ? `Model API time: ${fmtDuration(l.apiMs)}` : null,
-    l.apiMs != null && l.durMs != null && l.durMs > l.apiMs ? `Tools and waiting: ${fmtDuration(l.durMs - l.apiMs)}` : null,
-    l.apiMs != null && l.apiMs > 0 && l.out > 0 ? `Output speed: ${Math.round(l.out / (l.apiMs / 1000))} tokens/s` : null,
-    l.promptTokens != null
-      ? ctxWindow ? `Context at the end: ${fmtTokens(l.promptTokens)} of ${fmtTokens(ctxWindow)} tokens (${Math.round((l.promptTokens / ctxWindow) * 100)}%)`
-        : `Context at the end: ${fmtTokens(l.promptTokens)} tokens`
-      : null,
-    l.ttlS != null ? `Cache lifetime: ${fmtSpan(l.ttlS * 1000)}` : null,
-    showsTurnCost(provider) && l.costUsd != null ? `Cost: $${l.costUsd < 0.1 ? l.costUsd.toFixed(3) : l.costUsd.toFixed(2)}` : null,
-  ];
-  const title = misses > 0 ? 'Turn input · the cache was cold'
-    : pct != null ? `Turn input · ${pct}% from the prompt cache` : 'Turn input';
-  return { title, lines: lines.filter((v): v is string => !!v) };
-}
-
 /** The turn's ledger, on its own line under the bubble header: mini-bar, %,
  *  read, written, uncached, output, relative cost, duration — then the rest.
  *  Wraps on a narrow bubble; the tooltip repeats it with labels. */
 export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
   const ctxWindow = useContext(ContextWindowContext);
+  // The popover (proposal 2): open on hover, at once — the line's own anchor.
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const popId = `ledger${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
   const pct = ledgerCachedPct(ledger);
@@ -210,7 +180,6 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   const warm = ledgerWarmCost(ledger);
   const misses = ledger.misses ?? 0;
   const cold = misses > 0;
-  const tip = ledgerTip(ledger, provider, ctxWindow);
   const w = (n: number) => `${((n / input) * 100).toFixed(1)}%`;
   const items: (React.ReactNode | null)[] = [
     pct != null ? <span key="pct" className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span> : null,
@@ -239,12 +208,132 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
   ];
   return (
-    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} data-tip-instant="" {...tipAttrs({ detail: tip.lines, labels: true })}>
+    <div className={`turn-ledger${cold ? ' cold' : ''}`} onMouseEnter={(e) => setAnchor(e.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => setAnchor(null)} aria-describedby={anchor ? popId : undefined}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />
       </span>
       {items.filter(Boolean)}
+      {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor} onGone={() => setAnchor(null)} />}
     </div>
+  );
+}
+
+// ── The ledger popover: four tiles, one ring each ───────────────────────────
+
+const POP_W = 352;
+
+function Ring({ frac, color }: { frac: number; color: string }) {
+  const size = 44, w = 6, r = (size - w) / 2, c = 2 * Math.PI * r;
+  const f = Math.max(0, Math.min(1, frac));
+  return (
+    <svg className="ledger-ring" viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      <circle className="ledger-ring-track" cx={size / 2} cy={size / 2} r={r} strokeWidth={w} />
+      {f > 0 && (
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={w} strokeLinecap="round"
+          strokeDasharray={`${(c * Math.max(0.01, f)).toFixed(2)} ${c.toFixed(2)}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+      )}
+    </svg>
+  );
+}
+
+function Donut({ parts }: { parts: [frac: number, color: string][] }) {
+  const size = 44, w = 7, r = (size - w) / 2, c = 2 * Math.PI * r;
+  let off = 0;
+  return (
+    <svg className="ledger-ring" viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      <circle className="ledger-ring-track" cx={size / 2} cy={size / 2} r={r} strokeWidth={w} />
+      {parts.map(([frac, color], i) => {
+        const len = c * Math.max(0, Math.min(1, frac));
+        const arc = (
+          <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={w}
+            strokeDasharray={`${len.toFixed(2)} ${(c - len).toFixed(2)}`} strokeDashoffset={(-off).toFixed(2)}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+        );
+        off += len;
+        return arc;
+      })}
+    </svg>
+  );
+}
+
+/** Below the line (above when the bottom is short), clamped to the viewport.
+ *  Informational only: no pointer events, gone on scroll. */
+function LedgerPopover({ id, ledger, ctxWindow, anchor, onGone }: {
+  id: string; ledger: TurnLedger; ctxWindow: number | null; anchor: DOMRect; onGone: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const h = ref.current?.offsetHeight ?? 0;
+    const below = anchor.bottom + 8;
+    setTop(below + h > window.innerHeight - 8 && anchor.top - 8 - h > 8 ? anchor.top - 8 - h : below);
+  }, [anchor]);
+  useEffect(() => {
+    window.addEventListener('scroll', onGone, true);
+    return () => window.removeEventListener('scroll', onGone, true);
+  }, [onGone]);
+  const input = ledgerInput(ledger);
+  const pct = ledgerCachedPct(ledger) ?? 0;
+  const rel = ledgerRelativeCost(ledger);
+  const warm = ledgerWarmCost(ledger);
+  const misses = ledger.misses ?? 0;
+  const cold = misses > 0;
+  const ctx = ledger.promptTokens != null && ctxWindow ? ledger.promptTokens / ctxWindow : null;
+  const toolsMs = ledger.apiMs != null && ledger.durMs != null ? Math.max(0, ledger.durMs - ledger.apiMs) : null;
+  const left = Math.min(window.innerWidth - POP_W - 8, Math.max(8, anchor.left - 8));
+  const tile = (ring: React.ReactNode, value: React.ReactNode, lines: (React.ReactNode | null)[], valueColor?: string) => (
+    <div className="ledger-tile">
+      {ring}
+      <div>
+        <div className="ledger-tile-v" style={valueColor ? { color: valueColor } : undefined}>{value}</div>
+        {lines.filter(Boolean).map((l, i) => <div key={i} className="ledger-tile-l">{l}</div>)}
+      </div>
+    </div>
+  );
+  return createPortal(
+    <div ref={ref} id={id} role="tooltip" className="ledger-pop"
+      style={{ left, top: top ?? anchor.bottom + 8, width: POP_W, visibility: top == null ? 'hidden' : undefined }}>
+      <div className="ledger-pop-head">
+        <span>{cold ? 'Turn input · the cache was cold' : `Turn input · ${pct}% from the cache`}</span>
+        {ledger.requests != null && <span className="ledger-pop-req">{ledger.requests} req</span>}
+      </div>
+      <div className="ledger-tiles">
+        {tile(
+          <Donut parts={[[ledger.read / input, 'var(--attention)'], [ledger.write / input, 'var(--info)'], [ledger.uncached / input, 'var(--text-muted)']]} />,
+          `${pct}%`,
+          ['from the cache', ledger.requests != null ? `${ledger.hits ?? 0}/${ledger.requests} requests hit` : null],
+          cold ? 'var(--info)' : 'var(--attention)',
+        )}
+        {tile(
+          <Ring frac={rel ?? 0} color="var(--warning)" />,
+          rel != null ? pctText(rel) : '—',
+          [rel != null ? 'of full price' : 'price unknown',
+            rel != null && cold && warm ? <span className="ledger-cold">≈ {(rel / warm).toFixed(1)}× a warm turn</span>
+              : rel != null ? `saved ${Math.max(0, 100 - Math.round(rel * 100))}%` : null],
+        )}
+        {tile(
+          <Ring frac={ctx ?? 0} color="var(--info)" />,
+          ctx != null ? `${Math.round(ctx * 100)}%` : ledger.promptTokens != null ? fmtTokens(ledger.promptTokens) : '—',
+          [ctx != null ? 'context used' : 'context at the end',
+            ctx != null ? `${fmtTokens(ledger.promptTokens!)} / ${fmtTokens(ctxWindow!)}` : null],
+        )}
+        {tile(
+          ledger.apiMs != null && ledger.durMs ? <Donut parts={[[ledger.apiMs / ledger.durMs, 'var(--accent)'], [(toolsMs ?? 0) / ledger.durMs, 'var(--violet)']]} />
+            : <Ring frac={ledger.durMs ? 1 : 0} color="var(--accent)" />,
+          ledger.durMs != null ? fmtDuration(ledger.durMs) : '—',
+          [ledger.tools != null ? `⚒ ${ledger.tools} tool${ledger.tools === 1 ? '' : 's'}` : null,
+            ledger.apiMs != null ? `model ${fmtDuration(ledger.apiMs)}` : null],
+        )}
+      </div>
+      <div className="ledger-legend">
+        <span><i style={{ background: 'var(--attention)' }} />read <b>{fmtTokens(ledger.read)}</b></span>
+        <span><i style={{ background: 'var(--info)' }} />written <b>{fmtTokens(ledger.write)}</b></span>
+        {ledger.uncached >= 1000 && <span><i style={{ background: 'var(--text-muted)' }} />uncached <b>{fmtTokens(ledger.uncached)}</b></span>}
+        <span><i style={{ background: 'var(--success)' }} />out <b>{fmtTokens(ledger.out)}</b></span>
+      </div>
+    </div>,
+    document.body,
   );
 }

@@ -156,6 +156,33 @@ a { color: inherit; }
 }
 .hover-tip-section-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
 .hover-tip-section-head .cache-icon { width: 12px; height: 12px; }
+/* The turn ledger's popover (PromptCacheMarks § LedgerPopover): the
+   hover-tip card, four tiles with a ring each (cache, cost, context, time),
+   a legend in the ledger line's colours. Informational: no pointer events. */
+.ledger-pop {
+  position: fixed; z-index: 2100; pointer-events: none;
+  padding: 10px 12px 11px; background: var(--bg-elevated); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow-color) 50%, transparent);
+  font-family: var(--body); font-size: 12px; line-height: 1.4; text-align: left;
+  animation: hover-tip-in .1s ease-out;
+}
+.ledger-pop-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; font-weight: 600; color: var(--text-strong); }
+.ledger-pop-req { margin-left: auto; font: 400 10.5px var(--mono); color: var(--text-muted); }
+.ledger-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.ledger-tile {
+  display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: center;
+  padding: 7px 8px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.ledger-ring { width: 44px; height: 44px; display: block; }
+.ledger-ring-track { fill: none; stroke: color-mix(in srgb, var(--text-muted) 22%, transparent); }
+.ledger-tile-v { font: 600 15px/1.1 var(--mono); color: var(--text-strong); }
+.ledger-tile-l { font-size: 10.5px; line-height: 1.25; color: var(--text-muted); }
+.ledger-cold { color: var(--info); }
+.ledger-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+.ledger-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.ledger-legend i { width: 8px; height: 8px; border-radius: var(--radius-sm); display: inline-block; }
+.ledger-legend b { font: 500 11px var(--mono); color: var(--text); }
 /* An excerpt of the object (a session's first message): quoted, clamped. */
 .hover-tip-quote {
   margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border-strong);
