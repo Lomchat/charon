@@ -95,7 +95,7 @@ export function applyThinkingReopened(messages: Msg[], openText: string): Msg[] 
 
 // ─── The live lane (useSessionStream's delta-reasoning state) ────────
 // Kept pure so the hub's real frame stream can be replayed through the exact
-// client logic in tests (thinkingCoalescing.test.ts: live == rebuild).
+// client logic (live == rebuild).
 // `batch`: fragments received but not committed to `messages` yet (≤ 80 ms,
 // §14.17); `open`: the hub's still-open block as this browser received it,
 // since its last `thinking_flushed` cut; `known`: the highest row id this

@@ -32,7 +32,7 @@
  * server state, and it composes with the existing `?session=` / `?shell=`
  * deep links.
  *
- * Pure functions, no dependencies — unit-tested in tests/pathFilter.test.ts.
+ * Pure functions, no dependencies.
  */
 
 export type PathFilter = { include: string[]; exclude: string[] };

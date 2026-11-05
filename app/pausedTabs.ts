@@ -3,7 +3,7 @@
  * survives the drop.
  *
  * Pure — the strip's own filtering and its reorder callbacks both go through
- * here, and both are unit-tested (tests/pausedTabs.test.ts).
+ * here.
  */
 
 /** What a filter needs of a resolved tab — the strip's `ResolvedTab` fits. */

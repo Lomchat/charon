@@ -1,7 +1,7 @@
 // Wording of the fleet auto-update notifications (Telegram + push).
 //
 // PLAIN module on purpose (no 'server-only', no db): the formatting is the
-// whole point and it must be unit-testable — cf. tests/updateNotice.test.ts.
+// whole point.
 //
 // Two rules shape every string here, both born from a real Telegram fil:
 //  1. Say the target versions ONCE, in the head. The first version of the
