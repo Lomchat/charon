@@ -202,7 +202,6 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    sessionMeta,
     messages, currentAssistant, streamingInto, status, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
@@ -878,7 +877,6 @@ export default function SessionView({
             model={model} fallbackModel={fallbackModel} effort={effort}
             modelPendingApply={modelPendingApply} effortPendingApply={effortPendingApply}
             effectiveModel={effectiveModel}
-            nativeSessionId={sessionMeta?.nativeSessionId ?? null}
             onSetModel={setModel} onSetEffort={setEffort}
             onApplyNow={doRestart}
             context={(
@@ -2030,7 +2028,7 @@ function LiveUsageRings({ vpsId, profile, kind, ...rest }: {
 /** Direct choices use the same provider catalogs as the creation/settings forms. */
 function SessionRuntimePanel({
   tokenUsage, vpsName, onUsageRefresh, usageAccountLabel, kind, accountProfile = "default", profileNumber, vpsId, model, fallbackModel, effort,
-  modelPendingApply, effortPendingApply, effectiveModel, nativeSessionId,
+  modelPendingApply, effortPendingApply, effectiveModel,
   onSetModel, onSetEffort, onApplyNow, sessionId, endpoint, onEndpointChanged, context, accountSwitch,
 }: {
   accountSwitch: AccountSwitchTarget;
@@ -2053,7 +2051,6 @@ function SessionRuntimePanel({
   modelPendingApply: boolean;
   effortPendingApply: boolean;
   effectiveModel: string | null;
-  nativeSessionId: string | null;
   onSetModel: (m: string | null, fallback?: string | null) => Promise<void>;
   onSetEffort: (e: string | null) => Promise<void>;
   onApplyNow?: () => Promise<void> | void;
@@ -2219,9 +2216,6 @@ function SessionRuntimePanel({
           </div>
           {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
-          {open === 'model' && !endpoint.active && nativeSessionId && providerText.modelChangeNote(kind) && (
-            <p className="runtime-choice-note">{providerText.modelChangeNote(kind)}</p>
-          )}
           {(modelPendingApply || effortPendingApply) && !endpoint.pending && onApplyNow && <button type="button" className="runtime-apply" disabled={saving} onClick={async () => {
             setSaving(true); setSaveError(null);
             try { await onApplyNow(); close(); }

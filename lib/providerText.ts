@@ -127,14 +127,6 @@ export const providerText = {
       ? `Native ${providerName(target)} branch`
       : `Imports the conversation into a new ${providerName(target)} session`),
 
-  /** Claude keeps a conversation pinned to the model it started on (§14.35);
-   *  the others apply a change on the next turn, so they get no warning. */
-  modelChangeNote: (kind: Kind): string | null => (
-    asSessionProvider(kind) === 'claude'
-      ? `An existing ${providerName(kind)} conversation may keep its original model.`
-        + ' Use Fork to switch models while preserving history.'
-      : null),
-
   /** §14.100 — which on-disk settings files a session loads. Claude-only. */
   settingScopeTitle: (scope: string | null | undefined) =>
     `${providerName('claude')} settings files loaded on this VPS — ${scope || 'inheriting the hub default'}`,
