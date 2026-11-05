@@ -903,6 +903,9 @@ export class SessionStream {
   // on; or that row, held a few seconds for a usage arriving after `stop`.
   private pendingTurnLedger: TurnLedger | null = null;
   private awaitingTurnLedger: { rowId: number; at: number } | null = null;
+  // Tool calls of the current turn (`_turnToolCount`), re-counted from the
+  // rows at each tool_use; null = not counted yet this turn (reset at stop).
+  private turnTools: number | null = null;
   private pendingBlockingErrorRecorded = false;
   // Evidence that the current/replayed turn actually carried assistant output.
   // Needed to clear an older `failed` latch on a later successful replay
