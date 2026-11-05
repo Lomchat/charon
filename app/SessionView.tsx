@@ -531,10 +531,15 @@ export default function SessionView({
   }, [messages]);
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
-  // in flight makes the switch (a restart) wait.
-  const accountSwitch = useMemo(() => ({
-    sessionId, current: currentAccount, busy: status === 'thinking' || status === 'starting',
-  }), [sessionId, currentAccount, status]);
+  // in flight, or background tasks the restart would kill with the CLI
+  // (§14.91), make the switch wait.
+  const bgRunning = selected.runningBgTasks ?? 0;
+  const accountSwitch = useMemo((): AccountSwitchTarget => ({
+    sessionId, current: currentAccount,
+    waitFor: status === 'thinking' || status === 'starting' ? { kind: 'turn' }
+      : status === 'background' || bgRunning > 0 ? { kind: 'background', tasks: bgRunning }
+      : null,
+  }), [sessionId, currentAccount, status, bgRunning]);
   const continueWithAccount = useCallback(async (accountId: string) => {
     await api.switchSessionAccount(sessionId, accountId);
     void streamSend('Continue');
@@ -2173,37 +2178,45 @@ function SessionRuntimePanel({
             </span>
           </button>
         )}
-        {open && <div className="runtime-choice-popover" aria-busy={saving}>
-          {open === 'model' && supportsCustomEndpoint(kind) && <div className="endpoint-picker-actions">
-            <button type="button" onClick={() => { close(); setEndpointOpen(true); }}>⚯ {endpoint.active ? 'Change endpoint…' : 'Custom endpoint…'}</button>
-            {endpoint.active && <button type="button" disabled={saving} onClick={async () => {
-              setSaving(true); setSaveError(null);
-              try { await api.setSessionEndpoint(sessionId, { endpoint: null }); onEndpointChanged(); close(); }
-              catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not restore connection.'); }
-              finally { setSaving(false); }
-            }}>Return to standard connection</button>}
-          </div>}
-          {open === 'model' && !endpoint.active && <SessionAccountChoice sessionId={sessionId} kind={kind} current={accountProfile}
+        {/* The popover kit (app.css § Popover kit): a head, then one tile per
+            block — the account tiles, then the catalog with its own filter. */}
+        {open && <div className="runtime-choice-popover pop-kit" aria-busy={saving}>
+          <div className="pop-head">
+            <span className="pop-title">{open === 'model' ? 'Model' : 'Effort'}</span>
+            {open === 'model' && supportsCustomEndpoint(kind) && <>
+              <button type="button" className="pop-action" onClick={() => { close(); setEndpointOpen(true); }}>⚯ {endpoint.active ? 'Change endpoint…' : 'Custom endpoint…'}</button>
+              {endpoint.active && <button type="button" className="pop-action" disabled={saving} onClick={async () => {
+                setSaving(true); setSaveError(null);
+                try { await api.setSessionEndpoint(sessionId, { endpoint: null }); onEndpointChanged(); close(); }
+                catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not restore connection.'); }
+                finally { setSaving(false); }
+              }}>Return to standard connection</button>}
+            </>}
+            {endpoint.active?.usageUrl && <a className="pop-action" href={endpoint.active.usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
+          </div>
+          {open === 'model' && !endpoint.active && <SessionAccountChoice target={accountSwitch} kind={kind}
             disabled={saving} onSwitched={close} />}
-          {endpoint.active?.usageUrl && <a className="runtime-usage-link" href={endpoint.active.usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
           {endpoint.pending && <p className="runtime-choice-note">Connection change queued until current work finishes. <button type="button" onClick={async () => { try { await api.setSessionEndpoint(sessionId, { cancelPending: true }); onEndpointChanged(); } catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not cancel change.'); } }}>Cancel change</button></p>}
           {endpoint.error && <p role="alert" className="runtime-choice-error">{endpoint.error}</p>}
 
           {/* One control per backend, resolved through PROVIDER_CATALOGS
               (§14.102) — the header must never offer a catalog the session's
               provider cannot run. */}
-          {(() => {
-            const { Model, Effort } = PROVIDER_CATALOGS[kind];
-            if (endpoint.active) {
-              if (open === 'effort') return <EndpointEffortPicker endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} disabled={saving} onChange={choose} />;
-              return <EndpointModelPicker endpoint={endpoint.active} kind={kind} presentation="list" value={model || ''} disabled={saving} onChange={choose} />;
-            }
+          <div className="pop-tile pop-tile-list">
+            {open === 'model' && <div className="pop-tile-label">Models</div>}
+            {(() => {
+              const { Model, Effort } = PROVIDER_CATALOGS[kind];
+              if (endpoint.active) {
+                if (open === 'effort') return <EndpointEffortPicker endpoint={endpoint.active} kind={kind} model={model || ''} effort={customEffort} disabled={saving} onChange={choose} />;
+                return <EndpointModelPicker endpoint={endpoint.active} kind={kind} presentation="list" value={model || ''} disabled={saving} onChange={choose} />;
+              }
 
-            return open === 'model'
-              ? <Model accountProfile={accountProfile} {...pickerProps} vpsId={vpsId} value={model ?? ''} />
-              : <Effort accountProfile={accountProfile} {...pickerProps} vpsId={vpsId} value={effort ?? ''}
-                  modelId={model || effectiveModel || ''} />;
-          })()}
+              return open === 'model'
+                ? <Model accountProfile={accountProfile} {...pickerProps} vpsId={vpsId} value={model ?? ''} />
+                : <Effort accountProfile={accountProfile} {...pickerProps} vpsId={vpsId} value={effort ?? ''}
+                    modelId={model || effectiveModel || ''} />;
+            })()}
+          </div>
           {open === 'model' && endpoint.active && isOpenCodeGo(endpoint.active.baseUrl) && <p className="runtime-choice-note">Catalog: Models.dev. Go limits, promotions and time-based rates may differ.</p>}
           {saveError && <p className="runtime-choice-error" role="alert">{saveError}</p>}
           {open === 'model' && !endpoint.active && nativeSessionId && providerText.modelChangeNote(kind) && (

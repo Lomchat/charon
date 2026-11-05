@@ -9,6 +9,10 @@ import * as schema from '@/lib/db/schema';
 const fake = vi.hoisted(() => ({
   call: vi.fn(), emitProfiles: vi.fn(), emitUsage: vi.fn(), emitHubUsage: vi.fn(), emitRuntime: vi.fn(), restart: vi.fn(), listChanged: vi.fn(),
   clients: [] as { vps: { id: string }; status: string; hello: Record<string, unknown> | null; call: (...a: any[]) => unknown }[],
+  /** The live stream `peekStream` returns (null = none in memory). */
+  stream: null as { hasRunningBgTasks: () => boolean } | null,
+  /** The persisted bg registry `runningBgTasksIfWarm` returns (null = cold). */
+  bgRegistry: new Map<string, number>() as Map<string, number> | null,
 }));
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/db', async () => {
@@ -27,11 +31,15 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   emitGlobalAccountProfiles: fake.emitProfiles, emitGlobalAccountUsage: fake.emitUsage, emitGlobalHubAccountUsage: fake.emitHubUsage,
   emitGlobalVpsRuntimeFromDb: fake.emitRuntime, emitGlobalSessionListChanged: fake.listChanged, restartSession: fake.restart,
+  peekStream: () => fake.stream,
   // usagePoll.ts registers its hooks at import (the usage path loads it).
   setUsagePollTrigger: () => {}, setCodexUsagePollTrigger: () => {}, setCodexUsagePushHandler: () => {},
   setUsageWindowsHandler: () => {}, setUsageResetResolver: () => {},
 }));
-vi.mock('@/lib/server/hub/bgTaskState', () => ({ runningBgTasksIfWarm: () => [], pruneStaleBgTasks: () => false }));
+vi.mock('@/lib/server/hub/bgTaskState', () => ({
+  runningBgTasksIfWarm: () => (fake.bgRegistry ? new Map(fake.bgRegistry) : null),
+  pruneStaleBgTasks: (running: Map<string, number>) => running.size > 0,
+}));
 
 import { db } from '@/lib/db';
 import { accountKeyFor, agentAccount, getAccountRow, openSecret, sealSecret, type ClaudeSecret, type CodexSecret } from '@/lib/server/accounts/store';
@@ -55,6 +63,7 @@ beforeEach(() => {
   fake.call.mockReset(); fake.emitProfiles.mockReset(); fake.emitUsage.mockReset(); fake.emitHubUsage.mockReset(); fake.emitRuntime.mockReset();
   fake.restart.mockReset(); fake.listChanged.mockReset();
   fake.clients = [];
+  fake.stream = null; fake.bgRegistry = new Map();
   db.delete(schema.agentSessions).run();
   db.delete(schema.providerAccounts).run();
   db.delete(schema.vps).run();
@@ -253,6 +262,32 @@ describe('sessions on hub accounts', () => {
     await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).resolves.toEqual({ restarted: true });
     expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBe('bbbbbbbbbbbbbbbb');
     expect(fake.restart).toHaveBeenCalledWith('s1');
+  });
+
+  it('refuses while background tasks run: the restart would kill them with the CLI (§14.91)', async () => {
+    claudeRow('aaaaaaaaaaaaaaaa');
+    claudeRow('bbbbbbbbbbbbbbbb');
+    db.insert(schema.agentSessions).values({ id: 's1', vpsId: 'a', cwd: '/srv/app', status: 'active', kind: 'claude',
+      providerConfig: JSON.stringify({ accountProfile: 'aaaaaaaaaaaaaaaa' }) }).run();
+    fake.clients = [{ vps: { id: 'a' }, status: 'connected', hello: { global_accounts: true }, call: vi.fn(async () => ({ ok: true, found: {} })) }];
+    const { switchSessionAccount } = await import('@/lib/server/accounts/migration');
+    // The live stream's registry is the truth when the session is in memory…
+    fake.stream = { hasRunningBgTasks: () => true };
+    await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).rejects.toThrow(/background tasks/);
+    // …else the persisted registry…
+    fake.stream = null;
+    fake.bgRegistry = new Map([['t1', Math.floor(Date.now() / 1000)]]);
+    await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).rejects.toThrow(/background tasks/);
+    // …else, while it warms, the parked `background` status.
+    fake.bgRegistry = null;
+    db.update(schema.agentSessions).set({ status: 'background' }).run();
+    await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).rejects.toThrow(/background tasks/);
+    expect(fake.restart).not.toHaveBeenCalled();
+    expect(JSON.parse(db.select().from(schema.agentSessions).get()!.providerConfig!).accountProfile).toBe('aaaaaaaaaaaaaaaa');
+    // The last task ended: free again.
+    db.update(schema.agentSessions).set({ status: 'active' }).run();
+    fake.bgRegistry = new Map();
+    await expect(switchSessionAccount('s1', 'bbbbbbbbbbbbbbbb')).resolves.toEqual({ restarted: true });
   });
 });
 

@@ -5651,23 +5651,12 @@
 .usage-chip-v { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
 .usage-chip-sep { width: 1px; background: var(--border); margin: 3px 0; }
 
+/* Placement only: the surface is the popover kit's (§ Popover kit). */
 .usage-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 70;
-  width: 288px; max-width: 86vw; max-height: 80dvh; overflow-y: auto; overscroll-behavior: contain;
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); box-shadow: 0 14px 40px color-mix(in srgb, var(--shadow-color) 50%, transparent);
-  padding: 12px;
+  width: 300px; max-width: 86vw; max-height: 80dvh; overflow-y: auto; overscroll-behavior: contain;
 }
-
-.um-detail { display: flex; flex-direction: column; gap: 10px; }
-.um-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.um-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--text); }
-.um-plan { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; padding: 1px 6px; border-radius: var(--radius-md); background: var(--border); color: var(--accent-strong); }
-.um-refresh { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: var(--radius-md); }
-.um-refresh:hover { color: var(--accent); background: var(--bg-inset); }
 .um-empty { font-size: 11px; color: var(--text-muted); padding: 4px 0; }
-/* Whose usage: provider · account. Two accounts on one VPS can read alike. */
-.um-account { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .um-row { display: flex; flex-direction: column; gap: 3px; }
 .um-scope { font-style: normal; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
@@ -5700,44 +5689,94 @@
    notch cut up from the pill's bottom edge, the colour of the surface BEHIND
    the gauge (`--um-surface`, set by each host), with a solid point inside:
    it reads on an empty track and on a fill of any colour alike. */
-.usage-pop {
-  --um-surface: var(--bg-elevated);
-}
 .um-pace { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .um-pace-notch { fill: var(--um-surface, var(--bg)); }
 .um-pace-point { fill: var(--text); }
-.um-foot { font-size: 9px; color: var(--text-muted); text-align: right; margin-top: 2px; }
-/* Gauges are real but the last refresh failed (throttled / token stale) — the
-   numbers stay on screen, the footer says why they're older. §14.72. */
-.um-foot-stale { color: var(--warning); opacity: .85; }
 
-/* A session's popover: its provider's other accounts (§14.115), one row
-   each — who, then THE SAME bars as the session's own (`UsageBars`), at the
-   same width: rows bleed to the popover's padding so nothing narrows them.
-   Most headroom first; a click moves the session there. */
-.um-switch { display: flex; flex-direction: column; margin-top: 12px; border-top: 1px solid var(--border); }
-.um-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 0 2px;
-  font: 600 10px/1.2 var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
-.um-switch-row {
+/* ── Popover kit ───────────────────────────────────────────────────────────
+   THE look of the session header's menus (model, effort, usage, tokens):
+   one surface, a head (title + pill actions), then one TILE per block. A tile
+   is a surface of its own, so `--um-surface` follows it: the gauges' pace
+   notch is cut in the colour actually behind it. Rules on buttons go through
+   `.pop-kit` to outrank the header's generic `.app-bar button`. Picker rows
+   (§ picker-options) share its selection: accent outline + ✓ pastille. */
+.pop-kit {
+  --um-surface: var(--bg-elevated);
+  display: flex; flex-direction: column; gap: 8px; padding: 8px; box-sizing: border-box;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xl);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--shadow-color) 50%, transparent);
+  color: var(--text); font: 12px/1.45 var(--body);
+}
+.pop-kit > * { flex-shrink: 0; }
+.pop-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; padding: 4px 4px 0 6px; }
+.pop-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 650 14px/1.3 var(--body); letter-spacing: -.01em; color: var(--text-strong);
+}
+.pop-kit :is(button, a).pop-action {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong);
+  font: 500 11px/1.2 var(--body); letter-spacing: 0; text-transform: none; text-decoration: none; white-space: nowrap; cursor: pointer;
+}
+.pop-kit :is(button, a).pop-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-strong); }
+.pop-kit button.pop-action:disabled { opacity: .5; cursor: not-allowed; }
+.pop-badge {
+  padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px;
+  color: var(--accent-strong); font: 600 9px/1 var(--body); letter-spacing: .08em; text-transform: uppercase;
+}
+.pop-kit button.pop-icon-btn {
+  display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%;
+  background: var(--bg-raised); color: var(--text-muted); font: 13px/1 var(--body); letter-spacing: 0; cursor: pointer;
+}
+.pop-kit button.pop-icon-btn:hover:not(:disabled) { background: var(--bg-high); color: var(--accent-strong); }
+/* Whose usage: provider · account. Two accounts on one VPS can read alike. */
+.pop-sub { margin-top: -6px; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.pop-stamp { margin-top: -4px; padding: 0 6px; text-align: right; font-size: 10px; color: var(--text-faint); }
+/* Gauges are real but the last refresh failed (throttled / token stale) — the
+   numbers stay on screen, the stamp says why they're older. §14.72. */
+.pop-stamp.is-stale { color: var(--warning); opacity: .85; }
+
+.pop-tile {
+  --um-surface: var(--bg-raised);
+  display: flex; flex-direction: column; min-width: 0; margin: 0; padding: 4px;
+  background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: var(--radius-lg);
+}
+.pop-tile-label { display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px; font: 600 11px/1.2 var(--body); color: var(--text-muted); }
+.pop-tile-note {
+  margin-left: auto; padding: 2px 7px; border-radius: 999px; font: 500 10px/1.2 var(--body);
+  color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, transparent);
+}
+.pop-tile-text { margin: 0; padding: 4px 8px 6px; font-size: 11px; color: var(--text-muted); }
+.pop-tile > .um-empty { padding: 6px 8px; }
+.um-bars { display: flex; flex-direction: column; gap: 10px; }
+.pop-tile.um-bars { padding: 10px 10px 8px; }
+/* A catalog in its tile: the list scrolls INSIDE it, under its own filter,
+   and the tiles above stay in view. */
+.pop-tile-list { flex: 1 1 auto; min-height: 140px; }
+.pop-tile-list > .picker-options { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+
+/* An account row: logo, the name, who under it. */
+.pop-row { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 8px 9px; border-radius: var(--radius-md); }
+.pop-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pop-row-main :is(b, small) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pop-row-main b { font-weight: 600; color: var(--text-strong); }
+.pop-row-main small { font-size: 11px; color: var(--text-muted); }
+
+/* "Switch account" (§14.115): the provider's other accounts, most headroom
+   first — with THEIR gauges in the usage popover (the session's own
+   `UsageBars`, same width), one line each in the model picker (`is-plain`).
+   A click moves the session there. */
+.pop-kit button.um-switch-row {
   all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
-  margin: 0 -12px; padding: 10px 12px; cursor: pointer; text-transform: none; letter-spacing: 0;
-  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 10px 9px; border-radius: var(--radius-md); color: var(--text); cursor: pointer;
 }
-/* Only a top rule: a generic button border on the sides narrowed the bars. */
-.usage-pop .um-switch-row { border-width: 1px 0 0; }
-.usage-pop .um-switch-head + .um-switch-row { border-top-width: 0; }
-.um-switch-row:hover:not(:disabled), .um-switch-row:focus-visible {
-  --um-surface: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
-  background: var(--um-surface);
-}
-.um-switch-row:disabled { cursor: default; }
-.um-switch-row.is-off { opacity: .55; }
-.um-switch-who { display: flex; align-items: center; gap: 6px; min-width: 0; font: 600 12px/1.2 var(--body); color: var(--text); }
+.pop-kit .um-switch.is-plain button.um-switch-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; }
+.pop-kit button.um-switch-row:hover:not(:disabled), .pop-kit button.um-switch-row:focus-visible { --um-surface: var(--bg-high); background: var(--bg-high); }
+.pop-kit button.um-switch-row:disabled { opacity: .55; cursor: not-allowed; }
+.um-switch-who { display: flex; align-items: center; gap: 9px; min-width: 0; font: 500 12px/1.3 var(--body); color: var(--text); }
 .um-switch-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.um-switch-bars { display: flex; flex-direction: column; gap: 10px; }
-.um-switch-row :is(.um-switch-who, .um-pill-label, .um-pill-pct, .um-reset) { text-transform: none; letter-spacing: 0; }
-.um-switch-note { font: 400 10px/1.2 var(--body); color: var(--text-muted); text-transform: none; letter-spacing: 0; }
-.um-switch-error { font-size: 11px; color: var(--danger); padding-top: 6px; }
+.um-switch-note { font: 400 10px/1.2 var(--body); color: var(--text-muted); }
+.um-switch-error { padding: 4px 8px 6px; font-size: 11px; color: var(--danger); }
 
 .um-ok   { color: var(--success); }
 .um-warn { color: var(--warning); }
@@ -8562,9 +8601,8 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .runtime-token-row b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .runtime-token-note { color: var(--text-muted); font: 9px/1.3 var(--body); }
 .runtime-token-popover { font: 12px/1.5 var(--body); }
-.runtime-token-popover.runtime-choice-popover { padding: 16px; }
-.runtime-token-popover p { margin: 10px 0 0; color: var(--text-muted); }
-.runtime-token-popover dl { display: grid; gap: 6px; margin: 12px 0; }
+.runtime-token-popover p { margin: 0; padding: 0 6px; font-size: 11px; color: var(--text-muted); }
+.runtime-token-popover dl { display: grid; gap: 6px; padding: 10px 12px; }
 .runtime-token-popover dl > div { display: flex; justify-content: space-between; gap: 12px; }
 .runtime-token-popover dt { color: var(--text-muted); }
 .runtime-token-popover dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -8821,12 +8859,14 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar .session-runtime-panel .bar-context-tokens { display: none; }
 }
 
-.runtime-choice-popover { position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 50; width: min(350px, calc(100vw - 24px)); padding: 6px; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); border-radius: var(--radius-xl); background: var(--bg); box-shadow: 0 12px 35px color-mix(in srgb, var(--shadow-color) 33.3333%, transparent); max-height: min(65dvh, 520px); overflow-y: auto; }
+/* Placement only: the surface is the popover kit's (§ Popover kit). */
+.runtime-choice-popover { position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 50; width: min(350px, calc(100vw - 24px)); max-height: min(80dvh, 660px); overflow-y: auto; }
 .picker-options { display: flex; flex-direction: column; gap: 2px; }
-.picker-options button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border: 0; border-radius: var(--radius-lg); background: transparent; color: var(--text); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; }
+.picker-options button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 9px; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--text); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; }
 .picker-options button > span:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.picker-options button:hover:not(:disabled), .picker-options button:focus-visible { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: none; }
-.picker-options button[data-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); }
+.picker-options button:hover:not(:disabled), .picker-options button:focus-visible { background: var(--bg-high); outline: none; }
+.picker-options button[data-selected="true"] { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--text-strong); }
+.picker-options button[data-selected="true"] .picker-check { display: grid; place-items: center; height: 16px; border-radius: 50%; background: var(--accent); color: var(--bg); font: 700 10px/1 var(--body); }
 /* Inheritance stays selectable; its label is distinct from concrete choices. */
 .picker-options button[data-inherit="true"] > span:first-child,
 .picker-trigger[data-inherit="true"] > span:first-child { color: color-mix(in srgb, var(--text-muted) 80%, var(--text)); }
@@ -8878,21 +8918,33 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 /* Closed pickers reserve their single line for the name. */
 .picker-trigger .picker-line { display: inline; }
 .picker-trigger .picker-line small { display: none; }
-/* Keep large-catalog filtering visible while its results scroll. */
-.picker-search { position: sticky; top: 0; z-index: 1; padding: 2px 2px 6px; background: var(--bg); }
+/* Keep large-catalog filtering visible while its results scroll: the sticky
+   field takes the colour of whatever it sits on (popup or tile). */
+.picker-search { position: sticky; top: 0; z-index: 1; padding: 2px 2px 6px; background: var(--bg-elevated); }
+.pop-tile .picker-search { background: var(--bg-raised); }
 .picker-search input {
-  width: 100%; box-sizing: border-box; padding: 7px 9px;
-  border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-elevated); color: var(--text);
+  width: 100%; box-sizing: border-box; padding: 7px 12px 7px 30px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-inset); color: var(--text);
   font: 12px/1.4 var(--body);
 }
 .picker-search input:focus { border-color: var(--accent); outline: none; }
 .picker-search input::placeholder { color: var(--text-muted); }
-.picker-check { width: 14px; flex: none; }
-.picker-group-label { padding: 12px 12px 5px; color: var(--text-muted); font: 10px/1.3 var(--body); }
-.runtime-choice-note, .runtime-choice-error { margin: 6px; padding: 10px 6px; border-top: 1px solid color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text-muted); font: 11px/1.5 var(--body); }
+.picker-search svg {
+  position: absolute; left: 12px; top: calc(50% - 2px); width: 13px; height: 13px; transform: translateY(-50%);
+  fill: none; stroke: var(--text-muted); stroke-width: 1.6; stroke-linecap: round; pointer-events: none;
+}
+.picker-search:focus-within svg { stroke: var(--accent); }
+.picker-check { width: 16px; flex: none; }
+.picker-group-label { padding: 10px 9px 3px; color: var(--text-faint); font: 500 10px/1.3 var(--body); }
+.runtime-choice-note, .runtime-choice-error { margin: 0; padding: 0 6px; color: var(--text-faint); font: 11px/1.5 var(--body); }
 .runtime-choice-error { color: var(--danger-strong); }
-.app-bar .runtime-apply { margin: 6px; padding: 8px; color: var(--warning); font: 11px/1.4 var(--body); text-transform: none; letter-spacing: 0; }
+.pop-kit button.runtime-apply {
+  align-self: flex-start; padding: 6px 12px; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning);
+  font: 500 11px/1.3 var(--body); text-transform: none; letter-spacing: 0;
+}
+.pop-kit button.runtime-apply:hover:not(:disabled) { background: color-mix(in srgb, var(--warning) 22%, transparent); color: var(--warning); }
 
 /* Shared select triggers; popup lives above scrolling modals via a workspace portal. */
 button.picker-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; max-width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated); color: var(--text); font: 12px/1.45 var(--body); text-align: left; text-transform: none; letter-spacing: 0; cursor: pointer; }
@@ -8902,7 +8954,8 @@ button.picker-trigger:disabled { opacity: .5; cursor: default; }
 .picker-trigger > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .picker-chevron { flex: none; color: var(--text-muted); }
 .app-modal label .picker-trigger, .nw-field > .picker-trigger, .wiz-adv-field > .picker-trigger { width: 100%; }
-.picker-popup { position: fixed; z-index: 2000; box-sizing: border-box; padding: 6px; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); border-radius: var(--radius-xl); background: var(--bg); box-shadow: 0 12px 35px color-mix(in srgb, var(--shadow-color) 40%, transparent); overflow-y: auto; overscroll-behavior: contain; }
+/* A select's popup wears the popover kit's surface. */
+.picker-popup { position: fixed; z-index: 2000; box-sizing: border-box; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--bg-elevated); box-shadow: 0 18px 44px color-mix(in srgb, var(--shadow-color) 50%, transparent); overflow-y: auto; overscroll-behavior: contain; }
 .picker-options button { cursor: pointer; flex-shrink: 0; }
 .picker-options button:disabled { opacity: .45; cursor: default; }
 .picker-options button:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-strong); }
@@ -9344,12 +9397,6 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .endpoint-compatibility-head .endpoint-btn { padding: 8px; letter-spacing: .04em; }
   .endpoint-settings-footnote { max-width: 200px; font-size: 10px; }
 }
-.endpoint-picker-actions { position: sticky; top: 0; z-index: 2; background: var(--bg-elevated); display: flex; flex-direction: column; gap: 4px; padding: 6px; border-bottom: 1px solid var(--border); }
-.endpoint-picker-actions button { text-align: left; padding: 8px 10px; }
-/* Keep endpoint actions above the catalog's own scrolling/search surface. */
-.runtime-choice-popover:has(> .endpoint-picker-actions) { display: flex; flex-direction: column; overflow: hidden; }
-.runtime-choice-popover:has(> .endpoint-picker-actions) > .picker-options { min-height: 0; overflow-y: auto; flex: 1 1 auto; }
-.runtime-choice-popover:has(> .endpoint-picker-actions) > :not(.picker-options) { flex-shrink: 0; }
 .agent-logo.has-endpoint { position: relative; overflow: visible; }
 .endpoint-logo-badge { position: absolute; width: 10px; height: 10px; right: -5px; bottom: -4px; padding: 1px; background: var(--bg-elevated); border-radius: var(--radius-sm); color: var(--text); }
 /* The folded async-question strip sits ABOVE the composer, never at the screen
@@ -9564,17 +9611,6 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .accounts-banner-close { all: unset; cursor: pointer; padding: 0 4px; color: var(--text-muted); }
 .accounts-banner-close:hover { color: var(--text); }
 
-.session-account-choice { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-.session-account-choice .runtime-choice-title { font-size: 11px; color: var(--text-muted); padding: 2px 6px; }
-.session-account-row {
-  all: unset; display: flex; align-items: center; gap: 8px; padding: 5px 6px; font-size: 12px; cursor: pointer;
-  border-radius: var(--radius-sm); color: var(--text);
-}
-.session-account-row:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
-.session-account-row.is-on { font-weight: 600; cursor: default; }
-.session-account-row:disabled:not(.is-on) { opacity: 0.55; cursor: default; }
-.session-account-note { margin-left: auto; font-size: 11px; color: var(--danger); }
-
 .continue-with-account { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .accounts-row .usage-rings { display: inline-flex; --um-surface: var(--bg-raised); }
 .accounts-row .usage-rings-button {
@@ -9583,4 +9619,3 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 }
 .accounts-row .ur-ring { width: 26px; height: 26px; }
 .accounts-row .usage-pop { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; }
-.session-account-row { text-transform: none; letter-spacing: 0; }

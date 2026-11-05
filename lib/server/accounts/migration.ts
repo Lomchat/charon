@@ -4,7 +4,7 @@ import { db, agentSessions, sessionMessages, sessionPendingPermissions, sessionP
 import { asSessionProvider, type SessionProvider } from '@/lib/sessionCapabilities';
 import { getSetting } from '@/lib/server/hub/settings';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import { emitGlobalSessionListChanged, restartSession } from '@/lib/server/agent/sessionOps';
+import { emitGlobalSessionListChanged, peekStream, restartSession } from '@/lib/server/agent/sessionOps';
 import { runningBgTasksIfWarm, pruneStaleBgTasks } from '@/lib/server/hub/bgTaskState';
 import { readScheduledTasks } from '@/lib/server/hub/scheduledTaskState';
 import { cursorIdentities } from '@/lib/server/agent/accountProfileState';
@@ -175,8 +175,8 @@ export function migrationBacklog(): { waiting: number; unmatched: number } {
 /**
  * "Répond : <compte> ▾" — run this session on another account of its provider
  * (§14.115). History is shared, so the conversation carries over; the CLI
- * binds the account at start, hence a restart when it runs (refused mid-turn:
- * the caller retries once the turn ended).
+ * binds the account at start, hence a restart when it runs (refused mid-turn
+ * or while background tasks run: the caller retries once they ended).
  */
 export async function switchSessionAccount(sessionId: string, accountId: string): Promise<{ restarted: boolean }> {
   const row = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).get();
@@ -189,6 +189,15 @@ export async function switchSessionAccount(sessionId: string, accountId: string)
   if (config.customEndpoint) throw new Error('This session runs on a custom endpoint');
   if (config.accountProfile === accountId) return { restarted: false };
   if (row.status === 'thinking' || row.status === 'starting') throw Object.assign(new Error('Wait for the current turn to finish'), { status: 409 });
+  // The restart kills the CLI and the background tasks it runs (§14.91): the
+  // live stream's registry, else the persisted one, else the parked status.
+  const stream = peekStream(sessionId);
+  const bgRunning = stream ? null : runningBgTasksIfWarm(sessionId);
+  if (stream ? stream.hasRunningBgTasks()
+    : bgRunning ? pruneStaleBgTasks(bgRunning, Math.floor(Date.now() / 1000))
+    : row.status === 'background') {
+    throw Object.assign(new Error('Wait for the background tasks to finish: the restart would stop them'), { status: 409 });
+  }
   if (!agentTakesAccounts(row.vpsId)) throw Object.assign(new Error("Update this VPS's agent first (it predates hub accounts)"), { status: 409 });
   if (provider === 'claude') {
     const c: Candidate = { id: row.id, vpsId: row.vpsId, provider, status: row.status, nativeId: row.nativeSessionId, config, target: account,

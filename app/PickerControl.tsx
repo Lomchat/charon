@@ -235,11 +235,12 @@ export default function PickerControl({ value, onValueChange, children, presenta
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="filter…"
+          placeholder="Filter…"
           aria-label="Filter the list"
           autoComplete="off"
           spellCheck={false}
         />
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" /><path d="M10.4 10.4 14 14" /></svg>
       </div>
     )}
     {choices.map((choice, index) => <Fragment key={`${choice.value}-${index}`}>

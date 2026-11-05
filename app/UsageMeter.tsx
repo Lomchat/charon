@@ -223,17 +223,31 @@ function Bar({ label, sub, pct, severity, reset, pace = null }: {
   );
 }
 
-/** The full detail body of the popover both surfaces open. */
 /** Whose usage this is (`usageAccountLabel`: provider + official identity, as in the
  *  header account buttons). Two accounts on one VPS can read near-identical numbers. */
 function UsageAccount({ accountLabel }: { accountLabel: string | null }) {
   if (!accountLabel) return null;
-  return <div className="um-account" title={accountLabel}>{accountLabel}</div>;
+  return <div className="pop-sub" title={accountLabel}>{accountLabel}</div>;
 }
 
-function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
-  usage: AccountUsage; vpsName?: string | null; onRefresh?: () => void;
-  provider: AgentKind; accountLabel: string | null;
+/** The popover's head (popover kit, app.css § Popover kit): whose gauges, the
+ *  plan, refresh. */
+function UsageHead({ provider, vpsName, plan, onRefresh }: {
+  provider?: AgentKind | null; vpsName?: string | null; plan?: string | null; onRefresh?: () => void;
+}) {
+  return (
+    <div className="pop-head">
+      {provider ? <AgentLogo kind={provider} size={15} /> : null}
+      <span className="pop-title">Usage{vpsName ? ` · ${vpsName}` : ''}</span>
+      {plan ? <span className="pop-badge">{plan}</span> : null}
+      {onRefresh ? <button type="button" className="pop-icon-btn" onClick={onRefresh} title="Refresh" aria-label="Refresh usage">↻</button> : null}
+    </div>
+  );
+}
+
+/** The full detail body of the popover both surfaces open. */
+function UsageDetail({ usage, vpsName, onRefresh, accountLabel }: {
+  usage: AccountUsage; vpsName?: string | null; onRefresh?: () => void; accountLabel: string | null;
 }) {
   // Only reached when we have NO good reading at all — a degraded snapshot
   // still renders its (real, just older) gauges below. §14.72.
@@ -243,41 +257,24 @@ function UsageDetail({ usage, vpsName, onRefresh, provider, accountLabel }: {
       : usage.error === 'http_error' && usage.statusCode === 401 ? 'Token expired — will refresh on next turn.'
       : usage.error === 'http_error' && usage.statusCode === 429 ? 'Rate-limited by the usage API — retrying shortly.'
       : 'Usage temporarily unavailable.';
-    return (
-      <div className="um-detail">
-        <div className="um-head">
-          <span className="um-title">
-            {usage.provider ? <AgentLogo kind={usage.provider} size={13} /> : null}
-            Usage{vpsName ? ` · ${vpsName}` : ''}
-          </span>
-          {onRefresh ? <button className="um-refresh" onClick={onRefresh} title="Refresh">↻</button> : null}
-        </div>
-        <UsageAccount accountLabel={accountLabel} />
-        <div className="um-empty">{reason}</div>
-      </div>
-    );
+    return <>
+      <UsageHead provider={usage.provider} vpsName={vpsName} onRefresh={onRefresh} />
+      <UsageAccount accountLabel={accountLabel} />
+      <div className="pop-tile"><div className="um-empty">{reason}</div></div>
+    </>;
   }
   const live = (usage.windowsAt ?? 0) > usage.fetchedAt;
-  return (
-    <div className="um-detail">
-      <div className="um-head">
-        <span className="um-title">
-          {usage.provider ? <AgentLogo kind={usage.provider} size={13} /> : null}
-          Usage{vpsName ? ` · ${vpsName}` : ''}
-          {usage.subscriptionType ? <span className="um-plan">{usage.subscriptionType}</span> : null}
-        </span>
-        {onRefresh ? <button className="um-refresh" onClick={onRefresh} title="Refresh">↻</button> : null}
-      </div>
-      <UsageAccount accountLabel={accountLabel} />
-      <UsageBars usage={usage} />
-      {/* Live 5h/7d windows outdate the poll; a failing poll then only
-          stales the per-model caps. §14.72 */}
-      <div className={`um-foot${usage.degraded && !live ? ' um-foot-stale' : ''}`}>
-        {fmtAgo(accountUsageReadAt(usage))}
-        {usage.degraded ? <> · {live ? 'model caps: ' : ''}{degradedNote(usage.degraded)}</> : null}
-      </div>
+  return <>
+    <UsageHead provider={usage.provider} vpsName={vpsName} plan={usage.subscriptionType} onRefresh={onRefresh} />
+    <UsageAccount accountLabel={accountLabel} />
+    <div className="pop-tile um-bars"><UsageBars usage={usage} /></div>
+    {/* Live 5h/7d windows outdate the poll; a failing poll then only
+        stales the per-model caps. §14.72 */}
+    <div className={`pop-stamp${usage.degraded && !live ? ' is-stale' : ''}`}>
+      {fmtAgo(accountUsageReadAt(usage))}
+      {usage.degraded ? <> · {live ? 'model caps: ' : ''}{degradedNote(usage.degraded)}</> : null}
     </div>
-  );
+  </>;
 }
 
 /** An account's windows as full bars: the endpoint's rich limits[], else the
@@ -312,7 +309,7 @@ function UsageBars({ usage }: { usage: AccountUsage }) {
 /** Another account's gauges in the switch list: the session's own bars. */
 function SwitchGauges({ usage }: { usage: AccountUsage | null }) {
   if (!usage?.ok) return <div className="um-empty">No usage reading yet.</div>;
-  return <div className="um-switch-bars"><UsageBars usage={usage} /></div>;
+  return <div className="um-bars"><UsageBars usage={usage} /></div>;
 }
 
 export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel, switchTarget, onClose }: {
@@ -324,10 +321,11 @@ export function UsagePopover({ usage, vpsName, onRefresh, provider, accountLabel
 }) {
   const label = accountLabel;
   return (
-    <div className="usage-pop" role="dialog" aria-label={label ? `Account usage: ${label}` : 'Account usage'}>
-      {usage ? <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} provider={usage.provider ?? provider} accountLabel={accountLabel} /> : <>
+    <div className="usage-pop pop-kit" role="dialog" aria-label={label ? `Account usage: ${label}` : 'Account usage'}>
+      {usage ? <UsageDetail usage={usage} vpsName={vpsName} onRefresh={onRefresh} accountLabel={accountLabel} /> : <>
+        <UsageHead provider={provider} vpsName={vpsName} onRefresh={onRefresh} />
         <UsageAccount accountLabel={accountLabel} />
-        <div className="um-empty">No usage data yet.{onRefresh && <button type="button" className="um-refresh" onClick={onRefresh} aria-label="Refresh usage">↻</button>}</div>
+        <div className="pop-tile"><div className="um-empty">No usage data yet.</div></div>
       </>}
       {switchTarget ? <UsageAccountSwitch target={switchTarget} provider={provider}
         renderGauges={(u) => <SwitchGauges usage={u} />} onDone={() => onClose?.()} /> : null}

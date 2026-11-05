@@ -41,10 +41,12 @@ export default function SessionTokenMeter({ usage, usageUrl }: { usage: SessionT
         </span>)}
       </span>
     </button>
-    {open && <div className="runtime-choice-popover runtime-token-popover" role="region" aria-label="Recorded session tokens">
-      <strong>Session tokens</strong>
-      {usageUrl && <a className="runtime-usage-link" href={usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
-      <dl>{fields.map((f) => <div key={f.label}><dt>{f.label}</dt><dd>{format(f, true)}</dd></div>)}</dl>
+    {open && <div className="runtime-choice-popover runtime-token-popover pop-kit" role="region" aria-label="Recorded session tokens">
+      <div className="pop-head">
+        <span className="pop-title">Session tokens</span>
+        {usageUrl && <a className="pop-action" href={usageUrl} target="_blank" rel="noopener noreferrer">Open usage ↗</a>}
+      </div>
+      <dl className="pop-tile">{fields.map((f) => <div key={f.label}><dt>{f.label}</dt><dd>{format(f, true)}</dd></div>)}</dl>
       <p>Recorded across this session. Sent tokens include context sent again with each request and cached input. Received tokens include reasoning when reported.</p>
       {totalOnly && <p>The endpoint reports a total only, without separate input and output counts.</p>}
       {!usage || (usage.inputTokens == null && usage.outputTokens == null && usage.totalTokens == null)
