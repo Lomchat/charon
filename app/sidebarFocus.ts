@@ -1,11 +1,12 @@
 // The sidebar's focus chips (Sidebar § cs-focus): list only what finished
 // unread, what is running and/or what still has a warm prompt cache. They ADD
 // up — several on admits any of their kinds — and no chip on admits
-// everything. "Unread" is the cards' own ✓ (attention 'unread', §14.47);
-// "running" is the header nav's "Working": a working status, or a busy shell;
+// everything. "Unread" is the cards' own ✓ or red ! (attention 'unread' |
+// 'error', §14.47); "running" is the header nav's "Working": a working
+// status, or a busy shell;
 // "warm" is the card's flame (lib/promptCache.ts): the sessions worth
 // answering before their cache expires.
-import { attentionForRow, rowStatus, shellAttention } from '@/lib/sessionAttention';
+import { attentionForRow, isUnseenFinish, rowStatus, shellAttention } from '@/lib/sessionAttention';
 import { cacheReading, isCacheWarm } from '@/lib/promptCache';
 import { isWorkingStatus } from './sessionUnread';
 import type { SessionListItem } from '@/lib/types/api';
@@ -20,7 +21,8 @@ type FocusShell = { id: string; unreadFinish?: boolean; liveStatus?: string | nu
 export function sessionFocusFacts(s: SessionListItem, selectedId: string | null, cacheNow = 0): FocusFacts {
   const status = rowStatus(s);
   return {
-    unread: attentionForRow(s, { viewedHere: s.id === selectedId }) === 'unread',
+    // A finish that ended in an error is unread too (the red twin).
+    unread: isUnseenFinish(attentionForRow(s, { viewedHere: s.id === selectedId })),
     running: isWorkingStatus(status),
     warm: cacheNow > 0 && isCacheWarm(cacheReading(s.promptCache, {
       now: cacheNow, busy: status === 'thinking' || status === 'starting',

@@ -170,6 +170,25 @@ describe('a live stop: status and unread before any push (G6)', () => {
     expect(row().status).toBe('failed');
   });
 
+  it('a crash (fatal error, no stop) marks unread before its push; a watched one does not', async () => {
+    const s = mkStream('thinking');
+    s._onAgentEvent(ev({ event: 'error', msg: 'client transport died', fatal: true }));
+    s._onAgentEvent(ev({ event: 'status', status: 'error' }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contract()).toEqual(['unread:true', 'push:session_error', 'telegram:session_error', 'status:error']);
+    expect(row()).toMatchObject({ status: 'error', unreadStop: 1 });
+
+    db.update(schema.agentSessions).set({ unreadStop: 0, status: 'thinking' })
+      .where(eq(schema.agentSessions.id, SID)).run();
+    order.log = [];
+    hubHooks().focusChecker = (id) => id === SID;
+    const watched = mkStream('thinking');
+    watched._onAgentEvent(ev({ event: 'error', msg: 'client transport died again', fatal: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contract()).toEqual(['push:session_error', 'telegram:session_error']);
+    expect(row().unreadStop).toBe(0);
+  });
+
   it('the background path is unchanged: background, no unread, the background push', async () => {
     const s = mkStream('thinking');
     s._onAgentEvent(ev({ event: 'bg_task', kind: 'started', task_id: 'bt1', tool_use_id: 'tu' }));

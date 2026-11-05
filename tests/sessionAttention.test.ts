@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  attentionForRow, deriveAttention, isLiveRow, isWaitingAttention, pendingSplit, rowStatus, NON_LIVE_STATUSES,
+  attentionForRow, deriveAttention, isLiveRow, isUnseenFinish, isWaitingAttention, pendingSplit, rowStatus,
+  NON_LIVE_STATUSES,
 } from '@/lib/sessionAttention';
 import { deriveAttention as reexported } from '@/lib/sessionSummary';
 import { isWorkingStatus } from '@/app/sessionUnread';
@@ -56,10 +57,43 @@ describe('deriveAttention', () => {
   });
 
   it('unread only on a ready (active) session', () => {
-    for (const status of ['thinking', 'starting', 'background', 'sleeping', 'error', 'failed']) {
+    for (const status of ['thinking', 'starting', 'background', 'sleeping']) {
       expect(deriveAttention({ status, unreadStop: true, pendingBlocking: 0, pendingAsync: 0 })).toBe(null);
     }
     expect(deriveAttention({ status: 'active', unreadStop: true, pendingBlocking: 0, pendingAsync: 0 })).toBe('unread');
+  });
+
+  it('error = the unread marker on a failed or crashed session; a seen failure is still', () => {
+    for (const status of ['failed', 'error']) {
+      expect(deriveAttention({ status, unreadStop: true, pendingBlocking: 0, pendingAsync: 0 })).toBe('error');
+      expect(deriveAttention({ status, unreadStop: 0, pendingBlocking: 0, pendingAsync: 0 })).toBe(null);
+    }
+  });
+
+  it('orders blocked > question > error', () => {
+    const failed = { status: 'failed', unreadStop: 1, pendingBlocking: 1, pendingAsync: 1 };
+    expect(deriveAttention(failed)).toBe('blocked');
+    expect(deriveAttention({ ...failed, pendingBlocking: 0 })).toBe('question');
+    expect(deriveAttention({ ...failed, pendingBlocking: 0, pendingAsync: 0 })).toBe('error');
+  });
+});
+
+describe('attentionForRow: error', () => {
+  it('is hidden on the row this tab views, like unread', () => {
+    const r = row({ status: 'failed', unreadStop: 1 });
+    expect(attentionForRow(r, { viewedHere: false })).toBe('error');
+    expect(attentionForRow(r, { viewedHere: true })).toBe(null);
+  });
+
+  it('reads the live status first', () => {
+    expect(attentionForRow(row({ status: 'active', liveStatus: 'error', unreadStop: 1 }), { viewedHere: false })).toBe('error');
+    expect(attentionForRow(row({ status: 'failed', liveStatus: 'thinking', unreadStop: 1 }), { viewedHere: false })).toBe(null);
+  });
+
+  it('isUnseenFinish covers unread and error only', () => {
+    expect(isUnseenFinish('unread')).toBe(true);
+    expect(isUnseenFinish('error')).toBe(true);
+    for (const a of ['blocked', 'question', null] as const) expect(isUnseenFinish(a)).toBe(false);
   });
 });
 

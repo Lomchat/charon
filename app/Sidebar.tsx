@@ -12,6 +12,8 @@ import { accountProfileNumber, type AccountProfile } from '@/lib/accountProfiles
 import { AccountChoiceMark, AccountChoiceMenu, accountChoices, useAccountChoice, vpsForProfile } from './AccountChoice';
 import { providerText, providerName } from '@/lib/providerText';
 import { useReorder, type ReorderItemProps } from './useReorder';
+import SidebarOffscreenPills, { CollapsedAttention } from './SidebarOffscreenPills';
+import { buildOffscreenTargets, collapsedAttentionCounts, type OffscreenTarget } from './sidebarOffscreen';
 import { colorToCss } from './SessionContextMenu';
 import { useLongPress } from './useLongPress';
 import { useStableCallback, useStableOptionalCallback } from './useStable';
@@ -633,6 +635,28 @@ export default function Sidebar({
   const focusEmpty = focusing
     && (focusUnread ? unreadCount : 0) + (focusRunning ? runningCount : 0) + (focusWarm ? warmCount : 0) === 0;
 
+  // Lit rows above/below the visible part of the list (app/sidebarOffscreen.ts):
+  // the ones the list holds now, anchored to the collapsed group hiding them.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const knownFolderIds = new Set(vpsFolders.map((f) => f.id));
+  const offscreenTargets = buildOffscreenTargets({
+    folders: sortedFolders.map((folder) => ({
+      id: folder.id,
+      collapsed: folder.collapsed === 1,
+      vpsIds: (folder.id === '__orphans__'
+        ? vpsList.filter((v) => !knownFolderIds.has(v.folderId))
+        : (vpsByFolder.get(folder.id) ?? [])).map((v) => v.id),
+    })),
+    sessionsOf: sessionsFor, shellsOf: shellsFor,
+    collapsedVps, collapsedPaths, pathKey: pathCollapseKey,
+    selectedId, selectedShellId,
+  });
+  function revealOffscreen(t: OffscreenTarget) {
+    if (t.reveal.folderId) onToggleFolderCollapsed?.(t.reveal.folderId, false);
+    if (t.reveal.vpsId) setVpsCollapsed(t.reveal.vpsId, false);
+    if (t.reveal.pathKey) setPathCollapsed(t.reveal.pathKey, false);
+  }
+
   return (
     <>
     <aside
@@ -751,7 +775,9 @@ export default function Sidebar({
         </div>
       </div>
 
-      <div className="cs-scroll">
+      <div className="cs-scroll" ref={scrollRef}>
+        {/* FIRST child: a sticky layer pinned to the scroller's top edge. */}
+        <SidebarOffscreenPills scrollRef={scrollRef} targets={offscreenTargets} onReveal={revealOffscreen} />
         {focusEmpty && (
           <div className="cs-empty cs-focus-empty">
             {focusEmptyText(focus)}
@@ -800,7 +826,7 @@ export default function Sidebar({
           const folderCollapsed = folder.collapsed === 1;
 
           return (
-            <section key={folder.id} className={`cs-folder${folderCollapsed ? ' collapsed' : ''}`}>
+            <section key={folder.id} className={`cs-folder${folderCollapsed ? ' collapsed' : ''}`} data-folder-id={folder.id}>
               <div
                 className="cs-folder-head"
                 onClick={() => { if (folder.id !== '__orphans__') onToggleFolderCollapsed?.(folder.id, !folderCollapsed); }}
@@ -1002,9 +1028,13 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   );
 
   const hostLabel = `${v.sshUser}@${v.ip}${v.sshPort !== 22 ? `:${v.sshPort}` : ''}`;
+  // Folded, its lit rows have no card to pulse on: the head counts them.
+  const collapsedAttention = collapsed
+    ? <CollapsedAttention counts={collapsedAttentionCounts(vpsSessions, vpsShells, selectedId, selectedShellId)} />
+    : null;
 
   return (
-    <section key={v.id} className={`cs-vps agent-${agentStatus}${showDetails ? '' : ' compact'}${collapsed ? ' collapsed' : ''}`}>
+    <section key={v.id} className={`cs-vps agent-${agentStatus}${showDetails ? '' : ' compact'}${collapsed ? ' collapsed' : ''}`} data-vps-id={v.id}>
       {showDetails ? (
       <div className="cs-vps-head">
         <button type="button" className="cs-vps-toggle" onClick={onToggleCollapsed}
@@ -1042,6 +1072,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             </span>
           ))}
         </span>
+        {collapsedAttention}
         </button>
         {historyBtn}
         {addBtns}
@@ -1058,6 +1089,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
           <span className="cs-vps-id" title={`${hostLabel} — ${agentTip}`}>
             <span className="cs-vps-name">{v.name}</span>
           </span>
+          {collapsedAttention}
         </button>
         <div className="cs-vps-actions">
           {historyBtn}
@@ -1485,6 +1517,7 @@ function SessionPathGroup({
   return (
     <section
       className={`cs-path-group${current ? ' current' : ''}`}
+      data-path-key={pathCollapseKey(vpsId, path)}
       onDragOver={pathDnd?.onDragOver}
       onDrop={pathDnd?.onDrop}
       data-dragging={pathDnd?.['data-dragging']}
@@ -1630,6 +1663,9 @@ const SessionRow = memo(function SessionRow({
   // you haven't opened it since (DB: unread_stop, §14.47). The durable marker
   // itself is untouched by the drawing.
   const unread = attention === 'unread';
+  // Its red twin: the turn or the session ended in an error nobody has opened
+  // yet (attention `error`) — the card pulses red until opened.
+  const errorUnread = attention === 'error';
   // Prompts the CLI will send this session by itself later (CronCreate /
   // ScheduleWakeup, lib/scheduledTasks.ts). Marked on a READY card only: a
   // working one is busy anyway, a paused one cannot fire them.
@@ -1641,7 +1677,7 @@ const SessionRow = memo(function SessionRow({
       data-tab-id={s.id}
       /* Beside the column, never over the next cards (app/HoverTip.tsx). */
       data-tip-side="right"
-      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
+      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${errorUnread ? ' error-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
       disabled={deleting}
       aria-busy={deleting || undefined}
       aria-pressed={multiSelected}
@@ -1700,6 +1736,9 @@ const SessionRow = memo(function SessionRow({
             {...tipAttrs({ detail: scheduledTip(scheduled) })}>
             <IconAlarm />
           </span>
+        )}
+        {errorUnread && (
+          <span className="cs-unread is-error" title="ended in an error — unread (open to clear)">!</span>
         )}
         {/* 🔒 = BLOCKING gates only: an async question never blocks (§14.96);
             its QUESTION state chip already says so. */}

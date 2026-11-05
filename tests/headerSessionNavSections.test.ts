@@ -39,6 +39,25 @@ describe('HeaderSessionNav sections', () => {
   });
 });
 
+describe('HeaderSessionNav errors', () => {
+  it('a failed or crashed session nobody opened is `errored`, red over green, under orange', () => {
+    const failedUnread = rowOf(item('f', { status: 'failed', unreadStop: 1 }), null);
+    const crashedUnread = rowOf(item('c', { status: 'error', unreadStop: 1 }), null);
+    const failedSeen = rowOf(item('s', { status: 'failed', unreadStop: 0 }), null);
+    const done = rowOf(item('d', { unreadStop: 1 }), null);
+    const waiting = rowOf(item('w', { pendingBlocking: 0, pendingAsync: 1 }), null);
+    expect([failedUnread.errored, crashedUnread.errored, failedSeen.errored, done.errored]).toEqual([true, true, false, false]);
+    expect(failedUnread.unread).toBe(false);
+    expect(failedUnread.state).toBe('error');
+    expect(navSections([failedUnread, failedSeen]).finished.map((r) => r.id)).toEqual(['f', 's']);
+    expect(navAttentionClass([done, failedUnread])).toBe('has-error');
+    expect(navAttentionClass([done, failedUnread, waiting])).toBe('has-waiting');
+    expect(navAttentionClass([done, failedSeen])).toBe('has-unread');
+    // The session this tab shows is the acknowledgement.
+    expect(rowOf(item('f', { status: 'failed', unreadStop: 1 }), 'f').errored).toBe(false);
+  });
+});
+
 describe('HeaderSessionNav shells', () => {
   const shell = (id: string, extra: Partial<ShellListItem>): ShellListItem => ({
     id, vpsId: 'v', vpsName: 'V', cwd: '/p', name: null, color: null, startedAt: 1_000,
@@ -177,6 +196,11 @@ describe('pulse phase lock', () => {
       .toContain('animation: row-pulse-green ');
     expect(rule('.app-head .hnav-trigger.has-waiting, .app-head .acct-nav-item.has-waiting {'))
       .toContain('animation: row-pulse ');
+    expect(rule('.app-head .hnav-trigger.has-error, .app-head .acct-nav-item.has-error {'))
+      .toContain('animation: row-pulse-red ');
+    // Orange is declared after red: a blocked session outranks a failed one.
+    expect(css.indexOf('.app-head .hnav-trigger.has-waiting,'))
+      .toBeGreaterThan(css.indexOf('.app-head .hnav-trigger.has-error,'));
   });
 });
 

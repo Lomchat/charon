@@ -21,6 +21,13 @@ describe('sidebar focus chips', () => {
     expect(sessionFocusFacts(session({ id: 'u', unreadStop: 1 }), 'u').unread).toBe(false);
   });
 
+  it('a failure nobody opened (the red !) is unread too; a seen one is not', () => {
+    expect(sessionFocusFacts(session({ id: 'f', status: 'failed', unreadStop: 1 }), null).unread).toBe(true);
+    expect(sessionFocusFacts(session({ id: 'e', status: 'error', unreadStop: 1 }), null).unread).toBe(true);
+    expect(sessionFocusFacts(session({ id: 'f', status: 'failed', unreadStop: 0 }), null).unread).toBe(false);
+    expect(sessionFocusFacts(session({ id: 'f', status: 'failed', unreadStop: 1 }), 'f').unread).toBe(false);
+  });
+
   it('no chip on admits everything', () => {
     for (const f of [unread, running, idle]) expect(focusAdmits({ unread: false, running: false }, f)).toBe(true);
   });

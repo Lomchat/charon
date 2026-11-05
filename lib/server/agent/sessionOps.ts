@@ -2783,6 +2783,17 @@ export class SessionStream {
             turnFailure: false,
             hint: this.pendingTurnErrorKind,
           });
+          // A crash is a finish too: the durable marker turns it red until
+          // opened (lib/sessionAttention.ts `error`, §14.47). `recorded` is
+          // its replay dedup (a NEW error row), so like a failed stop, a crash
+          // first learned via replay still counts. Before the push (G6).
+          if (recorded && !(hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false)) {
+            try {
+              db.update(agentSessions).set({ unreadStop: 1 })
+                .where(eq(agentSessions.id, this.id)).run();
+            } catch {}
+            this._broadcast({ type: 'session_unread', unread: true });
+          }
           if (recorded && !this.isReplaying && !this.fatalErrorNotified) {
             this.fatalErrorNotified = true;
             const title = `⚠ ${this.vpsName} · ${this._label()}`;

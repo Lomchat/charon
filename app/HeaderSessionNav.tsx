@@ -50,6 +50,9 @@ type NavRowBase = {
   /** The wait is an async question (answerable any time), not a parked turn. */
   question: boolean;
   unread: boolean;
+  /** Finished BADLY and not opened yet (attention `error`): the red twin of
+   *  `unread`. A paused or failed row that was already seen stays still. */
+  errored: boolean;
   /** When this session last did anything; the launch for one that never spoke. */
   when: number;
 };
@@ -91,6 +94,7 @@ export function rowOf(s: SessionListItem, viewedId: string | null): SessionNavRo
     waiting,
     question: attention === 'question',
     unread: !waiting && attention === 'unread',
+    errored: attention === 'error',
     when: s.lastActivityMs ?? (s.createdAt ? s.createdAt * 1000 : 0),
   };
 }
@@ -107,6 +111,7 @@ export function shellRowOf(shell: ShellListItem, viewedId: string | null): Shell
     waiting: false,
     question: false,
     unread: shellAttention(shell, { viewedHere: shell.id === viewedId }) === 'unread',
+    errored: false,
     when: shell.lastActivityMs ?? shell.startedAt,
   };
 }
@@ -198,7 +203,7 @@ function stateWord(r: NavRow): string {
     case 'needs-you': return r.question ? 'question' : 'needs you';
     case 'working': return 'working';
     case 'background': return 'background';
-    case 'error': return 'error';
+    case 'error': return r.errored ? 'error, unread' : 'error';
     case 'idle': return 'paused';
     default: return r.unread ? 'finished, unread' : 'ready';
   }
@@ -228,13 +233,15 @@ export function triggerClickOutcome(open: boolean, openedBy: 'hover' | 'click'):
   return openedBy === 'hover' ? 'pin' : 'close';
 }
 
-/** The trigger's attention class over a set of rows: orange outranks green
- *  (one is a question blocking a session, the other a page waiting to be
- *  read — the card's precedence). Shared by the global trigger and every
- *  account button (app/AccountNav.tsx), so they light up from ONE reading. */
-export type NavAttentionClass = '' | 'has-waiting' | 'has-unread';
+/** The trigger's attention class over a set of rows: orange outranks red,
+ *  red outranks green (a question blocking a session, then a session that
+ *  ended badly, then a page waiting to be read — the card's precedence).
+ *  Shared by the global trigger and every account button (app/AccountNav.tsx),
+ *  so they light up from ONE reading. */
+export type NavAttentionClass = '' | 'has-waiting' | 'has-error' | 'has-unread';
 export function navAttentionClass(rows: readonly NavRow[]): NavAttentionClass {
   if (rows.some((r) => r.waiting)) return 'has-waiting';
+  if (rows.some((r) => r.errored)) return 'has-error';
   if (rows.some((r) => r.unread)) return 'has-unread';
   return '';
 }
@@ -501,6 +508,9 @@ export default function HeaderSessionNav({ sessions, shells, vpsName, selectedId
   // BLOCKED on you until you answer. Same apparatus as the unread green —
   // a count on the trigger, a pulse, a row you click to land on the card.
   const waitingCount = rows.filter((r) => r.waiting).length;
+  // The red twin of the unread green: a turn or a session that ended in an
+  // error nobody has opened yet.
+  const errorCount = rows.filter((r) => r.errored).length;
   const attention = navAttentionClass(rows);
   const trigger = useRef<HTMLButtonElement>(null);
   usePulsePhase(trigger, attention);
@@ -530,7 +540,7 @@ export default function HeaderSessionNav({ sessions, shells, vpsName, selectedId
     // list never leaves this element: one enter/leave pair drives both.
     <div className={`hnav${open ? ' is-open' : ''}`} ref={menu.wrapRef}
       onMouseEnter={menu.onPointerEnter} onMouseLeave={menu.onPointerLeave}>
-      <TabNotificationBadge count={unreadCount + waitingCount} />
+      <TabNotificationBadge count={unreadCount + waitingCount + errorCount} />
       <button
         type="button"
         ref={trigger}
@@ -543,6 +553,7 @@ export default function HeaderSessionNav({ sessions, shells, vpsName, selectedId
         title={[
           `${running.length} working`,
           ...(waitingCount ? [`${waitingCount} waiting on you`] : []),
+          ...(errorCount ? [`${errorCount} ended in error, unread`] : []),
           `${unreadCount} finished, unread`,
           `${rows.length} sessions`,
         ].join(' · ')}
@@ -559,6 +570,11 @@ export default function HeaderSessionNav({ sessions, shells, vpsName, selectedId
         {!!waitingCount && (
           <span className="hnav-trigger-waiting" title={`${waitingCount} waiting for your answer`}>
             <span className="hnav-dot waiting" aria-hidden />{waitingCount}
+          </span>
+        )}
+        {!!errorCount && (
+          <span className="hnav-trigger-error" title={`${errorCount} ended in an error and not opened yet`}>
+            <span className="hnav-dot errored" aria-hidden />{errorCount}
           </span>
         )}
         {!!unreadCount && (
@@ -626,7 +642,7 @@ function Row({ r, onPick, selectedId, vpsName }: RowProps & { r: NavRow }) {
       type="button"
       role="menuitem"
       data-nav-id={r.id}
-      className={`hnav-row ${r.state}${r.shell ? ' shell' : ''}${r.unread ? ' unread' : ''}${r.id === selectedId ? ' is-open' : ''}`}
+      className={`hnav-row ${r.state}${r.shell ? ' shell' : ''}${r.unread ? ' unread' : ''}${r.errored ? ' errored' : ''}${r.id === selectedId ? ' is-open' : ''}`}
       onClick={() => onPick(r)}
       title={label(r)}
       {...tipAttrs({

@@ -155,6 +155,14 @@
   border-color: var(--success);
   animation: row-pulse-green 1.8s infinite ease-in-out;
 }
+/* The red twin: a turn or a session that ended in an error nobody has opened
+   yet (attention `error`, lib/sessionAttention.ts). Same apparatus, the
+   sidebar card's own `row-pulse-red`. */
+.hnav-dot.errored { background: var(--danger); animation: none; }
+.hnav-row.errored {
+  border-color: var(--danger);
+  animation: row-pulse-red 1.6s infinite ease-in-out;
+}
 /* The same apparatus in orange for the louder half of the pair: a session
    BLOCKED on your answer. Same frames as the sidebar's own attention card
    (`row-pulse`), so one glance reads the same in both places — and the two can
@@ -188,7 +196,12 @@
   border-color: var(--success); color: var(--text);
   animation: row-pulse-green 1.8s infinite ease-in-out;
 }
-/* Last of the three on purpose: a session cannot run until you answer it, so
+/* A session that ended in an error outranks one that ended well. */
+.app-head .hnav-trigger.has-error, .app-head .acct-nav-item.has-error {
+  border-color: var(--danger); color: var(--text);
+  animation: row-pulse-red 1.5s infinite ease-in-out;
+}
+/* Last of the four on purpose: a session cannot run until you answer it, so
    it outranks both the pointer and a finished one waiting to be read. The
    class itself is exclusive (HeaderSessionNav picks one), this is the
    belt-and-braces half. */
@@ -197,7 +210,7 @@
   animation: row-pulse 1.3s infinite ease-in-out;
 }
 .hnav-trigger-count { color: var(--text); font: 600 12px/1 var(--mono); }
-.hnav-trigger-unread, .hnav-trigger-waiting {
+.hnav-trigger-unread, .hnav-trigger-waiting, .hnav-trigger-error {
   display: inline-flex; align-items: center; gap: 4px;
   padding-left: 7px; border-left: 1px solid var(--border);
   color: var(--text); font: 600 11px/1 var(--mono);
@@ -281,6 +294,7 @@
 .hnav-row-cwd[data-compact] .hnav-row-cwd-short { display: inline; }
 .hnav-row-when { flex: none; color: var(--text-faint); font: 9.5px/1.3 var(--mono); }
 .hnav-row.unread .hnav-row-when { color: var(--success); }
+.hnav-row.errored .hnav-row-when { color: var(--danger); }
 
 /* ── Account buttons (app/AccountNav.tsx): one per login, after the nav ──
    [logo · label · rings | ▾]. The strip scrolls sideways; its items are
@@ -312,8 +326,8 @@
 }
 /* Never over an attention border: like the trigger, a session waiting to be
    read (or answered) outranks the pointer being nearby. */
-.app-head .acct-nav-item:not(.has-unread):not(.has-waiting):hover,
-.app-head .acct-nav-item.is-open:not(.has-unread):not(.has-waiting) { border-color: var(--accent); color: var(--text); }
+.app-head .acct-nav-item:not(.has-unread):not(.has-waiting):not(.has-error):hover,
+.app-head .acct-nav-item.is-open:not(.has-unread):not(.has-waiting):not(.has-error) { border-color: var(--accent); color: var(--text); }
 /* The open session's login wears the sidebar's selected-card look
    (`.cs-card.selected`); an attention border still outranks it. Opaque (the
    accent tint over the header gradient's middle) so the rings' bead halo
@@ -322,7 +336,7 @@
   --acct-surface: color-mix(in srgb, var(--accent) 12%, color-mix(in srgb, var(--bg-raised) 50%, var(--bg)));
   background: var(--acct-surface);
 }
-.app-head .acct-nav-item.is-selected:not(.has-unread):not(.has-waiting) { border-color: var(--accent); }
+.app-head .acct-nav-item.is-selected:not(.has-unread):not(.has-waiting):not(.has-error) { border-color: var(--accent); }
 .acct-nav .usage-rings {
   display: inline-flex; position: static; height: 100%;
   --um-surface: var(--acct-surface, var(--bg-inset));
@@ -441,6 +455,10 @@
   .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-unread) .acct-nav-more {
     border-color: var(--success); color: var(--text);
     animation: row-pulse-green 1.8s infinite ease-in-out;
+  }
+  .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-error) .acct-nav-more {
+    border-color: var(--danger); color: var(--text);
+    animation: row-pulse-red 1.5s infinite ease-in-out;
   }
   .acct-nav:not(.is-expanded):has(> .acct-nav-item:not(.is-current).has-waiting) .acct-nav-more {
     border-color: var(--attention); color: var(--text);
@@ -1171,11 +1189,69 @@
   0%, 100% { background-color: color-mix(in srgb, var(--success) 8%, transparent); box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--success) 0%, transparent); }
   50%      { background-color: color-mix(in srgb, var(--success) 20%, transparent); box-shadow: inset 0 0 12px 0 color-mix(in srgb, var(--success) 32%, transparent); }
 }
+/* Its red twin: the turn or the session ended in an ERROR while you weren't
+   looking (unread_stop on a failed/error row — attention `error`). Pulses
+   until opened, like the green; the still red dot + FAILED chip is what a
+   failure you have already seen keeps. */
+.cs-card.error-unread {
+  border-color: var(--danger); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 30%, transparent);
+  animation: row-pulse-red 1.6s infinite ease-in-out;
+}
+@keyframes row-pulse-red {
+  0%, 100% { background-color: color-mix(in srgb, var(--danger) 8%, transparent); box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--danger) 0%, transparent); }
+  50%      { background-color: color-mix(in srgb, var(--danger) 22%, transparent); box-shadow: inset 0 0 14px 0 color-mix(in srgb, var(--danger) 36%, transparent); }
+}
 .cs-unread {
   font-family: var(--mono); font-size: 10px; line-height: 1; flex-shrink: 0;
   color: var(--success); border: 1px solid var(--success); border-radius: var(--radius-md);
   padding: 1px 5px; background: color-mix(in srgb, var(--success) 12%, transparent);
 }
+.cs-unread.is-error {
+  color: var(--danger); border-color: var(--danger); font-weight: 700;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+/* Lit rows above / below the visible list (app/SidebarOffscreenPills.tsx):
+   one pill per colour, a triangle pointing where they are + how many. The
+   layer is the scroller's FIRST child, sticky at its top edge with no height;
+   the rows are placed from measurements (under the pinned server head, and
+   at the bottom edge). Above the sticky heads (z 3). */
+.cs-offscreen { position: sticky; top: 0; height: 0; z-index: 6; pointer-events: none; }
+.cs-offscreen-row {
+  position: absolute; left: 0; right: 0;
+  display: flex; justify-content: center; gap: 5px;
+}
+.cs-offscreen-pill {
+  pointer-events: auto; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px 0 8px; border-radius: 999px;
+  border: 1px solid var(--pill-c); color: var(--text-strong);
+  background: color-mix(in srgb, var(--pill-c) 14%, var(--bg-elevated));
+  font: 600 11px/1 var(--mono);
+  animation: cs-offscreen-pulse 1.6s infinite ease-in-out;
+}
+.cs-offscreen-pill:hover { background: color-mix(in srgb, var(--pill-c) 28%, var(--bg-elevated)); }
+.cs-offscreen-pill:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 1px; }
+.cs-offscreen-pill.waiting {
+  --pill-c: var(--attention); animation-duration: 1.3s;
+}
+.cs-offscreen-pill.error {
+  --pill-c: var(--danger); animation-duration: 1.5s;
+}
+.cs-offscreen-pill.unread {
+  --pill-c: var(--success); animation-duration: 1.8s;
+}
+.cs-offscreen-tri { width: 9px; height: 8px; flex: none; fill: var(--pill-c); }
+@keyframes cs-offscreen-pulse {
+  0%, 100% { box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 45%, transparent), 0 0 0 0 color-mix(in srgb, var(--pill-c) 0%, transparent); }
+  50%      { box-shadow: 0 3px 10px color-mix(in srgb, var(--shadow-color) 45%, transparent), 0 0 10px 1px color-mix(in srgb, var(--pill-c) 55%, transparent); }
+}
+/* A folded server's lit rows, on its head: a dot + count per colour. */
+.cs-vps-attention { display: inline-flex; align-items: center; gap: 6px; flex: none; margin-left: auto; font: 600 10px/1 var(--mono); }
+.cs-vps-attention-n { display: inline-flex; align-items: center; gap: 3px; }
+.cs-vps-attention-n i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cs-vps-attention-n.waiting { color: var(--attention); }
+.cs-vps-attention-n.error   { color: var(--danger); }
+.cs-vps-attention-n.unread  { color: var(--success); }
 .cs-card-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, transparent); }
 
 /* Sessions and SSH shells are grouped by cwd. This is intentionally open
@@ -5373,6 +5449,8 @@
   .app-root[data-side="icons"] .app-sidebar:not(.peek) .cs-add.full .cs-add-btn { padding: 7px 0; }
   .app-root[data-side="icons"] .app-sidebar:not(.peek) .cs-add.full .cs-add-btn > span { display: none; }
   .app-root[data-side="icons"] .app-sidebar:not(.peek) .cs-scroll { scrollbar-width: none; }
+  /* Bare icons leave no width for a row of pills. */
+  .app-root[data-side="icons"] .app-sidebar:not(.peek) .cs-offscreen { display: none; }
   .app-root[data-side="icons"] .app-sidebar:not(.peek) .cs-scroll::-webkit-scrollbar { display: none; }
 
   /* Folder → its glyph. VPS → its agent dot over its name, clipped. Path →
@@ -9319,6 +9397,8 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
 .bgc-node-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font: 10px/1.6 var(--mono); color: var(--text-muted); overflow-wrap: anywhere; }
 .bgc-node-phase { font: 11px/1.5 var(--body); color: var(--text); }
 .bgc-root { width: min(290px, 100%); margin: 0 auto; border-left-color: var(--violet); position: relative; z-index: 1; }
+.bgc-command { max-width: 720px; margin: 24px auto 0; }
+.bgc-command .tm-code { max-height: none; }
 .bgc-children { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; position: relative; margin-top: 55px; }
 .bgc-children::before { content: ''; position: absolute; left: 50%; top: -55px; height: 55px; border-left: 1px solid var(--border-strong); }
 .bgc-branch { position: relative; padding: 28px 0 10px; }

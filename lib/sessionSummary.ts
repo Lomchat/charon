@@ -3,8 +3,9 @@
 // the bus publishes them as `{type:'session_summary', sessionId, summary}`.
 import type { SessionListItem, WorkerStatus } from '@/lib/types/api';
 import type { PermissionSuggestion } from '@/lib/permissionSuggestions';
+import type { Attention } from './sessionAttention';
 
-export type Attention = 'blocked' | 'question' | 'unread' | null;
+export type { Attention };
 
 export type SummaryGate = {
   id: string;
