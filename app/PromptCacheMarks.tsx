@@ -4,7 +4,7 @@
 // the TTL, the sidebar card mark, the context-row marker and the bubble-header
 // ledger. Colour = `cacheHeat` (attention cooling to info, theme tokens only);
 // shape = the TTL quarter, so four levels read apart at 12 px.
-import { useId, useSyncExternalStore } from 'react';
+import React, { useId, useSyncExternalStore } from 'react';
 import {
   cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
   ledgerCachedPct, ledgerInput, ledgerRelativeCost, ledgerWarmCost,
@@ -181,26 +181,49 @@ function ledgerTip(l: TurnLedger, provider: SessionProvider): { title: string; l
   return { title, lines: lines.filter((v): v is string => !!v) };
 }
 
-/** Mini-bar, %, tokens read, output, relative cost, duration. */
-export function TurnLedgerChip({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
+/** The turn's ledger, on its own line under the bubble header: mini-bar, %,
+ *  tokens read, output, relative cost, duration — then every other detail.
+ *  Wraps on a narrow bubble; the tooltip repeats it with labels. */
+export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
   const pct = ledgerCachedPct(ledger);
   const rel = ledgerRelativeCost(ledger);
-  const cold = (ledger.misses ?? 0) > 0;
+  const warm = ledgerWarmCost(ledger);
+  const misses = ledger.misses ?? 0;
+  const cold = misses > 0;
   const tip = ledgerTip(ledger, provider);
   const w = (n: number) => `${((n / input) * 100).toFixed(1)}%`;
+  const items: (React.ReactNode | null)[] = [
+    pct != null ? <span key="pct" className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span> : null,
+    <span key="read">{fmtTokens(ledger.read)} read</span>,
+    <span key="out">{fmtTokens(ledger.out)} out</span>,
+    rel != null ? <span key="cost" className="turn-ledger-cost">cost {pctText(rel)}</span> : null,
+    ledger.durMs != null ? <span key="dur">{fmtDuration(ledger.durMs)}</span> : null,
+    <span key="write" className={cold ? 'turn-ledger-cold' : undefined}>{fmtTokens(ledger.write)} written</span>,
+    <span key="uncached">{fmtTokens(ledger.uncached)} uncached</span>,
+    ledger.requests != null
+      ? <span key="hits">{ledger.hits ?? 0}/{ledger.requests} hit{ledger.requests === 1 ? '' : 's'}</span> : null,
+    cold ? <span key="miss" className="turn-ledger-cold">{misses} miss · {fmtTokens(ledger.missWrite ?? 0)} rewritten</span> : null,
+    cold && rel != null && warm != null && warm > 0
+      ? <span key="warm" className="turn-ledger-cold">≈ {(rel / warm).toFixed(1)}× a warm turn</span> : null,
+    ledger.apiMs != null ? <span key="api">API {fmtDuration(ledger.apiMs)}</span> : null,
+    ledger.apiMs != null && ledger.durMs != null && ledger.durMs > ledger.apiMs
+      ? <span key="tools">tools {fmtDuration(ledger.durMs - ledger.apiMs)}</span> : null,
+    ledger.apiMs != null && ledger.apiMs > 0 && ledger.out > 0
+      ? <span key="speed">{Math.round(ledger.out / (ledger.apiMs / 1000))} tok/s</span> : null,
+    ledger.promptTokens != null ? <span key="prompt">prompt {fmtTokens(ledger.promptTokens)}</span> : null,
+    ledger.ttlS != null ? <span key="ttl">TTL {fmtSpan(ledger.ttlS * 1000)}</span> : null,
+    showsTurnCost(provider) && ledger.costUsd != null
+      ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
+  ];
   return (
-    <span className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} {...tipAttrs({ detail: tip.lines })}>
+    <div className={`turn-ledger${cold ? ' cold' : ''}`} title={tip.title} {...tipAttrs({ detail: tip.lines })}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
         <i className="write" style={{ width: w(ledger.write) }} />
       </span>
-      {pct != null && <span className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span>}
-      <span>{fmtTokens(ledger.read)} read</span>
-      <span>{fmtTokens(ledger.out)} out</span>
-      {rel != null && <span className="turn-ledger-cost">cost {pctText(rel)}</span>}
-      {ledger.durMs != null && <span>{fmtDuration(ledger.durMs)}</span>}
-    </span>
+      {items.filter(Boolean)}
+    </div>
   );
 }
