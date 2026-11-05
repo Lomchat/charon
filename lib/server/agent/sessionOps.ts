@@ -4372,9 +4372,19 @@ export class SessionStream {
       }).from(agentSessions).where(eq(agentSessions.id, this.id)).get();
       if (!row) return;
       const previous = parsePromptCache(row.promptCacheJson);
-      const state = cacheStateFromUsage(kind, ev.turn_cache, {
+      let state = cacheStateFromUsage(kind, ev.turn_cache, {
         previousTtlS: previous?.ttlS ?? null, model: row.model ?? null, account: accountProfileId(row.providerConfig),
       });
+      // An agent too old to count requests (< 0.121.0) still says a turn just
+      // used the cache: keep the last known size and TTL, restart the clock
+      // at this turn's end (a few seconds late at worst).
+      const endedAt = this.currentEventTs ?? Date.now();
+      if (!state && !ev.turn_cache && previous && endedAt > previous.at) {
+        state = {
+          ...previous, at: endedAt, expiresAt: endedAt + previous.ttlS * 1000,
+          model: row.model ?? null, account: accountProfileId(row.providerConfig),
+        };
+      }
       if (state) {
         db.update(agentSessions).set({ promptCacheJson: JSON.stringify(state) })
           .where(eq(agentSessions.id, this.id)).run();
