@@ -107,7 +107,12 @@ export type BridgeEvent =
       };
     }
   | { type: 'session_token_usage'; usage: import('@/lib/sessionTokenUsage').SessionTokenUsage }
-  | { type: 'stop'; subtype?: string; finalAssistantId?: number | null }
+  // `turnUsage` = the ledger just written on that final row (prompt cache,
+  // lib/promptCache.ts): the bubble header reads it without a refetch.
+  | {
+      type: 'stop'; subtype?: string; finalAssistantId?: number | null;
+      turnUsage?: import('@/lib/promptCache').TurnLedger;
+    }
   // compaction (agent >= 0.36.0) = the CLI replaced the conversation with a
   // summary. Charon's own rows are untouched, so this marks a boundary rather
   // than a loss: above it is still readable, but the model no longer remembers

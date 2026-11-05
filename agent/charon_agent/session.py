@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 
 from .peer_mcp import PEER_MODEL_INSTRUCTIONS
 from .crons import scheduled_tasks, local_tz
+from . import prompt_cache
 
 # A CLI-opened turn's own prompt, when a stream message carries one.
 UNPROMPTED_PROMPT_MAX = 8000
@@ -583,6 +584,8 @@ class AgentSession:
         self._usage_committed_out = 0   # output tokens of FINISHED messages this turn
         self._usage_cur_out = 0         # output tokens of the in-flight message
         self._usage_last_emit = 0.0     # monotonic ts of the last throttled live emit
+        # Per-request prompt-cache counters of the turn (prompt_cache.py).
+        self._turn_cache = prompt_cache.new_turn_cache()
         self._generation_characters = 0
         self._generation_last_emit = 0.0
         self._generation_last_sent = 0
@@ -1905,6 +1908,17 @@ class AgentSession:
                         # never sum (summing N-counts the same context).
                         self._usage_in = int(u.get("input_tokens") or 0)
                         self._usage_cache = int(u.get("cache_read_input_tokens") or 0)
+                        # One API request of the main thread: its cache read,
+                        # write and TTL (a subagent caches its own prefix).
+                        turn_cache = getattr(self, "_turn_cache", None)
+                        if turn_cache is not None and not getattr(ev, "parent_tool_use_id", None):
+                            prompt_cache.count_request(
+                                turn_cache,
+                                read=u.get("cache_read_input_tokens"),
+                                write=prompt_cache.anthropic_write_tokens(u),
+                                uncached=u.get("input_tokens"),
+                                ttl_s=prompt_cache.anthropic_ttl_s(u),
+                            )
                     elif rtype == "content_block_delta":
                         delta = raw.get("delta")
                         delta = delta if isinstance(delta, dict) else {}
@@ -1965,6 +1979,12 @@ class AgentSession:
                     "duration_ms": int(getattr(ev, "duration_ms", 0) or 0),
                     "cost_usd": getattr(ev, "total_cost_usd", None),
                 }
+                api_ms = getattr(ev, "duration_api_ms", None)
+                if isinstance(api_ms, (int, float)):
+                    usage_ev["duration_api_ms"] = int(api_ms)
+                turn_cache = prompt_cache.payload(getattr(self, "_turn_cache", None) or {})
+                if turn_cache:
+                    usage_ev["turn_cache"] = turn_cache
                 if tree:
                     usage_ev["tree"] = tree
                 if getattr(self, "_endpoint_proxy", None) is not None:
@@ -2133,6 +2153,7 @@ class AgentSession:
         self._usage_in = self._usage_cache = 0
         self._usage_committed_out = self._usage_cur_out = 0
         self._usage_last_emit = 0.0
+        self._turn_cache = prompt_cache.new_turn_cache()
         self._generation_characters = self._generation_last_sent = 0
         self._generation_last_emit = 0.0
         self._blocking_turn_error = None

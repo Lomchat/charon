@@ -1096,6 +1096,9 @@ export type SessionListItem = AgentSession & {
   /** The CLI's scheduled tasks as of their last change (lib/scheduledTasks.ts);
    *  null = never reported. Dormant while the session sleeps. */
   scheduledTasks?: ScheduledTasksState | null;
+  /** The prompt cache the last turn left (lib/promptCache.ts); null = none
+   *  reported. The countdown runs on the browser's clock. */
+  promptCache?: import('@/lib/promptCache').PromptCacheState | null;
 };
 
 // Non-sensitive VPS fields that can change while the dashboard stays open.

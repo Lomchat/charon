@@ -393,9 +393,11 @@ export function reduceStop(messages: Msg[], ev: StopFrame, ctx: Pick<TranscriptC
   if (index < 0 && !ctx.hubBoundaries) {
     index = next.findLastIndex((m) => m.role === 'assistant' && m.id.startsWith('a'));
   }
-  if (index < 0 || next[index].assistantFinal === 1) return next;
+  if (index < 0) return next;
+  // The turn's ledger rides on the same frame (lib/promptCache.ts).
+  if (next[index].assistantFinal === 1 && !ev.turnUsage) return next;
   next = next.slice();
-  next[index] = { ...next[index], assistantFinal: 1 };
+  next[index] = { ...next[index], assistantFinal: 1, ...(ev.turnUsage ? { turnUsage: ev.turnUsage } : {}) };
   return next;
 }
 

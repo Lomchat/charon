@@ -6,6 +6,7 @@ import type { SessionTokenUsage } from '@/lib/sessionTokenUsage';
 import { adaptCursorEffortForVps } from '@/lib/server/hub/cursorModels';
 import 'server-only';
 import { accountProfileId } from '@/lib/accountProfiles';
+import { cacheStateFromUsage, ledgerFromUsage, parsePromptCache, type TurnLedger } from '@/lib/promptCache';
 import type { NotificationEvent } from '@/lib/notificationPreferences';
 import crypto from 'node:crypto';
 import { asyncQuestionReply } from '@/lib/asyncQuestions';
@@ -891,6 +892,11 @@ export class SessionStream {
   private fatalErrorNotified = false;
   private pendingAgentError: { msg: string; fatal: boolean } | null = null;
   private pendingTurnErrorKind: string | null = null;
+  // The turn's prompt-cache ledger (lib/promptCache.ts), held from its
+  // `usage final:true` until `stop` names the final assistant row it lands
+  // on; or that row, held a few seconds for a usage arriving after `stop`.
+  private pendingTurnLedger: TurnLedger | null = null;
+  private awaitingTurnLedger: { rowId: number; at: number } | null = null;
   private pendingBlockingErrorRecorded = false;
   // Evidence that the current/replayed turn actually carried assistant output.
   // Needed to clear an older `failed` latch on a later successful replay
@@ -2315,12 +2321,15 @@ export class SessionStream {
             cacheReadTokens: ev.cache_read_tokens ?? 0,
             cacheWriteTokens: ev.cache_write_tokens ?? 0,
             durationMs: ev.duration_ms ?? 0,
+            ...(ev.duration_api_ms != null ? { durationApiMs: ev.duration_api_ms } : {}),
             costUsd: ev.cost_usd ?? null,
             ...(ev.endpoint_accounted ? { endpointAccounted: true } : {}),
             ...(ev.tree ? { tree: ev.tree } : {}),
+            ...(ev.turn_cache ? { cache: ev.turn_cache } : {}),
           });
           // turn_usage rows count in the session totals too (legacy turns).
           if (turnUsageRow !== false) this._scheduleTokenUsageBroadcast();
+          this._recordPromptCache(ev);
         }
         // Fan every frame to the focused SSE connection so ThinkingBar can
         // show the growing output counter. Intermediate frames never touch DB.
@@ -2541,6 +2550,7 @@ export class SessionStream {
         // A replayed stop whose live flush had failed keeps the buffer going
         // (its row is longer): nothing to finalize here, as live.
         const finalAssistantId = assistantFlushed && !this.currentAssistant ? this._finalizeAssistantTurn() : null;
+        const turnUsage = this._attachTurnLedger(finalAssistantId);
         // The typed outcome (agent >= 0.36.0) OUTRANKS the prose classifier.
         // Measured on the fleet: a failed turn still reports
         // subtype='success' while is_error is true and terminal_reason is
@@ -2654,7 +2664,7 @@ export class SessionStream {
           })
             .where(eq(agentSessions.id, this.id)).run();
         } catch {}
-        this._broadcast({ type: 'stop', subtype: ev.subtype, finalAssistantId });
+        this._broadcast({ type: 'stop', subtype: ev.subtype, finalAssistantId, ...(turnUsage ? { turnUsage } : {}) });
         if (writtenStatus) {
           this._broadcast({ type: 'status', status: writtenStatus });
         }
@@ -4345,6 +4355,68 @@ export class SessionStream {
         .all();
       for (const q of qs) this.replayKnownPendingIds.add(q.id);
     } catch {}
+  }
+
+  /** The turn's prompt-cache facts (lib/promptCache.ts) from its one
+   *  `usage final:true`. The session state is written now and reaches every
+   *  sidebar through the summary; the ledger waits for `stop`, which names the
+   *  final assistant row it belongs on (usage precedes stop for every agent;
+   *  the reverse order still lands, without a live frame). */
+  private _recordPromptCache(ev: Extract<AgentEvent, { event: 'usage' }>): void {
+    const kind = asSessionProvider(this.kind);
+    if (!PROVIDERS[kind].promptCache) return;
+    try {
+      const row = db.select({
+        model: agentSessions.model, effectiveModel: agentSessions.effectiveModel,
+        providerConfig: agentSessions.providerConfig, promptCacheJson: agentSessions.promptCacheJson,
+      }).from(agentSessions).where(eq(agentSessions.id, this.id)).get();
+      if (!row) return;
+      const previous = parsePromptCache(row.promptCacheJson);
+      const state = cacheStateFromUsage(kind, ev.turn_cache, {
+        previousTtlS: previous?.ttlS ?? null, model: row.model ?? null, account: accountProfileId(row.providerConfig),
+      });
+      if (state) {
+        db.update(agentSessions).set({ promptCacheJson: JSON.stringify(state) })
+          .where(eq(agentSessions.id, this.id)).run();
+        markSummaryDirty(this.id);
+      }
+      const ledger = ledgerFromUsage(kind, ev, {
+        model: row.effectiveModel ?? row.model ?? null, ttlS: state?.ttlS ?? previous?.ttlS ?? null,
+      });
+      const late = this.awaitingTurnLedger;
+      this.awaitingTurnLedger = null;
+      if (!ledger) return;
+      if (late && Date.now() - late.at < 30_000) {
+        db.update(sessionMessages).set({ turnUsageJson: JSON.stringify(ledger) })
+          .where(and(eq(sessionMessages.id, late.rowId), eq(sessionMessages.sessionId, this.id))).run();
+      } else {
+        this.pendingTurnLedger = ledger;
+      }
+    } catch (e: any) {
+      this._log('warn', 'sdk_error', { msg: 'prompt cache record failed', err: e?.message ?? String(e) });
+    }
+  }
+
+  /** At `stop`: the held ledger onto the turn's final assistant row (the same
+   *  tick publishes it on the `stop` frame). A turn without a final row drops
+   *  it — it must never land on a later turn's answer. */
+  private _attachTurnLedger(finalAssistantId: number | null): TurnLedger | null {
+    const ledger = this.pendingTurnLedger;
+    this.pendingTurnLedger = null;
+    this.awaitingTurnLedger = null;
+    if (finalAssistantId == null) return null;
+    if (!ledger) {
+      this.awaitingTurnLedger = { rowId: finalAssistantId, at: Date.now() };
+      return null;
+    }
+    try {
+      db.update(sessionMessages).set({ turnUsageJson: JSON.stringify(ledger) })
+        .where(and(eq(sessionMessages.id, finalAssistantId), eq(sessionMessages.sessionId, this.id))).run();
+      return ledger;
+    } catch (e: any) {
+      this._log('warn', 'sdk_error', { msg: 'turn ledger write failed', err: e?.message ?? String(e) });
+      return null;
+    }
   }
 
   private _finalizeAssistantTurn(): number | null {

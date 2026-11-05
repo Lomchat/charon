@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from . import codex_compat
+from . import prompt_cache
 from .codex_compat import ResumedThread
 from .peer_mcp import PEER_MODEL_INSTRUCTIONS
 
@@ -724,6 +725,8 @@ class CodexSession:
         self._streamed_items: set[str] = set()   # item ids that got text deltas
         self._async_question_items: set[str] = set()
         self._last_usage: dict[str, int] | None = None
+        # Per-request prompt-cache counters of the turn (prompt_cache.py).
+        self._turn_cache = prompt_cache.new_turn_cache()
         self._last_thread_usage: dict[str, Any] | None = None
         self._thread_status: dict[str, Any] | None = None
         self._mcp_startup: dict[str, dict[str, Any]] = {}
@@ -2510,6 +2513,7 @@ class CodexSession:
                             base = self._sdk_output_base = total - last
                     u["_sdk_output_tokens"] = total - base if total is not None and base is not None and total >= base else None
                     self._last_usage = u
+                    self._count_cache_request(tu)
                     out.append({"event": "usage", **u})
 
             elif pt == "ThreadStatusChangedNotification":
@@ -2678,6 +2682,9 @@ class CodexSession:
                 dm = getattr(turn, "duration_ms", None)
                 if isinstance(dm, (int, float)):
                     final["duration_ms"] = int(dm)
+                turn_cache = prompt_cache.payload(getattr(self, "_turn_cache", None) or {})
+                if turn_cache:
+                    final["turn_cache"] = turn_cache
                 out.append({"event": "usage", **final})
                 if str(status) == "failed":
                     err = getattr(turn, "error", None)
@@ -3073,6 +3080,32 @@ class CodexSession:
         except Exception:
             return str(v)
 
+    def _count_cache_request(self, tu: Any) -> None:
+        """Fold one model request (`last`) into the turn's cache counters
+        (prompt_cache.py). OpenAI's `input_tokens` INCLUDES the cached part.
+        A repeated notification (same thread `total`) is the same request."""
+        last = getattr(tu, "last", None)
+        turn_cache = getattr(self, "_turn_cache", None)
+        if last is None or turn_cache is None:
+            return
+        total = getattr(tu, "total", None)
+        key = (getattr(total, "input_tokens", None), getattr(total, "output_tokens", None))
+        if key[0] is not None and key == getattr(self, "_cache_total_key", None):
+            return
+        self._cache_total_key = key
+        inp = int(getattr(last, "input_tokens", 0) or 0)
+        cached = int(getattr(last, "cached_input_tokens", 0) or 0)
+        written = int(getattr(last, "cache_write_input_tokens", 0) or 0)
+        # OpenAI caches the prompt implicitly up to its end: whatever was not
+        # read from the cache is written to it (the field is reported as 0).
+        if written <= 0:
+            written = max(0, inp - cached)
+        prompt_cache.count_request(
+            turn_cache, read=cached, write=written,
+            uncached=max(0, inp - cached - written),
+            output=getattr(last, "output_tokens", 0),
+        )
+
     @staticmethod
     def _usage_from(tu: Any) -> dict[str, int] | None:
         if tu is None:
@@ -3330,6 +3363,7 @@ class CodexSession:
                 self._streamed_items.clear()
                 self._async_question_items.clear()
                 self._last_usage = None
+                self._turn_cache = prompt_cache.new_turn_cache()
                 # Announce the resolved model for this turn (effective_model).
                 if self.model and self.model != self._effective_model:
                     self._effective_model = self.model

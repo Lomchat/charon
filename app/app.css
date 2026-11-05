@@ -2556,6 +2556,42 @@
 }
 /* Not the selected model: red, like the runtime cell's `.has-mismatch`. */
 .bubble .bubble-h .model-chip.is-substituted { color: var(--danger-strong); opacity: 1; }
+
+/* ── Prompt cache (lib/promptCache.ts, app/PromptCacheMarks.tsx) ─────────────
+   Colour comes inline from `cacheHeat` (attention cooling to info, tokens
+   only); the I2 flame empties by TTL quarter. A cold cache is info-blue +
+   snowflake, never orange: on a card orange means "a human is waited on". */
+.cache-icon { width: 12px; height: 12px; flex: none; display: block; overflow: visible; }
+.cache-icon.cache-live { animation: cache-flicker 1.1s ease-in-out infinite; transform-origin: 50% 100%; }
+@keyframes cache-flicker { 50% { transform: scale(1.08, 1.14); } }
+@media (prefers-reduced-motion: reduce) { .cache-icon.cache-live { animation: none; } }
+.cs-cache { display: inline-flex; flex-shrink: 0; }
+.cs-cache .cache-icon { width: 11px; height: 11px; }
+.cs-card-cache { flex-shrink: 0; font-weight: 600; white-space: nowrap; }
+.cs-chip-warm .cs-chip-face .cache-icon { width: 12px; height: 12px; color: var(--attention); }
+.app-bar .bar-context-cache {
+  display: inline-flex; align-items: center; gap: 3px; flex: none;
+  font-weight: 600; white-space: nowrap; cursor: help;
+}
+.app-bar .bar-context-cache .cache-icon { width: 10px; height: 10px; }
+/* The turn's ledger, after the model chip: mini-bar, %, read, out, cost,
+   duration. The first thing to give way on a narrow bubble. */
+.bubble .bubble-h .turn-ledger {
+  display: inline-flex; align-items: center; gap: 5px; min-width: 0; flex-shrink: 1;
+  overflow: hidden; white-space: nowrap; cursor: help;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em; color: var(--text-muted); opacity: 0.8;
+}
+.turn-ledger > span:not(.turn-ledger-bar) + span::before { content: '·'; margin-right: 5px; opacity: 0.5; }
+.turn-ledger-bar {
+  display: inline-flex; width: 26px; height: 4px; flex: none; overflow: hidden;
+  border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+}
+.turn-ledger-bar i { display: block; height: 100%; }
+.turn-ledger-bar .read { background: var(--attention); }
+.turn-ledger-bar .write { background: var(--info); }
+.turn-ledger-pct { display: inline-flex; align-items: center; gap: 3px; }
+.turn-ledger .cache-icon { width: 10px; height: 10px; }
+.turn-ledger.cold .turn-ledger-pct, .turn-ledger.cold .turn-ledger-cost { color: var(--info); }
 .bubble .tag {
   display: inline-block;
   font-family: var(--display); font-size: 9px;

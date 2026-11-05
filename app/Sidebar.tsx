@@ -33,6 +33,8 @@ import { focusAdmits, focusEmptyText, sessionFocusFacts, shellFocusFacts } from 
 import PanelResizer from './PanelResizer';
 import { usePanelLayout } from './panelLayoutStore';
 import { tipAttrs } from './tooltipText';
+import { CacheFlame, SessionCacheMark, cacheClockActive, sessionCacheFootText, useCacheTick, useSessionCacheReading } from './PromptCacheMarks';
+import { cacheHeat, cacheTipLines } from '@/lib/promptCache';
 import { isPanelClosed, sideTier } from './panelLayout';
 import { isPausedSession } from './pausedCleanup';
 
@@ -49,6 +51,7 @@ const DETAILS_KEY = 'hub.claude.showDetails.v1';
 // The focus chips ("unread", "running"), browser-local like DETAILS_KEY.
 const FOCUS_UNREAD_KEY = 'hub.claude.focusUnread.v1';
 const FOCUS_RUNNING_KEY = 'hub.claude.focusRunning.v1';
+const FOCUS_WARM_KEY = 'hub.claude.focusWarm.v1';
 const ACTIVE_STATUSES = new Set(['active', 'thinking', 'starting', 'failed', 'background']);
 
 function pathCollapseKey(vpsId: string, cwd: string | null | undefined): string {
@@ -305,6 +308,7 @@ export default function Sidebar({
   // ADD up (both on = either kind), and narrow every other filter's result.
   const [focusUnread, setFocusUnread] = useState(false);
   const [focusRunning, setFocusRunning] = useState(false);
+  const [focusWarm, setFocusWarm] = useState(false);
   // Browser-local Windows-style selection. `selectedId` remains the ONE open
   // workspace tab; this set is only what a bulk context action targets.
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
@@ -339,6 +343,7 @@ export default function Sidebar({
       if (localStorage.getItem(DETAILS_KEY) === '1') setShowDetails(true);
       if (localStorage.getItem(FOCUS_UNREAD_KEY) === '1') setFocusUnread(true);
       if (localStorage.getItem(FOCUS_RUNNING_KEY) === '1') setFocusRunning(true);
+      if (localStorage.getItem(FOCUS_WARM_KEY) === '1') setFocusWarm(true);
     } catch {}
   }, []);
   function toggleFocus(key: string, set: (fn: (v: boolean) => boolean) => void) {
@@ -455,8 +460,11 @@ export default function Sidebar({
   // leave the main pane blank with no explanation.
   const showEntity = isEntityShown ?? (() => true);
   // The focus chips (app/sidebarFocus.ts): unread and/or running, added up.
-  const focus = { unread: focusUnread, running: focusRunning };
-  const focusing = focusUnread || focusRunning;
+  const focus = { unread: focusUnread, running: focusRunning, warm: focusWarm };
+  const focusing = focusUnread || focusRunning || focusWarm;
+  // The shared prompt-cache clock (PromptCacheMarks): ticks only while some
+  // session's cache is warm, so "warm" stays true to the minute.
+  const cacheNow = useCacheTick(sessions.some((s) => cacheClockActive(s.promptCache)));
   function allSessionsFor(vpsId: string): SessionListItem[] {
     return sessions.filter((s) => s.vpsId === vpsId)
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
@@ -468,7 +476,7 @@ export default function Sidebar({
   function visibleSessionsFor(all: SessionListItem[]): SessionListItem[] {
     return sidebarVisiblePathItems(all, (s) =>
       (showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      && (s.id === selectedId || (showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, selectedId)))));
+      && (s.id === selectedId || (showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, selectedId, cacheNow)))));
   }
   function sessionsFor(vpsId: string): SessionListItem[] {
     return visibleSessionsFor(allSessionsFor(vpsId));
@@ -580,12 +588,13 @@ export default function Sidebar({
   // The focus chips count within the path filter, like "paused".
   const scopedSessions = sessions.filter((s) => showEntity(s.vpsId, s.cwd, 'session'));
   const scopedShells = shells.filter((sh) => showEntity(sh.vpsId, sh.cwd, 'shell'));
-  const sessionFacts = scopedSessions.map((s) => sessionFocusFacts(s, selectedId));
+  const sessionFacts = scopedSessions.map((s) => sessionFocusFacts(s, selectedId, cacheNow));
   const shellFacts = scopedShells.map((sh) => shellFocusFacts(sh, selectedShellId));
   const unreadCount = [...sessionFacts, ...shellFacts].filter((f) => f.unread).length;
   const runningCount = [...sessionFacts, ...shellFacts].filter((f) => f.running).length;
+  const warmCount = sessionFacts.filter((f) => f.warm).length;
   const focusEmpty = focusing
-    && (focusUnread ? unreadCount : 0) + (focusRunning ? runningCount : 0) === 0;
+    && (focusUnread ? unreadCount : 0) + (focusRunning ? runningCount : 0) + (focusWarm ? warmCount : 0) === 0;
 
   return (
     <>
@@ -691,6 +700,15 @@ export default function Sidebar({
             })}>
               <input type="checkbox" checked={focusRunning} onChange={() => toggleFocus(FOCUS_RUNNING_KEY, setFocusRunning)} aria-label="List only running sessions" />
               <span className="cs-chip-face"><IconLightningCharge />{runningCount > 0 ? <span className="cs-chip-count">{runningCount}</span> : null}</span>
+            </label>
+            <label className="cs-chip cs-chip-warm" title="Warm cache" {...tipAttrs({
+              detail: [warmCount ? `${warmCount} with a warm prompt cache` : 'No warm prompt cache',
+                'A warm cache makes the next message cheaper — until it expires',
+                focusWarm ? 'Filter on — listing only these' : null],
+              actions: [['Click', focusWarm ? 'list everything' : 'list only these']],
+            })}>
+              <input type="checkbox" checked={focusWarm} onChange={() => toggleFocus(FOCUS_WARM_KEY, setFocusWarm)} aria-label="List only sessions with a warm prompt cache" />
+              <span className="cs-chip-face"><CacheFlame level={4} />{warmCount > 0 ? <span className="cs-chip-count">{warmCount}</span> : null}</span>
             </label>
           </span>
         </div>
@@ -1509,6 +1527,9 @@ function SessionRow({
   // status (a gate is always raised mid-turn), async question ⇒ "question",
   // unread ⇒ the green ✓ (hidden on the card you are reading).
   const attention = attentionForRow(s, { viewedHere: selected });
+  // The prompt cache the last turn left (lib/promptCache.ts), on the shared
+  // clock: the mark, a tooltip block and the details line all read it.
+  const cache = useSessionCacheReading(s);
   const effective = attention === 'blocked' ? 'waiting' : attention === 'question' ? 'question' : baseStatus;
   const dotClass = DOT_CLASS[effective] ?? 'dot-gray';
   if (editing) {
@@ -1521,6 +1542,7 @@ function SessionRow({
     );
   }
   const preview = (s.firstUserMessage ?? '').replace(/\s+/g, ' ').trim();
+  const cacheFoot = deleting ? null : sessionCacheFootText(cache);
   const headline = s.name || (preview ? preview.slice(0, 60) : s.cwd.split('/').slice(-2).join('/'));
   const age = formatAge(s.createdAt);
   // Unsent text in this browser tab's composer (inputDraftStore.ts). Not on the
@@ -1538,6 +1560,7 @@ function SessionRow({
       s.cwd,
       age ? agePhrase('created', age) : null,
       draft ? 'Unsent draft' : null,
+      ...(cache && cache.phase !== 'small' && !deleting ? cacheTipLines(cache) : []),
     ],
     quote: preview && preview !== headline ? preview : null,
     actions: deleting ? [] : [
@@ -1644,6 +1667,7 @@ function SessionRow({
             ◐{bgRunning}
           </span>
         )}
+        {!deleting && <SessionCacheMark reading={cache} />}
         <span className={`cs-state ${deleting ? 'deleting' : effective === 'question' ? 'waiting' : effective}`}>
           {deleting ? 'deleting…' : (STATUS_TEXT[effective] ?? effective)}
         </span>
@@ -1660,6 +1684,7 @@ function SessionRow({
             </span>
           )}
           <span className="cs-card-cwd">{cwdTail(s.cwd, 30)}</span>
+          {cacheFoot && <span className="cs-card-cache" style={{ color: cacheHeat(cache!) }}>{cacheFoot}</span>}
           {age && <span className="cs-card-age" suppressHydrationWarning>{age}</span>}
         </div>
       )}

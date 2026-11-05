@@ -274,6 +274,11 @@ export type AgentEvent = (
       event: 'usage'; session_id: string; output_tokens: number;
       input_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number;
       final?: boolean; duration_ms?: number; cost_usd?: number | null;
+      // Final frame only (agent >= 0.121.0): the model-API share of the
+      // turn's wall time (Claude) and the per-request prompt-cache counters
+      // (lib/promptCache.ts § AgentTurnCache).
+      duration_api_ms?: number;
+      turn_cache?: import('@/lib/promptCache').AgentTurnCache;
       sdk_throughput?: { output_tokens: number; elapsed_ms: number };
       endpoint_accounted?: boolean;
       tree?: {

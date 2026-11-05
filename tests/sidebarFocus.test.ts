@@ -14,9 +14,9 @@ describe('sidebar focus chips', () => {
   const idle = sessionFocusFacts(session({ id: 'i' }), null);
 
   it('reads unread and running the way the cards do', () => {
-    expect(unread).toEqual({ unread: true, running: false });
-    expect(running).toEqual({ unread: false, running: true });
-    expect(idle).toEqual({ unread: false, running: false });
+    expect(unread).toEqual({ unread: true, running: false, warm: false });
+    expect(running).toEqual({ unread: false, running: true, warm: false });
+    expect(idle).toEqual({ unread: false, running: false, warm: false });
     // The open session's ✓ is not drawn, so it is not "unread" here either.
     expect(sessionFocusFacts(session({ id: 'u', unreadStop: 1 }), 'u').unread).toBe(false);
   });
@@ -41,5 +41,18 @@ describe('sidebar focus chips', () => {
     expect(focusEmptyText({ unread: true, running: false })).toBe('Nothing unread.');
     expect(focusEmptyText({ unread: false, running: true })).toBe('Nothing running.');
     expect(focusEmptyText({ unread: true, running: true })).toBe('Nothing unread or running.');
+    expect(focusEmptyText({ unread: true, running: true, warm: true })).toBe('Nothing unread, running or with a warm cache.');
+  });
+
+  it('"warm" = a prompt cache not yet expired, on the shared clock (0 = server render)', () => {
+    const now = 1_700_000_000_000;
+    const pc = { at: now, expiresAt: now + 600_000, ttlS: 3600, promptTokens: 200_000 };
+    const warm = session({ id: 'w', promptCache: pc });
+    expect(sessionFocusFacts(warm, null, now).warm).toBe(true);
+    expect(sessionFocusFacts(warm, null, now + 601_000).warm).toBe(false);
+    expect(sessionFocusFacts(warm, null).warm).toBe(false);
+    const facts = sessionFocusFacts(warm, null, now);
+    expect(focusAdmits({ unread: false, running: false, warm: true }, facts)).toBe(true);
+    expect(focusAdmits({ unread: false, running: false, warm: true }, idle)).toBe(false);
   });
 });

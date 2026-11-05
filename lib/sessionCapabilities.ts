@@ -199,6 +199,20 @@ export type ProviderDescriptor = {
    *  question every backend owes an answer to, and a new one whose cost IS
    *  billed must not inherit silence (§14.102). */
   turnCost: 'billed' | 'equivalent' | 'none';
+  /** The provider's prompt cache (lib/promptCache.ts), or null when the
+   *  backend reports nothing usable (no indicator, no turn ledger).
+   *  `ttlS` = a fixed TTL when the agent cannot report one (null = reported
+   *  per turn, falling back to `defaultTtlS`); `approx` marks an estimate;
+   *  `inputExcludesCache` = the flat usage fields follow the uncached-input
+   *  convention (an old agent's turn can still be ledgered); `multipliers` =
+   *  read/write price vs plain input for a model and TTL. */
+  promptCache: null | {
+    ttlS: number | null;
+    defaultTtlS: number;
+    approx: boolean;
+    inputExcludesCache: boolean;
+    multipliers: (model: string | null, ttlS: number) => { read: number; write: number };
+  };
   /** What an `edit_snapshot` row from this backend CONTAINS.
    *
    *  `'contents'` a before/after pair Charon diffs itself — the only shape a
@@ -300,6 +314,15 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // rate. A Charon session signs in with OAuth, so it draws on the plan's
     // quota — the gauges (§14.58) are what that costs, not this.
     turnCost: 'equivalent',
+    // TTL per turn from `cache_creation.ephemeral_1h/5m`; reads are 0.1× input
+    // (0.05× Opus 5.5, 0.025× Fable/Mythos 5.1), writes 1.25× (5 min) / 2× (1 h).
+    promptCache: {
+      ttlS: null, defaultTtlS: 300, approx: false, inputExcludesCache: true,
+      multipliers: (model, ttlS) => ({
+        read: /opus-5-5/.test(model ?? '') ? 0.05 : /(fable|mythos)-5-1/.test(model ?? '') ? 0.025 : 0.1,
+        write: ttlS >= 3600 ? 2 : 1.25,
+      }),
+    },
     efforts: CLAUDE_EFFORTS,
     effortAxis: 'static',
     editSnapshot: 'contents',
@@ -357,6 +380,15 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     usageDashboardUrl: null,
     // The app-server sends token counts and no money at all.
     turnCost: 'none',
+    // No TTL reported: OpenAI guarantees ≥ 30 min (gpt-5.6+), hence "≈". Reads
+    // 0.1× (0.05× GPT-6.1 Sol/Terra); writes 1.25× from gpt-5.6, free before.
+    promptCache: {
+      ttlS: 1800, defaultTtlS: 1800, approx: true, inputExcludesCache: false,
+      multipliers: (model) => ({
+        read: /gpt-6\.1-(sol|terra)/.test(model ?? '') ? 0.05 : 0.1,
+        write: /gpt-(5\.([6-9]|\d\d)|[6-9])/.test(model ?? '') ? 1.25 : 1,
+      }),
+    },
     efforts: CODEX_EFFORTS,
     effortAxis: 'static',
     // Unified diffs with no pre-image, so no split view and no revert (§14.59).
@@ -440,6 +472,8 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // Real spend: `raw_cost_cents` off the SDK's own run record (§14.103), and
     // the only per-turn figure in the fleet a user is actually charged for.
     turnCost: 'billed',
+    // The SDK reports no per-request cache counters nor TTL.
+    promptCache: null,
     efforts: [],
     effortAxis: 'model',
     // The SDK reports no per-file snapshots, so the diffs tab has nothing of

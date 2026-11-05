@@ -4,12 +4,17 @@ import React from 'react';
 import {
   contextUsagePercentage, contextWindowTokenLabel, type SessionContextUsage,
 } from './sessionInsightState';
+import type { CacheReading } from '@/lib/promptCache';
+import { CacheGaugeMark } from './PromptCacheMarks';
 
 /** Compact, shared-context summary under the cwd in the session header. */
 export default function HeaderContextGauge({
-  context, onCompact, compacting, compactDisabled, compactError,
+  context, cache, onCompact, compacting, compactDisabled, compactError,
 }: {
   context: SessionContextUsage | null;
+  /** The prompt cache as of now (lib/promptCache.ts): a marker after the
+   *  token count — what the row shows will be re-read, this says at what price. */
+  cache?: CacheReading | null;
   onCompact: () => void | Promise<void>;
   compacting: boolean;
   compactDisabled: boolean;
@@ -35,6 +40,7 @@ export default function HeaderContextGauge({
         </span>
         <b>{rounded}%</b>
         <span className="bar-context-tokens">{tokenLabel}</span>
+        <CacheGaugeMark reading={cache ?? null} />
       </span>
       <button type="button" className="bar-context-compact"
         onClick={() => void onCompact()} disabled={compacting || compactDisabled}

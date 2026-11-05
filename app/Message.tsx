@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
+import { TurnLedgerChip } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
 import { apiErrorText, providerAccountLabel } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
@@ -191,6 +192,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             {m.model}
           </span>
         )}
+        {isAssistant && m.turnUsage && <TurnLedgerChip ledger={m.turnUsage} provider={kind} />}
         {m.createdAt > 0 && (
           <span className="bubble-h-meta">
             <MessageTime ts={m.createdAt} />

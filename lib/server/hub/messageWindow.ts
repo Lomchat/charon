@@ -54,6 +54,8 @@ export const publicMessageColumns = {
   // The CLI transcript entry this row came from — the anchor "fork from here"
   // branches at. Cheap (a uuid string) and only ever set on assistant rows.
   cliUuid: sessionMessages.cliUuid,
+  // The turn's prompt-cache ledger, on final assistant rows only (lib/promptCache.ts).
+  turnUsageJson: sessionMessages.turnUsageJson,
   createdAt: sessionMessages.createdAt,
 };
 

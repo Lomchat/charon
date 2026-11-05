@@ -315,6 +315,10 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // (lib/scheduledTasks.ts). NULL = never reported. Kept while the session
   // sleeps: the CLI restores them on resume. Read as `scheduledTasks`.
   scheduledTasksJson: text('scheduled_tasks'),
+  // The prompt cache left by the last turn: JSON `PromptCacheState`
+  // (lib/promptCache.ts) — last request time, expiry, prompt size. NULL =
+  // never reported or a backend without one. Read as `promptCache`.
+  promptCacheJson: text('prompt_cache'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [
@@ -383,6 +387,10 @@ export const sessionMessages = sqliteTable('session_messages', {
   // per-message action. Null on user rows, side-channel rows, and everything
   // persisted before agent 0.39.0.
   cliUuid: text('cli_uuid'),
+  // The turn's input ledger (JSON `TurnLedger`, lib/promptCache.ts) on its
+  // FINAL assistant row, written at `stop`. Null elsewhere and on turns
+  // before the feature.
+  turnUsageJson: text('turn_usage'),
   tsMs: integer('ts_ms'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`)
 }, (t) => [

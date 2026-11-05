@@ -22,6 +22,7 @@ import { DEFAULT_SESSION_PROVIDER, PROVIDERS, isSessionProvider, type SessionPro
 import { appendThinkingMessage, closeThinkingMessage } from './thinkingMessages';
 import { parseAsyncQuestion, resolveAsyncQuestionMessages } from '@/lib/asyncQuestions';
 import { scheduledFireContent } from '@/lib/scheduledTasks';
+import { parseTurnLedger } from '@/lib/promptCache';
 
 // Shape of a message as it comes from the `GET /api/sessions/[id]` API.
 // Deliberately permissive (the `role` values in the DB are free-form strings).
@@ -34,6 +35,8 @@ export type PersistedMessage = {
   model?: string | null;
   assistantFinal?: number | null;
   peerReplyTo?: string;
+  // Final assistant rows: the turn's prompt-cache ledger (JSON TurnLedger).
+  turnUsageJson?: string | null;
 };
 
 export type RebuiltSessionState = {
@@ -279,6 +282,7 @@ export function rebuildStateFromMessages(
       // elsewhere) so the bubble header chip survives every refetch.
       model: m.model ?? null,
       assistantFinal: m.assistantFinal ?? null,
+      ...(m.role === 'assistant' && m.turnUsageJson ? { turnUsage: parseTurnLedger(m.turnUsageJson) } : {}),
       ...(m.role === 'assistant' && m.peerReplyTo ? { replyTo: m.peerReplyTo } : {}),
     });
   }

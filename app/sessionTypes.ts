@@ -30,6 +30,9 @@ export type Msg = {
   // 0 = intermediate assistant text, 1 = this turn's final answer;
   // null/absent = legacy or imported message with unknown classification.
   assistantFinal?: number | null;
+  // Final assistant rows: the turn's prompt-cache ledger (lib/promptCache.ts),
+  // rendered in the bubble header. Absent on turns before the feature.
+  turnUsage?: import('@/lib/promptCache').TurnLedger | null;
   // role='external' only: the addressable name of the session that sent this
   // message. Rendered as a chip beside the role, the same way an assistant
   // bubble shows the model that produced it.

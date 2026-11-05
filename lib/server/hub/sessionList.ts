@@ -1,4 +1,5 @@
 import 'server-only';
+import { parsePromptCache } from '@/lib/promptCache';
 import { eq, sql } from 'drizzle-orm';
 import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
@@ -135,6 +136,8 @@ export function annotateSessionRows(
       providerConfig: undefined as unknown as AgentSession['providerConfig'],
       scheduledTasksJson: undefined as unknown as AgentSession['scheduledTasksJson'],
       scheduledTasks: parseScheduledTasks(r.scheduledTasksJson),
+      promptCacheJson: undefined as unknown as AgentSession['promptCacheJson'],
+      promptCache: parsePromptCache(r.promptCacheJson),
       accountProfile: accountProfileId(r.providerConfig), accountProfileNumber: accountProfileNumber(r.providerConfig),
       endpoint: publicConnection(r.providerConfig),
       liveStatus,
