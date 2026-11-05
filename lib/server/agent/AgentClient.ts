@@ -987,7 +987,17 @@ export class AgentClient {
     }
     try {
       const shouldPersist = isMissing || this.reconnectAttempts >= ERROR_PERSIST_AFTER_ATTEMPTS;
-      if (shouldPersist) {
+      // An agent that stays down re-fails every backoff step with the SAME
+      // verdict: rewriting it re-published an identical `vps_status` to every
+      // tab each time, and each one re-rendered the hub. No change, no write,
+      // no frame (§14.52: it is the WRITE that owes the frame).
+      const [stored] = shouldPersist
+        ? db.select({ agentStatus: vpsTable.agentStatus, agentLastError: vpsTable.agentLastError })
+          .from(vpsTable).where(eq(vpsTable.id, this.vps.id)).all()
+        : [];
+      const changed = !stored || stored.agentStatus !== this.lastClassified
+        || (stored.agentLastError ?? null) !== this.lastErrorDetail;
+      if (shouldPersist && changed) {
         db.update(vpsTable).set({
           agentStatus: this.lastClassified,
           agentLastError: this.lastErrorDetail,

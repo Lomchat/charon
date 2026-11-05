@@ -354,6 +354,39 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
   return { ok: false, mode: 'nohup', detail: `systemd: ${r.stderr.slice(-200) || r.stdout.slice(-200)} | nohup: ${r2.stderr.slice(-200)}` };
 }
 
+type PingResult = Awaited<ReturnType<typeof pingAgent>>;
+
+/** `--connect` exit 2's own message: the daemon has not opened its socket. */
+const SOCKET_ABSENT = /daemon not started|socket .*not found/i;
+
+/**
+ * Ping until the daemon answers, waiting ONLY while its socket is merely
+ * absent: a freshly installed or restarted daemon can take seconds to open it
+ * (first imports of the provider SDKs), and a one-shot ping reported a working
+ * install as failed. Any other failure answers at once; a daemon that never
+ * comes up fails when `budgetMs` runs out. `ping`/`sleep` are test seams.
+ */
+export async function pingUntilUp(
+  ping: () => Promise<PingResult>,
+  opts: { budgetMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<PingResult> {
+  const budgetMs = opts.budgetMs ?? 20_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const deadline = now() + budgetMs;
+  let delay = 1_000;
+  for (;;) {
+    const r = await ping();
+    if (r.ok || !SOCKET_ABSENT.test(r.detail) || now() + delay > deadline) return r;
+    await sleep(delay);
+    delay = Math.min(delay * 2, 4_000);
+  }
+}
+
+export async function pingAgentUntilUp(vps: Vps, session?: SshSession): Promise<PingResult> {
+  return pingUntilUp(() => pingAgent(vps, session));
+}
+
 export async function pingAgent(
   vps: Vps,
   session?: SshSession,
@@ -935,14 +968,9 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
       return { ok: false, detail: `restart failed: ${tail}` };
     }
 
-    // Step 3: ping to get the new version + sha (hello).
-    // Retry once after 2s if the first ping fails — the daemon can take a
-    // little time to open its socket depending on the machine.
-    let ping = await pingAgent(vps, session);
-    if (!ping.ok) {
-      await new Promise((r) => setTimeout(r, 2000));
-      ping = await pingAgent(vps, session);
-    }
+    // Step 3: ping to get the new version + sha (hello), waiting while the
+    // restarted daemon has not opened its socket yet (`pingUntilUp`).
+    const ping = await pingAgentUntilUp(vps, session);
     if (!ping.ok) {
       return { ok: false, detail: `ping after restart: ${ping.detail}` };
     }
@@ -1326,9 +1354,9 @@ async function* bootstrapVpsInner(
   }
   yield { phase: 'install_service', status: svcR.mode === 'systemd' ? 'ok' : 'warn', detail: svcR.detail };
 
-  // Phase 4: ping_agent
+  // Phase 4: ping_agent (a first boot can take seconds to open the socket)
   yield { phase: 'ping_agent', status: 'running' };
-  const pingR = await pingAgent(vps, session);
+  const pingR = await pingAgentUntilUp(vps, session);
   if (!pingR.ok) {
     yield { phase: 'ping_agent', status: 'error', detail: pingR.detail };
     yield { phase: 'done', status: 'error', detail: 'the daemon is not responding to ping' };
