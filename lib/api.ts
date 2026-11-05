@@ -244,9 +244,10 @@ export const api = {
     // via the next vps_status hello.
     send<UpdateVpsAgentResponse>('POST', `/api/vps/${id}/agent/update`, undefined, { timeoutMs: 360_000 }),
   refreshVpsAgent: (id: string) =>
-    // Can take up to ~40s in the worst case (reconnect → start daemon →
-    // reconnect), so override the default 30s client timeout.
-    send<RefreshVpsAgentResponse>('POST', `/api/vps/${id}/agent/refresh`, undefined, { timeoutMs: 50_000 }),
+    // Reconnect → start the daemon → reconnect, and when the box answers SSH
+    // but the agent won't stay up, a full redeploy (the update flow, pip
+    // included): the update's own budget.
+    send<RefreshVpsAgentResponse>('POST', `/api/vps/${id}/agent/refresh`, undefined, { timeoutMs: 360_000 }),
   // Account usage (the `/usage` gauges) for a VPS's Claude account (§14.58).
   // `cachedOnly`: the hub's snapshot, never an awaited poll (header account buttons).
   getVpsUsage: (id: string, provider?: SessionProvider, profile = 'default', refresh = false, cachedOnly = false) =>

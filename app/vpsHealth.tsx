@@ -49,7 +49,7 @@ export type VpsHealthAxis = {
 export type VpsHealth = {
   agentStatus: string;
   // Classified error code parsed from vps.agentLastError (null when n/a):
-  // 'ssh-auth' | 'ssh-unreachable' | 'daemon-down' | 'error'.
+  // 'ssh-auth' | 'ssh-hostkey' | 'ssh-unreachable' | 'daemon-down' | 'error'.
   errCode: string | null;
   axes: VpsHealthAxis[];   // always the 4 axes, in ssh→agent→claude→codex order
   // Aggregate of the per-axis fixes, deduped by action (axis order = priority,
@@ -114,6 +114,16 @@ export function diagnoseVps(
       detail: `SSH refused the key (wrong/missing key or user)${errSuffix}${lastContactSuffix(v)}`,
       fixes: [{ action: 'refresh', label: '↻ retry', title: 'retry the SSH connection', primary: true }],
     });
+  } else if (status === 'error' && code === 'ssh-hostkey') {
+    // Never auto-accepted (an intercepted connection looks exactly like a
+    // reinstall): no button would be honest, retrying cannot change the key.
+    axes.push({
+      key: 'ssh', state: 'err', label: 'host key ✗',
+      detail: 'This VPS now presents a DIFFERENT SSH host key than the one Charon trusts — the server was reinstalled, '
+        + 'or the connection is intercepted. If you reinstalled it, remove its line from ~/.ssh/charon_known_hosts on the hub, '
+        + `then retry${errSuffix}${lastContactSuffix(v)}`,
+      fixes: [{ action: 'refresh', label: '↻ retry', title: 'retry once the host key has been checked and reset', primary: true }],
+    });
   } else if (status === 'error' && code === 'ssh-unreachable') {
     axes.push({
       key: 'ssh', state: 'err', label: 'ssh ✗',
@@ -170,16 +180,16 @@ export function diagnoseVps(
     axes.push({
       key: 'agent', state: 'err', label: 'agent stopped',
       detail: `installed, but the daemon is not running${errSuffix}${lastContactSuffix(v)}`,
-      fixes: [{ action: 'refresh', label: '↻ start agent', title: 'start the agent daemon and reconnect', primary: true }],
+      fixes: [{ action: 'refresh', label: '↻ start agent', title: 'start the agent daemon and reconnect — if it will not stay up, redeploy this hub\'s agent', primary: true }],
     });
-  } else if (status === 'error' && (code === 'ssh-auth' || code === 'ssh-unreachable')) {
+  } else if (status === 'error' && (code === 'ssh-auth' || code === 'ssh-hostkey' || code === 'ssh-unreachable')) {
     axes.push({ key: 'agent', state: 'unk', label: 'agent ?', detail: 'unknown while SSH is failing' });
   } else if (status === 'error') {
     axes.push({
       key: 'agent', state: 'err', label: 'agent ✗',
       detail: `connection to the agent dropped${errSuffix}${lastContactSuffix(v)}`,
       fixes: [
-        { action: 'refresh', label: '↻ refresh', title: 'reconnect (and start the daemon if needed)', primary: true },
+        { action: 'refresh', label: '↻ refresh', title: 'reconnect, start the daemon if needed, redeploy the agent if it will not stay up', primary: true },
         { action: 'install', label: 'reinstall', title: 'redo the full bootstrap', primary: false },
       ],
     });
@@ -273,6 +283,7 @@ export function agentAvailability(v: Vps): { ok: boolean; reason: string; fix?: 
   if (h.agentStatus === 'ok') return { ok: true, reason: 'agent up' };
   const reasons: Record<string, string> = {
     'ssh-auth': 'SSH key refused',
+    'ssh-hostkey': 'SSH host key changed',
     'ssh-unreachable': 'VPS unreachable (SSH)',
     'daemon-down': 'agent stopped',
   };

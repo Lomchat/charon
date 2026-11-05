@@ -931,12 +931,19 @@ export async function updateVpsAgent(vps: Vps): Promise<UpdateAgentResult> {
     // `KillMode=process` (0.10.0), without which systemd's control-group
     // sweep kills the detached shell HOLDERS on restart and shells lose
     // their agent-restart survival.
+    // Enabled + linger too (idempotent, same lines as the install): an update
+    // is also how a box whose install never finished — unit absent or never
+    // enabled — gets repaired (agent/refresh redeploys a daemon that won't
+    // stay up), and that agent must survive the next logout and reboot.
     const unitB64ForUpdate = Buffer.from(SYSTEMD_UNIT, 'utf8').toString('base64');
     const restartCmd = [
       'export XDG_RUNTIME_DIR=/run/user/$(id -u) 2>/dev/null || true',
+      'loginctl enable-linger "$(whoami)" 2>/dev/null || sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || true',
+      'systemctl start user@$(id -u).service 2>/dev/null || sudo -n systemctl start user@$(id -u).service 2>/dev/null || true',
       'mkdir -p ~/.config/systemd/user 2>/dev/null || true',
       `echo '${unitB64ForUpdate}' | base64 -d > ~/.config/systemd/user/${UNIT_NAME} 2>/dev/null || true`,
       'systemctl --user daemon-reload 2>/dev/null || true',
+      `systemctl --user enable ${UNIT_NAME} >/dev/null 2>&1 || true`,
       `if systemctl --user restart ${UNIT_NAME} 2>/dev/null; then`,
       '  sleep 1',
       `  if systemctl --user is-active ${UNIT_NAME} >/dev/null 2>&1; then`,

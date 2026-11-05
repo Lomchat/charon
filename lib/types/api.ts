@@ -828,8 +828,11 @@ export type RefreshVpsAgentResponse = {
   agentVersion?: string | null;
   agentPyzSha?: string | null;
   // Classified failure detail when agentStatus='error' (vps.agentLastError
-  // format: 'ssh-auth: …' | 'ssh-unreachable: …' | 'daemon-down: …' | 'error: …').
+  // format: 'ssh-auth: …' | 'ssh-hostkey: …' | 'ssh-unreachable: …' | 'daemon-down: …' | 'error: …').
   agentLastError?: string | null;
+  /** Set when the daemon would not stay up and the hub redeployed its agent
+   *  (the update flow's summary). */
+  repaired?: string;
   error?: string;
 };
 

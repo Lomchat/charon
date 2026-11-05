@@ -117,7 +117,7 @@ export function classifyAgentFailure(
   code: number | null,
   stderrTail: string,
   spawnError: string | null,
-): { code: 'ssh-auth' | 'ssh-unreachable' | 'daemon-down' | 'error'; detail: string } {
+): { code: AgentFailureCode; detail: string } {
   // Last meaningful stderr line (errors come last; skip the known noise).
   const line = stderrTail
     .split('\n')
@@ -133,12 +133,30 @@ export function classifyAgentFailure(
   }
   const sshLevel = code === 255 || code === null; // 255 = OpenSSH client failure; null = spawn error/kill
   if (sshLevel) {
-    if (/permission denied|authentication|host key verification|too many authentication|no matching|sign_and_send|publickey/i.test(line)) {
+    // With `accept-new`, an UNKNOWN host is trusted on first contact: a host
+    // key failure means the VPS now presents a DIFFERENT key (reinstalled —
+    // or intercepted). Its own code: retrying cannot fix it, and accepting
+    // the new key is the operator's call, never automatic.
+    if (/host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(stderrTail)) {
+      return { code: 'ssh-hostkey', detail };
+    }
+    if (/permission denied|authentication|too many authentication|no matching|sign_and_send|publickey/i.test(line)) {
       return { code: 'ssh-auth', detail };
     }
     return { code: 'ssh-unreachable', detail: detail || 'ssh connection failed' };
   }
   return { code: 'error', detail: detail || `ssh exit ${code}` };
+}
+
+export type AgentFailureCode = 'ssh-auth' | 'ssh-hostkey' | 'ssh-unreachable' | 'daemon-down' | 'error';
+
+/** Did this failure happen AFTER SSH reached the box (the remote command
+ *  ran)? Then the agent itself is broken — dead, crash-looping, a truncated
+ *  pyz — and redeploying it can help; an SSH-level failure it cannot. */
+export function failureReachedVps(status: string | null | undefined, lastErrorDetail: string | null | undefined): boolean {
+  if (status !== 'error' || !lastErrorDetail) return false;
+  const code = lastErrorDetail.split(':', 1)[0].trim();
+  return code === 'daemon-down' || code === 'error';
 }
 
 export type EventListener = (ev: AgentEvent) => void;

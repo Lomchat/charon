@@ -98,6 +98,8 @@ export const vps = sqliteTable('vps', {
   // tell "the VPS itself is unreachable" apart from "SSH is fine but the agent
   // daemon is down". Format: '<code>: <first stderr line>' where code ∈
   //   'ssh-auth'        — SSH reached the host but auth failed (key refused)
+  //   'ssh-hostkey'     — the host presents a DIFFERENT key than the trusted
+  //                       one (reinstalled or intercepted; never auto-accepted)
   //   'ssh-unreachable' — SSH could not reach the host (down/network/firewall)
   //   'daemon-down'     — SSH ok, pyz present, but the daemon isn't running
   //                       (--connect exit 2/3: socket absent / connect failed)

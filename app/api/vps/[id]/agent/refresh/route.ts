@@ -6,6 +6,8 @@ import { requireApiSession } from '@/lib/server/session';
 import { dropAgentClient, getAgentClient } from '@/lib/server/agent/AgentClientPool';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { ensureAgentRunning } from '@/lib/server/hub/bootstrap';
+import { runAgentUpdateFlow } from '@/lib/server/hub/agentUpdate';
+import { failureReachedVps } from '@/lib/server/agent/AgentClient';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
 import type { AgentClient } from '@/lib/server/agent/AgentClient';
 
@@ -38,6 +40,11 @@ async function tryConnect(v: Vps, waitMs: number): Promise<AgentClient> {
 //   Phase 2 (only if Phase 1 fails): start the daemon IF it isn't already
 //            running, then reconnect. Revives a dead daemon without restarting
 //            a healthy one. See §14 gotcha "false agent-in-error".
+//   Phase 3 (only if SSH works but the daemon still won't answer): redeploy
+//            this hub's agent through the update flow. A dead daemon never
+//            says hello, so the fleet auto-update never reaches it: an old,
+//            crash-looping or truncated pyz stays broken until something
+//            pushes the current one. Nothing to interrupt — it answers nobody.
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -78,6 +85,28 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     console.warn(`[agent/refresh ${v.id}] ensureAgentRunning threw:`, e);
   }
 
+  // Phase 3: the box answers SSH, the agent does not stay up → redeploy it.
+  let redeployError: string | null = null;
+  if (failureReachedVps(client.lastClassified, client.lastErrorDetail)) {
+    const result = await runAgentUpdateFlow(v);
+    if (result.ok) {
+      // The flow persisted + published the versions and re-armed the pool's
+      // client (§14.51): only the verdict is left to answer.
+      return NextResponse.json({
+        ok: true,
+        agentStatus: 'ok' as const,
+        agentVersion: result.newVersion ?? null,
+        agentPyzSha: result.newPyzSha ?? null,
+        agentLastError: null,
+        repaired: result.detail,
+      });
+    }
+    // The flow re-armed the pool's client whatever happened (§14.51); the
+    // verdict below is the one that led here.
+    redeployError = result.detail ?? 'redeploy failed';
+    console.warn(`[agent/refresh ${v.id}] redeploy failed:`, redeployError);
+  }
+
   // Still failing → persist + return a definitive verdict (the auto path gates
   // 'error' behind a reconnect threshold, so it may not be written yet). The
   // classified detail travels with it so the health chips can say WHY
@@ -105,6 +134,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     ok: false,
     agentStatus: status,
     agentLastError: lastError,
-    error: client.lastConnectError ?? 'agent unreachable',
+    error: redeployError ? `redeploy failed: ${redeployError}` : client.lastConnectError ?? 'agent unreachable',
   });
 }

@@ -1084,20 +1084,26 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                   "3 d ago" reads as a genuinely dead box. */}
               <span
                 className="cs-agent-meta"
-                title={[errDetail, (v as any).agentLastSeenAt && `last OK contact: ${formatAge((v as any).agentLastSeenAt)}`,
+                title={[errCode === 'ssh-hostkey'
+                  && 'This VPS presents a DIFFERENT SSH host key (reinstalled — or intercepted). If you reinstalled it, remove its line from ~/.ssh/charon_known_hosts on the hub, then refresh.',
+                  errDetail, (v as any).agentLastSeenAt && `last OK contact: ${formatAge((v as any).agentLastSeenAt)}`,
                   (v as any).agentLastSeenAt && 'auto-retries with backoff (up to 5 min between tries)'].filter(Boolean).join('\n') || undefined}
               >
                 {errCode === 'ssh-unreachable' ? 'vps unreachable (ssh)'
                   : errCode === 'ssh-auth' ? 'ssh key refused'
+                  : errCode === 'ssh-hostkey' ? 'host key changed'
                   : errCode === 'daemon-down' ? 'agent stopped'
                   : 'agent unreachable'}
               </span>
               {onRefreshAgent && (
-                <button className="cs-agent-btn primary" disabled={agentRefreshing} onClick={() => onRefreshAgent(v)}>
-                  {agentRefreshing ? '⟳ refreshing…' : errCode === 'daemon-down' ? '↻ start' : '↻ refresh'}
+                <button className="cs-agent-btn primary" disabled={agentRefreshing} onClick={() => onRefreshAgent(v)}
+                  title={errCode === 'ssh-hostkey'
+                    ? 'retry once the host key has been checked and reset (see the tooltip)'
+                    : 'reconnect and start the agent; if it will not stay up, redeploy this hub\'s agent (up to a minute)'}>
+                  {agentRefreshing ? (errCode === 'daemon-down' ? '⟳ starting…' : '⟳ refreshing…') : errCode === 'daemon-down' ? '↻ start' : '↻ refresh'}
                 </button>
               )}
-              {onInstallAgent && errCode !== 'ssh-unreachable' && errCode !== 'ssh-auth' && (
+              {onInstallAgent && errCode !== 'ssh-unreachable' && errCode !== 'ssh-auth' && errCode !== 'ssh-hostkey' && (
                 <button className="cs-agent-btn" disabled={agentRefreshing} onClick={() => onInstallAgent(v)}>reinstall</button>
               )}
             </div>
