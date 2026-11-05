@@ -356,8 +356,10 @@ async function installAgentService(vps: Vps, session?: SshSession): Promise<{ ok
 
 type PingResult = Awaited<ReturnType<typeof pingAgent>>;
 
-/** `--connect` exit 2's own message: the daemon has not opened its socket. */
-const SOCKET_ABSENT = /daemon not started|socket .*not found/i;
+/** `--connect`'s own verdicts while a daemon (re)starts: its socket is not
+ *  there yet (exit 2), or is there with nobody accepting yet (exit 3). Same
+ *  set as AgentClient's `isSocketAbsent`. */
+const SOCKET_ABSENT = /daemon not started|socket .*not found|charon-agent: connect failed/i;
 
 /**
  * Ping until the daemon answers, waiting ONLY while its socket is merely

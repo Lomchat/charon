@@ -26,6 +26,13 @@ describe('pingUntilUp', () => {
     expect(slept).toEqual([1_000, 2_000]);
   });
 
+  it('a socket with nobody accepting yet (exit 3) is waited out too', async () => {
+    const REFUSED = { ok: false, detail: 'charon-agent: connect failed: [Errno 111] Connection refused\n' };
+    const { r, calls } = await run([REFUSED, UP]);
+    expect(r.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
   it('any other failure answers at once', async () => {
     const { r, calls } = await run([{ ok: false, detail: 'Permission denied (publickey)' }, UP]);
     expect(r.ok).toBe(false);
