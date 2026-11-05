@@ -5,12 +5,14 @@
  *  entry here. Nothing else: every colour in app.css / agent-ui.css /
  *  globals.css goes through the semantic tokens that block defines.
  *
- *  This file exists because three surfaces are NOT styled by CSS and would
+ *  This file exists because four surfaces are NOT styled by CSS and would
  *  otherwise stay frozen on the dark palette:
  *    · xterm.js takes a JS colour object (ShellTerminal.tsx)
  *    · CodeMirror takes an extension, not a class (CodeEditor.tsx)
  *    · <meta name="theme-color"> is document metadata (layout.tsx)
- *  Keep those three reading from `xterm` / `dark` / `themeColor` below.
+ *    · a framed document (live HTML view, docx, notebook output) styles
+ *      itself (lib/scrollbarCss.ts)
+ *  Keep those four reading from `xterm` / `dark` / `themeColor` / `scrollbar`.
  *
  *  Kept free of any React/DOM import: it is read by the server (layout.tsx,
  *  the settings route) as well as by the browser.
@@ -35,6 +37,10 @@ export type Theme = {
   dark: boolean;
   /** Mobile browser chrome (`<meta name="theme-color">`) — must match --bg. */
   themeColor: string;
+  /** The scrollbar carried into documents the hub frames but does not style
+   *  (live HTML views, converted documents: lib/scrollbarCss.ts) — must match
+   *  --border / --accent. */
+  scrollbar: { thumb: string; hover: string };
   xterm: XtermPalette;
 };
 
@@ -45,6 +51,7 @@ export const THEMES: readonly Theme[] = [
     hint: 'the original — deep blue-grey, low glare',
     dark: true,
     themeColor: '#181b24',
+    scrollbar: { thumb: '#363c4d', hover: '#8ab4e4' },
     xterm: {
       background: '#0e0e0e', foreground: '#dcdcdc', cursor: '#dcdcdc',
       selectionBackground: '#2f4f6f',
@@ -61,6 +68,7 @@ export const THEMES: readonly Theme[] = [
     hint: 'light — for a bright room or a sunlit screen',
     dark: false,
     themeColor: '#eef1f6',
+    scrollbar: { thumb: '#cfd7e3', hover: '#2c6db5' },
     xterm: {
       background: '#fbfaf7', foreground: '#2f3337', cursor: '#2f3337',
       selectionBackground: '#c9dcf2',
@@ -79,6 +87,7 @@ export const THEMES: readonly Theme[] = [
     hint: 'warm greys and coral — the transcript reads as a document',
     dark: true,
     themeColor: '#191817',
+    scrollbar: { thumb: '#3a3835', hover: '#d97757' },
     // One reservation: a terminal renders someone else's ANSI, so
     // blue/cyan/magenta stay recognisably themselves — muted into the warm
     // register, never recoloured. `ls` has to keep meaning what it means.
@@ -98,6 +107,7 @@ export const THEMES: readonly Theme[] = [
     hint: 'light — a Mac app: grey window, white content, hairlines',
     dark: false,
     themeColor: '#f2f2f7',
+    scrollbar: { thumb: '#d2d2d7', hover: '#007aff' },
     // Terminal.app's own Basic profile is white-on-black-text, and its ANSI
     // brights (#00d900, #e5e500) are invisible there — so the palette is the
     // system one darkened to carry on white, keeping each hue recognisable.
@@ -117,6 +127,7 @@ export const THEMES: readonly Theme[] = [
     hint: 'dark — the same Mac app after sunset',
     dark: true,
     themeColor: '#1c1c1e',
+    scrollbar: { thumb: '#38383a', hover: '#8ab4e4' },
     // Apple's Dark variants land almost exactly where a terminal wants them:
     // bright enough on near-black, and each hue still itself.
     xterm: {

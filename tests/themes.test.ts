@@ -67,6 +67,17 @@ describe('theme registry', () => {
       expect(theme.themeColor.toLowerCase()).toBe(bg!.toLowerCase());
     }
   });
+
+  it("each theme's scrollbar matches its --border / --accent", () => {
+    for (const theme of THEMES) {
+      const block = theme.id === DEFAULT_THEME_ID
+        ? blockOf(THEME_CSS, ":root,\n[data-theme='nordic']")
+        : blockOf(THEME_CSS, `[data-theme='${theme.id}']`);
+      const token = (name: string) => new RegExp(`^\\s*--${name}\\s*:\\s*(\\S+?);`, 'm').exec(block)?.[1]?.toLowerCase();
+      expect(theme.scrollbar.thumb.toLowerCase(), `${theme.id} thumb`).toBe(token('border'));
+      expect(theme.scrollbar.hover.toLowerCase(), `${theme.id} hover`).toBe(token('accent'));
+    }
+  });
 });
 
 describe('theme tokens', () => {

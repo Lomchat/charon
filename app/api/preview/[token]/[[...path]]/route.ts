@@ -9,6 +9,9 @@ import {
   LIVE_PREVIEW_SANDBOX, livePreviewExt, livePreviewMimeFor, parseLivePreviewPath,
 } from '@/lib/livePreview';
 import { parseByteRange } from '@/lib/fileRange';
+import { withScrollbar } from '@/lib/scrollbarCss';
+import { getSetting } from '@/lib/server/hub/settings';
+import { resolveTheme } from '@/app/themes';
 import { compareVersions } from '@/lib/version';
 import type { FsReadResponse, FsStatResponse } from '@/lib/types/api';
 
@@ -72,6 +75,11 @@ function bytesResponse(req: Request, bytes: Buffer, mime: string, headOnly: bool
   return new Response(headOnly || body.length === 0 ? null : new Uint8Array(body), {
     status: r ? 206 : 200, headers,
   });
+}
+
+/** The hub's theme, as the page around the frame renders it (layout.tsx). */
+function hubTheme() {
+  try { return resolveTheme(getSetting('app.theme')); } catch { return resolveTheme(null); }
 }
 
 type Located =
@@ -148,7 +156,11 @@ async function handle(req: Request, headOnly: boolean): Promise<Response> {
       const bytes = r.encoding === 'base64'
         ? Buffer.from(r.content, 'base64')
         : Buffer.from(r.content, 'utf8');
-      return bytesResponse(req, bytes, mime, headOnly);
+      // The hub's scrollbar in the page (lib/scrollbarCss.ts). A whole
+      // document only: a byte range of it must stay the file's own bytes.
+      const themed = mime.startsWith('text/html') && !req.headers.get('range')
+        ? withScrollbar(bytes, hubTheme().scrollbar) : bytes;
+      return bytesResponse(req, themed, mime, headOnly);
     }
   }
 

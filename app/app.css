@@ -315,10 +315,8 @@
   /* A thin themed scrollbar on desktop is the cue that buttons lie past the
      edge (a vertical wheel scrolls the strip too, AccountNav.tsx); only the
      touch layout below hides it, where swiping is the affordance. */
-  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
 }
 .acct-nav::-webkit-scrollbar { height: 4px; }
-.acct-nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
 .app-head .acct-nav-item {
   flex: none; display: inline-flex; align-items: center; height: 32px; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: var(--chip-radius);
@@ -2324,15 +2322,10 @@
 .mermaid-source { margin-top: 8px; }
 .mermaid-source > summary { cursor: pointer; }
 /* The tool panes scroll VERTICALLY (max-height + auto), so their scrollbar
-   runs down the right edge — exactly where the button is anchored. Thin, like
-   `.app-tabbar`'s, so the two don't fight over the corner. */
-.code-block > .tu-detail, .code-block > .tr-detail { scrollbar-width: thin; }
+   runs down the right edge — exactly where the button is anchored. The theme's
+   bar, thinner, so the two don't fight over the corner. */
 .code-block > .tu-detail::-webkit-scrollbar,
 .code-block > .tr-detail::-webkit-scrollbar { width: 6px; }
-.code-block > .tu-detail::-webkit-scrollbar-thumb,
-.code-block > .tr-detail::-webkit-scrollbar-thumb { background: var(--border); }
-.code-block > .tu-detail::-webkit-scrollbar-track,
-.code-block > .tr-detail::-webkit-scrollbar-track { background: transparent; }
 .code-copy-btn {
   position: absolute; top: 6px; right: 6px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -7920,7 +7913,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .xlsv > .dvm-note { flex: none; padding: 6px 12px; border-bottom: 1px solid var(--border); }
 .xlsv-tabs {
   flex: 0 1 auto; min-width: 0; display: flex; gap: 6px; padding: 1px 0;
-  overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin;
+  overflow-x: auto; overscroll-behavior-x: contain;
 }
 .xlsv-tabs > button {
   flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 220px;

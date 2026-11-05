@@ -2,6 +2,7 @@
 // view, what their bytes really are, the srcdoc a sandboxed frame shows, and
 // the spreadsheet window handed to the CSV grid.
 // PLAIN module, no React/DOM — the viewers and vitest share it.
+import { scrollbarCss, type ScrollbarColors } from '@/lib/scrollbarCss';
 
 export function isNotebookName(name: string): boolean {
   return /\.ipynb$/i.test(name);
@@ -109,12 +110,16 @@ const LINK = '#1a55b0';
 const ink = (pct: number) => `color-mix(in srgb, ${INK} ${pct}%, transparent)`;
 
 /** A full srcdoc around sanitized content (`css` from the builders below). */
-export function frameDocument({ css, head = '', body }: { css: string; head?: string; body: string }): string {
+export function frameDocument({ css, head = '', body, scrollbar }: {
+  css: string; head?: string; body: string;
+  /** The theme's (`useTheme().scrollbar`): a wide table scrolls sideways with the hub's bar. */
+  scrollbar?: ScrollbarColors;
+}): string {
   return '<!doctype html><html><head><meta charset="utf-8">'
     + '<base target="_blank">'
     + '<meta name="referrer" content="no-referrer">'
     + `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">`
-    + `<style>${css}</style>${head}</head><body>${body}</body></html>`;
+    + `<style>${scrollbar ? scrollbarCss(scrollbar) : ''}${css}</style>${head}</head><body>${body}</body></html>`;
 }
 
 /**

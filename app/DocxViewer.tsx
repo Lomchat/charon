@@ -6,6 +6,7 @@ import {
   sniffContainer, summarizeMessages, type ConversionMessage,
 } from './documentViews';
 import DocFrame, { sanitizeFrameHtml, usePaper } from './DocFrame';
+import { useTheme } from './themeClient';
 
 // A Word document as a page (§14.111): mammoth turns the .docx into plain
 // semantic HTML (headings, lists, tables, images as data: URIs), shown on
@@ -85,8 +86,9 @@ export default function DocxViewer({ url, name, rev, active }: ByteViewerProps) 
   }, [url, loadRev]);
 
   const paper = usePaper();
+  const { scrollbar } = useTheme();
   const body = doc?.body;
-  const srcDoc = useMemo(() => (body ? frameDocument({ css: docxFrameCss(paper), body }) : ''), [body, paper]);
+  const srcDoc = useMemo(() => (body ? frameDocument({ css: docxFrameCss(paper), body, scrollbar }) : ''), [body, paper, scrollbar]);
   const warnings = doc?.messages ?? [];
   const note = !doc
     ? (loading ? 'loading…' : '')

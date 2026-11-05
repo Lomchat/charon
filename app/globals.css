@@ -31,10 +31,24 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 input, textarea, select { font-family: inherit; color: inherit; }
 a { color: inherit; }
 
+/* THE scrollbar, for every scroller of the hub (and of the documents it frames:
+   lib/scrollbarCss.ts carries the same bar into live HTML views). Chrome drops
+   these pseudo-elements for any element that sets the standard
+   `scrollbar-width` / `scrollbar-color` — that is how its grey default came
+   back — so the app sets neither, except `scrollbar-width: none` to hide one.
+   Firefox has no pseudo-elements: it gets the standard pair, and only it. */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-sm); }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+}
+/* xterm draws its own bar (VS Code's slider, coloured by an injected style):
+   the same thumb, through CSS so it follows the theme's tokens. */
+:root .xterm .xterm-scrollable-element > .scrollbar > .slider { background: var(--border); border-radius: var(--radius-sm); }
+:root .xterm .xterm-scrollable-element > .scrollbar > .slider:hover,
+:root .xterm .xterm-scrollable-element > .scrollbar > .slider.active { background: var(--accent); }
 
 /* ── Auth pages ── */
 .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; position: relative; z-index: 2; }

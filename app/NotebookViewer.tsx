@@ -17,6 +17,7 @@ import {
 } from './notebook';
 import { frameDocument, outputFrameCss } from './documentViews';
 import DocFrame, { sanitizeFrameHtml, usePaper } from './DocFrame';
+import { useTheme } from './themeClient';
 
 type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
 type Components = NonNullable<MarkdownProps['components']>;
@@ -308,10 +309,11 @@ function SvgImage({ svg, width, height }: { svg: string; width?: number; height?
 
 function HtmlOutput({ html }: { html: string }) {
   const paper = usePaper();
+  const { scrollbar } = useTheme();
   const clean = useMemo(() => sanitizeFrameHtml(html), [html]);
   const srcDoc = useMemo(
-    () => frameDocument({ css: outputFrameCss(paper), head: clean.head, body: clean.body }),
-    [clean, paper],
+    () => frameDocument({ css: outputFrameCss(paper), head: clean.head, body: clean.body, scrollbar }),
+    [clean, paper, scrollbar],
   );
   return (
     <>
