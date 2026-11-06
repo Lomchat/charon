@@ -2662,6 +2662,19 @@
 .turn-ledger-pct { display: inline-flex; align-items: center; gap: 3px; }
 .turn-ledger .cache-icon { width: 10px; height: 10px; }
 .turn-ledger.cold .turn-ledger-pct, .turn-ledger.cold .turn-ledger-cost, .turn-ledger .turn-ledger-cold { color: var(--info); }
+.turn-ledger .turn-ledger-mark { display: none; }
+/* Narrow or touch: only the mini-bar + coloured mark + %, a roomy tap target for the popover. */
+@media (max-width: 820px), (pointer: coarse) {
+  .bubble .turn-ledger {
+    width: fit-content; margin: -2px 0 0; padding: 4px 12px 6px 0;
+    font-size: 11px; opacity: 1; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  .turn-ledger > span:not(.turn-ledger-pct, .turn-ledger-bar) { display: none; }
+  .turn-ledger .turn-ledger-mark { display: block; }
+  .turn-ledger .cache-icon { width: 12px; height: 12px; }
+  .turn-ledger-pct.warm { color: var(--attention); }
+  .turn-ledger-pct.cold { color: var(--info); }
+}
 .bubble .tag {
   display: inline-block;
   font-family: var(--display); font-size: 9px;

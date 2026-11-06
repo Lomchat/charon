@@ -4,7 +4,7 @@
 // the TTL, the sidebar card mark, the context-row marker and the bubble-header
 // ledger. Colour = `cacheHeat` (attention cooling to info, theme tokens only);
 // shape = the TTL quarter, so four levels read apart at 12 px.
-import React, { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
   cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
@@ -166,14 +166,20 @@ function pctText(x: number): string {
 
 /** The turn's ledger, on its own line under the bubble header: mini-bar, %,
  *  read, written, uncached, output, relative cost, duration — then the rest.
- *  Wraps on a narrow bubble; the tooltip repeats it with labels. */
+ *  Narrow or touch (app.css): folded to its mark + %, the popover holds the rest. */
 export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provider: SessionProvider }) {
   const ctxWindow = useContext(ContextWindowContext);
-  // The popover (proposal 2): open on hover, at once — the line's own anchor.
-  // `x` = the pointer: the card opens under it and follows it along the line.
-  const [anchor, setAnchor] = useState<{ rect: DOMRect; x: number } | null>(null);
+  // The popover, the line's own anchor. A mouse opens it on hover, at once: `x`
+  // = the pointer, the card opens under it and follows it along the line. A tap
+  // toggles it (`tapped`): no hover to end it, see LedgerPopover.
+  const [anchor, setAnchor] = useState<{ rect: DOMRect; x: number; tapped: boolean } | null>(null);
   // The last x the card was placed at, read synchronously by the handler.
   const placedX = useRef<number | null>(null);
+  // What pressed the line: a mouse's click means nothing, it already hovered.
+  const pressedBy = useRef<string | null>(null);
+  const lineRef = useRef<HTMLDivElement>(null);
+  const close = useCallback(() => { placedX.current = null; setAnchor(null); }, []);
+  const moved = useCallback((rect: DOMRect) => setAnchor((a) => a && { ...a, rect }), []);
   const popId = `ledger${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const input = ledgerInput(ledger);
   if (!(input > 0)) return null;
@@ -184,7 +190,12 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   const cold = misses > 0;
   const w = (n: number) => `${((n / input) * 100).toFixed(1)}%`;
   const items: (React.ReactNode | null)[] = [
-    pct != null ? <span key="pct" className="turn-ledger-pct">{cold && <IconSnow />}{pct}%</span> : null,
+    pct != null ? (
+      <span key="pct" className={`turn-ledger-pct ${cold || !pct ? 'cold' : 'warm'}`}>
+        {cold ? <IconSnow /> : pct ? <CacheFlame level={4} className="turn-ledger-mark" /> : <IconSnow className="turn-ledger-mark" />}
+        {pct}%
+      </span>
+    ) : null,
     <span key="read">{fmtTokens(ledger.read)} read</span>,
     <span key="write" className={cold ? 'turn-ledger-cold' : undefined}>{fmtTokens(ledger.write)} written</span>,
     <span key="uncached">{fmtTokens(ledger.uncached)} uncached</span>,
@@ -210,19 +221,28 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       ? <span key="usd">${ledger.costUsd < 0.1 ? ledger.costUsd.toFixed(3) : ledger.costUsd.toFixed(2)}</span> : null,
   ];
   return (
-    <div className={`turn-ledger${cold ? ' cold' : ''}`}
-      onMouseEnter={(e) => {
+    <div ref={lineRef} className={`turn-ledger${cold ? ' cold' : ''}`}
+      onPointerEnter={(e) => {
+        if (e.pointerType !== 'mouse') return;
         placedX.current = e.clientX;
-        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX });
+        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX, tapped: false });
       }}
-      onMouseMove={(e) => {
+      onPointerMove={(e) => {
+        if (e.pointerType !== 'mouse') return;
         // Everything the event gives is read HERE: React nulls `currentTarget`
         // once the handler returns, and a queued state updater runs later.
         if (placedX.current != null && Math.abs(placedX.current - e.clientX) < 6) return;
         placedX.current = e.clientX;
-        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX });
+        setAnchor({ rect: e.currentTarget.getBoundingClientRect(), x: e.clientX, tapped: false });
       }}
-      onMouseLeave={() => { placedX.current = null; setAnchor(null); }}
+      onPointerLeave={(e) => { if (e.pointerType === 'mouse') close(); }}
+      onPointerDown={(e) => { pressedBy.current = e.pointerType; }}
+      onClick={(e) => {
+        if (pressedBy.current === 'mouse') return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = e.clientX;
+        setAnchor((a) => (a ? null : { rect, x, tapped: true }));
+      }}
       aria-describedby={anchor ? popId : undefined}>
       <span className="turn-ledger-bar" aria-hidden="true">
         <i className="read" style={{ width: w(ledger.read) }} />
@@ -230,7 +250,7 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
       </span>
       {items.filter(Boolean)}
       {anchor && <LedgerPopover id={popId} ledger={ledger} ctxWindow={ctxWindow} anchor={anchor.rect} pointerX={anchor.x}
-        onGone={() => { placedX.current = null; setAnchor(null); }} />}
+        tapped={anchor.tapped} lineRef={lineRef} onMoved={moved} onGone={close} />}
     </div>
   );
 }
@@ -274,9 +294,12 @@ function Donut({ parts }: { parts: [frac: number, color: string][] }) {
 }
 
 /** Under the pointer, below the line (above when the bottom is short), clamped to the viewport.
- *  Informational only: no pointer events, gone on scroll. */
-function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, onGone }: {
-  id: string; ledger: TurnLedger; ctxWindow: number | null; anchor: DOMRect; pointerX: number; onGone: () => void;
+ *  Hovered: informational, no pointer events, gone on scroll. Tapped: it stays
+ *  until a tap (on it or the line: their click toggles; elsewhere: at once), and
+ *  a live turn's autoscroll only moves it along with its line, until off screen. */
+function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, tapped, lineRef, onMoved, onGone }: {
+  id: string; ledger: TurnLedger; ctxWindow: number | null; anchor: DOMRect; pointerX: number; tapped: boolean;
+  lineRef: React.RefObject<HTMLDivElement | null>; onMoved: (rect: DOMRect) => void; onGone: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState<number | null>(null);
@@ -286,9 +309,25 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, onGone }: {
     setTop(below + h > window.innerHeight - 8 && anchor.top - 8 - h > 8 ? anchor.top - 8 - h : below);
   }, [anchor]);
   useEffect(() => {
-    window.addEventListener('scroll', onGone, true);
-    return () => window.removeEventListener('scroll', onGone, true);
-  }, [onGone]);
+    const onScroll = !tapped ? onGone : () => {
+      const rect = lineRef.current?.getBoundingClientRect();
+      const view = lineRef.current?.closest('.app-chat')?.getBoundingClientRect();
+      if (!rect || rect.bottom < (view?.top ?? 0) || rect.top > (view?.bottom ?? window.innerHeight)) onGone();
+      else onMoved(rect);
+    };
+    const onPress = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!lineRef.current?.contains(t) && !ref.current?.contains(t)) onGone();
+    };
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onGone);
+    if (tapped) document.addEventListener('pointerdown', onPress, true);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onGone);
+      document.removeEventListener('pointerdown', onPress, true);
+    };
+  }, [tapped, lineRef, onMoved, onGone]);
   const input = ledgerInput(ledger);
   const pct = ledgerCachedPct(ledger) ?? 0;
   const rel = ledgerRelativeCost(ledger);
@@ -298,7 +337,8 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, onGone }: {
   const ctx = ledger.promptTokens != null && ctxWindow ? ledger.promptTokens / ctxWindow : null;
   const toolsMs = ledger.apiMs != null && ledger.durMs != null ? Math.max(0, ledger.durMs - ledger.apiMs) : null;
   // Under the pointer (its arrow-side quarter), clamped to the viewport.
-  const left = Math.min(window.innerWidth - POP_W - 8, Math.max(8, pointerX - POP_W / 4));
+  const width = Math.min(POP_W, window.innerWidth - 16);
+  const left = Math.min(window.innerWidth - width - 8, Math.max(8, pointerX - width / 4));
   const tile = (ring: React.ReactNode, value: React.ReactNode, lines: (React.ReactNode | null)[], valueColor?: string) => (
     <div className="ledger-tile">
       {ring}
@@ -309,8 +349,8 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, onGone }: {
     </div>
   );
   return createPortal(
-    <div ref={ref} id={id} role="tooltip" className="ledger-pop"
-      style={{ left, top: top ?? anchor.bottom + 8, width: POP_W, visibility: top == null ? 'hidden' : undefined }}>
+    <div ref={ref} id={id} role="tooltip" className={`ledger-pop${tapped ? ' tapped' : ''}`}
+      style={{ left, top: top ?? anchor.bottom + 8, width, visibility: top == null ? 'hidden' : undefined }}>
       <div className="ledger-pop-head">
         <span>{cold ? 'Turn input · the cache was cold' : `Turn input · ${pct}% from the cache`}</span>
         {ledger.requests != null && <span className="ledger-pop-req">{ledger.requests} req</span>}

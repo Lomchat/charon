@@ -172,7 +172,8 @@ a { color: inherit; }
 .hover-tip-section-head .cache-icon { width: 12px; height: 12px; }
 /* The turn ledger's popover (PromptCacheMarks § LedgerPopover): the
    hover-tip card, four tiles with a ring each (cache, cost, context, time),
-   a legend in the ledger line's colours. Informational: no pointer events. */
+   a legend in the ledger line's colours. Hovered: no pointer events. Tapped: a
+   tap on it closes it instead of falling through to the message below. */
 .ledger-pop {
   position: fixed; z-index: 2100; pointer-events: none;
   padding: 10px 12px 11px; background: var(--bg-elevated); color: var(--text);
@@ -181,6 +182,7 @@ a { color: inherit; }
   font-family: var(--body); font-size: 12px; line-height: 1.4; text-align: left;
   animation: hover-tip-in .1s ease-out;
 }
+.ledger-pop.tapped { pointer-events: auto; }
 .ledger-pop-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; font-weight: 600; color: var(--text-strong); }
 .ledger-pop-req { margin-left: auto; font: 400 10.5px var(--mono); color: var(--text-muted); }
 .ledger-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
