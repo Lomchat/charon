@@ -52,7 +52,7 @@ let failMessageInserts = 0;
 
 function mkStream(lastSeenSeq: number | null = null, id = SID) {
   return new SessionStream({
-    id, vpsId: VPS_ID, vpsName: 'test', name: null,
+    id, vpsId: VPS_ID, name: null,
     status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: 'claude', lastSeenSeq,
   }) as any;
@@ -305,7 +305,7 @@ describe('session GET during the replay', () => {
 describe('a hub-only cut the restart replay cannot reproduce (`plan_progress` is transient agent-side)', () => {
   function codexStream(lastSeenSeq: number | null) {
     return new SessionStream({
-      id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+      id: SID, vpsId: VPS_ID, name: null,
       status: 'active', permissionMode: 'normal', nativeSessionId: null,
       kind: 'codex', lastSeenSeq,
     }) as any;

@@ -173,7 +173,7 @@ function thinkingText(r: any): string {
 function mkStream(kind: 'claude' | 'codex' = 'codex') {
   const row = sessionRow();
   const s = new SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'v', name: 'n', status: 'thinking',
+    id: SID, vpsId: VPS_ID, name: 'n', status: 'thinking',
     permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', nativeSessionId: null, kind,
     lastSeenSeq: row.lastSeenSeq, lastStopNotifiedSeq: row.lastStopNotifiedSeq,
   }) as any;

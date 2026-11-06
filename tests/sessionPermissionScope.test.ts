@@ -49,7 +49,7 @@ let subscribeGlobalSessionEvents: any;
 
 function stream(id: string, kind: 'claude' | 'codex') {
   return new SessionStream({
-    id, vpsId: VPS_ID, vpsName: 'test-vps', name: 'permissions',
+    id, vpsId: VPS_ID, name: 'permissions',
     status: 'active', permissionMode: kind === 'codex' ? 'workspace-write' : 'normal',
     nativeSessionId: null, kind, cwd: '/tmp/project',
   }) as any;

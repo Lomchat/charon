@@ -2378,7 +2378,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
             >
               <ShellTerminal
                 shellId={sh.id}
-                vpsName={sh.vpsName}
+                vpsName={vpsNameOf(sh.vpsId)}
                 cwd={sh.cwd}
                 active={selectedShellId === sh.id}
                 onKilled={() => shellKilled(sh.id)}

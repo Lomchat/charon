@@ -44,7 +44,6 @@ function createStream(
   return new SessionStream({
     id: SID,
     vpsId: VPS_ID,
-    vpsName: 'test-vps',
     name: 'build',
     status,
     permissionMode: 'normal',
@@ -392,7 +391,7 @@ describe('terminal Claude assistant errors', () => {
 
     // After a hub restart from a cursor pinned below the failed turn.
     const restarted = new SessionStream({
-      id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'active', permissionMode: 'normal',
+      id: SID, vpsId: VPS_ID, name: 'build', status: 'active', permissionMode: 'normal',
       nativeSessionId: null, kind, lastSeenSeq: 9, lastStopNotifiedSeq: 15,
     }) as any;
     replayInto(restarted);
@@ -403,7 +402,7 @@ describe('terminal Claude assistant errors', () => {
 
   it('a failed stop the hub never handled (it was down) still latches on replay', () => {
     const stream = new SessionStream({
-      id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'active', permissionMode: 'normal',
+      id: SID, vpsId: VPS_ID, name: 'build', status: 'active', permissionMode: 'normal',
       nativeSessionId: null, kind: 'codex', lastSeenSeq: 9, lastStopNotifiedSeq: 8,
     }) as any;
     stream._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 2 });

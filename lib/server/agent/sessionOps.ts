@@ -618,7 +618,8 @@ export class SessionStream {
   permissionMode: PermissionMode = 'normal';
   nativeSessionId: string | null = null;
   name: string | null = null;
-  vpsName: string;
+  // Read at use: a stream outlives a rename of its VPS.
+  get vpsName(): string { return _vpsName(this.vpsId); }
   cwd: string | null = null;
   // Set by PATCH cwd right before its `kill_session`: the status case turns
   // ONE following `killed` echo into `sleeping` (S7, C13). NOT cleared when the
@@ -957,7 +958,7 @@ export class SessionStream {
   private tokenUsageTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: {
-    id: string; vpsId: string; vpsName: string; name: string | null;
+    id: string; vpsId: string; name: string | null;
     status: WorkerStatus; permissionMode: SessionMode;
     nativeSessionId: string | null;
     kind?: AgentKind;
@@ -973,7 +974,6 @@ export class SessionStream {
   }) {
     this.id = opts.id;
     this.vpsId = opts.vpsId;
-    this.vpsName = opts.vpsName;
     this.name = opts.name;
     this.cwd = opts.cwd ?? null;
     this.kind = opts.kind ?? 'claude';
@@ -4753,7 +4753,7 @@ export function getOrCreateStream(sessionId: string): SessionStream | null {
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row) return null;
   s = new SessionStream({
-    id: row.id, vpsId: row.vpsId, vpsName: _vpsName(row.vpsId),
+    id: row.id, vpsId: row.vpsId,
     name: row.name, status: row.status as WorkerStatus,
     kind: (row.kind as AgentKind) ?? 'claude',
     accountProfile: accountProfileId(row.providerConfig),
@@ -5015,7 +5015,7 @@ export async function startNewSession(opts: {
   }).run();
 
   const stream = new SessionStream({
-    id: sessionId, vpsId: opts.vpsId, vpsName: vps.name,
+    id: sessionId, vpsId: opts.vpsId,
     name: opts.name ?? null, status: 'starting',
     accountProfile: accountProfileId(providerConfig),
     kind,
@@ -5114,7 +5114,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     let stream = streams.get(sessionId);
     if (!stream) {
       stream = new SessionStream({
-        id: row.id, vpsId: row.vpsId, vpsName: vps.name,
+        id: row.id, vpsId: row.vpsId,
         name: row.name, status: row.status as WorkerStatus,
         kind,
         accountProfile: accountProfileId(row.providerConfig),

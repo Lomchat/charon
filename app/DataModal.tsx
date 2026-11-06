@@ -1,6 +1,6 @@
 'use client';
 import PickerControl from './PickerControl';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { providerText } from '@/lib/providerText';
 import type { AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
@@ -275,6 +275,15 @@ export default function DataModal({
       setAddVpsOpen(false);
     } catch (e: any) { setErr(e?.message ?? String(e)); }
   }
+  async function renameVps(id: string, name: string): Promise<boolean> {
+    setErr(null);
+    try {
+      const updated = await api.updateVps(id, { name });
+      const next = vpsList.map((v) => (v.id === id ? { ...v, name: updated.name } : v));
+      setVpsList(next); notify(next);
+      return true;
+    } catch (e: any) { setErr(e?.message ?? String(e)); return false; }
+  }
   async function deleteVps(id: string, name: string) {
     if (!confirm(`Delete ${name}?\nIts paths and sessions will also be deleted.`)) return;
     try {
@@ -300,12 +309,13 @@ export default function DataModal({
       setAddFolderOpen(false);
     } catch (e: any) { setErr(e?.message ?? String(e)); }
   }
-  async function renameFolder(id: string, name: string) {
+  async function renameFolder(id: string, name: string): Promise<boolean> {
     try {
       const updated = await api.updateVpsFolder(id, { name });
       const next = folders.map((f) => f.id === id ? updated : f);
       setFolders(next); notify(undefined, next);
-    } catch (e: any) { setErr(e?.message ?? String(e)); }
+      return true;
+    } catch (e: any) { setErr(e?.message ?? String(e)); return false; }
   }
   async function deleteFolder(id: string, name: string) {
     if (id === DEFAULT_FOLDER_ID) { setErr('the default folder cannot be deleted'); return; }
@@ -654,6 +664,7 @@ export default function DataModal({
                   onLogin={(v) => onProviderLogin?.(v, 'claude')}
                   onSettingScope={(v) => onEditSettingScope?.(v)}
                   onDeleteVps={(id, name) => deleteVps(id, name)}
+                  onRenameVps={renameVps}
                   onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                   onAddPath={(vpsId) => addPath(vpsId)}
                   onDeletePath={(id) => deletePath(id)}
@@ -682,6 +693,7 @@ export default function DataModal({
                 onLogin={(v) => onProviderLogin?.(v, 'claude')}
                 onSettingScope={(v) => onEditSettingScope?.(v)}
                 onDeleteVps={(id, name) => deleteVps(id, name)}
+                onRenameVps={renameVps}
                 onChangeVpsFolder={(vpsId, newFolderId) => moveVpsToFolder(vpsId, newFolderId)}
                 onAddPath={(vpsId) => addPath(vpsId)}
                 onDeletePath={(id) => deletePath(id)}
@@ -717,7 +729,7 @@ export default function DataModal({
 function SortableFolder({
   folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
   onRename, onDelete,
-  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onRenameVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -730,13 +742,14 @@ function SortableFolder({
   pathInputs: Record<string, { path: string; label: string }>;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  onRename: (name: string) => void;
+  onRename: (name: string) => Promise<boolean>;
   onDelete: () => void;
   onFixVps: (v: Vps, action: VpsFixAction) => void;
   healthOpts: HealthOpts;
   onLogin: (v: Vps) => void;
   onSettingScope: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
+  onRenameVps: (id: string, name: string) => Promise<boolean>;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
   onAddPath: (vpsId: string) => void;
   onDeletePath: (id: number) => void;
@@ -777,7 +790,7 @@ function SortableFolder({
           title={collapsed ? 'expand folder' : 'collapse folder'}
         >{collapsed ? '▸' : '▾'}</button>
         <span className="data-folder-glyph">▤</span>
-        <FolderRenameInput initial={folder.name} onSubmit={onRename} />
+        <RenameInput className="data-folder-name-input" initial={folder.name} onSubmit={onRename} ariaLabel="folder name" />
         <span className="data-folder-count">
           {vps.length === totalVps ? `${totalVps} VPS` : `${vps.length}/${totalVps} VPS`}
         </span>
@@ -807,6 +820,7 @@ function SortableFolder({
                 onLogin={() => onLogin(v)}
                 onSettingScope={() => onSettingScope(v)}
                 onDelete={() => onDeleteVps(v.id, v.name)}
+                onRename={(name) => onRenameVps(v.id, name)}
                 onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
                 onAddPath={() => onAddPath(v.id)}
                 onDeletePath={onDeletePath}
@@ -831,26 +845,48 @@ function useSortableWithDroppable(folderId: string, disabled = false) {
   return { ...sortable, setDroppableNodeRef: droppable.setNodeRef };
 }
 
-function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (name: string) => void }) {
+// A name edited in place: Enter or leaving the field commits, Escape reverts.
+// A refused rename falls back to the saved name, so the field never shows a
+// name that isn't the real one.
+function RenameInput({ className, initial, onSubmit, title, ariaLabel, maxLength }: {
+  className: string;
+  initial: string;
+  onSubmit: (name: string) => Promise<boolean>;
+  title?: string;
+  ariaLabel: string;
+  maxLength?: number;
+}) {
   const [val, setVal] = useState(initial);
   useEffect(() => { setVal(initial); }, [initial]);
+  // Escape leaves the field too, and that blur still sees the abandoned text.
+  const cancelled = useRef(false);
   return (
     <input
-      className="data-folder-name-input"
+      className={className}
       value={val}
+      title={title}
+      aria-label={ariaLabel}
+      maxLength={maxLength}
+      autoComplete="off"
+      spellCheck={false}
       onChange={(e) => setVal(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
-          (e.target as HTMLInputElement).blur();
+          e.currentTarget.blur();
         } else if (e.key === 'Escape') {
-          setVal(initial);
-          (e.target as HTMLInputElement).blur();
+          // Only revert: the modal's window-level Escape would close it too.
+          e.stopPropagation();
+          cancelled.current = true;
+          e.currentTarget.blur();
         }
       }}
       onBlur={() => {
+        const discard = cancelled.current;
+        cancelled.current = false;
         const trimmed = val.trim();
-        if (trimmed && trimmed !== initial) onSubmit(trimmed);
-        else setVal(initial);
+        if (discard || !trimmed || trimmed === initial) { setVal(initial); return; }
+        setVal(trimmed);
+        void onSubmit(trimmed).then((ok) => { if (!ok) setVal(initial); });
       }}
       onPointerDown={(e) => e.stopPropagation()}
     />
@@ -866,7 +902,7 @@ function FolderRenameInput({ initial, onSubmit }: { initial: string; onSubmit: (
 // ─────────────────────────────────────────────────────────────
 function StaticFolder({
   folder, vps, totalVps, dragDisabled, allFolders, paths, pathInputs, collapsed, onToggleCollapsed,
-  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onChangeVpsFolder,
+  onFixVps, healthOpts, onLogin, onSettingScope, onDeleteVps, onRenameVps, onChangeVpsFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   folder: VpsFolder;
@@ -883,6 +919,7 @@ function StaticFolder({
   onLogin: (v: Vps) => void;
   onSettingScope: (v: Vps) => void;
   onDeleteVps: (id: string, name: string) => void;
+  onRenameVps: (id: string, name: string) => Promise<boolean>;
   onChangeVpsFolder: (vpsId: string, newFolderId: string) => void;
   onAddPath: (vpsId: string) => void;
   onDeletePath: (id: number) => void;
@@ -929,6 +966,7 @@ function StaticFolder({
               onLogin={() => onLogin(v)}
               onSettingScope={() => onSettingScope(v)}
               onDelete={() => onDeleteVps(v.id, v.name)}
+              onRename={(name) => onRenameVps(v.id, name)}
               onChangeFolder={(newFolderId) => onChangeVpsFolder(v.id, newFolderId)}
               onAddPath={() => onAddPath(v.id)}
               onDeletePath={onDeletePath}
@@ -950,7 +988,7 @@ function StaticFolder({
 // ─────────────────────────────────────────────────────────────
 function SortableVpsCard({
   v, dragDisabled, allFolders, paths, pathInput,
-  onFix, healthOpts, onLogin, onSettingScope, onDelete, onChangeFolder,
+  onFix, healthOpts, onLogin, onSettingScope, onDelete, onRename, onChangeFolder,
   onAddPath, onDeletePath, onUpdatePathLabel, onSetPathInput,
 }: {
   v: Vps;
@@ -963,6 +1001,7 @@ function SortableVpsCard({
   onLogin: () => void;
   onSettingScope: () => void;
   onDelete: () => void;
+  onRename: (name: string) => Promise<boolean>;
   onChangeFolder: (newFolderId: string) => void;
   onAddPath: () => void;
   onDeletePath: (id: number) => void;
@@ -1010,7 +1049,14 @@ function SortableVpsCard({
           title={collapsed ? 'expand VPS' : 'collapse VPS'}
         >{collapsed ? '▸' : '▾'}</button>
         <span className="dv-glyph">▣</span>
-        <span className="dv-name">{v.name}</span>
+        <RenameInput
+          className="dv-name dv-name-input"
+          initial={v.name}
+          onSubmit={onRename}
+          title="rename this VPS"
+          ariaLabel="VPS name"
+          maxLength={120}
+        />
         <span className="dv-host">{v.sshUser}@{v.ip}{v.sshPort !== 22 ? `:${v.sshPort}` : ''}</span>
         <PickerControl
           className="dv-folder-select"

@@ -365,12 +365,33 @@
   color: var(--accent-strong);
   font-weight: 600;
 }
+/* The card's title is its rename field: plain text until hovered or focused,
+   and only as wide as the name so the host stays right beside it. */
+.dv-name-input {
+  field-sizing: content;
+  min-width: 4ch; max-width: 100%;
+  margin: -3px -7px; padding: 2px 6px;
+  background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  outline: none;
+}
+.dv-name-input:hover { border-color: var(--border); }
+.dv-name-input:focus {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--shade) 25%, transparent);
+}
 .dv-host {
   font-family: var(--mono, monospace);
   font-size: 11px;
   color: var(--text-muted);
   flex: 1;
   min-width: 0;
+}
+@media (max-width: 820px) {
+  /* 16px: iOS zooms the page into any smaller input. */
+  .dv-name-input { font-size: 16px; }
+  /* The larger name fills the line: the host takes the next one, not the clip. */
+  .dv-host { flex-basis: 100%; }
 }
 .dv-agent {
   display: inline-flex;

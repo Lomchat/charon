@@ -51,7 +51,7 @@ function row(): any {
 
 function mkStream(status = 'thinking', kind: 'claude' | 'codex' = 'claude') {
   const s = new SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'v', name: 'n', status,
+    id: SID, vpsId: VPS_ID, name: 'n', status,
     permissionMode: 'normal', nativeSessionId: null, kind,
     lastStopNotifiedSeq: row()?.lastStopNotifiedSeq ?? null,
   }) as any;

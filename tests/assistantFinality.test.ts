@@ -32,7 +32,7 @@ let SessionStream: any;
 
 function stream() {
   return new SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'test', name: 'chat',
+    id: SID, vpsId: VPS_ID, name: 'chat',
     status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: 'claude',
   }) as any;

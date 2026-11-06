@@ -59,7 +59,7 @@ let failNextMessageUpdates = 0;
 
 function mkStream(opts: { id?: string; kind?: string; lastSeenSeq?: number | null; effectiveModel?: string | null } = {}) {
   return new SessionStream({
-    id: opts.id ?? SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+    id: opts.id ?? SID, vpsId: VPS_ID, name: null,
     status: 'active', permissionMode: 'normal', nativeSessionId: null,
     kind: opts.kind ?? 'claude', lastSeenSeq: opts.lastSeenSeq ?? null,
     effectiveModel: opts.effectiveModel ?? null,

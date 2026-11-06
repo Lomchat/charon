@@ -53,7 +53,7 @@ async function twoCopies(): Promise<[Ops, Ops]> {
 
 function stream(ops: Ops, kind: 'claude' | 'codex' = 'claude') {
   return new ops.SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'test-vps', name: 'build', status: 'thinking',
+    id: SID, vpsId: VPS_ID, name: 'build', status: 'thinking',
     permissionMode: kind === 'codex' ? 'workspace-write' : 'normal', nativeSessionId: null, kind,
   }) as any;
 }

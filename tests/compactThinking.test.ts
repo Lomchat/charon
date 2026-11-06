@@ -572,7 +572,7 @@ describe('compaction keeps every rendering', () => {
     async function replayAll(sid: string, events: any[]) {
       const { SessionStream } = await import('@/lib/server/agent/sessionOps');
       const s: any = new SessionStream({
-        id: sid, vpsId: VPS_ID, vpsName: 'compact', name: null, status: 'active', permissionMode: 'normal' as any,
+        id: sid, vpsId: VPS_ID, name: null, status: 'active', permissionMode: 'normal' as any,
         nativeSessionId: null, kind: 'codex', lastSeenSeq: 22,
       });
       const frames: any[] = [];

@@ -197,7 +197,7 @@ let nextSeq = 1;
 
 function mkStream(kind: 'claude' | 'codex' = 'claude') {
   return new SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+    id: SID, vpsId: VPS_ID, name: null,
     status: 'active', permissionMode: 'normal', nativeSessionId: null, kind,
   }) as any;
 }

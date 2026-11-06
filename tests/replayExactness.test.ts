@@ -55,7 +55,7 @@ let skipInserts = 0;
 
 function mkStream(lastSeenSeq: number | null) {
   const s = new SessionStream({
-    id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+    id: SID, vpsId: VPS_ID, name: null,
     status: 'active', permissionMode: 'normal', nativeSessionId: null,
     lastSeenSeq,
   });
@@ -81,7 +81,7 @@ function persistedCursor(): number | null {
 }
 
 it('preserves endpoint parameter sets on hydration and replay without widening native efforts', () => {
-  const opts = { id: SID, vpsId: VPS_ID, vpsName: 'test', name: null,
+  const opts = { id: SID, vpsId: VPS_ID, name: null,
     status: 'active', permissionMode: 'normal', nativeSessionId: null,
     model: 'deepseek', effort: 'effort=max', customEndpoint: true };
   for (const kind of ['claude', 'codex']) {
@@ -216,7 +216,7 @@ describe('durable asynchronous questions', () => {
     expect(rows('user')).toHaveLength(0);
     await expect(stream.respondQuestion('async-q', answers)).rejects.toThrow('transport unavailable');
     await expect(stream.respondQuestion('async-q', { 'Which colour?': 'Purple' })).rejects.toThrow('Retry the same answers');
-    const other = new SessionStream({ id: 'other', vpsId: VPS_ID, vpsName: 'test', status: 'active', permissionMode: 'normal' });
+    const other = new SessionStream({ id: 'other', vpsId: VPS_ID, status: 'active', permissionMode: 'normal' });
     await expect(other.respondQuestion('async-q', answers)).rejects.toThrow('not found in this session');
   });
 

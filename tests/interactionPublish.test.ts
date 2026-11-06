@@ -83,7 +83,7 @@ function resolved() {
 
 function newStream(id: string) {
   return new ops.SessionStream({
-    id, vpsId: VPS_ID, vpsName: 'gate-vps', name: 'gates', status: 'active',
+    id, vpsId: VPS_ID, name: 'gates', status: 'active',
     permissionMode: 'normal', nativeSessionId: null, kind: 'claude', cwd: '/tmp/gates',
   } as any) as any;
 }
