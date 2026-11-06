@@ -1,6 +1,6 @@
 'use client';
 import { effectiveBrowserNotifications } from '@/lib/notificationPreferences';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
@@ -295,14 +295,22 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     return out;
   }, [sessions]);
   const initialActiveTab = initialTabs.find((t) => t.active) ?? null;
+  // A link to a session the list doesn't hold (deleted, archived) selects nothing.
   const [selectedId, setSelectedId] = useState<string | null>(queryParamShell
     ? null
-    : (queryParamSession ?? (initialActiveTab?.kind === 'session' ? initialActiveTab.ref : null)));
+    : (queryParamSession && sessions.some((s) => s.id === queryParamSession)
+      ? queryParamSession
+      : (initialActiveTab?.kind === 'session' ? initialActiveTab.ref : null)));
   // Charon both consumes and produces these query parameters. Keep provenance,
   // otherwise Next's asynchronous useSearchParams update can reinterpret our
   // own replaceState as a fresh deep link and bounce between two tabs forever.
   const sessionDeepLink = useRef(new DeepLinkGuard());
   const shellDeepLink = useRef(new DeepLinkGuard());
+  // The page-load links: the first list that lacks one proves it dead.
+  const linkAtLoad = useRef({ session: queryParamSession, shell: queryParamShell }).current;
+  // Re-runs the tab → pane bridge and the URL sync: a link that has no row must
+  // not leave a selection or a URL behind with no active-tab change to undo them.
+  const [paneResync, resyncPane] = useReducer((n: number) => n + 1, 0);
   // `error` stays on the parent: it carries errors from rename/kill/patch etc.
   // which are cross-session actions (not in the active view). Errors for the
   // ACTIVE SESSION live in `<SessionView>` via the hook.
@@ -385,6 +393,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }, [loginTarget]);
   // Ephemeral SSH shells. Live list (polled on mount, updated locally).
   const [shells, setShells] = useState<ShellListItem[]>([]);
+  const [shellsLoaded, setShellsLoaded] = useState(false);
   // Read by the SSE handler below, which subscribes once.
   const shellsRef = useRef(shells);
   shellsRef.current = shells;
@@ -528,7 +537,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   useEffect(() => {
     let cancelled = false;
     api.listShells().then((r) => {
-      if (!cancelled) setShells(r?.shells ?? []);
+      if (cancelled) return;
+      setShells(r?.shells ?? []);
+      setShellsLoaded(true);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -1206,7 +1217,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     setSelectedId(activeTab.kind === 'session' ? activeTab.ref : null);
     setSelectedShellId(activeTab.kind === 'shell' ? activeTab.ref : null);
     setSelectedInstallId(activeTab.kind === 'install' ? activeTab.ref : null);
-  }, [activeTab, workspaceTabsLoaded]);
+  }, [activeTab, workspaceTabsLoaded, paneResync]);
 
   /** Open (or focus) something as a tab. Preview unless `pin`. */
   const openEntityTab = useCallback((
@@ -1242,9 +1253,18 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     // worked in a tab (a message, an edit, a double-click); arriving and
     // reading is not that.
     const sess = sessions.find((x) => x.id === queryParamSession);
-    if (sess) openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', false);
-    else setSelectedId(queryParamSession);
-  }, [queryParamSession, sessions, activeTab, openEntityTab]);
+    if (sess) {
+      openEntityTab('session', sess.id, sess.vpsId, sess.cwd ?? '', false);
+      return;
+    }
+    // No row: the link never holds the pane, or every tap on a session is
+    // overwritten by a link to one that no longer exists (§14.78).
+    const gaveUp = sessionDeepLink.current.giveUpIfMissing(
+      queryParamSession, activeTab?.id ?? null, queryParamSession === linkAtLoad.session,
+    );
+    if (gaveUp) hydrationDone.current = true;
+    if (gaveUp || isNew) resyncPane();
+  }, [queryParamSession, sessions, activeTab, openEntityTab, linkAtLoad]);
 
   // Shell deep links follow the exact same guarded path. Opening a real
   // workspace tab (when its row is known) is important: direct selected-state
@@ -1260,13 +1280,17 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     if (!queryParamShell
       || (!isNew && !shellDeepLink.current.isAwaiting(queryParamShell))) return;
     const sh = shells.find((x) => x.id === queryParamShell);
-    if (sh) openEntityTab('shell', sh.id, sh.vpsId, sh.cwd ?? '', false);
-    else {
-      setSelectedShellId(queryParamShell);
-      setSelectedId(null);
-      setSelectedInstallId(null);
+    if (sh) {
+      openEntityTab('shell', sh.id, sh.vpsId, sh.cwd ?? '', false);
+      return;
     }
-  }, [queryParamShell, shells, activeTab, openEntityTab]);
+    // As for a session, but the shell list only arrives after mount.
+    const gaveUp = shellDeepLink.current.giveUpIfMissing(
+      queryParamShell, activeTab?.id ?? null, shellsLoaded && queryParamShell === linkAtLoad.shell,
+    );
+    if (gaveUp) hydrationDone.current = true;
+    if (gaveUp || isNew) resyncPane();
+  }, [queryParamShell, shells, shellsLoaded, activeTab, openEntityTab, linkAtLoad]);
 
   // Sync the active workspace tab to the URL atomically. Drive this from the
   // tab itself, not selectedId: the latter updates one effect later and could
@@ -1294,7 +1318,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     if (desiredShell) url.searchParams.set('shell', desiredShell);
     else url.searchParams.delete('shell');
     window.history.replaceState(null, '', url);
-  }, [activeTab, workspaceTabsLoaded]);
+  }, [activeTab, workspaceTabsLoaded, paneResync]);
 
   /**
    * Where you were, per group. Browser-side (not the DB): "the tab I was last
@@ -1521,7 +1545,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     refreshSessions();
     void refreshTabs();
     void settingsResource.refresh();
-    void api.listShells().then((r) => setShells(r?.shells ?? [])).catch(() => {});
+    void api.listShells().then((r) => {
+      setShells(r?.shells ?? []);
+      setShellsLoaded(true);
+    }).catch(() => {});
     for (const [key, cachedOnly] of usageKeysRef.current) {
       const [vpsId, provider, profile] = key.split('\u0000');
       refreshUsage(vpsId, provider as AgentKind, profile, false, cachedOnly);

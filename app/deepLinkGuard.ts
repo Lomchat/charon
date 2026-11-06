@@ -13,6 +13,8 @@ export class DeepLinkGuard {
   private internalTarget: string | null = null;
   private hasInternalTarget = false;
   private externalTarget: string | null = null;
+  /** Focused tab when the awaited target was first found to have no row. */
+  private waitingFocus: string | null | undefined = undefined;
 
   /** Call immediately before replaceState writes this query parameter. */
   markInternal(target: string | null): void {
@@ -23,6 +25,7 @@ export class DeepLinkGuard {
     this.internalTarget = target;
     this.hasInternalTarget = true;
     this.externalTarget = null;
+    this.waitingFocus = undefined;
   }
 
   /** True only when `value` represents a new external navigation intent. */
@@ -44,11 +47,13 @@ export class DeepLinkGuard {
     if (value === null) {
       this.handled = null;
       this.externalTarget = null;
+      this.waitingFocus = undefined;
       return false;
     }
     if (this.handled === value) return false;
     this.handled = value;
     this.externalTarget = value;
+    this.waitingFocus = undefined;
     return true;
   }
 
@@ -59,7 +64,27 @@ export class DeepLinkGuard {
 
   /** Mark an external target as reflected by the active workspace tab. */
   settle(value: string | null): void {
-    if (this.externalTarget === value) this.externalTarget = null;
+    if (this.externalTarget === value) {
+      this.externalTarget = null;
+      this.waitingFocus = undefined;
+    }
+  }
+
+  /**
+   * The awaited target has no row. A push tap can beat the list, so waiting is
+   * right while the row can still arrive. But a link that never resolves stays
+   * "awaited" forever, and it keeps the URL: it must not outlive a list proving
+   * it gone (`listComplete`), nor the user moving to another tab. True = given
+   * up: the caller hands the pane and the URL back to the active tab.
+   */
+  giveUpIfMissing(value: string, focus: string | null, listComplete: boolean): boolean {
+    if (this.externalTarget !== value) return false;
+    if (listComplete || (this.waitingFocus !== undefined && this.waitingFocus !== focus)) {
+      this.settle(value);
+      return true;
+    }
+    if (this.waitingFocus === undefined) this.waitingFocus = focus;
+    return false;
   }
 
   /** Do not overwrite a deep link while its tab mutation is still settling. */
