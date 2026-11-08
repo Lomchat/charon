@@ -6,7 +6,7 @@ import { FILE_STREAM_AGENT_VERSION, openRemoteFileStream } from '@/lib/server/hu
 import { verifyLivePreviewToken } from '@/lib/server/hub/livePreviewToken';
 import { livePreviewKey, livePreviewSessionValid } from '@/lib/server/hub/livePreviewAuth';
 import {
-  LIVE_PREVIEW_SANDBOX, livePreviewExt, livePreviewMimeFor, parseLivePreviewPath,
+  LIVE_PREVIEW_ESCAPE_RELAY, LIVE_PREVIEW_SANDBOX, livePreviewExt, livePreviewMimeFor, parseLivePreviewPath,
 } from '@/lib/livePreview';
 import { parseByteRange } from '@/lib/fileRange';
 import { withScrollbar } from '@/lib/scrollbarCss';
@@ -156,10 +156,11 @@ async function handle(req: Request, headOnly: boolean): Promise<Response> {
       const bytes = r.encoding === 'base64'
         ? Buffer.from(r.content, 'base64')
         : Buffer.from(r.content, 'utf8');
-      // The hub's scrollbar in the page (lib/scrollbarCss.ts). A whole
-      // document only: a byte range of it must stay the file's own bytes.
+      // The hub's scrollbar in the page (lib/scrollbarCss.ts), and its Esc
+      // relay to the full-screen pane. A whole document only: a byte range
+      // of it must stay the file's own bytes.
       const themed = mime.startsWith('text/html') && !req.headers.get('range')
-        ? withScrollbar(bytes, hubTheme().scrollbar) : bytes;
+        ? withScrollbar(bytes, hubTheme().scrollbar, LIVE_PREVIEW_ESCAPE_RELAY) : bytes;
       return bytesResponse(req, themed, mime, headOnly);
     }
   }

@@ -29,11 +29,14 @@ function ToolCard({ call, expanded, toggle }: { call: AgentToolActivity; expande
 }
 
 /** Public actions and conclusions are two independent, always-visible readers. */
-function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, running, identity, preview, mission }: {
+function BgAgentActivity({ sessionId, task, label, phase, nativeAgent, workflowAgent, running, identity, preview, mission }: {
   sessionId: string; task?: string; label?: string; phase?: string; nativeAgent?: string; running: boolean;
+  /** With `task`: that workflow's node by native id (repeated labels are fine). */
+  workflowAgent?: string;
   identity: string; preview?: string | null; mission?: string | null;
 }) {
-  const data = useWorkflowOutput(sessionId, nativeAgent ? { agent: nativeAgent, activity: '1' } : { task, label, phase }, running, identity);
+  const data = useWorkflowOutput(sessionId, nativeAgent ? { agent: nativeAgent, activity: '1' }
+    : workflowAgent ? { task, agent: workflowAgent } : { task, label, phase }, running, identity);
   const view = data.view;
   const activity = useRef<HTMLDivElement>(null), output = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(() => ({ activity: view.activitySnapshot || data.entries, output: view.outputSnapshot || data.entries }));

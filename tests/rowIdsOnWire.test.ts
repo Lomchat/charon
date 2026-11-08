@@ -157,6 +157,8 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
   shell_status: { events: [{ event: 'shell_status', shell_id: 's1', status: 'busy', cols: 80, rows: 24, pid: 1, seq: null }] },
   shell_output: { events: [{ event: 'shell_output', shell_id: 's1', data: 'x', seq: null }] },
   shell_exit: { events: [{ event: 'shell_exit', shell_id: 's1', code: 0, seq: null }] },
+  // Hub-internal and transient: no row, no frame (empty id = ignored).
+  peer_spawn_request: { events: [{ event: 'peer_spawn_request', request_id: '', task: 't', seq: null }] },
   shell_idle: { events: [{ event: 'shell_idle', shell_id: 's1', idle_seconds: 1, burst_seconds: 1, burst_bytes: 1, seq: null }] },
 };
 

@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { classifyDocHref } from './documentViews';
+import { relayEscape } from './escapeRelay';
 
 /**
  * Sandbox of every converted document and notebook HTML output. NEVER
@@ -136,6 +137,15 @@ export default function DocFrame({ srcDoc, title, className }: {
         inner.current.observe(body);
       }
     } catch { /* timers and the width observer still cover it */ }
+    // Keys pressed inside the frame never reach the hub: Esc is handed to the
+    // <iframe> so the full-screen pane closes from a click into the document
+    // too. The listener leaves with its document on the next load.
+    try {
+      const frame = ref.current;
+      frame?.contentDocument?.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !e.defaultPrevented) relayEscape(frame);
+      });
+    } catch { /* an inaccessible frame keeps its keys */ }
   }, [measure]);
 
   return (

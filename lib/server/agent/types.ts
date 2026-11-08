@@ -378,6 +378,13 @@ export type AgentEvent = (
       status: 'accepted' | 'processing' | 'replied' | 'failed' | 'timed_out';
       error?: string; reply_id?: string;
     }
+  // TRANSIENT (never logged): the parent's agent asks the hub to create a
+  // sub-session (charon_peer `start_sub_session`). Hub-internal, never persisted.
+  | {
+      event: 'peer_spawn_request'; session_id: string; request_id: string; task: string;
+      name?: string | null; provider?: AgentKind | null; model?: string | null;
+      effort?: string | null; mode?: string | null; cwd?: string | null;
+    }
   // turn_error (agent >= 0.36.0): typed failure off AssistantMessage.error
   // (authentication_failed, billing_error, …) — the same fact §14.65 infers by
   // regexing prose, stated.
@@ -416,6 +423,9 @@ export type AgentEvent = (
 // Any protocol change must touch both places.
 export type AgentMethodName =
   | 'hello'
+  | 'peer_spawn'
+  | 'peer_spawn_resolve'
+  | 'peer_interrupt'
   | 'ping'
   | 'list_sessions'
   | 'get_usage'
@@ -427,6 +437,9 @@ export type AgentMethodName =
   | 'list_codex_models'
   | 'list_codex_threads'
   | 'get_codex_usage'
+  // This box's session history (agent >= 0.124.0, history.py).
+  | 'history_index'
+  | 'history_preview'
   // Codex ChatGPT device-code login (agent >= 0.16.0) — headless `codex
   // login`: start → {verification_url, user_code}, hub polls status. §14.61.
   | 'codex_login_start'

@@ -75,6 +75,10 @@ METHODS = {
     "list_codex_models",
     "list_codex_threads",
     "get_codex_usage",
+    # This box's session history (agent >= 0.124.0, history.py): a cached
+    # index of every transcript, and one session's last exchanges.
+    "history_index",
+    "history_preview",
     # Codex ChatGPT DEVICE-CODE login (agent >= 0.16.0): headless-safe
     # `codex login` — start returns verification_url + user_code, the hub
     # polls status until the user completes on any device. codex_login.py.
@@ -179,6 +183,9 @@ METHODS = {
     "resume_session",
     "peer_list",
     "peer_send",
+    "peer_spawn",
+    "peer_spawn_resolve",
+    "peer_interrupt",
     "peer_status",
     "peer_conversation",
     "peer_inbox",

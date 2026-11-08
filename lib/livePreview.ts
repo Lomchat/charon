@@ -25,6 +25,24 @@ export const LIVE_PREVIEW_SANDBOX = [
   'allow-pointer-lock',
 ].join(' ');
 
+/** What a framed live page posts to its parent on an Esc it did not use. */
+export const LIVE_PREVIEW_ESCAPE = 'charon:escape';
+
+/**
+ * Injected with the scrollbar into every whole HTML page the route serves:
+ * keys inside the sandbox never reach the hub, so an Esc the page did not
+ * take (`defaultPrevented`, read once the dispatch is over) is posted to the
+ * parent — the full-screen pane closes on it. Framed only: a page opened in a
+ * tab of its own has no parent to tell. The parent trusts only its own
+ * frame's window, and all a message can do is close that pane.
+ */
+export const LIVE_PREVIEW_ESCAPE_RELAY = '<script data-charon-escape>(function(){'
+  + 'if(window.parent===window)return;'
+  + 'addEventListener("keydown",function(e){'
+  + 'if(e.key!=="Escape"||e.isComposing)return;'
+  + `setTimeout(function(){if(!e.defaultPrevented)parent.postMessage("${LIVE_PREVIEW_ESCAPE}","*")},0)`
+  + '},true)})()</script>';
+
 /** Files the explorer offers a Live view for. */
 export function isLiveHtmlName(name: string): boolean {
   return /\.x?html?$/i.test(name);

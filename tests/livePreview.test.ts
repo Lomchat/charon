@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  LIVE_PREVIEW_SANDBOX, isLiveHtmlName, livePreviewMimeFor, livePreviewScope,
+  LIVE_PREVIEW_ESCAPE, LIVE_PREVIEW_ESCAPE_RELAY, LIVE_PREVIEW_SANDBOX, isLiveHtmlName, livePreviewMimeFor, livePreviewScope,
   livePreviewUrl, livePreviewWatches, parseLivePreviewPath,
 } from '../lib/livePreview';
 import {
@@ -207,7 +207,14 @@ describe('live preview: the routes', () => {
     expect(page.headers.get('x-content-type-options')).toBe('nosniff');
     expect(page.headers.get('referrer-policy')).toBe('no-referrer');
     expect(page.headers.get('access-control-allow-origin')).toBe('*');
-    expect(await page.text()).toContain('héllo');
+    const html = await page.text();
+    expect(html).toContain('héllo');
+    // Hub markup goes after the doctype (no quirks mode), before the page's
+    // own: the scrollbar, then the framed-only Esc relay to the full-screen pane.
+    expect(html.startsWith(`<!doctype html><style data-charon-scrollbar>`)).toBe(true);
+    expect(html).toContain(`</style>${LIVE_PREVIEW_ESCAPE_RELAY}<link rel=stylesheet`);
+    expect(LIVE_PREVIEW_ESCAPE_RELAY).toContain('if(window.parent===window)return;');
+    expect(LIVE_PREVIEW_ESCAPE_RELAY.match(/postMessage\(([^)]*)\)/g)).toEqual([`postMessage("${LIVE_PREVIEW_ESCAPE}","*")`]);
 
     const css = await get(body.url.replace('index.html', 'main.css'));
     expect(css.status).toBe(200);

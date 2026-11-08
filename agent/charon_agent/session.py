@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .peer_mcp import PEER_MODEL_INSTRUCTIONS
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions
 from .crons import scheduled_tasks, local_tz
 from . import prompt_cache
 
@@ -1190,6 +1190,8 @@ class AgentSession:
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
+            "parent_session_id": getattr(self, "parent_session_id", None),
+            "parent_handle": getattr(self, "parent_handle", None),
             "permission_mode": self.permission_mode,
             "status": self.status,
             "model": self.model,
@@ -1212,6 +1214,8 @@ class AgentSession:
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
+            "parent_session_id": getattr(self, "parent_session_id", None),
+            "parent_handle": getattr(self, "parent_handle", None),
             # Claude's native --name is a start-time flag; persist it so CLI
             # interoperability survives daemon restarts.
             "cli_name": self.cli_name,
@@ -2220,6 +2224,9 @@ class AgentSession:
             appended.append("Developer instructions:\n" + developer.strip())
         if self.peer_mcp:
             appended.append("Charon peer communication rules:\n" + PEER_MODEL_INSTRUCTIONS)
+            sub_note = sub_session_instructions(getattr(self, "parent_handle", None))
+            if sub_note:
+                appended.append(sub_note)
         if appended:
             # Claude exposes one append channel rather than separate base and
             # developer slots. Preserve the Claude Code preset (tools, project

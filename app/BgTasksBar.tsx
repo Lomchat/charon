@@ -1,12 +1,12 @@
 'use client';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sessionApi } from '@/lib/api';
 import { createLatestGate } from './sync/revResource';
 import TaskModal, { TaskGroup } from './TaskModal';
 import BgTaskConstellation from './BgTaskConstellation';
 import { backgroundWorkText } from '@/lib/providerText';
 import { fmtDuration, fmtMoment } from './taskTime';
-import { CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus } from './bgTasks';
+import { bgWorkItems, CODEX_TERMINAL_TASK_PREFIX, codexTerminalProcessId, effectiveBgStatus, isBgCommandTask } from './bgTasks';
 import type { BgTask, BgTaskStatus } from './bgTasks';
 import type { SessionProvider } from '@/lib/sessionCapabilities';
 import { providerText } from '@/lib/providerText';
@@ -81,6 +81,11 @@ function fmtTokens(n: number): string {
 
 function taskTitle(t: BgTask): string {
   return t.description || t.workflowName || t.command || t.taskId;
+}
+
+function taskKind(t: BgTask): string {
+  return isWorkflow(t) ? backgroundWorkText.workflow : isBgCommandTask(t) ? backgroundWorkText.command
+    : t.taskType === 'local_agent' ? backgroundWorkText.agent : backgroundWorkText.task;
 }
 
 function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd }: {
@@ -175,8 +180,9 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
   // Age-capped view of the registry: a task running past the cap is `stale`,
   // not live work (`effectiveBgStatus`). Recomputed off the 1s ticker, so a
   // task that ages out while the bar is open stops claiming to be running.
+  // A sub-agent's own commands are steps of their owner, not items (`bgWorkItems`).
   const view = useMemo(
-    () => tasks.map((t) => ({ t, status: effectiveBgStatus(t, nowS) })),
+    () => bgWorkItems(tasks.map((t) => ({ t, status: effectiveBgStatus(t, nowS) }))),
     [tasks, nowS],
   );
   const terminalTaskIds = useMemo(
@@ -196,8 +202,8 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
   const runningRows = useMemo(() => taskView.filter((v) => v.status === 'running'), [taskView]);
   const ended = useMemo(() => taskView.filter((v) => v.status !== 'running'), [taskView]);
   const lastEndedAt = useMemo(
-    () => tasks.reduce((m, t) => Math.max(m, t.endedAt ?? 0), 0),
-    [tasks],
+    () => view.reduce((m, { t }) => Math.max(m, t.endedAt ?? 0), 0),
+    [view],
   );
 
   // 1s ticker for the elapsed display — armed only while something runs
@@ -211,6 +217,14 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
 
   const defaultTask = runningRows[runningRows.length - 1] ?? ended[0];
   const selectedTask = taskView.find(({ t }) => t.taskId === selectedTaskId) ?? defaultTask;
+  // Every running item stays in sight (a picker hiding all but one read as
+  // "one task"); a finished one opened from the history joins them.
+  const picks = selectedTask && selectedTask.status !== 'running' ? [...runningRows, selectedTask] : runningRows;
+  const detailRef = useRef<HTMLDivElement>(null);
+  const inspect = useCallback((taskId: string) => {
+    setSelectedTaskId(taskId);
+    detailRef.current?.scrollIntoView({ block: 'start' });
+  }, []);
   // Session sub-agents are listed by native id; a `local_agent` task id IS it.
   const agentLabels = useMemo(() => new Map(tasks.flatMap((t) => t.description ? [[t.taskId, t.description] as const] : [])), [tasks]);
 
@@ -219,14 +233,14 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
   const runningCount = running.length + terminals.length;
   // An open modal never vanishes under its reader when the grace runs out.
   const visible = open || runningCount > 0
-    || (tasks.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
+    || (view.length > 0 && lastEndedAt > 0 && nowS - lastEndedAt < ENDED_GRACE_S);
   if (!visible) return null;
 
   const headline = runningCount > 0
     ? `${runningCount} background work item${runningCount > 1 ? 's' : ''} running`
     : 'background work finished';
   const newest = running.length > 0 ? running[running.length - 1]
-    : terminals.length > 0 ? undefined : tasks[0];
+    : terminals.length > 0 ? undefined : ended[0]?.t;
   const newestTerminal = terminals[terminals.length - 1];
 
   function renderTask({ t, status }: { t: BgTask; status: BgTaskStatus }) {
@@ -243,7 +257,7 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
       <article key={t.taskId} className={`tm-card ${meta.cls}`}>
         <div className="tm-card-top">
           <span className={`tm-pill ${meta.cls}`} title={meta.hint}><i aria-hidden />{meta.label}</span>
-          <button type="button" className="tm-card-title bgc-inspect-task" onClick={() => setSelectedTaskId(t.taskId)} title={backgroundWorkText.inspect}>{title}</button>
+          <button type="button" className="tm-card-title bgc-inspect-task" onClick={() => inspect(t.taskId)} title={backgroundWorkText.inspect}>{title}</button>
           {status === 'running' && (stoppable ? (
             // Kills the TASK, not the session. The row stays "running" until
             // the CLI's own terminal event lands (§14.18).
@@ -376,17 +390,23 @@ function BgTasksBarImpl({ tasks, sessionId, provider, sessionStatus, vpsId, cwd 
           </>}
           onClose={close}
         >
-          {selectedTask && <>
-            <div className="bgc-task-picker">
-              <label htmlFor="bgc-task-select">{backgroundWorkText.task}</label>
-              <select id="bgc-task-select" value={selectedTask.t.taskId} onChange={(e) => setSelectedTaskId(e.target.value)}>
-                {runningRows.length > 0 && <optgroup label={backgroundWorkText.running}>{runningRows.map(({ t }) => <option key={t.taskId} value={t.taskId}>{taskTitle(t)}</option>)}</optgroup>}
-                {ended.length > 0 && <optgroup label={backgroundWorkText.finished}>{ended.slice(0, historyLimit).map(({ t }) => <option key={t.taskId} value={t.taskId}>{taskTitle(t)}</option>)}</optgroup>}
-              </select>
-            </div>
+          {selectedTask && <div ref={detailRef} className="bgc-detail">
+            {picks.length > 1 && <div className="bgc-picks" role="group" aria-label={backgroundWorkText.task}>
+              {picks.map(({ t, status }) => {
+                const meta = STATUS_META[status] ?? STATUS_META.stale;
+                const on = t.taskId === selectedTask.t.taskId;
+                return <button type="button" key={t.taskId} className={`bgc-pick ${meta.cls}${on ? ' selected' : ''}`} aria-pressed={on}
+                  onClick={() => setSelectedTaskId(t.taskId)} title={taskTitle(t)}>
+                  <span className={`tm-pill ${meta.cls}`}><i aria-hidden />{meta.label}</span>
+                  <span className="bgc-pick-kind">{taskKind(t)}</span>
+                  <span className="bgc-pick-title">{taskTitle(t)}</span>
+                  <span className="bgc-pick-time">{fmtElapsed(t.startedAt, t.endedAt ?? nowS)}</span>
+                </button>;
+              })}
+            </div>}
             <BgTaskConstellation key={`${selectedTask.t.taskId}:${selectedTask.t.startedAt}`} task={selectedTask.t} status={selectedTask.status}
               sessionId={sessionId} vpsId={vpsId} cwd={cwd} provider={provider} nowS={nowS} killing={killing[selectedTask.t.taskId]} onStop={kill} agentLabels={agentLabels} />
-          </>}
+          </div>}
           <TaskGroup label="Processes" count={terminals.length}>{terminals.map(renderTerminal)}</TaskGroup>
           {terminalError && <div className="tm-error">Process list refresh failed: {terminalError}</div>}
           {ended.length > 0 && <section className="bgc-history">

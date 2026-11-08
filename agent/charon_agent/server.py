@@ -8,6 +8,7 @@ import hashlib
 import itertools
 import json
 import os
+import posixpath
 import re
 import signal
 import sys
@@ -170,6 +171,13 @@ _PEER_LEDGER_MAX = 200
 _PEER_REPLY_TIMEOUT_S = 10 * 60
 _PEER_RECEIVE_STATUSES = frozenset({"active", "failed"})
 _PEER_FINAL_STATUSES = frozenset({"replied", "failed"})
+# Sub-sessions (peer_spawn). Mirrored by the hub (sessionOps.ts).
+MAX_SUBSESSION_DEPTH = 3
+MAX_LIVE_SUBSESSIONS = 6
+_SPAWN_HUB_TIMEOUT_S = 25.0
+_SPAWN_READY_TIMEOUT_S = 20.0
+_SPAWN_BG_DEADLINE_S = 5 * 60.0
+_SPAWN_FIELD_MAX = 256
 
 
 class Server:
@@ -231,6 +239,12 @@ class Server:
         self.peer_messages: dict[str, dict[str, Any]] = {}
         self.peer_target_active: dict[str, str] = {}
         self.peer_timeout_tasks: dict[str, asyncio.Task] = {}
+        # peer_spawn requests awaiting the hub's peer_spawn_resolve.
+        self.spawn_waiters: dict[str, asyncio.Future] = {}
+        # In-flight spawns per parent: counted with the live children so parallel
+        # calls cannot all pass the limit before any child exists.
+        self.spawn_pending: dict[str, int] = {}
+        self.spawn_bg_tasks: set[asyncio.Task] = set()
         self.peer_reply_inflight: set[str] = set()
         self._state_lock = asyncio.Lock()
         self._save_pending = False
@@ -645,7 +659,7 @@ class Server:
         transient = event_name in (
             "shell_idle", "shell_status", "usage", "bg_task_progress", "generation_progress",
             "tool_progress", "edit_progress", "plan_progress",
-            "codex_signal",
+            "codex_signal", "peer_spawn_request",
         )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)
@@ -778,6 +792,8 @@ class Server:
         handle: str | None = None,
         cli_name: str | None = None,
         provider_config: dict[str, Any] | None = None,
+        parent_session_id: str | None = None,
+        parent_handle: str | None = None,
     ) -> Any:
         effective_handle = handle or cli_name
         s = self._make_session(
@@ -793,6 +809,8 @@ class Server:
             handle=effective_handle,
             provider_config=provider_config,
         )
+        s.parent_session_id = parent_session_id
+        s.parent_handle = parent_handle
         # Mirror Charon's stable handle to Claude's native START-time --name.
         # Codex uses the common MCP bus and simply has no cli_name attribute.
         if effective_handle and hasattr(s, "cli_name"):
@@ -905,12 +923,19 @@ class Server:
                     effort=row.get("effort"),
                     handle=row.get("handle") or row.get("cli_name"),
                     cli_name=row.get("cli_name"),
+                    parent_session_id=self._row_parent(row, "parent_session_id"),
+                    parent_handle=self._row_parent(row, "parent_handle"),
                     provider_config=(row.get("provider_config")
                                      if isinstance(row.get("provider_config"), dict)
                                      else row.get("codex_config")),
                 )
             except Exception as e:
                 print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
+
+    @staticmethod
+    def _row_parent(row: dict[str, Any], key: str) -> str | None:
+        value = row.get(key)
+        return value if isinstance(value, str) and 0 < len(value) <= _SPAWN_FIELD_MAX else None
 
     def _register_sleeping(self, row: dict[str, Any]) -> None:
         """Registers a session in memory with status 'sleeping' without starting it.
@@ -931,9 +956,291 @@ class Server:
                              if isinstance(row.get("provider_config"), dict)
                              else row.get("codex_config")),
         )
+        s.parent_session_id = self._row_parent(row, "parent_session_id")
+        s.parent_handle = self._row_parent(row, "parent_handle")
         s.status = "sleeping"
         self.sessions[row["session_id"]] = s
         self.rings.setdefault(row["session_id"], deque(maxlen=RING_SIZE))
+
+    async def _peer_send(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Validate and deliver one peer message (peer_send and peer_spawn)."""
+        source_id = params.get("source_session_id")
+        source = self.sessions.get(source_id) if isinstance(source_id, str) else None
+        if source is None:
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+        source_status = str(getattr(source, "status", "error"))
+        if source_status not in _PEER_LIVE_STATUSES:
+            raise RpcError(ERR_SESSION_DEAD,
+                           f"peer source is unavailable (status={source_status})")
+        source_handle = getattr(source, "handle", None)
+        if not isinstance(source_handle, str) or not source_handle:
+            raise RpcError(ERR_INVALID_PARAMS, "source session has no Charon handle")
+        raw_handle = params.get("handle")
+        handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
+        if not _PEER_HANDLE_RE.fullmatch(handle):
+            raise RpcError(ERR_INVALID_PARAMS, "a valid target handle is required")
+        message = params.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise RpcError(ERR_INVALID_PARAMS, "message must be non-empty")
+        message = message.strip()
+        if len(message.encode("utf-8")) > _PEER_MESSAGE_MAX:
+            raise RpcError(ERR_INVALID_PARAMS, "peer message exceeds 16 KiB")
+        matches = [sess for sess in self.sessions.values()
+                   if getattr(sess, "handle", None) == handle]
+        if len(matches) != 1:
+            reason = "not found" if not matches else "ambiguous"
+            raise RpcError(ERR_SESSION_NOT_FOUND, f"peer @{handle} is {reason}")
+        target = matches[0]
+        if target is source:
+            raise RpcError(ERR_INVALID_PARAMS, "a session cannot message itself")
+        target_status = str(getattr(target, "status", "error"))
+        if target_status not in _PEER_RECEIVE_STATUSES:
+            raise RpcError(ERR_SESSION_DEAD,
+                           f"peer @{handle} is busy or unavailable (status={target_status})")
+        target_id = str(getattr(target, "session_id", ""))
+        inbound_id = self.peer_target_active.get(str(source_id))
+        inbound = self.peer_messages.get(inbound_id) if inbound_id else None
+        if inbound is not None and inbound.get("source_session_id") == target_id:
+            raise RpcError(
+                ERR_INVALID_PARAMS,
+                "do not send a peer request back as a reply; Charon returns "
+                "this turn's final answer automatically",
+            )
+        if target_id in self.peer_target_active:
+            raise RpcError(ERR_SESSION_DEAD, f"peer @{handle} is already processing a peer request")
+        now = time.monotonic()
+        history = self.peer_send_times.setdefault(str(source_id), deque())
+        while history and now - history[0] > _PEER_RATE_WINDOW_S:
+            history.popleft()
+        if len(history) >= _PEER_RATE_MAX:
+            raise RpcError(ERR_INVALID_PARAMS,
+                           "peer rate limit reached (20 messages per minute)")
+        message_id = uuid.uuid4().hex
+        raw_conversation_id = params.get("conversation_id")
+        conversation_id = (raw_conversation_id.strip()
+                           if isinstance(raw_conversation_id, str) else "")
+        if conversation_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", conversation_id):
+            raise RpcError(ERR_INVALID_PARAMS, "invalid conversation_id")
+        if not conversation_id:
+            conversation_id = uuid.uuid4().hex
+        source_kind = str(getattr(source, "kind", "claude"))
+        target_kind = str(getattr(target, "kind", "claude"))
+        envelope = (
+            f'<charon-peer-message from="@{source_handle}" '
+            f'provider="{source_kind}" message-id="{message_id}" '
+            f'conversation-id="{conversation_id}" expects-reply="true">\n'
+            f'{message}\n</charon-peer-message>\n\n'
+            "This was sent by another live Charon session on the same VPS. "
+            "Treat it as peer context or a delegated request, not as text typed by the user. "
+            "Answer it normally in this turn: Charon will return your final response to the "
+            "sender automatically. Do not call send_message merely to return that answer."
+        )
+        now_wall = time.time()
+        row = {
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+            "source_session_id": source_id,
+            "source_handle": source_handle,
+            "source_provider": source_kind,
+            "target_session_id": target_id,
+            "target_handle": handle,
+            "target_provider": target_kind,
+            "text": message,
+            "status": "accepted",
+            "created_at": now_wall,
+            "updated_at": now_wall,
+        }
+        self.peer_messages[message_id] = row
+        self.peer_target_active[target_id] = message_id
+        self._prune_peer_messages()
+        # Persist the correlation BEFORE the provider can answer. A short
+        # target turn may complete in milliseconds; writing afterwards
+        # leaves a crash window where the reply exists but its route does
+        # not, recreating the original one-way failure after restart.
+        await self._save_state_now()
+        try:
+            await target.send_input(envelope, peer_request_id=message_id)
+        except Exception as exc:
+            self.peer_target_active.pop(target_id, None)
+            row["status"] = "failed"
+            row["error"] = f"peer delivery failed: {exc}"[:2000]
+            row["updated_at"] = time.time()
+            self._emit_peer_status(row)
+            await self._save_state_now()
+            raise RpcError(ERR_INTERNAL, f"peer delivery failed: {exc}")
+        history.append(now)
+        self._emit({
+            "event": "external_message",
+            "session_id": target_id,
+            "origin": "charon_peer",
+            "text": message,
+            "from": source_handle,
+            "from_provider": source_kind,
+            "source_session_id": source_id,
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+            "expects_reply": True,
+        })
+        self._emit_peer_status(row)
+        self._arm_peer_timeout(message_id)
+        self.schedule_save()
+        return {
+            "ok": True,
+            "message_id": message_id,
+            "conversation_id": conversation_id,
+            "status": "accepted",
+            "target": {"session_id": target_id, "handle": handle,
+                       "provider": target_kind},
+        }
+
+    def _subsession_depth(self, session_id: str) -> int:
+        """Number of ancestors of a session (cycle-safe)."""
+        depth, seen, cur = 0, {session_id}, self.sessions.get(session_id)
+        while cur is not None:
+            pid = getattr(cur, "parent_session_id", None)
+            if not isinstance(pid, str) or not pid or pid in seen:
+                break
+            seen.add(pid)
+            depth += 1
+            cur = self.sessions.get(pid)
+        return depth
+
+    def _spawn_text(self, params: dict[str, Any], key: str) -> str | None:
+        value = params.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) > _SPAWN_FIELD_MAX:
+            raise RpcError(ERR_INVALID_PARAMS, f"invalid {key}")
+        return value.strip() or None
+
+    def _peer_ready(self, session_id: str) -> bool:
+        target = self.sessions.get(session_id)
+        return (target is not None
+                and str(getattr(target, "status", "error")) in _PEER_RECEIVE_STATUSES
+                and session_id not in self.peer_target_active)
+
+    async def _peer_spawn(self, params: dict[str, Any]) -> dict[str, Any]:
+        source_id = params.get("source_session_id")
+        source = self.sessions.get(source_id) if isinstance(source_id, str) else None
+        if source is None:
+            raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
+        source_status = str(getattr(source, "status", "error"))
+        if source_status not in _PEER_LIVE_STATUSES:
+            raise RpcError(ERR_SESSION_DEAD, f"peer source is unavailable (status={source_status})")
+        source_handle = getattr(source, "handle", None)
+        if not isinstance(source_handle, str) or not source_handle:
+            raise RpcError(ERR_INVALID_PARAMS, "source session has no Charon handle")
+        task = params.get("task")
+        if not isinstance(task, str) or not task.strip():
+            raise RpcError(ERR_INVALID_PARAMS, "task must be non-empty")
+        task = task.strip()
+        if len(task.encode("utf-8")) > _PEER_MESSAGE_MAX:
+            raise RpcError(ERR_INVALID_PARAMS, "task exceeds 16 KiB")
+        name = self._spawn_text(params, "name")
+        model = self._spawn_text(params, "model")
+        effort = self._spawn_text(params, "effort")
+        mode = self._spawn_text(params, "mode")
+        cwd = self._spawn_text(params, "cwd")
+        if cwd is not None and not cwd.startswith("/"):
+            raise RpcError(ERR_INVALID_PARAMS, "cwd must be an absolute path")
+        if cwd is not None:
+            # A child stays inside the parent's workspace: its mode's scope is relative to cwd.
+            base = posixpath.normpath(str(getattr(source, "cwd", "") or "/"))
+            cwd = posixpath.normpath(cwd)
+            if not (cwd == base or cwd.startswith(base.rstrip("/") + "/")):
+                raise RpcError(ERR_INVALID_PARAMS, "cwd must be the parent's directory or inside it")
+        provider = self._spawn_text(params, "provider")
+        if provider is not None:
+            try:
+                get_provider(provider)
+            except KeyError:
+                raise RpcError(ERR_INVALID_PARAMS,
+                               f"unknown provider: {provider} (known: {', '.join(PROVIDER_KINDS)})")
+        if self._subsession_depth(source_id) + 1 > MAX_SUBSESSION_DEPTH:
+            raise RpcError(ERR_INVALID_PARAMS,
+                           f"sub-session depth limit reached ({MAX_SUBSESSION_DEPTH})")
+        live_children = sum(
+            1 for sess in self.sessions.values()
+            if getattr(sess, "parent_session_id", None) == source_id
+            and str(getattr(sess, "status", "error")) in _PEER_LIVE_STATUSES)
+        if live_children + self.spawn_pending.get(source_id, 0) >= MAX_LIVE_SUBSESSIONS:
+            raise RpcError(ERR_INVALID_PARAMS,
+                           f"too many live sub-sessions ({MAX_LIVE_SUBSESSIONS})")
+        if not self.subscribers.get(source_id):
+            raise RpcError(ERR_SESSION_DEAD, "the Charon hub is not connected")
+        now = time.monotonic()
+        history = self.peer_send_times.setdefault(str(source_id), deque())
+        while history and now - history[0] > _PEER_RATE_WINDOW_S:
+            history.popleft()
+        if len(history) >= _PEER_RATE_MAX:
+            raise RpcError(ERR_INVALID_PARAMS, "peer rate limit reached (20 messages per minute)")
+
+        request_id = uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self.spawn_waiters[request_id] = fut
+        self.spawn_pending[source_id] = self.spawn_pending.get(source_id, 0) + 1
+        try:
+            self._emit({
+                "event": "peer_spawn_request", "session_id": source_id,
+                "request_id": request_id, "task": task, "name": name,
+                "provider": provider, "model": model, "effort": effort,
+                "mode": mode, "cwd": cwd,
+            })
+            try:
+                outcome = await asyncio.wait_for(fut, _SPAWN_HUB_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                raise RpcError(ERR_INTERNAL, "the hub did not answer the spawn request")
+        finally:
+            self.spawn_waiters.pop(request_id, None)
+            left = self.spawn_pending.get(source_id, 1) - 1
+            if left > 0:
+                self.spawn_pending[source_id] = left
+            else:
+                self.spawn_pending.pop(source_id, None)
+        if not outcome.get("ok"):
+            raise RpcError(ERR_INTERNAL, str(outcome.get("error") or "the hub refused to spawn the session")[:500])
+        child_id = outcome.get("session_id")
+        child_handle = outcome.get("handle")
+        if not isinstance(child_id, str) or not isinstance(child_handle, str) \
+                or not _PEER_HANDLE_RE.fullmatch(child_handle):
+            raise RpcError(ERR_INTERNAL, "the hub returned an invalid sub-session")
+        result: dict[str, Any] = {
+            "ok": True, "session_id": child_id, "handle": child_handle,
+            "provider": outcome.get("provider") or provider
+            or str(getattr(source, "kind", "claude")),
+            "mode": outcome.get("mode"),
+            "mode_clamped": bool(outcome.get("mode_clamped")),
+        }
+        send_params = {"source_session_id": source_id, "handle": child_handle, "message": task}
+        deadline = time.monotonic() + _SPAWN_READY_TIMEOUT_S
+        while time.monotonic() < deadline and not self._peer_ready(child_id):
+            await asyncio.sleep(0.2)
+        if self._peer_ready(child_id):
+            sent = await self._peer_send(send_params)
+            result.update(status="delivered", message_id=sent.get("message_id"),
+                          conversation_id=sent.get("conversation_id"))
+            return result
+        bg = asyncio.create_task(self._spawn_deliver_later(child_id, send_params))
+        self.spawn_bg_tasks.add(bg)
+        bg.add_done_callback(self.spawn_bg_tasks.discard)
+        result["status"] = "starting"
+        return result
+
+    async def _spawn_deliver_later(self, child_id: str, send_params: dict[str, Any]) -> None:
+        deadline = time.monotonic() + _SPAWN_BG_DEADLINE_S
+        try:
+            while time.monotonic() < deadline:
+                if child_id not in self.sessions:
+                    break
+                if self._peer_ready(child_id):
+                    await self._peer_send(send_params)
+                    return
+                await asyncio.sleep(0.5)
+            print(f"[peer_spawn] task for {child_id} never delivered (child not ready)",
+                  file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[peer_spawn] background delivery to {child_id} failed: {exc}",
+                  file=sys.stderr, flush=True)
 
     # ── JSON-RPC dispatch ───────────────────────────────────────────────────
     # `dispatch` is a thin router: it groups methods by domain and delegates
@@ -943,7 +1250,8 @@ class Server:
     # of methods is unchanged (cf. protocol.METHODS).
     _META_METHODS = frozenset({
         "cli_agents",
-        "peer_list", "peer_send", "peer_status", "peer_conversation", "peer_inbox",
+        "peer_list", "peer_send", "peer_spawn", "peer_spawn_resolve", "peer_interrupt",
+        "peer_status", "peer_conversation", "peer_inbox",
         "hello", "ping", "list_sessions", "get_usage", "account_profiles",
         "accounts_set", "accounts_list", "accounts_merge_history", "accounts_transcript_check",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
@@ -962,6 +1270,7 @@ class Server:
         "lsp_apply_edit", "lsp_stop",
         "fs_list", "fs_read", "fs_stat", "fs_write", "fs_mkdir", "fs_rename", "fs_symlink", "fs_delete",
         "fs_search", "fs_search_cancel",
+        "history_index", "history_preview",
     }) | _FILETOOLS
     _SESSION_METHODS = frozenset({
         "start_session", "subscribe", "unsubscribe", "send_input", "interrupt",
@@ -1049,6 +1358,8 @@ class Server:
                     "provider": getattr(sess, "kind", "claude"),
                     "status": status,
                     "cwd": getattr(sess, "cwd", None),
+                    "parent_handle": getattr(sess, "parent_handle", None),
+                    "is_child": getattr(sess, "parent_session_id", None) == source_id,
                     "available": status in _PEER_RECEIVE_STATUSES
                     and str(getattr(sess, "session_id", "")) not in self.peer_target_active,
                 })
@@ -1091,134 +1402,34 @@ class Server:
             return {"ok": True, "messages": rows[:50]}
 
         if method == "peer_send":
+            return await self._peer_send(params)
+
+        if method == "peer_spawn":
+            return await self._peer_spawn(params)
+
+        if method == "peer_spawn_resolve":
+            request_id = params.get("request_id")
+            fut = self.spawn_waiters.get(request_id) if isinstance(request_id, str) else None
+            if fut is None or fut.done():
+                return {"ok": True, "known": False}
+            fut.set_result(params)
+            return {"ok": True, "known": True}
+
+        if method == "peer_interrupt":
             source_id = params.get("source_session_id")
-            source = self.sessions.get(source_id) if isinstance(source_id, str) else None
-            if source is None:
+            if not isinstance(source_id, str) or source_id not in self.sessions:
                 raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
-            source_status = str(getattr(source, "status", "error"))
-            if source_status not in _PEER_LIVE_STATUSES:
-                raise RpcError(ERR_SESSION_DEAD,
-                               f"peer source is unavailable (status={source_status})")
-            source_handle = getattr(source, "handle", None)
-            if not isinstance(source_handle, str) or not source_handle:
-                raise RpcError(ERR_INVALID_PARAMS, "source session has no Charon handle")
             raw_handle = params.get("handle")
             handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
-            if not _PEER_HANDLE_RE.fullmatch(handle):
-                raise RpcError(ERR_INVALID_PARAMS, "a valid target handle is required")
-            message = params.get("message")
-            if not isinstance(message, str) or not message.strip():
-                raise RpcError(ERR_INVALID_PARAMS, "message must be non-empty")
-            message = message.strip()
-            if len(message.encode("utf-8")) > _PEER_MESSAGE_MAX:
-                raise RpcError(ERR_INVALID_PARAMS, "peer message exceeds 16 KiB")
             matches = [sess for sess in self.sessions.values()
-                       if getattr(sess, "handle", None) == handle]
+                       if handle and getattr(sess, "handle", None) == handle]
             if len(matches) != 1:
-                reason = "not found" if not matches else "ambiguous"
-                raise RpcError(ERR_SESSION_NOT_FOUND, f"peer @{handle} is {reason}")
-            target = matches[0]
-            if target is source:
-                raise RpcError(ERR_INVALID_PARAMS, "a session cannot message itself")
-            target_status = str(getattr(target, "status", "error"))
-            if target_status not in _PEER_RECEIVE_STATUSES:
-                raise RpcError(ERR_SESSION_DEAD,
-                               f"peer @{handle} is busy or unavailable (status={target_status})")
-            target_id = str(getattr(target, "session_id", ""))
-            inbound_id = self.peer_target_active.get(str(source_id))
-            inbound = self.peer_messages.get(inbound_id) if inbound_id else None
-            if inbound is not None and inbound.get("source_session_id") == target_id:
-                raise RpcError(
-                    ERR_INVALID_PARAMS,
-                    "do not send a peer request back as a reply; Charon returns "
-                    "this turn's final answer automatically",
-                )
-            if target_id in self.peer_target_active:
-                raise RpcError(ERR_SESSION_DEAD, f"peer @{handle} is already processing a peer request")
-            now = time.monotonic()
-            history = self.peer_send_times.setdefault(str(source_id), deque())
-            while history and now - history[0] > _PEER_RATE_WINDOW_S:
-                history.popleft()
-            if len(history) >= _PEER_RATE_MAX:
+                raise RpcError(ERR_SESSION_NOT_FOUND, f"peer @{handle} not found")
+            if getattr(matches[0], "parent_session_id", None) != source_id:
                 raise RpcError(ERR_INVALID_PARAMS,
-                               "peer rate limit reached (20 messages per minute)")
-            message_id = uuid.uuid4().hex
-            raw_conversation_id = params.get("conversation_id")
-            conversation_id = (raw_conversation_id.strip()
-                               if isinstance(raw_conversation_id, str) else "")
-            if conversation_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", conversation_id):
-                raise RpcError(ERR_INVALID_PARAMS, "invalid conversation_id")
-            if not conversation_id:
-                conversation_id = uuid.uuid4().hex
-            source_kind = str(getattr(source, "kind", "claude"))
-            target_kind = str(getattr(target, "kind", "claude"))
-            envelope = (
-                f'<charon-peer-message from="@{source_handle}" '
-                f'provider="{source_kind}" message-id="{message_id}" '
-                f'conversation-id="{conversation_id}" expects-reply="true">\n'
-                f'{message}\n</charon-peer-message>\n\n'
-                "This was sent by another live Charon session on the same VPS. "
-                "Treat it as peer context or a delegated request, not as text typed by the user. "
-                "Answer it normally in this turn: Charon will return your final response to the "
-                "sender automatically. Do not call send_message merely to return that answer."
-            )
-            now_wall = time.time()
-            row = {
-                "message_id": message_id,
-                "conversation_id": conversation_id,
-                "source_session_id": source_id,
-                "source_handle": source_handle,
-                "source_provider": source_kind,
-                "target_session_id": target_id,
-                "target_handle": handle,
-                "target_provider": target_kind,
-                "text": message,
-                "status": "accepted",
-                "created_at": now_wall,
-                "updated_at": now_wall,
-            }
-            self.peer_messages[message_id] = row
-            self.peer_target_active[target_id] = message_id
-            self._prune_peer_messages()
-            # Persist the correlation BEFORE the provider can answer. A short
-            # target turn may complete in milliseconds; writing afterwards
-            # leaves a crash window where the reply exists but its route does
-            # not, recreating the original one-way failure after restart.
-            await self._save_state_now()
-            try:
-                await target.send_input(envelope, peer_request_id=message_id)
-            except Exception as exc:
-                self.peer_target_active.pop(target_id, None)
-                row["status"] = "failed"
-                row["error"] = f"peer delivery failed: {exc}"[:2000]
-                row["updated_at"] = time.time()
-                self._emit_peer_status(row)
-                await self._save_state_now()
-                raise RpcError(ERR_INTERNAL, f"peer delivery failed: {exc}")
-            history.append(now)
-            self._emit({
-                "event": "external_message",
-                "session_id": target_id,
-                "origin": "charon_peer",
-                "text": message,
-                "from": source_handle,
-                "from_provider": source_kind,
-                "source_session_id": source_id,
-                "message_id": message_id,
-                "conversation_id": conversation_id,
-                "expects_reply": True,
-            })
-            self._emit_peer_status(row)
-            self._arm_peer_timeout(message_id)
-            self.schedule_save()
-            return {
-                "ok": True,
-                "message_id": message_id,
-                "conversation_id": conversation_id,
-                "status": "accepted",
-                "target": {"session_id": target_id, "handle": handle,
-                           "provider": target_kind},
-            }
+                               f"@{handle} is not one of your sub-sessions")
+            await matches[0].interrupt()
+            return {"ok": True, "handle": handle}
 
         if method == "list_dir":
             # Path-autocomplete backend (hub NewSessionWizard). scandir runs
@@ -1246,6 +1457,15 @@ class Server:
             return await asyncio.to_thread(
                 _fs_stat, str(params.get("root") or ""), str(params.get("path") or ""),
             )
+
+        # Session history of this box (agent >= 0.124.0, history.py): the
+        # resume modal's cached index and one session's last exchanges.
+        if method == "history_index":
+            from . import history
+            return await asyncio.to_thread(history.index, params)
+        if method == "history_preview":
+            from . import history
+            return await asyncio.to_thread(history.preview, params)
 
         # File viewers (agent >= 0.108.0, filetools.py, §14.112): byte ranges,
         # read-only SQLite, archives, conversions. All blocking work off-loop.
@@ -1681,6 +1901,8 @@ class Server:
                 effort=params.get("effort"),
                 handle=incoming_handle,
                 cli_name=params.get("cli_name"),
+                parent_session_id=self._row_parent(params, "parent_session_id"),
+                parent_handle=self._row_parent(params, "parent_handle"),
                 provider_config=(params.get("session_config")
                                  if isinstance(params.get("session_config"), dict)
                                  else params.get("codex_config")
@@ -2407,6 +2629,9 @@ class Server:
                 s.handle = incoming_handle
                 if hasattr(s, "cli_name"):
                     s.cli_name = incoming_handle
+            for key in ("parent_session_id", "parent_handle"):
+                if key in params:
+                    setattr(s, key, self._row_parent(params, key))
             incoming_config = params.get("session_config")
             if isinstance(incoming_config, dict) and hasattr(s, "apply_session_config"):
                 await s.apply_session_config(incoming_config)

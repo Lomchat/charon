@@ -32,7 +32,7 @@ import type {
   InstallInfo, InstallsListResponse, VpsInstallResponse,
   CreateVpsPathBody, UpdateVpsPathBody,
   ClaudeCheckResponse, SetupVpsClaudeResponse, ScanVpsClaudeResponse, ScanVpsCodexResponse,
-  ScanVpsSessionsQuery, ScanVpsSessionsResponse,
+  ScanVpsSessionsQuery, ScanVpsSessionsResponse, HistoryIndexResponse, HistoryPreviewResponse,
   CheckClaudeLoginResponse, ClaudeLoginStatusResponse,
   CodexLoginStartResponse, CodexLoginStatusResponse,
   CursorLoginStartResponse, CursorLoginStatusResponse, CursorLoginCheckResponse,
@@ -535,6 +535,13 @@ export const api = {
       'GET', `/api/vps/${id}/${PROVIDERS[provider].deployment.scanRouteDir}/scan${qs}`,
     );
   },
+  /** Every Claude/Codex session on the VPS, from the agent's cached index;
+   *  `pending` > 0 = call again (the first build fills in). */
+  historyIndex: (id: string) =>
+    send<HistoryIndexResponse>('GET', `/api/vps/${id}/history`, undefined, { timeoutMs: 45_000 }),
+  /** One session's first request + last exchanges, for the resume panel. */
+  historyPreview: (id: string, kind: SessionProvider, sessionId: string, turns = 3) =>
+    send<HistoryPreviewResponse>('GET', `/api/vps/${id}/history/preview?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(sessionId)}&turns=${turns}`, undefined, { timeoutMs: 30_000 }),
   // Re-checks the VPS's `claude login` state. Persists in DB + returns.
   // Triggered when the login modal closes (the user may have just logged
   // in or out), or on manual demand.
@@ -815,8 +822,10 @@ export const api = {
     send<ClaudeModelsRefreshResponse>('POST', '/api/claude/models/refresh'),
   revertSessionEdit: (id: string, filePath: string) =>
     send<RevertEditResponse>('POST', `/api/sessions/${id}/revert`, { filePath }),
-  searchSessions: (q: string) =>
-    send<SessionSearchResponse>('GET', `/api/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, signal?: AbortSignal) =>
+    send<SessionSearchResponse>('GET', `/api/search?q=${encodeURIComponent(q)}`, undefined, { signal }),
+  searchFiles: (q: string, signal?: AbortSignal) =>
+    send<import('@/lib/types/api').FileSearchResponse>('POST', '/api/search/files', { q }, { signal }),
 
   getModelNotices: () =>
     send<import('@/lib/types/api').ModelNoticesResponse>('GET', '/api/models/notices'),

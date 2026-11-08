@@ -203,7 +203,8 @@ export default function PdfViewer({ url, name, rev = 0 }: { url: string; name: s
             onBlur={() => setPageDraft(null)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') { goTo(Number(pageDraft || page)); setPageDraft(null); (e.target as HTMLInputElement).blur(); }
-              if (e.key === 'Escape') { setPageDraft(null); (e.target as HTMLInputElement).blur(); }
+              // Taken: this Esc cancels the page number, not the full-screen pane.
+              if (e.key === 'Escape') { e.preventDefault(); setPageDraft(null); (e.target as HTMLInputElement).blur(); }
             }}
           />
           <span>/ {sizes.length || '…'}</span>

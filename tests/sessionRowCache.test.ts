@@ -160,6 +160,7 @@ function refBgDetails(rows: RefBgRow[], nowS: number) {
       toolUseId: detail?.toolUseId ?? null, taskType: detail?.taskType ?? null, status: 'running', startedAt,
       endedAt: null, outputFile: detail?.outputFile ?? null, summary: null,
       workflowName: detail?.workflowName ?? null, usage: null, lastToolName: null, agents: null,
+      ...(detail?.ownedBySubagent ? { ownedBySubagent: true } : {}),
     });
   }
   return bgTasks.bgTasksToArray(active);
@@ -222,6 +223,8 @@ function checkBg(sessionId: string): void {
     expect(sorted(bg.bgTasksHiddenFromStopHook(sessionId, alive))).toEqual(sorted(want));
     expect(sorted(bg.bgTasksHiddenFromStopHook(sessionId, alive, ids))).toEqual(sorted(want).filter((id) => ids.includes(id)));
   }
+  const steps = refBgHidden(rows, new Set(ref.running.keys()));
+  expect(bg.bgWorkCount(sessionId, ref.running)).toBe([...ref.running.keys()].filter((id) => !steps.has(id)).length);
 }
 
 // ── Random interleavings ────────────────────────────────────────────────────
@@ -418,6 +421,7 @@ describe('bg registry readers once warm (G1)', () => {
       ['runningBgTasksIfWarm', () => bg.runningBgTasksIfWarm(a)],
       ['bgTaskIdsBeforeEventFromDb', () => bg.bgTaskIdsBeforeEventFromDb(a, { seq: null, tsMs: 1_900_000_000_000 }, candidates)],
       ['bgTasksHiddenFromStopHook', () => bg.bgTasksHiddenFromStopHook(a, alive, candidates)],
+      ['bgWorkCount', () => bg.bgWorkCount(a, bg.runningBgTasksFromDb(a))],
     ];
     for (const [name, read] of readers) {
       const times: number[] = [];
@@ -733,6 +737,36 @@ describe('the fold scan plan', () => {
       try { h.exec('DELETE FROM sqlite_stat4'); } catch { /* not compiled in */ }
       h.exec('ANALYZE sqlite_schema');
     }
+  });
+});
+
+// §14.91: a sub-agent's own command is a step of the owner running beside it.
+// A workflow reports one per tool call: counted, they read "2 running" next to
+// a single workflow and bury the history under thousands of steps.
+describe('background work vs a sub-agent\'s steps', () => {
+  it('the hub count and the composer bar agree: steps fold into a running owner, an orphan stands alone', () => {
+    const a = newSession('claude', 'background');
+    const ev = (taskId: string, kind: string, extra: Record<string, unknown> = {}) =>
+      insert(a, 'event', { type: 'bg_task', kind, taskId, ...extra });
+    ev('wf', 'started', { taskType: 'local_workflow', workflowName: 'review' });
+    ev('cmd', 'started', { taskType: 'local_bash', description: 'Build the site' });
+    ev('s1', 'started', { taskType: 'local_bash', ownedBySubagent: true });
+    ev('s1', 'finished', { status: 'completed' });
+    ev('s2', 'started', { taskType: 'local_bash', ownedBySubagent: true });
+    const items = () => bgTasks.bgWorkItems(bgTasks.reconcileAuthoritativeBgTasks([], bg.runningBgTaskDetailsFromDb(a))
+      .map((t) => ({ t, status: t.status }))).map(({ t }) => t.taskId).sort();
+    expect(bg.runningBgTasksFromDb(a).size).toBe(3);
+    expect(bg.bgWorkCount(a, bg.runningBgTasksFromDb(a))).toBe(2);
+    expect(items()).toEqual(['cmd', 'wf']);
+    // The rebuilt history: an ended step never joins the finished list.
+    const all = new Map<string, any>();
+    for (const r of refBg(a) as RefBgRow[]) bgTasks.applyBgTaskEvent(all, JSON.parse(r.content), r.createdAt);
+    expect(bgTasks.bgWorkItems(bgTasks.bgTasksToArray(all).map((t) => ({ t, status: t.status })))
+      .map(({ t }) => t.taskId).sort()).toEqual(['cmd', 'wf']);
+    // The owner ends, its step still runs: nothing else shows it any more.
+    ev('wf', 'finished', { status: 'completed' });
+    expect(bg.bgWorkCount(a, bg.runningBgTasksFromDb(a))).toBe(2);
+    expect(items()).toEqual(['cmd', 's2']);
   });
 });
 

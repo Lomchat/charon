@@ -1,10 +1,11 @@
 'use client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import { LIVE_PREVIEW_SANDBOX, livePreviewWatches } from '@/lib/livePreview';
+import { LIVE_PREVIEW_ESCAPE, LIVE_PREVIEW_SANDBOX, livePreviewWatches } from '@/lib/livePreview';
+import { relayEscape } from './escapeRelay';
 import { useFileActivity } from './fileActivityStore';
 import { subscribeFsChanged } from './fsChangeBus';
-import { IconArrowClockwise, IconBoxArrowUpRight } from './icons';
+import { IconArrowClockwise } from './icons';
 
 type Props = {
   vpsId: string;
@@ -130,6 +131,18 @@ export default function HtmlLiveView({ vpsId, root, path, rev, dirty, saving, on
     schedule(ACTIVITY_SETTLE_MS, `${leaf(lastWrite.path)} changed`);
   }, [lastWrite, schedule]);
 
+  // An Esc pressed inside the page (its injected relay, lib/livePreview.ts):
+  // only OUR frame's window is heard — the origin is opaque, the source is not.
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      const frame = frameRef.current;
+      if (frame && e.source === frame.contentWindow && e.data === LIVE_PREVIEW_ESCAPE) relayEscape(frame);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
   // Watch notifications report a write that already landed.
   useEffect(() => subscribeFsChanged((changedVpsId, paths) => {
     if (changedVpsId !== vpsId) return;
@@ -159,17 +172,12 @@ export default function HtmlLiveView({ vpsId, root, path, rev, dirty, saving, on
         <button type="button" onClick={() => reload(null)} title="Reload the page">
           <IconArrowClockwise /> Reload
         </button>
-        {link && (
-          <a href={link.url} target="_blank" rel="noopener noreferrer"
-             title="Open this page in a browser tab of its own (still sandboxed)">
-            <IconBoxArrowUpRight /> New tab
-          </a>
-        )}
       </div>
       {err && <div className="dvm-note err">{err}</div>}
       {link && (
         <iframe
           key={`${link.url}#${nonce}`}
+          ref={frameRef}
           className="hlv-frame"
           src={link.url}
           title={`Live view of ${leaf(path)}`}

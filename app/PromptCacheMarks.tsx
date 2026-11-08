@@ -8,7 +8,7 @@ import React, { createContext, useCallback, useContext, useEffect, useId, useLay
 import { createPortal } from 'react-dom';
 import {
   cacheHeat, cacheReading, cacheTipLines, fmtDuration, fmtSpan, fmtSpanShort, fmtTokens,
-  ledgerCachedPct, ledgerInput, ledgerRelativeCost, ledgerWarmCost,
+  ledgerCachedPct, ledgerInput, ledgerIsCold, ledgerMissFactor, ledgerRelativeCost,
   type CacheReading, type PromptCacheState, type TurnLedger,
 } from '@/lib/promptCache';
 import { showsTurnCost, type SessionProvider } from '@/lib/sessionCapabilities';
@@ -158,7 +158,7 @@ export function CacheGaugeMark({ reading }: { reading: CacheReading | null }) {
  *  so a ledger can say how full the context was; null = unknown. */
 export const ContextWindowContext = createContext<number | null>(null);
 
-/** "8% of full price", "0.4%": a relative cost that reads at a glance. */
+/** "8% of no-cache price", "0.4%": a relative cost that reads at a glance. */
 function pctText(x: number): string {
   const p = x * 100;
   return p >= 10 ? `${Math.round(p)}%` : p >= 1 ? `${p.toFixed(1)}%` : `${p.toFixed(2)}%`;
@@ -185,9 +185,9 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
   if (!(input > 0)) return null;
   const pct = ledgerCachedPct(ledger);
   const rel = ledgerRelativeCost(ledger);
-  const warm = ledgerWarmCost(ledger);
+  const factor = ledgerMissFactor(ledger);
   const misses = ledger.misses ?? 0;
-  const cold = misses > 0;
+  const cold = ledgerIsCold(ledger);
   const w = (n: number) => `${((n / input) * 100).toFixed(1)}%`;
   const items: (React.ReactNode | null)[] = [
     pct != null ? (
@@ -205,9 +205,9 @@ export function TurnLedgerLine({ ledger, provider }: { ledger: TurnLedger; provi
     ledger.tools != null ? <span key="tools-n">{ledger.tools} tool{ledger.tools === 1 ? '' : 's'}</span> : null,
     ledger.requests != null
       ? <span key="hits">{ledger.hits ?? 0}/{ledger.requests} hit{ledger.requests === 1 ? '' : 's'}</span> : null,
-    cold ? <span key="miss" className="turn-ledger-cold">{misses} miss · {fmtTokens(ledger.missWrite ?? 0)} rewritten</span> : null,
-    cold && rel != null && warm != null && warm > 0
-      ? <span key="warm" className="turn-ledger-cold">≈ {(rel / warm).toFixed(1)}× a warm turn</span> : null,
+    misses > 0
+      ? <span key="miss" className={cold ? 'turn-ledger-cold' : undefined}>{misses} miss · {fmtTokens(ledger.missWrite ?? 0)} rewritten</span> : null,
+    cold && factor != null ? <span key="warm" className="turn-ledger-cold">≈ {factor.toFixed(1)}× a warm turn</span> : null,
     ledger.apiMs != null ? <span key="api">API {fmtDuration(ledger.apiMs)}</span> : null,
     ledger.apiMs != null && ledger.durMs != null && ledger.durMs > ledger.apiMs
       ? <span key="tools">tools {fmtDuration(ledger.durMs - ledger.apiMs)}</span> : null,
@@ -331,9 +331,8 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, tapped, lineRe
   const input = ledgerInput(ledger);
   const pct = ledgerCachedPct(ledger) ?? 0;
   const rel = ledgerRelativeCost(ledger);
-  const warm = ledgerWarmCost(ledger);
-  const misses = ledger.misses ?? 0;
-  const cold = misses > 0;
+  const factor = ledgerMissFactor(ledger);
+  const cold = ledgerIsCold(ledger);
   const ctx = ledger.promptTokens != null && ctxWindow ? ledger.promptTokens / ctxWindow : null;
   const toolsMs = ledger.apiMs != null && ledger.durMs != null ? Math.max(0, ledger.durMs - ledger.apiMs) : null;
   // Under the pointer (its arrow-side quarter), clamped to the viewport.
@@ -365,8 +364,8 @@ function LedgerPopover({ id, ledger, ctxWindow, anchor, pointerX, tapped, lineRe
         {tile(
           <Ring frac={rel ?? 0} color="var(--warning)" />,
           rel != null ? pctText(rel) : '—',
-          [rel != null ? 'of full price' : 'price unknown',
-            rel != null && cold && warm ? <span className="ledger-cold">≈ {(rel / warm).toFixed(1)}× a warm turn</span>
+          [rel != null ? 'of no-cache price' : 'price unknown',
+            rel != null && cold && factor != null ? <span className="ledger-cold">≈ {factor.toFixed(1)}× a warm turn</span>
               : rel != null ? `saved ${Math.max(0, 100 - Math.round(rel * 100))}%` : null],
         )}
         {tile(

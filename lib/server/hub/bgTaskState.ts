@@ -1,7 +1,7 @@
 import 'server-only';
 import { foldSessionEventRows } from '@/lib/server/agent/sessionRowCache';
 import {
-  applyBgTaskEvent, BG_TASK_MAX_AGE_S, bgTasksToArray, isTerminalBgStatus,
+  applyBgTaskEvent, BG_OWNER_TASK_TYPES, BG_TASK_MAX_AGE_S, bgTasksToArray, isTerminalBgStatus,
   type BgTask,
 } from '@/app/bgTasks';
 
@@ -76,7 +76,7 @@ type BgRegistry = {
   /** Each task's LATEST lifecycle row (`bgTaskIdsBeforeEventFromDb`). */
   last: Map<string, BgRowStamp>;
   /** taskType as last stated, and the tasks ever flagged `ownedBySubagent`
-   *  (`bgTasksHiddenFromStopHook`). */
+   *  (`bgTasksHiddenFromStopHook`, `bgWorkCount`). */
   types: Map<string, string>;
   owned: Set<string>;
   /** Each task's latest `started` row that names its launcher (row id +
@@ -222,8 +222,28 @@ export function bgTaskIdsBeforeEventFromDb(
   return eligible;
 }
 
-/** Task kinds that run tools of their own, hence can own a sub-agent command. */
-const BG_OWNER_TASK_TYPES = new Set(['local_agent', 'local_workflow', 'in_process_teammate']);
+/** Among `candidates`, the sub-agent commands an `alive` owner stands for. */
+function ownedWhileOwnerAlive(reg: BgRegistry, alive: Iterable<string>, candidates?: Iterable<string>): Set<string> {
+  let ownerAlive = false;
+  for (const id of alive) if (BG_OWNER_TASK_TYPES.has(reg.types.get(id) ?? '')) { ownerAlive = true; break; }
+  if (!ownerAlive) return new Set();
+  if (!candidates) return new Set(reg.owned);
+  const hidden = new Set<string>();
+  for (const taskId of candidates) if (reg.owned.has(taskId)) hidden.add(taskId);
+  return hidden;
+}
+
+/** How many of `running` count as background WORK — the sidebar count, the
+ *  "still running" notice — by the composer bar's rule (`bgWorkItems`): a
+ *  sub-agent's command is a step of the owner running beside it. Never 0 when
+ *  `running` is not (an owner counts itself). TOLERANT: all of them while a
+ *  cold fold warms. */
+export function bgWorkCount(sessionId: string, running: ReadonlyMap<string, number>): number {
+  if (running.size === 0) return 0;
+  const reg = bgRegistryIfWarm(sessionId);
+  if (!reg) return running.size;
+  return running.size - ownedWhileOwnerAlive(reg, running.keys(), running.keys()).size;
+}
 
 /** The Stop hook's `background_tasks` skips foreground commands, i.e. those a
  * SUB-AGENT runs itself (agent >= 0.98.3 flags them `ownedBySubagent`). Its
@@ -234,13 +254,7 @@ const BG_OWNER_TASK_TYPES = new Set(['local_agent', 'local_workflow', 'in_proces
 export function bgTasksHiddenFromStopHook(
   sessionId: string, alive: ReadonlySet<string>, candidates?: Iterable<string>,
 ): Set<string> {
-  const reg = bgRegistry(sessionId);
-  const ownerAlive = [...alive].some((id) => BG_OWNER_TASK_TYPES.has(reg.types.get(id) ?? ''));
-  if (!ownerAlive) return new Set();
-  if (!candidates) return new Set(reg.owned);
-  const hidden = new Set<string>();
-  for (const taskId of candidates) if (reg.owned.has(taskId)) hidden.add(taskId);
-  return hidden;
+  return ownedWhileOwnerAlive(bgRegistry(sessionId), alive, candidates);
 }
 
 /** STRICT (see `bgRegistry`): taskId → startedAt of the running tasks, a copy
@@ -301,6 +315,7 @@ function bgTaskDetails(reg: BgRegistry, nowS: number): BgTask[] {
       usage: null,
       lastToolName: null,
       agents: null,
+      ...(detail?.ownedBySubagent ? { ownedBySubagent: true } : {}),
     });
   }
   return bgTasksToArray(active);

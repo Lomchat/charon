@@ -79,7 +79,8 @@ function LegacyBgTaskOutput({ vpsId, cwd, outputFile, preview, running, sessionI
     return () => observer.disconnect();
   }, []);
   return <section className="bgc-output" aria-label={text.output}>
-    <header><span>{text.output}</span><span>{nativeAgentId ? text.transcript : outputFile ? text.fileOutput : preview ? text.preview : text.sourceUnavailable}</span></header>
+    {/* No source: the empty body says so, once. */}
+    <header><span>{text.output}</span>{(nativeAgentId || outputFile || preview) && <span>{nativeAgentId ? text.transcript : outputFile ? text.fileOutput : text.preview}</span>}</header>
     {error && <div className="tm-error">{text.outputError}: {error}</div>}
     <div className="bgc-output-scroll" ref={scroll} tabIndex={0} role="region" aria-label={text.output}
       onScroll={() => { const el = scroll.current!; follow.current = el.scrollHeight - el.clientHeight - el.scrollTop < 32; setFollowing(follow.current); }}>

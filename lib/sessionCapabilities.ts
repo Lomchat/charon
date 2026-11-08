@@ -280,6 +280,10 @@ export type ProviderDescriptor = {
     installPhase: string;
     /** Directory answering the import scan: `/api/vps/[id]/<dir>/scan`. */
     scanRouteDir: string;
+    /** The agent's history index (history.py) reads this provider's
+     *  transcript files — listing and previews in the resume modal. false =
+     *  no transcript file (its scan lists it, nothing to preview). */
+    historyIndex: boolean;
   };
   /** Settings keys that are NOT derivable from the id.
    *
@@ -341,7 +345,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
     // Claude's archive is Charon-side only (capability `adapted`) and its fork
     // anchors are the `cliUuid`s already in our rows — no RPC to name.
     nativeRpc: { archive: null, unarchive: null, forkPoints: null },
-    deployment: { installPhase: 'install_sdk', scanRouteDir: 'claude' },
+    deployment: { installPhase: 'install_sdk', scanRouteDir: 'claude', historyIndex: true },
     settings: {
       enabledKey: 'claude.enabled', autoUpdateKey: 'sdk.auto_update',
       defaultEnabled: true,
@@ -412,7 +416,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       unarchive: 'codex_unarchive_thread',
       forkPoints: 'codex_fork_points',
     },
-    deployment: { installPhase: 'install_codex', scanRouteDir: 'codex' },
+    deployment: { installPhase: 'install_codex', scanRouteDir: 'codex', historyIndex: true },
     settings: {
       enabledKey: 'codex.enabled', autoUpdateKey: 'codex.auto_update',
       defaultEnabled: true,
@@ -515,7 +519,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       unarchive: 'cursor_unarchive_agent',
       forkPoints: null,
     },
-    deployment: { installPhase: 'install_cursor', scanRouteDir: 'cursor' },
+    deployment: { installPhase: 'install_cursor', scanRouteDir: 'cursor', historyIndex: false },
     settings: {
       enabledKey: 'cursor.enabled', autoUpdateKey: 'cursor.auto_update',
       // Opt-in: it needs `cursor-sdk` installed and an account signed in.

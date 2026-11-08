@@ -59,7 +59,7 @@ from typing import Any, Awaitable, Callable
 from . import codex_compat
 from . import prompt_cache
 from .codex_compat import ResumedThread
-from .peer_mcp import PEER_MODEL_INSTRUCTIONS
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions
 
 try:
     from openai_codex import (
@@ -1267,6 +1267,9 @@ class CodexSession:
         parts = [existing.strip()] if isinstance(existing, str) and existing.strip() else []
         if getattr(self, "peer_mcp", None):
             parts.append("Charon peer communication rules:\n" + PEER_MODEL_INSTRUCTIONS)
+            sub_note = sub_session_instructions(getattr(self, "parent_handle", None))
+            if sub_note:
+                parts.append(sub_note)
         return "\n\n".join(parts) or None
 
     async def _fork_with_transient_client(
@@ -2271,6 +2274,8 @@ class CodexSession:
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
+            "parent_session_id": getattr(self, "parent_session_id", None),
+            "parent_handle": getattr(self, "parent_handle", None),
             "permission_mode": self.permission_mode,
             "status": self.status,
             "model": self.model,
@@ -2291,6 +2296,8 @@ class CodexSession:
             "cwd": self.cwd,
             "name": self.name,
             "handle": getattr(self, "handle", None),
+            "parent_session_id": getattr(self, "parent_session_id", None),
+            "parent_handle": getattr(self, "parent_handle", None),
             "permission_mode": self.permission_mode,
             "status": persist_status,
             "model": self.model,

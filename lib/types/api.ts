@@ -437,6 +437,16 @@ export type FsSearchFile = {
   truncated?: boolean;
 };
 
+/** POST /api/search/files — the global palette's file hits (hub-side fan-out). */
+export type FileSearchHit = { vpsId: string; vpsName: string; root: string; path: string; size: number; mtime: number };
+export type FileSearchResponse = {
+  files: FileSearchHit[];
+  rootsSearched: number;
+  /** Roots that were late, failed or past the cap: the list may be incomplete. */
+  rootsSkipped: number;
+  truncated: boolean;
+};
+
 export type FsSearchResponse = {
   ok: boolean;
   error?: string;
@@ -1061,6 +1071,61 @@ export type ScanVpsSessionsResponse = {
   reason?: string;
   error?: string;
 };
+// ── Session history of a VPS (agent >= 0.124.0, history.py) ─────────────────
+// The resume modal's source: one row per Claude transcript / Codex rollout,
+// from the agent's cached index (ResumeModal). `approx`: a big transcript was
+// sampled, `prompts` only counts what the samples saw — show the size instead.
+export type HistorySession = {
+  kind: AgentKind;
+  /** The NATIVE id (Claude session uuid, Codex thread id) — what import takes. */
+  sessionId: string;
+  cwd: string;
+  title: string;
+  firstPrompt: string;
+  lastPrompt: string;
+  prompts: number;
+  approx: boolean;
+  model: string;
+  effort?: string;
+  branch: string;
+  /** Seconds since the epoch. */
+  mtime: number;
+  size: number;
+  /** Codex: an archived thread (archived_sessions/). */
+  archived?: boolean;
+};
+export type HistoryIndexResponse = {
+  ok: boolean;
+  sessions?: HistorySession[];
+  /** Transcripts not indexed yet (the first build works newest-first within
+   *  a time budget): call again. */
+  pending?: number;
+  total?: number;
+  /** `unsupported`: the agent predates history_index — use the scans. */
+  reason?: 'unsupported' | 'offline' | 'error';
+  error?: string;
+};
+export type HistoryTool = {
+  k: 'edit' | 'read' | 'cmd' | 'search' | 'web' | 'agent' | 'other';
+  t: string;
+  /** Repeats of the same action in the turn. */
+  n?: number;
+};
+export type HistoryTurn = {
+  user: string;
+  answer: string;
+  tools: HistoryTool[];
+  more_tools: number;
+  at?: string;
+};
+export type HistoryPreviewResponse = {
+  ok: boolean;
+  first?: string;
+  turns?: HistoryTurn[];
+  reason?: 'unsupported' | 'offline' | 'missing' | 'invalid' | 'error';
+  error?: string;
+};
+
 export type ScanVpsSessionsQuery = {
   accountProfile?: string;
   archived?: boolean;
@@ -1205,6 +1270,20 @@ export type SessionBackgroundTaskAgent = {
   toolCalls: number | null;
   durationMs: number | null;
   resultPreview: string | null;
+  // Saved workflow nodes only (journal + run folder): the native agent id,
+  // wall-clock start / last activity in ms (file times), the result's shape.
+  agentId?: string | null;
+  startedAt?: number | null;
+  lastActivityAt?: number | null;
+  outcome?: WorkflowResultSummary | null;
+};
+// A workflow agent's structured result, reduced to what a timeline can show
+// without knowing the workflow: its first text, booleans, list sizes (lists of
+// objects counted by their few-valued field, e.g. findings by severity).
+export type WorkflowResultSummary = {
+  text?: string;
+  flags?: Array<{ key: string; value: boolean }>;
+  counts?: Array<{ key: string; n: number; by?: Array<{ value: string; n: number }> }>;
 };
 export type SessionBackgroundTask = {
   taskId: string;
@@ -1221,6 +1300,9 @@ export type SessionBackgroundTask = {
   usage: { tokens: number | null; toolUses: number | null; durationMs: number | null } | null;
   lastToolName: string | null;
   agents: SessionBackgroundTaskAgent[] | null;
+  // A command a SUB-AGENT runs: a step of its owner, not work of its own
+  // (`app/bgTasks.ts § bgWorkItems`). Absent = false.
+  ownedBySubagent?: boolean;
 };
 
 export type AgentSessionDetailResponse = {
@@ -1729,6 +1811,7 @@ export type EndpointBatchResponse = { batch: EndpointBatch | null };
 export type SessionEndpointBody = { endpoint?: import('@/lib/customEndpoints').EndpointInput | null; saveForReuse?: boolean; cancelPending?: boolean };
 
 /** Workflow output is resolved from the persisted task receipt and native journal. */
+// `task` + `agent`: that workflow's node by native id (no label lookup).
 export type WorkflowOutputQuery = { task?: string; label?: string; phase?: string; agent?: string; activity?: '1'; before?: number; after?: number; expectedAgent?: string; fileId?: string; cursor?: string };
 export type WorkflowOutputResponse =
   | { ok: true; agentId: string; blocks: string[]; entries: import('@/lib/subagentActivity').AgentActivity[]; info?: import('@/lib/subagentActivity').AgentTranscriptInfo; nextBefore: number | null; nextAfter: number; moreAfter: boolean; fileId: string; cursor: string; source: 'workflow_transcript' }

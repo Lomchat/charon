@@ -29,12 +29,13 @@ export function scrollbarCss({ thumb, hover }: ScrollbarColors): string {
 
 /** Server side (Buffer): `html` with the scrollbar style first in its <head>
  *  (else right after <html>, else after the doctype — never before it: that
- *  would drop the page into quirks mode — else at the very start, after a BOM). */
-export function withScrollbar(html: Buffer, colors: ScrollbarColors): Buffer {
+ *  would drop the page into quirks mode — else at the very start, after a BOM).
+ *  `after`: hub-owned markup placed right behind it (a constant, never input). */
+export function withScrollbar(html: Buffer, colors: ScrollbarColors, after = ''): Buffer {
   const head = html.subarray(0, SNIFF_BYTES).toString('latin1'); // 1 char = 1 byte
   const match = /<head\b[^>]*>/i.exec(head) ?? /<html\b[^>]*>/i.exec(head) ?? /<!doctype\b[^>]*>/i.exec(head);
   const bom = html[0] === 0xef && html[1] === 0xbb && html[2] === 0xbf;
   const at = match ? match.index + match[0].length : bom ? 3 : 0;
-  const tag = Buffer.from(`<style data-charon-scrollbar>${scrollbarCss(colors)}</style>`, 'utf8');
+  const tag = Buffer.from(`<style data-charon-scrollbar>${scrollbarCss(colors)}</style>${after}`, 'utf8');
   return Buffer.concat([html.subarray(0, at), tag, html.subarray(at)]);
 }

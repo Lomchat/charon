@@ -194,6 +194,23 @@ export function ledgerWarmCost(l: TurnLedger): number | null {
   return ((l.read + missed) * l.readX + (l.write - missed) * l.writeX + l.uncached) / input;
 }
 
+/** What the turn's misses cost: its input cost over the same turn with every
+ *  request hitting (1 = no miss); null when unknown. */
+export function ledgerMissFactor(l: TurnLedger): number | null {
+  const rel = ledgerRelativeCost(l), warm = ledgerWarmCost(l);
+  return rel != null && warm != null && warm > 0 ? rel / warm : null;
+}
+
+/** A miss marks the turn cold (snow, "the cache was cold") only when it at
+ *  least doubled the input cost. Neither "any miss" (one rewrite in a long turn
+ *  is noise) nor the cache share (a short turn at 86 % can have paid 6×). */
+export const COLD_TURN_FACTOR = 2;
+
+export function ledgerIsCold(l: TurnLedger): boolean {
+  const f = ledgerMissFactor(l);
+  return (l.misses ?? 0) > 0 && f != null && f >= COLD_TURN_FACTOR;
+}
+
 /** The agent's per-turn cache counters (`usage.turn_cache`, agent ≥ 0.121). */
 export type AgentTurnCache = {
   requests?: number; hits?: number; misses?: number; miss_write_tokens?: number;

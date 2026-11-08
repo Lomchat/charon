@@ -196,3 +196,18 @@ export function viewerFor(name: string): ViewerSpec | null {
   if (dot <= 0) return null;
   return VIEWERS[lower.slice(dot + 1)] ?? null;
 }
+
+// ── The document alone, in a browser tab of its own ────────────────────────
+// `/view` (app/view/page.tsx): an HTML file redirects to its live page
+// (§14.110), any other viewer renders full window. Source code has none.
+
+/** Files `/view` can show: a rendered viewer, or a CSV/TSV table. */
+export function hasStandaloneView(name: string): boolean {
+  return viewerFor(name) != null || /\.(csv|tsv)$/i.test(name);
+}
+
+/** The `/view` URL of a file: `path` is relative to `root`, like the fs routes. */
+export function standaloneViewUrl(vpsId: string, root: string, path: string): string {
+  const q = new URLSearchParams({ vps: vpsId, root, path });
+  return `/view?${q.toString()}`;
+}

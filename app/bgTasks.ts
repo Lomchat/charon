@@ -41,6 +41,8 @@ export type BgTaskEventLike = {
   workflowName?: string;
   /** The SDK's own terminal verdict (agent >= 0.36.0). See eventIsTerminal. */
   terminal?: boolean;
+  /** A command a SUB-AGENT runs itself (agent >= 0.98.3; see bgWorkItems). */
+  ownedBySubagent?: boolean;
 };
 
 // Transient bg_task_progress payload (broadcast-only; never persisted).
@@ -175,6 +177,7 @@ export function applyBgTaskEvent(
     map.set(ev.taskId, t);
   }
   if (ev.description) t.description = ev.description;
+  if (ev.ownedBySubagent === true) t.ownedBySubagent = true;
   // The launcher is the tool_use of the latest `started`; later events only
   // fill it in, so the relaunch test below compares against the right run.
   if (ev.toolUseId && (ev.kind === 'started' || !t.toolUseId)) t.toolUseId = ev.toolUseId;
@@ -355,6 +358,21 @@ export function bgTasksAfterWindowAnswer(
     if (task.status === 'running' && !next.has(task.taskId)) next.set(task.taskId, { ...task });
   }
   return bgTasksToArray(next);
+}
+
+/** Task kinds that run tools of their own, hence can own a sub-agent's command. */
+export const BG_OWNER_TASK_TYPES: ReadonlySet<string> = new Set(['local_agent', 'local_workflow', 'in_process_teammate']);
+
+/** THE rule for what counts as background WORK (composer bar, its modal, the
+ *  sidebar count, the "still running" notice — `bgTaskState § bgWorkCount`).
+ *  A command a SUB-AGENT runs (`ownedBySubagent`) is a STEP of its owner, whose
+ *  transcript shows it: a busy workflow reports one per tool call, thousands per
+ *  session. An ended step is dropped; a running one too while an owner runs
+ *  (the owner stands for it). An orphan still running is real work nothing else
+ *  shows, so it stays. */
+export function bgWorkItems<V extends { t: Pick<BgTask, 'taskType' | 'ownedBySubagent'>; status: BgTaskStatus }>(view: V[]): V[] {
+  const ownerRunning = view.some((v) => v.status === 'running' && BG_OWNER_TASK_TYPES.has(v.t.taskType ?? ''));
+  return view.filter((v) => !v.t.ownedBySubagent || (v.status === 'running' && !ownerRunning));
 }
 
 /** A background SHELL command: no sub-agents and no tokens; its command line

@@ -4,7 +4,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db, agentSessions, sessionMessages } from '@/lib/db';
 import { accountProfileId } from '@/lib/accountProfiles';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import type { SessionBackgroundTaskAgent } from '@/lib/types/api';
+import type { SessionBackgroundTaskAgent, WorkflowResultSummary } from '@/lib/types/api';
 import { projectAgentRecord, type AgentActivity, type AgentTranscriptInfo } from '@/lib/subagentActivity';
 import { visibleSubagentBlocks } from '@/app/backgroundOutput';
 
@@ -38,23 +38,100 @@ export function workflowAgentFromJournal(raw: string, label: string, phase: stri
   return ids.size === 1 ? [...ids][0] : null;
 }
 
+/** A structured result, reduced without knowing the workflow: its first
+ * string, its booleans, its list sizes — a list of objects also counted by the
+ * field with the fewest values (≤ 6, e.g. `severity`). Bounded on every axis. */
+export function summarizeWorkflowResult(value: unknown): WorkflowResultSummary | null {
+  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+  if (typeof value === 'string') return value.trim() ? { text: cut(value.trim(), 300) } : null;
+  if (typeof value === 'number' || typeof value === 'boolean') return { text: String(value) };
+  if (Array.isArray(value)) return { counts: [{ key: 'items', n: value.length }] };
+  if (!value || typeof value !== 'object') return null;
+  const out: Required<WorkflowResultSummary> = { text: '', flags: [], counts: [] };
+  for (const [key, v] of Object.entries(value).slice(0, 40)) {
+    const k = cut(key, 40);
+    if (typeof v === 'boolean') { if (out.flags.length < 6) out.flags.push({ key: k, value: v }); }
+    else if (Array.isArray(v)) { if (out.counts.length < 8) out.counts.push({ key: k, n: v.length, ...groupByFewValued(v) }); }
+    else if (typeof v === 'string' && !out.text && v.trim()) out.text = cut(v.trim(), 300);
+  }
+  const summary: WorkflowResultSummary = {};
+  if (out.text) summary.text = out.text;
+  if (out.flags.length) summary.flags = out.flags;
+  if (out.counts.length) summary.counts = out.counts;
+  return Object.keys(summary).length ? summary : null;
+}
+
+function groupByFewValued(items: unknown[]): { by?: Array<{ value: string; n: number }> } {
+  const objects = items.filter((i): i is Record<string, unknown> => !!i && typeof i === 'object' && !Array.isArray(i));
+  if (objects.length < 2 || objects.length !== items.length) return {};
+  let best: Map<string, number> | null = null;
+  for (const key of Object.keys(objects[0]).slice(0, 20)) {
+    const counts = new Map<string, number>();
+    for (const o of objects) {
+      const v = o[key];
+      if (typeof v !== 'string' || !v || v.length > 40) { counts.clear(); break; }
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    if (counts.size < 1 || counts.size > 6 || counts.size === objects.length) continue;
+    if (!best || counts.size < best.size) best = counts;
+  }
+  return best ? { by: [...best].sort((a, b) => b[1] - a[1]).map(([value, n]) => ({ value, n })) } : {};
+}
+
+/** What the hub keeps of a run's journal: identities, states and a bounded
+ * result summary — never the potentially huge structured results themselves. */
+export function projectWorkflowJournal(raw: string): string {
+  return raw.split('\n').flatMap(line => {
+    try {
+      const r = JSON.parse(line);
+      return r.type === 'started' ? [JSON.stringify({ type: r.type, agentId: r.agentId, label: r.label, phase: r.phase })]
+        : r.type === 'result' ? [JSON.stringify({ type: r.type, agentId: r.agentId, outcome: summarizeWorkflowResult(r.result) })]
+        : r.type === 'failed' ? [JSON.stringify({ type: r.type, agentId: r.agentId })] : [];
+    } catch { return []; }
+  }).join('\n');
+}
+
+/** The run folder's file times, by agent: `agent-<id>.meta.json` is written
+ * at spawn, `agent-<id>.jsonl` at each record (seconds → ms). */
+export type WorkflowAgentTimes = Map<string, { startedAt?: number; lastActivityAt?: number }>;
+export function workflowAgentTimes(entries: Array<{ name?: unknown; mtime?: unknown }>): WorkflowAgentTimes {
+  const times: WorkflowAgentTimes = new Map();
+  for (const e of entries) {
+    if (typeof e.name !== 'string' || typeof e.mtime !== 'number') continue;
+    const m = /^agent-([a-zA-Z0-9_-]+)\.(meta\.json|jsonl)$/.exec(e.name);
+    if (!m) continue;
+    const t = times.get(m[1]) ?? {};
+    if (m[2] === 'jsonl') t.lastActivityAt = e.mtime * 1000; else t.startedAt = e.mtime * 1000;
+    times.set(m[1], t);
+  }
+  return times;
+}
+
 /** Journal identities restore the graph after transient progress is lost.
- * Only an actual result proves completion; absence of a result means unknown. */
-export function workflowAgentsFromJournal(raw: string): SessionBackgroundTaskAgent[] {
+ * Only an actual result proves completion (`failed`: the harness says it
+ * died); absence of both means unknown. */
+export function workflowAgentsFromJournal(raw: string, times?: WorkflowAgentTimes): SessionBackgroundTaskAgent[] {
   const rows = raw.split('\n').flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const finished = new Set(rows.filter(r => r.type === 'result').map(r => r.agentId));
+  const outcome = new Map<string, WorkflowResultSummary | null>();
+  const failed = new Set<string>();
+  for (const r of rows) {
+    if (r.type === 'result') outcome.set(r.agentId, r.outcome ?? null);
+    else if (r.type === 'failed') failed.add(r.agentId);
+  }
   const seen = new Set<string>();
   return rows.flatMap(r => {
     if (r.type !== 'started' || typeof r.agentId !== 'string' || !safeId.test(r.agentId)
       || typeof r.label !== 'string' || seen.has(r.agentId)) return [];
     seen.add(r.agentId);
+    const t = times?.get(r.agentId);
     return [{ index: seen.size - 1, label: r.label, phaseTitle: typeof r.phase === 'string' ? r.phase : null,
-      state: finished.has(r.agentId) ? 'done' : null, model: null, tokens: null, toolCalls: null,
-      durationMs: null, resultPreview: null }];
+      state: outcome.has(r.agentId) ? 'done' : failed.has(r.agentId) ? 'failed' : null, model: null, tokens: null, toolCalls: null,
+      durationMs: null, resultPreview: null, agentId: r.agentId, startedAt: t?.startedAt ?? null,
+      lastActivityAt: t?.lastActivityAt ?? null, outcome: outcome.get(r.agentId) ?? null }];
   }).slice(0, 200);
 }
 
-export type TranscriptCursor = { after?: number; fileId?: string; cursor?: string; nativeAgent?: string };
+export type TranscriptCursor = { after?: number; fileId?: string; cursor?: string; nativeAgent?: string; workflowAgent?: string };
 class TranscriptReset extends Error { readonly reason = 'reset'; }
 const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex').slice(0, 24);
 
@@ -140,7 +217,9 @@ async function transcriptInfo(read: Reader, root: string, path: string, sessionI
           const prompt = typeof content === 'string' ? content : Array.isArray(content)
             ? content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n') : '';
           if (!prompt) continue;
-          const clean = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+          // A workflow node's prompt opens with the harness's provenance notice.
+          const clean = prompt.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+            .replace(/^\s*\[Workflow harness[^\]]*\][\s\S]{0,2000}?The computed task text follows:\s*/, '').trim();
           info.mission = clean.slice(0, 8000); info.missionTruncated = clean.length > 8000;
           if (typeof r.timestamp === 'string') info.startedAt = r.timestamp;
           break;
@@ -156,7 +235,8 @@ export async function readWorkflowTranscript(sessionId: string, taskId: string, 
   const unavailable = { ok: false, reason: 'unavailable', error: options.nativeAgent
     ? 'This sub-agent has no saved transcript yet.'
     : 'This workflow node could not be linked to a saved transcript. Preview only.' };
-  if ((!options.nativeAgent && !safeId.test(taskId)) || (options.nativeAgent && !safeId.test(options.nativeAgent)) || label.length > 500 || phase.length > 500) return unavailable;
+  if ((!options.nativeAgent && !safeId.test(taskId)) || (options.nativeAgent && !safeId.test(options.nativeAgent))
+    || (options.workflowAgent && !safeId.test(options.workflowAgent)) || label.length > 500 || phase.length > 500) return unavailable;
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, sessionId)).all();
   if (!row || row.kind !== 'claude' || !row.nativeSessionId || !/^[a-f0-9-]+$/i.test(row.nativeSessionId)) return unavailable;
   const profile = accountProfileId(row.providerConfig);
@@ -193,18 +273,20 @@ export async function readWorkflowTranscript(sessionId: string, taskId: string, 
       const rawJournal = await cached(`${scope}:journal:${run}`, 10_000, async () => {
         const journal = await read({ root, path: 'journal.jsonl', offset: 0, length: MAX_RECORD });
         if (!journal.ok || typeof journal.data !== 'string' || journal.size > MAX_RECORD) return null;
-        // Keep identities/states, not the potentially huge structured results.
-        return Buffer.from(journal.data, 'base64').toString('utf8').split('\n').flatMap(line => {
-          try {
-            const r = JSON.parse(line);
-            return ['started', 'result'].includes(r.type)
-              ? [JSON.stringify({ type: r.type, agentId: r.agentId, label: r.label, phase: r.phase })] : [];
-          } catch { return []; }
-        }).join('\n');
+        return projectWorkflowJournal(Buffer.from(journal.data, 'base64').toString('utf8'));
       });
       if (rawJournal == null) return unavailable;
-      if (!label) return { ok: true, agents: workflowAgentsFromJournal(rawJournal) };
-      const resolved = workflowAgentFromJournal(rawJournal, label, phase);
+      if (!label && !options.workflowAgent) {
+        // One listing of the run folder times every node (no per-agent read).
+        const times = await cached(`${scope}:times:${run}`, 10_000, async () => {
+          const listed = await client.call<any>('fs_list', { root, path: '', with_git: false });
+          return listed?.ok && Array.isArray(listed.entries) ? workflowAgentTimes(listed.entries) : null;
+        }).catch(() => null);
+        return { ok: true, agents: workflowAgentsFromJournal(rawJournal, times ?? undefined) };
+      }
+      const resolved = options.workflowAgent
+        ? (workflowAgentsFromJournal(rawJournal).some(a => a.agentId === options.workflowAgent) ? options.workflowAgent : null)
+        : workflowAgentFromJournal(rawJournal, label, phase);
       if (!resolved) return unavailable;
       agentId = resolved; path = `agent-${agentId}.jsonl`;
     }

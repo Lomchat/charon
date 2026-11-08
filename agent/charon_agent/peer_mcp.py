@@ -22,8 +22,28 @@ PEER_MODEL_INSTRUCTIONS = (
     "get_conversation or list_inbox when asked whether a peer answered. Charon "
     "automatically returns the target turn's final answer, so an incoming peer "
     "request should be answered normally; do not send a redundant acknowledgement. "
-    "Only contact the peer again for a genuine follow-up and avoid autonomous loops."
+    "Only contact the peer again for a genuine follow-up and avoid autonomous loops. "
+    "start_sub_session opens a NEW Charon session under this one, visible in the "
+    "user's Charon sidebar: use it only when the user asks for a Charon session or "
+    "sub-session, for work they can open and follow in Charon, or for another "
+    "provider than yours (Claude, Codex, Cursor). A bare \"agent\", \"subagent\" or "
+    "\"in parallel\" means your native subagent tool; ordinary coding tasks need "
+    "neither. Its final answer arrives later as a <charon-peer-reply>: end your turn, "
+    "never poll."
 )
+
+
+def sub_session_instructions(parent_handle: Any) -> str | None:
+    """System-prompt paragraph for a session spawned by another one."""
+    if not isinstance(parent_handle, str) or not parent_handle:
+        return None
+    return (
+        f"You are a Charon sub-session spawned by @{parent_handle}. Its tasks arrive "
+        "as <charon-peer-message>; the final answer of each turn is returned to it "
+        "automatically. You cannot message it while answering its request, so put "
+        "questions and blockers in your final answer. Do the work yourself: start no "
+        "sub-session unless your task asks for one."
+    )
 _INSTRUCTIONS = PEER_MODEL_INSTRUCTIONS
 
 _TOOLS = [
@@ -31,7 +51,9 @@ _TOOLS = [
         "name": "list_sessions",
         "description": (
             "List Charon sessions on this VPS, including their stable @handle, "
-            "provider and whether they can currently receive a message."
+            "provider and whether they can currently receive a message. "
+            "parent_handle names the session that spawned a row; is_child marks "
+            "your own sub-sessions."
         ),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
@@ -56,6 +78,46 @@ _TOOLS = [
             "additionalProperties": False,
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+    },
+    {
+        "name": "start_sub_session",
+        "description": (
+            "Open a NEW, separate Charon session under this one (same VPS, shown in the "
+            "user's Charon sidebar; Claude, Codex or Cursor) and send it `task`. Not your "
+            "native subagent tool: use it only when the user asks for a Charon session or "
+            "sub-session, something they can follow in Charon, or another provider. "
+            "Returns its @handle at once; its final answer arrives later as a "
+            "<charon-peer-reply>, so end your turn instead of polling. Never more "
+            "permissions than this session."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Full instructions for the sub-session"},
+                "name": {"type": "string", "description": "Optional display name"},
+                "provider": {"type": "string", "enum": ["claude", "codex", "cursor"],
+                             "description": "Default: same as this session"},
+                "model": {"type": "string"},
+                "effort": {"type": "string"},
+                "mode": {"type": "string", "description": "Permission mode, capped at this session's"},
+                "cwd": {"type": "string",
+                        "description": "Absolute path: this session's cwd (default) or a folder inside it"},
+            },
+            "required": ["task"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
+    },
+    {
+        "name": "interrupt_sub_session",
+        "description": "Stop the current turn of one of YOUR sub-sessions (soft interrupt).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"handle": {"type": "string", "description": "Sub-session handle, e.g. api or @api"}},
+            "required": ["handle"],
+            "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
     },
     {
         "name": "get_message_status",
@@ -94,11 +156,12 @@ _TOOLS = [
 ]
 
 
-def _agent_call(socket_path: str, method: str, params: dict[str, Any]) -> Any:
+def _agent_call(socket_path: str, method: str, params: dict[str, Any],
+                timeout: float = 30.0) -> Any:
     request = {"id": 1, "method": method, "params": params}
     raw = (json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(30.0)
+        sock.settimeout(timeout)
         sock.connect(socket_path)
         sock.sendall(raw)
         chunks = bytearray()
@@ -159,6 +222,18 @@ def _handle(request: dict[str, Any], source_session_id: str, socket_path: str) -
                     "handle": args.get("handle"),
                     "message": args.get("message"),
                     "conversation_id": args.get("conversation_id"),
+                })
+            elif name == "start_sub_session":
+                spawn = {"source_session_id": source_session_id}
+                for key in ("task", "name", "provider", "model", "effort", "mode", "cwd"):
+                    if args.get(key) is not None:
+                        spawn[key] = args[key]
+                # Hub answer (25 s) + child readiness (20 s) + slack.
+                value = _agent_call(socket_path, "peer_spawn", spawn, timeout=75.0)
+            elif name == "interrupt_sub_session":
+                value = _agent_call(socket_path, "peer_interrupt", {
+                    "source_session_id": source_session_id,
+                    "handle": args.get("handle"),
                 })
             elif name == "get_message_status":
                 value = _agent_call(socket_path, "peer_status", {

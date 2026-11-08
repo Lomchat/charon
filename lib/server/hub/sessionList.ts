@@ -5,7 +5,7 @@ import { accountProfileId, accountProfileNumber } from '@/lib/accountProfiles';
 import { publicConnection } from '@/lib/server/customEndpoints';
 import { db, sessionPendingPermissions, sessionPendingQuestions, type AgentSession } from '@/lib/db';
 import { listStreams } from '@/lib/server/agent/sessionOps';
-import { pruneStaleBgTasks, runningBgTasksIfWarm } from '@/lib/server/hub/bgTaskState';
+import { bgWorkCount, pruneStaleBgTasks, runningBgTasksIfWarm } from '@/lib/server/hub/bgTaskState';
 import { listVpsRuntimeSnapshots } from '@/lib/server/agent/vpsRuntimeSnapshot';
 import { compareVersions } from '@/lib/version';
 import { parseScheduledTasks } from '@/lib/scheduledTasks';
@@ -27,7 +27,7 @@ function runningBgTasksFor(
   const running = runningBgTasksIfWarm(id);
   if (running == null) return 0;
   pruneStaleBgTasks(running, Math.floor(Date.now() / 1000));
-  return running.size;
+  return bgWorkCount(id, running);
 }
 
 /**

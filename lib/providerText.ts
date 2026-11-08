@@ -253,8 +253,16 @@ export const backgroundWorkText = {
   detailsUnknown: 'Details not received', noAgents: 'No saved sub-agent transcripts were found.',
   nativeHint: 'Saved assistant output and tool activity · bounded provider transcript.',
   noTaskOutput: 'This task has not reported an output file or a result yet. Select a saved sub-agent to read its transcript.',
-  backgroundCommand: 'Background command', backgroundAgent: 'Background agent', commandUnknown: 'The command line is not in the loaded history.',
+  backgroundCommand: 'Background command', backgroundAgent: 'Background agent',
   noCommandOutput: 'This command has not reported its output file yet.',
-  sourceUnavailable: 'No output source reported',
-
+  noCommandOutputEnded: 'This command reported no output file.',
+  agent: 'Agent', started: 'Started', ended: 'Ended', took: 'Took', taskId: 'Task ID',
+  // Workflow frise (BgWorkflowView)
+  wfStartedAt: 'started', wfRunningFor: 'running for', wfTook: 'took', wfAgentsDone: 'agents done',
+  wfLastActivity: 'last activity', wfNow: 'now', wfReading: 'Reading the workflow journal…',
+  wfDone: 'done', wfNegative: 'answered no', wfFailed: 'failed', wfRunning: 'running', wfUnknown: 'no result', wfWave: 'started together',
+  wfSlow: (label: string, elapsed: string, usual: string, ago: string) =>
+    `${label} has been running for ${elapsed} — this step took ${usual} before. Last activity ${ago}.`,
+  wfAgo: (d: string) => `${d} ago`,
+  wfPickAgent: 'Select a bar to read that agent.',
 };

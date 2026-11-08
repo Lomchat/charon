@@ -14,15 +14,16 @@ import {
 import LspPicker from './LspPicker';
 import HistoryModal from './HistoryModal';
 import DiffViewerModal from './DiffViewerModal';
-import { IconClockHistory, IconDiff, IconDownload } from './icons';
+import {
+  IconBoxArrowUpRight, IconClockHistory, IconDiff, IconDownload, IconFullscreen, IconFullscreenExit,
+} from './icons';
 import PromptModal from './PromptModal';
 import { subscribeFsChanged } from './fsChangeBus';
 import type { LspDiagnostic, LspLocation } from '@/lib/types/api';
 import CsvViewer from './CsvViewer';
 import HtmlLiveView from './HtmlLiveView';
-import ImageViewer from './ImageViewer';
-import MarkdownFileView from './MarkdownFileView';
-import { viewerFor, type ByteViewerProps, type TextViewerProps, type ViewerKind } from './fileViews';
+import { BytesView, HexViewer, LogViewer, TextView } from './FileViewers';
+import { hasStandaloneView, standaloneViewUrl, viewerFor, type ViewerKind } from './fileViews';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -31,25 +32,6 @@ const CodeEditor = dynamic(() => import('./CodeEditor'), {
   ssr: false,
   loading: () => <div className="dvm-note">loading editor…</div>,
 });
-// The rendered views (§14.112): each its own chunk, most with a library
-// behind it (pdf.js, three.js, Leaflet, SheetJS, mammoth, viz.js) loaded only
-// when such a file is actually opened.
-const viewerLoading = () => <div className="dvm-note">loading viewer…</div>;
-const PdfViewer = dynamic(() => import('./PdfViewer'), { ssr: false, loading: viewerLoading });
-const LogViewer = dynamic(() => import('./LogViewer'), { ssr: false, loading: viewerLoading });
-const HexViewer = dynamic(() => import('./HexViewer'), { ssr: false, loading: viewerLoading });
-const JsonViewer = dynamic(() => import('./JsonViewer'), { ssr: false, loading: viewerLoading });
-const DiagramViewer = dynamic(() => import('./DiagramViewer'), { ssr: false, loading: viewerLoading });
-const SqliteViewer = dynamic(() => import('./SqliteViewer'), { ssr: false, loading: viewerLoading });
-const ArchiveViewer = dynamic(() => import('./ArchiveViewer'), { ssr: false, loading: viewerLoading });
-const ConvertedImageViewer = dynamic(() => import('./ConvertedImageViewer'), { ssr: false, loading: viewerLoading });
-const OfficeViewer = dynamic(() => import('./OfficeViewer'), { ssr: false, loading: viewerLoading });
-const DocxViewer = dynamic(() => import('./DocxViewer'), { ssr: false, loading: viewerLoading });
-const SpreadsheetViewer = dynamic(() => import('./SpreadsheetViewer'), { ssr: false, loading: viewerLoading });
-const NotebookViewer = dynamic(() => import('./NotebookViewer'), { ssr: false, loading: viewerLoading });
-const GeoViewer = dynamic(() => import('./GeoViewer'), { ssr: false, loading: viewerLoading });
-const FontViewer = dynamic(() => import('./FontViewer'), { ssr: false, loading: viewerLoading });
-const ModelViewer = dynamic(() => import('./ModelViewer'), { ssr: false, loading: viewerLoading });
 
 /** What each rendered view's toggle says it does. */
 const VIEW_TITLES: Partial<Record<ViewerKind, string>> = {
@@ -178,7 +160,18 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
       setFileView(want === 'rendered' ? (tabular ? 'table' : 'rendered') : defaultView);
     });
   }, [media, tabular, textView, defaultView, setFileView, vpsId, root, path]);
-  const showingRendered = !!textView && fileView === 'rendered';
+  // ── Full screen: THIS pane lifted over the hub, almost edge to edge ───────
+  // Offered where New tab is (a rendered document), and like New tab it shows
+  // the document, never its source: the rendered view is FORCED while open
+  // only — closing gives back the view the pane had, the remembered choice
+  // untouched. The same element restyled, never a copy in a portal: the live
+  // page, the PDF's zoom and place, the playback and the unsaved edits all
+  // stay (a moved iframe would reload, §14.111).
+  const standalone = hasStandaloneView(name);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => { if (!active || !standalone) setExpanded(false); }, [active, standalone]);
+  const shownView: FileView = expanded ? (tabular ? 'table' : 'rendered') : fileView;
+  const showingRendered = !!textView && shownView === 'rendered';
   // A text view needs the text — except Live (the route serves the file) and
   // the log view (it reads ranges): those work past the editor's 2 MB cap.
   const renderable = !!textView && !!res && !res.binary
@@ -444,7 +437,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
   useEffect(() => { if (!diffTarget) setDiffOpen(false); }, [diffTarget]);
 
   const canLsp = !!res && !res.binary && !res.tooLarge && !res.truncated && res.content != null
-    && !media && fileView === 'text';
+    && !media && shownView === 'text';
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;
   const lsp = useLsp({
     vpsId: canLsp ? vpsId : null,
@@ -542,8 +535,27 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
 
   const readOnly = !!res?.tooLarge || !!res?.binary;
 
+  // Full screen (state above): Esc or the scrim puts it back; a dialog the
+  // pane opened on top (diff, history, picker) takes Esc first.
+  const overlayOpen = historyOpen || diffOpen || !!picker || !!rename;
+  useEffect(() => {
+    if (!expanded || !active || overlayOpen) return;
+    function onKey(e: KeyboardEvent) {
+      // Taken already: CodeMirror's find, a cell being edited, a page's own Esc.
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      e.preventDefault();
+      setExpanded(false);
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [expanded, active, overlayOpen]);
+
   return (
-    <div className="file-editor">
+    <>
+    {expanded && <div className="fe-scrim" onClick={() => setExpanded(false)} aria-hidden />}
+    <div className={`file-editor${expanded ? ' expanded' : ''}`}
+         role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined}
+         aria-label={expanded ? name : undefined}>
       <header className="fe-head">
         <span className="fe-title">
           <span className="fe-path" title={`${root}/${path}`}>{path}</span>
@@ -557,7 +569,8 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         </span>
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {res?.size != null && <span className="fe-size">{fmtSize(res.size)}</span>}
-        {tabular && res?.content != null && !res.binary && !res.tooLarge && (
+        {/* Full screen is the rendered document only: no source to switch to. */}
+        {!expanded && tabular && res?.content != null && !res.binary && !res.tooLarge && (
           <span className="fe-view-toggle" role="group" aria-label="CSV view">
             <button type="button" className={fileView === 'table' ? 'on' : ''}
                     onClick={() => setFileView('table')}>Table</button>
@@ -565,7 +578,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                     onClick={() => setFileView('text')}>Text</button>
           </span>
         )}
-        {textView && renderable && (
+        {!expanded && textView && renderable && (
           <span className="fe-view-toggle" role="group" aria-label="View">
             <button type="button" className={fileView === 'rendered' ? 'on' : ''}
                     onClick={() => setFileView('rendered')} title={VIEW_TITLES[textView.kind]}>{textView.label}</button>
@@ -593,6 +606,26 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                   title="save to the VPS (Ctrl+S)">
             {saving ? 'saving…' : 'save'}
           </button>
+        )}
+        {/* The rendered document alone, two ways, one split button: over the
+            hub (this pane, live — unsaved edits included where the view shows
+            them), or in a browser tab of its own (`/view`: what is on disk;
+            an HTML page goes to its sandboxed live page, §14.110). */}
+        {standalone && (
+          <span className="fe-split" role="group" aria-label="Open the document alone">
+            <button type="button" onClick={() => setExpanded((v) => !v)} aria-pressed={expanded}
+                    title={expanded
+                      ? 'Back to the pane (Esc)'
+                      : `The ${html ? 'live page' : 'document'} almost full screen, over Charon — Esc closes`}>
+              {expanded ? <IconFullscreenExit /> : <IconFullscreen />}
+              <span>{expanded ? 'Close' : 'Full screen'}</span>
+            </button>
+            <a href={standaloneViewUrl(vpsId, root, path)} target="_blank" rel="noopener"
+               title={`The ${html ? 'live page' : 'document'} full window, in a new browser tab`}>
+              <IconBoxArrowUpRight />
+              <span>New tab</span>
+            </a>
+          </span>
         )}
         <a className="fe-dl" href={rawUrl} download={name} title={`download ${name}`}>
           <IconDownload /> Download
@@ -662,7 +695,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                 ⚠ only the first part of this file is shown — saving would truncate it, so it is read-only
               </div>
             )}
-            {tabular && fileView === 'table' ? (
+            {tabular && shownView === 'table' ? (
               <CsvViewer text={buf.current} filename={name} storageKey={viewKey}
                          onChange={res.truncated ? undefined : onChange} />
             ) : (
@@ -684,7 +717,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                 }}
               />
             )}
-            {(!tabular || fileView === 'text') && lspText && (
+            {(!tabular || shownView === 'text') && lspText && (
               <div className={`fe-lsp${lsp.live ? ' on' : ''}`} title={lsp.status?.install ?? undefined}>
                 <span className="fe-lsp-text">{lspText}</span>
                 {lsp.live && lsp.diagnostics.length > 0 && (
@@ -764,64 +797,6 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
         />
       )}
     </div>
+    </>
   );
-}
-
-/** The binary formats: each viewer reads the bytes itself (§14.112). */
-function BytesView({ kind, props, mediaSrc }: { kind: ViewerKind; props: ByteViewerProps; mediaSrc: string }) {
-  switch (kind) {
-    case 'pdf': return <PdfViewer url={props.url} name={props.name} rev={props.rev} />;
-    case 'image': return <ImageViewer src={mediaSrc} name={props.name} />;
-    case 'audio':
-    case 'video':
-      return <div className="fvm-media"><PlayableMedia kind={kind} src={mediaSrc} active={props.active} /></div>;
-    case 'convert-image': return <ConvertedImageViewer {...props} />;
-    case 'office': return <OfficeViewer {...props} />;
-    case 'docx': return <DocxViewer {...props} />;
-    case 'spreadsheet': return <SpreadsheetViewer {...props} />;
-    case 'sqlite': return <SqliteViewer {...props} />;
-    case 'archive': return <ArchiveViewer {...props} />;
-    case 'font': return <FontViewer {...props} />;
-    case 'model3d': return <ModelViewer {...props} />;
-    default: return <HexViewer vpsId={props.vpsId} root={props.root} path={props.path} rev={props.rev} />;
-  }
-}
-
-/** The rendered side of a text format (the buffer, unsaved edits included). */
-function TextView({ kind, props }: { kind: ViewerKind; props: TextViewerProps }) {
-  switch (kind) {
-    case 'markdown': return <MarkdownFileView vpsId={props.vpsId} root={props.root} path={props.path} text={props.text} />;
-    case 'svg':
-    case 'mermaid':
-    case 'graphviz':
-      return <DiagramViewer {...props} kind={kind} />;
-    case 'json': return <JsonViewer {...props} />;
-    case 'notebook': return <NotebookViewer {...props} />;
-    case 'geo': return <GeoViewer {...props} />;
-    default: return null;
-  }
-}
-
-/**
- * Audio/video that keeps its place: the element survives a tab switch with
- * the pane (§14.111) and pauses when the pane leaves the screen — coming back
- * finds it where it stopped, not playing on behind another tab. A container
- * or codec the browser cannot decode (AVI, WMV, FLV, some MKV) says so
- * instead of showing a dead player.
- */
-function PlayableMedia({ kind, src, active }: { kind: 'audio' | 'video'; src: string; active: boolean }) {
-  const ref = useRef<HTMLMediaElement | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => { if (!active) ref.current?.pause(); }, [active]);
-  useEffect(() => { setFailed(false); }, [src]);
-  if (failed) {
-    return (
-      <div className="dvm-note warn">
-        this browser cannot play this {kind === 'video' ? 'video' : 'audio'} format — use Download to play it locally
-      </div>
-    );
-  }
-  return kind === 'audio'
-    ? <audio ref={(el) => { ref.current = el; }} src={src} controls onError={() => setFailed(true)} />
-    : <video ref={(el) => { ref.current = el; }} src={src} controls onError={() => setFailed(true)} />;
 }

@@ -107,6 +107,7 @@ const DataModal = dynamic(() => import('./DataModal'), { ssr: false });
 const ResumeModal = dynamic(() => import('./ResumeModal'), { ssr: false });
 const PausedSessionsModal = dynamic(() => import('./PausedSessionsModal'), { ssr: false });
 const SearchModal = dynamic(() => import('./SearchModal'), { ssr: false });
+import type { SearchAction } from './SearchModal';
 const SettingsModal = dynamic(() => import('./SettingsModal'), { ssr: false });
 const SettingScopeModal = dynamic(() => import('./SettingScopeModal'), { ssr: false });
 
@@ -922,6 +923,18 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   }, [closeDrawers]);
   const [resumeOpen, setResumeOpen] = useState<null | { vpsId?: string }>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Ctrl/Cmd+K toggles the global palette from anywhere (composer, editor) —
+  // except inside a terminal, where Ctrl+K belongs to the shell.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'k') return;
+      if ((e.target as Element | null)?.closest?.('.xterm')) return;
+      e.preventDefault();
+      setSearchOpen((o) => !o);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Section the settings modal opens on (null = its own default). Set by the
   // wizard's "enable one in Settings" link when both backends are off.
@@ -1931,6 +1944,36 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   const openSessionFromPanel = useStableCallback((id: string) => openSessionById(id, false));
   const revealTools = useCallback(() => setToolsOpen(true), []);
 
+  // The global palette (SearchModal): stable callbacks, so its memoized
+  // sections do not recompute on every hub render.
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const searchOpenSession = useStableCallback((id: string, pin: boolean) => openSessionById(id, pin));
+  const searchOpenShell = useStableCallback((id: string, pin: boolean) => selectShell(id, pin));
+  const searchOpenProject = useStableCallback((vpsId: string, path: string) => {
+    closeDrawers();
+    if (resolvedTabs.some((t) => t.vpsId === vpsId && t.path === path)) onPathRowClick(vpsId, path);
+    else setWizard({ kind: 'agent', vpsId, cwd: path, offerShell: true });
+  });
+  const searchActionFolder = activeTab ? { vpsId: activeTab.vpsId, path: activeTab.path } : null;
+  const searchActions = useMemo<SearchAction[]>(() => {
+    const list: SearchAction[] = [
+      { id: 'new-session', label: 'New session', keywords: 'agent create start', run: () => setWizard({ kind: 'agent' }) },
+      { id: 'new-shell', label: 'New shell', keywords: 'terminal create start', run: () => setWizard({ kind: 'shell' }) },
+    ];
+    if (searchActionFolder) {
+      const { vpsId, path } = searchActionFolder;
+      list.push({ id: 'open-folder', label: 'Open folder…', keywords: 'directory project tab explorer', run: () => setFolderPicker({ vpsId, cwd: path }) });
+    }
+    list.push(
+      { id: 'resume-session', label: 'Resume a session…', keywords: 'import scan history', run: () => setResumeOpen({}) },
+      { id: 'paused-sessions', label: 'Paused sessions…', keywords: 'sleeping cleanup delete', run: () => setPausedCleanupOpen(true) },
+      { id: 'settings', label: 'Settings', keywords: 'preferences config', run: () => setSettingsOpen(true) },
+      { id: 'vps-data', label: 'VPS & paths', keywords: 'servers machines projects data', run: () => setDataOpen(true) },
+      { id: 'toggle-tools', label: 'Toggle tools panel', keywords: 'explorer git search side panel', run: toggleShowTools },
+    );
+    return list;
+  }, [searchActionFolder?.vpsId, searchActionFolder?.path, toggleShowTools]);
+
   return (
     <PanelLayoutProvider value={initialPanels}>
     <div
@@ -2030,7 +2073,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
               <span className="reload-chip-label">reload</span>
             </button>
           )}
-          <button className="head-btn" onClick={() => setSearchOpen(true)} title="search across all messages" aria-label="search" data-label="search">
+          <button className="head-btn" onClick={() => setSearchOpen(true)} title="search sessions, projects, files, messages (Ctrl/Cmd+K)" aria-label="search" data-label="search">
             <IconSearch />
           </button>
           <button
@@ -2513,8 +2556,10 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         <ResumeModal
           vpsList={vpsList}
           dbSessions={sessions}
+          enabledBackends={backends}
           initialVpsId={resumeOpen.vpsId}
           onClose={() => setResumeOpen(null)}
+          onOpen={(id) => { setResumeOpen(null); openSessionById(id, true); }}
           onImported={(c) => { setResumeOpen(null); applyCreatedSession(c); }}
           onResumed={async (id) => {
             setResumeOpen(null);
@@ -2528,8 +2573,15 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
       {searchOpen && (
         <SearchModal
-          onClose={() => setSearchOpen(false)}
-          onPick={(id) => { setSearchOpen(false); openSessionById(id, false); }}
+          onClose={closeSearch}
+          onPick={searchOpenSession}
+          onOpenShell={searchOpenShell}
+          onOpenProject={searchOpenProject}
+          sessions={sessions}
+          shells={shells}
+          vpsList={vpsList}
+          vpsPaths={vpsPaths}
+          actions={searchActions}
         />
       )}
 

@@ -1,5 +1,5 @@
 'use client';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
@@ -23,9 +23,10 @@ import { backendAvailability, backendLauncher, parseAgentLastError, type Backend
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
 import {
-  mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey, sidebarPathOrder,
-  sidebarPathOrderedIds, sidebarVisiblePathItems,
+  mergeSidebarPathGroupOrder, mergeSidebarPathOrder, sidebarPathKey,
+  sidebarVisiblePathItems,
 } from './sidebarPathGroups';
+import { MAX_SUB_INDENT, nestSubSessions, renderedSessionIds, type SubSessionRow } from './sidebarSubSessions';
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import {
   DEFAULT_SESSION_PROVIDER, PROVIDERS, SESSION_PROVIDERS, providerBackendState,
@@ -322,6 +323,8 @@ export default function Sidebar({
 
   const [collapsedVps, setVpsCollapsed] = useCollapsedGroups('hub.claude.collapsedVps.v2');
   const [collapsedPaths, setPathCollapsed] = useCollapsedGroups('hub.claude.collapsedPaths.v1');
+  // Parents whose sub-sessions are folded (default: unfolded).
+  const [subFolded, setSubFolded] = useCollapsedGroups('hub.sidebar.subFolded.v1');
 
   // Show / hide paused (sleeping) sessions. Default ON (= show everything).
   // Shared with the workspace strip, which filters on the same switch
@@ -541,8 +544,8 @@ export default function Sidebar({
     const folderVps = folder.id === '__orphans__'
       ? vpsList.filter((v) => !vpsFolders.some((known) => known.id === v.folderId))
       : (vpsByFolder.get(folder.id) ?? []);
-    return folderVps.flatMap((vps) => collapsedVps.has(vps.id) ? [] : sidebarPathOrderedIds(
-      sessionsFor(vps.id).filter((session) => !collapsedPaths.has(pathCollapseKey(vps.id, session.cwd))),
+    return folderVps.flatMap((vps) => collapsedVps.has(vps.id) ? [] : renderedSessionIds(
+      sessionsFor(vps.id), subFolded, (path) => collapsedPaths.has(pathCollapseKey(vps.id, path)),
     ));
   });
 
@@ -864,6 +867,7 @@ export default function Sidebar({
                     collapsed: collapsedVps.has(x.vps.id),
                     onToggleCollapsed: () => setVpsCollapsed(x.vps.id),
                     collapsedPaths, onTogglePath: setPathCollapsed,
+                    subFolded, onToggleSubFold: setSubFolded,
                     vpsSessions: x.vpsSessions,
                     allVpsSessions: x.allVpsSessions,
                     vpsShells: x.vpsShells,
@@ -908,6 +912,8 @@ type VpsRenderOpts = {
   onToggleCollapsed: () => void;
   collapsedPaths: ReadonlySet<string>;
   onTogglePath: (key: string) => void;
+  subFolded: ReadonlySet<string>;
+  onToggleSubFold: (id: string) => void;
   sessionHandles?: Map<string, { handle: string; confirmed: boolean }>;
   vpsSessions: SessionListItem[];
   allVpsSessions: SessionListItem[];
@@ -954,7 +960,7 @@ type VpsRenderOpts = {
 
 function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const {
-    sessionHandles, collapsed, onToggleCollapsed, collapsedPaths, onTogglePath,
+    sessionHandles, collapsed, onToggleCollapsed, collapsedPaths, onTogglePath, subFolded, onToggleSubFold,
     vpsSessions, allVpsSessions, vpsShells, vpsInstall, showDetails, agentOutOfDate,
     staleness,
     selectedId, selectedShellId, selectedInstallId, activeWorkspace, deletingSessionIds,
@@ -1204,6 +1210,8 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
             vpsId={v.id}
             collapsedPaths={collapsedPaths}
             onTogglePath={onTogglePath}
+            subFolded={subFolded}
+            onToggleSubFold={onToggleSubFold}
             sessions={vpsSessions}
             allSessions={allVpsSessions}
             shells={vpsShells}
@@ -1401,10 +1409,12 @@ function WorkspacePathGroups({
   showDetails, sessionHandles, onSelect, onSelectionGesture, onContext,
   editingId, onRenameSubmit, onRenameCancel, onReorder,
   activeWorkspace, shells, selectedShellId, onSelectShell, onContextShell,
-  collapsedPaths, onTogglePath,
+  collapsedPaths, onTogglePath, subFolded, onToggleSubFold,
 }: {
   collapsedPaths: ReadonlySet<string>;
   onTogglePath: (key: string) => void;
+  subFolded: ReadonlySet<string>;
+  onToggleSubFold: (id: string) => void;
   vpsId: string;
   sessions: SessionListItem[];
   allSessions: SessionListItem[];
@@ -1427,26 +1437,33 @@ function WorkspacePathGroups({
   activeWorkspace: WorkspaceScope | null;
 }) {
   const groups = useMemo(() => {
-    const byPath = new Map<string, { path: string; sessions: SessionListItem[]; shells: ShellListItem[] }>();
+    const byPath = new Map<string, { path: string; rows: SubSessionRow<SessionListItem>[]; total: number; shells: ShellListItem[] }>();
     const ensure = (path: string) => {
       let group = byPath.get(path);
       if (!group) {
-        group = { path, sessions: [], shells: [] };
+        group = { path, rows: [], total: 0, shells: [] };
         byPath.set(path, group);
       }
       return group;
     };
-    for (const session of sessions) ensure(sidebarPathKey(session.cwd)).sessions.push(session);
+    // Sub-sessions render under their parent, inside the parent's group.
+    for (const nested of nestSubSessions(sessions, subFolded)) {
+      const group = ensure(nested.path);
+      group.rows = nested.rows;
+      group.total = nested.total;
+    }
     for (const shell of shells) ensure(sidebarPathKey(shell.cwd)).shells.push(shell);
     return [...byPath.values()];
-  }, [sessions, shells]);
+  }, [sessions, shells, subFolded]);
 
   // Only a path holding sessions can move: order lives in `position` on the
   // session rows, so a shell-only group has nothing to carry it — and since
   // the map above is filled from the sessions first, those groups already sit
   // at the end, which is where they would land anyway. Expand the drag against
   // the full list so hidden sessions keep their positions.
-  const movablePaths = useMemo(() => sidebarPathOrder(sessions), [sessions]);
+  // Only ROOTS name a path: a child follows its parent (its slot in the full
+  // order is untouched, so the order sent stays complete).
+  const movablePaths = useMemo(() => groups.filter((g) => g.rows.length).map((g) => g.path), [groups]);
   const pathDnd = useReorder(movablePaths, (orderedPaths) => {
     const fullOrder = mergeSidebarPathGroupOrder(allSessions, orderedPaths);
     if (fullOrder) onReorder?.(vpsId, fullOrder);
@@ -1458,12 +1475,15 @@ function WorkspacePathGroups({
       {groups.map((group) => (
         <SessionPathGroup
           key={group.path}
-          dnd={pathsMovable && group.sessions.length > 0 ? pathDnd.itemProps(group.path) : undefined}
+          dnd={pathsMovable && group.rows.length > 0 ? pathDnd.itemProps(group.path) : undefined}
           vpsId={vpsId}
           path={group.path}
           collapsed={collapsedPaths.has(pathCollapseKey(vpsId, group.path))}
           onToggleCollapsed={() => onTogglePath(pathCollapseKey(vpsId, group.path))}
-          sessions={group.sessions}
+          rows={group.rows}
+          total={group.total}
+          subFolded={subFolded}
+          onToggleSubFold={onToggleSubFold}
           shells={group.shells}
           allSessions={allSessions}
           selectedId={selectedId}
@@ -1488,8 +1508,46 @@ function WorkspacePathGroups({
   );
 }
 
+/** What a FOLDED parent still shows of its hidden sub-sessions (cheap: one pass). */
+function subAttention(descendants: SessionListItem[]): string {
+  let best = '';
+  for (const d of descendants) {
+    const a = attentionForRow(d, { viewedHere: false });
+    if (a === 'blocked' || a === 'question') return 'blocked';
+    if (a === 'error') best = 'error';
+    else if (a === 'unread' && best !== 'error') best = 'unread';
+    else if (!best && rowStatus(d) === 'thinking') best = 'thinking';
+  }
+  return best;
+}
+
+const SUB_ATTENTION_TEXT: Record<string, string> = {
+  blocked: 'needs you', error: 'failed', unread: 'finished', thinking: 'working',
+};
+
+const SubFoldRow = memo(function SubFoldRow({ parentId, depth, folded, count, attention, onToggle }: {
+  parentId: string; depth: number; folded: boolean; count: number; attention: string;
+  onToggle: (id: string) => void;
+}) {
+  const label = `${count} sub-session${count === 1 ? '' : 's'}`;
+  return (
+    <button type="button" className={`cs-sub-fold${attention ? ` is-${attention}` : ''}`}
+      style={{ ['--sub-depth' as any]: depth }}
+      aria-expanded={!folded} aria-label={`${folded ? 'expand' : 'fold'} ${label}`}
+      onClick={() => onToggle(parentId)}
+      {...tipAttrs({
+        detail: [attention ? `${label}, ${SUB_ATTENTION_TEXT[attention]}` : label],
+        actions: [['Click', folded ? 'unfold' : 'fold']],
+      })}>
+      <span className="cs-caret" aria-hidden>{folded ? '▸' : '▾'}</span>
+      <span>{label}</span>
+      {attention && <span className="cs-sub-dot" aria-hidden />}
+    </button>
+  );
+});
+
 function SessionPathGroup({
-  vpsId, path, sessions, shells, allSessions, collapsed, onToggleCollapsed,
+  vpsId, path, rows, total, subFolded, onToggleSubFold, shells, allSessions, collapsed, onToggleCollapsed,
   selectedId, selectedShellId, selectedSessionIds, deletingSessionIds,
   showDetails, sessionHandles, activeWorkspace,
   onSelect, onSelectShell, onSelectionGesture, onContext, onContextShell,
@@ -1501,7 +1559,10 @@ function SessionPathGroup({
   dnd?: ReorderItemProps;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  sessions: SessionListItem[];
+  rows: SubSessionRow<SessionListItem>[];
+  total: number;
+  subFolded: ReadonlySet<string>;
+  onToggleSubFold: (id: string) => void;
   shells: ShellListItem[];
   allSessions: SessionListItem[];
   selectedId: string | null;
@@ -1521,13 +1582,14 @@ function SessionPathGroup({
   onRenameCancel?: () => void;
   onReorder?: (vpsId: string, ids: string[]) => void;
 }) {
-  const dnd = useReorder(sessions.map((session) => session.id), (orderedPathIds) => {
-    const fullOrder = mergeSidebarPathOrder(allSessions, path, orderedPathIds,
-      sessions.map((session) => session.id));
+  // Reordering moves ROOTS only; children keep their slots in the full order.
+  const rootIds = useMemo(() => rows.filter((row) => row.depth === 0).map((row) => row.item.id), [rows]);
+  const dnd = useReorder(rootIds, (orderedPathIds) => {
+    const fullOrder = mergeSidebarPathOrder(allSessions, path, orderedPathIds, rootIds);
     if (fullOrder) onReorder?.(vpsId, fullOrder);
   }, { axis: 'y' });
   const current = path !== '~' && isSameWorkspace(activeWorkspace, vpsId, path);
-  const count = sessions.length + shells.length;
+  const count = total + shells.length;
   const label = path === '~' ? 'default home directory' : path;
 
   return (
@@ -1557,9 +1619,11 @@ function SessionPathGroup({
         <span className="cs-path-name">{path}</span>
         <span className="cs-path-count">{count}</span>
       </button>
-      {!collapsed && sessions.map((s) => (
+      {!collapsed && rows.map(({ item: s, depth, descendants, folded }) => (
+        <Fragment key={s.id}>
         <SessionRow
-          key={s.id} s={s}
+          s={s}
+          depth={Math.min(depth, MAX_SUB_INDENT)}
           deleting={deletingSessionIds.has(s.id)}
           multiSelected={selectedSessionIds.has(s.id)}
           handle={sessionHandles?.get(s.id)?.handle ?? null}
@@ -1571,8 +1635,16 @@ function SessionPathGroup({
           editing={editingId === s.id}
           onRenameSubmit={onRenameSubmit}
           onRenameCancel={onRenameCancel}
-          dnd={onReorder && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
+          dnd={onReorder && depth === 0 && !deletingSessionIds.has(s.id) ? dnd.itemProps(s.id) : undefined}
         />
+        {descendants.length > 0 && (
+          <SubFoldRow
+            parentId={s.id} depth={Math.min(depth + 1, MAX_SUB_INDENT)} folded={folded}
+            count={descendants.length} attention={folded ? subAttention(descendants) : ''}
+            onToggle={onToggleSubFold}
+          />
+        )}
+        </Fragment>
       ))}
       {!collapsed && shells.map((sh) => (
         <ShellRow
@@ -1592,10 +1664,12 @@ function SessionPathGroup({
 // (kept by the store until it changes), a stable handler or the per-id drag
 // props (`useReorder`) — so a hub update redraws only the cards it touched.
 const SessionRow = memo(function SessionRow({
-  s, handle, selected, multiSelected, deleting, showDetails,
+  s, handle, selected, multiSelected, deleting, showDetails, depth,
   onSelect, onSelectionGesture, onContext, editing, onRenameSubmit, onRenameCancel, dnd,
 }: {
   s: SessionListItem;
+  /** Sub-session indent (0 = root, capped by the caller). */
+  depth: number;
   /** Stable provider-neutral Charon handle on this VPS. */
   handle?: string | null;
   selected: boolean;
@@ -1693,7 +1767,7 @@ const SessionRow = memo(function SessionRow({
       data-tab-id={s.id}
       /* Beside the column, never over the next cards (app/HoverTip.tsx). */
       data-tip-side="right"
-      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${errorUnread ? ' error-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
+      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${errorUnread ? ' error-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}${depth > 0 ? ' is-sub' : ''}`}
       disabled={deleting}
       aria-busy={deleting || undefined}
       aria-pressed={multiSelected}
@@ -1734,7 +1808,7 @@ const SessionRow = memo(function SessionRow({
       title={deleting ? `Deleting ${headline}…` : headline}
       {...tooltip}
       suppressHydrationWarning
-      style={colorToken ? { ['--c' as any]: colorToCss(colorToken) } : undefined}
+      style={colorToken || depth ? { ...(colorToken ? { ['--c' as any]: colorToCss(colorToken) } : null), ...(depth ? { ['--sub-depth' as any]: depth } : null) } : undefined}
     >
       <span className="cs-card-stripe" />
       <div className="cs-card-top">

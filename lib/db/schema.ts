@@ -321,10 +321,15 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // (lib/promptCache.ts) — last request time, expiry, prompt size. NULL =
   // never reported or a backend without one. Read as `promptCache`.
   promptCacheJson: text('prompt_cache'),
+  // The session whose agent spawned this one (charon_peer `start_sub_session`).
+  // NO foreign key (a self-FK rebuilds the table): deleteSession re-roots
+  // the children in code.
+  parentSessionId: text('parent_session_id'),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [
   uniqueIndex('uq_agent_sessions_vps_id_handle').on(t.vpsId, t.handle),
+  index('idx_agent_sessions_parent').on(t.parentSessionId),
 ]);
 
 export const sessionMessages = sqliteTable('session_messages', {

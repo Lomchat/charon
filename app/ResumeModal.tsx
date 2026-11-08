@@ -1,375 +1,599 @@
 'use client';
-import PickerControl from './PickerControl';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '@/lib/api';
-import type { Vps, AgentSession } from '@/lib/db/schema';
-import type { AgentKind, ScanVpsSessionsResponse, ScannedSession } from '@/lib/types/api';
-import { useAccountProfiles } from './accountProfileStore';
-import { accountProfileId, profileLabel } from '@/lib/accountProfiles';
+import type { Vps } from '@/lib/db/schema';
+import type { AgentKind, HistoryPreviewResponse, HistorySession, HistoryTool, SessionListItem } from '@/lib/types/api';
+import { profileLabel } from '@/lib/accountProfiles';
+import PickerControl from './PickerControl';
 import AgentLogo, { agentKindLabel } from './AgentLogo';
-import { SESSION_PROVIDERS, hasNativeCapability } from '@/lib/sessionCapabilities';
+import { useAccountProfiles } from './accountProfileStore';
 import { backendAvailability } from './vpsHealth';
-import { providerLoginPatch } from '@/lib/sessionCapabilities';
-import { appendScanPage, continuationQuery, scanPage } from './resumeScan';
+import { fmtSize } from './sessionAttachments';
+import { IconSearch } from './icons';
+import type { EnabledBackends } from './enabledBackends';
+import { PROVIDERS, SESSION_PROVIDERS } from '@/lib/sessionCapabilities';
+import {
+  ago, groupProjects, isNoise, leaf, matchesQuery, mergeHistory, scannedToHistory, shortModel,
+  type ResumeItem, type ResumeState,
+} from './resumeHistory';
 
-// "Scan existing sessions" — one modal, one tab PER DECLARED BACKEND.
+// "Resume a session" — what one VPS holds that Charon does not show: sessions
+// never imported, and archived ones. Projects on the left, their sessions as
+// cards, and a panel that slides in with a session's first request and last
+// exchanges before you import (or unarchive) it. A session in the sidebar is
+// never listed — this is not a search.
 //
-// Every half is symmetric on purpose (§14.59/§14.74): each scan route answers
-// the same row shape, `nativeSessionId` carries whatever native id that
-// backend resumes by, and the import route dispatches the history fetch on
-// `kind`. So the whole list/card rendering below is shared and only three
-// things branch: the scan endpoint, the DB-list filter, and the
-// availability gate — all three by `kind`, none by a hard-coded list.
+// The list is the agent's history index (history.py: cached, so a reopen is
+// instant; the first build of a box fills in over a few calls) merged with the
+// sessions Charon already holds (resumeHistory.ts). An agent too old to index
+// falls back to the per-provider scans; a provider without transcript files
+// (`deployment.historyIndex: false`) always comes from its scan.
 type Props = {
   vpsList: Vps[];
-  dbSessions: AgentSession[];
+  dbSessions: SessionListItem[];
+  enabledBackends?: EnabledBackends;
   initialVpsId?: string;
   onClose: () => void;
   // vpsId + cwd travel with the id: the caller opens its tab immediately and
   // the session list it would look them up in is a beat behind.
   onImported: (created: { id: string; vpsId: string; cwd: string }) => void;
+  /** Resume (wakes it) and open. */
   onResumed: (id: string) => void;
+  /** Open without resuming. */
+  onOpen?: (id: string) => void;
 };
 
-// Every declared backend gets a tab, derived (§14.102). Hand-listed, the third
-// one had no tab at all — which quietly made its whole scan → import chain
-// (`cursor/scan` → `importCursorAgent`) unreachable from the UI.
-const KINDS: readonly AgentKind[] = SESSION_PROVIDERS;
+type IndexState = {
+  rows: HistorySession[];
+  pending: number;
+  total: number;
+  loading: boolean;
+  error: string | null;
+  /** Rows from the old scans: no previews, counts are rough. */
+  legacy: boolean;
+};
+const LOADING: IndexState = { rows: [], pending: 0, total: 0, loading: true, error: null, legacy: false };
+const ALL = '*';
+// Read from the agent's index (history.py), previews included; the others
+// (no transcript file) come from their scan.
+const INDEXED = SESSION_PROVIDERS.filter((p) => PROVIDERS[p].deployment.historyIndex);
+const SCANNED = SESSION_PROVIDERS.filter((p) => !PROVIDERS[p].deployment.historyIndex);
+const TURNS = 3;
+const TURNS_MORE = 10;
+
+type Preview = { turns: number; loading: boolean; data?: HistoryPreviewResponse };
+
+const STATE_LABEL: Record<ResumeState, string> = { new: 'on VPS', archived: 'archived' };
+const TOOL_MARK: Record<HistoryTool['k'], string> = {
+  edit: '✎', read: '≡', cmd: '$', search: '⌕', web: '↗', agent: '◇', other: '·',
+};
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function actionLabel(it: ResumeItem): string {
+  return it.state === 'archived' ? 'Unarchive' : 'Import';
+}
+
+function countText(it: ResumeItem): string | null {
+  if (it.prompts == null) return null;
+  if (it.approx) return it.size != null ? fmtSize(it.size) : null;
+  return `${it.prompts} prompt${it.prompts === 1 ? '' : 's'}`;
+}
+
+function timeOf(at?: string): string {
+  if (!at) return '';
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 
 export default function ResumeModal({
-  vpsList, dbSessions, initialVpsId, onClose, onImported, onResumed,
+  vpsList, dbSessions, enabledBackends, initialVpsId, onClose, onImported, onResumed, onOpen,
 }: Props) {
   const [vpsId, setVpsId] = useState(initialVpsId ?? vpsList[0]?.id ?? '');
-  // Claude is the default tab (the historical behaviour of this button).
-  const [kind, setKind] = useState<AgentKind>('claude');
-  const [profile, setProfile] = useState('default');
-  const profiles = useAccountProfiles(vpsId);
-  const choices = profiles.filter((p) => p.provider === kind);
-  const [showArchivedCodex, setShowArchivedCodex] = useState(false);
-  const [archivedDb, setArchivedDb] = useState<AgentSession[]>([]);
-  const [scanLoading, setScanLoading] = useState(false);
-  // Scans are cached per VPS/provider/archive/folder scope so flipping tabs or
-  // folder filters does not repeat an expensive remote scan.
-  const [scans, setScans] = useState<Record<string, ScanVpsSessionsResponse>>({});
-  const [scanFolders, setScanFolders] = useState<Record<string, string[]>>({});
-  const [scanCwds, setScanCwds] = useState<Record<string, string>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const reqSeq = useRef(0);
-
-  const archivedScan = hasNativeCapability(kind, 'archive') && showArchivedCodex;
-  const scanBaseKey = `${vpsId}:${kind}:${profile}:${archivedScan ? 'archived' : 'active'}`;
-  const selectedScanCwd = scanCwds[scanBaseKey] ?? '';
-  const cacheKey = `${scanBaseKey}:${selectedScanCwd || '*'}`;
-  const currentScan = scans[cacheKey];
-  const scanned = currentScan?.sessions ?? null;
-  const scanError = errors[cacheKey] ?? null;
-  const folders = currentScan?.folders ?? scanFolders[scanBaseKey] ?? [];
-  const continuation = continuationQuery(currentScan);
-
   const vps = vpsList.find((v) => v.id === vpsId);
-  // ADVISORY only — never a gate. Scanning reads transcript files over ssh and
-  // needs neither a signed-in account nor an installed backend, so a VPS whose
-  // Codex is signed out must still list its threads: importing them is exactly
-  // how you keep the history before fixing the login. What the reason DOES
-  // predict is that the follow-up resume will fail, so we say so up front.
-  const selectedProfile = choices.find((p) => p.id === profile);
-  const scopedVps = vps && selectedProfile && selectedProfile.number > 1
-    ? { ...vps, ...providerLoginPatch(kind, selectedProfile.loggedIn ? 1 : 0) } : vps;
-  const availability = scopedVps ? backendAvailability(scopedVps, kind) : null;
-  const unusable = availability && !availability.ok ? availability.reason : null;
+  const [index, setIndex] = useState<IndexState>(LOADING);
+  const [scanRows, setScanRows] = useState<HistorySession[]>([]);
+  const [archivedDb, setArchivedDb] = useState<SessionListItem[]>([]);
+  const [reload, setReload] = useState(0);
+  const [q, setQ] = useState('');
+  const [offKinds, setOffKinds] = useState<ReadonlySet<AgentKind>>(new Set());
+  const [showArchived, setShowArchived] = useState(true);
+  const [hideNoise, setHideNoise] = useState(true);
+  const [project, setProject] = useState(ALL);
+  const [branch, setBranch] = useState<string | null>(null);
+  const [cur, setCur] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  // Imported here without opening: gone from the list at once (the sidebar
+  // has it), before the summaries catch up.
+  const [imported, setImported] = useState<ReadonlySet<string>>(new Set());
+  const searchRef = useRef<HTMLInputElement>(null);
+  const cardsRef = useRef<HTMLDivElement>(null);
 
-  const allDbSessions = [...dbSessions, ...archivedDb.filter(
-    (a) => !dbSessions.some((s) => s.id === a.id),
-  )];
-  const dbForVps = allDbSessions.filter(
-    (s) => s.vpsId === vpsId && ((s.kind ?? 'claude') === kind) && accountProfileId(s) === profile,
-  );
-  const dbKnownIds = useMemo(
-    () => new Set(dbForVps.map((s) => s.nativeSessionId).filter(Boolean) as string[]),
-    [dbForVps],
-  );
-  const archivedInDb = dbForVps.filter((s) => s.archived === 1);
-  const resumable = dbForVps.filter((s) => s.archived !== 1 && (s.status === 'sleeping' || s.status === 'error'));
-  const notImported = scanned ? scanned.filter((s) => !dbKnownIds.has(s.sessionId)) : null;
-
-  async function doScan(options: {
-    force?: boolean;
-    append?: boolean;
-    after?: string;
-    cwd?: string;
-  } = {}) {
-    if (!vpsId) return;
-    const wantsArchived = hasNativeCapability(kind, 'archive') && showArchivedCodex;
-    const baseKey = `${vpsId}:${kind}:${profile}:${wantsArchived ? 'archived' : 'active'}`;
-    const cwd = options.cwd ?? selectedScanCwd;
-    const key = `${baseKey}:${cwd || '*'}`;
-    if (!options.force && !options.append && scans[key]) return; // cached
-    const seq = ++reqSeq.current;
-    setScanLoading(true);
-    setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
-    try {
-      const r = await api.scanVpsSessions(vpsId, kind, {
-        archived: wantsArchived, accountProfile: profile,
-        ...(options.after ? { after: options.after } : {}),
-        ...(cwd ? { cwd } : {}),
-      });
-      if (seq !== reqSeq.current) return;  // a newer tab/VPS switch won
-      if (r.ok === false) throw new Error(r.error || 'session scan failed');
-      if (r.folders) setScanFolders((f) => ({ ...f, [baseKey]: r.folders! }));
-      setScans((s) => ({
-        ...s,
-        [key]: options.append ? appendScanPage(s[key], r) : scanPage(r),
-      }));
-    } catch (e: any) {
-      if (seq !== reqSeq.current) return;
-      setErrors((x) => ({ ...x, [key]: String(e?.message ?? e) }));
-    } finally {
-      if (seq === reqSeq.current) setScanLoading(false);
-    }
-  }
-
+  // ── Load: the index (in parts on a first build), the scans, archived rows ─
+  const scanned = SCANNED.filter((k) => enabledBackends?.[k]);
+  const scannedKey = scanned.join(',');
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    if (!vpsId) return;
+    let cancelled = false;
+    setIndex(LOADING);
+    setScanRows([]);
+    const legacy = async () => {
+      const parts = await Promise.all(INDEXED.map((k) => api.scanVpsSessions(vpsId, k)
+        .then((r) => scannedToHistory(k, r.sessions ?? [])).catch(() => [] as HistorySession[])));
+      if (!cancelled) setIndex({ rows: parts.flat(), pending: 0, total: 0, loading: false, error: null, legacy: true });
+    };
+    (async () => {
+      try {
+        // Each call indexes for ~2.5 s and answers what it has; a box's very
+        // first build takes a few rounds, a warm one answers at once.
+        for (let round = 0; round < 40 && !cancelled; round++) {
+          const r = await api.historyIndex(vpsId);
+          if (cancelled) return;
+          if (!r.ok) {
+            if (r.reason === 'unsupported') { await legacy(); return; }
+            setIndex((x) => ({ ...x, loading: false, error: r.error || 'could not read the history of this VPS' }));
+            return;
+          }
+          const pending = r.pending ?? 0;
+          setIndex({ rows: r.sessions ?? [], pending, total: r.total ?? 0, loading: pending > 0, error: null, legacy: false });
+          if (!pending) return;
+        }
+      } catch (e) {
+        if (!cancelled) setIndex((x) => ({ ...x, loading: false, error: errText(e) }));
+      }
+    })();
+    const kinds = scannedKey ? scannedKey.split(',') as AgentKind[] : [];
+    Promise.all(kinds.map((k) => api.scanVpsSessions(vpsId, k)
+      .then((r) => scannedToHistory(k, r.sessions ?? [])).catch(() => [] as HistorySession[])))
+      .then((parts) => { if (!cancelled) setScanRows(parts.flat()); });
+    return () => { cancelled = true; };
+  }, [vpsId, reload, scannedKey]);
+
+  // Archived Charon sessions stay out of the normal lists: fetched here so
+  // they can be found (and unarchived) like the rest.
+  useEffect(() => {
+    let cancelled = false;
+    setArchivedDb([]);
+    if (!vpsId) return;
+    api.listSessions({ vpsId, includeArchived: true })
+      .then((r) => { if (!cancelled) setArchivedDb(r.sessions.filter((s) => s.archived === 1)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [vpsId]);
+
+  // ── The list ──────────────────────────────────────────────────────────────
+  const items = useMemo(() => {
+    const charon = dbSessions.filter((s) => s.vpsId === vpsId);
+    for (const a of archivedDb) if (!charon.some((s) => s.id === a.id)) charon.push(a);
+    return mergeHistory([...index.rows, ...scanRows], charon).filter((it) => !imported.has(it.key));
+  }, [dbSessions, archivedDb, index.rows, scanRows, vpsId, imported]);
+
+  const kindsPresent = useMemo(() => {
+    const c = new Map<AgentKind, number>();
+    for (const it of items) if (!hideNoise || !isNoise(it)) c.set(it.kind, (c.get(it.kind) ?? 0) + 1);
+    return c;
+  }, [items, hideNoise]);
+  const noiseCount = useMemo(() => items.filter(isNoise).length, [items]);
+  const archivedCount = useMemo(() => items.filter((it) => it.state === 'archived').length, [items]);
+
+  const filtered = useMemo(() => items.filter((it) => !offKinds.has(it.kind)
+    && (showArchived || it.state !== 'archived')
+    && (!hideNoise || !isNoise(it))
+    && matchesQuery(it, q)), [items, offKinds, showArchived, hideNoise, q]);
+  const projects = useMemo(() => groupProjects(filtered), [filtered]);
+  // A project the filters emptied (a search elsewhere) gives way to them all.
+  const scope = project !== ALL && projects.some((p) => p.cwd === project) ? project : ALL;
+  const inScope = useMemo(() => (scope === ALL ? filtered : filtered.filter((it) => it.cwd === scope)), [filtered, scope]);
+  const branches = useMemo(() => (scope === ALL ? []
+    : [...new Set(inScope.map((it) => it.branch).filter(Boolean))]), [inScope, scope]);
+  const shownBranch = branch && branches.includes(branch) ? branch : null;
+  const shown = useMemo(() => (shownBranch ? inScope.filter((it) => it.branch === shownBranch) : inScope), [inScope, shownBranch]);
+  const leafCounts = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const p of projects) c.set(leaf(p.cwd), (c.get(leaf(p.cwd)) ?? 0) + 1);
+    return c;
+  }, [projects]);
+
+  const curItem = useMemo(() => items.find((it) => it.key === cur) ?? null, [items, cur]);
+  useEffect(() => { if (open && !curItem) setOpen(false); }, [open, curItem]);
+
+  // ── Preview ───────────────────────────────────────────────────────────────
+  const canPreview = (it: ResumeItem) => !index.legacy && !!it.nativeId && INDEXED.includes(it.kind);
+  const loadPreview = useCallback((it: ResumeItem, turns: number) => {
+    if (!it.nativeId) return;
+    const key = it.key;
+    setPreviews((p) => ({ ...p, [key]: { turns, loading: true, data: p[key]?.data } }));
+    api.historyPreview(vpsId, it.kind, it.nativeId, turns)
+      .then((data) => setPreviews((p) => ({ ...p, [key]: { turns, loading: false, data } })))
+      .catch((e) => setPreviews((p) => ({ ...p, [key]: { turns, loading: false, data: { ok: false, reason: 'offline', error: errText(e) } } })));
+  }, [vpsId]);
+  useEffect(() => {
+    if (!open || !curItem || !canPreview(curItem)) return;
+    if (!previews[curItem.key]) loadPreview(curItem, TURNS);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, curItem?.key, index.legacy]);
+
+  // ── Accounts (import only: an archived session keeps its own) ────────────
+  const profiles = useAccountProfiles(vpsId);
+  const [profile, setProfile] = useState('default');
+  const choices = curItem ? profiles.filter((p) => p.provider === curItem.kind) : [];
+  useEffect(() => { setProfile('default'); }, [curItem?.kind, vpsId]);
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+  const act = useCallback(async (it: ResumeItem, mode: 'primary' | 'secondary' = 'primary') => {
+    setActionErr(null);
+    setBusy(it.key);
+    try {
+      if (it.state === 'new') {
+        if (!it.nativeId) throw new Error('this session has no native id to import');
+        const r = await api.importSession({
+          vpsId, kind: it.kind, accountProfile: profile, nativeSessionId: it.nativeId, cwd: it.cwd,
+          name: it.title ? it.title.slice(0, 60) : null,
+        });
+        // An archived Codex thread: import the transcript first (the route
+        // needs a DB row), then restore the native thread.
+        if (it.archivedNative) await api.unarchiveSession(r.id);
+        if (mode === 'primary') { onImported({ id: r.id, vpsId, cwd: it.cwd }); return; }
+        setImported((m) => new Set(m).add(it.key));
+        setOpen(false);
+        setNote(`Imported “${it.title.slice(0, 60)}” — it waits in the sidebar`);
+        return;
+      }
+      const id = it.session?.id;
+      if (!id) return;
+      await api.unarchiveSession(id);
+      setArchivedDb((rows) => rows.filter((s) => s.id !== id));
+      if (mode === 'primary') onResumed(id); else (onOpen ?? onResumed)(id);
+    } catch (e) {
+      setActionErr(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [vpsId, profile, onImported, onResumed, onOpen]);
+
+  // ── Keyboard ──────────────────────────────────────────────────────────────
+  const step = useCallback((d: number) => {
+    if (!shown.length) return;
+    const i = shown.findIndex((it) => it.key === cur);
+    const next = shown[Math.min(shown.length - 1, Math.max(0, i < 0 ? 0 : i + d))];
+    setCur(next.key);
+    requestAnimationFrame(() => cardsRef.current
+      ?.querySelector(`[data-key="${CSS.escape(next.key)}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }, [shown, cur]);
+  const stateRef = useRef({ open, cur, curItem, step, act });
+  stateRef.current = { open, cur, curItem, step, act };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const s = stateRef.current;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (s.open) setOpen(false); else onClose();
+        return;
+      }
+      const t = e.target as HTMLElement | null;
+      const inSearch = t === searchRef.current;
+      if (t && !inSearch && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        s.step(e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Enter' && (inSearch || t === document.body || t?.classList.contains('rsm-card'))) {
+        e.preventDefault();
+        if (!s.cur) { s.step(1); return; }
+        if (!s.open) { setOpen(true); return; }
+        if (s.curItem) void s.act(s.curItem);
+      }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
-
-  // Scan on mount and on every (vps, kind) switch — cached, so a tab flip back
-  // is instant.
-  useEffect(() => { doScan(); }, [vpsId, kind, profile, showArchivedCodex, selectedScanCwd]); // eslint-disable-line
-
-  // Normal session lists deliberately hide archived rows. Load them only
-  // while that provider tab is open so archives remain recoverable without
-  // cluttering the sidebar or its steady-state polling payload.
   useEffect(() => {
-    let cancelled = false;
-    if (!vpsId) { setArchivedDb([]); return; }
-    api.listSessions({ vpsId, includeArchived: true }).then((r) => {
-      if (!cancelled) setArchivedDb(r.sessions.filter(
-        (s) => (s.kind ?? 'claude') === kind && s.archived === 1,
-      ));
-    }).catch(() => { if (!cancelled) setArchivedDb([]); });
-    return () => { cancelled = true; };
-  }, [kind, vpsId]);
+    // A phone would pop its keyboard over the list.
+    if (!window.matchMedia?.('(pointer: coarse)').matches) searchRef.current?.focus();
+  }, []);
 
-  async function importScanned(s: ScannedSession) {
-    setBusy(s.sessionId);
-    try {
-      const title = s.aiTitle || s.summary || s.firstUserText;
-      const r = await api.importSession({
-        vpsId, kind, accountProfile: profile, nativeSessionId: s.sessionId, cwd: s.cwd,
-        name: title ? title.slice(0, 60) : null,
-      });
-      // An SDK archived scan returns native archived threads. Import the
-      // transcript first (so the session route has a DB row), then restore the
-      // native thread before handing it back to the ordinary session flow.
-      if (archivedScan) await api.unarchiveSession(r.id);
-      onImported({ id: r.id, vpsId, cwd: s.cwd });
-    } catch (e: any) {
-      alert('import: ' + (e?.message ?? e));
-    } finally { setBusy(null); }
-  }
+  const selectVps = (id: string) => {
+    setVpsId(id); setProject(ALL); setBranch(null); setCur(null); setOpen(false); setPreviews({}); setImported(new Set());
+  };
+  const openItem = (it: ResumeItem) => { setCur(it.key); setOpen(true); setActionErr(null); };
+  const toggleKind = (k: AgentKind) => setOffKinds((s) => {
+    const n = new Set(s);
+    if (n.has(k)) n.delete(k); else n.add(k);
+    // Never every provider off: the list would just be empty.
+    return n.size >= kindsPresent.size ? s : n;
+  });
 
-  async function resumeOne(id: string) {
-    setBusy(id);
-    try {
-      await api.resumeSession(id);
-      onResumed(id);
-    } catch (e: any) {
-      alert('resume: ' + (e?.message ?? e));
-    } finally { setBusy(null); }
-  }
+  // ── Render ────────────────────────────────────────────────────────────────
+  const status = index.error ? <span className="rsm-idx err" title={index.error}>could not read the history</span>
+    : index.loading ? (
+      <span className="rsm-idx">
+        {index.total ? <>indexing transcripts <span className="rsm-bar"><i style={{ width: `${Math.round(100 * (index.total - index.pending) / index.total)}%` }} /></span> {index.total - index.pending}/{index.total} · newest first</>
+          : 'reading the history…'}
+      </span>
+    ) : (
+      <span className="rsm-idx">
+        <span className="ok">●</span> {items.length} sessions{index.legacy ? ' · update the agent for previews' : ''}
+        <button type="button" className="rsm-x small" onClick={() => setReload((n) => n + 1)} title="Read the history again (only what changed)">⟳</button>
+      </span>
+    );
 
-  async function unarchiveAndResume(id: string) {
-    setBusy(id);
-    try {
-      await api.unarchiveSession(id);
-      setArchivedDb((rows) => rows.filter((s) => s.id !== id));
-      onResumed(id);
-    } catch (e: any) {
-      alert('unarchive: ' + (e?.message ?? e));
-    } finally { setBusy(null); }
-  }
+  const chip = (on: boolean, label: ReactNode, onClick: () => void, n?: number, title?: string) => (
+    <button type="button" className={`rsm-chip${on ? ' on' : ''}`} onClick={onClick} title={title}>
+      {label}{n != null && <span className="n">{n}</span>}
+    </button>
+  );
 
-  function fmtAgo(mtime: number) {
-    const d = Date.now() / 1000 - mtime;
-    if (d < 60) return Math.floor(d) + 's';
-    if (d < 3600) return Math.floor(d / 60) + 'm';
-    if (d < 86400) return Math.floor(d / 3600) + 'h';
-    return Math.floor(d / 86400) + 'd';
-  }
-
-  function fmtSize(b: number) {
-    if (b < 1024) return b + ' B';
-    if (b < 1024 * 1024) return (b / 1024).toFixed(b < 10 * 1024 ? 1 : 0) + ' KB';
-    return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
-  }
-
-  function fmtModel(m?: string) {
-    if (!m) return '';
-    // claude-opus-4-7 → opus-4.7, claude-sonnet-4-6 → sonnet-4.6.
-    // Codex ids (gpt-5.6-sol) already read fine and are left untouched.
-    const x = m.replace(/^claude-/, '');
-    return x.replace(/-(\d+)-(\d+)$/, '-$1.$2');
-  }
+  const card = (it: ResumeItem) => {
+    const count = countText(it);
+    return (
+      <div key={it.key} data-key={it.key} tabIndex={-1} role="button"
+           className={`rsm-card${cur === it.key ? ' cur' : ''}`}
+           onClick={() => openItem(it)}>
+        <div className="l1">
+          <AgentLogo kind={it.kind} size={15} title={agentKindLabel(it.kind)} />
+          <span className="t" title={it.title}>{it.title}</span>
+          <span className={`rsm-st ${it.state}`}><i />{it.archivedNative ? 'archived on VPS' : STATE_LABEL[it.state]}</span>
+        </div>
+        <div className="q">{it.lastPrompt
+          ? <><b>last</b>{it.lastPrompt}</>
+          : it.firstPrompt ? <><b>first</b>{it.firstPrompt}</> : <span className="faint">no prompt</span>}
+        </div>
+        <div className="l3">
+          {scope === ALL && <span className="rsm-proj" title={it.cwd}>{leaf(it.cwd)}</span>}
+          {it.branch && <span className="rsm-meta" title="git branch">⎇ {it.branch}</span>}
+          {count && <span className="rsm-meta">{count}</span>}
+          {it.model && <span className="rsm-meta">{shortModel(it.model)}</span>}
+          <span className="rsm-meta" title={new Date(it.mtimeMs).toLocaleString()}>{ago(it.mtimeMs)}</span>
+          <span className="sp" />
+          <button type="button" className={`rsm-act${it.state === 'new' ? '' : ' prim'}`} disabled={busy === it.key}
+                  onClick={(e) => { e.stopPropagation(); void act(it); }}>
+            {busy === it.key ? '…' : actionLabel(it)}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="app-modal resume">
-        <button className="modal-close" onClick={onClose}>✕</button>
-        <h2>resumable sessions</h2>
-
-        <label>VPS
-          <PickerControl value={vpsId} onValueChange={(nextValue) => { setVpsId(nextValue); setProfile("default"); }}>
-            {vpsList.map((v) => (
-              <option key={v.id} value={v.id}>{v.name}</option>
-            ))}
+    <div className="rsm-bg" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="rsm" role="dialog" aria-modal="true" aria-label="Resume a session">
+        <header className="rsm-head">
+          <h2>Resume a session</h2>
+          <PickerControl className="rsm-vps" value={vpsId} onValueChange={selectVps}>
+            {vpsList.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           </PickerControl>
-        </label>
+          {status}
+          <span className="sp" />
+          <button type="button" className="rsm-x" onClick={onClose} title="Close (Esc)">✕</button>
+        </header>
 
-        <div className="resume-tabs" role="tablist">
-          {KINDS.map((k) => {
-            const avail = vps ? backendAvailability(vps, k) : null;
-            const off = avail && !avail.ok ? avail.reason : null;
-            return (
-              <button
-                key={k}
-                role="tab"
-                aria-selected={kind === k}
-                className={`resume-tab${kind === k ? ' active' : ''}${off ? ' unavailable' : ''}`}
-                // NOT disabled on purpose: the tab stays clickable so the user
-                // can read WHY the backend is unusable instead of facing a
-                // dead control with no explanation.
-                title={off ? `${k}: ${off}` : `${k} sessions on this VPS`}
-                onClick={() => { setKind(k); setProfile("default"); }}
-              >
-                <AgentLogo kind={k} size={14} title="" />
-                <span>{k}</span>
+        <div className="rsm-body">
+          <aside className="rsm-rail">
+            <label className="rsm-search">
+              <IconSearch />
+              <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)}
+                     placeholder="Search title, prompt, folder, branch…" spellCheck={false} autoComplete="off" />
+            </label>
+            <div className="rsm-pjs">
+              <button type="button" className={`rsm-pj${scope === ALL ? ' on' : ''}`} onClick={() => { setProject(ALL); setBranch(null); }}>
+                <span className="sw all" />
+                <span className="nm"><b>All projects</b><small>{q ? 'matching the search' : 'newest first'}</small></span>
+                <span className="cnt"><span>{filtered.length}</span>
+                  {filtered.some((it) => it.state === 'new') && <span className="fresh">{filtered.filter((it) => it.state === 'new').length} on VPS</span>}</span>
               </button>
-            );
-          })}
+              <div className="rsm-sep" />
+              {projects.map((p) => (
+                <button type="button" key={p.cwd} className={`rsm-pj${scope === p.cwd ? ' on' : ''}`} title={p.cwd}
+                        onClick={() => { setProject(p.cwd); setBranch(null); }}>
+                  <span className="sw" />
+                  <span className="nm"><b>{(leafCounts.get(leaf(p.cwd)) ?? 0) > 1 ? p.cwd : leaf(p.cwd)}</b><small>{p.cwd}</small></span>
+                  <span className="cnt"><span>{p.count} · {ago(p.latestMs)}</span>{p.fresh > 0 && <span className="fresh">{p.fresh} on VPS</span>}</span>
+                </button>
+              ))}
+              {index.loading && <div className="rsm-skel" />}
+            </div>
+          </aside>
+
+          <section className="rsm-pane">
+            <div className="rsm-scope">
+              <div className="ttl">
+                {scope === ALL ? <b>All projects</b> : <><b>{leaf(scope)}</b><span>{scope}</span></>}
+                <span className="sp" />
+                <span>{shown.length} session{shown.length === 1 ? '' : 's'}</span>
+              </div>
+              {branches.length > 0 && (
+                <div className="rsm-chips">
+                  {chip(!shownBranch, 'all branches', () => setBranch(null))}
+                  {branches.map((b) => <span key={b}>{chip(shownBranch === b, `⎇ ${b}`, () => setBranch(b))}</span>)}
+                </div>
+              )}
+              <div className="rsm-chips">
+                {[...kindsPresent.entries()].map(([k, n]) => (
+                  <span key={k}>{chip(!offKinds.has(k), <><AgentLogo kind={k} size={12} title="" />{agentKindLabel(k)}</>, () => toggleKind(k), n)}</span>
+                ))}
+                {kindsPresent.size > 0 && <span className="rsm-chip-sep" />}
+                {archivedCount > 0 && <>
+                  {chip(showArchived, 'Archived', () => setShowArchived((v) => !v), archivedCount,
+                    'Charon sessions you archived — unarchive one to get it back in the sidebar')}
+                  <span className="rsm-chip-sep" />
+                </>}
+                {chip(hideNoise, 'Hide noise', () => setHideNoise((v) => !v), noiseCount,
+                  'Hides transcripts with no prompt and sessions started under /tmp')}
+              </div>
+            </div>
+            {note && <div className="rsm-note" onClick={() => setNote(null)}>{note}</div>}
+            <div className="rsm-cards" ref={cardsRef}>
+              {shown.map(card)}
+              {index.loading && <><div className="rsm-skel" /><div className="rsm-skel" /></>}
+              {!index.loading && !shown.length && (
+                <div className="rsm-empty">{index.error ?? (q ? 'No session matches this search.' : 'No session here.')}</div>
+              )}
+            </div>
+          </section>
+
+          {open && curItem && (
+            <>
+              <div className="rsm-scrim" onClick={() => setOpen(false)} />
+              <Drawer
+                it={curItem} vps={vps} preview={previews[curItem.key]} canPreview={canPreview(curItem)} legacy={index.legacy}
+                busy={busy === curItem.key} error={actionErr}
+                accounts={choices.length > 1 ? (
+                  <PickerControl className="rsm-acct" value={profile} onValueChange={setProfile} title="The account the imported session runs on">
+                    {choices.map((p) => <option key={p.id} value={p.id}>{profileLabel(agentKindLabel(curItem.kind), p)}</option>)}
+                  </PickerControl>
+                ) : null}
+                onMore={() => loadPreview(curItem, TURNS_MORE)}
+                onAct={(mode) => void act(curItem, mode)}
+                onStep={step}
+                onClose={() => setOpen(false)}
+              />
+            </>
+          )}
         </div>
 
-        {choices.length > 1 && <label className="nw-field profile-picker"><span>Account</span>
-          <PickerControl value={profile} onValueChange={(id) => setProfile(String(id))}>
-            {choices.map((p) => <option key={p.id} value={p.id}>{profileLabel(agentKindLabel(kind), p)}</option>)}
-          </PickerControl>
-        </label>}
-        {unusable && (
-          <p className="resume-warn">
-            {agentKindLabel(kind)} is {unusable} on this VPS — you can still
-            import (the transcript is read over ssh), but resuming will fail until it is fixed.
-          </p>
-        )}
-
-        {hasNativeCapability(kind, 'archive') && (
-          <label className="wiz-adv-check">
-            <input type="checkbox" checked={showArchivedCodex}
-              onChange={(e) => setShowArchivedCodex(e.target.checked)} />
-            scan archived {agentKindLabel(kind)} threads
-          </label>
-        )}
-
-        {archivedInDb.length > 0 && (
-          <>
-            <h3>archived in DB ({archivedInDb.length})</h3>
-            <ul className="resume-list">
-              {archivedInDb.map((s) => (
-                <li key={s.id}>
-                  <span className="tag tag-scan">archived</span>
-                  <span className="name">{s.name || s.cwd.split('/').slice(-2).join('/')}</span>
-                  <span className="cwd">{s.cwd}</span>
-                  <button onClick={() => unarchiveAndResume(s.id)} disabled={busy === s.id}>
-                    unarchive & resume
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-
-        <h3>in DB ({resumable.length})</h3>
-        {resumable.length === 0 && <p className="empty">no sleeping or errored {kind} sessions</p>}
-        <ul className="resume-list">
-          {resumable.map((s) => (
-            <li key={s.id}>
-              <span className={`tag tag-${s.status}`}>{s.status}</span>
-              <span className="name">{s.name || s.cwd.split('/').slice(-2).join('/')}</span>
-              <span className="cwd">{s.cwd}</span>
-              <button onClick={() => resumeOne(s.id)} disabled={busy === s.id}>resume</button>
-            </li>
-          ))}
-        </ul>
-
-        <h3>on the VPS, not imported ({notImported ? notImported.length : '?'})
-          <button className="reload" onClick={() => doScan({ force: true })} disabled={scanLoading}>
-            {scanLoading ? '…' : '⟳'}
-          </button>
-        </h3>
-        {folders.length > 0 && (
-          <label>folder
-            <PickerControl
-              value={selectedScanCwd}
-              onValueChange={(cwd) => setScanCwds((values) => ({
-                ...values, [scanBaseKey]: cwd,
-              }))}
-            >
-              <option value="">all known folders</option>
-              {folders.map((folder) => (
-                <option key={folder} value={folder}>{folder}</option>
-              ))}
-            </PickerControl>
-          </label>
-        )}
-        {scanError && <p className="err">{scanError}</p>}
-        {scanned && notImported?.length === 0 && (
-          <p className="empty">nothing left to import</p>
-        )}
-        {notImported && (
-          <ul className="resume-list">
-            {notImported.map((s) => {
-              const title = s.aiTitle || s.summary || s.firstUserText || s.sessionId.slice(0, 8);
-              const preview = s.lastPrompt || (s.firstUserText && s.firstUserText !== title ? s.firstUserText : '');
-              const effort = 'effort' in s ? s.effort : undefined;   // Codex-only
-              return (
-                <li key={s.sessionId} className="scan-row">
-                  <div className="scan-row-main">
-                    <div className="scan-line-1">
-                      <span className="tag tag-scan">scan</span>
-                      <span className="name" title={title}>{title}</span>
-                      <span className="ago">{fmtAgo(s.mtime)}</span>
-                    </div>
-                    <div className="scan-line-2">
-                      <span className="cwd" title={s.cwd}>{s.cwd}</span>
-                      {s.gitBranch && <span className="meta-pill branch" title="git branch">⎇ {s.gitBranch}</span>}
-                      {typeof s.messageCount === 'number' && s.messageCount > 0 && (
-                        <span className="meta-pill" title="messages">{s.messageCount} msg</span>
-                      )}
-                      {s.model && <span className="meta-pill" title="model">{fmtModel(s.model)}</span>}
-                      {effort && <span className="meta-pill" title="reasoning effort">{effort}</span>}
-                      <span className="meta-pill" title="file size">{fmtSize(s.size)}</span>
-                    </div>
-                    {preview && (
-                      <div className="scan-preview" title={preview}>“{preview.length > 140 ? preview.slice(0, 140) + '…' : preview}”</div>
-                    )}
-                  </div>
-                  <button onClick={() => importScanned(s)} disabled={busy === s.sessionId}>import</button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {!selectedScanCwd && continuation && (
-          <button
-            className="resume-more"
-            onClick={() => doScan({ force: true, append: true, after: continuation.after })}
-            disabled={scanLoading}
-          >
-            {scanLoading ? 'scanning…' : 'scan more folders'}
-          </button>
-        )}
+        <footer className="rsm-foot">
+          <span><kbd>↑</kbd> <kbd>↓</kbd> session</span>
+          <span><kbd>↵</kbd> show the exchanges, then {curItem ? actionLabel(curItem).toLowerCase() : 'resume / import'}</span>
+          <span><kbd>esc</kbd> {open ? 'close the panel' : 'close'}</span>
+          <span className="sp" />
+          {hideNoise && noiseCount > 0 && <span>{noiseCount} empty or /tmp sessions hidden</span>}
+        </footer>
       </div>
     </div>
+  );
+}
+
+function Drawer({ it, vps, preview, canPreview, legacy, busy, error, accounts, onMore, onAct, onStep, onClose }: {
+  it: ResumeItem;
+  vps?: Vps;
+  preview?: Preview;
+  canPreview: boolean;
+  legacy: boolean;
+  busy: boolean;
+  error: string | null;
+  accounts: ReactNode;
+  onMore: () => void;
+  onAct: (mode: 'primary' | 'secondary') => void;
+  onStep: (d: number) => void;
+  onClose: () => void;
+}) {
+  const data = preview?.data;
+  const turns = data?.ok ? data.turns ?? [] : [];
+  const first = (data?.ok ? data.first : '') || it.firstPrompt;
+  const earlier = it.prompts != null && !it.approx ? Math.max(0, it.prompts - 1 - turns.length) : null;
+  const more = preview && preview.turns < TURNS_MORE && (earlier == null ? turns.length >= TURNS : earlier > 0);
+  const avail = vps ? backendAvailability(vps, it.kind) : null;
+  const unusable = avail && !avail.ok ? avail.reason : null;
+  const fresh = it.state === 'new';
+  const count = countText(it);
+  const last = new Date(it.mtimeMs);
+
+  return (
+    <aside className="rsm-drawer" aria-label={it.title}>
+      <div className="rsm-ph">
+        <div className="nav">
+          <button type="button" className="rsm-x" onClick={() => onStep(-1)} title="Previous session (↑)">↑</button>
+          <button type="button" className="rsm-x" onClick={() => onStep(1)} title="Next session (↓)">↓</button>
+          <button type="button" className="rsm-x" onClick={onClose} title="Close the panel (Esc)">✕</button>
+        </div>
+        <h3>
+          <AgentLogo kind={it.kind} size={16} title={agentKindLabel(it.kind)} />
+          <span className="t" title={it.title}>{it.title}</span>
+          <span className={`rsm-st ${it.state}`}><i />{it.archivedNative ? 'archived on VPS' : STATE_LABEL[it.state]}</span>
+        </h3>
+        <dl className="rsm-grid">
+          <div><dt>project</dt><dd title={it.cwd}>{it.cwd}</dd></div>
+          <div><dt>branch</dt><dd>{it.branch ? `⎇ ${it.branch}` : '—'}</dd></div>
+          <div><dt>model</dt><dd>{it.model ? shortModel(it.model) : '—'}{it.effort ? ` · ${it.effort}` : ''}</dd></div>
+          <div><dt>prompts</dt><dd>{it.prompts == null ? '—' : it.approx ? `${it.prompts}+ (big transcript)` : count}</dd></div>
+          <div><dt>transcript</dt><dd>{it.size != null ? fmtSize(it.size) : '—'}</dd></div>
+          <div><dt>last active</dt><dd title={last.toLocaleString()}>{last.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · {last.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ({ago(it.mtimeMs)} ago)</dd></div>
+        </dl>
+      </div>
+
+      <div className="rsm-conv">
+        {unusable && (
+          <div className="rsm-warn">
+            {agentKindLabel(it.kind)} is {unusable} on this VPS — {fresh ? 'importing works (the transcript is read over ssh), but resuming' : 'resuming'} will fail until it is fixed.
+          </div>
+        )}
+        {first && <div className="rsm-bub u first"><small>first request</small>{first}</div>}
+        {canPreview ? (
+          <>
+            {preview?.loading && !data && <div className="rsm-skel" />}
+            {data && !data.ok && (
+              <div className="rsm-empty small">
+                {data.reason === 'missing' ? 'No transcript for this session on the VPS any more.' : data.error || 'Could not read the exchanges.'}
+              </div>
+            )}
+            {more && (
+              <div className="rsm-gap">
+                {earlier != null ? `${earlier} earlier prompt${earlier === 1 ? '' : 's'}` : 'earlier exchanges'}
+                <button type="button" onClick={onMore} disabled={preview?.loading}>{preview?.loading ? '…' : 'show more'}</button>
+              </div>
+            )}
+            {turns.map((t, i) => (
+              <div key={`${t.at ?? ''}:${i}`} className="rsm-turn">
+                <div className="rsm-bub u"><small>you{t.at ? ` · ${timeOf(t.at)}` : ''}</small>{t.user}</div>
+                {(t.answer || t.tools.length > 0) && (
+                  <div className="rsm-bub a">
+                    <small>{agentKindLabel(it.kind)}{it.model ? ` · ${shortModel(it.model)}` : ''}</small>
+                    {t.tools.length > 0 && (
+                      <div className="rsm-tools">
+                        {t.more_tools > 0 && <span className="faint">… {t.more_tools} earlier actions</span>}
+                        {t.tools.map((x, j) => (
+                          <span key={j} title={x.t}><b>{TOOL_MARK[x.k] ?? '·'}</b>{x.t}{x.n ? <em> ×{x.n}</em> : null}</span>
+                        ))}
+                      </div>
+                    )}
+                    {t.answer}
+                  </div>
+                )}
+              </div>
+            ))}
+          </>
+        ) : (
+          <>
+            {it.lastPrompt && it.lastPrompt !== first && <div className="rsm-bub u"><small>last prompt</small>{it.lastPrompt}</div>}
+            <div className="rsm-empty small">
+              {legacy ? 'Update the agent on this VPS to see the last exchanges here.'
+                : 'No transcript file to preview for this session.'}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="rsm-pa">
+        {error && <div className="rsm-err">{error}</div>}
+        <div className="row">
+          {fresh ? (
+            <>
+              <button type="button" className="rsm-act prim big" disabled={busy} onClick={() => onAct('primary')}>
+                {busy ? 'importing…' : it.archivedNative ? 'Import, unarchive & open' : 'Import & open'}
+              </button>
+              <button type="button" className="rsm-act big" disabled={busy} onClick={() => onAct('secondary')}
+                      title="Import it into the sidebar and keep browsing">Import only</button>
+              {accounts}
+            </>
+          ) : (
+            <>
+              <button type="button" className="rsm-act prim big" disabled={busy} onClick={() => onAct('primary')}>
+                Unarchive &amp; resume
+              </button>
+              <button type="button" className="rsm-act big" disabled={busy} onClick={() => onAct('secondary')}
+                      title="Back in the sidebar, asleep">Unarchive only</button>
+            </>
+          )}
+          <span className="sp" />
+          <span className="rsm-meta">{agentKindLabel(it.kind)}{fresh ? ' · not in Charon yet' : ''}</span>
+        </div>
+      </div>
+    </aside>
   );
 }

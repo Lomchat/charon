@@ -12,8 +12,9 @@ import { isOpenCodeGo } from '@/lib/opencodeModels';
 
 import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps } from '@/lib/db/schema';
+import { getSummary, subscribeSummaries } from './sync/summaryStore';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
 import {
   asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
@@ -179,6 +180,7 @@ export default function SessionView({
   // memo(Message), memo(ToolPanel) and memo(ChatInputBar) hold (§14.38). An
   // unstable prop here re-rendered — and re-parsed — every bubble per frame.
   const onOpenSession = useStableOptionalCallback(onOpenSessionProp);
+  const parentSessionId = selected.parentSessionId ?? null;
   const onReauth = useStableOptionalCallback(onReauthProp);
   const onOpenTools = useStableOptionalCallback(onOpenToolsProp);
   const onOpenFolder = useStableOptionalCallback(onOpenFolderProp);
@@ -845,6 +847,9 @@ export default function SessionView({
                 title={`Stable Charon address on ${selectedVps?.name ?? 'this machine'} (${selected.addressable ? 'currently reachable' : 'not currently reachable'})`}
               >@{handle}</span>
             )}
+            {parentSessionId && onOpenSession && (
+              <ParentChip parentId={parentSessionId} onOpen={onOpenSession} />
+            )}
             {/* Phone only: its hit area spans the whole title line. */}
             <button type="button" className="bar-expand" aria-expanded={barExpanded}
               aria-label={barExpanded ? 'Hide session details' : 'Show session details'}
@@ -1335,6 +1340,25 @@ const MessageHistory = memo(function MessageHistory({
 // (new message, status change) doesn't needlessly re-render it either.
 // See CLAUDE.md §11 / §14.
 type InsertRequest = { text: string; nonce: number; block?: boolean };
+
+/** "sub-session of @parent": read from the summary store (a sleeping parent is
+ *  not in `siblings`), as a string so only this chip re-renders. */
+const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
+  parentId: string; onOpen: (id: string) => void;
+}) {
+  const label = useSyncExternalStore(subscribeSummaries, () => {
+    const p = getSummary(parentId);
+    return p ? (p.handle ? `@${p.handle}` : p.name || '(unnamed)') : null;
+  }, () => null);
+  if (label === null) return null;
+  return (
+    <button type="button" className="bar-parent"
+      title={`Sub-session of ${label}: open the session that spawned it`}
+      aria-label={`sub-session of ${label}`}
+      onClick={() => onOpen(parentId)}
+    >↳ {label}</button>
+  );
+});
 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,

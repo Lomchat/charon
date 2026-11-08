@@ -23,6 +23,10 @@ html[data-density='small'] .cs-vps.compact .cs-vps-body { padding: 4px 0 5px; }
 html[data-density='small'] .cs-vps.compact .cs-card { margin-top: 3px; }
 html[data-density='small'] .cs-card { gap: 4px; width: calc(100% - 12px); margin: 4px 6px 0; padding: 6px 8px 6px 10px; }
 html[data-density='small'] .cs-card.compact { padding-top: 5px; padding-bottom: 5px; }
+html[data-density='small'] .cs-card.is-sub {
+  margin-left: calc(6px + var(--sub-depth, 1) * 12px); width: calc(100% - 12px - var(--sub-depth, 1) * 12px);
+}
+html[data-density='small'] .cs-sub-fold { margin-left: calc(6px + var(--sub-depth, 1) * 12px); }
 html[data-density='small'] .cs-path-group { margin-top: 7px; }
 html[data-density='small'] .cs-path-group + .cs-path-group { margin-top: 9px; }
 html[data-density='small'] .cs-path-head { width: calc(100% - 16px); margin: 0 8px 2px; padding: 3px 2px; }

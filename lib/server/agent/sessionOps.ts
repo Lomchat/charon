@@ -19,6 +19,7 @@ import {
 import type { PermissionMode } from '@/lib/server/hub/types';
 import type { WorkerEvent, WorkerStatus, AccountUsage } from '@/lib/server/hub/types';
 import { getAgentClientForVpsId } from './AgentClientPool';
+import { handlePeerSpawnRequest } from '@/lib/server/hub/subSessions';
 import type { AgentSessionInfo } from './types';
 import { sendPushToAll } from '@/lib/server/hub/webPush';
 import {
@@ -51,7 +52,7 @@ import {
   compactToolInputForWire, compactToolResultForWire, deriveMessageStorage,
 } from '@/lib/server/hub/messageWire';
 import {
-  bgTaskIdsBeforeEventFromDb, bgTaskRunningInDb, bgTasksHiddenFromStopHook, isBgTaskDone, pruneStaleBgTasks,
+  bgTaskIdsBeforeEventFromDb, bgTaskRunningInDb, bgTasksHiddenFromStopHook, bgWorkCount, isBgTaskDone, pruneStaleBgTasks,
   runningBgTasksFromDb, runningBgTasksIfWarm, runningBgTaskDetailsIfWarm,
 } from '@/lib/server/hub/bgTaskState';
 import { withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
@@ -2422,6 +2423,13 @@ export class SessionStream {
         this._broadcast(withRowId(payload, this._persist('event', payload)));
         break;
       }
+      case 'peer_spawn_request': {
+        // Hub-internal and transient: no row, no frame, no replay identity.
+        void handlePeerSpawnRequest(this.id, ev).catch((e) => {
+          console.warn(`[sub-sessions] spawn request failed: ${(e as Error)?.message ?? e}`);
+        });
+        break;
+      }
       case 'peer_message_status': {
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         if (!this._flushAssistant()) break; // order-preserving stop (16.3)
@@ -2734,7 +2742,7 @@ export class SessionStream {
           && (terminalError || !this.peerDrivenFinish)) {
           const terminalError = this.terminalErrorLatched;
           const providerLabel = providerDisplayName(this.kind);
-          const bgCount = bgPending ? this.bgRunning!.size : 0;
+          const bgCount = bgPending ? bgWorkCount(this.id, this.bgRunning!) : 0;
           const finishedBody = `${providerLabel} finished its response${bgCount > 0
             ? ` — ${bgCount} background task${bgCount === 1 ? '' : 's'} still running`
             : ''}`;
@@ -4153,16 +4161,17 @@ export class SessionStream {
     return pruneStaleBgTasks(this.bgRunning, Math.floor(Date.now() / 1000));
   }
 
-  /** How many — the sidebar card's count. Same registry, same age cap. The
-   *  list GET's read: a cold registry is not folded synchronously there — 0
-   *  while it warms (cosmetic; the session's status is unchanged). */
+  /** How many — the sidebar card's count. Same registry, same age cap, the
+   *  composer bar's rule (`bgWorkCount`: a sub-agent's command is a step of its
+   *  owner). The list GET's read: a cold registry is not folded synchronously
+   *  there — 0 while it warms (cosmetic; the session's status is unchanged). */
   runningBgTaskCount(): number {
     if (this.bgRunning == null) {
       const running = runningBgTasksIfWarm(this.id);
       if (running == null) return 0;
       this.bgRunning = running;
     }
-    return this.hasRunningBgTasks() ? this.bgRunning!.size : 0;
+    return this.hasRunningBgTasks() ? bgWorkCount(this.id, this.bgRunning!) : 0;
   }
 
   /** Mirror the count onto every tab (LOW_VOLUME `session_bg_tasks`): the
@@ -4914,6 +4923,15 @@ export async function importExistingSession(opts: {
   return sessionId;
 }
 
+/** `start_session` parent params, the parent's CURRENT handle read from DB
+ *  (§14.35). Absent for a root session. */
+function parentStartParams(parentId: string | null | undefined): Record<string, string | null> {
+  if (!parentId) return {};
+  const p = db.select({ handle: agentSessions.handle }).from(agentSessions)
+    .where(eq(agentSessions.id, parentId)).get();
+  return { parent_session_id: parentId, parent_handle: p?.handle ?? null };
+}
+
 export async function startNewSession(opts: {
   // Internal callers that need transactional cleanup (cross-provider fork)
   // may reserve the id before the agent call. Public create leaves it unset.
@@ -4936,6 +4954,8 @@ export async function startNewSession(opts: {
   sessionConfig?: ProviderSessionConfig | null;
   /** @deprecated internal compatibility while old callers migrate. */
   providerConfig?: CodexSessionConfig | null;
+  /** The session whose agent spawned this one (sub-session). */
+  parentSessionId?: string | null;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
@@ -5012,6 +5032,7 @@ export async function startNewSession(opts: {
     providerConfig: providerConfig ? JSON.stringify(providerConfig) : null,
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
+    parentSessionId: opts.parentSessionId ?? null,
   }).run();
 
   const stream = new SessionStream({
@@ -5056,6 +5077,7 @@ export async function startNewSession(opts: {
       codex_config: kind === 'codex' ? runtimeConnection(providerConfig) : null,
       // Stable Charon peer address. Claude also mirrors it to native --name.
       cli_name: handle,
+      ...parentStartParams(opts.parentSessionId),
     });
   } catch (e: any) {
     streams.delete(sessionId);
@@ -5196,6 +5218,7 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
           // Reassert both provider-neutral identity and Claude's native name.
           handle: row.handle,
           cli_name: row.handle,
+          ...parentStartParams(row.parentSessionId),
         });
       } catch (startErr: any) {
         // If another concurrent call just created it (race between
@@ -5466,6 +5489,7 @@ export async function deleteSession(
   // Pending gates go with the cascade: read them first, publish after (G7).
   let gates: GateRef[] = [];
   const repacked: string[] = [];
+  let orphans: string[] = [];
   db.transaction((tx) => {
     gates = deleteSessionGates(sessionId);
     const siblings = tx.select({
@@ -5477,6 +5501,13 @@ export async function deleteSession(
     const visibleSiblings = siblings.filter((sibling) => sibling.archived === 0);
     const order = sidebarOrderAfterDelete(visibleSiblings, sessionId);
     tx.delete(sessionLogs).where(eq(sessionLogs.sessionId, sessionId)).run();
+    // No FK on parent_session_id: children are re-rooted here (sub-sessions).
+    orphans = tx.select({ id: agentSessions.id }).from(agentSessions)
+      .where(eq(agentSessions.parentSessionId, sessionId)).all().map((r) => r.id);
+    if (orphans.length) {
+      tx.update(agentSessions).set({ parentSessionId: null })
+        .where(eq(agentSessions.parentSessionId, sessionId)).run();
+    }
     tx.delete(agentSessions).where(eq(agentSessions.id, sessionId)).run();
     if (order) {
       const previousPositions = new Map(siblings.map((sibling) => [sibling.id, sibling.position]));
@@ -5497,6 +5528,8 @@ export async function deleteSession(
   // The pack moved siblings' `position` (a summary fact) behind the bus (I9):
   // republish them (this tick; bulk-delete's `syncAfter('dirty')` covers them).
   for (const id of repacked) markSummaryDirty(id);
+  // Re-rooted children changed `parentSessionId` (a summary fact).
+  for (const id of orphans) markSummaryDirty(id);
   // Its rows went with the cascade: free the incremental folds (I11).
   invalidateSessionRowCaches(sessionId);
   // Attachment ROWS go with the FK cascade, but the hub-side blobs under

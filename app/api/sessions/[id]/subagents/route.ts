@@ -27,7 +27,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       return NextResponse.json({ ok: false, error: 'Invalid transcript cursor.' }, { status: 400 });
     return NextResponse.json(await readWorkflowTranscript(id, task || '', query.get('label') || '', query.get('phase') || '', before,
       query.get('expectedAgent') || undefined, { after, fileId: query.get('fileId') || undefined, cursor: query.get('cursor') || undefined,
-        nativeAgent: task ? undefined : query.get('agent') || undefined }));
+        nativeAgent: task ? undefined : query.get('agent') || undefined,
+        workflowAgent: task ? query.get('agent') || undefined : undefined }));
   }
   const agent = query.get('agent');
   if (agent) {
