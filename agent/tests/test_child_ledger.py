@@ -176,12 +176,19 @@ class RealOrphanTestCase(unittest.TestCase):
         out = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, check=True)
         pid = int(out.stdout.split()[-1])
         self.pid = pid
-        for _ in range(50):
+        # `sh` has exited, but its background child may still be a forked `sh`
+        # that has not yet run setsid() nor exec'd `sleep`: read it only once it
+        # IS the sleep, else its session is still ours.
+        for _ in range(250):
             st = proc_stat(pid)
-            if st is not None and st[1] != os.getpid():
+            try:
+                comm = Path(f"/proc/{pid}/comm").read_text().strip()
+            except OSError:
+                comm = ""
+            if st is not None and comm == "sleep":
                 return pid, st
             time.sleep(0.02)
-        self.fail("the orphan never got reparented")
+        self.fail("the orphan never became a running sleep")
 
     def _ledger(self, pid, st):
         me = proc_stat(os.getpid())
