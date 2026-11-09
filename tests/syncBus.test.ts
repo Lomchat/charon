@@ -22,10 +22,9 @@ vi.mock('@/lib/server/agent/AgentClientPool', () => ({
   getAgentClient: () => ({}),
   dropAgentClient: async () => {},
 }));
-// eventConnections only needs the focus-checker slot and (route) peekStream;
-// the real sessionOps is loaded with `vi.importActual` where it is the subject.
+// The route only needs peekStream; the real sessionOps is loaded with
+// `vi.importActual` where it is the subject.
 vi.mock('@/lib/server/agent/sessionOps', () => ({
-  setSessionFocusChecker: () => {},
   peekStream: () => undefined,
 }));
 

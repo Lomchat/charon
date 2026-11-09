@@ -58,7 +58,7 @@ export const AccountNavItem = memo(function AccountNavItem({ group, usage, onRef
   const { openPanel, setOpenPanel } = menu;
   const open = openPanel === 'sessions';
   const usageOpen = openPanel === 'usage';
-  const rows = useNavRows(group.sessions, selectedId);
+  const rows = useNavRows(group.sessions);
   const attention = navAttentionClass(rows);
   usePulsePhase(menu.wrapRef, attention);
   const { running } = navSections(rows);

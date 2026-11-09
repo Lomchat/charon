@@ -74,12 +74,10 @@ function stateOf(s: SessionListItem, working: boolean, waiting: boolean): NavSta
   return 'ready';
 }
 
-export function rowOf(s: SessionListItem, viewedId: string | null): SessionNavRow {
+export function rowOf(s: SessionListItem): SessionNavRow {
   // THE attention predicate (lib/sessionAttention.ts), shared with the sidebar,
   // the tab bar, the filter chip and the desk: one session, one reading.
-  // `viewedHere` = selected AND visible: a finish on the session this tab
-  // shows while hidden is still news for the badge (§14.47).
-  const attention = attentionForRow(s, { viewedHere: s.id === viewedId });
+  const attention = attentionForRow(s);
   // The rows ARE the summary store (§14.108): gates and attention arrive in
   // the same frame, no side feed to union.
   const waiting = isWaitingAttention(attention);
@@ -100,8 +98,8 @@ export function rowOf(s: SessionListItem, viewedId: string | null): SessionNavRo
 }
 
 /** A live shell: streaming = working, otherwise ready (unread when a job
- *  finished unattended and this tab is not visibly showing it). */
-export function shellRowOf(shell: ShellListItem, viewedId: string | null): ShellNavRow {
+ *  finished and the shell was not left since). */
+export function shellRowOf(shell: ShellListItem): ShellNavRow {
   const working = shell.liveStatus === 'busy';
   return {
     id: shell.id,
@@ -110,7 +108,7 @@ export function shellRowOf(shell: ShellListItem, viewedId: string | null): Shell
     working,
     waiting: false,
     question: false,
-    unread: shellAttention(shell, { viewedHere: shell.id === viewedId }) === 'unread',
+    unread: shellAttention(shell) === 'unread',
     errored: false,
     when: shell.lastActivityMs ?? shell.startedAt,
   };
@@ -207,18 +205,6 @@ function stateWord(r: NavRow): string {
     case 'idle': return 'paused';
     default: return r.unread ? 'finished, unread' : 'ready';
   }
-}
-
-/** `document.visibilityState === 'visible'`, kept live (SSR: visible). */
-export function useDocumentVisible(): boolean {
-  const [visible, setVisible] = useState(true);
-  useEffect(() => {
-    const on = () => setVisible(document.visibilityState === 'visible');
-    on();
-    document.addEventListener('visibilitychange', on);
-    return () => document.removeEventListener('visibilitychange', on);
-  }, []);
-  return visible;
 }
 
 /**
@@ -437,21 +423,19 @@ export function useHoverMenu() {
   };
 }
 
-/** Rows as a nav panel lists them: newest activity first; unread hidden on
- *  the session this tab visibly shows. `shells`: the live ones join in. */
+/** Rows as a nav panel lists them: newest activity first. `shells`: the live
+ *  ones join in. */
 export function useNavRows(
-  sessions: readonly SessionListItem[], selectedId: string | null, shells?: readonly ShellListItem[],
+  sessions: readonly SessionListItem[], shells?: readonly ShellListItem[],
 ): NavRow[] {
-  const visible = useDocumentVisible();
-  const viewedId = visible ? selectedId : null;
-  return useMemo(() => navRows(sessions, viewedId, shells), [sessions, viewedId, shells]);
+  return useMemo(() => navRows(sessions, shells), [sessions, shells]);
 }
 
 export function navRows(
-  sessions: readonly SessionListItem[], viewedId: string | null, shells?: readonly ShellListItem[],
+  sessions: readonly SessionListItem[], shells?: readonly ShellListItem[],
 ): NavRow[] {
-  const rows: NavRow[] = sessions.map((session) => rowOf(session, viewedId));
-  for (const shell of shells ?? []) if (!shell.exited) rows.push(shellRowOf(shell, viewedId));
+  const rows: NavRow[] = sessions.map((session) => rowOf(session));
+  for (const shell of shells ?? []) if (!shell.exited) rows.push(shellRowOf(shell));
   return rows.sort((a, b) => b.when - a.when);
 }
 
@@ -501,7 +485,7 @@ export default function HeaderSessionNav({ sessions, shells, vpsName, selectedId
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const rows = useNavRows(sessions, selectedId, shells);
+  const rows = useNavRows(sessions, shells);
   const { running } = navSections(rows);
   const unreadCount = rows.filter((r) => r.unread).length;
   // The other durable "go and look" count, and the louder one: a session is

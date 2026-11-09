@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, shells as shellsTable, vps as vpsTable } from '@/lib/db';
 import { sendPushToAll } from '@/lib/server/hub/webPush';
 import { sendPlainToTelegram } from '@/lib/server/hub/telegram';
-import { emitGlobalShellStatus, emitGlobalShellUnread } from './sessionOps';
+import { emitGlobalShellStatus, emitGlobalShellUnread, markSessionRead } from './sessionOps';
 import { hubHooks } from './hubHooks';
 import type { AgentClient } from './AgentClient';
 import type { AgentEvent } from './types';
@@ -120,19 +120,17 @@ export function recordShellActivity(shellId: string, now = Date.now()): number |
 }
 
 /**
- * The shell twin of a session's finished-unread marker (§14.47): a finish
- * nobody ATTENDED lights it — the same `focusChecker` (an attended conn
- * focused on the shell, or one that left it within the grace AFTER its last
- * output). Persist, then publish; before any push.
+ * The shell twin of a session's finished-unread marker (§14.47): every
+ * announced finish lights it, on screen or not, until an attended view leaves
+ * the shell. Persist, then publish; before any push.
  */
-export function markShellFinished(shellId: string, lastOutputAtMs?: number | null): void {
-  if (hubHooks().focusChecker?.(shellId, lastOutputAtMs) ?? false) return;
+export function markShellFinished(shellId: string): void {
   const res = db.update(shellsTable).set({ unreadFinish: 1 })
     .where(and(eq(shellsTable.id, shellId), eq(shellsTable.unreadFinish, 0))).run();
   if (res.changes > 0) emitGlobalShellUnread(shellId, true);
 }
 
-/** Attended focus on the shell (POST /api/focus): it is read.
+/** An attended view left the shell (POST /api/focus): it is read.
  *  Writes and publishes only when it was unread. */
 export function markShellRead(shellId: string): void {
   try {
@@ -142,14 +140,22 @@ export function markShellRead(shellId: string): void {
   } catch {}
 }
 
+/** The focus targets an attended view just LEFT are read (§14.47). A target
+ *  is a session or a shell id (16 vs 32 hex): each mark is a no-op on the
+ *  other kind. */
+export function markLeftRead(ids: readonly string[]): void {
+  for (const id of ids) {
+    try { markSessionRead(id); } catch {}
+    markShellRead(id);
+  }
+}
+
 function handleShellIdle(ev: Extract<AgentEvent, { event: 'shell_idle' }>): void {
   const shellId = ev.shell_id;
   const [row] = db.select().from(shellsTable).where(eq(shellsTable.id, shellId)).all();
   if (!row) return; // unknown shell (not in our DB) → nothing to label/link
-  // The in-app marker never trails the push. `idle_seconds` = time since the
-  // output that ended it (agent clock offset is irrelevant: a duration).
-  const quietMs = Number.isFinite(ev.idle_seconds) ? Math.max(0, ev.idle_seconds) * 1000 : 0;
-  markShellFinished(shellId, Date.now() - quietMs);
+  // The in-app marker never trails the push.
+  markShellFinished(shellId);
 
   const [v] = db
     .select({ name: vpsTable.name })

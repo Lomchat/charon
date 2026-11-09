@@ -18,11 +18,11 @@ type FocusShell = { id: string; unreadFinish?: boolean; liveStatus?: string | nu
 
 /** `cacheNow` = the shared cache clock (PromptCacheMarks § useCacheTick);
  *  0 (server render) reads no cache as warm. */
-export function sessionFocusFacts(s: SessionListItem, selectedId: string | null, cacheNow = 0): FocusFacts {
+export function sessionFocusFacts(s: SessionListItem, cacheNow = 0): FocusFacts {
   const status = rowStatus(s);
   return {
     // A finish that ended in an error is unread too (the red twin).
-    unread: isUnseenFinish(attentionForRow(s, { viewedHere: s.id === selectedId })),
+    unread: isUnseenFinish(attentionForRow(s)),
     running: isWorkingStatus(status),
     warm: cacheNow > 0 && isCacheWarm(cacheReading(s.promptCache, {
       now: cacheNow, busy: status === 'thinking' || status === 'starting',
@@ -31,9 +31,9 @@ export function sessionFocusFacts(s: SessionListItem, selectedId: string | null,
   };
 }
 
-export function shellFocusFacts(sh: FocusShell, selectedShellId: string | null): FocusFacts {
+export function shellFocusFacts(sh: FocusShell): FocusFacts {
   return {
-    unread: shellAttention(sh, { viewedHere: sh.id === selectedShellId }) === 'unread',
+    unread: shellAttention(sh) === 'unread',
     running: !sh.exited && sh.liveStatus === 'busy',
   };
 }

@@ -79,6 +79,7 @@ import { useSessionContext } from './useSessionContext';
 import HeaderContextGauge from './HeaderContextGauge';
 import { ContextWindowContext, useSessionCacheReading } from './PromptCacheMarks';
 import { peerAssistantReplies, peerSessionTarget } from './peerMessageLinks';
+import { attentionForRow } from '@/lib/sessionAttention';
 import { usePeerMessageNavigation } from './usePeerMessageNavigation';
 
 // Renders one active session. Stream state lives in useSessionStream;
@@ -544,6 +545,23 @@ export default function SessionView({
     }
     return null;
   }, [messages, status, currentAssistant, sessionKind]);
+  // The finish on screen (§14.47): while the session's finish is unread — it
+  // stays so until the user leaves the session or sends — the turn's final
+  // answer wears the sidebar card's pulse, red when the turn failed (then an
+  // error row may be that answer). Nothing past the turn's input: a turn that
+  // ended without a final answer lights no older one.
+  const finishAttention = attentionForRow(selected);
+  const finishCue = finishAttention === 'unread' || finishAttention === 'error' ? finishAttention : null;
+  const finishMsgId = useMemo(() => {
+    if (!finishCue) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'user' || m.role === 'external' || m.role === 'scheduled_fire') return null;
+      if (m.role === 'assistant' && m.assistantFinal !== 0) return m.id;
+      if (finishCue === 'error' && m.role === 'error') return m.id;
+    }
+    return null;
+  }, [messages, finishCue]);
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
   // in flight, or background tasks the restart would kill with the CLI
@@ -1034,6 +1052,7 @@ export default function SessionView({
                   limitMsgId={endpoint.active ? null : limitMsgId}
                   currentAccount={currentAccount}
                   onContinueWithAccount={continueWithAccount}
+                  finishMsgId={finishMsgId} finishCue={finishCue}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1286,7 +1305,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  limitMsgId, currentAccount, onContinueWithAccount,
+  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1313,6 +1332,10 @@ const MessageHistory = memo(function MessageHistory({
   limitMsgId: string | null;
   currentAccount: string;
   onContinueWithAccount: (accountId: string) => Promise<void>;
+  // The bubble showing the unread finish, and its colour (§14.47): only that
+  // bubble sees the value (memo, §14.38).
+  finishMsgId: string | null;
+  finishCue: 'unread' | 'error' | null;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1344,6 +1367,7 @@ const MessageHistory = memo(function MessageHistory({
       peerSessionId={peerSessionTarget(msg, siblings)} onOpenPeerSession={onOpenPeerSession}
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
+      finishCue={msg.id === finishMsgId ? finishCue : null}
     />;
   });
 });

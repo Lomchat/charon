@@ -95,9 +95,18 @@ type Props = {
   onPeerRequestHover?: (messageId: string | null) => void;
   onPeerRequestJump?: (messageId: string) => void;
   peerReplyTo?: string | null;
+  // Set on the ONE bubble that shows the session's unread finish (§14.47):
+  // it pulses like the sidebar card — green, red for a failed turn — until
+  // the user leaves the session or sends.
+  finishCue?: 'unread' | 'error' | null;
 };
 
-function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo }: Props) {
+/** The bubble class of an unread finish (`.finish-cue`, app.css). */
+function finishCueClass(cue: Props['finishCue']): string {
+  return cue ? ` finish-cue${cue === 'error' ? ' is-error' : ''}` : '';
+}
+
+function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue }: Props) {
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -124,7 +133,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
       action: null, fatal: false, resetAt: null,
     } satisfies SessionErrorPayload;
     return <SessionErrorMessage m={m} error={error} onReauth={onReauth} onContinue={onContinue} onScheduleResume={onScheduleResume}
-      onContinueWithAccount={onContinueWithAccount} currentAccount={currentAccount} />;
+      onContinueWithAccount={onContinueWithAccount} currentAccount={currentAccount} finishCue={finishCue} />;
   }
 
   // Borderless until `stop` names the final answer (S2): a live bubble is
@@ -142,7 +151,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
-      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}`}
+      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}`}
       data-msg-role={m.role}
       data-peer-message-id={m.messageId ?? (isExternal ? m.id : undefined)}
     >
@@ -344,9 +353,10 @@ export function MessageLink({ href, vpsId, cwd, ...props }: React.ComponentProps
   }} />;
 }
 
-function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume, onContinueWithAccount, currentAccount }: {
+function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume, onContinueWithAccount, currentAccount, finishCue }: {
   m: Msg;
   error: SessionErrorPayload;
+  finishCue?: Props['finishCue'];
   onReauth?: () => void;
   onContinue?: () => void;
   onScheduleResume?: () => Promise<void>;
@@ -360,7 +370,7 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
     : error.kind === 'transport' ? 'connection' : 'API';
   const resetAt = error.kind === 'rate_limit' ? resolveResetAtMs(error.resetAt, error.message) : null;
   return (
-    <div className="bubble role-error" data-msg-role="error">
+    <div className={`bubble role-error${finishCueClass(finishCue)}`} data-msg-role="error">
       <header className="bubble-h">
         <span className="tag">error</span>
         <AgentLogo kind={error.provider} size={12} className="bubble-agent-logo" />

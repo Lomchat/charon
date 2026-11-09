@@ -304,8 +304,8 @@ export type SyntheticEvent =
       cursorLoggedIn?: number | null }
   // Per-session "finished, unread" marker fanned onto the global SSE bus
   // (sessionId = the Claude session id). unread=true when a turn finished
-  // (`stop`) while nobody was viewing the session; unread=false when the user
-  // opens/focuses it (POST /focus → markSessionRead). Lets the sidebar's green
+  // (`stop`), on screen or not; unread=false when an attended view leaves it
+  // or the user sends (markSessionRead). Lets the sidebar's green
   // "finished" glow appear live across tabs/devices and clear on read. Source
   // of truth is agentSessions.unreadStop; this event is just the live mirror.
   // Routed LOW (frameRouting.ts § FRAME_CLASS) so it reaches every tab regardless

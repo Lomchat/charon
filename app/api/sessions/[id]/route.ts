@@ -14,6 +14,7 @@ import {
   setSessionStatusLocal,
 } from '@/lib/server/agent/sessionOps';
 import { focusCountFor, setConnectionFocus } from '@/lib/server/agent/eventConnections';
+import { markLeftRead } from '@/lib/server/agent/shellNotify';
 import { currentRev } from '@/lib/server/sync/syncBus';
 import { isAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { buildSessionSummary, syncAfter } from '@/lib/server/sync/sessionSummaries';
@@ -197,13 +198,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // `conn` routes this session's frames from NOW on, so a frame published
   // after this response reaches it and one published before is in the
   // snapshot below (stamped `sync`, same synchronous tick, I1/I2). Routing
-  // only: a GET carries no presence report (no read-ack, no attention).
+  // only: a GET carries no presence report; what the move left is read now
+  // if this conn is already proven attended, else by the focus POST (§14.47).
   const focusConn = url.searchParams.get('conn');
   const focusSeqRaw = Number(url.searchParams.get('focusSeq'));
   let focus: { applied: boolean; focused: boolean; focusSeq: number } | undefined;
   if (since == null && url.searchParams.get('before') == null && focusConn
     && focusConn.length >= 8 && focusConn.length <= 64 && Number.isSafeInteger(focusSeqRaw) && focusSeqRaw >= 0) {
     const f = setConnectionFocus(focusConn, id, focusSeqRaw, true, { routingOnly: true });
+    markLeftRead(f.read);
     focus = { applied: f.applied, focused: f.ok && f.focus === id, focusSeq: focusSeqRaw };
   }
   // Text the lane coalescer still holds goes out as its frame BEFORE anything

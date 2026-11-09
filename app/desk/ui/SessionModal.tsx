@@ -31,10 +31,10 @@ type Props = {
 export default function SessionModal({
   session, vps, siblings, action, onClose, onOpenSession, onSessionsChanged
 }: Props) {
-  // La session ouverte est, par définition, une session qu'on regarde : elle
-  // n'a donc jamais la pastille verte. C'est la règle de Charon, appliquée.
-  const state = stateOf(session, { selected: true });
-  const beacon = beaconOf(session, { selected: true });
+  // La session ouverte garde sa pastille verte tant qu'on ne l'a pas quittée
+  // (ou qu'on ne lui a pas écrit) : la règle de Charon, appliquée (§14.47).
+  const state = stateOf(session);
+  const beacon = beaconOf(session);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

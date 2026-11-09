@@ -6,11 +6,9 @@ import type { VpsStatusEmitter } from './AgentClient';
 // ─────────────────────────────────────────────────────────────────────────────
 // Next evaluates a server module in several copies (the instrumentation copy
 // that boots the agents, the route/RSC copy, the login server-action copy), and
-// a module-level `let` exists once PER COPY. The slots below used to be such
-// `let`s: a hook wired by one copy (eventConnections' focus checker lives only
-// in the route copy) stayed null in the copy that reads it (the boot-attached
-// SessionStreams of the instrumentation copy), so every finish of a
-// boot-attached session marked itself unread while the user watched it.
+// a module-level `let` exists once PER COPY: a hook wired by one copy (e.g. a
+// route-copy module) stays null in the copy that reads it (the boot-attached
+// SessionStreams of the instrumentation copy).
 //
 // One object on `globalThis`, created with `??=`, shared by every copy. Each
 // `set*` keeps its historical exported name and writes `hubHooks().x`; every
@@ -18,9 +16,6 @@ import type { VpsStatusEmitter } from './AgentClient';
 // Type-only imports above: this module pulls no runtime dependency, so any
 // module may import it without an import cycle.
 export type HubHooks = {
-  /** "Is this session being watched?" — eventConnections § isBeingWatched
-   *  (`lastOutputAtMs`: hub ms of its last transcript output, null = unknown). */
-  focusChecker?: (sessionId: string, lastOutputAtMs?: number | null) => boolean;
   /** Post-stop Claude account-usage refresh — usagePoll. */
   usagePollTrigger?: (vpsId: string, profile?: string) => void;
   /** Post-stop Codex account-usage refresh — usagePoll. */

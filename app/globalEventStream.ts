@@ -270,9 +270,9 @@ function postAttention(): void {
 }
 
 // Once a stream is registered (its hello, or a legacy hub's open): an attended
-// device re-POSTs its focus. The URL grant does not acknowledge a read, and a
-// tab that turned visible while the stream was down (es null) sent no focus
-// POST at all — the viewed session would stay unread on every other device.
+// device re-POSTs its focus. The URL carries no presence report, and a tab
+// that switched sessions while the stream was down owes the hub that report:
+// it is what reads the session it left (§14.47).
 function reassertAttendedFocus(): void {
   if (currentFocus == null || !isAttentive()) return;
   void postFocus(currentFocus, ++currentFocusSeq);
@@ -699,9 +699,10 @@ export function subscribeAll(cb: GlobalListener): () => void {
 
 /**
  * Change the focus session on the server (high-volume frames follow it). A
- * repeated focus re-POSTs: POST /focus is also the durable read
- * acknowledgement, so a repeated selection heals an earlier POST that raced
- * the registration. The monotonic sequence makes the latest call win.
+ * repeated focus re-POSTs: POST /focus carries the presence report that reads
+ * what the focus left (§14.47), so a repeated selection heals an earlier POST
+ * that raced the registration. The monotonic sequence makes the latest call
+ * win.
  */
 export async function setFocus(sessionId: string | null): Promise<void> {
   if (currentFocus === sessionId) {

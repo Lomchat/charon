@@ -1,9 +1,8 @@
 'use client';
 // "Is a human at this device?" — the client half of ATTENDED viewing
-// (CLAUDE.md §14.47, SPEC I10). Viewed = visible AND input on this device
-// within the last 120 s: a forgotten desktop tab left on a session must not
-// swallow the green "finished, unread" cue for the phone, and an idle tab must
-// not acknowledge a finish nobody read.
+// (CLAUDE.md §14.47, SPEC I10). Attended = visible AND input on this device
+// within the last 120 s: only an attended view LEAVING a session reads its
+// finish — a focus that moves on a hidden or idle tab read nothing.
 //
 // Input = passive capture of pointerdown/keydown/wheel/touchstart, plus the
 // tab becoming visible — never the page load itself (automatic reloads). The SSE URL carries `attentive=1|0`, every focus POST
@@ -42,8 +41,8 @@ export function createAttentionTracker(deps: {
   post: () => void;
   /** Initial input time; default = never. A page load is NOT input: the
    *  SSE-silence and stale-chunk recoveries reload a forgotten tab on their
-   *  own, and that must neither acknowledge nor suppress an unread finish
-   *  (I10). The first real input is the idle→active proof. */
+   *  own, and that must not read an unread finish (I10). The first real input
+   *  is the idle→active proof. */
   initialInputAt?: number;
 }): AttentionTracker {
   let lastInputAt = deps.initialInputAt ?? Number.NEGATIVE_INFINITY;
@@ -56,7 +55,7 @@ export function createAttentionTracker(deps: {
       lastInputAt = t;
       if (!deps.isVisible()) return;
       if (!wasAttentive) {
-        // idle → active: prove it at once (acknowledges what the tab shows).
+        // idle → active: prove it at once (a focus move that follows reads).
         lastPostAt = t;
         deps.post();
         return;

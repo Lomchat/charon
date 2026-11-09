@@ -102,8 +102,8 @@ const POSE = {
 /** L'état d'une session, traduit en posture. La permission l'emporte sur la
  *  question : c'est le seul cas où le robot lève les deux mains, et ce geste
  *  doit rester rare pour rester lisible. */
-export function poseOf(session, options) {
-	const state = stateOf(session, options);
+export function poseOf(session) {
+	const state = stateOf(session);
 	if (state.id === 'question') return askOf(session)?.label === 'permission requested' ? POSE.permission : POSE.question;
 	return POSE[state.id] ?? POSE.ready;
 }

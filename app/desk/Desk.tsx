@@ -31,7 +31,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   initSyncPosition, isDegraded, setFocus, subscribeAll, subscribeReconnect,
 } from '@/app/globalEventStream';
-import { isAttentive } from '@/app/attention';
 import {
   addOverlay, getSummary, hydrateSummaries, seedFromListResponse, useSessionList, useVpsRuntime,
 } from '@/app/sync/summaryStore';
@@ -422,22 +421,15 @@ export default function Desk({ vpsList, folders, initialSummaries, initialSync }
   /* ------------------------------------------------------------------ effets */
 
   // Ouvrir une session, c'est la regarder : on le dit au serveur — la même
-  // route que Charon appelle —, qui efface la marque « fini, pas ouvert » si
-  // ce regard est ATTENTIF (visible, une saisie récente : §14.47) et publie le
-  // résumé qui l'efface ici. La fermer la remet dans la salle, et la pastille
-  // verte revient si le tour s'est terminé entre-temps.
+  // route que Charon appelle. La QUITTER (fermer le modal, en ouvrir une
+  // autre) est l'accusé de lecture : le serveur efface la marque « fini, pas
+  // lu » de ce qu'un regard ATTENTIF vient de quitter (§14.47) et publie le
+  // résumé qui l'efface ici. Tant que le modal reste ouvert, la marque reste.
   useEffect(() => {
     if (!openId) { void setFocus(null); return; }
     if (document.visibilityState !== 'visible') return;
     void setFocus(openId);
   }, [openId]);
-  // Un tour qui finit SOUS le modal ouvert : on redit le regard, s'il est
-  // attentif, pour que la marque tombe (comme la session choisie de Charon).
-  const openUnread = (sessions.find((s) => s.id === openId)?.unreadStop ?? 0) > 0;
-  useEffect(() => {
-    if (!openId || !openUnread) return;
-    if (document.visibilityState === 'visible' && isAttentive()) void setFocus(openId);
-  }, [openId, openUnread]);
 
   // Le clavier appartient au modal tant qu'il est ouvert — session ou liste.
   useEffect(() => {

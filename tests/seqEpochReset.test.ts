@@ -151,7 +151,6 @@ describe('AgentClient: seq_epoch_reset detection', () => {
 let db: any;
 let schema: any;
 let SessionStream: any;
-let hubHooks: typeof import('@/lib/server/agent/hubHooks').hubHooks;
 const T_OLD = Date.now() - 3_600_000;   // the old epoch
 const T_NEW = Date.now() - 60_000;      // the recreated log
 
@@ -203,7 +202,6 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'v', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
-  ({ hubHooks } = await import('@/lib/server/agent/hubHooks'));
   await import('@/lib/server/agent/endpointOps');
 });
 
@@ -213,7 +211,6 @@ beforeEach(() => {
   pool.afterSeq = [];
   pool.backpressured = true;
   pushMocks.sendPushToAll.mockClear();
-  hubHooks().focusChecker = undefined;
   db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
   db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).run();
   db.insert(schema.agentSessions).values({

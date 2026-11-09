@@ -364,7 +364,7 @@ function RowView({ d, terms, vpsName }: { d: Data; terms: readonly string[]; vps
   switch (d.t) {
     case 'session': {
       const s = d.s;
-      const att = attentionForRow(s, { viewedHere: false });
+      const att = attentionForRow(s);
       const vn = vpsName.get(s.vpsId);
       return (
         <>

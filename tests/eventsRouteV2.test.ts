@@ -16,8 +16,6 @@ const h = vi.hoisted(() => ({
 vi.mock('server-only', () => ({}));
 vi.mock('@/lib/server/agent/sessionOps', () => ({
   subscribeGlobalSessionEvents: () => () => {},
-  setSessionFocusChecker: () => {},
-  markSessionRead: () => {},
   peekStream: (id: string) => h.streams.get(id) ?? null,
   listStreams: () => [],
   sweepExpiredInteractions: () => { h.sweeps++; return 0; },

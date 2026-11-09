@@ -1,5 +1,5 @@
 import 'server-only';
-import { setSessionFocusChecker, type GlobalSessionEvent } from './sessionOps';
+import type { GlobalSessionEvent } from './sessionOps';
 import {
   currentRev, installFrameRouter, setConnStatsProvider, type Frame,
 } from '@/lib/server/sync/syncBus';
@@ -69,27 +69,16 @@ type ConnState = {
   attentionFromUrl: boolean;
   /** A client that never reports attention (pre-attention JS): attended = visible. */
   legacyAttention: boolean;
+  /** Focus targets this conn moved off while it was not (yet) proven
+   *  attended: the presence report that follows the move settles them (§14.47). */
+  leftUnsettled?: Set<string>;
 };
 
 /** "Attended" = visible AND input on that device within this window (I10). */
 export const ATTENTION_WINDOW_MS = 120_000;
 
-// "Recently watched" grace for the finished-unread marker (CLAUDE.md §14.47).
-// An agent's turn frequently finishes a second or two AFTER the user switches
-// away (or the tab's SSE drops), so a finish within RECENT_VIEW_GRACE_MS of an
-// ATTENDED conn leaving the session still counts as watched — but only if
-// that conn left AFTER the session's last output: leaving while the answer is
-// still being written is not having read it. Stamped only by attended conns
-// switching away or unregistering — never by an idle or hidden one, which is
-// not watching anything.
-const RECENT_VIEW_GRACE_MS = 12_000;
-
 type ConnRegistry = {
   connections: Map<string, ConnState>;
-  /** Grace stamps: session id → (stamping connId → ms). Owned per conn so a
-   *  device that reports idle/hidden clears only ITS OWN grace, never another
-   *  device's (a per-session stamp had no owner). */
-  graceStamps?: Map<string, Map<string, number>>;
   nextStreamId: number;
 };
 // One process-wide object (§14.106): the registry must be the same for every
@@ -97,60 +86,10 @@ type ConnRegistry = {
 const registry: ConnRegistry = ((globalThis as unknown as { __charonConns?: ConnRegistry })
   .__charonConns ??= { connections: new Map(), nextStreamId: 0 });
 const connections = registry.connections;
-const graceStamps = registry.graceStamps ??= new Map();
 
 function isAttended(conn: ConnState, now: number): boolean {
   if (!conn.visible) return false;
   return conn.legacyAttention || now - conn.attentionAt <= ATTENTION_WINDOW_MS;
-}
-
-// Every page load is a fresh connId, so a stamp whose conn is gone is never
-// cleared by its owner: expired stamps are pruned on every touch of their
-// session, and a global sweep runs every GRACE_SWEEP_EVERY stamps (bounded by
-// (session, conn) ENTRIES, not by the number of sessions).
-const GRACE_SWEEP_EVERY = 512;
-let stampsSinceSweep = 0;
-
-function pruneExpired(sessionId: string, byConn: Map<string, number>, now: number): void {
-  for (const [c, at] of byConn) if (now - at >= RECENT_VIEW_GRACE_MS) byConn.delete(c);
-  if (byConn.size === 0) graceStamps.delete(sessionId);
-}
-
-function stampAttended(sessionId: string | null, connId: string, now: number): void {
-  if (!sessionId) return;
-  let byConn = graceStamps.get(sessionId);
-  if (byConn) pruneExpired(sessionId, byConn, now);
-  byConn = graceStamps.get(sessionId);
-  if (!byConn) graceStamps.set(sessionId, byConn = new Map());
-  byConn.set(connId, now);
-  if (++stampsSinceSweep >= GRACE_SWEEP_EVERY) {
-    stampsSinceSweep = 0;
-    for (const [id, m] of graceStamps) pruneExpired(id, m, now);
-  }
-}
-
-/** Grace entries held (tests: the map stays bounded). */
-export function graceStampCount(): number {
-  let n = 0;
-  for (const m of graceStamps.values()) n += m.size;
-  return n;
-}
-
-function clearOwnGrace(sessionId: string, connId: string): void {
-  const byConn = graceStamps.get(sessionId);
-  if (!byConn) return;
-  byConn.delete(connId);
-  if (byConn.size === 0) graceStamps.delete(sessionId);
-}
-
-/** A live grace stamp; with `outputAtMs`, only one stamped at or after it
- *  (that conn saw the output before leaving). */
-function inGrace(sessionId: string, now: number, outputAtMs?: number | null): boolean {
-  const byConn = graceStamps.get(sessionId);
-  if (!byConn) return false;
-  pruneExpired(sessionId, byConn, now);
-  for (const at of byConn.values()) if (outputAtMs == null || at >= outputAtMs) return true;
-  return false;
 }
 
 /** Apply a client's presence report. `attentive` undefined = not reported
@@ -186,32 +125,32 @@ function applyPresence(
       conn.attentionFromUrl = false;
     }
   }
-  // Hidden (or idle) on its focus: that device stopped watching it, so ITS
-  // stale grace stops muting the marker too (§14.47). Another device's grace
-  // is not this device's to cancel.
-  if (!isAttended(conn, now) && conn.focus) clearOwnGrace(conn.focus, conn.connId);
 }
 
 /**
- * "Is this session being watched right now — or was it, a few seconds ago?"
- * True iff an ATTENDED conn (visible + input within ATTENTION_WINDOW_MS; a
- * legacy client: visible) is focused on it, or an attended conn left it within
- * RECENT_VIEW_GRACE_MS and after `lastOutputAtMs` (the session's last
- * transcript output, hub clock; null/absent = unknown, any stamp counts). Used
- * by the stop handler and the background-finish timer to decide whether to
- * light the finished-unread marker: a forgotten, visible desktop tab no longer
- * mutes it for every other device.
+ * Leaving is reading (§14.47): a finish stays lit while it is on screen and is
+ * acknowledged when an ATTENDED view moves its focus off it (another session,
+ * a shell, a file, nothing). Returns the focus targets this conn has left and
+ * now reads; the caller clears their markers. A routing-only move (the window
+ * GET) carries no presence: when the conn is not proven attended yet, the
+ * presence report that follows it (`settle`) decides — read if attended,
+ * dropped if not (a hidden or idle device read nothing).
  */
-export function isBeingWatched(sessionId: string, lastOutputAtMs?: number | null): boolean {
-  const now = Date.now();
-  for (const conn of connections.values()) {
-    if (conn.focus === sessionId && isAttended(conn, now)) return true;
+function takeReadLeaves(conn: ConnState, now: number, settle: boolean): string[] {
+  const left = conn.leftUnsettled;
+  if (!left?.size) return [];
+  if (isAttended(conn, now)) {
+    conn.leftUnsettled = undefined;
+    return [...left];
   }
-  return inGrace(sessionId, now, lastOutputAtMs);
+  if (settle) conn.leftUnsettled = undefined;
+  return [];
 }
 
-/** Historical name of isBeingWatched. */
-export const wasRecentlyViewed = isBeingWatched;
+function noteLeft(conn: ConnState, from: string | null, to: string | null): void {
+  if (from && from !== to) (conn.leftUnsettled ??= new Set()).add(from);
+  if (to) conn.leftUnsettled?.delete(to);
+}
 
 const encoder = new TextEncoder();
 
@@ -344,6 +283,9 @@ export function registerConnection(opts: {
     focus = existing.focus;
     focusSeq = existing.focusSeq;
   }
+  // A move the old stream did not see settled (or that the URL makes) is
+  // still owed its read decision by the next presence report (§14.47).
+  const leftUnsettled = existing?.leftUnsettled ? new Set(existing.leftUnsettled) : undefined;
 
   const now = Date.now();
   const urlAge = typeof opts.initialAttentiveAgeMs === 'number' && Number.isFinite(opts.initialAttentiveAgeMs)
@@ -363,7 +305,9 @@ export function registerConnection(opts: {
     attentionAt: opts.initialAttentive ? now - urlAge : 0,
     attentionFromUrl: opts.initialAttentive === true,
     legacyAttention: opts.initialAttentive === undefined,
+    leftUnsettled,
   };
+  if (existing) noteLeft(conn, existing.focus, focus);
   connections.set(connId, conn);
   ensureHeartbeat();
 
@@ -371,10 +315,8 @@ export function registerConnection(opts: {
   return () => {
     if (done) return;
     done = true;
-    // Tab closed / SSE dropped while watching → remember it was just being
-    // watched, so a finish during the gap doesn't mark it unread (§14.47).
-    const t = Date.now();
-    if (isAttended(conn, t)) stampAttended(conn.focus, conn.connId, t);
+    // A dropped stream (closed tab, network blip, reload) leaves nothing:
+    // only a focus MOVE reads (§14.47).
     // Identity, not key (G8): a superseded stream's late close must never
     // delete its replacement.
     if (connections.get(connId) === conn) connections.delete(connId);
@@ -393,7 +335,9 @@ export function registerConnection(opts: {
  *   - `seq === cur` and another session ⇒ not applied;
  *   - `seq > cur` ⇒ applied (`routingOnly`: focus/focusSeq only — the atomic
  *     focus of a window GET carries no presence report).
- * `ok:false` = no such connection (never created here).
+ * `ok:false` = no such connection (never created here). `read` = the focus
+ * targets this conn left and now acknowledges (takeReadLeaves): the caller
+ * clears their finish markers.
  */
 export function setConnectionFocus(
   connId: string,
@@ -401,22 +345,21 @@ export function setConnectionFocus(
   focusSeq: number,
   visible = true,
   opts?: { attentive?: boolean; attentiveAgeMs?: number; routingOnly?: boolean },
-): { ok: boolean; applied: boolean; focus: string | null; focusSeq: number } {
+): { ok: boolean; applied: boolean; focus: string | null; focusSeq: number; read: string[] } {
   const conn = connections.get(connId);
-  if (!conn) return { ok: false, applied: false, focus: null, focusSeq: 0 };
+  if (!conn) return { ok: false, applied: false, focus: null, focusSeq: 0, read: [] };
   const now = Date.now();
   if (focusSeq < conn.focusSeq || (focusSeq === conn.focusSeq && sessionId !== conn.focus)) {
-    return { ok: true, applied: false, focus: conn.focus, focusSeq: conn.focusSeq };
+    return { ok: true, applied: false, focus: conn.focus, focusSeq: conn.focusSeq, read: [] };
   }
   if (focusSeq > conn.focusSeq) {
-    // Leaving a session this conn was watching: the grace covers a turn that
-    // finishes right after the switch (cf. CLAUDE.md §14.47).
-    if (conn.focus !== sessionId && isAttended(conn, now)) stampAttended(conn.focus, conn.connId, now);
+    noteLeft(conn, conn.focus, sessionId);
     conn.focus = sessionId;
     conn.focusSeq = focusSeq;
   }
   if (!opts?.routingOnly) applyPresence(conn, visible, opts?.attentive, now, opts?.attentiveAgeMs);
-  return { ok: true, applied: true, focus: conn.focus, focusSeq: conn.focusSeq };
+  const read = takeReadLeaves(conn, now, !opts?.routingOnly);
+  return { ok: true, applied: true, focus: conn.focus, focusSeq: conn.focusSeq, read };
 }
 
 /**
@@ -449,10 +392,3 @@ export function focusCountFor(sessionId: string): number {
   return n;
 }
 
-// Wire the "is this session being watched?" check into sessionOps so its
-// `stop` handler and background-finish timer can decide whether to light the
-// "finished, unread" marker (a finish the user is watching — or just navigated
-// away from — shouldn't mark itself unread). The slot lives in `hubHooks()`
-// (§14.106): this module exists only in the route copy, while boot-attached
-// streams run the instrumentation copy's sessionOps. cf. §14.47.
-setSessionFocusChecker((sessionId, lastOutputAtMs) => isBeingWatched(sessionId, lastOutputAtMs));

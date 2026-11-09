@@ -241,8 +241,8 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // when a turn ends (`stop`) and nobody is currently viewing the session, so
   // the sidebar can paint a green "finished — unread" glow that SURVIVES
   // reloads and is shared across devices (DB is the source of truth, not a
-  // per-device localStorage flag). Cleared back to 0 when the user opens /
-  // focuses the session (POST /api/focus → markSessionRead), live across
+  // per-device localStorage flag). Cleared back to 0 when an attended view
+  // LEAVES the session or the user sends (markSessionRead), live across
   // tabs via the `session_unread` SSE event. Independent of
   // lastStopNotifiedSeq (which dedups PUSH notifications) — this one is a
   // passive in-app cue, only for Claude sessions. cf. CLAUDE.md §14.47.
@@ -563,8 +563,8 @@ export const shells = sqliteTable('shells', {
    *  the header's session nav (§11). */
   lastActivityMs: integer('last_activity_ms'),
   /** Durable "finished, unread" marker, the shell twin of
-   *  `agentSessions.unreadStop` (§14.47): set by a `shell_idle` nobody
-   *  attended, cleared by an attended focus (POST /api/focus). */
+   *  `agentSessions.unreadStop` (§14.47): set by every announced
+   *  `shell_idle`, cleared when an attended view leaves the shell. */
   unreadFinish: integer('unread_finish').notNull().default(0),
 }, (t) => [
   // GET /api/vps/[id]/shells + boot reconcile filter by vpsId.

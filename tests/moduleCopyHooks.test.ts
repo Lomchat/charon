@@ -4,8 +4,8 @@ import type { Vps } from '@/lib/db/schema';
 // Hook slots across module copies (CLAUDE.md §14.106, G12). Next evaluates
 // sessionOps/AgentClient/autoConnect in ≥3 copies (instrumentation, routes,
 // login action); the boot (instrumentation) copy owns the attached streams and
-// the connecting AgentClients, while eventConnections/usagePoll wire their hooks
-// from another copy. `vi.resetModules()` reproduces it: copy 1 SETS a hook,
+// the connecting AgentClients, while usagePoll wires its hooks from another
+// copy. `vi.resetModules()` reproduces it: copy 1 SETS a hook,
 // copy 2's code READS it — through `hubHooks()` on globalThis. As module-level
 // `let`s, every one of these read null in copy 2.
 
@@ -58,10 +58,6 @@ function stream(ops: Ops, kind: 'claude' | 'codex' = 'claude') {
   }) as any;
 }
 
-function unreadStop(): number {
-  return db.select().from(schema.agentSessions).all().find((r: any) => r.id === SID)?.unreadStop;
-}
-
 beforeAll(async () => {
   const dbMod = await import('@/lib/db');
   db = dbMod.db;
@@ -89,30 +85,6 @@ describe('hook slots shared by every module copy', () => {
     expect(b.hubHooks).not.toBe(a.hubHooks);
     expect(b.hubHooks()).toBe(a.hubHooks());
     expect((globalThis as any).__charonHooks).toBe(a.hubHooks());
-  });
-
-  it('a focus checker set by copy 1 decides the unread marker of a copy-2 stream', async () => {
-    const [one, two] = await twoCopies();
-    let watched = true;
-    one.setSessionFocusChecker(() => watched);
-    stream(two)._onAgentEvent({ event: 'stop', session_id: SID, seq: 1, subtype: 'end_turn' });
-    expect(unreadStop()).toBe(0);
-    watched = false;
-    stream(two)._onAgentEvent({ event: 'stop', session_id: SID, seq: 2, subtype: 'end_turn' });
-    expect(unreadStop()).toBe(1);
-  });
-
-  it('the route copy of eventConnections watches for a boot-copy stream (R2 §8.3)', async () => {
-    vi.resetModules();
-    const ec = await import('@/lib/server/agent/eventConnections');   // the route copy
-    const unreg = ec.registerConnection({
-      connId: 'copy-conn-1', send: () => {}, initialFocus: SID, initialFocusSeq: 1, initialVisible: true,
-    });
-    vi.resetModules();
-    const boot = await import('@/lib/server/agent/sessionOps');       // the instrumentation copy
-    stream(boot)._onAgentEvent({ event: 'stop', session_id: SID, seq: 1, subtype: 'end_turn' });
-    expect(unreadStop()).toBe(0);
-    unreg();
   });
 
   it('usage triggers and handlers set by copy 1 fire from copy-2 streams', async () => {

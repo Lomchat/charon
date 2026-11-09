@@ -5,7 +5,8 @@
 // you" at once.
 //
 // The MARKER is durable and server-owned (`agentSessions.unreadStop`, cleared
-// by an attended focus). This is only about DRAWING it.
+// when an attended view LEAVES the session or the user sends). This is only
+// about DRAWING it.
 import { attentionForRow } from '@/lib/sessionAttention';
 
 /** A turn, or the background work it launched, is still in flight (§14.91). */
@@ -25,8 +26,6 @@ export type UnreadCueInput = {
   pendingBlocking?: number | null;
   /** Async questions (§14.96): a question outranks the green cue too. */
   pendingAsync?: number | null;
-  /** The session the user is reading right now. */
-  selected?: boolean;
 };
 
 /**
@@ -45,5 +44,5 @@ export function showsUnreadCue(row: UnreadCueInput): boolean {
     pendingPermissions: row.pendingPermissions,
     pendingBlocking: row.pendingBlocking,
     pendingAsync: row.pendingAsync,
-  }, { viewedHere: !!row.selected }) === 'unread';
+  }) === 'unread';
 }

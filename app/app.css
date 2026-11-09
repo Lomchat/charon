@@ -2732,6 +2732,25 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.role-assistant.intermediate { border: 0; }
 .bubble.role-error { border-color: color-mix(in srgb, var(--danger-strong) 72%, transparent); background: color-mix(in srgb, var(--danger-deep) calc(10% * var(--bubble-tint)), transparent); }
 .bubble.role-error .tag { color: var(--danger-strong); }
+/* The finish on screen (§14.47, SessionView `finishMsgId`): the answer of a
+   session whose finish is still unread pulses like the sidebar card — green,
+   red for a failed turn — until the user leaves the session or sends. A halo
+   OUTSIDE the frame: the fill stays the role's, the text reads as usual.
+   After the role rules, which set the same border at the same specificity. */
+.bubble.finish-cue {
+  --finish: var(--success);
+  animation: bubble-finish-halo 1.8s infinite ease-in-out;
+}
+.bubble.finish-cue.is-error {
+  --finish: var(--danger);
+}
+@keyframes bubble-finish-halo {
+  0%, 100% { border-color: color-mix(in srgb, var(--finish) 70%, transparent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--finish) 0%, transparent); }
+  50%      { border-color: var(--finish); box-shadow: 0 0 10px 2px color-mix(in srgb, var(--finish) 40%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble.finish-cue { animation: none; border-color: var(--finish); box-shadow: 0 0 8px 1px color-mix(in srgb, var(--finish) 35%, transparent); }
+}
 .bubble.role-error .error-kind {
   font-family: var(--mono); font-size: 9.5px; color: var(--danger-soft); opacity: 0.8;
 }

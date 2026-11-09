@@ -36,7 +36,6 @@ import {
   initSyncPosition, isDegraded, setFocus, subscribeAll, subscribeBuildMismatch,
   subscribeDegraded, subscribeResync, subscribeSyncFrames,
 } from './globalEventStream';
-import { isAttentive } from './attention';
 import {
   addOverlay, hydrateSummaries, seedFromListResponse, useSessionList, useVpsRuntime,
 } from './sync/summaryStore';
@@ -677,33 +676,21 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
   // Background-task counts, "finished, unread" markers and live statuses all
   // ride the session summary now (§14.108): no per-field patchers (R3
-  // A5/A6/A7). The surfaces hide `unread` on the row this tab views
-  // (lib/sessionAttention.ts § attentionForRow, `viewedHere`).
+  // A5/A6/A7). The open session is no exception: its finish stays lit.
   //
-  // Ack-read: only an ATTENDED view acknowledges a finish (§14.47, I10) —
-  // selected, visible AND recent input here; an idle tab left open on the
-  // session reads nothing, so the phone still gets the green.
-  // The open SHELL is a focus target too (16 hex, never a session id): its
-  // finish marker follows the same attended-view rules (§14.47).
+  // The open SHELL is a focus target too (16 hex, never a session id).
   const focusTarget = selectedId ?? selectedShellId;
-  const selectedUnread = selectedId
-    ? (sessions.find((x) => x.id === selectedId)?.unreadStop ?? 0) > 0
-    : !!shells.find((x) => x.id === selectedShellId)?.unreadFinish;
-  useEffect(() => {
-    if (!focusTarget || !selectedUnread) return;
-    if (document.visibilityState === 'visible' && isAttentive()) void setFocus(focusTarget);
-  }, [focusTarget, selectedUnread]);
 
-  // Opening a session focuses it (routing + the durable read acknowledgement,
-  // POST /focus → markSessionRead). Re-POST here as well as in
-  // useSessionStream so the acknowledgement does not depend on that
-  // view mounting, and so selecting an already-active session heals a prior
-  // SSE-registration race. Keyed on selectedId so it covers EVERY open path
-  // (sidebar, tab bar, deep link, push-notification click).
+  // Opening a session focuses it (routing). Re-POST here as well as in
+  // useSessionStream so the focus does not depend on that view mounting, and
+  // so selecting an already-active session heals a prior SSE-registration
+  // race. Keyed on selectedId so it covers EVERY open path (sidebar, tab bar,
+  // deep link, push-notification click).
   //
-  // A main pane that is NOT a session or a shell (file, install, nothing)
-  // clears the server focus: a sticky focus on what was just left would keep
-  // muting its finishes as "viewed" (R5 D-7).
+  // Moving the focus OFF a session is its read acknowledgement (§14.47): the
+  // hub clears the finish marker of what an attended view just left. A main
+  // pane that is NOT a session or a shell (file, install, nothing) clears the
+  // focus, so opening a file leaves the session too.
   useEffect(() => {
     if (!focusTarget) { void setFocus(null); return; }
     if (document.visibilityState !== 'visible') return;
@@ -1110,7 +1097,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // chip agrees with the sidebar and the header; unread is not "waiting".
   const hiddenWaitingCount = useMemo(() => {
     return hiddenSessions.filter(
-      (s) => isWaitingAttention(attentionForRow(s, { viewedHere: false })),
+      (s) => isWaitingAttention(attentionForRow(s)),
     ).length;
   }, [hiddenSessions]);
 

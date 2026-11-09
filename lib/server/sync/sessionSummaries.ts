@@ -259,7 +259,6 @@ function buildFrom(rows: AgentSession[]): SessionSummary[] {
       pendingBlocking,
       pendingAsync,
       gates: gates.get(item.id) ?? [],
-      // `viewedHere` is client-side only (lib/sessionAttention.ts § attentionForRow).
       attention: deriveAttention({
         status: String(item.liveStatus ?? item.status), unreadStop: item.unreadStop,
         pendingBlocking, pendingAsync,

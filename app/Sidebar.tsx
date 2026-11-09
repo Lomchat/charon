@@ -523,7 +523,7 @@ export default function Sidebar({
   function visibleSessionsFor(all: SessionListItem[]): SessionListItem[] {
     return sidebarVisiblePathItems(all, (s) =>
       (showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      && (s.id === selectedId || (showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, selectedId, cacheNow)))));
+      && (s.id === selectedId || (showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, cacheNow)))));
   }
   function sessionsFor(vpsId: string): SessionListItem[] {
     return visibleSessionsFor(allSessionsFor(vpsId));
@@ -532,7 +532,7 @@ export default function Sidebar({
     return shells
       .filter((sh) => sh.vpsId === vpsId)
       .filter((sh) => showPaused || !sh.exited)
-      .filter((sh) => sh.id === selectedShellId || (showEntity(sh.vpsId, sh.cwd, 'shell') && focusAdmits(focus, shellFocusFacts(sh, selectedShellId))))
+      .filter((sh) => sh.id === selectedShellId || (showEntity(sh.vpsId, sh.cwd, 'shell') && focusAdmits(focus, shellFocusFacts(sh))))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
@@ -646,8 +646,8 @@ export default function Sidebar({
   // The focus chips count within the path filter, like "paused".
   const scopedSessions = sessions.filter((s) => showEntity(s.vpsId, s.cwd, 'session'));
   const scopedShells = shells.filter((sh) => showEntity(sh.vpsId, sh.cwd, 'shell'));
-  const sessionFacts = scopedSessions.map((s) => sessionFocusFacts(s, selectedId, cacheNow));
-  const shellFacts = scopedShells.map((sh) => shellFocusFacts(sh, selectedShellId));
+  const sessionFacts = scopedSessions.map((s) => sessionFocusFacts(s, cacheNow));
+  const shellFacts = scopedShells.map((sh) => shellFocusFacts(sh));
   const unreadCount = [...sessionFacts, ...shellFacts].filter((f) => f.unread).length;
   const runningCount = [...sessionFacts, ...shellFacts].filter((f) => f.running).length;
   const warmCount = sessionFacts.filter((f) => f.warm).length;
@@ -668,7 +668,6 @@ export default function Sidebar({
     })),
     sessionsOf: sessionsFor, shellsOf: shellsFor,
     collapsedVps, collapsedPaths, pathKey: pathCollapseKey,
-    selectedId, selectedShellId,
   });
   function revealOffscreen(t: OffscreenTarget) {
     if (t.reveal.folderId) onToggleFolderCollapsed?.(t.reveal.folderId, false);
@@ -1052,7 +1051,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const hostLabel = `${v.sshUser}@${v.ip}${v.sshPort !== 22 ? `:${v.sshPort}` : ''}`;
   // Folded, its lit rows have no card to pulse on: the head counts them.
   const collapsedAttention = collapsed
-    ? <CollapsedAttention counts={collapsedAttentionCounts(vpsSessions, vpsShells, selectedId, selectedShellId)} />
+    ? <CollapsedAttention counts={collapsedAttentionCounts(vpsSessions, vpsShells)} />
     : null;
 
   return (
@@ -1512,7 +1511,7 @@ function WorkspacePathGroups({
 function subAttention(descendants: SessionListItem[]): string {
   let best = '';
   for (const d of descendants) {
-    const a = attentionForRow(d, { viewedHere: false });
+    const a = attentionForRow(d);
     if (a === 'blocked' || a === 'question') return 'blocked';
     if (a === 'error') best = 'error';
     else if (a === 'unread' && best !== 'error') best = 'unread';
@@ -1695,8 +1694,8 @@ const SessionRow = memo(function SessionRow({
   // THE attention predicate (lib/sessionAttention.ts), shared with the header,
   // tab bar, filter chip and desk: blocked ⇒ "needs you" whatever the live
   // status (a gate is always raised mid-turn), async question ⇒ "question",
-  // unread ⇒ the green ✓ (hidden on the card you are reading).
-  const attention = attentionForRow(s, { viewedHere: selected });
+  // unread ⇒ the green ✓ (lit on the card you are reading too, §14.47).
+  const attention = attentionForRow(s);
   // The prompt cache the last turn left (lib/promptCache.ts), on the shared
   // clock: the mark, a tooltip block and the details line all read it.
   const cache = useSessionCacheReading(s);
@@ -1753,8 +1752,8 @@ const SessionRow = memo(function SessionRow({
   // you haven't opened it since (DB: unread_stop, §14.47). The durable marker
   // itself is untouched by the drawing.
   const unread = attention === 'unread';
-  // Its red twin: the turn or the session ended in an error nobody has opened
-  // yet (attention `error`) — the card pulses red until opened.
+  // Its red twin: the turn or the session ended in an error not read yet
+  // (attention `error`) — the card pulses red until read (§14.47).
   const errorUnread = attention === 'error';
   // Prompts the CLI will send this session by itself later (CronCreate /
   // ScheduleWakeup, lib/scheduledTasks.ts). Marked on a READY card only: a
@@ -1878,8 +1877,8 @@ const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, o
   const cwdShort = sh.cwd ? cwdTail(sh.cwd, 30) : '~';
   const headline = sh.name ?? `shell · ${sh.cwd ? cwdTail(sh.cwd, 16) : '~'}`;
   const dotClass = sh.exited ? 'dot-gray' : (sh.liveStatus === 'busy' ? 'dot-amber-pulse' : 'dot-green');
-  // A job finished while nobody attended it (§14.47, like a session's ✓).
-  const unread = shellAttention(sh, { viewedHere: selected }) === 'unread';
+  // A job finished and the shell was not left since (§14.47, like a session's ✓).
+  const unread = shellAttention(sh) === 'unread';
   return (
     <button
       type="button"

@@ -91,12 +91,6 @@ import {
 // to claim the session, short enough to feel immediate. cf. §14.91.
 const BG_FINISH_GRACE_MS = 5_000;
 
-// Transcript output (§14.47): the leave grace of the finished-unread marker
-// covers only what the user saw — output arriving after they left re-arms it.
-const FINISH_OUTPUT_EVENTS: ReadonlySet<string> = new Set([
-  'assistant_text', 'thinking', 'structured_output', 'tool_use', 'tool_result', 'bg_task',
-]);
-
 // Trailing window of the live `session_token_usage` broadcast: a burst of
 // usage rows publishes ONE frame (clients merge by `revision`, so a skipped
 // intermediate is never visible).
@@ -394,27 +388,16 @@ export function emitGlobalVpsStatus(
 setVpsStatusEmitter(emitGlobalVpsStatus);
 
 // ── "Finished, unread" marker (CLAUDE.md §14.47) ────────────────────────────
-// To decide whether a finishing turn should light the sidebar marker, we need
-// to know if the user is currently WATCHING the session — an ATTENDED conn
-// focused on it, or one that left it within the last few seconds (an agent
-// often finishes a beat after you switch away). That truth lives in
-// eventConnections (isBeingWatched), which already imports THIS module — so to
-// dodge a hard import cycle it wires the `focusChecker` slot at its module
-// load. The slot lives in `hubHooks()` (§14.106), NOT a module-level `let`:
-// eventConnections exists only in the route copy, while boot-attached streams
-// run the instrumentation copy's code. Unset → "not watched" (safe: no SSE
-// open ⇒ nobody's watching).
-export function setSessionFocusChecker(fn: (sessionId: string, lastOutputAtMs?: number | null) => boolean): void {
-  hubHooks().focusChecker = fn;
-}
+// Every new finish lights it, watched or not: it stays lit while the session
+// is on screen, and is read when an attended view LEAVES it or the user sends.
 
 /**
  * Clear a session's durable "finished, unread" marker
  * (agentSessions.unreadStop → 0) and mirror it live to every tab via the
- * `session_unread` bus event. Called when the user opens/focuses the session
- * (POST /api/focus). Idempotent + cheap: only writes/emits when the row
- * was actually unread, so re-focusing or switching between already-read
- * sessions never spams the bus.
+ * `session_unread` bus event. Called when an attended view leaves the session
+ * (POST /api/focus, the window GET's focus move), on a user send and on a new
+ * turn. Idempotent + cheap: only writes/emits when the row was actually
+ * unread, so switching between already-read sessions never spams the bus.
  */
 export function markSessionRead(sessionId: string): void {
   try {
@@ -808,9 +791,6 @@ export class SessionStream {
   // Replayed stops (Charon reboot / SSH reconnect) carry seq <= this →
   // skipped. Persisted to DB so the dedup survives a Charon restart.
   private lastStopNotifiedSeq: number | null = null;
-  // Hub clock (ms) of the last FINISH_OUTPUT_EVENTS event: a finish only
-  // counts as watched by a conn that left AFTER it (§14.47). null = none yet.
-  private lastOutputAtMs: number | null = null;
   // Set by a seq-epoch reset: the newest row ts_ms at that moment. A REPLAYED
   // stop at or before it is no new finish (the recreated log's seqs restart
   // below `lastStopNotifiedSeq`'s old epoch). Cleared when the reset replay
@@ -1256,7 +1236,6 @@ export class SessionStream {
       this.replayWindowFirstSeq ??= this.currentEventSeq;
       this.replayWindowLastSeq = this.currentEventSeq;
     }
-    if (FINISH_OUTPUT_EVENTS.has(ev.event)) this.lastOutputAtMs = Date.now();
     try {
       // Every handler runs on the event loop: a slow one is named in the
       // `[perf]`/`[eventloop]` journal lines.
@@ -2715,8 +2694,9 @@ export class SessionStream {
         // must never trail a push.
         //
         // Passive in-app "finished, unread" marker (CLAUDE.md §14.47). Light
-        // it on a genuinely-new finish UNLESS the user is currently viewing
-        // the session. Unlike the push below we do NOT require !isReplaying:
+        // it on every genuinely-new finish, on screen or not: it stays lit
+        // until the user leaves it. Unlike the push below we do NOT require
+        // !isReplaying:
         // a finish first learned about via replay (Charon was down when the
         // agent finished) is a real unread finish, and a silent DB flag has
         // no notification-storm concern. The seq dedup in `isNewFinish` + the
@@ -2724,14 +2704,11 @@ export class SessionStream {
         // The green unread marker and final background-work notice still
         // wait for the last task (§14.91).
         if (isNewFinish && !bgPending && (terminalError || !this.peerDrivenFinish)) {
-          const beingViewed = hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false;
-          if (!beingViewed) {
-            try {
-              db.update(agentSessions).set({ unreadStop: 1 })
-                .where(eq(agentSessions.id, this.id)).run();
-            } catch {}
-            this._broadcast({ type: 'session_unread', unread: true });
-          }
+          try {
+            db.update(agentSessions).set({ unreadStop: 1 })
+              .where(eq(agentSessions.id, this.id)).run();
+          } catch {}
+          this._broadcast({ type: 'session_unread', unread: true });
         }
         // Dedup the "finished" push. Without this, every agent re-subscribe
         // (Charon reboot / SSH reconnect) replays past `stop` events and
@@ -2814,10 +2791,10 @@ export class SessionStream {
             hint: this.pendingTurnErrorKind,
           });
           // A crash is a finish too: the durable marker turns it red until
-          // opened (lib/sessionAttention.ts `error`, §14.47). `recorded` is
+          // read (lib/sessionAttention.ts `error`, §14.47). `recorded` is
           // its replay dedup (a NEW error row), so like a failed stop, a crash
           // first learned via replay still counts. Before the push (G6).
-          if (recorded && !(hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false)) {
+          if (recorded) {
             try {
               db.update(agentSessions).set({ unreadStop: 1 })
                 .where(eq(agentSessions.id, this.id)).run();
@@ -4329,13 +4306,11 @@ export class SessionStream {
       if (this.peerDrivenFinish ?? this._peerTurnFromHistory()) return;
       // Same passive marker as a normal finish (§14.47) — this IS the finish.
       // Marked BEFORE the push: in-app green never trails a push (G6).
-      if (!(hubHooks().focusChecker?.(this.id, this.lastOutputAtMs) ?? false)) {
-        try {
-          db.update(agentSessions).set({ unreadStop: 1 })
-            .where(eq(agentSessions.id, this.id)).run();
-        } catch {}
-        this._broadcast({ type: 'session_unread', unread: true });
-      }
+      try {
+        db.update(agentSessions).set({ unreadStop: 1 })
+          .where(eq(agentSessions.id, this.id)).run();
+      } catch {}
+      this._broadcast({ type: 'session_unread', unread: true });
       this._maybePush({
         event: 'session_finished',
         title: `✓ ${this.vpsName} · ${this._label()}`,

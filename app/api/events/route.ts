@@ -139,7 +139,7 @@ export async function GET(req: Request) {
       req.signal?.addEventListener('abort', () => close('abort'), { once: true });
 
       // Any throw below ends the stream AND unregisters it (no `live:false`
-      // conn left behind that `isBeingWatched` would still count).
+      // conn left behind in the registry).
       try {
         // The REGISTERED focus (it may have inherited a newer one than the URL's
         // from the superseded stream), not the raw URL param.

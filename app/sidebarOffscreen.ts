@@ -4,9 +4,9 @@
 // the component measures, this decides.
 //
 // A row counts when its card is lit by THE attention predicate
-// (lib/sessionAttention.ts, the card's own `viewedHere`): orange = waiting on
-// you (blocked | question), red = ended in an error nobody opened, green =
-// finished, unread (sessions and shells). Only rows the list currently holds
+// (lib/sessionAttention.ts): orange = waiting on you (blocked | question),
+// red = ended in an error not yet read, green = finished, unread (sessions
+// and shells). Only rows the list currently holds
 // (paused switch, path filter, focus chips — the caller's own `sessionsOf` /
 // `shellsOf`): one a filter hides cannot be scrolled to. A row inside a
 // collapsed folder, server or path still counts, anchored to the outermost
@@ -71,19 +71,17 @@ export function buildOffscreenTargets(o: {
   collapsedVps: ReadonlySet<string>;
   collapsedPaths: ReadonlySet<string>;
   pathKey: (vpsId: string, cwd: string | null | undefined) => string;
-  selectedId: string | null;
-  selectedShellId: string | null;
 }): OffscreenTarget[] {
   const out: OffscreenTarget[] = [];
   for (const folder of o.folders) {
     for (const vpsId of folder.vpsIds) {
       const lit: { id: string; kind: OffscreenKind; cwd: string | null | undefined }[] = [];
       for (const s of o.sessionsOf(vpsId)) {
-        const kind = offscreenKind(attentionForRow(s, { viewedHere: s.id === o.selectedId }));
+        const kind = offscreenKind(attentionForRow(s));
         if (kind) lit.push({ id: s.id, kind, cwd: s.cwd });
       }
       for (const sh of o.shellsOf(vpsId)) {
-        const kind = offscreenKind(shellAttention(sh, { viewedHere: sh.id === o.selectedShellId }));
+        const kind = offscreenKind(shellAttention(sh));
         if (kind) lit.push({ id: sh.id, kind, cwd: sh.cwd });
       }
       const vpsCollapsed = o.collapsedVps.has(vpsId);
@@ -164,11 +162,10 @@ export function sameCounts(a: readonly OffscreenCount[], b: readonly OffscreenCo
  *  card to pulse on). */
 export function collapsedAttentionCounts(
   sessions: readonly SessionListItem[], shells: readonly OffscreenShell[],
-  selectedId: string | null, selectedShellId: string | null,
 ): OffscreenCount[] {
   const m = new Map<OffscreenKind, number>();
   const add = (k: OffscreenKind | null) => { if (k) m.set(k, (m.get(k) ?? 0) + 1); };
-  for (const s of sessions) add(offscreenKind(attentionForRow(s, { viewedHere: s.id === selectedId })));
-  for (const sh of shells) add(offscreenKind(shellAttention(sh, { viewedHere: sh.id === selectedShellId })));
+  for (const s of sessions) add(offscreenKind(attentionForRow(s)));
+  for (const sh of shells) add(offscreenKind(shellAttention(sh)));
   return OFFSCREEN_KINDS.filter((k) => m.has(k)).map((kind) => ({ kind, count: m.get(kind)! }));
 }

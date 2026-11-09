@@ -103,7 +103,7 @@ export function resolveTabs({
       // Waiting = blocked | question from THE attention predicate
       // (lib/sessionAttention.ts) over the summary store's row (§14.108).
       const state: TabState = !s ? 'sleeping'
-        : isWaitingAttention(attentionForRow(s, { viewedHere: false })) ? 'waiting'
+        : isWaitingAttention(attentionForRow(s)) ? 'waiting'
         : (rowStatus(s) as TabState) ?? 'active';
       return {
         ...t, dirty, orphan: !s, live: true,

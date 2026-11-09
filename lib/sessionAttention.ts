@@ -10,7 +10,7 @@
 //   question  an async question (§14.96): answerable at any time, any status
 //             (answering wakes a paused session), never blocking.
 //   error     the same durable marker on a row that finished BADLY: a failed
-//             turn (`failed`) or a crashed session (`error`). Red until opened.
+//             turn (`failed`) or a crashed session (`error`). Red until read.
 //   unread    the durable "finished, unread" marker (§14.47) on a READY row.
 //
 // A blocking gate on a non-live session (sleeping/error/killed) is dead — the
@@ -62,9 +62,8 @@ export function pendingSplit(row: {
 }
 
 /**
- * The attention of a list row as THIS tab draws it. The one client-local rule:
- * `unread`/`error` are hidden on the row this tab is visibly viewing (the view
- * itself is the acknowledgement, POST /focus clears the durable marker).
+ * The attention of a list row. The session on screen is no exception: a
+ * finish stays lit while you read it, until you leave it or send (§14.47).
  */
 export function attentionForRow(
   row: Pick<SessionListItem, 'status'> & {
@@ -72,21 +71,16 @@ export function attentionForRow(
     unreadStop?: number | boolean | null;
     pendingPermissions?: number | null; pendingBlocking?: number | null; pendingAsync?: number | null;
   },
-  o: { viewedHere: boolean },
 ): Attention {
-  const a = deriveAttention({ status: rowStatus(row), unreadStop: row.unreadStop, ...pendingSplit(row) });
-  if (isUnseenFinish(a) && o.viewedHere) return null;
-  return a;
+  return deriveAttention({ status: rowStatus(row), unreadStop: row.unreadStop, ...pendingSplit(row) });
 }
 
-/** A shell's attention (§14.47 twin): `unread` once a job finished unattended
- *  (`shells.unread_finish`), drawn only while it is idle and not the shell this
- *  tab visibly shows. Shells raise no gates. */
+/** A shell's attention (§14.47 twin): `unread` once a job finished
+ *  (`shells.unread_finish`), drawn while it is idle. Shells raise no gates. */
 export function shellAttention(
   shell: { unreadFinish?: boolean; liveStatus?: string | null; exited?: boolean },
-  o: { viewedHere: boolean },
 ): Attention {
-  if (!shell.unreadFinish || shell.exited || shell.liveStatus === 'busy' || o.viewedHere) return null;
+  if (!shell.unreadFinish || shell.exited || shell.liveStatus === 'busy') return null;
   return 'unread';
 }
 

@@ -42,7 +42,6 @@ const SID = '6'.repeat(32);
 let db: any;
 let schema: any;
 let SessionStream: any;
-let hubHooks: typeof import('@/lib/server/agent/hubHooks').hubHooks;
 let seq = 0;
 
 function row(): any {
@@ -81,7 +80,6 @@ beforeAll(async () => {
   db.insert(schema.vpsFolders).values({ id: 'default', name: 'default', position: 0 }).onConflictDoNothing().run();
   db.insert(schema.vps).values({ id: VPS_ID, name: 'v', ip: '127.0.0.1', sshUser: 'root' }).onConflictDoNothing().run();
   ({ SessionStream } = await import('@/lib/server/agent/sessionOps'));
-  ({ hubHooks } = await import('@/lib/server/agent/hubHooks'));
   // Loaded once up front (sendUserMessage imports it lazily; a first import
   // racing the stop handlers' deferred import hits its TDZ).
   await import('@/lib/server/agent/endpointOps');
@@ -92,7 +90,6 @@ beforeEach(() => {
   order.log = [];
   pushMocks.sendPushToAll.mockClear();
   telegramMocks.sendPlainToTelegram.mockClear();
-  hubHooks().focusChecker = undefined;
   db.delete(schema.sessionMessages).where(eq(schema.sessionMessages.sessionId, SID)).run();
   db.delete(schema.agentSessions).where(eq(schema.agentSessions.id, SID)).run();
   db.insert(schema.agentSessions).values({
@@ -103,7 +100,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
-  hubHooks().focusChecker = undefined;
 });
 
 describe('a live stop: status and unread before any push (G6)', () => {
@@ -141,15 +137,6 @@ describe('a live stop: status and unread before any push (G6)', () => {
     expect(contract()[1]).toBe('unread:true');
   });
 
-  it('a watched session gets no unread, the push still trails the status', async () => {
-    hubHooks().focusChecker = (id) => id === SID;
-    const s = mkStream('thinking');
-    s._onAgentEvent(ev({ event: 'stop', subtype: 'success' }));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(contract()).toEqual(['stop', 'status:active', 'push:session_finished', 'telegram:session_finished']);
-    expect(row().unreadStop).toBe(0);
-  });
-
   it('a replayed stop sets no status (and pushes nothing)', async () => {
     const s = mkStream('thinking');
     s._onAgentEvent({ event: 'replay_begin', session_id: SID, count: 1 });
@@ -170,23 +157,13 @@ describe('a live stop: status and unread before any push (G6)', () => {
     expect(row().status).toBe('failed');
   });
 
-  it('a crash (fatal error, no stop) marks unread before its push; a watched one does not', async () => {
+  it('a crash (fatal error, no stop) marks unread before its push', async () => {
     const s = mkStream('thinking');
     s._onAgentEvent(ev({ event: 'error', msg: 'client transport died', fatal: true }));
     s._onAgentEvent(ev({ event: 'status', status: 'error' }));
     await vi.advanceTimersByTimeAsync(0);
     expect(contract()).toEqual(['unread:true', 'push:session_error', 'telegram:session_error', 'status:error']);
     expect(row()).toMatchObject({ status: 'error', unreadStop: 1 });
-
-    db.update(schema.agentSessions).set({ unreadStop: 0, status: 'thinking' })
-      .where(eq(schema.agentSessions.id, SID)).run();
-    order.log = [];
-    hubHooks().focusChecker = (id) => id === SID;
-    const watched = mkStream('thinking');
-    watched._onAgentEvent(ev({ event: 'error', msg: 'client transport died again', fatal: true }));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(contract()).toEqual(['push:session_error', 'telegram:session_error']);
-    expect(row().unreadStop).toBe(0);
   });
 
   it('the background path is unchanged: background, no unread, the background push', async () => {
@@ -212,18 +189,6 @@ describe('background finish: unread before its push (G6)', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(contract()).toEqual(['status:active', 'unread:true', 'push:session_finished', 'telegram:session_finished']);
     expect(row()).toMatchObject({ status: 'active', unreadStop: 1 });
-  });
-
-  it('a watched session: no unread, the push still fires', async () => {
-    const s = mkStream('thinking');
-    s._onAgentEvent(ev({ event: 'bg_task', kind: 'started', task_id: 'bt3', tool_use_id: 'tu' }));
-    s._onAgentEvent(ev({ event: 'stop', subtype: 'success' }));
-    hubHooks().focusChecker = () => true;
-    order.log = [];
-    s._onAgentEvent(ev({ event: 'bg_task', kind: 'finished', task_id: 'bt3', status: 'completed', terminal: true }));
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(contract()).toEqual(['status:active', 'push:session_finished', 'telegram:session_finished']);
-    expect(row().unreadStop).toBe(0);
   });
 });
 

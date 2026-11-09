@@ -152,9 +152,9 @@ export const PULSES = [STATES.working, STATES.question, STATES.unread];
  *   - `working`   : `isWorkingStatus`, importé
  * On ne réinvente rien : on lit la même chose, dans le même ordre.
  */
-export function stateOf(session, { selected = false } = {}) {
+export function stateOf(session) {
 	const base = String(rowStatus({ liveStatus: session.liveStatus, status: session.status ?? '' }));
-	const attention = attentionForRow({ ...session, status: session.status ?? '' }, { viewedHere: selected });
+	const attention = attentionForRow({ ...session, status: session.status ?? '' });
 
 	if (attention === 'blocked' || attention === 'question') return STATES.question;
 	if (base === 'sleeping') return STATES.asleep;
@@ -169,8 +169,8 @@ export function stateOf(session, { selected = false } = {}) {
 /** La couleur du voyant : celle de la pulsation, sinon la teinte fixe de
  *  l'état, sinon celle de la famille — un robot au repos s'éclaire à sa
  *  couleur, ce qui suffit à lire la salle de loin. */
-export function beaconOf(session, { selected = false } = {}) {
-	const state = stateOf(session, { selected });
+export function beaconOf(session) {
+	const state = stateOf(session);
 	if (state.pulse) return { css: state.pulse, hex: hexOf(state.pulse), state };
 	const tint = state.tint ?? familyOf(session.kind).css;
 	return { css: tint, hex: hexOf(tint), state };
