@@ -2734,15 +2734,31 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.role-error .tag { color: var(--danger-strong); }
 /* The finish on screen (§14.47, SessionView `finishMsgId`): the answer of a
    session whose finish is still unread pulses like the sidebar card — green,
-   red for a failed turn — until the user leaves the session or sends. A halo
-   OUTSIDE the frame: the fill stays the role's, the text reads as usual.
-   After the role rules, which set the same border at the same specificity. */
+   red for a failed turn — until the user clicks it, leaves the session or
+   sends. A halo OUTSIDE the frame: the fill stays the role's, the text reads
+   as usual. After the role rules, which set the same border at the same
+   specificity. */
 .bubble.finish-cue {
   --finish: var(--success);
+  position: relative;
+  cursor: pointer;
   animation: bubble-finish-halo 1.8s infinite ease-in-out;
 }
 .bubble.finish-cue.is-error {
   --finish: var(--danger);
+}
+/* The click is the read (Message § finishClick): said on hover, where there
+   is one (a phone just taps). */
+@media (hover: hover) {
+  .bubble.finish-cue:hover { background-color: color-mix(in srgb, var(--finish) 9%, transparent); }
+  .bubble.finish-cue:hover::after {
+    content: '✓ click to mark as read';
+    position: absolute; right: 8px; bottom: -9px;
+    font-family: var(--mono); font-size: 10px; line-height: 16px;
+    color: var(--finish); background: var(--bg-elevated);
+    border: 1px solid var(--finish); border-radius: var(--radius-md); padding: 0 6px;
+    pointer-events: none;
+  }
 }
 @keyframes bubble-finish-halo {
   0%, 100% { border-color: color-mix(in srgb, var(--finish) 70%, transparent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--finish) 0%, transparent); }

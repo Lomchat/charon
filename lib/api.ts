@@ -704,6 +704,9 @@ export const api = {
   /** Any PATCH of the session row (name, color, cwd). */
   patchAgentSession: (id: string, body: { name?: string | null; color?: string | null; cwd?: string }) =>
     send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, body),
+  /** The session's finish is read (a click on the pulsing answer, §14.47). */
+  markSessionRead: (id: string) =>
+    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/read`),
   // Sleep / resume / input / interrupt / force-stop: all return { ok: true }
   sleepSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/sleep`),

@@ -14,7 +14,7 @@ import SessionSettingsModal from './SessionSettingsModal';
 import { IconGear, IconPause, IconPlay, IconStop, IconRewind, IconGitBranch } from './icons';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps } from '@/lib/db/schema';
-import { getSummary, subscribeSummaries } from './sync/summaryStore';
+import { addOverlay, getSummary, subscribeSummaries } from './sync/summaryStore';
 import type { SessionListItem, AgentKind, SessionAttachment } from '@/lib/types/api';
 import {
   asSessionProvider, hasEffortAxis, sessionCapabilities, sessionModes,
@@ -562,6 +562,12 @@ export default function SessionView({
     }
     return null;
   }, [messages, finishCue]);
+  // A click on that answer reads it: the same ack as leaving. Optimistic (a
+  // summary overlay, §14.32): the green goes at once, a failure brings it back.
+  const markFinishRead = useCallback(() => {
+    const o = addOverlay(sessionId, { unreadStop: 0 });
+    api.markSessionRead(sessionId).then((r) => o.ack(r?.sync), () => o.fail());
+  }, [sessionId]);
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
   // in flight, or background tasks the restart would kill with the CLI
@@ -1052,7 +1058,7 @@ export default function SessionView({
                   limitMsgId={endpoint.active ? null : limitMsgId}
                   currentAccount={currentAccount}
                   onContinueWithAccount={continueWithAccount}
-                  finishMsgId={finishMsgId} finishCue={finishCue}
+                  finishMsgId={finishMsgId} finishCue={finishCue} onFinishRead={markFinishRead}
                   // Conservative on purpose: `reconnecting` means we don't
                   // know yet, and a wrong "interrupted" is worse than a
                   // late one.
@@ -1305,7 +1311,7 @@ export default function SessionView({
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
   renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
-  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue,
+  limitMsgId, currentAccount, onContinueWithAccount, finishMsgId, finishCue, onFinishRead,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
 }: {
@@ -1336,6 +1342,7 @@ const MessageHistory = memo(function MessageHistory({
   // bubble sees the value (memo, §14.38).
   finishMsgId: string | null;
   finishCue: 'unread' | 'error' | null;
+  onFinishRead: () => void;
   // Is a turn in flight right now? A tool_use with no tool_result can only
   // still be running while one is: outside a turn nothing can produce that
   // result anymore (§14.91). Only the unresolved tool cards receive the
@@ -1368,6 +1375,7 @@ const MessageHistory = memo(function MessageHistory({
       onPeerRequestHover={onPeerRequestHover} onPeerRequestJump={onPeerRequestJump}
       peerReplyTo={peerReplyToById.get(msg.id)}
       finishCue={msg.id === finishMsgId ? finishCue : null}
+      onFinishRead={msg.id === finishMsgId && finishCue ? onFinishRead : undefined}
     />;
   });
 });
