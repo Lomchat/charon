@@ -3122,6 +3122,23 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+/* Compaction: the same bar, another colour and a turning ring instead of the
+   pulse — it must not read as an ordinary turn (the composer is closed). */
+.thinking-bar.is-compacting {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--warning) 12%, transparent), color-mix(in srgb, var(--warning) 4%, transparent));
+}
+.thinking-bar.is-compacting .t-label { color: var(--warning-strong); }
+.thinking-bar.is-compacting .t-dot {
+  width: 10px; height: 10px;
+  background: none;
+  border: 2px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-top-color: var(--warning-strong);
+  animation: ci-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-bar.is-compacting .t-dot { animation-duration: 2.4s; }
+}
+.app-input-bar .ci-attach:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .turn-cost {
   display: flex; justify-content: flex-end; align-items: center; gap: 6px;

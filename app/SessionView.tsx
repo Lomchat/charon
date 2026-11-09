@@ -205,7 +205,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
@@ -903,7 +903,7 @@ export default function SessionView({
                 context={endpoint.active && !endpoint.active.checks?.[sessionKind as 'claude' | 'codex']?.contextWindow ? null : sessionContext}
                 cache={promptCache}
                 onCompact={doCompact}
-                compacting={compacting}
+                compacting={compacting || liveCompacting}
                 compactDisabled={!compactAllowed}
                 compactError={compactError}
               />
@@ -1117,7 +1117,8 @@ export default function SessionView({
 
         {status === 'thinking' && (
           <ThinkingBar
-            label={providerText.thinking(sessionKind)}
+            label={liveCompacting ? providerText.compacting(sessionKind) : providerText.thinking(sessionKind)}
+            compacting={liveCompacting}
             onInterrupt={interrupt}
             currentTool={showTools ? currentTool : null}
             toolCount={liveUsage?.tools ?? (showTools ? stepCount : 0)}
@@ -1223,6 +1224,7 @@ export default function SessionView({
             insertRequest={insertRequest}
             clearInsertRequest={clearInsertRequest}
             siblings={siblings}
+            compacting={liveCompacting}
           />
         )}
         </ComposerWithAsyncStrip>
@@ -1251,7 +1253,7 @@ export default function SessionView({
         contextLoading={contextLoading}
         onRefreshContext={refreshContext}
         onCompact={doCompact}
-        compacting={compacting}
+        compacting={compacting || liveCompacting}
         compactDisabled={!compactAllowed}
         compactError={compactError}
         deferInsight={!historyReady}
@@ -1378,7 +1380,7 @@ const ParentChip = memo(function ParentChip({ parentId, onOpen }: {
 
 const ChatInputBar = memo(function ChatInputBar({
   sessionId, kind, permissionMode, onSetMode, onSend, prefillInput, clearPrefillInput,
-  pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings,
+  pending, onUploadFiles, onDismissPending, insertRequest, clearInsertRequest, siblings, compacting = false,
 }: {
   sessionId: string;
   kind: AgentKind;
@@ -1398,6 +1400,9 @@ const ChatInputBar = memo(function ChatInputBar({
   /** Other sessions on the same machine, for the `@` menu. `confirmed:false`
    *  = the handle is predicted, not yet what the CLI answers to. */
   siblings?: Array<{ id: string; name: string | null; handle: string; confirmed?: boolean; status: string }>;
+  /** The provider is summarising the conversation: nothing can be sent until
+   *  it ends, so the box is closed (the draft is kept). */
+  compacting?: boolean;
 }) {
   // `input` is wired to `inputDraftStore` so the draft survives session
   // switches (this component remounts via the parent's key={selectedId}) — cf.
@@ -1704,14 +1709,26 @@ const ChatInputBar = memo(function ChatInputBar({
   // about to have a path spliced into it at a caret that has since moved.
   const uploading = pending.filter((p) => !p.error);
 
+  // A compaction closes the box; a box that had the focus gets it back.
+  const refocusRef = useRef(false);
+  useEffect(() => {
+    const ta = taRef.current;
+    if (compacting) {
+      refocusRef.current = !!ta && document.activeElement === ta;
+    } else if (refocusRef.current) {
+      refocusRef.current = false;
+      ta?.focus();
+    }
+  }, [compacting]);
+
   const send = useCallback(async () => {
     const content = input.trim();
-    if (!content) return;
+    if (!content || compacting) return;
     setInput('');
     inputRef.current = '';
     caretRef.current = 0;
     await onSend(content);
-  }, [input, onSend, setInput]);
+  }, [input, onSend, setInput, compacting]);
 
   return (
     <footer
@@ -1799,7 +1816,10 @@ const ChatInputBar = memo(function ChatInputBar({
         onClick={rememberCaret}
         onKeyUp={rememberCaret}
         onBlur={rememberCaret}
-        placeholder={touchInput
+        disabled={compacting}
+        title={compacting ? providerText.composerCompacting(kind) : undefined}
+        placeholder={compacting ? providerText.composerCompacting(kind)
+          : touchInput
           ? providerText.composerHint(kind, true)
           : providerText.composerHint(kind, false)}
         onKeyDown={(e) => {
@@ -1840,6 +1860,7 @@ const ChatInputBar = memo(function ChatInputBar({
         <button
           type="button"
           className="ci-attach"
+          disabled={compacting}
           onClick={() => { rememberCaret(); fileInputRef.current?.click(); }}
           title="attach a file — it is uploaded to the session workspace and its path inserted here"
           aria-label="attach a file"
@@ -1847,7 +1868,7 @@ const ChatInputBar = memo(function ChatInputBar({
           <IconPaperclip />
         </button>
         {/* The word on a desktop, the icon on a phone (app.css). */}
-        <button className="send" onClick={send} disabled={!input.trim()} aria-label="send">
+        <button className="send" onClick={send} disabled={!input.trim() || compacting} aria-label="send">
           <span className="send-label">send</span><IconSend className="send-icon" />
         </button>
       </div>
@@ -1971,7 +1992,7 @@ function CwdSubtitle({ cwd, vpsName }: { cwd: string; vpsName?: string }) {
 }
 
 function ThinkingBar({
-  currentTool, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label,
+  currentTool, toolCount, startedAt, tokens, responseSpeed, onInterrupt, label, compacting = false,
 }: {
   currentTool: ToolCallEntry | null;
   /** Tool calls of this turn so far (hub-counted; tools shown or not). */
@@ -1981,6 +2002,9 @@ function ThinkingBar({
   responseSpeed: ResponseSpeedSnapshot | null;
   onInterrupt: () => void | Promise<void>;
   label?: string;
+  /** The provider is summarising the conversation: no tool, speed or
+   *  token figures describe that (they belong to the turn around it). */
+  compacting?: boolean;
 }) {
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -1990,8 +2014,8 @@ function ThinkingBar({
   void tick;
   const elapsed = startedAt ? Math.max(0, Math.floor(Date.now() / 1000 - startedAt)) : null;
   return (
-    <div className="thinking-bar">
-      <span className="t-dot" />
+    <div className={`thinking-bar${compacting ? ' is-compacting' : ''}`}>
+      <span className="t-dot" aria-hidden="true" />
       <span className="t-label" title={label}>{label}</span>
       <button
         type="button"
@@ -1999,7 +2023,7 @@ function ThinkingBar({
         onClick={() => { void onInterrupt(); }}
         title="Interrupt the current turn"
       >interrupt</button>
-      {currentTool && (
+      {!compacting && currentTool && (
         <span className="t-tool">
           <span className="sep">·</span>
           <span className="glyph">⚒</span>
@@ -2007,7 +2031,11 @@ function ThinkingBar({
           <span className="sum">{summarizeToolInput(currentTool.name, currentTool.input)}</span>
         </span>
       )}
-      <span className="t-meta">
+      {compacting ? (
+        <span className="t-meta">
+          {elapsed != null && <>{fmtElapsed(elapsed)}</>}
+        </span>
+      ) : <span className="t-meta">
         <span className="t-speed" title="Live received SSE JSON payloads over the last 3 seconds, including reasoning and tools. Measured UTF-8 bytes; 1 kB = 1000 bytes. Excludes HTTP framing and compression.">
           ↓ {((responseSpeed?.bytesPerSecond ?? 0) / 1_000).toFixed(1)} kB/s
         </span>
@@ -2019,7 +2047,7 @@ function ThinkingBar({
         {toolCount > 0 && <span className="t-step"><span className="sep">·</span> ⚒ {toolCount} tool{toolCount === 1 ? '' : 's'}</span>}
         {elapsed != null && <><span className="sep">·</span> {fmtElapsed(elapsed)}</>}
         {tokens != null && tokens > 0 && <span className="t-count"><span className="sep">·</span> ↑ {fmtTokens(tokens)} tokens</span>}
-      </span>
+      </span>}
     </div>
   );
 }

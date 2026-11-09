@@ -443,6 +443,9 @@ export type TranscriptState = {
   bgLaunches: Map<string, BgLaunchCandidate>;
   queues: { permissions: PermissionQ[]; questions: QuestionQ[]; exitPlans: ExitPlanQ[] };
   status: WorkerStatus | null;
+  /** The provider is summarising the conversation (`compacting` frame /
+   *  `liveCompacting`): the composer waits. Only meaningful while thinking. */
+  compacting: boolean;
   buf: LiveBuffers;
   /** The highest reasoning row id this view knows as persisted
    *  (thinkingMessages.ts § ThinkingLane.known). */
@@ -495,7 +498,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -631,7 +634,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
   switch (ev.type) {
     case 'status': {
       if (ev.status === 'killed') { effects.push({ kind: 'killed' }); break; }
-      st = { ...st, status: ev.status };
+      st = { ...st, status: ev.status, ...(ev.status !== 'thinking' ? { compacting: false } : {}) };
       // A new SDK client applies the queued config.
       if (ev.status === 'starting' && (st.meta.modelPendingApply || st.meta.effortPendingApply)) {
         st = { ...st, meta: { ...st.meta, modelPendingApply: false, effortPendingApply: false } };
@@ -727,8 +730,12 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
         if (Array.isArray(paths)) effects.push({ kind: 'fsChanged', paths: paths.map(String) });
       }
       break;
+    case 'compacting':
+      st = { ...st, compacting: ev.active === true };
+      break;
     case 'stop':
       st = legacyBoundary(st, nowMs);
+      st = { ...st, compacting: false };
       // Marks `m<finalAssistantId>` final; closes the reasoning bubble. The
       // row is already on screen (its `assistant_flushed` came first): no
       // refetch (I7).
@@ -885,6 +892,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
     }
     case 'compaction':
       st = legacyBoundary(st, nowMs);
+      st = { ...st, compacting: false };
       {
         let id: string;
         if (ev.rowId != null) id = rowKey(ev.rowId);
@@ -1138,6 +1146,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     bgTasks: new Map(bg.map((t) => [t.taskId, { ...t }])),
     queues,
     status: liveStatus,
+    compacting: r.liveCompacting === true,
     buf: { assistant, streamingInto, thinkingOpen },
     thinkingKnown,
     sends: reconciled.sends,

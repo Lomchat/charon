@@ -28,6 +28,9 @@ export type BridgeEvent =
   | { type: 'structured_output'; value: unknown; truncated?: boolean; rowId?: number }
   | { type: 'thinking'; text: string; replay?: boolean; rowId?: number }
   | { type: 'generation_progress'; characters: number }
+  // The provider is summarising the conversation: the composer waits.
+  // Stream memory, mirrored by the window GET's `liveCompacting`.
+  | { type: 'compacting'; active: boolean }
   // `turnTools` = tool calls of the current turn so far (thinking bar).
   | { type: 'tool_use'; id: string; name: string; input: any; rowId?: number; turnTools?: number }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean; rowId?: number }

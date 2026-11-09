@@ -45,6 +45,8 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   // ── LOW: cross-session facts every tab needs regardless of its focus ──────
   // Session lifecycle + the sidebar badges and the cross-session popups.
   status: LOW_SUMMARY,
+  // Rare and lifecycle-like (it closes the composer): every open view.
+  compacting: LOW,
   mode_changed: LOW_SUMMARY,
   // No browser reads it (status/summary carry the lifecycle): bus only.
   ready: INTERNAL,

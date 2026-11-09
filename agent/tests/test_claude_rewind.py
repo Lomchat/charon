@@ -177,5 +177,37 @@ class ResumeQueueResetTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session._stdin_queue.empty())
 
 
+class CompactingStatusTest(unittest.TestCase):
+    """The CLI's `system/status` frames → ONE `compacting` event per change.
+
+    The hub closes the composer on it: a missed end would leave the box shut,
+    so the turn's end always closes a compaction the CLI never closed."""
+
+    def test_status_frames_and_turn_end(self):
+        from charon_agent.session import AgentSession
+        events = []
+        session = AgentSession("sid", cwd="/tmp", name=None, permission_mode="normal",
+                               claude_session_id=None, on_state_change=lambda: None,
+                               emit=events.append)
+        SystemMessage = type("SystemMessage", (), {})
+
+        def frame(subtype, **data):
+            ev = SystemMessage()
+            ev.subtype, ev.data = subtype, {"subtype": subtype, **data}
+            return [e for e in session._translate(ev) if e["event"] == "compacting"]
+
+        self.assertEqual(frame("status", status="compacting"), [{"event": "compacting", "active": True}])
+        self.assertEqual(frame("status", status="compacting"), [])   # keepalive: no repeat
+        self.assertEqual(frame("status", status="requesting"), [])  # not an end
+        self.assertEqual(frame("compact_boundary"), [{"event": "compacting", "active": False}])
+        self.assertEqual(frame("status", status=None), [])
+
+        frame("status", status="compacting")
+        session.status = "thinking"
+        session._end_turn()    # interrupted: no closing status frame
+        self.assertFalse(session.compacting)
+        self.assertIn("compacting", [e.get("event") for e in events])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

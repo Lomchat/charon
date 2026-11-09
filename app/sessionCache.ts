@@ -65,14 +65,15 @@ function estimateBytes(data: AgentSessionDetailResponse): number {
 // receives keeps it, so opening a session that IS streaming still previews it.
 // `streamingThinking` (a delta provider's open reasoning block), the running
 // tools' output (`streamingToolOutput`) and the reopened row the text extends
-// (`streamingExtends`) are the same kind of live state and are blanked the
-// same way.
+// (`streamingExtends`) and a running compaction (`liveCompacting`) are the
+// same kind of live state and are blanked the same way.
 function withoutLiveState(data: AgentSessionDetailResponse): AgentSessionDetailResponse {
   if (!data.streamingText && !data.streamingThinking && !data.streamingToolOutput?.length
-      && !data.streamingExtends) return data;
+      && !data.streamingExtends && !data.liveCompacting) return data;
   return {
     ...data,
     streamingText: '',
+    ...(data.liveCompacting ? { liveCompacting: false } : {}),
     ...(data.streamingThinking ? { streamingThinking: '', streamingThinkingTsMs: null } : {}),
     ...(data.streamingToolOutput?.length ? { streamingToolOutput: [] } : {}),
     ...(data.streamingExtends ? { streamingExtends: null } : {}),

@@ -659,7 +659,7 @@ class Server:
         transient = event_name in (
             "shell_idle", "shell_status", "usage", "bg_task_progress", "generation_progress",
             "tool_progress", "edit_progress", "plan_progress",
-            "codex_signal", "peer_spawn_request",
+            "codex_signal", "peer_spawn_request", "compacting",
         )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)
@@ -2035,8 +2035,12 @@ class Server:
                         frames,
                         ({"event": "replay_end", "session_id": sid},),
                     ) if count else ()
+                    # `compacting` rides this frame: its toggles are transient
+                    # (never replayed), so a (re)subscribe mid-compaction learns
+                    # it here.
                     await client.send_replay_frames(itertools.chain(
-                        burst, ({"event": "status", "session_id": sid, "status": status},)))
+                        burst, ({"event": "status", "session_id": sid, "status": status,
+                                 "compacting": getattr(s, "compacting", False) is True},)))
                 finally:
                     if scan is not None:
                         scan.close()
@@ -2290,16 +2294,20 @@ class Server:
                     raise RpcError(ERR_INVALID_PARAMS, "Fork transcript could not be located in its account profile")
                 transcript = matches[0]
                 destination = target_dir / transcript.relative_to(source_dir)
-                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                await asyncio.to_thread(shutil.copy2, transcript, destination)
-                child_dir = transcript.with_suffix("")
-                if child_dir.is_dir():
-                    await asyncio.to_thread(shutil.copytree, child_dir, destination.with_suffix(""), dirs_exist_ok=True)
-                    await asyncio.to_thread(shutil.rmtree, child_dir)
-                # This is the SDK-created branch, never the source transcript.
-                # Leaving a copy in the old home would expose it under the
-                # wrong account in native scans and legacy resume paths.
-                await asyncio.to_thread(transcript.unlink)
+                # Hub accounts LINK `projects` to the shared ~/.claude (§14.115):
+                # the branch is already in the target home. Moving it there
+                # would copy the file onto itself, then delete the only copy.
+                if os.path.realpath(transcript) != os.path.realpath(destination):
+                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    await asyncio.to_thread(shutil.copy2, transcript, destination)
+                    child_dir = transcript.with_suffix("")
+                    if child_dir.is_dir():
+                        await asyncio.to_thread(shutil.copytree, child_dir, destination.with_suffix(""), dirs_exist_ok=True)
+                        await asyncio.to_thread(shutil.rmtree, child_dir)
+                    # This is the SDK-created branch, never the source transcript.
+                    # Leaving a copy in the old home would expose it under the
+                    # wrong account in native scans and legacy resume paths.
+                    await asyncio.to_thread(transcript.unlink)
             return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
 
         if method == "codex_fork_points":

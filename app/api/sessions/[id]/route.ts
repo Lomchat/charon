@@ -343,6 +343,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     ...(since == null ? { summary: buildSessionSummary(id) } : {}),
     session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
     liveStatus: stream ? stream.status : row.status,
+    liveCompacting: stream?.compacting === true,
     // Known "applies at next start" flags (window mode; unknown ones omitted).
     ...(since == null && stream ? pendingApplyOf(stream) : {}),
     subscribers: focusCountFor(id),

@@ -613,6 +613,11 @@ class AgentSession:
         # that warning with ResultMessage(subtype="success"), so carry the
         # blocking reason to the Result translator and make the stop honest.
         self._blocking_turn_error: str | None = None
+        # The CLI is summarising the conversation (`system/status:compacting`
+        # until `status:null`, `compact_boundary` or the turn's end). Read by
+        # server.py's post-replay status frame: the `compacting` events that
+        # toggle it are transient.
+        self.compacting = False
         self._stopped = asyncio.Event()
         self._ready_evt = asyncio.Event()
         self._error_msg: str | None = None
@@ -647,6 +652,7 @@ class AgentSession:
             self._endpoint_proxy = None
         """Cleanly stops the session (mark: 'sleeping' or 'killed')."""
         self.status = mark
+        self.compacting = False
         self._turn_done.set()
         self._emit("status", status=mark)
         # Cancel in-flight promises so the main loop doesn't hang
@@ -676,6 +682,7 @@ class AgentSession:
         we may have restarted in the meantime.
         """
         self.status = "sleeping"
+        self.compacting = False
         self._turn_done.set()
         self._emit("status", status="sleeping")
         self._emit("interrupted", forced=True)
@@ -2141,7 +2148,17 @@ class AgentSession:
                         )[:2000]
                         self._blocking_turn_error = msg
                         out.append({"event": "error", "msg": msg})
+                elif sub == "status":
+                    # `compacting` while the CLI summarises (re-sent as a
+                    # keepalive), `requesting` around model calls (no change),
+                    # null once it is back to normal.
+                    st = sdata.get("status")
+                    if st == "compacting":
+                        self._set_compacting(True, out)
+                    elif st != "requesting":
+                        self._set_compacting(False, out)
                 elif sub == "compact_boundary":
+                    self._set_compacting(False, out)
                     # The CLI just replaced the conversation with a summary. Our
                     # OWN transcript keeps every message (it lives in the hub's
                     # SQLite, not in the CLI's), so nothing is lost — but from
@@ -2203,8 +2220,23 @@ class AgentSession:
         self.status = "thinking"
         self._emit("status", status="thinking")
 
+    def _set_compacting(self, on: bool, out: list[dict[str, Any]] | None = None) -> None:
+        """Toggle `compacting`, emitting the transient event on a CHANGE only
+        (into `out` from the translator, directly otherwise)."""
+        if self.compacting == on:
+            return
+        self.compacting = on
+        ev = {"event": "compacting", "active": on}
+        if out is not None:
+            out.append(ev)
+        else:
+            self._emit("compacting", active=on)
+
     def _end_turn(self) -> None:
         """Turn finished (ResultMessage seen). Back to idle 'active'."""
+        # A compaction never outlives its turn (an interrupted one sends no
+        # closing status).
+        self._set_compacting(False)
         if self.status != "thinking":
             return
         self.status = "active"
@@ -2501,6 +2533,8 @@ class AgentSession:
             if self._main_task is None or self._main_task is me:
                 self._client = None
                 self._client_ctx = None
+                # The hub drops it with the status below.
+                self.compacting = False
                 if self.status not in ("error", "killed", "sleeping"):
                     self.status = "sleeping"
                     self._emit("status", status="sleeping")

@@ -174,7 +174,9 @@ export type AgentEvent = (
   // old-epoch buffers, resets its cursors and replays the new log from 0
   // (ts-matched identity dedupes, §14.31). No seq.
   | { event: 'seq_epoch_reset'; session_id: string; after_seq: number; current_seq: number }
-  | { event: 'status'; session_id: string; status: AgentSessionStatus }
+  // `compacting` (agent >= 0.125.0) rides only the post-replay status frame:
+  // the session's compaction state as of the subscribe. Absent ⇒ unknown.
+  | { event: 'status'; session_id: string; status: AgentSessionStatus; compacting?: boolean }
   | { event: 'ready'; session_id: string }
   | { event: 'session_id'; session_id: string; claude_session_id: string }
   // `uuid` (agent >= 0.39.0) is the CLI transcript's own id for the message
@@ -186,6 +188,8 @@ export type AgentEvent = (
   // Transient cumulative text/thinking characters within one model request.
   // Zero resets the request; full assistant blocks must not be counted again.
   | { event: 'generation_progress'; session_id: string; characters: number }
+  // Transient: the provider is summarising the conversation (on a CHANGE).
+  | { event: 'compacting'; session_id: string; active: boolean }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
   | { event: 'tool_progress'; session_id: string; tool_use_id: string; delta: string }

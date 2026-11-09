@@ -104,6 +104,8 @@ export type SessionStreamState = {
   // row's content, drawn into it (transcriptReducer § liveStreamingMessage).
   streamingInto: number | null;
   status: WorkerStatus | null;
+  /** The provider is summarising the conversation (only while thinking). */
+  compacting: boolean;
   // Claude permission mode OR Codex sandbox level (same DB field, kind-dependent).
   permissionMode: SessionMode;
   model: string | null;
@@ -793,7 +795,7 @@ export function useSessionStream(
     messages: state.messages,
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
-    status, permissionMode,
+    status, compacting: state.compacting && status === 'thinking', permissionMode,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,

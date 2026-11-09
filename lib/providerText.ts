@@ -52,6 +52,8 @@ export function providerName(kind: Kind): string {
 export const providerText = {
   /** Transient bar while a turn runs. */
   thinking: (kind: Kind) => `${providerName(kind)} is thinking`,
+  /** The same bar while the provider summarises the conversation. */
+  compacting: (kind: Kind) => `${providerName(kind)} is compacting the conversation`,
 
   /** Composer placeholder, long and short forms. The touch one stays a single
    *  short line: a phone's box rests at two lines, and a hint that fills them
@@ -59,6 +61,10 @@ export const providerText = {
   composerHint: (kind: Kind, touch: boolean) => (touch
     ? `Message ${providerName(kind)}…`
     : `message to ${providerName(kind)} — drop a file anywhere or use 📎 (Enter sends, Shift/Ctrl+Enter for newline)`),
+
+  /** The closed composer during a compaction. */
+  composerCompacting: (kind: Kind) =>
+    `Compacting the conversation — you can write to ${providerName(kind)} again when it is done`,
 
   /** "<Provider>: not signed in" — a blocker line that must name its OWN
    *  backend, since several can be broken independently on one VPS. */

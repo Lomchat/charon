@@ -198,7 +198,7 @@ class SubscribeBackpressureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(f["event"] == "assistant_text" and f["session_id"] == sid
                             for f in frames[1:n + 1]))
         self.assertEqual(frames[n + 1], {"event": "replay_end", "session_id": sid})
-        self.assertEqual(frames[n + 2], {"event": "status", "session_id": sid, "status": "active"})
+        self.assertEqual(frames[n + 2], {"event": "status", "session_id": sid, "status": "active", "compacting": False})
 
     # ── the bug: a burst past both caps ──────────────────────────────────────
     async def test_a_replay_past_both_caps_is_delivered_whole_then_the_held_live_events(self):
@@ -305,7 +305,7 @@ class SubscribeBackpressureTests(unittest.IsolatedAsyncioTestCase):
         c, c_srv = await self.connect()
         rid = await c.request("subscribe", {"session_id": SID, "after_seq": 10})
         frames = await c.until_answer(rid)
-        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active"})
+        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active", "compacting": False})
         self.assertEqual(frames[-1]["result"]["replay_count"], 0)
         # A reading client on the same session is not affected.
         d, d_srv = await self.connect()
@@ -592,7 +592,7 @@ class SubscribeBackpressureTests(unittest.IsolatedAsyncioTestCase):
         # Empty: no markers, status then the answer.
         rid = await a.request("subscribe", {"session_id": SID, "after_seq": 4})
         frames = await a.until_answer(rid)
-        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active"})
+        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active", "compacting": False})
         self.assertEqual(frames[1]["result"]["replay_count"], 0)
         self.assertEqual(len(frames), 2)
 
@@ -798,7 +798,7 @@ class SubscribeBackpressureTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(event_log_mod.EventLog, "open_replay", side_effect=OSError("EIO")):
             rid = await a.request("subscribe", {"session_id": SID, "after_seq": 10})
             frames = await a.until_answer(rid)
-        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active"})
+        self.assertEqual(frames[0], {"event": "status", "session_id": SID, "status": "active", "compacting": False})
         self.assertEqual(frames[-1]["result"]["replay_count"], 0)
         self.assertEqual(frames[-1]["result"]["internal_gaps"], [[11, 30]])
 

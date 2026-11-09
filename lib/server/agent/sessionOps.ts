@@ -612,6 +612,10 @@ export class SessionStream {
   // and which start_session kind the agent gets. Persisted in agentSessions.kind.
   readonly kind: AgentKind = 'claude';
   status: WorkerStatus = 'starting';
+  // The provider is summarising the conversation (agent `compacting`). Memory
+  // only, like `status`: the window GET's `liveCompacting`. Never outlives
+  // the turn (`_setCompacting`).
+  compacting = false;
   // For a Codex session this holds a sandbox mode ('read-only' |
   // 'workspace-write' | 'accept-all'); for Claude a permission mode. Typed as
   // the Claude subset for the existing broadcast plumbing (BridgeEvent is
@@ -1136,6 +1140,13 @@ export class SessionStream {
     }
   }
 
+  /** Set + publish on a CHANGE only (the bus frame before any later one). */
+  private _setCompacting(on: boolean): void {
+    if (this.compacting === on) return;
+    this.compacting = on;
+    this._broadcast({ type: 'compacting', active: on });
+  }
+
   /** Assistant text currently being accumulated (since the last flush).
    *  Exposed so the GET API can pass it to the client → lets the UI
    *  resume an "in-progress" streaming without having to re-listen
@@ -1621,6 +1632,10 @@ export class SessionStream {
         if (this.isReplaying) {
           break;
         }
+        // Compaction lives inside a turn: the post-replay frame says whether
+        // one runs (agent >= 0.125.0), any non-turn status ends it.
+        if (typeof ev.compacting === 'boolean') this._setCompacting(ev.compacting && ev.status === 'thinking');
+        else if (ev.status !== 'thinking') this._setCompacting(false);
         // A new SDK client applies the queued config (the reducer's rule).
         if (ev.status === 'starting') { this.pendingApply.model = false; this.pendingApply.effort = false; }
         if (this.expectKilledEcho && (ev.status === 'starting' || Date.now() > this.expectKilledEchoUntil)) {
@@ -1853,6 +1868,11 @@ export class SessionStream {
         this._broadcast({ type: 'assistant_text', delta: ev.delta, ...(this.isReplaying ? { replay: true } : {}) });
         break;
       }
+      case 'compacting':
+        // Transient on the agent (never replayed); `isReplaying` guards a
+        // future durable copy.
+        if (!this.isReplaying) this._setCompacting(ev.active === true && this.status === 'thinking');
+        break;
       case 'generation_progress':
         if (!this.isReplaying && Number.isFinite(ev.characters) && ev.characters >= 0) {
           this._broadcast({ type: 'generation_progress', characters: ev.characters });
@@ -2362,6 +2382,7 @@ export class SessionStream {
         });
         break;
       case 'compaction': {
+        if (!this.isReplaying) this._setCompacting(false);
         if (this._replayAlreadyPersisted(ev)) { this._dropReplayedAssistantBuffer(); break; }
         // A bubble boundary (lib/assistantBoundaries.ts): the text before the
         // marker persists first, so the marker sorts after it.
@@ -2564,6 +2585,7 @@ export class SessionStream {
         // turn, and no `stop` frame cuts the answer streaming now.
         if (this._replayPrecedesOpenAssistant()) break;
         this.liveToolOutput.clear();
+        if (!this.isReplaying) this._setCompacting(false);
         this.peerDrivenFinish = ev.peer_request_id !== undefined
           ? !!ev.peer_request_id : this._peerTurnFromHistory();
         const assistantFlushed = this._flushAssistant();

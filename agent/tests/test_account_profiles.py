@@ -266,6 +266,33 @@ class ProfileStatusTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source.claude_session_id, 'original-native')
         self.assertFalse((profiles.config_dir('claude', source_id) / 'projects' / '-project' / 'branched-native.jsonl').exists())
 
+    async def test_claude_fork_between_accounts_sharing_projects_keeps_the_branch(self):
+        # Hub accounts link `projects` to one shared dir: "moving" the branch
+        # would copy it onto itself, then unlink the only copy.
+        source_id, target_id = '0123456789abcdef', 'fedcba9876543210'
+        shared = Path(self.temp.name) / 'shared-projects'
+        shared.mkdir()
+        for pid in (source_id, target_id):
+            profiles.config_dir('claude', pid).mkdir(parents=True)
+            (profiles.config_dir('claude', pid) / 'projects').symlink_to(shared)
+        server = Server(socket_path=Path(self.temp.name) / 'agent.sock', state_path=Path(self.temp.name) / 'state.json')
+        server.sessions['session'] = types.SimpleNamespace(kind='claude', session_id='session', status='active', cwd='/project',
+                                                           claude_session_id='original-native', session_config={'accountProfile': source_id})
+        sdk = types.ModuleType('claude_agent_sdk')
+        sdk.fork_session = lambda *_args, **_kwargs: None
+
+        def fork(profile, function, native_id, **kwargs):
+            (shared / '-project').mkdir()
+            (shared / '-project' / 'branched-native.jsonl').write_text('branched history')
+            (shared / '-project' / 'branched-native' / 'subagents').mkdir(parents=True)
+            return {'session_id': 'branched-native'}
+
+        with mock.patch.dict(sys.modules, {'claude_agent_sdk': sdk}), mock.patch('charon_agent.server.sdk_call', fork):
+            result = await server.dispatch('fork_session', {'session_id': 'session', 'account_profile': target_id}, None)
+        self.assertEqual(result['claude_session_id'], 'branched-native')
+        self.assertEqual((shared / '-project' / 'branched-native.jsonl').read_text(), 'branched history')
+        self.assertTrue((shared / '-project' / 'branched-native' / 'subagents').is_dir())
+
     async def test_native_account_id_separates_workspaces_using_the_same_email(self):
         pid = '0123456789abcdef'
         directory = profiles.config_dir('codex', pid)
