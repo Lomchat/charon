@@ -64,9 +64,15 @@ export const providerText = {
    *  backend, since several can be broken independently on one VPS. */
   blocker: (kind: Kind, reason: string) => `${providerName(kind)}: ${reason}`,
 
-  /** Auth-expiry bubble and its call to action. */
-  signInExpired: (kind: Kind) =>
-    `${providerName(kind)} is not signed in on this VPS — this session cannot continue until it is renewed.`,
+  /** Auth-expiry bubble (§14.65): the remedy depends on the login the session
+   *  runs on (§14.115). `on` = its hub account (label + signed in or not),
+   *  null = the VPS's own login; `canMove` = another hub account can take over. */
+  signInExpired: (kind: Kind, on: { account: string; signedIn: boolean } | null, canMove: boolean) => (
+    !on ? (canMove
+      ? `This session still runs on this VPS's own ${providerName(kind)} login, which is signed out. A hub account can take over — same conversation:`
+      : `This session runs on this VPS's own ${providerName(kind)} login, which is signed out — sign in to continue.`)
+    : on.signedIn ? `${on.account} is signed in: the hub has re-sent its token to this VPS — continue where it stopped.`
+    : `${on.account} is signed out — sign it in again to continue.`),
   signInAction: (kind: Kind) => `Sign in to ${providerName(kind)}`,
   signOutOnVps: (kind: Kind) => `Sign out ${providerName(kind)} on this VPS`,
 

@@ -23,6 +23,7 @@ import {
 } from '@/lib/sessionCapabilities';
 import { isTurnInterrupted } from '@/lib/turnInterrupted';
 import { parseSessionError } from '@/lib/sessionError';
+import { isClaudeAuthExpired } from '@/lib/authExpired';
 import { resolveResetAtMs } from '@/lib/rateLimitReset';
 import Message, { type Msg, summarizeToolInput } from './Message';
 import ToolPanel from './ToolPanel';
@@ -530,6 +531,19 @@ export default function SessionView({
     }
     return null;
   }, [messages]);
+  // The newest chat row is an auth-expiry error (§14.65): it alone carries the
+  // remedy (sign in, Continue, or another account), and not while a turn
+  // runs — an older one was dealt with by whatever came after it.
+  const authMsgId = useMemo(() => {
+    if (status === 'thinking' || status === 'starting' || currentAssistant) return null;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'event' || m.role === 'edit_snapshot') continue;
+      if (m.role === 'assistant') return sessionKind === 'claude' && isClaudeAuthExpired(m.content) ? m.id : null;
+      return m.role === 'error' && parseSessionError(m.content)?.action === 'sign_in' ? m.id : null;
+    }
+    return null;
+  }, [messages, status, currentAssistant, sessionKind]);
   const currentAccount = accountProfileId(selected);
   // The usage popovers offer the provider's other accounts (§14.115); a turn
   // in flight, or background tasks the restart would kill with the CLI
@@ -996,7 +1010,7 @@ export default function SessionView({
                   </div>
                 )}
                 {liveMessage?.id === '__streaming' && (
-                  <Message m={{ ...liveMessage, model: effectiveModel }} streaming kind={sessionKind} onReauth={endpoint.active ? undefined : onReauth}
+                  <Message m={{ ...liveMessage, model: effectiveModel }} streaming kind={sessionKind}
                     substitutedFor={substitute ? model : null}
                     peerReplyTo={peerReplies.streamingReplyTo} onPeerRequestHover={hoverRequest} onPeerRequestJump={jumpToRequest} />
                 )}
@@ -1011,6 +1025,7 @@ export default function SessionView({
                   vpsId={selected.vpsId}
                   cwd={selected.cwd}
                   onReauth={endpoint.active ? undefined : onReauth}
+                  authMsgId={endpoint.active ? null : authMsgId}
                   continuableMsgId={continuableMsgId}
                   onContinue={sendContinue}
                   onScheduleResume={scheduleResume}
@@ -1268,7 +1283,7 @@ export default function SessionView({
 // inside a memoized child means a delta no longer creates/reconciles hundreds
 // of <Message> elements; only the small live-tail bubble changes.
 const MessageHistory = memo(function MessageHistory({
-  renderable, kind, vpsId, cwd, onReauth, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
+  renderable, kind, vpsId, cwd, onReauth, authMsgId, continuableMsgId, schedulableMsgId, onContinue, onScheduleResume, onCancelScheduledResume, turnInFlight,
   limitMsgId, currentAccount, onContinueWithAccount,
   siblings, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyToById,
   liveRow, substitute, selectedModel,
@@ -1287,6 +1302,7 @@ const MessageHistory = memo(function MessageHistory({
   vpsId: string;
   cwd: string | null;
   onReauth?: () => void;
+  authMsgId: string | null;
   continuableMsgId: string | null;
   schedulableMsgId: string | null;
   onContinue: () => void;
@@ -1316,11 +1332,11 @@ const MessageHistory = memo(function MessageHistory({
       attachedResult={attached} kind={kind}
       substitutedFor={substitute && m.model === substitute ? selectedModel : null}
       vpsId={vpsId} cwd={cwd}
-      onReauth={onReauth}
-      onContinue={msg.id === continuableMsgId ? onContinue : undefined}
+      onReauth={msg.id === authMsgId ? onReauth : undefined}
+      onContinue={msg.id === continuableMsgId || msg.id === authMsgId ? onContinue : undefined}
       onScheduleResume={msg.id === schedulableMsgId ? () => onScheduleResume(msg.id) : undefined}
-      onContinueWithAccount={msg.id === limitMsgId ? onContinueWithAccount : undefined}
-      currentAccount={msg.id === limitMsgId ? currentAccount : undefined}
+      onContinueWithAccount={msg.id === limitMsgId || msg.id === authMsgId ? onContinueWithAccount : undefined}
+      currentAccount={msg.id === limitMsgId || msg.id === authMsgId ? currentAccount : undefined}
       onCancelScheduledResume={onCancelScheduledResume}
       orphaned={msg.role === 'tool_use' && !attached && !turnInFlight}
       peerSessionId={peerSessionTarget(msg, siblings)} onOpenPeerSession={onOpenPeerSession}

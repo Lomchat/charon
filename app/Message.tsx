@@ -8,7 +8,7 @@ import type { AgentKind } from '@/lib/types/api';
 import AgentLogo from './AgentLogo';
 import { TurnLedgerLine } from './PromptCacheMarks';
 import { providerName, providerText } from '@/lib/providerText';
-import { apiErrorText, providerAccountLabel } from '@/lib/providerAccounts';
+import { apiErrorText, providerAccountLabel, type ProviderAccount } from '@/lib/providerAccounts';
 import { useAccounts } from './accountsStore';
 import { IconAlarm, IconClipboard } from './icons';
 import { hastText, hastCodeLanguage } from './hastText';
@@ -67,10 +67,10 @@ type Props = {
   // Which backend produced this session (Claude vs Codex). Drives the small
   // per-message agent logo next to the model chip so it's clear who's speaking.
   kind?: AgentKind;
-  // Opens the Claude sign-in modal for this session's VPS. Rendered as a CTA
-  // under an assistant bubble that IS the "OAuth token expired" message
-  // (§14.65) — the fix is one click away from the error instead of a hunt
-  // through the sidebar. MUST be a stable reference (memo, §14.38).
+  // Opens the sign-in modal for this session's account. Given ONLY to the
+  // newest row, when it IS an auth-expiry error (§14.65): with `currentAccount`,
+  // `onContinue` and `onContinueWithAccount` it draws that error's remedy
+  // (`AuthExpiredCta`). MUST be a stable reference (memo, §14.38).
   onReauth?: () => void;
   // Sends "Continue" to this session. Rendered as a CTA under an assistant
   // bubble that IS the CLI's "connection closed mid-response" report (§14.68),
@@ -85,8 +85,9 @@ type Props = {
   substitutedFor?: string | null;
   onScheduleResume?: () => Promise<void>;
   onCancelScheduledResume?: (scheduleId: string) => Promise<void>;
-  // Usage-limit error, newest row: switch this session to another hub account
-  // and continue there (§14.115). `currentAccount` = the one that hit it.
+  // Usage-limit or auth error, newest row: switch this session to another hub
+  // account and continue there (§14.115). `currentAccount` = the one that hit
+  // it (or the VPS's own login: not a hub account id).
   onContinueWithAccount?: (accountId: string) => Promise<void>;
   currentAccount?: string;
   peerSessionId?: string | null;
@@ -229,12 +230,8 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
         </footer>
       )}
       {isAssistant && onReauth && kind === 'claude' && isClaudeAuthExpired(m.content) && (
-        <div className="bubble-reauth">
-          <span>{providerText.signInExpired('claude')}</span>
-          <button type="button" className="wiz-btn primary" onClick={onReauth}>
-            Sign in to Claude
-          </button>
-        </div>
+        <AuthExpiredCta provider="claude" current={currentAccount ?? ''} onReauth={onReauth} onContinue={onContinue}
+          onContinueWithAccount={onContinueWithAccount} />
       )}
       {isAssistant && onContinue && isTurnInterrupted(m.content, m.model) && (
         <ContinueCta onContinue={onContinue} />
@@ -378,12 +375,8 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
         </details>
       )}
       {error.action === 'sign_in' && onReauth && (
-        <div className="bubble-reauth">
-          <span>{providerText.signInExpired(error.provider)}</span>
-          <button type="button" className="wiz-btn primary" onClick={onReauth}>
-            {providerText.signInAction(error.provider)}
-          </button>
-        </div>
+        <AuthExpiredCta provider={error.provider} current={currentAccount ?? ''} onReauth={onReauth} onContinue={onContinue}
+          onContinueWithAccount={onContinueWithAccount} />
       )}
       {error.action === 'continue' && onContinue && <ContinueCta onContinue={onContinue} />}
       {error.kind === 'rate_limit' && onContinueWithAccount && (
@@ -396,33 +389,78 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
   );
 }
 
-/** "Continue with <account>" (§14.115): the provider's other signed-in hub
- *  accounts, least used first when their gauges are known. */
-function ContinueWithAccountCta({ provider, current, onPick }: {
-  provider: AgentKind; current: string; onPick: (accountId: string) => Promise<void>;
-}) {
+/** The provider's signed-in hub accounts other than `current`, least used
+ *  first when their gauges are known: who can take a session over (§14.115). */
+function useTakeoverAccounts(provider: AgentKind, current: string): ProviderAccount[] {
   const { data } = useAccounts();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const load = (id: string) => {
     const u = data.usage[id];
     return Math.max(u?.fiveHour?.utilization ?? 0, u?.sevenDay?.utilization ?? 0);
   };
-  const others = data.accounts.filter((a) => a.provider === provider && a.id !== current && a.status !== 'expired')
+  return data.accounts.filter((a) => a.provider === provider && a.id !== current && a.status !== 'expired')
     .sort((a, b) => load(a.id) - load(b.id));
+}
+
+/** One "Continue with <account>" button per account (switch, then Continue). */
+function TakeoverButtons({ provider, accounts, onPick }: {
+  provider: AgentKind; accounts: ProviderAccount[]; onPick: (accountId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  return <>
+    {accounts.map((a) => (
+      <button key={a.id} type="button" className="wiz-btn primary" disabled={!!busy} onClick={async () => {
+        setBusy(a.id); setError(null);
+        try { await onPick(a.id); } catch (e) { setError(apiErrorText(e)); setBusy(null); }
+      }}>
+        {busy === a.id ? 'switching…' : `Continue with ${providerAccountLabel(providerName(provider), a)}`}
+      </button>
+    ))}
+    {error && <span className="runtime-choice-error" role="alert">{error}</span>}
+  </>;
+}
+
+/** "Continue with <account>" under a usage-limit error (§14.115). */
+function ContinueWithAccountCta({ provider, current, onPick }: {
+  provider: AgentKind; current: string; onPick: (accountId: string) => Promise<void>;
+}) {
+  const others = useTakeoverAccounts(provider, current);
   if (!others.length) return null;
   return (
     <div className="bubble-continue continue-with-account">
       <span>Another account can take over — same conversation:</span>
-      {others.map((a) => (
-        <button key={a.id} type="button" className="wiz-btn primary" disabled={!!busy} onClick={async () => {
-          setBusy(a.id); setError(null);
-          try { await onPick(a.id); } catch (e) { setError(apiErrorText(e)); setBusy(null); }
-        }}>
-          {busy === a.id ? 'switching…' : `Continue with ${providerAccountLabel(providerName(provider), a)}`}
-        </button>
-      ))}
-      {error && <span className="runtime-choice-error" role="alert">{error}</span>}
+      <TakeoverButtons provider={provider} accounts={others} onPick={onPick} />
+    </div>
+  );
+}
+
+/** The auth-expiry remedy (§14.65), on the newest such row only. It depends on
+ *  the login the session runs on (§14.115): its hub account signed out ⇒ sign
+ *  it in again; still signed in ⇒ the hub re-sent the token, Continue. A
+ *  session never moved to a hub account runs on the VPS's own login, which a
+ *  sign-in does NOT fix (it signs a hub account in, the session stays put) ⇒
+ *  the accounts that can take over, sign-in only when there is none. */
+function AuthExpiredCta({ provider, current, onReauth, onContinue, onContinueWithAccount }: {
+  provider: AgentKind; current: string; onReauth: () => void; onContinue?: () => void;
+  onContinueWithAccount?: (accountId: string) => Promise<void>;
+}) {
+  const { data } = useAccounts();
+  const others = useTakeoverAccounts(provider, current);
+  const own = data.accounts.find((a) => a.provider === provider && a.id === current);
+  const signedIn = !!own && own.status !== 'expired';
+  const canMove = !!onContinueWithAccount && others.length > 0 && !signedIn;
+  const on = own ? { account: providerAccountLabel(providerName(provider), own), signedIn } : null;
+  return (
+    <div className="bubble-reauth">
+      <span>{providerText.signInExpired(provider, on, canMove)}</span>
+      {signedIn
+        ? onContinue && <button type="button" className="wiz-btn primary" onClick={onContinue}>Continue</button>
+        : (own || !canMove) && (
+          <button type="button" className="wiz-btn primary" onClick={onReauth}>
+            {own ? 'Sign in again' : providerText.signInAction(provider)}
+          </button>
+        )}
+      {canMove && <TakeoverButtons provider={provider} accounts={others} onPick={onContinueWithAccount!} />}
     </div>
   );
 }
