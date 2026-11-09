@@ -24,6 +24,8 @@ AGENT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(AGENT_DIR))
 
 SERVER = AGENT_DIR / "charon_agent" / "server.py"
+# The per-session half of the driver (§14.117): resume/rewind live here now.
+DRIVERS = (SERVER, AGENT_DIR / "charon_agent" / "session_ops.py")
 
 # What `server.py` calls a session it is holding.
 SESSION_VARS = {"s", "s_", "sess", "session", "target", "other"}
@@ -45,7 +47,6 @@ def driver_attributes() -> set[str]:
     satisfy a path it can never reach — the opposite of the §14.102 rule that
     only a decision EVERY provider owes belongs in the shared contract.
     """
-    tree = ast.parse(SERVER.read_text("utf-8"))
     provider_ids = ("claude", "codex", "cursor")
     found: set[str] = set()
 
@@ -62,16 +63,18 @@ def driver_attributes() -> set[str]:
             if isinstance(base, ast.Name) and base.id in SESSION_VARS:
                 found.add(child.attr)
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if any(pid in node.name.lower() for pid in provider_ids):
-                continue
-            # Scan the body only, so a nested provider-specific helper is
-            # skipped by its own iteration rather than through its parent.
-            for stmt in node.body:
-                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    for path in DRIVERS:
+        tree = ast.parse(path.read_text("utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if any(pid in node.name.lower() for pid in provider_ids):
                     continue
-                scan(stmt)
+                # Scan the body only, so a nested provider-specific helper is
+                # skipped by its own iteration rather than through its parent.
+                for stmt in node.body:
+                    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    scan(stmt)
     return found
 
 

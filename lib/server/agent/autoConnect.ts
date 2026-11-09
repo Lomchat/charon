@@ -11,6 +11,7 @@ import { armAccountProfileWatch } from './accountProfiles';
 import { startInteractionSweeper } from './interactionSweeper';
 import { refreshModelsIfStale } from '@/lib/server/hub/modelSync';
 import { hubHooks } from './hubHooks';
+import { noteHello } from '@/lib/server/hub/sessionRuntimes';
 import type { AgentClient } from './AgentClient';
 import type { Vps } from '@/lib/db/schema';
 
@@ -45,6 +46,8 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
   const runReconcile = () => {
     const hello = client.hello;
     if (!hello) return;
+    // Which sessions still run pre-update code (§14.117); arms the moves.
+    noteHello(vpsId, hello);
     // Hub-owned accounts FIRST (§14.115): a session reconcile resumes must
     // find its account's credentials on the box. A failed push is retried by
     // the accounts engine's tick; reconcile never waits on it for long.

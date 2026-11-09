@@ -8369,6 +8369,14 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   margin-left: 6px; font-size: 11px; color: var(--violet);
   opacity: 0.85; white-space: nowrap; cursor: default;
 }
+/* Still on the agent code of before an update (§14.117). */
+.bar-outdated {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  width: fit-content; max-width: 100%; /* never stretched by the column layout */
+  margin-left: 6px; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: var(--radius-sm); color: var(--warning); font-size: 10px; cursor: default;
+}
+.app-bar .bar-outdated { text-transform: none; letter-spacing: normal; }
 .cs-card-handle {
   color: var(--violet); opacity: 0.8; margin-right: 6px;
   white-space: nowrap; flex: none;
@@ -8829,6 +8837,9 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .app-bar .bar-title .bar-name { flex: 0 1 auto; min-width: 0; }
   /* The handle gives way first: the name is what a human reads. */
   .app-bar .bar-title .bar-handle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* The title line has no room for words: the sign alone, never squeezed. */
+  .app-bar .bar-title .bar-outdated { flex: none; }
+  .app-bar .bar-title .bar-outdated-text { display: none; }
   .app-bar .bar-expand {
     position: static; display: inline-flex; align-items: center; justify-content: center; flex: none;
     width: 22px; height: 22px; margin-left: 2px; padding: 0; border: 0; background: none;

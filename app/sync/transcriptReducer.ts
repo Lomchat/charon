@@ -446,6 +446,9 @@ export type TranscriptState = {
   /** The provider is summarising the conversation (`compacting` frame /
    *  `liveCompacting`): the composer waits. Only meaningful while thinking. */
   compacting: boolean;
+  /** Still on the agent code of before an update (`runtime_outdated` frame /
+   *  `liveRuntimeOutdated`, §14.117): the header says so. */
+  runtimeOutdated: boolean;
   buf: LiveBuffers;
   /** The highest reasoning row id this view knows as persisted
    *  (thinkingMessages.ts § ThinkingLane.known). */
@@ -498,7 +501,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, compacting: false, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, runtimeOutdated: false, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -732,6 +735,9 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       break;
     case 'compacting':
       st = { ...st, compacting: ev.active === true };
+      break;
+    case 'runtime_outdated':
+      st = { ...st, runtimeOutdated: ev.outdated === true };
       break;
     case 'stop':
       st = legacyBoundary(st, nowMs);
@@ -1147,6 +1153,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     queues,
     status: liveStatus,
     compacting: r.liveCompacting === true,
+    runtimeOutdated: r.liveRuntimeOutdated === true,
     buf: { assistant, streamingInto, thinkingOpen },
     thinkingKnown,
     sends: reconciled.sends,

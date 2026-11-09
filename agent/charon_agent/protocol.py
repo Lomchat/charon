@@ -233,6 +233,9 @@ METHODS = {
     "respond_exit_plan",
     "sleep_session",
     "kill_session",
+    # Hot updates (agent >= 0.127.0, §14.117): move ONE idle session from an
+    # outdated runtime process onto the current one. Hub-driven, idle-gated.
+    "migrate_session",
     # Persistent PTY shells (agent >= 0.7.0). See agent/charon_agent/shell.py.
     # All routing through the same _emit pipeline as sessions, with shell_id
     # as the channel key (in the `session_id` JSON field for protocol reuse).

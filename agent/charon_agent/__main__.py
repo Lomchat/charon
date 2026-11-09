@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     # ── Shell holder mode (>= 0.10.0) ──
     # A detached per-shell process owning the PTY + bash so the shell
     # survives agent restarts. Spawned BY the agent, never by hand.
+    p.add_argument("--runtime", metavar="GENERATION", default=None,
+                   help="internal: run as the detached session runtime of a generation")
     p.add_argument("--shell-holder", metavar="SHELL_ID", default=None,
                    help="internal: run as the detached PTY holder for a shell")
     p.add_argument("--cwd", default=None, help="holder: shell working directory")
@@ -152,6 +154,13 @@ def main(argv: list[str] | None = None) -> int:
             rows=args.rows,
             state_dir=state_dir,
         )
+
+    if args.runtime:
+        # Sessions live here, not in the daemon (§14.117). `--socket` names
+        # the DAEMON's socket (peer MCP); the runtime's own derives from
+        # the state dir and the generation.
+        from .runtime import runtime_main
+        return runtime_main(args.runtime, state_path.parent, socket_path)
 
     if args.connect:
         from .client import connect_main

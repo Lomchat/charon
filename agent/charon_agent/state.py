@@ -51,10 +51,15 @@ def save_state(
     sessions: list[dict[str, Any]],
     *,
     peer_messages: list[dict[str, Any]] | None = None,
+    pending_kills: list[str] | None = None,
 ) -> None:
     """Atomic write: tmp + rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": STATE_VERSION, "sessions": sessions}
+    if pending_kills:
+        # Sessions deleted while their runtime was unreachable (§14.117): the
+        # next attach of that runtime must kill them, never re-adopt them.
+        data["pending_kills"] = pending_kills
     if peer_messages:
         # Provider-neutral peer request/reply ledger. Kept beside the session
         # lifecycle so a daemon restart cannot turn "processing" into

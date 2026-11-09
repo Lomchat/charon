@@ -79,6 +79,19 @@ control socket, durable log and bounded offline spool. A shell therefore
 survives a browser close, a hub restart and an agent update; the daemon
 reattaches to the holders it finds on boot.
 
+**Session runtimes.** Live sessions follow the same rule: their provider
+objects (and so their CLIs) belong to a detached runtime process, one per
+code generation (a frozen copy of the zipapp plus the provider SDK versions),
+not to the daemon. The daemon keeps a proxy per session, owns the event log,
+subscribers, peer ledger and state.json, and forwards per-session calls. A
+runtime numbers what it sends and keeps it until the daemon acks it after
+logging, so a daemon restart in the middle of a turn loses no event and logs
+none twice; a restarted daemon re-adopts every runtime before restoring
+anything. After an update the old runtime keeps its sessions running; each
+one is moved to the current runtime when idle (stop, then resume — hidden
+from the hub), and the drained runtime exits. Only when no runtime can start
+does a session run inside the daemon, as before.
+
 ## Transport
 
 ```bash
@@ -135,9 +148,13 @@ install the CLIs (no Node/npm required on the VPS) → base64-pipe the committed
 zipapp → install a systemd-user unit with `KillMode=process` (cron fallback on
 old systems) → ping the socket and report login state.
 
-Manual and automatic updates share one flow: snapshot live sessions, update SDKs
-and the zipapp, rewrite the unit, restart, ping, resume. Automatic updates wait
-for a quiet VPS. `CHARON_INSTANCE` gives a second hub on the same VPS its own
+Manual and automatic updates share one flow: update SDKs and the zipapp,
+rewrite the unit, restart, ping. On an agent with session runtimes the restart
+touches no session (only one still booting delays an automatic update); the
+hub then moves each outdated session once it is idle — no turn, human gate,
+background task or recent activity — and the session header says so until
+then. Older agents keep the original flow: snapshot live sessions, restart,
+resume, and automatic updates wait for a quiet VPS. `CHARON_INSTANCE` gives a second hub on the same VPS its own
 state/socket/log home and unit; the venv and provider credentials stay shared.
 
 ## Security properties
@@ -157,14 +174,16 @@ picks the provider's permission/sandbox mode and must treat each VPS as trusted.
 
 ## Consequences
 
-**Benefits:** hub and browser restarts no longer end sessions or shells; one SSH
+**Benefits:** hub and browser restarts — and agent updates — no longer end
+sessions or shells; one SSH
 connection per VPS; recovery has an exact cursor and explicit gaps; workspace,
 Git, LSP, usage and peer messaging share one transport and lifecycle owner;
 rolling upgrades are observable and capability-compatible.
 
 **Costs:** the daemon is an important resident process with a broad (bounded)
 protocol surface; provider SDK changes must be normalized without erasing real
-differences; a daemon crash interrupts active turns (sessions normally resume);
+differences; a runtime process per generation adds memory, and a runtime crash
+interrupts its active turns (its sessions are restored in a new one);
 peer routing is narrower than a fleet-wide bus; the committed zipapp must be
 rebuilt reproducibly with every agent change.
 

@@ -7,6 +7,7 @@ import { dropAgentClient, getAgentClient, holdAgentConnection } from '@/lib/serv
 import { resumeUpdatedSessions } from './resumeUpdatedSessions';
 import { armAgentClientHooks } from '@/lib/server/agent/autoConnect';
 import { emitGlobalVpsStatus } from '@/lib/server/agent/sessionOps';
+import { vpsHotUpdate } from './sessionRuntimes';
 
 /** One update per VPS, including confirmed session recovery. Pool users wait
  * until the replacement daemon is available; durable intent survives hub exit. */
@@ -40,10 +41,15 @@ async function updateAndResume(vps: Vps): Promise<AgentUpdateFlowResult> {
 }
 
 async function performUpdate(vps: Vps, release: () => void): Promise<AgentUpdateFlowResult> {
+  // An agent running its sessions in runtime processes (§14.117) restarts
+  // without stopping them: nothing to snapshot, nothing to resume — they
+  // are moved to the new code one by one, when idle (sessionRuntimes.ts).
+  // Read BEFORE the drop: it is the RUNNING agent that decides.
+  const hot = vpsHotUpdate(vps.id) === true;
   // 1. Snapshot BEFORE the drop/update: these DB statuses are still the
   // pre-update truth. sleepRequested=1 means the user WANTS it asleep —
   // never resurrect those (§14.46).
-  const toResume = db.select({ id: agentSessions.id })
+  const toResume = hot ? [] : db.select({ id: agentSessions.id })
     .from(agentSessions)
     .where(and(
       eq(agentSessions.vpsId, vps.id),

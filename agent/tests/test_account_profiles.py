@@ -258,7 +258,7 @@ class ProfileStatusTest(unittest.IsolatedAsyncioTestCase):
             transcript.write_text('branched history')
             return {'session_id': 'branched-native'}
 
-        with mock.patch.dict(sys.modules, {'claude_agent_sdk': sdk}), mock.patch('charon_agent.server.sdk_call', fork):
+        with mock.patch.dict(sys.modules, {'claude_agent_sdk': sdk}), mock.patch('charon_agent.session_ops.sdk_call', fork):
             result = await server.dispatch('fork_session', {'session_id': 'session', 'account_profile': target_id}, None)
         self.assertEqual(result['claude_session_id'], 'branched-native')
         self.assertEqual((target_dir / 'projects' / '-project' / 'branched-native.jsonl').read_text(), 'branched history')
@@ -287,7 +287,7 @@ class ProfileStatusTest(unittest.IsolatedAsyncioTestCase):
             (shared / '-project' / 'branched-native' / 'subagents').mkdir(parents=True)
             return {'session_id': 'branched-native'}
 
-        with mock.patch.dict(sys.modules, {'claude_agent_sdk': sdk}), mock.patch('charon_agent.server.sdk_call', fork):
+        with mock.patch.dict(sys.modules, {'claude_agent_sdk': sdk}), mock.patch('charon_agent.session_ops.sdk_call', fork):
             result = await server.dispatch('fork_session', {'session_id': 'session', 'account_profile': target_id}, None)
         self.assertEqual(result['claude_session_id'], 'branched-native')
         self.assertEqual((shared / '-project' / 'branched-native.jsonl').read_text(), 'branched history')

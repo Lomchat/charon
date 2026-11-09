@@ -15,6 +15,7 @@ import {
 import { sendPlainToTelegram } from './telegram';
 import { sendPushToAll } from './webPush';
 import { runningBgTasksIfWarm, pruneStaleBgTasks } from './bgTaskState';
+import { isVpsMigrating, vpsHotUpdate } from './sessionRuntimes';
 
 /**
  * Fleet-wide `claude-agent-sdk` + `openai-codex` auto-update tick.
@@ -164,6 +165,20 @@ function hasRunningBgTask(sessionId: string, nowS: number): boolean {
   // complete the VPS counts as busy — never restarted from under a task.
   const running = runningBgTasksIfWarm(sessionId);
   return running == null || pruneStaleBgTasks(running, nowS);
+}
+
+/** The hot-update gate (§14.117): a session booting (its runtime may be
+ *  importing the SDKs pip is about to replace) or being moved. */
+export function isVpsStartingOrMoving(vpsId: string): boolean {
+  if (isVpsMigrating(vpsId)) return true;
+  return db.select({ id: agentSessions.id })
+    .from(agentSessions)
+    .where(and(
+      eq(agentSessions.vpsId, vpsId),
+      eq(agentSessions.archived, 0),
+      eq(agentSessions.status, 'starting'),
+    ))
+    .limit(1).all().length > 0;
 }
 
 /** The auto-update quiet gate (exported for its tests). */
@@ -412,13 +427,18 @@ async function tick(): Promise<void> {
         console.log(`[sdkWatch] ${v.name}: this target already attempted this process — skipped (badge/button remain)`);
         continue;
       }
-      if (isVpsBusy(v.id)) {
+      // An agent whose sessions live in runtime processes (§14.117) restarts
+      // under running turns without touching them: only a session still
+      // booting (or being moved) can be caught by the update. The others get
+      // the full quiet gate.
+      const hot = vpsHotUpdate(v.id) === true;
+      if (hot ? isVpsStartingOrMoving(v.id) : isVpsBusy(v.id)) {
         console.log(`[sdkWatch] ${v.name}: busy, skipped (retry next tick)`);
         skippedBusy.push(v.name);
         continue;
       }
       state.attempted.set(key, Date.now());
-      console.log(`[sdkWatch] ${v.name}: idle, auto-updating (${reason(v)})`);
+      console.log(`[sdkWatch] ${v.name}: ${hot ? 'hot' : 'idle'}, auto-updating (${reason(v)})`);
       const res = await runAgentUpdateFlow(v);
       if (res.ok) {
         // ok = pyz deployed + restart + ping OK. sdkVersion/newPyzSha reflect

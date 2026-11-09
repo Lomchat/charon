@@ -58,6 +58,11 @@ export type AgentSessionInfo = {
   model?: string | null;
   fallback_model?: string | null;
   effort?: AnyEffort | null;
+  // Session runtimes (agent >= 0.127.0, §14.117): which runtime process runs
+  // it, and whether that is an older generation than the daemon's (the
+  // session still runs the code of before an update until it is moved).
+  runtime_generation?: string | null;
+  outdated?: boolean;
 };
 
 export type AgentHelloResult = {
@@ -88,6 +93,11 @@ export type AgentHelloResult = {
   cursor_sdk_version?: string | null;
   pid: number;
   sessions: AgentSessionInfo[];
+  // Sessions live in runtime processes (agent >= 0.127.0, §14.117): a daemon
+  // restart — an agent update — leaves them running. False while any session
+  // is hosted inline (no runtime could start); absent on older agents.
+  hot_update?: boolean;
+  runtime_generation?: string;
 };
 
 // A single Codex model from the catalog (list_codex_models RPC). The catalog
@@ -190,6 +200,9 @@ export type AgentEvent = (
   | { event: 'generation_progress'; session_id: string; characters: number }
   // Transient: the provider is summarising the conversation (on a CHANGE).
   | { event: 'compacting'; session_id: string; active: boolean }
+  // Which runtime process runs the session (agent >= 0.127.0, §14.117).
+  // Transient: hello re-states it on every (re)connect.
+  | { event: 'session_runtime'; session_id: string; generation: string | null; outdated: boolean }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
   | { event: 'tool_progress'; session_id: string; tool_use_id: string; delta: string }
@@ -608,7 +621,10 @@ export type AgentMethodName =
   | 'respond_question'
   | 'respond_exit_plan'
   | 'sleep_session'
-  | 'kill_session';
+  | 'kill_session'
+  // Hot updates (agent >= 0.127.0, §14.117): move one idle session from an
+  // outdated runtime onto the current one.
+  | 'migrate_session';
 
 // Per-shell info returned by `shell_list` and `shell_start` (agent >= 0.7.0).
 export type AgentShellInfo = {

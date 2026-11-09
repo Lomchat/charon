@@ -21,6 +21,7 @@ import of every backend would make one missing dependency fatal for all.
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 
@@ -123,6 +124,28 @@ PROVIDERS: "dict[str, ProviderSpec]" = {
 
 #: The kind a request may omit. Charon shipped Claude-only, so every kind-less
 #: caller means Claude — a data fact, not a preference.
+# Test-only backend: a file path in CHARON_TEST_PROVIDER defining `EchoSession`
+# registers kind "echo" (agent/tests/fixtures/echo_provider.py). It lets the
+# daemon↔runtime integration test drive real processes without any SDK; the
+# hub never asks for it, and without the variable it does not exist.
+_TEST_PROVIDER = os.environ.get("CHARON_TEST_PROVIDER")
+if _TEST_PROVIDER:
+    _echo_cache: "list[Any]" = []
+
+    def _echo_class() -> Any:
+        if not _echo_cache:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("charon_test_provider", _TEST_PROVIDER)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            _echo_cache.append(mod.EchoSession)
+        return _echo_cache[0]
+
+    PROVIDERS["echo"] = ProviderSpec(
+        "echo", "session_config", _echo_class, lambda: (True, ""),
+        rewind=None, compact=None,
+    )
+
 DEFAULT_KIND = "claude"
 
 #: Declared kinds, for the -32602 message listing what IS accepted.

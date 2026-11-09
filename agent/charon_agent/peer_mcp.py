@@ -10,7 +10,11 @@ from __future__ import annotations
 import json
 import socket
 import sys
+import time
 from typing import Any
+
+# How long a tool call waits for a restarting daemon's socket.
+DAEMON_RESTART_WAIT_S = 20.0
 
 
 PEER_MODEL_INSTRUCTIONS = (
@@ -162,7 +166,17 @@ def _agent_call(socket_path: str, method: str, params: dict[str, Any],
     raw = (json.dumps(request, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
-        sock.connect(socket_path)
+        # The daemon restarts under live sessions (an agent update, §14.117):
+        # its socket is briefly absent. Wait for it rather than fail the tool.
+        deadline = time.monotonic() + DAEMON_RESTART_WAIT_S
+        while True:
+            try:
+                sock.connect(socket_path)
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.25)
         sock.sendall(raw)
         chunks = bytearray()
         while b"\n" not in chunks:

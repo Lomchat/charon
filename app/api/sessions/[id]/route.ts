@@ -26,6 +26,7 @@ import { countToolCalls, exitPlanFallback, withBgTaskLaunchers } from '@/lib/ser
 import type { TranscriptView } from '@/lib/transcriptRows';
 import { normalizeSessionHandle } from '@/lib/server/agent/sessionHandles';
 import { runningBgTaskDetailsIfWarm } from '@/lib/server/hub/bgTaskState';
+import { isRuntimeOutdated } from '@/lib/server/hub/sessionRuntimes';
 import { attachPeerAssistantReplies } from '@/lib/server/hub/peerReplyContext';
 import { attachAsyncQuestionState } from '@/lib/server/agent/asyncQuestions';
 import { timeSection } from '@/lib/server/perf/loopLag';
@@ -347,6 +348,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     session: { ...row, providerConfig: undefined, accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) },
     liveStatus: stream ? stream.status : row.status,
     liveCompacting: stream?.compacting === true,
+    // Still on the agent code of before an update (§14.117): header warning.
+    liveRuntimeOutdated: isRuntimeOutdated(id),
     // Known "applies at next start" flags (window mode; unknown ones omitted).
     ...(since == null && stream ? pendingApplyOf(stream) : {}),
     subscribers: focusCountFor(id),

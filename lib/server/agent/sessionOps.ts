@@ -44,6 +44,7 @@ import { classifySessionError, type SessionErrorPayload } from '@/lib/sessionErr
 import { pickVpsRuntimeFields } from '@/lib/vpsRuntimeFields';
 import { normalizeResetAtMs, resolveResetAtMs } from '@/lib/rateLimitReset';
 import { purgeSessionBlobs } from '@/lib/server/hub/attachments';
+import { noteSessionRuntime } from '@/lib/server/hub/sessionRuntimes';
 import { dropTabsForRef } from '@/lib/server/hub/tabs';
 import {
   clearSessionActivity, fileFromToolUse, noteActivity, type FileActivity,
@@ -1851,6 +1852,11 @@ export class SessionStream {
         // Transient on the agent (never replayed); `isReplaying` guards a
         // future durable copy.
         if (!this.isReplaying) this._setCompacting(ev.active === true && this.status === 'thinking');
+        break;
+      case 'session_runtime':
+        // Transient (never replayed): the runtime process now running it
+        // (§14.117). Hub memory, re-stated by every hello.
+        if (!this.isReplaying) noteSessionRuntime(this.vpsId, this.id, ev.outdated === true);
         break;
       case 'generation_progress':
         if (!this.isReplaying && Number.isFinite(ev.characters) && ev.characters >= 0) {

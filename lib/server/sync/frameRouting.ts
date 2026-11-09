@@ -47,6 +47,7 @@ export const FRAME_CLASS: Record<KnownFrameType, FrameClass> = {
   status: LOW_SUMMARY,
   // Rare and lifecycle-like (it closes the composer): every open view.
   compacting: LOW,
+  runtime_outdated: LOW,
   mode_changed: LOW_SUMMARY,
   // No browser reads it (status/summary carry the lifecycle): bus only.
   ready: INTERNAL,

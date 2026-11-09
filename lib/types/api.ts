@@ -1321,6 +1321,9 @@ export type AgentSessionDetailResponse = {
   // The provider is summarising the conversation (stream memory, frame
   // `compacting`). Optional: older hubs omit it.
   liveCompacting?: boolean;
+  // The session still runs the agent code of before an update (§14.117):
+  // moved automatically once idle. Optional: older hubs omit it.
+  liveRuntimeOutdated?: boolean;
   // "Applies at next start" flags the hub knows (window mode; a key is absent
   // when unknown since the hub's boot — keep the view's own value).
   pendingApply?: { model?: boolean; effort?: boolean };

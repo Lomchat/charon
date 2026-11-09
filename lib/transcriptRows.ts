@@ -105,6 +105,7 @@ export const FRAME_SNAPSHOT_CLASS: Record<KnownFrameType, SnapshotClass> = {
   stop: 'durable',
   status: 'durable',                 // `liveStatus` (stream memory, set before the publish)
   compacting: 'durable',             // `liveCompacting` (same)
+  runtime_outdated: 'durable',       // `liveRuntimeOutdated` (hub memory, set before the publish)
   mode_changed: 'durable',
   model_changed: 'durable',
   effort_changed: 'durable',

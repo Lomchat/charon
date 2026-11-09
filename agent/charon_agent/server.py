@@ -1,7 +1,7 @@
 """Main daemon: Unix socket server + JSON-RPC dispatch + session mgmt."""
 from __future__ import annotations
 
-from .account_profiles import profile_id as _profile_id, status as profile_status, sdk_call, config_dir, signature as profile_signature
+from .account_profiles import profile_id as _profile_id, status as profile_status, signature as profile_signature
 
 import asyncio
 import hashlib
@@ -120,6 +120,17 @@ from .codex_session import (
 from .shell import AgentShell
 from .state import load_state, save_state
 from .usage import fetch_usage
+from . import session_ops
+from .runtime import process_home, runtimes_dir
+from .runtime_client import (
+    LIVE_STATUSES,
+    RemoteSession,
+    RuntimeConn,
+    compute_generation,
+    freeze_pyz,
+    proc_alive,
+    runtime_processes,
+)
 
 
 def profile_id(value: Any = None) -> str:
@@ -178,6 +189,11 @@ _SPAWN_HUB_TIMEOUT_S = 25.0
 _SPAWN_READY_TIMEOUT_S = 20.0
 _SPAWN_BG_DEADLINE_S = 5 * 60.0
 _SPAWN_FIELD_MAX = 256
+# Session runtimes (§14.117).
+RUNTIME_SPAWN_TIMEOUT_S = 60.0     # imports of every SDK on a slow box
+RUNTIME_RETRY_S = 30.0             # after a failed spawn, inline meanwhile
+MIGRATE_QUIET_S = float(os.environ.get("CHARON_MIGRATE_QUIET_S") or 15.0)  # no move this soon after input
+MIGRATE_START_TIMEOUT_S = 60.0
 
 
 class Server:
@@ -246,6 +262,17 @@ class Server:
         self.spawn_pending: dict[str, int] = {}
         self.spawn_bg_tasks: set[asyncio.Task] = set()
         self.peer_reply_inflight: set[str] = set()
+        # Session runtimes (§14.117): generation → connection.
+        self.runtimes: dict[str, RuntimeConn] = {}
+        self.generation = "inline"
+        self._frozen_pyz: Path | None = None
+        self._runtime_lock = asyncio.Lock()
+        self._runtime_failed_at = -1e9
+        self._bg_tasks: set[asyncio.Task] = set()
+        self._unrestored: dict[str, dict[str, Any]] = {}
+        # Deleted while their runtime was unreachable: killed at its attach.
+        self._pending_kills: set[str] = set()
+        self._booted = False
         self._state_lock = asyncio.Lock()
         self._save_pending = False
         self._stopping = False
@@ -262,11 +289,15 @@ class Server:
         async with self._state_lock:
             try:
                 sessions = [s.to_persist() for s in self.sessions.values()]
+                # Rows a boot could not put back stay on disk for the next.
+                sessions += [row for sid, row in self._unrestored.items()
+                             if sid not in self.sessions]
                 # save_state is sync (short file). No need for a threadpool.
                 save_state(
                     self.state_path,
                     sessions,
                     peer_messages=self._peer_messages_for_state(),
+                    pending_kills=sorted(self._pending_kills),
                 )
             except Exception:
                 traceback.print_exc(file=sys.stderr)
@@ -660,6 +691,8 @@ class Server:
             "shell_idle", "shell_status", "usage", "bg_task_progress", "generation_progress",
             "tool_progress", "edit_progress", "plan_progress",
             "codex_signal", "peer_spawn_request", "compacting",
+            # Which runtime a session runs in: hello re-states it on connect.
+            "session_runtime",
         )
         if not transient:
             # 1. durable log (mutates payload to add seq, ts)
@@ -694,41 +727,12 @@ class Server:
                         and row.get("reply_injection") == "pending":
                     self._schedule_peer_reply_injection(message_id)
 
-    #: Insight RPC → the session attribute that answers it. Used to degrade a
-    #: method a backend does not implement into an `unavailable` envelope
-    #: instead of an AttributeError (§14.103).
-    #:
-    #: ⚠ `unavailable`, NOT `unsupported`. The hub renders `unsupported` as
-    #: "needs a newer agent on this VPS" (§14.95) — true for a rollout lag,
-    #: a lie for a backend that will never have the method however new the
-    #: agent gets. Telling a user to update a box that is already current is
-    #: worse than saying nothing.
-    _SESSION_INSIGHT_ATTR = {
-        "get_context_usage": "context_usage",
-        "mcp_status": "mcp_status",
-        "mcp_toggle": "mcp_toggle",
-        "mcp_reconnect": "mcp_reconnect",
-        "mcp_oauth_login": "mcp_oauth_login",
-        "list_subagents": "subagents",
-        "get_subagent_messages": "subagent_messages",
-        "session_identity": "identity",
-        # Missing from this map, `session_resources` reached `s_.resources()`
-        # on a class that has none and surfaced the raw AttributeError
-        # (-32603 "'CursorSession' object has no attribute 'resources'") in
-        # the panel.
-        "session_resources": "resources",
-    }
-
-    def _insight_unavailable(self, session: Any, method: str) -> "dict[str, Any] | None":
-        """The `unavailable` envelope when this backend has no such surface."""
-        attr = self._SESSION_INSIGHT_ATTR.get(method)
-        if attr is None or callable(getattr(session, attr, None)):
-            return None
-        return {
-            "ok": False, "reason": "unavailable",
-            "error": f"{getattr(session, 'kind', 'this')} sessions do not support {method}",
-        }
-
+    # ── Session construction & hosting ──────────────────────────────────────
+    # Live sessions run in a RUNTIME process (runtime.py, §14.117) so an agent
+    # update restarts this daemon without touching them. `self.sessions` maps
+    # each id to a `RemoteSession` proxy — or, when no runtime could be
+    # started (and in unit tests), to the provider object itself ("inline",
+    # the pre-runtime model: it dies with the daemon).
     def _make_session(
         self,
         *,
@@ -744,38 +748,53 @@ class Server:
         handle: str | None = None,
         provider_config: dict[str, Any] | None = None,
     ) -> Any:
-        """Factory keyed on the agent-type discriminator, driven by the provider
-        REGISTRY (providers.py) rather than a ternary: every backend shares the
-        exact constructor signature + public/private contract this server
-        drives, and only its class and config kwarg differ. Adding a backend is
-        one registry entry — never an edit here."""
-        spec = get_provider(kind)
-        cls = spec.session_class()
-        kwargs: dict[str, Any] = dict(
-            cwd=cwd,
-            name=name,
-            permission_mode=permission_mode,
-            claude_session_id=claude_session_id,
-            emit=self._emit,
-            on_state_change=self._save_state_now,
-            model=model,
-            fallback_model=fallback_model,
-            effort=effort,
-            handle=handle,
-            peer_mcp=self._peer_mcp_config(session_id),
-        )
-        kwargs[spec.config_kwarg] = provider_config
-        return cls(
-            session_id,
-            **kwargs,
-        )
+        """An INLINE session object (never started here)."""
+        return session_ops.build_session({
+            "kind": kind, "session_id": session_id, "cwd": cwd, "name": name,
+            "permission_mode": permission_mode, "claude_session_id": claude_session_id,
+            "model": model, "fallback_model": fallback_model, "effort": effort,
+            "handle": handle, "provider_config": provider_config,
+        }, emit=self._emit, on_state_change=self._save_state_now,
+            socket_path=self.socket_path)
 
     def _peer_mcp_config(self, session_id: str) -> dict[str, Any]:
         """Command both providers launch for the common peer MCP server."""
-        entry = str(Path(sys.argv[0]).resolve())
-        args = [entry] if entry.endswith(".pyz") else ["-m", "charon_agent"]
-        args.extend(("--peer-mcp", session_id, "--socket", str(self.socket_path)))
-        return {"command": sys.executable, "args": args}
+        return session_ops.peer_mcp_config(session_id, self.socket_path)
+
+    async def _host(self, row: dict[str, Any], *, start: bool) -> Any:
+        """Put a session (a persisted-row shape) in the current runtime,
+        started or registered asleep. Falls back to an inline object when no
+        runtime can run — sessions work, they just won't survive a restart."""
+        sid = row["session_id"]
+        self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
+        try:
+            rt = await self._current_runtime()
+        except Exception as e:
+            rt = None
+            print(f"[server] session {sid}: no runtime ({e}) — hosting it inline",
+                  file=sys.stderr, flush=True)
+        if rt is not None:
+            # Errors from a reachable runtime propagate: hosting inline as
+            # well could give the session two writers (§14.97).
+            await rt.request("create", row=row, start=start)
+            s = self.sessions.get(sid)
+            if not isinstance(s, RemoteSession) or s.runtime is not rt:
+                raise RuntimeError(f"runtime {rt.gen} sent no state for {sid}")
+            self._unrestored.pop(sid, None)
+            self.schedule_save()
+            return s
+        s = session_ops.build_session(row, emit=self._emit,
+                                      on_state_change=self._save_state_now,
+                                      socket_path=self.socket_path)
+        self.sessions[sid] = s
+        self._unrestored.pop(sid, None)
+        if start:
+            await s.start()
+        else:
+            status = row.get("status")
+            s.status = status if status in ("sleeping", "error") else "sleeping"
+        self.schedule_save()
+        return s
 
     async def _create_session(
         self,
@@ -795,152 +814,72 @@ class Server:
         parent_session_id: str | None = None,
         parent_handle: str | None = None,
     ) -> Any:
-        effective_handle = handle or cli_name
-        s = self._make_session(
-            kind=kind,
-            session_id=session_id,
-            cwd=cwd,
-            name=name,
-            permission_mode=permission_mode,
-            claude_session_id=claude_session_id,
-            model=model,
-            fallback_model=fallback_model,
-            effort=effort,
-            handle=effective_handle,
-            provider_config=provider_config,
-        )
-        s.parent_session_id = parent_session_id
-        s.parent_handle = parent_handle
-        # Mirror Charon's stable handle to Claude's native START-time --name.
-        # Codex uses the common MCP bus and simply has no cli_name attribute.
-        if effective_handle and hasattr(s, "cli_name"):
-            s.cli_name = effective_handle
-        self.sessions[session_id] = s
-        self.rings.setdefault(session_id, deque(maxlen=RING_SIZE))
-        await s.start()
-        self.schedule_save()
-        return s
-
-    async def _rewind_claude_session(self, session: Any,
-                                     up_to_message_id: str | None) -> dict[str, Any]:
-        """Replace one live Claude handle with a truncated native branch.
-
-        Claude has no rollback primitive. Its supported transcript fork is the
-        equivalent operation: branch at the last message we keep, stop the old
-        writer, then restart this Charon session against the branch. With no
-        anchor we restart fresh. The old transcript stays on disk and files are
-        deliberately untouched.
-        """
-        old_id = getattr(session, "claude_session_id", None)
-        if not isinstance(old_id, str) or not old_id:
-            raise RpcError(ERR_INVALID_PARAMS, "session has no transcript to rewind")
-        if getattr(session, "status", None) in ("thinking", "starting"):
-            raise RpcError(ERR_INVALID_PARAMS, "cannot rewind while a Claude turn is running")
-
-        new_id: str | None = None
-        if up_to_message_id:
-            try:
-                from claude_agent_sdk import fork_session as _fork
-                result = await asyncio.to_thread(
-                    sdk_call, getattr(session, "session_config", {}).get("accountProfile"), "fork_session", old_id, directory=getattr(session, "cwd", None),
-                    up_to_message_id=up_to_message_id,
-                    title=getattr(session, "name", None),
-                )
-            except FileNotFoundError as e:
-                raise RpcError(ERR_INVALID_PARAMS, f"transcript not found: {e}")
-            except ValueError as e:
-                raise RpcError(ERR_INVALID_PARAMS, str(e))
-            new_id = getattr(result, "session_id", None) or (
-                result.get("session_id") if isinstance(result, dict) else None)
-            if not isinstance(new_id, str) or not new_id:
-                raise RpcError(ERR_INTERNAL, "Claude rewind fork returned no session id")
-
-        # Release the old native writer before starting the replacement. A new
-        # queue is intentional: stop() injects an EOF sentinel and a timeout
-        # can leave stale input behind; neither may leak into the new history.
-        await session.stop(mark="sleeping")
-        session.claude_session_id = new_id
-        session._stdin_queue = asyncio.Queue()
-        session._stopped.clear()
-        session._ready_evt.clear()
-        session._session_id_emitted = False
-        session._main_task = None
-        session._client = None
-        session._client_ctx = None
-        session._cli_title_value = None
-        session._error_msg = None
-        session.status = "starting"
-        if new_id:
-            session._emit("session_id", claude_session_id=new_id)
-        await session._save_state()
-        await session.start()
-        self.schedule_save()
-        return {
-            "ok": True,
-            "strategy": "fork" if new_id else "fresh",
-            "old_claude_session_id": old_id,
-            "claude_session_id": new_id,
-        }
+        return await self._host({
+            "kind": kind, "session_id": session_id, "cwd": cwd, "name": name,
+            "permission_mode": permission_mode, "claude_session_id": claude_session_id,
+            "model": model, "fallback_model": fallback_model, "effort": effort,
+            "handle": handle or cli_name, "cli_name": cli_name or handle,
+            "provider_config": provider_config,
+            "parent_session_id": parent_session_id, "parent_handle": parent_handle,
+        }, start=True)
 
     async def _restore_existing(self) -> None:
-        """At boot: reload state.json and attempt a resume for each session.
+        """At boot, AFTER the live runtimes were adopted: put back every
+        session of state.json that no runtime holds (rows loaded up front by
+        `_load_state_rows`, so no save in between can drop them).
 
-        Sessions ignored at restore:
           - status='killed'    → dead for good
-          - status='sleeping'  → explicit pause by the user, stays paused
-        For sessions being resumed but without a claude_session_id (never out
-        of 'starting' before a crash), we add them in memory with status
-        'sleeping' so they are visible but not relaunched on their own
-        (a user's first query never actually initialized them).
+          - status='sleeping'  → registered asleep (an explicit pause)
+          - anything else      → started (the box rebooted, a runtime died)
+        A session a runtime still runs is never started twice (§14.97).
         """
+        for sid, row in list(self._unrestored.items()):
+            try:
+                if sid in self.sessions:
+                    self._unrestored.pop(sid, None)
+                    continue
+                status = row.get("runtime_status") or row.get("status")
+                if status in ("killed",):
+                    self._unrestored.pop(sid, None)
+                    continue
+                row = dict(row)
+                row.pop("runtime_status", None)
+                row["status"] = status
+                row["handle"] = row.get("handle") or row.get("cli_name")
+                row["provider_config"] = session_ops.row_config(row)
+                if status == "sleeping":
+                    await self._host(row, start=False)
+                    continue
+                print(f"[boot] restoring session {sid} (kind={row.get('kind') or 'claude'}, cwd={row.get('cwd')})",
+                      file=sys.stderr, flush=True)
+                await self._host(row, start=True)
+            except Exception as e:
+                print(f"[boot] restore of {sid} failed: {e}", file=sys.stderr, flush=True)
+
+    def _load_state_rows(self) -> None:
+        """Boot, FIRST thing: state.json into memory. Until a row is hosted it
+        stays in `_unrestored`, which every save writes back."""
         state = load_state(self.state_path)
         self._restore_peer_messages(state.get("peer_messages"))
-        sessions = state.get("sessions", []) or []
-        for row in sessions:
-            try:
-                sid = row.get("session_id")
-                cwd = row.get("cwd")
-                if not sid or not cwd:
-                    continue
-                status = row.get("status")
-                if status in ("killed",):
-                    continue
-                if status == "sleeping":
-                    # Load in memory without starting the SDK
-                    self._register_sleeping(row)
-                    continue
-                kind = row.get("kind") or "claude"
-                print(f"[boot] restoring session {sid} (kind={kind}, cwd={cwd})", file=sys.stderr, flush=True)
-                await self._create_session(
-                    session_id=sid,
-                    cwd=cwd,
-                    name=row.get("name"),
-                    permission_mode=row.get("permission_mode") or "normal",
-                    claude_session_id=row.get("claude_session_id"),
-                    kind=kind,
-                    model=row.get("model"),
-                    fallback_model=row.get("fallback_model"),
-                    effort=row.get("effort"),
-                    handle=row.get("handle") or row.get("cli_name"),
-                    cli_name=row.get("cli_name"),
-                    parent_session_id=self._row_parent(row, "parent_session_id"),
-                    parent_handle=self._row_parent(row, "parent_handle"),
-                    provider_config=(row.get("provider_config")
-                                     if isinstance(row.get("provider_config"), dict)
-                                     else row.get("codex_config")),
-                )
-            except Exception as e:
-                print(f"[boot] restore failed: {e}", file=sys.stderr, flush=True)
+        kills = state.get("pending_kills")
+        if isinstance(kills, list):
+            self._pending_kills = {k for k in kills if isinstance(k, str)}
+        for row in state.get("sessions", []) or []:
+            sid = row.get("session_id") if isinstance(row, dict) else None
+            if isinstance(sid, str) and sid and isinstance(row.get("cwd"), str) and row["cwd"] \
+                    and sid not in self._pending_kills:
+                self._unrestored[sid] = row
 
     @staticmethod
     def _row_parent(row: dict[str, Any], key: str) -> str | None:
-        value = row.get(key)
-        return value if isinstance(value, str) and 0 < len(value) <= _SPAWN_FIELD_MAX else None
+        return session_ops.row_parent(row, key)
+
+    async def _rewind_claude_session(self, session: Any,
+                                     up_to_message_id: str | None) -> dict[str, Any]:
+        return await session_ops.rewind_claude_session(self, session, up_to_message_id)
 
     def _register_sleeping(self, row: dict[str, Any]) -> None:
-        """Registers a session in memory with status 'sleeping' without starting it.
-        Used at boot for sessions paused by the user — list_sessions
-        sees them, and an explicit resume will start the SDK."""
+        """Registers an INLINE session asleep without starting it."""
         s = self._make_session(
             kind=row.get("kind") or "claude",
             session_id=row["session_id"],
@@ -952,15 +891,492 @@ class Server:
             fallback_model=row.get("fallback_model"),
             effort=row.get("effort"),
             handle=row.get("handle") or row.get("cli_name"),
-            provider_config=(row.get("provider_config")
-                             if isinstance(row.get("provider_config"), dict)
-                             else row.get("codex_config")),
+            provider_config=session_ops.row_config(row),
         )
         s.parent_session_id = self._row_parent(row, "parent_session_id")
         s.parent_handle = self._row_parent(row, "parent_handle")
         s.status = "sleeping"
         self.sessions[row["session_id"]] = s
         self.rings.setdefault(row["session_id"], deque(maxlen=RING_SIZE))
+
+    # ── Session runtimes (§14.117) ──────────────────────────────────────────
+    async def _session_op(self, s: Any, method: str, params: dict[str, Any]) -> Any:
+        """Run one session_ops method where the session object lives."""
+        if not isinstance(s, RemoteSession):
+            return await session_ops.run(method, params, s, self)
+        await s.wait_migration()
+        rt = s.runtime
+        if rt is None or not rt.connected:
+            raise RpcError(ERR_SESSION_DEAD,
+                           f"session {s.session_id} not running (runtime unavailable)")
+        s.inflight_ops += 1
+        try:
+            if method == "send_input":
+                s.last_input_at = time.monotonic()
+            return await rt.call(s.session_id, method, params)
+        finally:
+            s.inflight_ops -= 1
+
+    @staticmethod
+    def _row_of(s: Any) -> dict[str, Any]:
+        row = dict(s.to_persist())
+        if "runtime_status" in row:
+            row["status"] = row.pop("runtime_status")
+        row["session_id"] = s.session_id
+        return row
+
+    def _runtime_versions(self) -> dict[str, Any]:
+        return {"claude": SDK_VERSION, "codex": CODEX_SDK_VERSION,
+                "codex_cli": CODEX_CLI_VERSION, "cursor": CURSOR_SDK_VERSION}
+
+    def _init_generation(self) -> None:
+        try:
+            self._frozen_pyz, sha = freeze_pyz(self.state_path.parent)
+        except Exception as e:
+            print(f"[runtime] cannot freeze the zipapp: {e}", file=sys.stderr, flush=True)
+            self._frozen_pyz, sha = None, _PYZ_SHA
+        self.generation = compute_generation(sha, self._runtime_versions())
+
+    async def _spawn_runtime(self, gen: str) -> RuntimeConn:
+        import subprocess
+        state_dir = self.state_path.parent
+        if self._frozen_pyz is not None and self._frozen_pyz.is_file():
+            argv = [sys.executable, str(self._frozen_pyz)]
+        else:
+            argv = [sys.executable, "-m", "charon_agent"]
+        argv += ["--runtime", gen, "--socket", str(self.socket_path),
+                 "--state", str(self.state_path)]
+        env = dict(os.environ)
+        pkg_parent = str(Path(__file__).resolve().parent.parent)
+        env["PYTHONPATH"] = pkg_parent + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        try:
+            log_fh: Any = open(state_dir / "agent.log", "ab")
+        except OSError:
+            log_fh = subprocess.DEVNULL
+        try:
+            # Own session: it outlives this daemon and is immune to its signals
+            # (systemd survival also needs KillMode=process, §14.44).
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log_fh,
+                                    stderr=log_fh, env=env, close_fds=True,
+                                    start_new_session=True)
+        finally:
+            if log_fh is not subprocess.DEVNULL:
+                log_fh.close()
+        conn = RuntimeConn(self, gen, state_dir)
+        conn.proc = proc
+        deadline = time.monotonic() + RUNTIME_SPAWN_TIMEOUT_S
+        while True:
+            try:
+                await conn.connect(timeout=2.0)
+                print(f"[runtime] started {gen} (pid {conn.pid})", file=sys.stderr, flush=True)
+                return conn
+            except (OSError, asyncio.TimeoutError):
+                pass
+            code = proc.poll()
+            # 4 = another process already runs this generation: connect to it.
+            if code is not None and code != 4:
+                raise RuntimeError(f"session runtime exited with code {code}")
+            if time.monotonic() > deadline:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                raise RuntimeError("session runtime did not come up")
+            await asyncio.sleep(0.2)
+
+    async def _current_runtime(self) -> RuntimeConn:
+        async with self._runtime_lock:
+            gen = self.generation
+            conn = self.runtimes.get(gen)
+            if conn is not None and conn.recovering:
+                # Never a second connection while we decide whether it lives.
+                try:
+                    await asyncio.wait_for(conn.recovered.wait(), RUNTIME_SPAWN_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    pass
+                conn = self.runtimes.get(gen)
+            if conn is not None and conn.connected:
+                return conn
+            if time.monotonic() - self._runtime_failed_at < RUNTIME_RETRY_S:
+                raise RuntimeError("session runtime unavailable (recent failure)")
+            try:
+                conn = RuntimeConn(self, gen, self.state_path.parent)
+                try:
+                    await conn.connect(timeout=2.0)   # alive, we lost the link
+                except (OSError, asyncio.TimeoutError):
+                    conn = await self._spawn_runtime(gen)
+            except Exception:
+                self._runtime_failed_at = time.monotonic()
+                raise
+            self.runtimes[gen] = conn
+            return conn
+
+    async def _adopt_runtimes(self) -> None:
+        """Boot: reconnect to every runtime still running. Must finish BEFORE
+        state.json is restored: a session one of them holds is never started
+        a second time (§14.97). An unreachable runtime is killed and its
+        children reaped first, for the same reason."""
+        rdir = runtimes_dir(self.state_path.parent)
+        if not rdir.is_dir():
+            return
+        for sock in sorted(rdir.glob("*.sock")):
+            gen = sock.stem
+            known = self.runtimes.get(gen)
+            if known is not None and known.connected:
+                continue
+            conn = RuntimeConn(self, gen, self.state_path.parent)
+            adopted = False
+            for _ in range(5):
+                try:
+                    await conn.connect(timeout=3.0)
+                    adopted = True
+                    break
+                except (OSError, asyncio.TimeoutError):
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    print(f"[boot] runtime {gen}: attach failed: {e}", file=sys.stderr, flush=True)
+                    await asyncio.sleep(0.5)
+            if adopted:
+                self.runtimes[gen] = conn
+                held = sum(1 for x in self.sessions.values()
+                           if isinstance(x, RemoteSession) and x.runtime is conn)
+                print(f"[boot] adopted runtime {gen} (pid {conn.pid}, {held} session(s))",
+                      file=sys.stderr, flush=True)
+                continue
+            await self._bury_runtime(conn)
+
+    async def _bury_runtime(self, conn: RuntimeConn, pid: int | None = None,
+                            start: Any = None) -> None:
+        """Make sure nothing of a lost runtime still writes: its process, then
+        its provider children (its OWN ledger: a respawn of the generation has
+        another). `pid` None = every process of the generation that does not
+        answer on its socket (boot)."""
+        targets = runtime_processes(conn.home)
+        if pid is not None:
+            targets = [(d, i) for d, i in targets if i.get("pid") == pid] or \
+                [(process_home(conn.home, pid), {"pid": pid, "start": start})]
+        for proc_dir, info in targets:
+            if proc_alive(info.get("pid"), info.get("start")):
+                print(f"[runtime] {conn.gen}: unreachable but alive — killing pid {info['pid']}",
+                      file=sys.stderr, flush=True)
+                try:
+                    os.kill(int(info["pid"]), signal.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                reaped = await reap_orphans(proc_dir)
+                if reaped:
+                    print(f"[runtime] {conn.gen}: stopped {len(reaped)} orphan process(es)",
+                          file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[runtime] {conn.gen}: orphan sweep failed: {e}", file=sys.stderr, flush=True)
+        if pid is None:
+            try:
+                conn.sock_path.unlink()
+            except OSError:
+                pass
+
+    def _runtime_state(self, conn: RuntimeConn, snap: Any) -> None:
+        """A runtime's `st` line: create/refresh the session's proxy."""
+        if not isinstance(snap, dict) or not isinstance(snap.get("sid"), str):
+            return
+        sid = snap["sid"]
+        if sid in self._pending_kills:
+            # Deleted while this runtime was unreachable: finish the kill.
+            self._spawn_bg(self._finish_kill(conn, sid))
+            return
+        rs = self.sessions.get(sid)
+        if rs is None:
+            rs = RemoteSession(self, sid, conn)
+            self.sessions[sid] = rs
+            self.rings.setdefault(sid, deque(maxlen=RING_SIZE))
+            moved = True
+        elif isinstance(rs, RemoteSession):
+            moved = rs.runtime is not conn
+            rs.runtime = conn
+        else:
+            print(f"[runtime] {conn.gen} reports {sid}, held inline here — ignored",
+                  file=sys.stderr, flush=True)
+            return
+        self._unrestored.pop(sid, None)
+        rs.update(snap)
+        if moved:
+            self._emit_runtime_change(rs)
+        self.schedule_save()
+        # A stopped session left in an outdated runtime moves right away (it
+        # costs nothing and lets that runtime retire) — once boot is over:
+        # until then `_rebalance` owns it, and a move could open a second
+        # connection to a runtime adoption has not reached yet.
+        if (self._booted and rs.outdated and rs._migration is None and not self._stopping
+                and rs.real_status in ("sleeping", "error")):
+            self._spawn_bg(self._move(rs))
+
+    async def _finish_kill(self, conn: RuntimeConn, sid: str) -> None:
+        try:
+            await conn.request("release", sid=sid, stop="killed")
+            self._pending_kills.discard(sid)
+            self.schedule_save()
+        except RpcError as e:
+            if e.code == ERR_SESSION_NOT_FOUND:
+                self._pending_kills.discard(sid)
+                self.schedule_save()
+
+    def _runtime_event(self, conn: RuntimeConn, payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        rs = self.sessions.get(payload.get("session_id"))
+        if isinstance(rs, RemoteSession) and rs._masked \
+                and payload.get("event") == "status" \
+                and payload.get("status") in ("sleeping", "starting"):
+            return  # the stop + start of a hot-update move are invisible
+        self._emit(payload)
+
+    def _emit_runtime_change(self, rs: RemoteSession) -> None:
+        if rs._migration is not None:
+            return  # announced once the move is over
+        self._emit({"event": "session_runtime", "session_id": rs.session_id,
+                    "generation": rs.generation, "outdated": rs.outdated})
+
+    def _spawn_bg(self, coro: Any) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _migration_blocker(self, rs: RemoteSession) -> str | None:
+        if rs.real_status != "active":
+            return f"status {rs.real_status}"
+        blocker = rs._x.get("blocker")
+        if blocker:
+            return str(blocker)
+        if rs.inflight_ops:
+            return "operation in flight"
+        if time.monotonic() - rs.last_input_at < MIGRATE_QUIET_S:
+            return "recent input"
+        return None
+
+    async def _move(self, rs: RemoteSession) -> None:
+        """Move a STOPPED session (asleep / errored) to the current runtime."""
+        if rs._migration is not None or not rs.outdated:
+            return
+        old = rs.runtime
+        rs._migration = asyncio.get_running_loop().create_future()
+        try:
+            try:
+                res = await old.request("release", sid=rs.session_id, stop=None)
+            except RpcError as e:
+                if e.code != ERR_SESSION_NOT_FOUND:
+                    raise
+                res = None   # already gone from there
+            row = res.get("persist") if isinstance(res, dict) else None
+            row = dict(row) if isinstance(row, dict) else self._row_of(rs)
+            row["session_id"] = rs.session_id
+            rs.runtime = None    # released: a failure below leaves it detached
+            await self._host(row, start=False)
+        except Exception as e:
+            print(f"[runtime] move of {rs.session_id} failed: {e}", file=sys.stderr, flush=True)
+        finally:
+            self._end_migration(rs)
+            self._maybe_retire(old)
+
+    async def _migrate(self, rs: RemoteSession) -> dict[str, Any]:
+        """Move an IDLE live session: stop it in its outdated runtime, resume
+        it in the current one. Its requests wait meanwhile (`wait_migration`)
+        and its stop/start statuses are dropped: to the hub it stays idle."""
+        sid = rs.session_id
+        old = rs.runtime
+        rs._migration = asyncio.get_running_loop().create_future()
+        rs._masked = True
+        released = False
+        try:
+            res = await old.request("release", sid=sid, stop="sleeping", only_if_idle=True)
+            if not (isinstance(res, dict) and res.get("ok")):
+                reason = res.get("reason") if isinstance(res, dict) else None
+                return {"ok": False, "busy": True, "reason": reason}
+            released = True
+            row = dict(res.get("persist") or self._row_of(rs))
+            row["session_id"] = sid
+            await self._host(row, start=False)
+            current = self.sessions.get(sid)
+            if not isinstance(current, RemoteSession):
+                await session_ops.run("resume_session", {}, current, self)
+                return {"ok": False, "error": "no runtime: session resumed inline"}
+            await current.runtime.call(sid, "resume_session", {})
+            deadline = time.monotonic() + MIGRATE_START_TIMEOUT_S
+            while current.real_status == "starting" and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            print(f"[runtime] migrated {sid}: {old.gen} → {current.generation} "
+                  f"({current.real_status})", file=sys.stderr, flush=True)
+            return {"ok": True, "migrated": True, "status": current.real_status}
+        except Exception as e:
+            print(f"[runtime] migration of {sid} failed: {e}", file=sys.stderr, flush=True)
+            if released:
+                # Released from the old runtime: never leave it nowhere.
+                cur = self.sessions.get(sid)
+                if not isinstance(cur, RemoteSession) or cur.runtime is old:
+                    try:
+                        await self._host(self._row_of(rs), start=True)
+                    except Exception as e2:
+                        print(f"[runtime] {sid}: re-host failed: {e2}", file=sys.stderr, flush=True)
+            return {"ok": False, "error": str(e)}
+        finally:
+            self._end_migration(rs)
+            self._maybe_retire(old)
+
+    def _end_migration(self, rs: Any) -> None:
+        fut = getattr(rs, "_migration", None)
+        if fut is None:
+            return
+        masked = getattr(rs, "_masked", False)
+        rs._migration = None
+        rs._masked = False
+        if not fut.done():
+            fut.set_result(None)
+        current = self.sessions.get(rs.session_id)
+        if isinstance(current, RemoteSession):
+            # The hub was shown "still idle" throughout; anything else it must
+            # now learn (a failed restart, a slow start).
+            if masked and current.real_status != "active":
+                self._emit({"event": "status", "session_id": current.session_id,
+                            "status": current.real_status})
+            self._emit_runtime_change(current)
+        self.schedule_save()
+
+    def _maybe_retire(self, conn: RuntimeConn | None) -> None:
+        """An outdated runtime with nothing left exits."""
+        if conn is None or conn.gen == self.generation or conn.retired or not conn.connected:
+            return
+        if any(isinstance(x, RemoteSession) and x.runtime is conn
+               for x in self.sessions.values()):
+            return
+        conn.retired = True
+
+        async def retire() -> None:
+            try:
+                await conn.request("retire")
+                print(f"[runtime] retired {conn.gen}", file=sys.stderr, flush=True)
+            except Exception:
+                conn.retired = False   # retried at the next chance
+        self._spawn_bg(retire())
+
+    async def _runtime_lost(self, conn: RuntimeConn) -> None:
+        """A runtime connection ended. Retired → clean up. Otherwise try to
+        re-attach to the SAME process; a runtime that is really gone has its
+        CLIs reaped and its sessions restored in the current runtime (live
+        ones restarted)."""
+        if self._stopping:
+            return
+        owned = [x for x in self.sessions.values()
+                 if isinstance(x, RemoteSession) and x.runtime is conn]
+        if conn.retired and not owned:
+            if self.runtimes.get(conn.gen) is conn:
+                self.runtimes.pop(conn.gen, None)
+            await self._gc_runtimes()
+            return
+        old_rid, old_pid, old_start = conn.hello.get("rid"), conn.pid, conn.hello.get("start")
+        # Their requests WAIT (as during a move) instead of failing: a failure
+        # would make the hub resume them concurrently with the restore below.
+        loop = asyncio.get_running_loop()
+        held = [x for x in owned if x._migration is None]
+        for x in held:
+            x._migration = loop.create_future()
+        conn.recovering = True
+        conn.recovered.clear()
+        try:
+            for _ in range(10):
+                await asyncio.sleep(0.3)
+                if self._stopping:
+                    return
+                current = self.runtimes.get(conn.gen)
+                if current is not None and current is not conn and current.connected:
+                    break    # superseded: never two connections to one runtime
+                try:
+                    await conn.connect(timeout=2.0)
+                except Exception:
+                    continue
+                if conn.hello.get("rid") == old_rid:
+                    print(f"[runtime] re-attached {conn.gen}", file=sys.stderr, flush=True)
+                    return
+                break        # another process of this generation answers: ours is gone
+            print(f"[runtime] {conn.gen} (pid {old_pid}) is gone — restoring "
+                  f"{len(owned)} session(s)", file=sys.stderr, flush=True)
+            if self.runtimes.get(conn.gen) is conn and not conn.connected:
+                self.runtimes.pop(conn.gen, None)
+            conn.recovering = False
+            conn.recovered.set()
+            if old_pid is not None:
+                await self._bury_runtime(conn, old_pid, old_start)
+            for x in owned:
+                if self.sessions.get(x.session_id) is not x or x.runtime is not conn:
+                    continue
+                was = x.real_status
+                row = self._row_of(x)
+                x.runtime = None
+                if was == "thinking":
+                    self._emit({"event": "error", "session_id": x.session_id,
+                                "msg": "The session runtime stopped unexpectedly; "
+                                       "the turn was interrupted and the session restarted."})
+                try:
+                    await self._host(row, start=was in LIVE_STATUSES)
+                except Exception as e:
+                    print(f"[runtime] restore of {x.session_id} failed: {e}",
+                          file=sys.stderr, flush=True)
+                    # Nothing runs it now: say so instead of looking alive.
+                    x._info = {**x._info, "status": "error"}
+                    x._persist = {**x._persist, "status": "error"}
+                    self._emit({"event": "error", "session_id": x.session_id, "fatal": True,
+                                "msg": f"session runtime lost and restore failed: {e}"})
+                    self._emit({"event": "status", "session_id": x.session_id, "status": "error"})
+            await self._gc_runtimes()
+        finally:
+            conn.recovering = False
+            conn.recovered.set()
+            for x in held:
+                self._end_migration(x)
+
+    async def _gc_runtimes(self) -> None:
+        """Drop what runtimes that no longer run left: their children (reaped
+        through each dead process's ledger), sockets, homes, frozen archives
+        nobody uses."""
+        rdir = runtimes_dir(self.state_path.parent)
+        if not rdir.is_dir():
+            return
+        live = {gen for gen, c in self.runtimes.items() if c.connected or not c.retired}
+        live.add(self.generation)     # possibly being spawned right now
+        used_pyz = {Path(str(c.hello.get("argv0") or "")).name for c in self.runtimes.values()}
+        if self._frozen_pyz is not None:
+            used_pyz.add(self._frozen_pyz.name)
+        import shutil
+        for entry in list(rdir.iterdir()):
+            try:
+                if entry.is_dir():
+                    gone = 0
+                    procs = runtime_processes(entry)
+                    for proc_dir, info in procs:
+                        if proc_alive(info.get("pid"), info.get("start")):
+                            continue
+                        await reap_orphans(proc_dir)
+                        shutil.rmtree(proc_dir, ignore_errors=True)
+                        gone += 1
+                    if entry.name not in live and gone == len(procs):
+                        shutil.rmtree(entry, ignore_errors=True)
+                elif entry.suffix == ".sock" and entry.stem not in live:
+                    entry.unlink()
+                elif entry.suffix == ".pyz" and entry.name not in used_pyz:
+                    entry.unlink()
+            except OSError:
+                pass
+
+    async def _rebalance(self) -> None:
+        """Boot, after adoption + restore: stopped sessions leave outdated
+        runtimes; empty outdated runtimes retire."""
+        for x in list(self.sessions.values()):
+            if isinstance(x, RemoteSession) and x.outdated \
+                    and x.real_status not in LIVE_STATUSES:
+                await self._move(x)
+        for conn in list(self.runtimes.values()):
+            self._maybe_retire(conn)
+        await self._gc_runtimes()
 
     async def _peer_send(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and deliver one peer message (peer_send and peer_spawn)."""
@@ -1287,6 +1703,7 @@ class Server:
         "respond_permission",
         "respond_question", "respond_exit_plan", "resume_session",
         "sleep_session", "force_stop", "kill_session", "stop_bg_task",
+        "migrate_session",
     })
     _SHELL_METHODS = frozenset({
         "shell_list", "shell_start", "shell_input", "shell_resize",
@@ -1327,6 +1744,14 @@ class Server:
                 "cursor_sdk_version": CURSOR_SDK_VERSION,
                 "pid": os.getpid(),
                 "sessions": [s.to_info() for s in self.sessions.values()],
+                # Session runtimes (§14.117): a restart of THIS process leaves
+                # every session running — unless one is hosted inline.
+                "hot_update": not any(not isinstance(s, RemoteSession)
+                                      for s in self.sessions.values()),
+                "runtime_generation": self.generation,
+                "runtimes": [{"generation": gen, "pid": c.pid, "connected": c.connected,
+                              "current": gen == self.generation}
+                             for gen, c in self.runtimes.items()],
             }
 
         if method == "endpoint_probe":
@@ -1697,8 +2122,13 @@ class Server:
             except ValueError as e:
                 raise RpcError(ERR_INVALID_PARAMS, str(e))
             from .account_profiles import _cache as _profile_cache
-            for key in [k for k in _profile_cache if k[1] in set(result.get("applied", [])) | set(result.get("removed", []))]:
+            changed = set(result.get("applied", [])) | set(result.get("removed", []))
+            for key in [k for k in _profile_cache if k[1] in changed]:
                 _profile_cache.pop(key, None)
+            # Runtimes cache the same facts in their own process.
+            for conn in list(self.runtimes.values()):
+                if conn.connected and changed:
+                    self._spawn_bg(conn.request("accounts_changed", ids=sorted(changed)))
             return result
         if method == "accounts_list":
             from . import global_accounts
@@ -2114,588 +2544,44 @@ class Server:
                 await s.send_input(content)
             return {"ok": True}
 
-        if method == "interrupt":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            await s.interrupt()
-            return {"ok": True}
-
-        # NB: top-level branch on purpose - a dispatch nested under another
-        # method's `if` is unreachable and the METHODS-vs-dispatch test cannot
-        # see it (that shipped once, CLAUDE.md §14.89).
-        if method == "stop_bg_task":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            task_id = params.get("task_id")
-            if not isinstance(task_id, str) or not task_id:
-                raise RpcError(ERR_INVALID_PARAMS, "task_id must be a non-empty string")
-            fn = getattr(s, "stop_bg_task", None)
-            if fn is None:  # Codex session: no per-task stop in that SDK
-                raise RpcError(ERR_INVALID_PARAMS,
-                               "stop_bg_task is not supported for this session kind")
-            await fn(task_id)
-            return {"ok": True}
-
-        if method == "set_permission_mode":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            mode = params.get("mode") or "normal"
-            await s.set_permission_mode(mode)
-            return {"ok": True, "mode": s.permission_mode}
-
-        if method == "set_model":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            model = params.get("model")
-            fallback_model = params.get("fallback_model")
-            if model is not None and not isinstance(model, str):
-                raise RpcError(ERR_INVALID_PARAMS, "model must be a string or null")
-            if fallback_model is not None and not isinstance(fallback_model, str):
-                raise RpcError(ERR_INVALID_PARAMS, "fallback_model must be a string or null")
-            await s.set_model(model, fallback_model)
-            # Codex applies model per-turn (no sleep+resume) → not deferred.
-            deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
-            return {
-                "ok": True,
-                "model": s.model,
-                "fallback_model": s.fallback_model,
-                "applied_at_next_start": deferred,
-            }
-
-        if method in ("get_context_usage", "mcp_status", "mcp_toggle",
-                      "mcp_reconnect", "mcp_oauth_login", "list_subagents", "get_subagent_messages",
-                      "session_identity"):
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            # A backend implements the slice of this surface its runtime can
-            # answer; anything it does not is reported as `reason:'unavailable'`
-            # — an envelope the hub renders beside a chat rather than throwing
-            # (§14.95). Probing the session object rather than testing its kind
-            # is what lets a new provider (§14.103) implement one method at a
-            # time instead of stubbing all nine.
-            _missing = self._insight_unavailable(s_, method)
-            if _missing is not None:
-                return _missing
-            # Codex now exposes context/status, identity and MCP inventory
-            # through the SDK typed client. Sub-agent transcript browsing and
-            # config mutation remain Claude-only.
-            if getattr(s_, "kind", "claude") == "codex":
-                if method == "session_identity":
-                    return s_.identity()
-                if method == "get_context_usage":
-                    return await s_.context_usage()
-                if method == "mcp_status":
-                    return await s_.mcp_status()
-                if method == "mcp_reconnect":
-                    name = params.get("name")
-                    if not isinstance(name, str) or not name:
-                        raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
-                    return await s_.mcp_reconnect(name)
-                if method == "mcp_oauth_login":
-                    name = params.get("name")
-                    if not isinstance(name, str) or not name:
-                        raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
-                    return await s_.mcp_oauth_login(name)
-                if method == "list_subagents":
-                    return await s_.subagents()
-                if method == "get_subagent_messages":
-                    agent_id = params.get("agent_id")
-                    if not isinstance(agent_id, str) or not agent_id:
-                        raise RpcError(ERR_INVALID_PARAMS, "agent_id must be a non-empty string")
-                    limit = params.get("limit")
-                    return await s_.subagent_messages(
-                        agent_id, int(limit) if isinstance(limit, int) else 400)
-                return {"ok": False, "error": "not available on Codex sessions"}
-            # The sync readers below may shell out (an isolated account
-            # profile's SDK helpers, account_profiles.sdk_call): off the loop.
-            if method == "session_identity":
-                return await asyncio.to_thread(s_.identity)
-            if method == "get_context_usage":
-                return await s_.context_usage()
-            if method == "mcp_status":
-                return await s_.mcp_status()
-            if method == "mcp_toggle":
-                name = params.get("name")
-                enabled = params.get("enabled")
-                if not isinstance(name, str) or not isinstance(enabled, bool):
-                    raise RpcError(ERR_INVALID_PARAMS, "name (str) and enabled (bool) required")
-                return await s_.mcp_toggle(name, enabled)
-            if method == "mcp_reconnect":
-                name = params.get("name")
-                if not isinstance(name, str) or not name:
-                    raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
-                return await s_.mcp_reconnect(name)
-            if method == "mcp_oauth_login":
-                return {"ok": False, "error": "MCP OAuth login is Codex-only"}
-            if method == "list_subagents":
-                return await asyncio.to_thread(s_.subagents)
-            # Explicit rather than a fall-through: the protocol test scans for
-            # the literal `method == "..."`, and §14.89 is the incident where a
-            # branch it could not see shipped unreachable.
-            if method == "get_subagent_messages":
-                agent_id = params.get("agent_id")
-                if not isinstance(agent_id, str) or not agent_id:
-                    raise RpcError(ERR_INVALID_PARAMS, "agent_id must be a non-empty string")
-                limit = params.get("limit")
-                return await asyncio.to_thread(
-                    s_.subagent_messages, agent_id, int(limit) if isinstance(limit, int) else 400)
-            raise RpcError(ERR_INTERNAL, f"unhandled: {method}")
-
-        if method == "fork_session":
-            # Branch a session's transcript into a NEW one, optionally cutting
-            # at a message. Pure file work (the SDK copies the transcript and
-            # remaps every uuid) — it does NOT touch the live session, so the
-            # original keeps running untouched, which is the whole point.
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            csid = getattr(s_, "claude_session_id", None)
-            if not csid:
-                raise RpcError(ERR_INVALID_PARAMS,
-                               "session has no transcript yet — nothing to fork")
-            up_to = params.get("up_to_message_id")
-            if up_to is not None and not isinstance(up_to, str):
-                raise RpcError(ERR_INVALID_PARAMS, "up_to_message_id must be a string")
-            title = params.get("title")
-            if title is not None and not isinstance(title, str):
-                raise RpcError(ERR_INVALID_PARAMS, "title must be a string")
-            if getattr(s_, "kind", "claude") == "codex":
-                try:
-                    last_turn_id = params.get("last_turn_id")
-                    if last_turn_id is not None and not isinstance(last_turn_id, str):
-                        raise RpcError(ERR_INVALID_PARAMS, "last_turn_id must be a string")
-                    return await s_.fork(title, last_turn_id)
-                except Exception as e:
-                    raise RpcError(ERR_INTERNAL, f"Codex fork failed: {e}")
-            try:
-                from claude_agent_sdk import fork_session as _fork
-            except Exception as e:
-                raise RpcError(ERR_SDK_UNAVAILABLE,
-                               f"this SDK cannot fork sessions: {e}")
-            try:
-                res = await asyncio.to_thread(sdk_call, getattr(s_, "session_config", {}).get("accountProfile"), "fork_session", csid, directory=getattr(s_, "cwd", None),
-                            up_to_message_id=up_to, title=title)
-            except FileNotFoundError as e:
-                raise RpcError(ERR_INVALID_PARAMS, f"transcript not found: {e}")
-            except ValueError as e:
-                # Bad uuid, or a message id that is not in this transcript.
-                raise RpcError(ERR_INVALID_PARAMS, str(e))
-            new_id = getattr(res, "session_id", None) or (
-                res.get("session_id") if isinstance(res, dict) else None)
-            if not isinstance(new_id, str) or not new_id:
-                raise RpcError(ERR_INTERNAL, "fork returned no session id")
-            source_profile = profile_id(getattr(s_, "session_config", {}).get("accountProfile"))
-            target_profile = profile_id(params.get("account_profile", source_profile))
-            if source_profile != target_profile:
-                import shutil
-                source_dir = config_dir("claude", source_profile)
-                target_dir = config_dir("claude", target_profile)
-                matches = list((source_dir / "projects").rglob(f"{new_id}.jsonl"))
-                if len(matches) != 1:
-                    raise RpcError(ERR_INVALID_PARAMS, "Fork transcript could not be located in its account profile")
-                transcript = matches[0]
-                destination = target_dir / transcript.relative_to(source_dir)
-                # Hub accounts LINK `projects` to the shared ~/.claude (§14.115):
-                # the branch is already in the target home. Moving it there
-                # would copy the file onto itself, then delete the only copy.
-                if os.path.realpath(transcript) != os.path.realpath(destination):
-                    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    await asyncio.to_thread(shutil.copy2, transcript, destination)
-                    child_dir = transcript.with_suffix("")
-                    if child_dir.is_dir():
-                        await asyncio.to_thread(shutil.copytree, child_dir, destination.with_suffix(""), dirs_exist_ok=True)
-                        await asyncio.to_thread(shutil.rmtree, child_dir)
-                    # This is the SDK-created branch, never the source transcript.
-                    # Leaving a copy in the old home would expose it under the
-                    # wrong account in native scans and legacy resume paths.
-                    await asyncio.to_thread(transcript.unlink)
-            return {"ok": True, "claude_session_id": new_id, "forked_from": csid}
-
-        if method == "codex_fork_points":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                return {"ok": False, "error": "Codex-only surface"}
-            try:
-                return await s_.fork_points()
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex fork points failed: {e}")
-
-        if method == "compact_session":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            kind_ = getattr(s_, "kind", "claude")
-            # Declared per backend (providers.py), never a kind ternary with a
-            # Claude fallthrough: `/compact` sent to a provider that does not
-            # know the command reaches the MODEL as a literal prompt.
-            strategy = get_provider(kind_).compact
-            if strategy is None:
-                raise RpcError(ERR_INVALID_PARAMS,
-                               f"{kind_} sessions cannot be compacted")
-            if strategy == "native":
-                try:
-                    return await s_.compact()
-                except Exception as e:
-                    raise RpcError(ERR_INTERNAL, f"{kind_} compaction failed: {e}")
-            # Claude's SDK has no compact() method; the CLI command travels
-            # through the same query channel and emits the normal marker.
-            await s_.send_input("/compact")
-            return {"ok": True}
-
-        if method == "rollback_session":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            kind_ = getattr(s_, "kind", "claude")
-            # ⚠ The fallthrough this replaces was DESTRUCTIVE, not merely wrong:
-            # `_rewind_claude_session` clears `claude_session_id`, which for a
-            # non-Claude backend is its only resume handle (§14.74).
-            strategy = get_provider(kind_).rewind
-            if strategy is None:
-                raise RpcError(ERR_INVALID_PARAMS,
-                               f"{kind_} sessions cannot be rewound")
-            if strategy == "native":
-                num_turns = params.get("num_turns")
-                if not isinstance(num_turns, int) or isinstance(num_turns, bool) or not 1 <= num_turns <= 100:
-                    raise RpcError(ERR_INVALID_PARAMS, "num_turns must be an integer from 1 to 100")
-                try:
-                    return await s_.rollback(num_turns)
-                except Exception as e:
-                    if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                        raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                    raise RpcError(ERR_INTERNAL, f"{kind_} rewind failed: {e}")
-            up_to = params.get("up_to_message_id")
-            if up_to is not None and (not isinstance(up_to, str) or not up_to):
-                raise RpcError(ERR_INVALID_PARAMS, "up_to_message_id must be a non-empty string or null")
-            return await self._rewind_claude_session(s_, up_to)
-
-        if method == "review_session":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "native review is only supported for Codex sessions")
-            target = params.get("target")
-            delivery = params.get("delivery", "inline")
-            if not isinstance(target, dict) or target.get("type") not in (
-                "uncommittedChanges", "baseBranch", "commit", "custom"
-            ):
-                raise RpcError(ERR_INVALID_PARAMS, "invalid review target")
-            if delivery not in ("inline", "detached"):
-                raise RpcError(ERR_INVALID_PARAMS, "delivery must be inline or detached")
-            try:
-                return await s_.review(target, delivery)
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex review failed: {e}")
-
-        if method == "codex_security_status":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                return {"ok": False, "error": "Codex-only surface"}
-            return await s_.security_status(bool(params.get("force_reload")))
-
-        if method == "set_codex_security":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
-            reviewer = params.get("reviewer")
-            profile = params.get("permission_profile")
-            if reviewer not in ("user", "auto_review"):
-                raise RpcError(ERR_INVALID_PARAMS, "reviewer must be user or auto_review")
-            if profile is not None and not isinstance(profile, str):
-                raise RpcError(ERR_INVALID_PARAMS, "permission_profile must be a string or null")
-            try:
-                return await s_.set_security(reviewer, profile)
-            except ValueError as e:
-                raise RpcError(ERR_INVALID_PARAMS, str(e))
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex security update failed: {e}")
-
-        if method == "approve_codex_denial":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            review_id = params.get("review_id")
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
-            if not isinstance(review_id, str) or not review_id:
-                raise RpcError(ERR_INVALID_PARAMS, "review_id required")
-            try:
-                return await s_.approve_guardian_denial(review_id)
-            except ValueError as e:
-                raise RpcError(ERR_INVALID_PARAMS, str(e))
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Guardian override failed: {e}")
-
-        if method == "codex_resources":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                return {"ok": False, "error": "Codex-only surface"}
-            try:
-                return await s_.resources(bool(params.get("force_reload")))
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex resources failed: {e}")
-
-        if method == "session_resources":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            _missing = self._insight_unavailable(s_, method)
-            if _missing is not None:
-                return _missing
-            try:
-                return await s_.resources(bool(params.get("force_reload")))
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"session resources failed: {e}")
-
-        if method == "set_codex_skill":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            path, enabled = params.get("path"), params.get("enabled")
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
-            if not isinstance(path, str) or not path or not isinstance(enabled, bool):
-                raise RpcError(ERR_INVALID_PARAMS, "path and enabled required")
-            try:
-                return await s_.set_skill_enabled(path, enabled)
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"Codex skill update failed: {e}")
-
-        if method == "list_background_terminals":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                return {"ok": False, "error": "Codex-only surface"}
-            return await s_.background_terminals()
-
-        if method == "stop_background_terminal":
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS, "Codex-only surface")
-            process_id = params.get("process_id")
-            if not isinstance(process_id, str) or not process_id:
-                raise RpcError(ERR_INVALID_PARAMS, "process_id required")
-            try:
-                return await s_.stop_background_terminal(process_id)
-            except Exception as e:
-                if getattr(e, "code", None) == ERR_METHOD_NOT_FOUND:
-                    raise RpcError(ERR_METHOD_NOT_FOUND, str(e))
-                raise RpcError(ERR_INTERNAL, f"stop background terminal failed: {e}")
-
-        if method == "inject_history":
-            # Cross-provider fork primitive (agent >= 0.46.0).  Only Codex has
-            # an app-server history-injection API; Claude uses fork_session's
-            # native transcript copy instead.  The session method waits for a
-            # freshly-started Codex thread to be loaded before injecting.
-            sid = self._require_sid(params)
-            s_ = self._require_session(sid)
-            if getattr(s_, "kind", "claude") != "codex":
-                raise RpcError(ERR_INVALID_PARAMS,
-                               "inject_history is only supported for Codex sessions")
-            items = params.get("items")
-            if not isinstance(items, list) or not items:
-                raise RpcError(ERR_INVALID_PARAMS, "items must be a non-empty list")
-            try:
-                return await s_.inject_history(items)
-            except ValueError as e:
-                raise RpcError(ERR_INVALID_PARAMS, str(e))
-            except Exception as e:
-                raise RpcError(ERR_INTERNAL, f"history import failed: {e}")
-
-        if method == "set_session_name":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            name = params.get("name")
-            if not isinstance(name, str) or not name.strip():
-                raise RpcError(ERR_INVALID_PARAMS, "name must be a non-empty string")
-            s.name = name
-            # Mirror the DISPLAY title into each provider's native transcript.
-            # Peer routing uses `handle`, independently. Never fatal: the hub
-            # keeps the display name either way.
-            written = False
-            fn = getattr(s, "write_cli_title", None)   # Claude sessions only
-            if callable(fn):
-                try:
-                    written = bool(fn(name))
-                except Exception:
-                    written = False
-            sdk_name = getattr(s, "set_session_name", None)
-            if callable(sdk_name):
-                try:
-                    written = bool(await sdk_name(name))
-                except Exception:
-                    written = False
-            # Record what actually landed. On failure the value stays stale, so
-            # the turn-end comparison retries — that is the whole point of
-            # tracking the value rather than a "done" flag.
-            if written:
-                s._cli_title_value = name
-            return {"ok": True, "name": name, "cli_title": written}
-
-        if method == "set_session_handle":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            raw_handle = params.get("handle")
-            handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
-            if not _PEER_HANDLE_RE.fullmatch(handle):
-                raise RpcError(ERR_INVALID_PARAMS, "invalid session handle")
-            if any(other is not s and getattr(other, "handle", None) == handle
-                   for other in self.sessions.values()):
-                raise RpcError(ERR_INVALID_PARAMS, f"handle @{handle} is already in use")
-            s.handle = handle
-            # Claude's native peer name remains useful outside Charon. It is a
-            # start-time flag, so changing it here applies at the next restart;
-            # the provider-neutral bus routes the new handle immediately.
-            if hasattr(s, "cli_name"):
-                s.cli_name = handle
-            self.schedule_save()
-            return {"ok": True, "handle": handle, "addressable": True}
-
-        if method == "set_effort":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            effort = params.get("effort")
-            if effort is not None and not isinstance(effort, str):
-                raise RpcError(ERR_INVALID_PARAMS, "effort must be a string or null")
-            await s.set_effort(effort)
-            deferred = (getattr(s, "kind", "claude") != "codex") and s._client is not None
-            return {
-                "ok": True,
-                "effort": s.effort,
-                "applied_at_next_start": deferred,
-            }
-
-        if method == "respond_permission":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            perm_id = params.get("perm_id") or params.get("id")
-            if not isinstance(perm_id, str):
-                raise RpcError(ERR_INVALID_PARAMS, "perm_id required")
-            always = bool(params.get("always"))
-            # Claude: index of the CLI's own "don't ask again" suggestion the
-            # answer picked (permission_request.suggestions).
-            suggestion = params.get("suggestion")
-            if suggestion is not None and (
-                    not isinstance(suggestion, int) or isinstance(suggestion, bool)
-                    or suggestion < 0):
-                raise RpcError(ERR_INVALID_PARAMS, "suggestion must be a non-negative integer")
-            try:
-                if suggestion is not None:
-                    resolved = s.respond_permission(
-                        perm_id, bool(params.get("allow")), always, suggestion=suggestion)
-                else:
-                    resolved = s.respond_permission(perm_id, bool(params.get("allow")), always)
-            except TypeError:
-                # Claude sessions on older SDK-compatible code keep the
-                # two-argument method; Charon persists its alwaysAllow rule.
-                resolved = s.respond_permission(perm_id, bool(params.get("allow")))
-            return {"ok": True, "resolved": resolved is not False}
-
-        if method == "respond_question":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            q_id = params.get("q_id") or params.get("id")
-            if not isinstance(q_id, str):
-                raise RpcError(ERR_INVALID_PARAMS, "q_id required")
-            answers = params.get("answers")
-            resolved = s.respond_question(q_id, answers if isinstance(answers, dict) else None)
-            return {"ok": True, "resolved": resolved is not False}
-
-        if method == "respond_exit_plan":
-            sid = self._require_sid(params)
-            s = self._require_session(sid)
-            q_id = params.get("q_id") or params.get("id")
-            if not isinstance(q_id, str):
-                raise RpcError(ERR_INVALID_PARAMS, "q_id required")
-            decision = params.get("decision") or "reject"
-            feedback = params.get("feedback") or ""
-            resolved = s.respond_exit_plan(q_id, decision, feedback)
-            return {"ok": True, "resolved": resolved is not False}
-
         if method == "resume_session":
-            # For a session already in memory (typically after an agent
-            # reboot where it was registered 'sleeping'), restart the SDK.
             sid = self._require_sid(params)
             s = self._require_session(sid)
-            # Apply identity even on the noop path: a hub PATCH must converge
-            # a live daemon without forcing a provider restart.
-            incoming_handle = params.get("handle") or params.get("cli_name")
-            if isinstance(incoming_handle, str) and _PEER_HANDLE_RE.fullmatch(incoming_handle):
-                s.handle = incoming_handle
-                if hasattr(s, "cli_name"):
-                    s.cli_name = incoming_handle
-            for key in ("parent_session_id", "parent_handle"):
-                if key in params:
-                    setattr(s, key, self._row_parent(params, key))
-            incoming_config = params.get("session_config")
-            if isinstance(incoming_config, dict) and hasattr(s, "apply_session_config"):
-                await s.apply_session_config(incoming_config)
-            if s.status in ("active", "thinking", "starting"):
-                return {"ok": True, "status": s.status, "noop": True}
-            for key in ("model", "fallback_model", "effort"):
-                if key in params:
-                    setattr(s, key, params[key])
-            # ⚠ Status said stopped; the RUN may disagree. Starting a second
-            # one over a live task gives one session two provider clients:
-            # Codex's newcomer then cannot take the thread's writer lock
-            # ("already has an active writer") while the older app-server
-            # holds it — and that older process is now unreachable, so the
-            # lock never comes back (§14.97). Stop it first, always.
-            old_run = getattr(s, "_main_task", None)
-            if old_run is not None and not old_run.done():
-                try:
-                    await s.stop(mark="sleeping")
-                except Exception as e:
-                    print(f"[server] resume: stopping the previous run failed: {e}",
-                          file=sys.stderr, flush=True)
-            # Claude's native --name is start-time only. The common handle was
-            # already applied above even when this resume is a noop.
-            # Reset internal state so we can restart cleanly.
-            # ⚠ The QUEUE is part of that state. `stop()` pushes an EOF
-            # sentinel, and when the run loop has already exited (a failed
-            # start, or a stop that timed out and cancelled the task) that
-            # sentinel simply STAYS. The next run loop then emits ready/active
-            # and immediately reads it — a session that reports itself alive
-            # and never executes another turn, with no error anywhere. Same
-            # reasoning as the rewind path, which has always done this.
-            s.status = "starting"
-            s._stdin_queue = asyncio.Queue()
-            s._stopped.clear()
-            s._ready_evt.clear()
-            s._session_id_emitted = False
-            s._main_task = None
-            s._connection_changing = False
-            if "model" in params:
-                s._emit("model_changed", model=s.model, fallback_model=s.fallback_model, applied_at_next_start=False)
-            if "effort" in params:
-                s._emit("effort_changed", effort=s.effort, applied_at_next_start=False)
-            await s.start()
+            if isinstance(s, RemoteSession):
+                await s.wait_migration()
+                # Never resume into an outdated runtime: a stopped session
+                # moves to the current one first (a free hot-update move).
+                if s.runtime is None or not s.runtime.connected:
+                    await self._host(self._row_of(s), start=False)
+                    s = self._require_session(sid)
+                elif s.outdated and s.real_status not in LIVE_STATUSES:
+                    await self._move(s)
+                    s = self._require_session(sid)
+            result = await self._session_op(s, "resume_session", params)
+            if isinstance(s, RemoteSession) and not (isinstance(result, dict) and result.get("noop")):
+                s._connection_changing = False
             self.schedule_save()
-            return {"ok": True, "status": s.status}
+            return result
 
         if method == "sleep_session":
             sid = self._require_sid(params)
             s = self._require_session(sid)
-            if params.get("only_if_idle"):
-                if s.status in ("thinking", "starting"):
-                    return {"ok": False, "busy": True}
-                s._connection_changing = True
-            await s.stop(mark="sleeping")
-            self.schedule_save()
-            return {"ok": True}
+            if isinstance(s, RemoteSession):
+                await s.wait_migration()
+                if params.get("only_if_idle"):
+                    if s.status in ("thinking", "starting"):
+                        return {"ok": False, "busy": True}
+                    s._connection_changing = True
+                try:
+                    result = await self._session_op(s, "sleep_session", params)
+                except Exception:
+                    s._connection_changing = False
+                    raise
+                if isinstance(result, dict) and result.get("busy"):
+                    s._connection_changing = False
+                self.schedule_save()
+                return result
+            return await self._session_op(s, "sleep_session", params)
 
         if method == "force_stop":
             # Brutal cancellation (the SDK is blocked and the soft interrupt
@@ -2703,16 +2589,33 @@ class Server:
             # the user can resume without waiting for the current tool to finish.
             sid = self._require_sid(params)
             s = self._require_session(sid)
-            await s.force_stop()
-            self.schedule_save()
-            return {"ok": True}
+            return await self._session_op(s, "force_stop", params)
 
         if method == "kill_session":
             sid = self._require_sid(params)
             s = self.sessions.get(sid)
-            if s is not None:
+            runtime = None
+            if isinstance(s, RemoteSession):
+                await s.wait_migration()
+                runtime = s.runtime
+                released = False
+                if runtime is not None and runtime.connected:
+                    try:
+                        await runtime.request("release", sid=sid, stop="killed")
+                        released = True
+                    except RpcError as e:
+                        released = e.code == ERR_SESSION_NOT_FOUND
+                        if not released:
+                            print(f"[server] kill {sid}: runtime release failed: {e.message}",
+                                  file=sys.stderr, flush=True)
+                if not released and runtime is not None:
+                    # Deletion stays authoritative (§14.29): the runtime kills
+                    # it when it next attaches, never re-adopts it.
+                    self._pending_kills.add(sid)
+            elif s is not None:
                 await s.stop(mark="killed")
             self.sessions.pop(sid, None)
+            self._unrestored.pop(sid, None)
             self.rings.pop(sid, None)
             self.subscribers.pop(sid, None)
             self.recent_input_ids.pop(sid, None)
@@ -2727,7 +2630,50 @@ class Server:
                     print(f"[server] event_log.delete error sid={sid}: {e}",
                           file=sys.stderr, flush=True)
             self.schedule_save()
+            if runtime is not None:
+                self._maybe_retire(runtime)
             return {"ok": True}
+
+        if method == "set_session_handle":
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            raw_handle = params.get("handle")
+            handle = raw_handle.strip().lstrip("@").lower() if isinstance(raw_handle, str) else ""
+            # Uniqueness spans every session: only the daemon sees them all.
+            if _PEER_HANDLE_RE.fullmatch(handle) and any(
+                    other is not s and getattr(other, "handle", None) == handle
+                    for other in self.sessions.values()):
+                raise RpcError(ERR_INVALID_PARAMS, f"handle @{handle} is already in use")
+            result = await self._session_op(s, "set_session_handle", params)
+            self.schedule_save()
+            return result
+
+        if method == "migrate_session":
+            # Hot update (§14.117): the hub asks once the session looks idle;
+            # every condition is checked again here, and atomically by the
+            # runtime at the instant it stops the session.
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            if not isinstance(s, RemoteSession):
+                return {"ok": False, "reason": "inline"}
+            if not s.outdated:
+                return {"ok": True, "noop": True}
+            if getattr(s, "_migration", None) is not None:
+                return {"ok": False, "busy": True, "reason": "migrating"}
+            if s.real_status not in LIVE_STATUSES:
+                await self._move(s)
+                return {"ok": True, "migrated": True, "status": s.real_status}
+            why = self._migration_blocker(s)
+            if why:
+                return {"ok": False, "busy": True, "reason": why}
+            return await self._migrate(s)
+
+        if method in session_ops.OPS:
+            # Everything else acts on ONE session object: run it where the
+            # object lives (session_ops.py), here or in its runtime.
+            sid = self._require_sid(params)
+            s = self._require_session(sid)
+            return await self._session_op(s, method, params)
 
         raise RpcError(ERR_METHOD_NOT_FOUND, f"unknown method: {method}")
 
@@ -3002,8 +2948,24 @@ class Server:
             print(f"[boot] orphan sweep failed: {e}", file=sys.stderr, flush=True)
         ledger_task = asyncio.create_task(ChildLedger(state_dir).loop())
 
+        # Sessions live in runtime processes (§14.117): re-attach to the ones
+        # still running BEFORE restoring state.json, so a session they hold
+        # is never started twice.
+        # state.json is read FIRST: a save triggered while adopting must not
+        # drop the rows no runtime reported yet.
+        self._load_state_rows()
+        self._init_generation()
+        try:
+            await self._adopt_runtimes()
+        except Exception as e:
+            print(f"[boot] runtime adoption failed: {e}", file=sys.stderr, flush=True)
         await self._restore_existing()
         self._resume_peer_runtime()
+        try:
+            await self._rebalance()
+        except Exception as e:
+            print(f"[boot] runtime rebalance failed: {e}", file=sys.stderr, flush=True)
+        self._booted = True
 
         # Cleanup orphan event logs: any .jsonl file in ~/.charon/events/
         # whose session_id is not in our restored state. These accumulate
@@ -3128,9 +3090,16 @@ class Server:
             for task in list(self.peer_timeout_tasks.values()):
                 task.cancel()
             self.peer_timeout_tasks.clear()
-            # Save final state and stop sessions
+            # Sessions in runtimes KEEP RUNNING (§14.117): stop reading them —
+            # what this daemon did not log is resent to the next one — and
+            # record how far it got.
+            for conn in list(self.runtimes.values()):
+                conn.close_for_shutdown()
+            # Save final state and stop the INLINE sessions (they die with us).
             await self._save_state_now()
             for s in list(self.sessions.values()):
+                if isinstance(s, RemoteSession):
+                    continue
                 try:
                     await s.stop(mark="sleeping")
                 except Exception:

@@ -106,6 +106,8 @@ export type SessionStreamState = {
   status: WorkerStatus | null;
   /** The provider is summarising the conversation (only while thinking). */
   compacting: boolean;
+  /** Runs the agent code of before an update (§14.117); moved when idle. */
+  runtimeOutdated: boolean;
   // Claude permission mode OR Codex sandbox level (same DB field, kind-dependent).
   permissionMode: SessionMode;
   model: string | null;
@@ -795,7 +797,7 @@ export function useSessionStream(
     messages: state.messages,
     currentAssistant: state.buf.assistant,
     streamingInto: state.buf.streamingInto,
-    status, compacting: state.compacting && status === 'thinking', permissionMode,
+    status, compacting: state.compacting && status === 'thinking', runtimeOutdated: state.runtimeOutdated, permissionMode,
     model: modelPair.model, fallbackModel: modelPair.fallbackModel, effort,
     modelPendingApply: state.meta.modelPendingApply, effortPendingApply: state.meta.effortPendingApply,
     effectiveModel: state.meta.effectiveModel,

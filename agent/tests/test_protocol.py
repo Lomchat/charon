@@ -230,9 +230,13 @@ class TestDispatchConsistency(unittest.TestCase):
     """
 
     def _dispatched_methods(self):
-        server_path = os.path.join(_AGENT_DIR, "charon_agent", "server.py")
-        with open(server_path, "r", encoding="utf-8") as fh:
-            src = fh.read()
+        # Per-session operations live in session_ops.py (§14.117): the daemon
+        # routes every name of `session_ops.OPS` there.
+        src = ""
+        for name in ("server.py", "session_ops.py"):
+            path = os.path.join(_AGENT_DIR, "charon_agent", name)
+            with open(path, "r", encoding="utf-8") as fh:
+                src += fh.read()
         return set(re.findall(r'if method == "([^"]+)":', src))
 
     def test_dispatch_set_equals_methods(self):

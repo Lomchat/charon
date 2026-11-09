@@ -206,7 +206,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
@@ -887,6 +887,14 @@ export default function SessionView({
             )}
             {parentSessionId && onOpenSession && (
               <ParentChip parentId={parentSessionId} onOpen={onOpenSession} />
+            )}
+            {/* The agent was updated under this session (§14.117): it still
+                runs the previous version, and moves itself to the new one the
+                next time it is idle. Nothing to do — but worth knowing. */}
+            {runtimeOutdated && (
+              <span className="bar-outdated" role="note" aria-label="Outdated agent version"
+                title={'This session still runs the previous agent version.\nIt switches to the new one by itself the next time it is idle (a few seconds, conversation kept).'}
+              >⚠<span className="bar-outdated-text"> outdated agent</span></span>
             )}
             {/* Phone only: its hit area spans the whole title line. */}
             <button type="button" className="bar-expand" aria-expanded={barExpanded}

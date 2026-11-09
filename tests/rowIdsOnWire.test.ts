@@ -104,6 +104,7 @@ const FIXTURES: { [K in AgentEvent['event']]: Scenario } = {
   thinking: { events: [{ event: 'thinking', text: 'A complete block.' }] },
   generation_progress: { events: [{ event: 'generation_progress', characters: 10 }] },
   compacting: { events: [{ event: 'status', status: 'thinking' }, { event: 'compacting', active: true }] },
+  session_runtime: { events: [{ event: 'session_runtime', generation: 'g2', outdated: true, seq: null }] },
   tool_use: { events: [{ event: 'tool_use', id: 'tu-1', name: 'Read', input: { file_path: '/x' } }] },
   tool_result: { events: [{ event: 'tool_result', tool_use_id: 'tu-1', content: 'out', is_error: false }] },
   tool_progress: { events: [{ event: 'tool_progress', tool_use_id: 'tu-1', delta: 'partial' }] },
