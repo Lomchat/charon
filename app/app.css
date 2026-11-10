@@ -9774,17 +9774,11 @@ button.dv-folder-select { max-width: 170px; padding: 4px 7px; font-size: 11px; }
   .accounts-row .accounts-usage, .accounts-row .accounts-actions { grid-column: 2 / -1; justify-content: flex-start; }
 }
 
-.accounts-banner {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 12px; font-size: 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
-  /* A tint OF the page, not a light chip: --warning-soft is pale in dark
-     themes and the text vanished on it. */
-  background: color-mix(in srgb, var(--warning) 14%, var(--bg)); color: var(--text);
-}
-.accounts-banner-text { flex: 1; min-width: 12em; }
-.accounts-banner .wiz-btn { padding: 3px 10px; font-size: 12px; }
-.accounts-banner-close { all: unset; cursor: pointer; padding: 0 4px; color: var(--text-muted); }
-.accounts-banner-close:hover { color: var(--text); }
+/* Hub-wide notice (AccountsBanner) in the sidebar's fixed top: a VPS update
+   bar's look, without its in-box margin. */
+.cs-top .cs-notice { margin: 0; }
+.cs-notice-close { all: unset; cursor: pointer; padding: 0 2px; color: var(--text-muted); }
+.cs-notice-close:hover { color: var(--text); }
 
 .continue-with-account { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .accounts-row .usage-rings { display: inline-flex; --um-surface: var(--bg-raised); }

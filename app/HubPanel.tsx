@@ -2184,11 +2184,11 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         </button>
         </div>
       </header>
-      <AccountsBanner data={accountsState.data} loaded={accountsState.loaded} enabled={backends} hasVps={vpsList.length > 0}
-        onOpen={() => setAccountsOpen(true)}
-        onLogin={(provider, accountId) => setHubLogin({ provider, accountId })} />
-
       <Sidebar
+        noticeSlot={(
+          <AccountsBanner data={accountsState.data} loaded={accountsState.loaded} enabled={backends} hasVps={vpsList.length > 0}
+            onLogin={(provider, accountId) => setHubLogin({ provider, accountId })} />
+        )}
         toolbarSlot={(
           <SidebarPathFilter
             groups={knownFilterGroups}

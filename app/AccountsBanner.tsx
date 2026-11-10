@@ -30,9 +30,11 @@ export function accountsNeedAttention(data: AccountList, enabled: Record<Session
   return needs(data, enabled).length > 0;
 }
 
-export default function AccountsBanner({ data, loaded, enabled, hasVps, onOpen, onLogin }: {
+/** A sidebar notice shaped like a VPS update bar (`.cs-agent-bar update`):
+ *  one line, one action, a dismiss. */
+export default function AccountsBanner({ data, loaded, enabled, hasVps, onLogin }: {
   data: AccountList; loaded: boolean; enabled: Record<SessionProvider, boolean>; hasVps: boolean;
-  onOpen: () => void; onLogin: (provider: SessionProvider, accountId: string | null) => void;
+  onLogin: (provider: SessionProvider, accountId: string | null) => void;
 }) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   if (!loaded || !hasVps) return null;
@@ -40,11 +42,10 @@ export default function AccountsBanner({ data, loaded, enabled, hasVps, onOpen, 
   if (!list.length) return null;
   const first = list[0];
   return (
-    <div className="accounts-banner" role="status">
-      <span className="accounts-banner-text">{first.text}{list.length > 1 ? ` (+${list.length - 1})` : ''}</span>
-      <button type="button" className="wiz-btn primary" onClick={() => onLogin(first.provider, first.accountId)}>{first.action}</button>
-      <button type="button" className="wiz-btn ghost" onClick={onOpen}>Accounts</button>
-      <button type="button" className="accounts-banner-close" aria-label="dismiss"
+    <div className="cs-agent-bar update cs-notice" role="status">
+      <span className="cs-agent-meta">{first.text}{list.length > 1 ? ` (+${list.length - 1})` : ''}</span>
+      <button type="button" className="cs-agent-btn update" onClick={() => onLogin(first.provider, first.accountId)}>{first.action}</button>
+      <button type="button" className="cs-notice-close" aria-label="dismiss" title="dismiss"
         onClick={() => setDismissed(new Set([...dismissed, first.key]))}>✕</button>
     </div>
   );

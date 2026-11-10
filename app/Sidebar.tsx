@@ -225,6 +225,9 @@ type Props = {
    *  control that is off almost all the time does not get a line of the
    *  sidebar to itself. */
   toolbarSlot?: React.ReactNode;
+  /** Hub-wide notices (accounts…), under the toolbar and above the VPSes:
+   *  in the sidebar, never a strip above the chat that shifts the composer. */
+  noticeSlot?: React.ReactNode;
   /** Display filter. Applied when listing a VPS, never when computing a
    *  reorder: the drag handlers need the complete list (sidebarPathGroups). */
   isEntityShown?: (vpsId: string, path: string | null, kind: 'session' | 'shell') => boolean;
@@ -309,7 +312,7 @@ export default function Sidebar({
   selectedShellId, selectedInstallId,
   openTabRef = null,
   activeWorkspace = null,
-  toolbarSlot, isEntityShown,
+  toolbarSlot, noticeSlot, isEntityShown,
   onSelect, onSelectShell, onSelectInstall, onReorderSessions,
   enabledBackends = ALL_BACKENDS_ENABLED,
   onNew, onNewShell, onScan, onOpenData, onOpenPausedCleanup,
@@ -824,6 +827,7 @@ export default function Sidebar({
             </label>
           </span>
         </div>
+        {noticeSlot}
       </div>
 
       <div className="cs-scroll" ref={scrollRef}>
