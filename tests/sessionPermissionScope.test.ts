@@ -325,3 +325,30 @@ describe('provider-aware permission scope', () => {
     }));
   });
 });
+
+// A box serving its own model has no provider account: creating a session must
+// not be refused (§14.115) — a saved endpoint if any, else the box's own CLI.
+describe('a hub with no account for the provider', () => {
+  const rowOf = (id: string) => db.select().from(schema.agentSessions).all()
+    .find((candidate: any) => candidate.id === id);
+
+  it("starts on a saved endpoint, else on the box's own CLI configuration", async () => {
+    db.delete(schema.providerAccounts).run();
+    try {
+      const plain = await startNewSession({ vpsId: VPS_ID, cwd: '/tmp/project', kind: 'claude', model: 'opus' });
+      expect(JSON.parse(rowOf(plain.id).providerConfig ?? 'null')?.customEndpoint).toBeUndefined();
+
+      db.insert(schema.customEndpoints).values({ id: 'local', config: JSON.stringify({
+        name: 'Local', baseUrl: 'http://127.0.0.1:8317', auth: 'none', model: 'local-model',
+      }) }).run();
+      const onEndpoint = await startNewSession({ vpsId: VPS_ID, cwd: '/tmp/project', kind: 'claude', model: 'opus' });
+      const row = rowOf(onEndpoint.id);
+      expect(JSON.parse(row.providerConfig).customEndpoint).toMatchObject({ baseUrl: 'http://127.0.0.1:8317' });
+      expect(JSON.parse(row.providerConfig).accountProfile).toBeUndefined();
+      expect(row.model).toBe('local-model');
+    } finally {
+      db.delete(schema.customEndpoints).run();
+      seedProviderAccounts(db, schema);
+    }
+  });
+});

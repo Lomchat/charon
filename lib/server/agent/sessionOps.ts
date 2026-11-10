@@ -5030,18 +5030,28 @@ export async function startNewSession(opts: {
     model: opts.model, fallbackModel: opts.fallbackModel, effort: opts.effort,
   });
   let requestedConfig = opts.sessionConfig ?? opts.providerConfig ?? null;
-  // Hub-owned accounts (§14.115): every session runs on one. No choice ⇒ the
-  // provider's first usable account; a custom endpoint needs none.
+  // Hub-owned accounts (§14.115): no choice ⇒ the provider's first usable
+  // account; a custom endpoint needs none. A hub with NO account for an
+  // endpoint-capable provider (a box serving its own model) never refuses: a
+  // saved endpoint if any, else the box's own CLI configuration ('default').
+  let autoEndpointModel: string | null = null;
   if (!(requestedConfig as { customEndpoint?: unknown } | null)?.customEndpoint
       && (!requestedConfig?.accountProfile || requestedConfig.accountProfile === 'default')) {
     const { defaultAccountFor } = await import('@/lib/server/accounts/store');
     const fallback = defaultAccountFor(kind);
-    if (!fallback) {
-      throw new Error(supportsCustomEndpoint(kind)
-        ? `Add a ${providerName(kind)} account first (Accounts), or start the session on a saved custom endpoint.`
-        : `Add a ${providerName(kind)} account first (Accounts).`);
+    if (fallback) {
+      requestedConfig = { ...(requestedConfig ?? {}), accountProfile: fallback };
+    } else if (!supportsCustomEndpoint(kind)) {
+      throw new Error(`Add a ${providerName(kind)} account first (Accounts).`);
+    } else {
+      const { endpointWithoutAccount } = await import('./endpointOps');
+      const endpoint = await endpointWithoutAccount(opts.vpsId, kind);
+      if (endpoint) {
+        const { accountProfile: _none, ...rest } = (requestedConfig ?? {}) as Record<string, unknown>;
+        requestedConfig = { ...rest, customEndpoint: endpoint } as ProviderSessionConfig;
+        autoEndpointModel = endpoint.model;
+      }
     }
-    requestedConfig = { ...(requestedConfig ?? {}), accountProfile: fallback };
   }
   if (requestedConfig?.accountProfile) {
     const { requireAccountProfile, readProfileStatus } = await import('./accountProfiles');
@@ -5069,6 +5079,8 @@ export async function startNewSession(opts: {
     cfg.fallbackModel = null;
     if (!opts.effort) cfg.effort = null;
   }
+  // Nobody chose that endpoint: the caller's model/effort name the provider's.
+  if (autoEndpointModel) { cfg.model = autoEndpointModel; cfg.effort = null; }
   // Strict (§14.118): no fallback model to switch to — an overloaded model
   // fails the turn instead of quietly answering with another one.
   if (opts.strictModel) cfg.fallbackModel = null;

@@ -1,7 +1,7 @@
 import { invalidateSessionInsightSnapshot } from '@/lib/server/hub/sessionInsightSnapshot';
 import 'server-only';
 import { eq } from 'drizzle-orm';
-import { db, agentSessions } from '@/lib/db';
+import { db, agentSessions, customEndpoints } from '@/lib/db';
 import { connectionConfig, parseEndpoint, publicConnection, savedEndpoint, type StoredEndpoint } from '@/lib/server/customEndpoints';
 import { withEndpointChecks } from '@/lib/server/endpointProbe';
 import { emitGlobalSessionListChanged, peekStream, resumeSession } from './sessionOps';
@@ -104,6 +104,28 @@ export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null,
 /** A session BORN on a saved endpoint (`POST /api/sessions` `endpoint`). Applying
  *  one afterwards needs an idle sleep + resume, and a session that never ran a
  *  turn has no native conversation to resume: the endpoint must ride the create. */
+/** A hub with NO account for `kind` (§14.115): the saved endpoint a session
+ *  falls back on — the first verified for this engine, else the first saved.
+ *  Null when none is saved or the engine has no endpoint support. */
+export async function endpointWithoutAccount(vpsId: string, kind: string): Promise<StoredEndpoint | null> {
+  if (!supportsCustomEndpoint(kind)) return null;
+  const saved: StoredEndpoint[] = [];
+  for (const row of db.select().from(customEndpoints).all()) {
+    try { saved.push({ ...JSON.parse(row.config), id: row.id }); } catch { /* unreadable row: skipped */ }
+  }
+  const pick = saved.find((e) => endpointModelCheck(e, kind, e.model)?.ok) ?? saved[0];
+  if (!pick?.id) return null;
+  try {
+    return await endpointForNewSession(vpsId, kind, pick.id, null, null);
+  } catch (e) {
+    // An agent predating endpoints answers the capability probe -32601.
+    if (/unknown method|no such method|method not found|-32601/i.test((e as Error).message)) {
+      throw new Error('Update the agent on this VPS to use custom endpoints.');
+    }
+    throw e;
+  }
+}
+
 export async function endpointForNewSession(vpsId: string, kind: string, savedId: string, model: string | null, effort: string | null): Promise<StoredEndpoint> {
   if (!supportsCustomEndpoint(kind)) throw new Error('Custom endpoints are not supported by this engine.');
   const saved = savedEndpoint(savedId);
