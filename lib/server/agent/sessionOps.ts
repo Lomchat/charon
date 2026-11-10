@@ -596,6 +596,9 @@ export class SessionStream {
   // and which start_session kind the agent gets. Persisted in agentSessions.kind.
   readonly kind: AgentKind = 'claude';
   status: WorkerStatus = 'starting';
+  // Bumped by every live agent `status` applied: an RPC answer read before it
+  // must never overwrite it (resumeSession, §14.117).
+  statusEpoch = 0;
   // The provider is summarising the conversation (agent `compacting`). Memory
   // only, like `status`: the window GET's `liveCompacting`. Never outlives
   // the turn (`_setCompacting`).
@@ -1669,6 +1672,7 @@ export class SessionStream {
           this._cancelBlockingGates();
         }
         this.status = ev.status as WorkerStatus;
+        this.statusEpoch++;
         this._broadcast({ type: 'status', status: this.status });
         // A new turn beginning (status → thinking) means the session is being
         // actively worked again, so it is no longer "finished, unread": clear
@@ -5175,6 +5179,10 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // gotcha 36.
     let resolvedStatus: WorkerStatus = 'starting';
     let resumedNoop = false;
+    // The answer's status is the agent's truth WHEN IT ANSWERED; a live status
+    // event can reach us first (a later `active` overtaking a noop resume's
+    // `starting`). Then the event is the newer truth (§14.117).
+    const epochBefore = stream.statusEpoch;
     try {
       // Reassert the stable handle on every resume. Claude's native --name is
       // start-time only; Charon's common bus changes immediately.
@@ -5248,6 +5256,9 @@ export async function resumeSession(sessionId: string): Promise<SessionStream> {
     // attach() just subscribed, a second subscribe replays the same range a
     // second time (§14.31; it once doubled a whole answer's text).
     if (!stream.attach()) client.resubscribe(sessionId);
+    if (stream.statusEpoch !== epochBefore && stream.status !== 'sleeping') {
+      resolvedStatus = stream.status;
+    }
     // Reconcile the in-memory stream + every SSE client + DB with the agent's
     // authoritative status. CRITICAL for the noop path: a session the agent
     // already considers active emits NO status event, so without this the

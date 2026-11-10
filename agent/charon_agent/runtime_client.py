@@ -388,6 +388,11 @@ class RuntimeConn:
                     continue
                 if "res" in msg:
                     self._resolve(msg)
+                    # Let the waiting handler forward this answer BEFORE any
+                    # later line: the runtime wrote them in that order, and an
+                    # event overtaking an answer (`active` before a resume's
+                    # `starting`) leaves the hub with the older truth.
+                    await asyncio.sleep(0)
                 elif "n" in msg:
                     n = msg["n"]
                     if not isinstance(n, int) or n <= self._processed:

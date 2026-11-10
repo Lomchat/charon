@@ -199,7 +199,13 @@ class HotUpdateTest(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(os.path.exists(os.path.join(self.home, "runtimes", "gen-a.sock")),
                          "the drained runtime did not retire")
+        # An answer is never overtaken by a later event (a hub took a noop
+        # resume's `starting` AFTER the `active` that followed it, and kept
+        # sessions "starting" forever): `thinking` comes after `ok`.
+        c.events.clear()
         c.call("send_input", {"session_id": SID, "content": "hi"})
+        self.assertFalse([e for e in c.events if e.get("status") == "thinking"],
+                         "an event overtook the answer it followed")
         answer = c.wait_event(lambda e: e.get("text", "").endswith("echo=hi"))
         self.assertNotIn(f"pid={rt_pid} ", answer["text"])
 
