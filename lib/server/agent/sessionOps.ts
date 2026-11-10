@@ -1,4 +1,5 @@
 import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
+import { supportsCustomEndpoint } from '@/lib/customEndpoints';
 import { sameModel } from '@/lib/strictModel';
 import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
@@ -5035,7 +5036,11 @@ export async function startNewSession(opts: {
       && (!requestedConfig?.accountProfile || requestedConfig.accountProfile === 'default')) {
     const { defaultAccountFor } = await import('@/lib/server/accounts/store');
     const fallback = defaultAccountFor(kind);
-    if (!fallback) throw new Error(`Add a ${providerName(kind)} account first (Accounts).`);
+    if (!fallback) {
+      throw new Error(supportsCustomEndpoint(kind)
+        ? `Add a ${providerName(kind)} account first (Accounts), or start the session on a saved custom endpoint.`
+        : `Add a ${providerName(kind)} account first (Accounts).`);
+    }
     requestedConfig = { ...(requestedConfig ?? {}), accountProfile: fallback };
   }
   if (requestedConfig?.accountProfile) {

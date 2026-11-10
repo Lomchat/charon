@@ -1,5 +1,5 @@
 'use client';
-import PickerControl from './PickerControl';
+import PickerControl, { PickerOption } from './PickerControl';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, sessionApi } from '@/lib/api';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
@@ -23,6 +23,9 @@ import { agentAvailability, backendAvailability, backendLauncher, type BackendLa
 import { ALL_BACKENDS_ENABLED, enabledKinds, type EnabledBackends } from './enabledBackends';
 import { useSearchAutoFocus, useVpsSearch } from './vpsSearch';
 import SettingSourcesPicker from './SettingSourcesPicker';
+import EndpointModelPicker from './EndpointModelPicker';
+import { useSavedEndpoints } from './savedEndpointsStore';
+import { endpointModels, supportsCustomEndpoint, type CustomEndpoint } from '@/lib/customEndpoints';
 import PathChooser, { knownPathsFor } from './PathChooser';
 import {
   resolveSettingSources, safeParseSettingSources, type ClaudeSettingSource,
@@ -42,6 +45,7 @@ import {
 // which turns the wizard into a shell launch on the same VPS and folder.
 type Step = 'vps' | 'backend' | 'path' | 'name';
 const DEFAULT_FOLDER_ID = 'default';
+const NO_ENDPOINTS: CustomEndpoint[] = [];
 
 type Props = {
   kind: 'agent' | 'shell';
@@ -126,6 +130,13 @@ export default function NewSessionWizard({
   // default rather than reaching the server as a foreign profile.
   const ownProfile = (v: Vps, k: AgentKind, id: string) =>
     choicesFor(v, k).some((p) => p.id === id) ? id : DEFAULT_ACCOUNT_PROFILE;
+  // Saved custom endpoints (§14.115): a session born on one runs on its
+  // credentials, so "no account signed in" stops blocking the backend — the
+  // launchers open this wizard and step 3 starts it on the endpoint. One
+  // account at most: several keep their own sign-in menu.
+  const savedEndpoints = useSavedEndpoints(undefined, true);
+  const endpointsFor = (k: AgentKind) => supportsCustomEndpoint(k) ? savedEndpoints : NO_ENDPOINTS;
+  const endpointFallback = (v: Vps, k: AgentKind) => endpointsFor(k).length > 0 && choicesFor(v, k).length === 1;
   const [vpsId, setVpsId] = useState<string | null>(initialVpsId ?? null);
   const selectedProfile = profiles.find((p) => p.vpsId === (vpsId ?? '') && p.provider === selKind && p.id === selProfile);
   const [path, setPath] = useState<string | null>(hasInitialCwd ? initialCwd! : null);
@@ -160,6 +171,11 @@ export default function NewSessionWizard({
   // default (claude.default_* / codex.default_*). Codex has no fallback model
   // and its "mode" is a sandbox level (default workspace-write).
   const [showAdv, setShowAdv] = useState(false);
+  // Step 3's connection: '' = the backend's account, else a saved endpoint id.
+  const [endpointId, setEndpointId] = useState('');
+  // '' = the endpoint's own saved model.
+  const [endpointModel, setEndpointModel] = useState('');
+  const [connectionTouched, setConnectionTouched] = useState(false);
   const [model, setModel] = useState('');
   const [fallbackModel, setFallbackModel] = useState('');
   const [effort, setEffort] = useState('');
@@ -244,9 +260,25 @@ export default function NewSessionWizard({
   // aren't comparable across Claude and Codex).
   useEffect(() => {
     setModel(''); setFallbackModel(''); setEffort(''); setSessionMode('');
+    setEndpointId(''); setEndpointModel(''); setConnectionTouched(false);
   }, [selKind]);
 
   const vps = vpsId ? vpsList.find((v) => v.id === vpsId) ?? null : null;
+  const endpointChoices = kind === 'agent' ? endpointsFor(selKind) : NO_ENDPOINTS;
+  const selectedEndpoint = endpointId ? endpointChoices.find((e) => e.id === endpointId) ?? null : null;
+  // The account as it stands, endpoint fallback aside.
+  const accountAvail = vps && kind === 'agent' ? backendAvailability(profileVps(vps, selKind), selKind) : null;
+  const accountReady = !!accountAvail?.ok;
+  // Until the user picks one: the account when it can run, else the first
+  // endpoint. A deleted endpoint falls back to the account.
+  const accountKnown = !!accountAvail;
+  useEffect(() => { setConnectionTouched(false); }, [vpsId]);
+  useEffect(() => {
+    if (endpointId && !endpointChoices.some((e) => e.id === endpointId)) { setEndpointId(''); setEndpointModel(''); return; }
+    if (connectionTouched || !accountKnown) return;
+    const auto = accountReady ? '' : endpointChoices[0]?.id ?? '';
+    if (endpointId !== auto) { setEndpointId(auto); setEndpointModel(''); }
+  }, [endpointId, endpointChoices, connectionTouched, accountKnown, accountReady]);
   // What this session gets if the user leaves the picker alone (§14.100): the
   // VPS's own scope, else the fleet default, else the built-in one. Resolved
   // here purely to LABEL the inherit option — the server resolves it again for
@@ -305,7 +337,8 @@ export default function NewSessionWizard({
   // Per-VPS availability — shared diagnosis (app/vpsHealth.tsx). Sessions
   // need the whole stack for their backend; a shell only needs the agent
   // layer (ssh + daemon). Each row shows the precise blocker + its fix.
-  const availFor = (v: Vps, k: AgentKind, profile = selProfile) => backendAvailability(profileVps(v, k, profile), k);
+  const availFor = (v: Vps, k: AgentKind, profile = selProfile) =>
+    backendAvailability(profileVps(v, k, profile), k, endpointFallback(v, k));
 
   // The blockers to paint under a row, each PAIRED with its own repair
   // button ("⚠ reason [fix]" per line — never a detached button cluster).
@@ -318,7 +351,7 @@ export default function NewSessionWizard({
     const out: { text: string; fix?: VpsFix }[] = [];
     const kinds: AgentKind[] = backendFixed ? [selKind] : allowedKinds;
     for (const k of kinds) {
-      const av = backendAvailability(v, k);
+      const av = backendAvailability(v, k, endpointFallback(v, k));
       if (av.ok) continue;
       // A SIGN-IN blocker is carried by that backend's own button now — it
       // opens the modal itself — so repeating it here would restore exactly the
@@ -475,8 +508,9 @@ export default function NewSessionWizard({
           if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`invalid env name: ${key}`);
           env[key] = line.slice(split + 1);
         }
+        // On an endpoint the session has no account at all (§14.115).
         const shared = {
-          accountProfile: selProfile,
+          ...(selectedEndpoint ? {} : { accountProfile: selProfile }),
           outputSchema,
           baseInstructions: baseInstructions.trim() || null,
           developerInstructions: developerInstructions.trim() || null,
@@ -519,11 +553,13 @@ export default function NewSessionWizard({
           // Blank means the installation default. The server resolves and
           // persists it atomically, so a slow settings fetch cannot race this.
           permissionMode: sessionMode || undefined,
-          model: model.trim() || null,
+          // An endpoint runs its own model: no provider fallback or effort.
+          model: selectedEndpoint ? null : model.trim() || null,
           // Codex has no fallback-model concept (server ignores it anyway).
-          fallbackModel: capabilities.fallbackModel === 'none' ? null : (fallbackModel.trim() || null),
-          effort: effort || null,
+          fallbackModel: selectedEndpoint || capabilities.fallbackModel === 'none' ? null : (fallbackModel.trim() || null),
+          effort: selectedEndpoint ? null : effort || null,
           sessionConfig,
+          ...(selectedEndpoint?.id ? { endpoint: { savedId: selectedEndpoint.id, model: endpointModel.trim() || null } } : {}),
         });
         onCreatedSession?.({ id: r.id, vpsId: vps.id, cwd: r.cwd });
       } else {
@@ -547,7 +583,7 @@ export default function NewSessionWizard({
   // and the layout effect runs before paint, so no frame shows the old size.
   const modalRef = useRef<HTMLDivElement | null>(null);
   const multiAccount = !!vps && kind === 'agent' && choicesFor(vps, selKind).length > 1;
-  const pageKey = `${step}|${kind}|${selKind}|${showAdv}|${multiAccount}|${noBackend}`;
+  const pageKey = `${step}|${kind}|${selKind}|${showAdv}|${multiAccount}|${noBackend}|${endpointChoices.length > 0}|${!!selectedEndpoint}`;
   useLayoutEffect(() => {
     const el = modalRef.current;
     if (!el) return;
@@ -645,7 +681,7 @@ export default function NewSessionWizard({
                   // Same launcher rule as the step-1 buttons (`vpsHealth §
                   // backendLauncher`): signed out ⇒ the row signs in; a missing
                   // runtime stays unpressable, its reason + repair inline.
-                  const launcher = backendLauncher(vps, k);
+                  const launcher = backendLauncher(vps, k, endpointFallback(vps, k));
                   if (!launcher.enabled) {
                     const av = backendAvailability(vps, k);
                     return (
@@ -670,6 +706,7 @@ export default function NewSessionWizard({
                   }
                   return (
                     <WizardBackendRow key={k} vps={vps} provider={k} profiles={choicesFor(vps, k)}
+                      onEndpoint={endpointFallback(vps, k)}
                       onLaunch={(profile, l) => {
                         if (l.ready) pickBackend(k, profile.id);
                         else if (profile.id !== 'default') onProfileLogin?.(vps, k, profile);
@@ -776,6 +813,7 @@ export default function NewSessionWizard({
                           <span className="wiz-kind-btns">
                             {allowedKinds.map((k) => (
                               <WizardKindButton key={k} vps={v} provider={k} profiles={choicesFor(v, k)}
+                                onEndpoint={endpointFallback(v, k)}
                                 onLaunch={(profile, l) => {
                                   if (l.ready) pickVps(v, k, profile.id);
                                   else if (profile.id !== 'default') onProfileLogin?.(v, k, profile);
@@ -791,7 +829,7 @@ export default function NewSessionWizard({
                     // RPC) — same gating, minus the login/backend checks.
                     // A fixed-backend row IS the button, so it follows the same
                     // rule: signed out ⇒ still pressable, and it signs in.
-                    const rowLauncher = kind === 'agent' ? backendLauncher(profileVps(v, selKind), selKind) : null;
+                    const rowLauncher = kind === 'agent' ? backendLauncher(profileVps(v, selKind), selKind, endpointFallback(v, selKind)) : null;
                     const disabled = rowLauncher ? !rowLauncher.enabled : !agentAvailability(v).ok;
                     if (disabled) {
                       // Not a <button>: the row hosts the repair buttons
@@ -875,7 +913,24 @@ export default function NewSessionWizard({
             taller than the screen allows. */}
         {step === 'name' && vps && (<>
           <div className="wiz-body">
-            {kind === 'agent' && choicesFor(vps, selKind).length > 1 && <label className="nw-field profile-picker">
+            {endpointChoices.length > 0 && <label className="nw-field profile-picker">
+              <span>Connection</span>
+              <PickerControl value={endpointId} onValueChange={(id) => { setConnectionTouched(true); setEndpointId(String(id)); setEndpointModel(''); }}>
+                <option value="">
+                  <PickerOption title={`${providerName(selKind)} account`} sub={accountReady ? null : 'Sign in required'} />
+                </option>
+                {endpointChoices.map((e) => <option value={e.id} key={e.id}>
+                  <PickerOption title={e.name || e.baseUrl} sub={`Custom endpoint · ${e.baseUrl}`} />
+                </option>)}
+              </PickerControl>
+              {!selectedEndpoint && !accountReady && choicesFor(vps, selKind).length === 1 && accountAvail?.fix && <button type="button" className="wiz-btn ghost"
+                onClick={() => {
+                  const profile = choicesFor(vps, selKind)[0];
+                  if (profile.id !== DEFAULT_ACCOUNT_PROFILE) onProfileLogin?.(vps, selKind, profile);
+                  else onFix?.(vps, accountAvail.fix!.action);
+                }}>{accountAvail.fix.label}</button>}
+            </label>}
+            {kind === 'agent' && !selectedEndpoint && choicesFor(vps, selKind).length > 1 && <label className="nw-field profile-picker">
               <span>Account</span>
               <PickerControl value={selProfile} onValueChange={(id) => setSelProfile(String(id))}>
                 {choicesFor(vps, selKind).map((profile) => <option value={profile.id} key={profile.id}>
@@ -907,7 +962,16 @@ export default function NewSessionWizard({
                         `isCodex ? … : …`, which offered a third provider
                         Claude's models — a picker listing what its backend
                         cannot run, with a green typecheck. */}
-                    {(() => {
+                    {selectedEndpoint ? (
+                      // The endpoint's own catalog; blank = its saved model.
+                      <label className="wiz-adv-field">model
+                        {endpointModels(selectedEndpoint, selKind).length > 0
+                          ? <EndpointModelPicker endpoint={selectedEndpoint} kind={selKind}
+                              value={endpointModel || selectedEndpoint.model} onChange={setEndpointModel} />
+                          : <input className="mono" value={endpointModel} onChange={(e) => setEndpointModel(e.target.value)}
+                              placeholder={selectedEndpoint.model} autoComplete="off" spellCheck={false} />}
+                      </label>
+                    ) : (() => {
                       const { Model, Effort } = PROVIDER_CATALOGS[selKind];
                       const inherit = providerText.agentLabel(selKind) + ' default';
                       return (
@@ -1036,7 +1100,8 @@ export default function NewSessionWizard({
           <div className="wiz-foot">
             <div className="wiz-summary">
               <KindIcon />
-              <span>{kindLabel} · <b>{vps.name}</b> · <span className="mono">{path == null ? '~ (home)' : path}</span></span>
+              <span>{kindLabel} · <b>{vps.name}</b> · <span className="mono">{path == null ? '~ (home)' : path}</span>
+                {selectedEndpoint && <> · on <b>{selectedEndpoint.name || selectedEndpoint.baseUrl}</b></>}</span>
             </div>
             {/* Reserved like step 2's: the path check answers after the page
                 is measured. A launch failure outranks it. */}
@@ -1075,11 +1140,11 @@ type AccountLaunch = (profile: AccountProfile, launcher: BackendLauncher) => voi
 
 /** Step-1 backend button of a VPS row. Several accounts stay ONE button: it
  *  opens the account choice in place (`AccountChoice.tsx`). */
-function WizardKindButton({ vps, provider, profiles, onLaunch }: {
-  vps: Vps; provider: AgentKind; profiles: AccountProfile[]; onLaunch: AccountLaunch;
+function WizardKindButton({ vps, provider, profiles, onEndpoint, onLaunch }: {
+  vps: Vps; provider: AgentKind; profiles: AccountProfile[]; onEndpoint: boolean; onLaunch: AccountLaunch;
 }) {
   const choice = useAccountChoice(profiles.length);
-  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider);
+  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider, onEndpoint);
   const launcher = launcherOf(profiles[0]);
   const warn = choice.multi ? !profiles.some((p) => launcherOf(p).ready) : launcher.warn;
   return (
@@ -1100,11 +1165,11 @@ function WizardKindButton({ vps, provider, profiles, onLaunch }: {
 }
 
 /** Backend-step row ("＋ agent here"): same account choice, row-sized. */
-function WizardBackendRow({ vps, provider, profiles, onLaunch }: {
-  vps: Vps; provider: AgentKind; profiles: AccountProfile[]; onLaunch: AccountLaunch;
+function WizardBackendRow({ vps, provider, profiles, onEndpoint, onLaunch }: {
+  vps: Vps; provider: AgentKind; profiles: AccountProfile[]; onEndpoint: boolean; onLaunch: AccountLaunch;
 }) {
   const choice = useAccountChoice(profiles.length);
-  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider);
+  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider, onEndpoint);
   const launcher = launcherOf(profiles[0]);
   const blocked = choice.multi ? !profiles.some((p) => launcherOf(p).ready) : !launcher.ready;
   return (

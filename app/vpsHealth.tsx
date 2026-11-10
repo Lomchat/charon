@@ -3,6 +3,7 @@ import type { Vps } from '@/lib/db/schema';
 import type { AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
 import { isVersionOutdated, agentBuildRelation } from '@/lib/version';
 import { providerText } from '@/lib/providerText';
+import { supportsCustomEndpoint } from '@/lib/customEndpoints';
 import {
   PROVIDERS, SESSION_PROVIDERS, providerBackendState,
   type ProviderLoginAction, type SessionProvider,
@@ -324,10 +325,10 @@ export type BackendLauncher = {
   warn: boolean;
 };
 
-export function backendLauncher(v: Vps, kind: AgentKind): BackendLauncher {
-  const av = backendAvailability(v, kind);
+export function backendLauncher(v: Vps, kind: AgentKind, onEndpoint = false): BackendLauncher {
+  const av = backendAvailability(v, kind, onEndpoint);
   if (av.ok) {
-    return { ready: true, fix: null, enabled: true, title: providerText.newAgent(kind), warn: false };
+    return { ready: true, fix: null, enabled: true, title: av.endpoint ? av.reason : providerText.newAgent(kind), warn: false };
   }
   const signIn = av.fix && av.fix.action === PROVIDERS[kind].backend.login.action ? av.fix : null;
   return {
@@ -341,10 +342,14 @@ export function backendLauncher(v: Vps, kind: AgentKind): BackendLauncher {
   };
 }
 
+/** `onEndpoint`: a saved custom endpoint exists for this backend. A session
+ *  born on one runs on its credentials, so a missing sign-in no longer blocks
+ *  (`endpoint: true` ⇒ the session MUST be created on an endpoint). */
 export function backendAvailability(
   v: Vps,
   kind: AgentKind,
-): { ok: boolean; reason: string; fix?: VpsFix } {
+  onEndpoint = false,
+): { ok: boolean; reason: string; fix?: VpsFix; endpoint?: true } {
   const agent = agentAvailability(v);
   if (!agent.ok) return agent;
   const d = PROVIDERS[kind];
@@ -362,6 +367,9 @@ export function backendAvailability(
   }
   const loginBlocked = st.loggedIn === 0
     || (st.loggedIn == null && !b.loginUnknownIsUsable);
+  if (loginBlocked && onEndpoint && supportsCustomEndpoint(kind)) {
+    return { ok: true, endpoint: true, reason: `${providerText.newAgent(kind)} on a custom endpoint (no account signed in)` };
+  }
   if (loginBlocked) {
     return {
       ok: false,

@@ -66,6 +66,7 @@ import { useShowHidden } from './showPaused';
 import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
 import { useStableCallback } from './useStable';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
+import { useHasSavedEndpoints } from './savedEndpointsStore';
 import {
   AGENT_KINDS, ALL_BACKENDS_ENABLED, enabledBackendsFromSettings, sameBackends,
 } from './enabledBackends';
@@ -1484,17 +1485,18 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
    *  button stays enabled — SSH doesn't need the agent. Uses the SHARED
    *  diagnosis (app/vpsHealth.tsx § backendAvailability), so a backend the
    *  sidebar greys out is greyed out here too, with the same wording. */
+  const hasSavedEndpoints = useHasSavedEndpoints();
   const tabBarNewSessionReasons = useMemo((): Record<AgentKind, string | null> => {
     const vps = activeVpsId ? vpsList.find((v) => v.id === activeVpsId) : null;
     const reason = (k: AgentKind) => {
       if (!vps) return null;
-      const av = backendAvailability(vps, k);
+      const av = backendAvailability(vps, k, hasSavedEndpoints);
       return av.ok ? null : av.reason;
     };
     return Object.fromEntries(
       AGENT_KINDS.map((k) => [k, reason(k)]),
     ) as Record<AgentKind, string | null>;
-  }, [vpsList, activeVpsId]);
+  }, [vpsList, activeVpsId, hasSavedEndpoints]);
 
   // ── Sessions list: frames are the path, the list GET the backstop ──
   // `session_summary` frames keep the store current; the default list GET

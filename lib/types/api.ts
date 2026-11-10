@@ -1505,6 +1505,8 @@ export type CreateAgentSessionBody = {
   sessionConfig?: ProviderSessionConfig | null;
   /** @deprecated request compatibility for clients predating the neutral name. */
   providerConfig?: CodexSessionConfig | null;
+  /** Born on a saved custom endpoint: needs no provider account. */
+  endpoint?: { savedId: string; model?: string | null };
 };
 
 export type SharedSessionConfig = {

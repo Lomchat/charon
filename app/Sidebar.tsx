@@ -20,6 +20,7 @@ import { useLongPress } from './useLongPress';
 import { useStableCallback, useStableOptionalCallback } from './useStable';
 import { isVersionOutdated, isAgentOutdated, agentBuildRelation } from '@/lib/version';
 import { backendAvailability, backendLauncher, parseAgentLastError, type BackendLauncher } from './vpsHealth';
+import { useHasSavedEndpoints } from './savedEndpointsStore';
 import { isTreeSelectionOnly, selectTreeRow, type TreeSelectionModifiers } from './treeSelection';
 import { isSameWorkspace, type WorkspaceScope } from './workspaceScope';
 import {
@@ -1312,7 +1313,10 @@ function VpsProviderButton({ vps, provider, profiles, signingOutAccounts, onNew,
   const main = profiles[0];
   const choice = useAccountChoice(profiles.length);
   const signingOut = (p: AccountProfile) => signingOutAccounts?.has(`${vps.id}:${provider}:${p.id}`) ?? false;
-  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider);
+  // No account but a saved endpoint: the button opens the wizard, which starts
+  // the session on that endpoint (§14.115). Several accounts keep their menu.
+  const onEndpoint = useHasSavedEndpoints() && profiles.length === 1;
+  const launcherOf = (p: AccountProfile) => backendLauncher(vpsForProfile(vps, provider, p), provider, onEndpoint);
   const launcher = launcherOf(main);
   // A missing runtime blocks every account alike; a sign-in or a logout in
   // flight belongs to one account, and the menu carries it per row.

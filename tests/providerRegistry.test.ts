@@ -14,7 +14,7 @@ import { AGENT_KINDS, enabledBackendsFromSettings, enabledKinds } from '@/app/en
 import {
   PROVIDER_VERSION_COLUMNS, VPS_RUNTIME_KEYS, pickVpsRuntimeFields,
 } from '@/lib/vpsRuntimeFields';
-import { diagnoseVps } from '@/app/vpsHealth';
+import { backendAvailability, backendLauncher, diagnoseVps } from '@/app/vpsHealth';
 
 // The provider registry is the ONE table a new backend is declared in
 // (CLAUDE.md §14.102). TypeScript already refuses an incomplete descriptor —
@@ -433,5 +433,23 @@ describe('provider registry', () => {
       // the declared default: a typo must never hide a backend someone enabled.
       expect(enabledBackendsFromSettings({ [PROVIDERS[p].settings.enabledKey]: 'nope' })[p]).toBe(true);
     }
+  });
+});
+
+// A box with no provider account but a saved custom endpoint must still launch
+// (the endpoint carries its own credentials, §14.115); nothing else unblocks.
+describe('launching on a custom endpoint', () => {
+  const row = (patch: Record<string, unknown>) => ({
+    id: 'v1', agentStatus: 'ok', codexAvailable: 1, cursorAvailable: 1, ...patch,
+  }) as unknown as Parameters<typeof backendAvailability>[0];
+
+  it('a missing sign-in stops blocking only when an endpoint exists', () => {
+    const signedOut = row(providerLoginPatch('claude', 0));
+    expect(backendAvailability(signedOut, 'claude').ok).toBe(false);
+    expect(backendAvailability(signedOut, 'claude', true)).toMatchObject({ ok: true, endpoint: true });
+    expect(backendLauncher(signedOut, 'claude', true).ready).toBe(true);
+    // An engine without endpoint support, or a missing runtime, stays blocked.
+    expect(backendAvailability(row(providerLoginPatch('cursor', 0)), 'cursor', true).ok).toBe(false);
+    expect(backendAvailability(row({ codexAvailable: 0, ...providerLoginPatch('codex', 0) }), 'codex', true).ok).toBe(false);
   });
 });

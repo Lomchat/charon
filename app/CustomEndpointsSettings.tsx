@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
+import { publishSavedEndpoints, refreshSavedEndpoints } from './savedEndpointsStore';
 import type { EndpointBatch, Vps } from '@/lib/types/api';
 import { ENDPOINT_ENGINES, endpointModelCheck, type CustomEndpoint, type EndpointEngine } from '@/lib/customEndpoints';
 import { providerName } from '@/lib/providerText';
@@ -24,7 +25,7 @@ export default function CustomEndpointsSettings({ vpsList = [] }: { vpsList?: Vp
   const batchBusy = !!batch && ['preparing', 'running', 'cancelling'].includes(batch.status);
   const locked = batchBusy || batchPending || !!removing;
   async function refresh() {
-    try { const r = await api.listCustomEndpoints(); setEndpoints(r.endpoints); setError(null); }
+    try { const r = await api.listCustomEndpoints(); setEndpoints(r.endpoints); publishSavedEndpoints(r.endpoints); setError(null); }
     catch (e) { setError(e instanceof Error ? e.message : 'Could not load endpoints.'); }
     finally { setLoading(false); }
   }
@@ -69,7 +70,7 @@ export default function CustomEndpointsSettings({ vpsList = [] }: { vpsList?: Vp
   }
   async function remove(id: string) {
     setRemoving(id); setError(null);
-    try { await api.deleteCustomEndpoint(id); setEndpoints((rows) => rows.filter((e) => e.id !== id)); }
+    try { await api.deleteCustomEndpoint(id); setEndpoints((rows) => rows.filter((e) => e.id !== id)); void refreshSavedEndpoints(); }
     catch (e) { setError(e instanceof Error ? e.message : 'Could not delete endpoint.'); }
     finally { setRemoving(null); }
   }
