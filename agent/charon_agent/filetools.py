@@ -219,7 +219,9 @@ def sqlite_query(root: str, path: str, sql: str, params: list[Any] | None = None
         elif "interrupted" in msg:
             msg = f"stopped after {int(SQLITE_TIMEOUT_S)} s"
         return {"ok": False, "error": msg}
-    except (sqlite3.Error, ValueError) as e:
+    # Python 3.10 refuses a multi-statement string with sqlite3.Warning, which
+    # is not an sqlite3.Error: it must stay a refusal, never escape.
+    except (sqlite3.Error, sqlite3.Warning, ValueError) as e:
         return {"ok": False, "error": str(e)}
     finally:
         conn.close()
