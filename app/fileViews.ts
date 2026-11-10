@@ -158,7 +158,8 @@ const B = (kind: ViewerKind): ViewerSpec => ({ kind, source: 'bytes' });
 
 const VIEWERS: Record<string, ViewerSpec> = {
   html: T('live', 'Live'), htm: T('live', 'Live'), xhtml: T('live', 'Live'),
-  md: T('markdown', 'View'), markdown: T('markdown', 'View'),
+  // A document is read rendered; Code is one click away. HTML keeps its source.
+  md: T('markdown', 'View', true), markdown: T('markdown', 'View', true),
   svg: T('svg', 'View', true),
   mmd: T('mermaid', 'View', true), mermaid: T('mermaid', 'View', true),
   dot: T('graphviz', 'View', true), gv: T('graphviz', 'View', true),
