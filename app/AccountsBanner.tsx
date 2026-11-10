@@ -1,13 +1,14 @@
 'use client';
 import { useState } from 'react';
-import { SESSION_PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
+import type { SessionProvider } from '@/lib/sessionCapabilities';
 import { providerName } from '@/lib/providerText';
 import { loginDaysLeft, providerAccountLabel, LOGIN_EXPIRY_WARN_DAYS } from '@/lib/providerAccounts';
 import type { AccountList } from './accountsStore';
 
 /** What the hub's accounts need from the user (§14.115), most urgent first:
- *  a signed-out account, a sign-in ending soon, an enabled backend with no
- *  account at all. */
+ *  a signed-out account, a sign-in ending soon. A backend with NO account is
+ *  not a problem — a box may serve its own model (§8 custom endpoints) — and
+ *  its launcher already leads to sign-in. */
 type Need = { key: string; text: string; action: string; provider: SessionProvider; accountId: string | null };
 
 function needs(data: AccountList, enabled: Record<SessionProvider, boolean>): Need[] {
@@ -22,10 +23,6 @@ function needs(data: AccountList, enabled: Record<SessionProvider, boolean>): Ne
         text: `${label}: its sign-in ends ${days <= 0 ? 'today' : `in ${days} day${days > 1 ? 's' : ''}`}.`, action: 'Sign in again', provider: a.provider, accountId: a.id });
     }
   }
-  const missing = SESSION_PROVIDERS.filter((p) => enabled[p] && !data.accounts.some((a) => a.provider === p));
-  // Cursor is optional: only nag about it once Claude/Codex are covered.
-  for (const p of missing.filter((p) => p !== 'cursor')) out.push({ key: `m:${p}`,
-    text: `Connect your ${providerName(p)} account — once, for every VPS.`, action: 'Add account', provider: p, accountId: null });
   return out;
 }
 
