@@ -204,7 +204,8 @@ function normalizeProviderConfig(kind: AgentKind, raw: unknown): ProviderSession
 }
 
 // POST /api/sessions
-// Body: { vpsId, cwd, name?, kind?, permissionMode?, model?, fallbackModel?, effort? }
+// Body: { vpsId, cwd, name?, kind?, permissionMode?, model?, fallbackModel?, effort?,
+//         sessionConfig?, endpoint?: { savedId, model? }, hidden?, strictModel? }
 export async function POST(req: Request) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -254,6 +255,37 @@ export async function POST(req: Request) {
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
+  // `endpoint: { savedId, model? }` = the session is BORN on a saved custom
+  // endpoint. Applying one after create needs an idle resume, which a session
+  // that never ran a turn cannot do. `effort` is then the endpoint's parameter set.
+  let endpointModel: string | null = null;
+  if (body.endpoint != null) {
+    const raw = body.endpoint;
+    if (typeof raw !== 'object' || Array.isArray(raw) || typeof raw.savedId !== 'string') {
+      return NextResponse.json({ error: 'endpoint must be { savedId, model? }' }, { status: 400 });
+    }
+    try {
+      const { endpointForNewSession } = await import('@/lib/server/agent/endpointOps');
+      const endpoint = await endpointForNewSession(vpsId, kind, raw.savedId,
+        typeof raw.model === 'string' ? raw.model.trim().slice(0, 256) : null, effort);
+      sessionConfig = { ...(sessionConfig ?? {}), customEndpoint: endpoint } as ProviderSessionConfig;
+      endpointModel = endpoint.model;
+    } catch (e) {
+      const message = (e as Error).message;
+      // An agent predating endpoints answers the capability probe -32601.
+      return NextResponse.json({
+        error: /unknown method|no such method|method not found|-32601/i.test(message)
+          ? 'Update the agent on this VPS to use custom endpoints.' : message,
+      }, { status: 400 });
+    }
+  }
+  // §14.118: `hidden` = only the hidden view lists it, no Telegram/push;
+  // `strictModel` (API) = no fallback model, another model stops the turn.
+  for (const key of ['hidden', 'strictModel'] as const) {
+    if (body[key] != null && typeof body[key] !== 'boolean') {
+      return NextResponse.json({ error: `${key} must be true or false` }, { status: 400 });
+    }
+  }
   try {
     const directory = await checkSessionPath(v, cwd, true);
     if (!directory.ok) return NextResponse.json({ error: directory.error }, { status: 400 });
@@ -263,7 +295,8 @@ export async function POST(req: Request) {
       name: body.name ? String(body.name) : null,
       kind,
       permissionMode,
-      model, fallbackModel, effort, sessionConfig,
+      model: endpointModel ?? model, fallbackModel, effort, sessionConfig,
+      hidden: body.hidden === true, strictModel: body.strictModel === true,
     });
     const stored = db.select({ config: agentSessions.providerConfig }).from(agentSessions).where(eq(agentSessions.id, stream.id)).get();
     return NextResponse.json({
@@ -271,6 +304,7 @@ export async function POST(req: Request) {
       id: stream.id, kind: stream.kind, status: stream.status, nativeSessionId: stream.nativeSessionId,
       vpsId, cwd, name: stream.name, permissionMode: stream.permissionMode,
       model: stream.model, fallbackModel: stream.fallbackModel, effort: stream.effort,
+      hidden: body.hidden === true, strictModel: body.strictModel === true,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? String(e) }, { status: 500 });

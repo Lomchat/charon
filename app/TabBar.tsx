@@ -67,6 +67,8 @@ export type ResolvedTab = TabDTO & {
    * opened one. Files carry their icon and their unsaved dot, nothing else.
    */
   live: boolean;
+  /** A hidden session's tab (§14.118): drawn only while hidden ones are shown. */
+  hidden?: boolean;
 };
 
 type Args = {
@@ -106,7 +108,7 @@ export function resolveTabs({
         : isWaitingAttention(attentionForRow(s)) ? 'waiting'
         : (rowStatus(s) as TabState) ?? 'active';
       return {
-        ...t, dirty, orphan: !s, live: true,
+        ...t, dirty, orphan: !s, live: true, hidden: s?.hidden === 1,
         label: s?.name || '(unnamed)',
         title: `${s?.name || '(unnamed)'}\n${t.path}`,
         state: STATE_PRIORITY[state] === undefined ? 'active' : state,
@@ -186,10 +188,10 @@ type Props = {
    *  here exactly as it does in the sidebar — two launchers disagreeing about
    *  which backends exist is worse than no launcher. */
   enabledBackends?: EnabledBackends;
-  /** The sidebar's own switch (app/showPaused.ts). OFF hides every tab whose
-   *  session is asleep, and with them any folder or machine that held nothing
-   *  else — the strip and the sidebar answer "what is paused" together. */
-  showPaused?: boolean;
+  /** The sidebar's hidden switch (app/showPaused.ts § useShowHidden). OFF
+   *  drops every hidden session's tab, and with them any folder or machine
+   *  that held nothing else (app/pausedTabs.ts). */
+  showHidden?: boolean;
   onReorderVps: (vpsIds: string[]) => void;
   onReorderPaths: (vpsId: string, paths: string[]) => void;
   onReorderTabs: (vpsId: string, path: string, ids: string[]) => void;
@@ -200,7 +202,7 @@ export default function TabBar({
   onVpsClick, onPathClick, onTabClick, onTabDoubleClick, onTabClose, onTabContext,
   onVpsClose, onPathClose,
   onNewSession, onNewShell, newSessionDisabledReason,
-  enabledBackends = ALL_BACKENDS_ENABLED, showPaused = true,
+  enabledBackends = ALL_BACKENDS_ENABLED, showHidden = false,
   onReorderVps, onReorderPaths, onReorderTabs,
 }: Props) {
   const profiles = useAccountProfiles(activeVpsId ?? undefined);
@@ -218,7 +220,7 @@ export default function TabBar({
     // Everything below is built from the SHOWN tabs, so a folder or a machine
     // with nothing left to show simply has no row. `fullOrder` keeps the
     // unfiltered sequences: a drop commits the whole order (§14.80).
-    const shown = visibleTabs(resolved, showPaused, activeTabId);
+    const shown = visibleTabs(resolved, showHidden, activeTabId);
     const fullOrder = {
       vps: [...new Set(resolved.map((t) => t.vpsId))],
       paths: [...new Set(resolved.filter((t) => t.vpsId === activeVpsId).map((t) => t.path))],
@@ -239,7 +241,7 @@ export default function TabBar({
         vpsId, tabs: list, count: list.length, state: rollUp(list),
         pos: Math.min(...list.map((t) => t.vpsPos)),
       }))
-      .filter((r) => r.vps && groupShown(r.tabs, showPaused, activeTabId))
+      .filter((r) => r.vps && groupShown(r.tabs, showHidden, activeTabId))
       .sort((a, b) => a.pos - b.pos
         || (sidebarOrder.get(a.vpsId) ?? 99) - (sidebarOrder.get(b.vpsId) ?? 99));
 
@@ -251,7 +253,7 @@ export default function TabBar({
       byPath.set(t.path, arr);
     }
     const pathRows: PathGroup[] = [...byPath.entries()]
-      .filter(([, list]) => groupShown(list, showPaused, activeTabId))
+      .filter(([, list]) => groupShown(list, showHidden, activeTabId))
       .map(([path, list]) => ({
         vpsId: activeVpsId!, path, tabs: list, state: rollUp(list),
         pos: Math.min(...list.map((t) => t.groupPos)),
@@ -261,11 +263,11 @@ export default function TabBar({
     const tabRows = (byPath.get(activePath ?? '') ?? [])
       .slice().sort((a, b) => a.position - b.position);
     return { vpsRows, pathRows, tabRows, fullOrder };
-  }, [resolved, vpsList, vpsFolders, activeVpsId, activePath, showPaused, activeTabId]);
+  }, [resolved, vpsList, vpsFolders, activeVpsId, activePath, showHidden, activeTabId]);
 
   // One hook per row. Each commits the FULL new order for that row — the
   // dragged subsequence is slotted back into the hidden rows' own order, or
-  // turning the switch back on would show everything paused pushed to the end.
+  // turning the switch back on would show everything hidden pushed to the end.
   const vpsDnd = useReorder(vpsRows.map((r) => r.vpsId),
     (vpsIds) => onReorderVps(mergeVisibleOrder(fullOrder.vps, vpsIds)));
   const pathDnd = useReorder(pathRows.map((g) => g.path),

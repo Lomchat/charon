@@ -41,6 +41,9 @@ export async function sendPushToAll(payload: {
   url?: string;
   sessionId?: string;
   tag?: string;
+  /** A hidden session's event (§14.118): only devices showing hidden
+   *  sessions (`showHidden`, mirrored from the sidebar filter) get it. */
+  hidden?: boolean;
 }): Promise<void> {
   const k = ensureVapid();
   if (!k) return;
@@ -52,9 +55,12 @@ export async function sendPushToAll(payload: {
   // allSettled is bounded enough — no need for a concurrency pool.
   const SEND_TIMEOUT_MS = 10_000;
   await Promise.allSettled(subs.map(async (s) => {
-    const preferences = effectiveBrowserNotifications(parseBrowserNotifications(s.preferences), payload.sessionId);
+    const stored = parseBrowserNotifications(s.preferences);
+    if (payload.hidden && !stored.showHidden) return;
+    const preferences = effectiveBrowserNotifications(stored, payload.sessionId);
     if (!preferences.enabled || !preferences.events[payload.event]) return;
-    const body = JSON.stringify({ ...payload, silent: !preferences.sound });
+    const { hidden: _hidden, ...wire } = payload;
+    const body = JSON.stringify({ ...wire, silent: !preferences.sound });
     const sub = {
       endpoint: s.endpoint,
       keys: { p256dh: s.p256dh, auth: s.authKey },

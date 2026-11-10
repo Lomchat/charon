@@ -210,6 +210,8 @@ async function createChild(
     vpsId: parent.vpsId, cwd, name: ev.name?.trim() || nameFromTask(ev.task), kind,
     permissionMode: mode, model, effort, sessionConfig: parentConfig,
     parentSessionId: parent.id,
+    // A hidden session's children are born hidden (§14.118).
+    hidden: parent.hidden === 1,
   });
   const handle = db.select({ h: agentSessions.handle }).from(agentSessions)
     .where(eq(agentSessions.id, stream.id)).get()?.h ?? null;

@@ -944,10 +944,15 @@
 /* Inset: the row clips what overflows it. */
 .cs-chip input:focus-visible + .cs-chip-face { outline: 2px solid var(--accent-strong); outline-offset: -2px; }
 .cs-chip-count { font-family: var(--mono); font-size: 10px; opacity: .8; }
-/* "paused" + its cleanup (PausedSessionsModal): ONE pill split by a hairline
-   — the toggle (moon, count) | the trash. The pill owns the border; its left
-   half fills when paused sessions are shown. Overflow is clipped to the pill,
-   so the two halves draw their focus rings inside. */
+/* The hidden chip's red dot (§14.118): a hidden session waits on you or failed. */
+.cs-chip-alarm {
+  width: 6px; height: 6px; border-radius: 50%; flex: none;
+  background: var(--danger-strong); align-self: flex-start; margin-top: 5px;
+}
+/* The moon + its cleanup (PausedSessionsModal): ONE pill split by a hairline
+   — the toggle (moon, count) | the trash, drawn only while the moon is on.
+   The pill owns the border; its left half fills when on. Overflow is clipped
+   to the pill, so the two halves draw their focus rings inside. */
 .cs-switch-pair {
   display: inline-flex; align-items: stretch; flex: none; overflow: hidden;
   border: 1px solid var(--border); border-radius: 999px;

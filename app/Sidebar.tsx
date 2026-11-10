@@ -2,7 +2,7 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Vps, VpsFolder, VpsPath } from '@/lib/db/schema';
 import type { SessionListItem, InstallInfo, AgentKind, VpsStalenessBaselines } from '@/lib/types/api';
-import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
+import { IconAlarm, IconArrowClockwise, IconCheck2Circle, IconClockHistory, IconLightningCharge, IconEyeSlash, IconListUl, IconMoon, IconPencil, IconRobot, IconServers, IconTerminal, IconTrash, IconWrench } from './icons';
 import { getDraft, useHasDraft } from './inputDraftStore';
 import { fmtMoment } from './taskTime';
 import { describeSchedule, scheduledTaskTitle, type ScheduledTask } from '@/lib/scheduledTasks';
@@ -33,7 +33,7 @@ import {
 } from '@/lib/sessionCapabilities';
 import { reconcileSidebarSessionSelection } from './sidebarSessionSelection';
 import { attentionForRow, pendingSplit, rowStatus, shellAttention } from '@/lib/sessionAttention';
-import { useShowPaused } from './showPaused';
+import { useShowHidden, useShowPaused } from './showPaused';
 import { focusAdmits, focusEmptyText, sessionFocusFacts, shellFocusFacts } from './sidebarFocus';
 import PanelResizer from './PanelResizer';
 import { usePanelLayout } from './panelLayoutStore';
@@ -242,7 +242,8 @@ type Props = {
   // "Manage VPS & folders" button in the sidebar toolbar.
   onOpenData: () => void;
   /** The trash beside "show paused": the paused-sessions cleanup modal. */
-  onOpenPausedCleanup?: () => void;
+  /** Delete sleeping sessions — the hidden ones when `hidden` (§14.118). */
+  onOpenPausedCleanup?: (hidden: boolean) => void;
   onContext?: (sessions: SessionListItem[], x: number, y: number) => void;
   onContextShell?: (shell: ShellListItem, x: number, y: number) => void;
   onContextInstall?: (install: InstallInfo, x: number, y: number) => void;
@@ -326,11 +327,11 @@ export default function Sidebar({
   // Parents whose sub-sessions are folded (default: unfolded).
   const [subFolded, setSubFolded] = useCollapsedGroups('hub.sidebar.subFolded.v1');
 
-  // Show / hide paused (sleeping) sessions. Default ON (= show everything).
-  // Shared with the workspace strip, which filters on the same switch
-  // (app/showPaused.ts) — one list hiding a session while the other keeps its
-  // tab is the same session answering two ways.
+  // The two view axes (app/showPaused.ts, §14.118): the moon = ONLY sleeping
+  // sessions (off = only the awake ones), the eye = ONLY hidden sessions
+  // (off = only the normal ones). Four views; both off is the default.
   const [showPaused, toggleShowPaused] = useShowPaused();
+  const [showHidden, toggleShowHidden] = useShowHidden();
   // Show / hide per-card details (first-message preview, cwd, age). Default OFF
   // (= compact one-line cards — the full info stays in the card tooltip); the
   // denser default keeps a many-VPS fleet scannable. Opt back IN via the
@@ -502,9 +503,10 @@ export default function Sidebar({
     return sorted;
   }, [vpsFolders, vpsList]);
 
-  // Sessions / shells per VPS (paused switch, then the machine+folder filter).
-  // The selected entity is never dropped: a filter that excluded it would
-  // leave the main pane blank with no explanation.
+  // Sessions / shells per VPS (the two view axes, then the machine+folder
+  // filter). The selected entity is never dropped: a filter that excluded it
+  // would leave the main pane blank with no explanation — a session that falls
+  // asleep or gets hidden under you leaves the list once you leave it.
   const showEntity = isEntityShown ?? (() => true);
   // The focus chips (app/sidebarFocus.ts): unread and/or running, added up.
   const focus = { unread: focusUnread, running: focusRunning, warm: focusWarm };
@@ -512,6 +514,8 @@ export default function Sidebar({
   // The shared prompt-cache clock (PromptCacheMarks): ticks only while some
   // session's cache is warm, so "warm" stays true to the minute.
   const cacheNow = useCacheTick(sessions.some((s) => cacheClockActive(s.promptCache)));
+  const onHiddenAxis = (s: SessionListItem) => (s.hidden === 1) === showHidden;
+  const onViewAxes = (s: SessionListItem) => onHiddenAxis(s) && isPausedSession(s) === showPaused;
   function allSessionsFor(vpsId: string): SessionListItem[] {
     return sessions.filter((s) => s.vpsId === vpsId)
       // `position` first, `createdAt` as the tiebreak: every pre-existing row
@@ -521,9 +525,8 @@ export default function Sidebar({
         || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
   function visibleSessionsFor(all: SessionListItem[]): SessionListItem[] {
-    return sidebarVisiblePathItems(all, (s) =>
-      (showPaused || (s.liveStatus ?? s.status) !== 'sleeping')
-      && (s.id === selectedId || (showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, cacheNow)))));
+    return sidebarVisiblePathItems(all, (s) => s.id === selectedId
+      || (onViewAxes(s) && showEntity(s.vpsId, s.cwd, 'session') && focusAdmits(focus, sessionFocusFacts(s, cacheNow))));
   }
   function sessionsFor(vpsId: string): SessionListItem[] {
     return visibleSessionsFor(allSessionsFor(vpsId));
@@ -531,8 +534,10 @@ export default function Sidebar({
   function shellsFor(vpsId: string): ShellListItem[] {
     return shells
       .filter((sh) => sh.vpsId === vpsId)
-      .filter((sh) => showPaused || !sh.exited)
-      .filter((sh) => sh.id === selectedShellId || (showEntity(sh.vpsId, sh.cwd, 'shell') && focusAdmits(focus, shellFocusFacts(sh))))
+      // A shell is never hidden: the hidden view lists none.
+      .filter((sh) => sh.id === selectedShellId
+        || (!showHidden && !!sh.exited === showPaused
+          && showEntity(sh.vpsId, sh.cwd, 'shell') && focusAdmits(focus, shellFocusFacts(sh))))
       .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
   }
 
@@ -638,14 +643,23 @@ export default function Sidebar({
   // of input, so it opens the peek for as long as it is being typed.
   const peeking = (closed && peek) || (iconsOnly && !!editingId);
 
-  const totalSleeping = sessions.filter(
-    (s) => isPausedSession(s) && showEntity(s.vpsId, s.cwd, 'session'),
-  ).length;
-  // The cleanup lists the whole fleet, whatever the path filter hides.
-  const fleetPaused = sessions.filter(isPausedSession).length;
-  // The focus chips count within the path filter, like "paused".
-  const scopedSessions = sessions.filter((s) => showEntity(s.vpsId, s.cwd, 'session'));
-  const scopedShells = shells.filter((sh) => showEntity(sh.vpsId, sh.cwd, 'shell'));
+  // Each chip counts what clicking it would show, on the other axis as it
+  // stands (within the path filter).
+  const inScope = (s: SessionListItem) => showEntity(s.vpsId, s.cwd, 'session');
+  const totalSleeping = sessions.filter((s) => onHiddenAxis(s) && isPausedSession(s) && inScope(s)).length;
+  const hiddenCount = sessions.filter((s) => s.hidden === 1 && isPausedSession(s) === showPaused && inScope(s)).length;
+  // The red dot: a hidden session waits on you or failed, wherever it is —
+  // hidden sessions raise no notification, so this is the only signal.
+  const hiddenAlarm = sessions.some((s) => s.hidden === 1 && (() => {
+    const a = attentionForRow(s);
+    return a === 'blocked' || a === 'question' || a === 'error';
+  })());
+  // The delete button (moon on) lists the whole fleet's sleeping sessions on
+  // the hidden axis, whatever the path filter hides.
+  const fleetPaused = sessions.filter((s) => onHiddenAxis(s) && isPausedSession(s)).length;
+  // The focus chips count within the path filter, on the hidden axis.
+  const scopedSessions = sessions.filter((s) => onHiddenAxis(s) && inScope(s));
+  const scopedShells = showHidden ? [] : shells.filter((sh) => showEntity(sh.vpsId, sh.cwd, 'shell'));
   const sessionFacts = scopedSessions.map((s) => sessionFocusFacts(s, cacheNow));
   const shellFacts = scopedShells.map((sh) => shellFocusFacts(sh));
   const unreadCount = [...sessionFacts, ...shellFacts].filter((f) => f.unread).length;
@@ -728,26 +742,44 @@ export default function Sidebar({
               toggles). The paused cleanup shares the moon's pill, past a
               hairline (`.cs-switch-pair`). */}
           <span className="cs-switch-pair">
-            <label className="cs-chip" title="Paused sessions" {...tipAttrs({
-              detail: [`${showPaused ? 'Shown' : 'Hidden'}${totalSleeping > 0 ? ` · ${totalSleeping} paused` : ''}`],
-              actions: [['Click', showPaused ? 'hide them' : 'show them']],
+            <label className="cs-chip" title="Sleeping sessions" {...tipAttrs({
+              detail: [`${showPaused ? 'Only sleeping sessions shown' : 'Only awake sessions shown'}${totalSleeping > 0 ? ` · ${totalSleeping} sleeping` : ''}`],
+              actions: [['Click', showPaused ? 'show the awake ones' : 'show only the sleeping ones']],
             })}>
-              <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} aria-label="Show paused sessions" />
+              <input type="checkbox" checked={showPaused} onChange={toggleShowPaused} aria-label="Show only sleeping sessions" />
               <span className="cs-chip-face">
                 <IconMoon />{totalSleeping > 0 ? <span className="cs-chip-count">{totalSleeping}</span> : null}
               </span>
             </label>
-            {onOpenPausedCleanup && (
+            {/* Deletes what the moon shows: the sleeping sessions, hidden
+                ones when the eye is on too (§14.118). */}
+            {showPaused && onOpenPausedCleanup && (
               <button
                 type="button"
                 className="cs-paused-trash"
-                onClick={onOpenPausedCleanup}
+                onClick={() => onOpenPausedCleanup(showHidden)}
                 disabled={fleetPaused === 0}
-                title={fleetPaused === 0 ? 'no paused session to delete' : `delete paused sessions… (${fleetPaused} paused)`}
-                aria-label="delete paused sessions"
+                title={fleetPaused === 0
+                  ? `no sleeping ${showHidden ? 'hidden ' : ''}session to delete`
+                  : `delete sleeping ${showHidden ? 'hidden ' : ''}sessions… (${fleetPaused})`}
+                aria-label={`delete sleeping ${showHidden ? 'hidden ' : ''}sessions`}
               ><IconTrash /></button>
             )}
           </span>
+          <label className={`cs-chip${hiddenAlarm ? ' has-alarm' : ''}`} title="Hidden sessions" {...tipAttrs({
+            detail: [
+              `${showHidden ? 'Only hidden sessions shown' : 'Hidden sessions not shown'}${hiddenCount > 0 ? ` · ${hiddenCount} ${showPaused ? 'sleeping' : 'awake'}` : ''}`,
+              ...(hiddenAlarm ? ['A hidden session is waiting on you or failed'] : []),
+              'They run normally, without Telegram; browser notifications only while shown here',
+            ],
+            actions: [['Click', showHidden ? 'back to normal sessions' : 'show only hidden sessions']],
+          })}>
+            <input type="checkbox" checked={showHidden} onChange={toggleShowHidden} aria-label="Show only hidden sessions" />
+            <span className="cs-chip-face">
+              <IconEyeSlash />{hiddenCount > 0 ? <span className="cs-chip-count">{hiddenCount}</span> : null}
+              {hiddenAlarm ? <span className="cs-chip-alarm" aria-label="a hidden session needs attention" /> : null}
+            </span>
+          </label>
           <label className="cs-chip" title="Card details" {...tipAttrs({
             detail: ['First message, path and age on each card', showDetails ? 'On' : 'Off — compact cards'],
             actions: [['Click', showDetails ? 'compact cards' : 'show details']],

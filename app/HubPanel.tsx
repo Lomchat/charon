@@ -62,7 +62,7 @@ import SessionView from './SessionView';
 import HeaderSessionNav from './HeaderSessionNav';
 import AccountNav from './AccountNav';
 import { accountGroupRepresentative, buildAccountGroups, type AccountGroup } from '@/lib/accountGroups';
-import { useShowPaused } from './showPaused';
+import { useShowHidden } from './showPaused';
 import { dropOtherLoginUsage, putUsage, useUsageFeed } from './usageStore';
 import { useStableCallback } from './useStable';
 import { backendAvailability, type VpsFixAction } from './vpsHealth';
@@ -330,8 +330,9 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // Confirmation closes immediately; the card stays visible and red until
   // the DELETE request settles. Shared by Claude and Codex rows.
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(() => new Set());
-  // The trash beside "show paused" (PausedSessionsModal).
-  const [pausedCleanupOpen, setPausedCleanupOpen] = useState(false);
+  // The trash beside the moon (PausedSessionsModal): null = closed, else
+  // whether it deletes hidden or normal sleeping sessions (§14.118).
+  const [pausedCleanupOpen, setPausedCleanupOpen] = useState<null | { hidden: boolean }>(null);
   // "You are about to discard an unsaved buffer" — the ONLY close that asks.
   // `run` is the close that was requested (one tab, a folder, a machine), held
   // until the answer comes back so the dialog can't do a different thing than
@@ -940,9 +941,18 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   // Nothing until the profile store has answered once: before it every
   // session looks profile-less, so one login would show one button per VPS,
   // then merge and reorder under the pointer.
+  // The sidebar's hidden switch, read from the shared store: the strip and the
+  // header navs filter on the same value the list does (app/showPaused.ts).
+  const [showHidden] = useShowHidden();
+  // What the header navs and the search list: one side of that switch only —
+  // a hidden session is on no screen until hidden ones are shown (§14.118).
+  const viewSessions = useMemo(
+    () => sessions.filter((s) => (s.hidden === 1) === showHidden),
+    [sessions, showHidden],
+  );
   const accountGroups = useMemo(
-    () => profilesLoaded ? buildAccountGroups({ sessions, profiles, enabled: backends, vpsName: vpsNameOf }) : [],
-    [profilesLoaded, sessions, profiles, backends, vpsNameOf],
+    () => profilesLoaded ? buildAccountGroups({ sessions: viewSessions, profiles, enabled: backends, vpsName: vpsNameOf }) : [],
+    [profilesLoaded, viewSessions, profiles, backends, vpsNameOf],
   );
   const vpsReachable = useCallback(
     (id: string) => vpsList.find((v) => v.id === id)?.agentStatus === 'ok',
@@ -1160,9 +1170,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     refreshUsage(selectedVps?.id, asSessionProvider(selected?.kind), accountProfileId(selected));
   }, [selectedVps?.id, selected?.kind, selected?.accountProfile, selectedAccount?.accountKey, selectedAccount?.loggedIn, refreshUsage]);
 
-  // The sidebar's "show paused" switch, read from the shared store: the strip
-  // filters on the same value the list does (app/showPaused.ts).
-  const [showPaused] = useShowPaused();
 
   // Ordered tab list (sidebar order, grouped by VPS). Recomputed on any
   // change to sessions/shells/installs/pendings — cheap, ~O(n).
@@ -1720,6 +1727,24 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     });
   }
 
+  // Hide / show back (§14.118): the session keeps running; the list moves it
+  // to the other side of the hidden switch, with its sub-sessions.
+  function setHidden(targets: SessionListItem[], hidden: boolean) {
+    const ids = targets.filter((t) => (t.hidden === 1) !== hidden).map((t) => t.id);
+    if (!ids.length) return;
+    void Promise.allSettled(ids.map(async (id) => {
+      const o = addOverlay(id, { hidden: hidden ? 1 : 0 });
+      try { o.ack((await api.setSessionHidden(id, hidden))?.sync); } catch (e) { o.fail(); throw e; }
+    })).then((results) => {
+      const failed = results.filter((r) => r.status === 'rejected');
+      if (failed.length) {
+        const first = failed[0] as PromiseRejectedResult;
+        setError({ msg: `${hidden ? 'hide' : 'show'}: ${failed.length}/${ids.length} failed — ${first.reason?.message ?? first.reason}` });
+      }
+      refreshIfDegraded();
+    });
+  }
+
   async function archiveOne(id: string) {
     const o = addOverlay(id, { removed: true });
     try {
@@ -1953,7 +1978,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     }
     list.push(
       { id: 'resume-session', label: 'Resume a session…', keywords: 'import scan history', run: () => setResumeOpen({}) },
-      { id: 'paused-sessions', label: 'Paused sessions…', keywords: 'sleeping cleanup delete', run: () => setPausedCleanupOpen(true) },
+      { id: 'paused-sessions', label: 'Paused sessions…', keywords: 'sleeping cleanup delete', run: () => setPausedCleanupOpen({ hidden: showHidden }) },
       { id: 'settings', label: 'Settings', keywords: 'preferences config', run: () => setSettingsOpen(true) },
       { id: 'vps-data', label: 'VPS & paths', keywords: 'servers machines projects data', run: () => setDataOpen(true) },
       { id: 'toggle-tools', label: 'Toggle tools panel', keywords: 'explorer git search side panel', run: toggleShowTools },
@@ -2018,7 +2043,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         {/* Jump to a session without hunting for it in the sidebar: the same
             data that sidebar holds, read as activity (app/HeaderSessionNav.tsx). */}
         <HeaderSessionNav
-          sessions={sessions}
+          sessions={viewSessions}
           shells={shells}
           vpsName={vpsNameOf}
           selectedId={selectedId ?? selectedShellId}
@@ -2209,7 +2234,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         onNewShell={(opts) => setWizard({ kind: 'shell', ...opts })}
         onScan={(vpsId) => setResumeOpen({ vpsId })}
         onOpenData={() => setDataOpen(true)}
-        onOpenPausedCleanup={() => setPausedCleanupOpen(true)}
+        onOpenPausedCleanup={(hidden) => setPausedCleanupOpen({ hidden })}
         onContext={(targets, x, y) => {
           const available = targets.filter((session) => !deletingSessionIds.has(session.id));
           if (available.length) setCtxMenu({ kind: 'session', sessions: available, x, y });
@@ -2242,7 +2267,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
       <TabBar
         resolved={resolvedTabs}
-        showPaused={showPaused}
+        showHidden={showHidden}
         vpsList={vpsList}
         vpsFolders={vpsFolders}
         activeVpsId={activeVpsId}
@@ -2564,7 +2589,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           onPick={searchOpenSession}
           onOpenShell={searchOpenShell}
           onOpenProject={searchOpenProject}
-          sessions={sessions}
+          sessions={viewSessions}
           shells={shells}
           vpsList={vpsList}
           vpsPaths={vpsPaths}
@@ -2681,6 +2706,12 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           onResume={resumeTargets.length ? () => runSessionLifecycle('resume', resumeTargets) : undefined}
           resumeLabel={resumeTargets.length > 1 ? `Resume ${resumeTargets.length} sessions` : 'Resume'}
           onArchive={single ? () => archiveOne(single.id) : undefined}
+          // Every target is on the side the switch shows, so one verb fits
+          // them all: hide from the normal view, show from the hidden one.
+          onHide={() => setHidden(targets, !targets.every((t) => t.hidden === 1))}
+          hideLabel={targets.every((t) => t.hidden === 1)
+            ? (targets.length > 1 ? `Show ${targets.length} sessions` : 'Show (unhide)')
+            : (targets.length > 1 ? `Hide ${targets.length} sessions` : 'Hide')}
           onDelete={() => setConfirmDelete(targets)}
           deleteLabel={targets.length > 1 ? `Delete ${targets.length} permanently` : 'Delete permanently'}
           onClose={() => setCtxMenu(null)}
@@ -2778,12 +2809,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
 
       {pausedCleanupOpen && (
         <PausedSessionsModal
-          sessions={sessions}
+          hidden={pausedCleanupOpen.hidden}
+          sessions={sessions.filter((s) => (s.hidden === 1) === pausedCleanupOpen.hidden)}
           vpsList={vpsList}
           vpsFolders={vpsFolders}
           deletingSessionIds={deletingSessionIds}
           onDelete={deletePausedSessions}
-          onClose={() => setPausedCleanupOpen(false)}
+          onClose={() => setPausedCleanupOpen(null)}
         />
       )}
 

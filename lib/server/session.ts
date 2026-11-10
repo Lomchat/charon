@@ -1,8 +1,9 @@
 import 'server-only';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { ensureUser, getSession, getSessionKey, SESSION_COOKIE } from './auth';
 import { isAuthRequired } from './authGate.js';
+import { API_TOKEN_SESSION_ID, apiTokenMatches } from './apiToken';
 
 export type SessionContext = {
   userId: number;
@@ -31,14 +32,24 @@ export async function readSession(): Promise<SessionContext | null> {
   }
   const c = await cookies();
   const sid = c.get(SESSION_COOKIE)?.value;
-  if (!sid) return null;
-  const session = await getSession(sid);
-  if (!session) return null;
-  return {
-    userId: session.userId,
-    sessionId: session.id,
-    aesKey: getSessionKey(session.id)
-  };
+  const session = sid ? await getSession(sid) : null;
+  if (session) {
+    return {
+      userId: session.userId,
+      sessionId: session.id,
+      aesKey: getSessionKey(session.id)
+    };
+  }
+  // §12 automation token. The middleware has already confined it to the
+  // allow-list in apiToken.ts; like the auth-off branch, the id is never stored.
+  if (apiTokenMatches((await headers()).get('authorization'))) {
+    return {
+      userId: await ensureUser(),
+      sessionId: API_TOKEN_SESSION_ID,
+      aesKey: getSessionKey(API_TOKEN_SESSION_ID),
+    };
+  }
+  return null;
 }
 
 export async function requireSession(): Promise<SessionContext> {

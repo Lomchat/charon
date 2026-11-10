@@ -53,6 +53,8 @@ type Props = {
   resumeLabel?: string;
   onKill?: () => void;               // "Close" — shell/install only
   onArchive?: () => void;            // common reversible workspace archive
+  onHide?: () => void;               // hide / show back (§14.118)
+  hideLabel?: string;
   onDelete?: () => void;
   deleteLabel?: string;
   onClose: () => void;
@@ -64,7 +66,7 @@ export default function SessionContextMenu({
   showRename = true, showColor = true,
   onRename, onEditHandle, onColor, onEditCwd,
   onSleep, sleepLabel = '💤 Sleep', onResume, resumeLabel = 'Resume',
-  onKill, onArchive, onDelete, deleteLabel = 'Delete permanently', onClose,
+  onKill, onArchive, onHide, hideLabel = 'Hide', onDelete, deleteLabel = 'Delete permanently', onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -177,6 +179,11 @@ export default function SessionContextMenu({
       {onResume && (
         <button type="button" onClick={() => { onResume(); onClose(); }}>
           {resumeLabel}
+        </button>
+      )}
+      {onHide && (
+        <button type="button" onClick={() => { onHide(); onClose(); }}>
+          {hideLabel}
         </button>
       )}
       {onArchive && (

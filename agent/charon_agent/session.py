@@ -1706,7 +1706,12 @@ class AgentSession:
                 # so Charon can display the truth alongside the configured
                 # model. Old SDKs without `.model` → getattr returns None and
                 # we just skip.
+                # Main thread only: a sub-agent (Task tool) runs its own model,
+                # and the CLI's `<synthetic>` notices are no model at all —
+                # either would read as a switch (strict sessions stop on one).
                 msg_model = getattr(ev, "model", None)
+                if getattr(ev, "parent_tool_use_id", None) or msg_model == "<synthetic>":
+                    msg_model = None
                 if isinstance(msg_model, str) and msg_model and msg_model != self._effective_model:
                     self._effective_model = msg_model
                     out.append({"event": "effective_model", "model": msg_model})

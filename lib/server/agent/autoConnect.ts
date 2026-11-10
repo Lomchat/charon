@@ -56,6 +56,9 @@ export function armAgentClientHooks(client: AgentClient, vpsId: string): void {
       .catch(() => {})
       .finally(() => { reconcileVpsAgentState(vpsId, hello.sessions).catch(() => {}); });
     void import('@/lib/server/accounts/migration').then((m) => m.scheduleMigration()).catch(() => {});
+    // The daemon keeps the hidden set in memory only (§14.118): every connect
+    // (restart, hot update) hands it over again.
+    void import('@/lib/server/hub/hiddenSessions').then((m) => m.pushPeerHidden(vpsId)).catch(() => {});
     ensureShellIdleWatch(client);
     armAccountProfileWatch(vpsId);
     // Account-usage gauges (§14.58): immediate poll on connect + a steady

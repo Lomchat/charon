@@ -36,6 +36,20 @@ export async function middleware(req: NextRequest) {
   const isApi = pathname.startsWith('/api/');
   const sid = req.cookies.get(SESSION_COOKIE)?.value;
 
+  // §12 automation token. A request that PRESENTS a Bearer is judged on it
+  // alone: the right token on an allow-listed route passes, anything else is a
+  // 401 — never a fall-through to the cookie. No CSRF check: a Bearer is not
+  // an ambient credential a foreign page could ride.
+  const authorization = req.headers.get('authorization');
+  if (isApi && authorization) {
+    const { apiTokenMatches, apiTokenRouteAllowed, isBearerAttempt } = await import('@/lib/server/apiToken');
+    if (isBearerAttempt(authorization)) {
+      return apiTokenMatches(authorization) && apiTokenRouteAllowed(req.method, pathname)
+        ? NextResponse.next()
+        : new NextResponse('unauthorized', { status: 401 });
+    }
+  }
+
   // CSRF hardening (P1.4): cookie-authenticated API mutations must come from
   // our own origin. Browsers ALWAYS attach Origin to cross-site fetches; when
   // present it must match the request Host / a forwarded host / the

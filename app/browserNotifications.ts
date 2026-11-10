@@ -49,6 +49,14 @@ export function copySessionNotifications(fromSessionId: string, toSessionId: str
   if (!value) return Promise.resolve();
   return saveBrowserNotifications({ ...current, sessions: { ...current.sessions, [toSessionId]: value } });
 }
+/** Mirror the sidebar's hidden switch (app/showPaused.ts) into this device's
+ *  push preferences: hidden sessions push only to devices showing them
+ *  (§14.118). A no-op when nothing changes or push is off. */
+export function syncShowHidden(showHidden: boolean): Promise<void> {
+  const current = readBrowserNotifications();
+  if (!!current.showHidden === showHidden) return Promise.resolve();
+  return saveBrowserNotifications({ ...current, showHidden });
+}
 let initializing: Promise<void> | null = null;
 function initialize(): Promise<void> {
   if (!initializing) {

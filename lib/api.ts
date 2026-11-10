@@ -697,6 +697,9 @@ export const api = {
     send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/archive`),
   unarchiveSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
+  /** Hide or show a session with its sub-sessions (§14.118). */
+  setSessionHidden: (id: string, hidden: boolean) =>
+    send<OkResponse & ActionSyncStamp & { hidden: boolean; ids: string[] }>('POST', `/api/sessions/${id}/hidden`, { hidden }),
   renameAgentSession: (id: string, name: string | null) =>
     send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, { name } as RenameAgentSessionBody),
   updateSessionHandle: (id: string, handle: string) =>

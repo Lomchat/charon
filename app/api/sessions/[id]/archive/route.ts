@@ -13,6 +13,7 @@ import { deleteSessionGates, type GateRef } from '@/lib/server/agent/pendingInte
 import { invalidateSessionRowCaches } from '@/lib/server/agent/sessionRowCache';
 import { dropTabsForRef } from '@/lib/server/hub/tabs';
 import { PROVIDERS, asSessionProvider } from '@/lib/sessionCapabilities';
+import { pushPeerHidden } from '@/lib/server/hub/hiddenSessions';
 
 async function rowFor(id: string) {
   return db.select().from(agentSessions).where(eq(agentSessions.id, id)).get() ?? null;
@@ -70,6 +71,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     if (dropTabsForRef('session', id)) emitGlobalTabsChanged();
     // Archived rows are never summaries: the provider publishes `null`.
     emitGlobalSessionListChanged(id);
+    // Out of the other agents' `list_sessions` too (§14.118).
+    void pushPeerHidden(row.vpsId);
     return NextResponse.json({ ok: true, archived: true, sync: syncAfter([id]) });
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
@@ -96,6 +99,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
     setSessionStatusLocal(id, 'sleeping', { persist: false });
     // Back in the list: the provider republishes its summary.
     emitGlobalSessionListChanged(id);
+    void pushPeerHidden(row.vpsId);
     return NextResponse.json({ ok: true, archived: false, sync: syncAfter([id]) });
   } catch (e: any) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });

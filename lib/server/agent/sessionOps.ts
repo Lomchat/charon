@@ -1,4 +1,5 @@
 import { runtimeConnection, connectionConfig } from '@/lib/server/customEndpoints';
+import { sameModel } from '@/lib/strictModel';
 import { isModelParamSet } from '@/lib/modelParams';
 import { sessionTokenUsage } from './sessionTokenUsage';
 import { invalidateSessionRowCaches } from './sessionRowCache';
@@ -887,6 +888,10 @@ export class SessionStream {
   // a failed stop promotes this into one durable role='error' chat row.
   private fatalErrorNotified = false;
   private pendingAgentError: { msg: string; fatal: boolean } | null = null;
+  /** A strict session answered by another model (§14.118): the error text,
+   *  held until the interrupted turn's `stop` fails it. Not part of the
+   *  terminal latch — a `thinking` frame must not clear it. */
+  private strictViolation: string | null = null;
   private pendingTurnErrorKind: string | null = null;
   // The turn's prompt-cache ledger (lib/promptCache.ts), held from its
   // `usage final:true` until `stop` names the final assistant row it lands
@@ -1665,6 +1670,8 @@ export class SessionStream {
           this._cancelBgFinish();
         }
         if (ev.status === 'sleeping' || ev.status === 'error' || ev.status === 'killed') {
+          // No `stop` will come to fail the wrong-model turn: its card stays.
+          this.strictViolation = null;
           this.liveToolOutput.clear();
           this._expireBgTasks();
           // The worker is gone: its blocking gates can never be answered.
@@ -2099,8 +2106,8 @@ export class SessionStream {
           });
           // Telegram's question callback answers a blocking gate. Async forms
           // instead link to their durable transcript bubble.
-          if (asynchronous) sendPlainToTelegram(`❓ ${this.vpsName} · ${this._label()}\n${ev.questions[0]?.question ?? 'Question'}`, `/?session=${this.id}`, 'question').catch(() => {});
-          else sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
+          if (asynchronous) this._telegramPlain(`❓ ${this.vpsName} · ${this._label()}\n${ev.questions[0]?.question ?? 'Question'}`, `/?session=${this.id}`, 'question').catch(() => {});
+          else if (!this._hidden()) sendQuestionToTelegram(this.id, ev.id, ev.questions ?? []).catch(() => {});
         }
         break;
       }
@@ -2135,7 +2142,7 @@ export class SessionStream {
             body: providerText.finishedPlanning(this.kind),
             tag: `plan-${this.id}`,
           });
-          sendPlainToTelegram(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan').catch(() => {});
+          this._telegramPlain(`📋 ${this.vpsName} · ${this._label()}\nPlan ready — open Charon to approve`, `/?session=${this.id}`, 'plan').catch(() => {});
         }
         break;
       }
@@ -2310,6 +2317,7 @@ export class SessionStream {
               .where(eq(agentSessions.id, this.id)).run();
           } catch {}
           this._broadcast({ type: 'effective_model', model: ev.model });
+          if (!this.isReplaying) this._enforceStrictModel(ev.model);
         } else if (this.isReplaying && typeof ev.model === 'string' && ev.model.length > 0) {
           // Replayed switch the hub already applied (cursor lagged behind it):
           // the live run flushed here, so the text before it must not merge
@@ -2594,12 +2602,18 @@ export class SessionStream {
         // does not have Claude's ResultMessage.is_error/terminal_reason
         // fields, so ignoring subtype here turned a real Codex failure into a
         // successful finish notification followed by an idle session.
+        // A strict session's wrong-model turn (§14.118) fails whatever the
+        // interrupted turn reports; its error card is already written.
+        const strictViolation = this.isReplaying ? null : this.strictViolation;
+        this.strictViolation = null;
+        if (strictViolation) this.pendingBlockingErrorRecorded = true;
         const typedFailure = ev.is_error === true
           || ev.terminal_reason === 'api_error'
           || ev.subtype === 'error'
-          || this.pendingAgentError?.fatal === true;
-        const assistantTerminalError = this.pendingTerminalAssistantError;
-        const typedErrorText = this.pendingAgentError?.msg ?? this.terminalErrorText
+          || this.pendingAgentError?.fatal === true
+          || strictViolation != null;
+        const assistantTerminalError = strictViolation ? null : this.pendingTerminalAssistantError;
+        const typedErrorText = strictViolation ?? this.pendingAgentError?.msg ?? this.terminalErrorText
           ?? `The turn ended with an API error${ev.api_error_status ? ` (${ev.api_error_status})` : ''}.`;
         const typedErrorKind = typedFailure
           ? classifySessionError({
@@ -2773,7 +2787,7 @@ export class SessionStream {
             body: finishedBody,
             tag: `stop-${this.id}`,
           });
-          sendPlainToTelegram(
+          this._telegramPlain(
             terminalError
               ? `⚠ ${this.vpsName} · ${this._label()}\n${providerLabel} ended with ${terminalErrorLabel}\n${(this.terminalErrorText ?? '').trim().split('\n')[0].slice(0, 300)}`
               : `✓ ${this.vpsName} · ${this._label()}\n${finishedBody}`,
@@ -2815,7 +2829,7 @@ export class SessionStream {
             this.fatalErrorNotified = true;
             const title = `⚠ ${this.vpsName} · ${this._label()}`;
             this._maybePush({ event: 'session_error', title, body: ev.msg.slice(0, 300), tag: `stop-${this.id}` });
-            sendPlainToTelegram(`${title}\n${ev.msg.slice(0, 300)}`, `/?session=${this.id}`, 'session_error').catch(() => {});
+            this._telegramPlain(`${title}\n${ev.msg.slice(0, 300)}`, `/?session=${this.id}`, 'session_error').catch(() => {});
           }
         }
         break;
@@ -2837,6 +2851,8 @@ export class SessionStream {
     opts?: { persist?: boolean; broadcastUser?: boolean; clientMessageId?: string; rowId?: number },
   ): Promise<{ rowId: number | null }> {
     await (await loadEndpointOps()).applyPendingEndpoint(this.id);
+    // A new turn is not the wrong-model one (§14.118).
+    this.strictViolation = null;
 
     const client = getAgentClientForVpsId(this.vpsId);
     const clientMessageId = opts?.clientMessageId ?? crypto.randomUUID();
@@ -2933,6 +2949,20 @@ export class SessionStream {
   async sendInterrupt(): Promise<void> {
     const client = getAgentClientForVpsId(this.vpsId);
     await client.call('interrupt', { session_id: this.id });
+  }
+
+  /** Strict model (§14.118): another model answered this turn — write the
+   *  error card now, interrupt, and let the turn's `stop` fail the session
+   *  (`failed`, durable). Live events only; the DB row is the truth. */
+  private _enforceStrictModel(effective: string): void {
+    const row = db.select({ strict: agentSessions.strictModel, model: agentSessions.model })
+      .from(agentSessions).where(eq(agentSessions.id, this.id)).get();
+    if (row?.strict !== 1 || sameModel(row.model, effective) || this.strictViolation) return;
+    const text = `Model changed: ${effective} answered instead of ${row.model}. `
+      + 'This session is strict (strictModel), so the turn was stopped.';
+    this.strictViolation = text;
+    this._recordBlockingError(text, { turnFailure: true });
+    this.sendInterrupt().catch((e) => this._log('error', 'strict_model_interrupt', { msg: String(e?.message ?? e) }));
   }
 
   /** A hub-originated status (setSessionStatusLocal): memory + this
@@ -4327,7 +4357,7 @@ export class SessionStream {
         body: 'background tasks finished',
         tag: `stop-${this.id}`,
       });
-      sendPlainToTelegram(
+      this._telegramPlain(
         `✓ ${this.vpsName} · ${this._label()}\nbackground tasks finished`,
         `/?session=${this.id}`, 'session_finished',
       ).catch(() => {});
@@ -4638,7 +4668,7 @@ export class SessionStream {
     const always = supportsSessionCapability(this.kind, 'permissionSuggestions')
       ? offeredSuggestions(gate.suggestions)[0]?.label ?? null
       : undefined;
-    sendPermissionToTelegram(this.id, id, tool, input, { reason: gate.reason, always }).catch(() => {});
+    if (!this._hidden()) sendPermissionToTelegram(this.id, id, tool, input, { reason: gate.reason, always }).catch(() => {});
   }
 
 
@@ -4702,7 +4732,22 @@ export class SessionStream {
       ...payload,
       sessionId: this.id,
       url: `/?session=${this.id}`,
+      hidden: this._hidden(),
     }).catch(() => {});
+  }
+
+  /** Hidden sessions (§14.118) never reach Telegram; their browser pushes
+   *  go only to devices showing hidden sessions (webPush). Read per event:
+   *  a hide silences the very next one. */
+  private _hidden(): boolean {
+    try {
+      return db.select({ hidden: agentSessions.hidden }).from(agentSessions)
+        .where(eq(agentSessions.id, this.id)).get()?.hidden === 1;
+    } catch { return false; }
+  }
+
+  private _telegramPlain(...args: Parameters<typeof sendPlainToTelegram>): Promise<unknown> {
+    return this._hidden() ? Promise.resolve() : sendPlainToTelegram(...args);
   }
 }
 
@@ -4963,6 +5008,10 @@ export async function startNewSession(opts: {
   providerConfig?: CodexSessionConfig | null;
   /** The session whose agent spawned this one (sub-session). */
   parentSessionId?: string | null;
+  /** Born hidden (§14.118). */
+  hidden?: boolean;
+  /** Born strict (§14.118): no fallback model; another model stops the turn. */
+  strictModel?: boolean;
 }): Promise<SessionStream> {
   const [vps] = db.select().from(vpsTable).where(eq(vpsTable.id, opts.vpsId)).all();
   if (!vps) throw new Error(`vps ${opts.vpsId} not found`);
@@ -5009,6 +5058,15 @@ export async function startNewSession(opts: {
   }
   const providerConfig = resolveProviderConfig(kind, requestedConfig, vps);
   const customEndpoint = !!(providerConfig as any)?.customEndpoint;
+  // An endpoint session runs the ENDPOINT's model: the provider's fallback
+  // model and default effort mean nothing there (same as applyPendingEndpoint).
+  if (customEndpoint) {
+    cfg.fallbackModel = null;
+    if (!opts.effort) cfg.effort = null;
+  }
+  // Strict (§14.118): no fallback model to switch to — an overloaded model
+  // fails the turn instead of quietly answering with another one.
+  if (opts.strictModel) cfg.fallbackModel = null;
   // Cursor's parameter set must match the model it runs with: an undeclared
   // knob fails every turn, and the Settings default may predate its model
   // (§14.103).
@@ -5040,7 +5098,11 @@ export async function startNewSession(opts: {
     lastUsedAt: Math.floor(Date.now() / 1000),
     position: nextSessionPosition(opts.vpsId),
     parentSessionId: opts.parentSessionId ?? null,
+    hidden: opts.hidden ? 1 : 0,
+    strictModel: opts.strictModel ? 1 : 0,
   }).run();
+  // Out of other agents' `list_sessions` before it can answer anyone.
+  if (opts.hidden) void import('@/lib/server/hub/hiddenSessions').then((m) => m.pushPeerHidden(opts.vpsId)).catch(() => {});
 
   const stream = new SessionStream({
     id: sessionId, vpsId: opts.vpsId,

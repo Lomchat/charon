@@ -325,6 +325,13 @@ export const agentSessions = sqliteTable('agent_sessions', {
   // NO foreign key (a self-FK rebuilds the table): deleteSession re-roots
   // the children in code.
   parentSessionId: text('parent_session_id'),
+  // Hidden session (0/1, §14.118): runs like any other, but only the
+  // "hidden" view lists it, no Telegram, browser push only to devices
+  // showing hidden ones, and other agents' `list_sessions` skips it.
+  hidden: integer('hidden').notNull().default(0),
+  // Strict model (0/1, API-only, §14.118): born without a fallback model, and a
+  // turn answered by any other model is stopped and recorded as an error.
+  strictModel: integer('strict_model').notNull().default(0),
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
   lastUsedAt: integer('last_used_at')
 }, (t) => [

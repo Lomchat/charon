@@ -2,67 +2,64 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 /**
- * The "show paused" switch, shared by the two surfaces it filters.
+ * The sidebar's two view switches (CLAUDE.md §14.118). Two independent axes:
  *
- * It started as sidebar-local state, which was right while the sidebar was the
- * only list of sessions. The workspace strip is a second one: hiding a paused
- * session on the left while its tab kept its dot on top is the same session
- * answering two ways at once. So the choice lives here — one value, one
- * localStorage key, both readers subscribed.
+ * - the MOON picks the status: off = sessions that are not asleep, on = ONLY
+ *   the sleeping ones;
+ * - the HIDDEN switch picks the visibility: off = normal sessions, on = ONLY
+ *   the hidden ones.
  *
- * Browser-local ON PURPOSE (like the tab focus, §14.78): "hide what is asleep"
- * is a view of the fleet, not a property of it, and a phone watching one
- * session should not re-filter a desktop.
+ * So four views, the default (both off) being "awake, not hidden". The moon
+ * filters the sidebar alone; the hidden switch also filters the workspace
+ * strip (app/pausedTabs.ts) and decides whether THIS device gets hidden
+ * sessions' pushes (mirrored into its push preferences).
  *
- * Hydration matches the old sidebar behaviour exactly: the first render shows
- * EVERYTHING (the server has no localStorage and must render the same markup),
- * and the stored choice is read after mount.
+ * Browser-local ON PURPOSE (like the tab focus, §14.78): a view of the fleet,
+ * not a property of it — a phone watching one session must not re-filter a
+ * desktop. The server has no localStorage, so the first render shows the
+ * default and the stored choice is read after mount.
  */
 
-export const SHOW_PAUSED_KEY = 'hub.claude.showPaused.v1';
+type Switch = { value: boolean; subs: Set<() => void>; read: boolean };
+const g = globalThis as unknown as { __charonViewSwitches?: Record<string, Switch> };
+g.__charonViewSwitches ??= {};
 
-const g = globalThis as unknown as {
-  __charonShowPaused?: boolean;
-  __charonShowPausedSubs?: Set<() => void>;
-  __charonShowPausedRead?: boolean;
-};
-g.__charonShowPausedSubs ??= new Set<() => void>();
-
-function notify(): void {
-  for (const fn of g.__charonShowPausedSubs!) fn();
+function makeSwitch(key: string, onChange?: (next: boolean) => void) {
+  const state = (g.__charonViewSwitches![key] ??= { value: false, subs: new Set(), read: false });
+  const notify = () => { for (const fn of state.subs) fn(); };
+  const getSnapshot = () => state.value;
+  const subscribe = (fn: () => void) => { state.subs.add(fn); return () => { state.subs.delete(fn); }; };
+  const write = (next: boolean) => {
+    if (state.value === next) return;
+    state.value = next;
+    try { localStorage.setItem(key, next ? '1' : '0'); } catch {}
+    notify();
+    onChange?.(next);
+  };
+  const hydrate = () => {
+    if (state.read) return;
+    state.read = true;
+    try {
+      if (localStorage.getItem(key) === '1') { state.value = true; notify(); }
+    } catch {}
+    onChange?.(state.value);
+  };
+  return function useSwitch(): [boolean, () => void] {
+    const value = useSyncExternalStore(subscribe, getSnapshot, () => false);
+    useEffect(() => { hydrate(); }, []);
+    return [value, useCallback(() => { write(!getSnapshot()); }, [])];
+  };
 }
 
-function getSnapshot(): boolean {
-  return g.__charonShowPaused ?? true;
-}
+/** v2: the moon used to mean "also show paused" (default on). Its old stored
+ *  value would now mean "only paused", so the key moved. */
+export const SHOW_PAUSED_KEY = 'hub.claude.showPaused.v2';
+export const SHOW_HIDDEN_KEY = 'hub.sidebar.showHidden.v1';
 
-function subscribe(fn: () => void): () => void {
-  g.__charonShowPausedSubs!.add(fn);
-  return () => { g.__charonShowPausedSubs!.delete(fn); };
-}
+/** `[sleepingOnly, toggle]` — the moon. */
+export const useShowPaused = makeSwitch(SHOW_PAUSED_KEY);
 
-function write(next: boolean): void {
-  if (getSnapshot() === next) return;
-  g.__charonShowPaused = next;
-  try { localStorage.setItem(SHOW_PAUSED_KEY, next ? '1' : '0'); } catch {}
-  notify();
-}
-
-/** Adopt the stored choice, once per tab and never during render. */
-function hydrate(): void {
-  if (g.__charonShowPausedRead) return;
-  g.__charonShowPausedRead = true;
-  try {
-    if (localStorage.getItem(SHOW_PAUSED_KEY) === '0') {
-      g.__charonShowPaused = false;
-      notify();
-    }
-  } catch {}
-}
-
-/** `[showPaused, toggle]` — the same shape the sidebar's own state had. */
-export function useShowPaused(): [boolean, () => void] {
-  const value = useSyncExternalStore(subscribe, getSnapshot, () => true);
-  useEffect(() => { hydrate(); }, []);
-  return [value, useCallback(() => { write(!getSnapshot()); }, [])];
-}
+/** `[hiddenOnly, toggle]` — the hidden-sessions switch. */
+export const useShowHidden = makeSwitch(SHOW_HIDDEN_KEY, (next) => {
+  void import('./browserNotifications').then((m) => m.syncShowHidden(next)).catch(() => {});
+});

@@ -1,50 +1,36 @@
 /**
- * What the workspace strip drops when "show paused" is off, and how a drag
- * survives the drop.
+ * What the workspace strip drops, and how a drag survives the drop.
+ *
+ * Only the HIDDEN switch filters the strip (§14.118): a hidden session's tab
+ * shows only while this browser shows hidden sessions. The moon does not — an
+ * open tab is where you work, asleep or not, and "sleeping only" would empty
+ * the strip of everything running.
  *
  * Pure — the strip's own filtering and its reorder callbacks both go through
  * here.
  */
 
 /** What a filter needs of a resolved tab — the strip's `ResolvedTab` fits. */
-export type PausableTab = { id: string; state: string; live: boolean };
+export type FilterableTab = { id: string; hidden?: boolean };
 
-/**
- * The tabs of ONE shown folder.
- *
- * `live` is the discriminator, not the state alone: a FILE tab is 'sleeping'
- * because nothing about it runs, and inside a folder you can still reach, a
- * switch named "show paused" has no business closing the file you are editing.
- * The ACTIVE tab always stays — the strip is where you are, and a bar that
- * omits the pane behind it reads as a bug.
- */
-export function visibleTabs<T extends PausableTab>(
-  tabs: readonly T[], showPaused: boolean, activeTabId: string | null,
-): T[] {
-  if (showPaused) return [...tabs];
-  return tabs.filter((t) => t.id === activeTabId || !t.live || t.state !== 'sleeping');
+/** The ACTIVE tab always stays — the strip is where you are, and a bar that
+ *  omits the pane behind it reads as a bug. */
+function shown(tab: FilterableTab, showHidden: boolean, activeTabId: string | null): boolean {
+  return tab.id === activeTabId || !tab.hidden || showHidden;
 }
 
-/**
- * Does this tab earn its folder and its machine a row?
- *
- * A file does NOT: a machine whose sessions are all asleep is asleep, whatever
- * is open on it, and leaving it in row 1 because someone once opened a file
- * there is exactly the noise the switch is asked to remove. Its files come
- * back with the switch — the folder is one click away again.
- *
- * So the two levels answer differently on purpose: a file keeps its place
- * INSIDE a folder that something else keeps alive, and never on its own.
- */
-export function keepsGroup(tab: PausableTab, activeTabId: string | null): boolean {
-  return tab.id === activeTabId || (tab.live && tab.state !== 'sleeping');
+/** The tabs of ONE shown folder. */
+export function visibleTabs<T extends FilterableTab>(
+  tabs: readonly T[], showHidden: boolean, activeTabId: string | null,
+): T[] {
+  return tabs.filter((t) => shown(t, showHidden, activeTabId));
 }
 
 /** Rows 1 and 2: a machine / a folder is drawn only if something in it is. */
 export function groupShown(
-  tabs: readonly PausableTab[], showPaused: boolean, activeTabId: string | null,
+  tabs: readonly FilterableTab[], showHidden: boolean, activeTabId: string | null,
 ): boolean {
-  return showPaused || tabs.some((t) => keepsGroup(t, activeTabId));
+  return tabs.some((t) => shown(t, showHidden, activeTabId));
 }
 
 /**
@@ -52,7 +38,7 @@ export function groupShown(
  *
  * A reorder sends the whole order (§14.80), so committing what the user can
  * see would push every hidden tab behind it — turn the switch back on and the
- * paused sessions have all moved. The visible ids take the slots the visible
+ * hidden sessions have all moved. The visible ids take the slots the visible
  * ids occupied, in their new order; a hidden id keeps the index it had.
  */
 export function mergeVisibleOrder(full: readonly string[], visibleNext: readonly string[]): string[] {

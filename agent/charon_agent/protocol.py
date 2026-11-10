@@ -189,6 +189,8 @@ METHODS = {
     "peer_status",
     "peer_conversation",
     "peer_inbox",
+    # Hub-hidden sessions left out of peer_list (agent >= 0.130.0, §14.118).
+    "peer_hidden_set",
     "subscribe",
     "unsubscribe",
     "send_input",

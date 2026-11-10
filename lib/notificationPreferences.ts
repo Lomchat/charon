@@ -12,7 +12,12 @@ export const NOTIFICATION_EVENTS = [
 ] as const;
 export type NotificationEvent = typeof NOTIFICATION_EVENTS[number]['id'];
 export type NotificationEvents = Record<NotificationEvent, boolean>;
-export type BrowserNotificationPreferences = { enabled: boolean; sound: boolean; events: NotificationEvents; sessions?: Record<string, ChannelNotificationPreferences> };
+export type BrowserNotificationPreferences = {
+  enabled: boolean; sound: boolean; events: NotificationEvents; sessions?: Record<string, ChannelNotificationPreferences>;
+  /** This device's sidebar shows hidden sessions (§14.118): only then do their
+   *  pushes reach it. Mirrored from app/showHidden.ts, never set by hand. */
+  showHidden?: boolean;
+};
 export const DEFAULT_NOTIFICATION_EVENTS = Object.fromEntries(
   NOTIFICATION_EVENTS.map(({ id }) => [id, true]),
 ) as NotificationEvents;
@@ -32,6 +37,7 @@ export function normalizeBrowserNotifications(value: unknown, enabled = false): 
   }
   return {
     ...(Object.keys(sessions).length ? { sessions } : {}),
+    ...(v.showHidden === true ? { showHidden: true } : {}),
     enabled: typeof v.enabled === 'boolean' ? v.enabled : enabled,
     sound: typeof v.sound === 'boolean' ? v.sound : true,
     events: Object.fromEntries(NOTIFICATION_EVENTS.map(({ id }) => [

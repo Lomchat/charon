@@ -254,6 +254,10 @@ class Server:
         # powers the MCP status/inbox tools as well as restart recovery.
         self.peer_messages: dict[str, dict[str, Any]] = {}
         self.peer_target_active: dict[str, str] = {}
+        # Hub-hidden sessions (`peer_hidden_set`, CLAUDE.md §14.118): left out
+        # of other sessions' `peer_list`, still reachable by handle. Memory
+        # only — the hub pushes the full set again on every connect.
+        self.peer_hidden: set[str] = set()
         self.peer_timeout_tasks: dict[str, asyncio.Task] = {}
         # peer_spawn requests awaiting the hub's peer_spawn_resolve.
         self.spawn_waiters: dict[str, asyncio.Future] = {}
@@ -1667,7 +1671,7 @@ class Server:
     _META_METHODS = frozenset({
         "cli_agents",
         "peer_list", "peer_send", "peer_spawn", "peer_spawn_resolve", "peer_interrupt",
-        "peer_status", "peer_conversation", "peer_inbox",
+        "peer_status", "peer_conversation", "peer_inbox", "peer_hidden_set",
         "hello", "ping", "list_sessions", "get_usage", "account_profiles",
         "accounts_set", "accounts_list", "accounts_merge_history", "accounts_transcript_check",
         "list_codex_models", "list_codex_threads", "get_codex_usage",
@@ -1769,11 +1773,17 @@ class Server:
             if source is None:
                 raise RpcError(ERR_SESSION_NOT_FOUND, "peer source session not found")
             rows = []
+            source_parent = getattr(source, "parent_session_id", None)
             for sess in self.sessions.values():
                 if sess is source:
                     continue
                 handle = getattr(sess, "handle", None)
                 if not isinstance(handle, str) or not handle:
+                    continue
+                sid = str(getattr(sess, "session_id", ""))
+                # A hidden session stays listed only for its own family.
+                if (sid in self.peer_hidden and sid != source_parent
+                        and getattr(sess, "parent_session_id", None) != source_id):
                     continue
                 status = str(getattr(sess, "status", "error"))
                 rows.append({
@@ -1790,6 +1800,13 @@ class Server:
                 })
             rows.sort(key=lambda row: (not row["available"], row["handle"]))
             return {"ok": True, "sessions": rows}
+
+        if method == "peer_hidden_set":
+            ids = params.get("session_ids")
+            if not isinstance(ids, list):
+                raise RpcError(ERR_INVALID_PARAMS, "session_ids must be a list")
+            self.peer_hidden = {i for i in ids[:20000] if isinstance(i, str) and i}
+            return {"ok": True, "count": len(self.peer_hidden)}
 
         if method == "peer_status":
             source_id = params.get("source_session_id")

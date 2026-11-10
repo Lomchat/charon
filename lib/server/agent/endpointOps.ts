@@ -2,10 +2,11 @@ import { invalidateSessionInsightSnapshot } from '@/lib/server/hub/sessionInsigh
 import 'server-only';
 import { eq } from 'drizzle-orm';
 import { db, agentSessions } from '@/lib/db';
-import { connectionConfig, publicConnection, type StoredEndpoint } from '@/lib/server/customEndpoints';
+import { connectionConfig, parseEndpoint, publicConnection, savedEndpoint, type StoredEndpoint } from '@/lib/server/customEndpoints';
+import { withEndpointChecks } from '@/lib/server/endpointProbe';
 import { emitGlobalSessionListChanged, peekStream, resumeSession } from './sessionOps';
 import { getAgentClientForVpsId } from './AgentClientPool';
-import { endpointModelCheck, validEndpointEffort } from '@/lib/customEndpoints';
+import { endpointModelCheck, supportsCustomEndpoint, validEndpointEffort } from '@/lib/customEndpoints';
 import { enrichEndpoint } from '@/lib/server/opencodeModels';
 
 const inflight = new Map<string, Promise<void>>();
@@ -99,4 +100,21 @@ export async function queueEndpoint(id: string, endpoint: StoredEndpoint | null,
   emitGlobalSessionListChanged(id);
   await applyPendingEndpoint(id);
   return publicConnection(db.select().from(agentSessions).where(eq(agentSessions.id, id)).get()?.providerConfig);
+}
+/** A session BORN on a saved endpoint (`POST /api/sessions` `endpoint`). Applying
+ *  one afterwards needs an idle sleep + resume, and a session that never ran a
+ *  turn has no native conversation to resume: the endpoint must ride the create. */
+export async function endpointForNewSession(vpsId: string, kind: string, savedId: string, model: string | null, effort: string | null): Promise<StoredEndpoint> {
+  if (!supportsCustomEndpoint(kind)) throw new Error('Custom endpoints are not supported by this engine.');
+  const saved = savedEndpoint(savedId);
+  let endpoint = withEndpointChecks(parseEndpoint({ name: saved.name, baseUrl: saved.baseUrl, auth: saved.auth, model: model || saved.model }, saved), vpsId);
+  endpoint = await enrichEndpoint(endpoint);
+  const check = endpointModelCheck(endpoint, kind, endpoint.model);
+  endpoint = { ...endpoint, checks: { ...endpoint.checks, ...(check ? { [kind]: check } : {}) } };
+  const capability = await getAgentClientForVpsId(vpsId).call<{ capabilities?: string[] }>('endpoint_probe', { action: 'capability' });
+  if (effort) {
+    if (!capability.capabilities?.includes('endpoint_parameters')) throw new Error('Update the agent on this VPS to configure endpoint parameters.');
+    if (!validEndpointEffort(endpoint, kind, endpoint.model, effort)) throw new Error('These parameters are not supported by this endpoint model.');
+  }
+  return endpoint;
 }

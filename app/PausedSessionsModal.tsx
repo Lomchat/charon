@@ -34,6 +34,9 @@ type Props = {
   /** Resolves with the server's verdict; throws on a transport failure. */
   onDelete: (ids: string[]) => Promise<BulkDeleteSessionsResponse>;
   onClose: () => void;
+  /** The sidebar's hidden switch was on: these are hidden sessions (§14.118).
+   *  The caller filters `sessions`; this only names them. */
+  hidden?: boolean;
 };
 
 const DAY = 86_400_000;
@@ -79,7 +82,7 @@ function checkRowProps(state: CheckState, disabled: boolean, onToggle: (range: b
 }
 
 export default function PausedSessionsModal({
-  sessions, vpsList, vpsFolders, deletingSessionIds, onDelete, onClose,
+  sessions, vpsList, vpsFolders, deletingSessionIds, onDelete, onClose, hidden = false,
 }: Props) {
   const [query, setQuery] = useState('');
   const [age, setAge] = useState('any');
@@ -193,15 +196,15 @@ export default function PausedSessionsModal({
 
   const body = (
     <div className="app-modal-bg" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="app-modal paused-cleanup" role="dialog" aria-modal="true" aria-label="Paused sessions">
+      <div className="app-modal paused-cleanup" role="dialog" aria-modal="true" aria-label={hidden ? 'Paused hidden sessions' : 'Paused sessions'}>
         <div className="pc-head">
           <span className="confirm-ico"><IconTrash /></span>
           <div className="pc-title">
-            <h2>Paused sessions</h2>
+            <h2>{hidden ? 'Paused hidden sessions' : 'Paused sessions'}</h2>
             <p>
               {everything.ids.length === 0
                 ? 'Nothing is paused.'
-                : `${plural(everything.ids.length, 'paused session')} on ${vpsCount} VPS`}
+                : `${plural(everything.ids.length, hidden ? 'paused hidden session' : 'paused session')} on ${vpsCount} VPS`}
               {' · deleting removes a session and its whole history.'}
             </p>
           </div>
