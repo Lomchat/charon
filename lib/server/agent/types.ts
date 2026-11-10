@@ -63,6 +63,8 @@ export type AgentSessionInfo = {
   // session still runs the code of before an update until it is moved).
   runtime_generation?: string | null;
   outdated?: boolean;
+  /** What its runtime runs (agent >= 0.131.0): `RuntimeVersions`. */
+  runtime_versions?: unknown;
 };
 
 export type AgentHelloResult = {
@@ -202,7 +204,8 @@ export type AgentEvent = (
   | { event: 'compacting'; session_id: string; active: boolean }
   // Which runtime process runs the session (agent >= 0.127.0, §14.117).
   // Transient: hello re-states it on every (re)connect.
-  | { event: 'session_runtime'; session_id: string; generation: string | null; outdated: boolean }
+  // `versions` = what that runtime runs (agent >= 0.131.0, §14.117).
+  | { event: 'session_runtime'; session_id: string; generation: string | null; outdated: boolean; versions?: unknown }
   | { event: 'tool_use'; session_id: string; id: string; name: string; input: any }
   | { event: 'tool_result'; session_id: string; tool_use_id: string; content: string; is_error: boolean }
   | { event: 'tool_progress'; session_id: string; tool_use_id: string; delta: string }

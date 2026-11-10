@@ -20,6 +20,7 @@
 // invents a boundary; the legacy flush on boundary frames runs only against a
 // hub without the feature.
 
+import type { RuntimeVersions } from '@/lib/runtimeUpdate';
 import type {
   Msg, ToolCallEntry, EditSnapshot, PermissionRequest, PendingQuestion, PendingExitPlan,
 } from '../sessionTypes';
@@ -449,6 +450,8 @@ export type TranscriptState = {
   /** Still on the agent code of before an update (`runtime_outdated` frame /
    *  `liveRuntimeOutdated`, §14.117): the header says so. */
   runtimeOutdated: boolean;
+  /** What that older runtime runs (null = unknown): the header's "from". */
+  runtimeVersions: RuntimeVersions | null;
   buf: LiveBuffers;
   /** The highest reasoning row id this view knows as persisted
    *  (thinkingMessages.ts § ThinkingLane.known). */
@@ -501,7 +504,7 @@ export function createTranscriptState(sessionId: string, provider?: SessionProvi
     sessionId, rows: [], messages: [], toolCalls: [], files: new Set(), edits: new Map(),
     bgTasks: new Map(), bgLaunches: new Map(),
     queues: { permissions: [], questions: [], exitPlans: [] },
-    status: null, compacting: false, runtimeOutdated: false, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
+    status: null, compacting: false, runtimeOutdated: false, runtimeVersions: null, buf: { assistant: '', streamingInto: null, thinkingOpen: '' }, thinkingKnown: 0,
     sends: new Map(), knownRowIds: new Set(), livePlans: new Map(), durablePlans: new Set(), localResolved: new Map(),
     snapshotRev: null, toolCallBase: null, toolCallIdsSince: new Set(), afterId: 0, hubBoundaries: false, hasMore: false, oldestChatId: null,
     provider: p, session: null,
@@ -737,7 +740,7 @@ export function applyFrame(s: TranscriptState, ev: SessionFrame, ctx: Transcript
       st = { ...st, compacting: ev.active === true };
       break;
     case 'runtime_outdated':
-      st = { ...st, runtimeOutdated: ev.outdated === true };
+      st = { ...st, runtimeOutdated: ev.outdated === true, runtimeVersions: ev.outdated === true ? ev.versions ?? null : null };
       break;
     case 'stop':
       st = legacyBoundary(st, nowMs);
@@ -1154,6 +1157,7 @@ export function applySnapshot(s: TranscriptState, r: SessionWindowResponse,
     status: liveStatus,
     compacting: r.liveCompacting === true,
     runtimeOutdated: r.liveRuntimeOutdated === true,
+    runtimeVersions: r.liveRuntimeOutdated === true ? r.liveRuntimeVersions ?? null : null,
     buf: { assistant, streamingInto, thinkingOpen },
     thinkingKnown,
     sends: reconciled.sends,

@@ -133,6 +133,10 @@ export type ProviderBackend = {
     packageLabel: string;
     /** Compact form inside a per-VPS update transition ('claude', 'cli'). */
     short: string;
+    /** Key of this line in the agent's runtime versions (`server.py §
+     *  _runtime_versions`, `versions.json`): the session header's pending
+     *  update reads the "from" there (lib/runtimeUpdate.ts, §14.117). */
+    runtimeKey: string;
     /** Key naming this line's `latest` version (`sdkSync § latestVersionsByKey`,
      *  and the same key in `diagnoseVps`'s opts). */
     latestKey: string;
@@ -357,7 +361,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       loginUnknownIsUsable: false,
       versions: [{
         column: 'sdkVersion', chipLabel: 'sdk',
-        packageLabel: 'claude-agent-sdk', short: 'claude',
+        packageLabel: 'claude-agent-sdk', short: 'claude', runtimeKey: 'claude',
         latestKey: 'sdkLatestVersion', latestSettingKey: 'sdk.latest_version',
         notifiedKey: 'sdk.last_notified_version',
         independentInstall: false,
@@ -429,7 +433,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
       versions: [
         {
           column: 'codexSdkVersion', chipLabel: 'sdk',
-          packageLabel: 'openai-codex', short: 'codex',
+          packageLabel: 'openai-codex', short: 'codex', runtimeKey: 'codex',
           latestKey: 'codexLatestVersion', latestSettingKey: 'codex.latest_version',
           notifiedKey: 'codex.last_notified_version',
           independentInstall: false,
@@ -438,7 +442,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
           // The npm release line runs AHEAD of the SDK on purpose (§14.59) and
           // is fetched separately, so the pyz can update while it does not.
           column: 'codexCliVersion', chipLabel: 'cli',
-          packageLabel: 'codex-cli', short: 'cli',
+          packageLabel: 'codex-cli', short: 'cli', runtimeKey: 'codex_cli',
           latestKey: 'codexCliLatestVersion', latestSettingKey: 'codex.cli_latest_version',
           notifiedKey: 'codex.last_notified_cli_version',
           independentInstall: true,
@@ -538,7 +542,7 @@ export const PROVIDERS: Readonly<Record<SessionProvider, ProviderDescriptor>> = 
         // Charon deliberately does not drive it — this is the only line Charon
         // owns, so it is the only one on the staleness axis.
         column: 'cursorSdkVersion', chipLabel: 'sdk',
-        packageLabel: 'cursor-sdk', short: 'cursor',
+        packageLabel: 'cursor-sdk', short: 'cursor', runtimeKey: 'cursor',
         latestKey: 'cursorLatestVersion', latestSettingKey: 'cursor.latest_version',
         notifiedKey: 'cursor.last_notified_version',
         independentInstall: false,

@@ -1,5 +1,6 @@
 'use client';
 import { api } from '@/lib/api';
+import { pendingUpdateRows } from '@/lib/runtimeUpdate';
 import PickerControl from './PickerControl';
 import SessionAccountChoice from './SessionAccountChoice';
 import type { AccountSwitchTarget } from './UsageAccountSwitch';
@@ -206,7 +207,7 @@ export default function SessionView({
     provider: asSessionProvider(selected.kind),
   });
   const {
-    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, permissionMode,
+    messages, currentAssistant, streamingInto, status, compacting: liveCompacting, runtimeOutdated, runtimeVersions, permissionMode,
     model, fallbackModel, effort, modelPendingApply, effortPendingApply,
     effectiveModel, liveUsage, tokenUsage, responseSpeed,
     toolCalls, toolCallCount, edits, bgTasks,
@@ -889,12 +890,13 @@ export default function SessionView({
               <ParentChip parentId={parentSessionId} onOpen={onOpenSession} />
             )}
             {/* The agent was updated under this session (§14.117): it still
-                runs the previous version, and moves itself to the new one the
-                next time it is idle. Nothing to do — but worth knowing. */}
+                runs the previous versions, and moves itself to the new ones the
+                next time it is idle. Nothing to do — but worth knowing which. */}
             {runtimeOutdated && (
-              <span className="bar-outdated" role="note" aria-label="Outdated agent version"
-                title={'This session still runs the previous agent version.\nIt switches to the new one by itself the next time it is idle (a few seconds, conversation kept).'}
-              >⚠<span className="bar-outdated-text"> outdated agent</span></span>
+              <span className="bar-outdated" role="note" aria-label="Agent update pending"
+                title={[...pendingUpdateRows(runtimeVersions, selectedVps),
+                  'Applied by itself the next time this session is idle'].join('\n')}
+              >⚠<span className="bar-outdated-text"> update pending</span></span>
             )}
             {/* Phone only: its hit area spans the whole title line. */}
             <button type="button" className="bar-expand" aria-expanded={barExpanded}

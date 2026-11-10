@@ -199,6 +199,7 @@ class RemoteSession:
         info["status"] = self.status
         info["runtime_generation"] = self.generation
         info["outdated"] = self.outdated
+        info["runtime_versions"] = self.runtime.versions if self.runtime is not None else None
         return info
 
     def to_persist(self) -> dict[str, Any]:
@@ -250,6 +251,7 @@ class RuntimeConn:
         self.sock_path = runtime_socket(state_dir, generation)
         self.home = runtime_home(state_dir, generation)
         self.hello: dict[str, Any] = {}
+        self._versions: dict[str, Any] | None = None
         self.connected = False
         self.stopping = False      # daemon shutdown: never recovered
         self.retired = False       # asked to exit once empty
@@ -303,6 +305,34 @@ class RuntimeConn:
             os.replace(tmp, path)
         except OSError as e:
             print(f"[runtime {self.gen}] watermark write failed: {e}", file=sys.stderr, flush=True)
+
+    # ── What it runs (§14.117/118) ───────────────────────────────────────────
+    def write_versions(self, versions: dict[str, Any]) -> None:
+        """Recorded by the daemon that spawns this generation: a later daemon
+        (hot update) reads back which agent and SDKs its sessions still run —
+        the "from" of the header's pending update. Never overwritten."""
+        path = self.home / "versions.json"
+        if path.exists():
+            return
+        tmp = path.with_name(f"versions.json.tmp{os.getpid()}")
+        try:
+            self.home.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(json.dumps(versions))
+            os.replace(tmp, path)
+        except OSError as e:
+            print(f"[runtime {self.gen}] versions write failed: {e}", file=sys.stderr, flush=True)
+
+    @property
+    def versions(self) -> dict[str, Any] | None:
+        """None for a generation spawned before agent 0.131.0."""
+        if self._versions is None:
+            try:
+                raw = json.loads((self.home / "versions.json").read_text())
+                self._versions = {str(k): v for k, v in raw.items()
+                                  if isinstance(v, str) or v is None} if isinstance(raw, dict) else {}
+            except (OSError, ValueError):
+                self._versions = {}
+        return self._versions or None
 
     def _schedule_ack(self) -> None:
         if self._ack_handle is None:

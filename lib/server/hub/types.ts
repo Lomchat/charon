@@ -34,7 +34,7 @@ export type BridgeEvent =
   // The session still runs the agent code of before an update (§14.117):
   // the header says so until the agent moves it. Hub memory, mirrored by
   // the window GET's `liveRuntimeOutdated`.
-  | { type: 'runtime_outdated'; outdated: boolean }
+  | { type: 'runtime_outdated'; outdated: boolean; versions?: import('@/lib/runtimeUpdate').RuntimeVersions | null }
   // `turnTools` = tool calls of the current turn so far (thinking bar).
   | { type: 'tool_use'; id: string; name: string; input: any; rowId?: number; turnTools?: number }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean; rowId?: number }

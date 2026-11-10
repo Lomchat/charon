@@ -933,6 +933,10 @@ class Server:
         return {"claude": SDK_VERSION, "codex": CODEX_SDK_VERSION,
                 "codex_cli": CODEX_CLI_VERSION, "cursor": CURSOR_SDK_VERSION}
 
+    def _current_versions(self) -> dict[str, Any]:
+        """What a runtime of THIS daemon's generation runs (versions.json)."""
+        return {"agent": __version__, **self._runtime_versions()}
+
     def _init_generation(self) -> None:
         try:
             self._frozen_pyz, sha = freeze_pyz(self.state_path.parent)
@@ -968,6 +972,8 @@ class Server:
             if log_fh is not subprocess.DEVNULL:
                 log_fh.close()
         conn = RuntimeConn(self, gen, state_dir)
+        if gen == self.generation:
+            conn.write_versions(self._current_versions())
         conn.proc = proc
         deadline = time.monotonic() + RUNTIME_SPAWN_TIMEOUT_S
         while True:
@@ -1140,7 +1146,8 @@ class Server:
         if rs._migration is not None:
             return  # announced once the move is over
         self._emit({"event": "session_runtime", "session_id": rs.session_id,
-                    "generation": rs.generation, "outdated": rs.outdated})
+                    "generation": rs.generation, "outdated": rs.outdated,
+                    "versions": rs.runtime.versions if rs.runtime is not None else None})
 
     def _spawn_bg(self, coro: Any) -> None:
         task = asyncio.get_running_loop().create_task(coro)

@@ -1867,7 +1867,7 @@ export class SessionStream {
       case 'session_runtime':
         // Transient (never replayed): the runtime process now running it
         // (§14.117). Hub memory, re-stated by every hello.
-        if (!this.isReplaying) noteSessionRuntime(this.vpsId, this.id, ev.outdated === true);
+        if (!this.isReplaying) noteSessionRuntime(this.vpsId, this.id, ev.outdated === true, ev.versions);
         break;
       case 'generation_progress':
         if (!this.isReplaying && Number.isFinite(ev.characters) && ev.characters >= 0) {
