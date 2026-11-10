@@ -24,6 +24,7 @@ import CsvViewer from './CsvViewer';
 import HtmlLiveView from './HtmlLiveView';
 import { BytesView, HexViewer, LogViewer, TextView } from './FileViewers';
 import { hasStandaloneView, standaloneViewUrl, viewerFor, type ViewerKind } from './fileViews';
+import { MarkdownMarginsToggle } from './markdownMargins';
 
 // ~200KB and touches `document` at construction — never in the main chunk,
 // never on the server. A failed lazy import after a deploy is caught by
@@ -587,6 +588,7 @@ export default function FileEditor({ tabId, vpsId, root, path, onInteract, onOpe
                     title={res?.tooLarge ? 'Too large for the editor' : 'Read and edit the source'}>Code</button>
           </span>
         )}
+        {rendered && textView?.kind === 'markdown' && <MarkdownMarginsToggle />}
         {diffTarget && (
           <button className="fe-diff" onClick={() => setDiffOpen(true)}
                   title={`Open Git diff for ${diffTarget.file.path}`}>

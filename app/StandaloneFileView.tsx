@@ -6,6 +6,7 @@ import { IconDownload, IconFullscreen, IconFullscreenExit } from './icons';
 import CsvViewer from './CsvViewer';
 import { BytesView, LogViewer, TextView } from './FileViewers';
 import { viewerFor } from './fileViews';
+import { MarkdownMarginsToggle } from './markdownMargins';
 
 /** Same cadence as the pane's change probe (FileEditor). */
 const POLL_MS = 10_000;
@@ -141,6 +142,7 @@ export default function StandaloneFileView({ vpsId, root, path }: Props) {
         {dirty && <span className="fe-dirty" title="unsaved changes">●</span>}
         {note && <span className="sfv-note">{note}</span>}
         {size != null && <span className="fe-size">{fmtSize(size)}</span>}
+        {textKind === 'markdown' && text != null && !err && <MarkdownMarginsToggle />}
         {canFull && (
           <button type="button" className="fe-open" onClick={toggleFull}
                   title={full ? 'Leave full screen (Esc)' : 'Full screen: the document and nothing else'}>

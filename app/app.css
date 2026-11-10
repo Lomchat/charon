@@ -7905,7 +7905,7 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
 .nbv-output > .nbv-prompt { padding-top: 5px; }
 
 /* Markdown cells reuse the Markdown View's typography, minus its page box. */
-.nbv .md-doc { max-width: none; margin: 0; padding: 0; }
+.nbv .md-doc { padding: 0; }
 .nbv .md-doc > :last-child { margin-bottom: 0; }
 .nbv-missing { color: var(--text-muted); font-style: italic; }
 
@@ -8138,13 +8138,15 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   .fntv-glyph { font-size: 24px; }
 }
 
-/* Markdown View: a document, not a chat bubble — readable measure, the same
-   tokens as the transcript's Markdown. */
+/* Markdown View: a document, not a chat bubble — the same tokens as the
+   transcript's Markdown; "Margins" (`markdownMargins.ts`) = a readable measure,
+   centred, else the pane's full width. */
 .md-doc-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .md-doc {
-  max-width: 860px; margin: 0 auto; padding: 24px 32px 64px;
+  padding: 24px 32px 64px;
   color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere;
 }
+.md-doc.margins { max-width: 860px; margin: 0 auto; }
 .md-doc > :first-child { margin-top: 0; }
 .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 {
   font-family: var(--display); letter-spacing: 0.04em; line-height: 1.3;

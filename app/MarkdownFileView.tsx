@@ -8,6 +8,7 @@ import {
 import { remarkFilePaths } from './messageLinks';
 import { hastText } from './hastText';
 import { markdownSlug, resolveDocPath, rootedPath } from './fileViews';
+import { useMarkdownMargins } from './markdownMargins';
 
 type MarkdownProps = ComponentProps<typeof ReactMarkdown>;
 type Components = NonNullable<MarkdownProps['components']>;
@@ -24,6 +25,7 @@ export default function MarkdownFileView({ vpsId, root, path, text }: {
   vpsId: string; root: string; path: string; text: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const [margins] = useMarkdownMargins();
   const absPath = `${root.replace(/\/+$/, '')}/${path}`;
   const docDir = absPath.slice(0, absPath.lastIndexOf('/')) || '/';
   // Repeated headings number themselves in document order: one map per render.
@@ -73,7 +75,7 @@ export default function MarkdownFileView({ vpsId, root, path, text }: {
 
   return (
     <div className="md-doc-scroll" ref={scroller}>
-      <article className="md-doc">
+      <article className={`md-doc${margins ? ' margins' : ''}`}>
         <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={MARKDOWN_REHYPE_PLUGINS} components={components}>
           {text}
         </ReactMarkdown>
