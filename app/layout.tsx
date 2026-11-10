@@ -10,7 +10,7 @@ import ChunkReloadGuard from './ChunkReloadGuard';
 import { TooltipLayer } from './HoverTip';
 import { getSetting } from '@/lib/server/hub/settings';
 import { resolveTheme } from './themes';
-import { resolveDensity } from './density';
+import { DEFAULT_DENSITY, resolveDensity } from './density';
 import { DEFAULT_FILE_ICONS, resolveFileIcons } from './fileIconStyle';
 
 // The active theme is read from the DB and rendered onto <html data-theme>.
@@ -47,7 +47,7 @@ export function generateViewport(): Viewport {
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  let density: ReturnType<typeof resolveDensity> = 'default';
+  let density: ReturnType<typeof resolveDensity> = DEFAULT_DENSITY;
   try { density = resolveDensity(getSetting('app.density')); } catch { /* use the default */ }
   let fileIcons = DEFAULT_FILE_ICONS;
   try { fileIcons = resolveFileIcons(getSetting('app.file_icons')); } catch { /* use the default */ }

@@ -160,6 +160,9 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
   const [syncing, setSyncing] = useState(false);
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [syncMsg, setSyncMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+  // Every provider's discoveries are announced in `general` (the section the
+  // header's dot opens on), so the nav badge sits there too.
+  const hasNewModels = SESSION_PROVIDERS.some((p) => modelNotices[p].length > 0);
 
   // Both account-driven catalogs pick their box the same way — SIGNED IN
   // first, because an installed-but-signed-out VPS answers with an empty list
@@ -326,7 +329,7 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
                       >
                         {navIcon(c.id)}
                         <span>{c.label}</span>
-                        {isSessionProvider(c.id) && modelNotices[c.id].length > 0 && (
+                        {c.id === 'general' && hasNewModels && (
                           <span className="model-notice-badge" aria-label="new models available">new</span>
                         )}
                         {isSessionProvider(c.id) && (
@@ -343,12 +346,10 @@ export default function SettingsModal({ onClose, vpsList, initialCat, modelNotic
               </nav>
 
               <div className="settings-pane">
-                {isSessionProvider(cat) && (
-                  <ModelReleaseNotice key={cat} provider={cat} unread={modelNotices[cat]} onSeen={onModelsSeen} />
-                )}
                 {cat === 'endpoints' && <CustomEndpointsSettings vpsList={vpsList} />}
                 {cat === 'general' && (
                   <>
+                    <ModelReleaseNotice notices={modelNotices} onSeen={onModelsSeen} />
                     <label>theme
                       <PickerControl
                         value={s['app.theme'] ?? DEFAULT_THEME_ID}

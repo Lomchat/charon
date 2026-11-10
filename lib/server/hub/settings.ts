@@ -6,6 +6,7 @@ import { encrypt, tryDecrypt } from '@/lib/server/crypto';
 import { getEnvAesKey } from '@/lib/server/masterKey';
 import { parseSettingSources } from '@/lib/settingSources';
 import { DEFAULT_THEME_ID } from '@/app/themes';
+import { DEFAULT_DENSITY } from '@/app/density';
 import { PROVIDERS, type SessionProvider } from '@/lib/sessionCapabilities';
 
 // ── At-rest encryption of secret settings (P0.7) ────────────────────────────
@@ -96,8 +97,8 @@ const DEFAULTS = {
   // an id dropped from the code degrades to the default rather than rendering
   // a page against tokens nothing defines.
   'app.theme': DEFAULT_THEME_ID,
-  // Optional hub-wide display density; absence keeps the original layout.
-  'app.density': 'default',
+  // Hub-wide display size, 'default' | 'small' (app/density.ts).
+  'app.density': DEFAULT_DENSITY,
   // How file icons are drawn hub-wide: 'colored' | 'mono' | 'classic'.
   'app.file_icons': 'colored',
   // Per-backend availability in the UI, hub-wide. 'false' HIDES every launcher

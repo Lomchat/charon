@@ -1,5 +1,7 @@
-export const DEFAULT_DENSITY = 'default';
 export type Density = 'default' | 'small';
+/** A fresh install shows the small size; hubs that predate it carry an
+ * explicit 'default' row (drizzle 0056), so an upgrade changes nothing. */
+export const DEFAULT_DENSITY: Density = 'small';
 
 export function isDensity(value: unknown): value is Density {
   return value === 'default' || value === 'small';

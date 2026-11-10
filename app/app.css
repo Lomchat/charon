@@ -8527,7 +8527,8 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   opacity: 0.45; font-style: italic;
 }
 
-/* Hub-wide model discoveries: header dot → provider badge → notice banner. */
+/* Hub-wide model discoveries: header dot → `general` badge → one list, each
+   row naming its CLI. */
 .model-notice-anchor { position: relative; }
 .model-notice-dot {
   position: absolute; top: 3px; right: 3px; width: 8px; height: 8px;
@@ -8548,7 +8549,13 @@ html:not([data-file-icons='mono']) .tt-row:not(.ignored) > .tt-ico.fi { opacity:
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
   color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
 }
-.model-release-notice > span:first-child { flex: 1 1 180px; }
+.model-release-text {
+  flex: 1 1 180px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
+}
+.model-release-cli {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-weight: 600; color: var(--text);
+}
 .model-release-notice strong { color: var(--accent-strong); }
 .model-release-notice button {
   flex: none; margin-left: auto; padding: 5px 12px;
