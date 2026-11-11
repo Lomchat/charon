@@ -572,10 +572,6 @@ function resetFromCodexLimits(detail: unknown): number | null {
   return exhausted.length ? Math.max(...exhausted) : future.length ? Math.min(...future) : null;
 }
 
-/** How long a PATCH-cwd kill waits for its `killed` echo (a held one arrives
- *  after the subscribe replay that held it). */
-const KILLED_ECHO_GRACE_MS = 5 * 60_000;
-
 // ONE in-flight lazy import of endpointOps (it imports this module back): two
 // concurrent first `import()`s of a cyclic module can hand the second caller a
 // partly evaluated copy under vite-node (TDZ on its `inflight`). A failed load
@@ -615,18 +611,6 @@ export class SessionStream {
   // Read at use: a stream outlives a rename of its VPS.
   get vpsName(): string { return _vpsName(this.vpsId); }
   cwd: string | null = null;
-  // Set by PATCH cwd right before its `kill_session`: the status case turns
-  // ONE following `killed` echo into `sleeping` (S7, C13). NOT cleared when the
-  // RPC settles: during a subscribe replay the agent HOLDS the session's live
-  // events (the echo) while the answer, which carries no session id, overtakes
-  // them. Cleared by the echo, by a live `starting` (a new instance: anything
-  // held was delivered before it, in order) or past KILLED_ECHO_GRACE_MS.
-  expectKilledEcho = false;
-  private expectKilledEchoUntil = 0;
-  armKilledEcho(now = Date.now()): void {
-    this.expectKilledEcho = true;
-    this.expectKilledEchoUntil = now + KILLED_ECHO_GRACE_MS;
-  }
   // Per-session model / fallback / effort. NULL = fall back to the global
   // default (claude.default_* or codex.default_*) → agent/SDK default. Source
   // of truth is the DB column; SessionStream caches it in memory for fast access
@@ -1627,29 +1611,6 @@ export class SessionStream {
         else if (ev.status !== 'thinking') this._setCompacting(false);
         // A new SDK client applies the queued config (the reducer's rule).
         if (ev.status === 'starting') { this.pendingApply.model = false; this.pendingApply.effort = false; }
-        if (this.expectKilledEcho && (ev.status === 'starting' || Date.now() > this.expectKilledEchoUntil)) {
-          this.expectKilledEcho = false;
-        }
-        // S7 (PATCH cwd): the hub killed the agent-side instance itself to
-        // re-create it with the new cwd. ONE `killed` echo of that kill means
-        // "sleeping" — never the transient deletion signal (a browser would
-        // drop the session), never a bg-task burial. Only that echo consumes
-        // the flag: a turn-end `active` already on the wire ahead of it must
-        // not.
-        if (this.expectKilledEcho && ev.status === 'killed') {
-          this.expectKilledEcho = false;
-          // The killed instance's running tools are gone, as on any
-          // sleeping status (C12's liveToolOutput rule).
-          this.liveToolOutput.clear();
-          this._cancelBlockingGates();
-          this.status = 'sleeping';
-          this._broadcast({ type: 'status', status: 'sleeping' });
-          try {
-            db.update(agentSessions).set({ status: 'sleeping' })
-              .where(eq(agentSessions.id, this.id)).run();
-          } catch {}
-          break;
-        }
         // The Claude daemon returns to idle after ResultMessage even when the
         // final assistant bubble was an API/auth failure. Keep the durable
         // failed-turn marker visible until a new turn really starts.

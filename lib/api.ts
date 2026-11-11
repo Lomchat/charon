@@ -693,8 +693,6 @@ export const api = {
   // optimistic overlay waits for (app/sync/summaryStore.ts § addOverlay).
   deleteAgentSession: (id: string) =>
     send<DeleteAgentSessionResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}`),
-  archiveSession: (id: string) =>
-    send<OkResponse & ActionSyncStamp>('POST', `/api/sessions/${id}/archive`),
   unarchiveSession: (id: string) =>
     send<OkResponse & ActionSyncStamp>('DELETE', `/api/sessions/${id}/archive`),
   /** Hide or show a session with its sub-sessions (§14.118). */
@@ -704,8 +702,8 @@ export const api = {
     send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, { name } as RenameAgentSessionBody),
   updateSessionHandle: (id: string, handle: string) =>
     send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, { handle } as RenameAgentSessionBody),
-  /** Any PATCH of the session row (name, color, cwd). */
-  patchAgentSession: (id: string, body: { name?: string | null; color?: string | null; cwd?: string }) =>
+  /** Any PATCH of the session row (name, color). */
+  patchAgentSession: (id: string, body: { name?: string | null; color?: string | null }) =>
     send<AgentSession & ActionSyncStamp>('PATCH', `/api/sessions/${id}`, body),
   /** The session's finish is read (a click on the pulsing answer, §14.47). */
   markSessionRead: (id: string) =>
@@ -879,7 +877,6 @@ export const sessionApi = {
   create: api.createSession,
   import: api.importSession,
   remove: api.deleteAgentSession,
-  archive: api.archiveSession,
   unarchive: api.unarchiveSession,
   rename: api.renameAgentSession,
   updateHandle: api.updateSessionHandle,

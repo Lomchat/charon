@@ -1690,7 +1690,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
   //  for the ACTIVE SESSION are in `<SessionView>` via the
   //  `useSessionStream` hook. HubPanel only keeps cross-session
   //  actions: deletion of another session via the menu
-  //  (`deleteSessionOne`), edit cwd (`editSessionCwd`), patch shell, etc.]
+  //  (`deleteSessionOne`), colour (`setColor`), patch shell, etc.]
 
   // Optimistic writes are summary-store OVERLAYS (§14.32): shown until the
   // route answered AND this tab's bus position reached the `sync` it returned
@@ -1747,19 +1747,21 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
     });
   }
 
-  async function archiveOne(id: string) {
-    const o = addOverlay(id, { removed: true });
-    try {
-      const r = await api.archiveSession(id);
-      o.ack(r?.sync);
-      const tab = resolvedTabs.find((t) => t.kind === 'session' && t.ref === id);
-      if (tab) await closeWorkspaceTab(tab.id);
-      if (id === selectedId) setSelectedId(null);
+  // Same shape as `setHidden`: one overlay per changed row, one error line.
+  function setColor(targets: SessionListItem[], color: string | null) {
+    const ids = targets.filter((t) => (t.color ?? null) !== color).map((t) => t.id);
+    if (!ids.length) return;
+    void Promise.allSettled(ids.map(async (id) => {
+      const o = addOverlay(id, { color });
+      try { o.ack((await api.patchAgentSession(id, { color }))?.sync); } catch (e) { o.fail(); throw e; }
+    })).then((results) => {
+      const failed = results.filter((r) => r.status === 'rejected');
+      if (failed.length) {
+        const first = failed[0] as PromiseRejectedResult;
+        setError({ msg: `colour: ${failed.length}/${ids.length} failed — ${first.reason?.message ?? first.reason}` });
+      }
       refreshIfDegraded();
-    } catch (e: any) {
-      o.fail();
-      setError({ msg: 'archive: ' + (e?.message ?? e) });
-    }
+    });
   }
 
   // Permanent deletion (DB cascade on the server side). The caller must
@@ -1818,28 +1820,6 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
       });
       refreshIfDegraded();
     }
-  }
-
-  async function patchSession(id: string, body: { name?: string | null; color?: string | null; cwd?: string }) {
-    const o = addOverlay(id, body as Partial<SessionSummary>);
-    try {
-      const r = await api.patchAgentSession(id, body);
-      o.ack(r?.sync);
-      refreshIfDegraded();
-    } catch (e: any) {
-      o.fail();
-      setError({ msg: 'patch session: ' + (e?.message ?? e) });
-    }
-  }
-
-  /** Edits a session's cwd via prompt(). The PATCH on the server side
-   *  automatically kills the agent instance if it exists, and resets the
-   *  DB status to 'sleeping' so the user can click resume with the new
-   *  cwd. */
-  async function editSessionCwd(sess: SessionListItem) {
-    const newCwd = prompt('New folder (cwd) for this session?\n(the session will be recreated at the next resume)', sess.cwd);
-    if (newCwd == null || newCwd.trim() === '' || newCwd.trim() === sess.cwd) return;
-    await patchSession(sess.id, { cwd: newCwd.trim() });
   }
 
   async function updateSessionHandle(sess: SessionListItem, value: string) {
@@ -2681,6 +2661,7 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
         const single = targets.length === 1 ? targets[0] : null;
         const sleepTargets = targets.filter(canSleepSession);
         const resumeTargets = targets.filter(canResumeSession);
+        const colors = new Set(targets.map((t) => t.color ?? null));
         return <SessionContextMenu
           title={single
             ? (single.name || single.cwd.split('/').slice(-2).join('/'))
@@ -2688,7 +2669,8 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           subtitle={single ? single.cwd : 'bulk session actions'}
           x={ctxMenu.x}
           y={ctxMenu.y}
-          currentColor={single ? (single as any).color : null}
+          currentColor={colors.size === 1 ? [...colors][0] : null}
+          colorMixed={colors.size > 1}
           // No `onKill` here: the kill→delete rework merged the two
           // actions. Only `onDelete` remains for Claude sessions. The
           // shells/installs below keep their `onKill` (= close).
@@ -2698,16 +2680,13 @@ export default function HubPanel({ vpsList: initialVpsList, vpsFolders: initialF
           // the item disappears from the menu (the "resume" button in the
           // chat header takes care of waking up the session; we don't duplicate here).
           showRename={!!single}
-          showColor={!!single}
           onRename={single ? () => setEditingId(single.id) : undefined}
           onEditHandle={single ? () => setHandleEditor(single) : undefined}
-          onEditCwd={single ? () => editSessionCwd(single) : undefined}
-          onColor={single ? (color) => patchSession(single.id, { color }) : undefined}
+          onColor={(color) => setColor(targets, color)}
           onSleep={sleepTargets.length ? () => runSessionLifecycle('sleep', sleepTargets) : undefined}
           sleepLabel={sleepTargets.length > 1 ? `💤 Sleep ${sleepTargets.length} sessions` : '💤 Sleep'}
           onResume={resumeTargets.length ? () => runSessionLifecycle('resume', resumeTargets) : undefined}
           resumeLabel={resumeTargets.length > 1 ? `Resume ${resumeTargets.length} sessions` : 'Resume'}
-          onArchive={single ? () => archiveOne(single.id) : undefined}
           // Every target is on the side the switch shows, so one verb fits
           // them all: hide from the normal view, show from the hidden one.
           onHide={() => setHidden(targets, !targets.every((t) => t.hidden === 1))}

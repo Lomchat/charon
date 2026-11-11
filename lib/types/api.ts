@@ -1600,7 +1600,6 @@ export type RenameAgentSessionBody = {
   name?: string | null;
   handle?: string;
   color?: string | null;
-  cwd?: string;
 };
 
 export type SendAgentInputBody = {

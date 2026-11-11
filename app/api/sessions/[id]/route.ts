@@ -4,14 +4,13 @@ import { sessionTokenUsage } from '@/lib/server/agent/sessionTokenUsage';
 import { NextResponse } from 'next/server';
 import { and, asc, desc, eq, gt, gte, lt, lte, notInArray, sql } from 'drizzle-orm';
 import {
-  db, agentSessions, sessionMessages, sessionLogs, vps as vpsTable,
+  db, agentSessions, sessionMessages,
   sessionPendingPermissions, sessionPendingQuestions,
   type AgentSessionMessage,
 } from '@/lib/db';
 import { requireApiSession } from '@/lib/server/session';
 import {
   deleteSession, peekStream, emitGlobalSessionListChanged, sweepExpiredInteractions,
-  setSessionStatusLocal,
 } from '@/lib/server/agent/sessionOps';
 import { focusCountFor, setConnectionFocus } from '@/lib/server/agent/eventConnections';
 import { markLeftRead } from '@/lib/server/agent/shellNotify';
@@ -19,7 +18,6 @@ import { currentRev } from '@/lib/server/sync/syncBus';
 import { isAsyncQuestionDelivering } from '@/lib/server/agent/asyncQuestionDelivery';
 import { buildSessionSummary, syncAfter } from '@/lib/server/sync/sessionSummaries';
 import { getAgentClientForVpsId } from '@/lib/server/agent/AgentClientPool';
-import { sshExec, shQuote } from '@/lib/server/hub/sshExec';
 import { orderChronologically } from '@/lib/server/hub/messageOrder';
 import { loadMessageWindow, publicMessageColumns } from '@/lib/server/hub/messageWindow';
 import { countToolCalls, exitPlanFallback, withBgTaskLaunchers } from '@/lib/server/hub/conversationSources';
@@ -33,49 +31,6 @@ import { timeSection } from '@/lib/server/perf/loopLag';
 import type { AgentSessionMessageWindow } from '@/lib/types/api';
 import { HUB_TRANSCRIPT_FEATURES } from '@/lib/assistantBoundaries';
 import { parseSuggestions, type PermissionSuggestion } from '@/lib/permissionSuggestions';
-
-/**
- * The Claude SDK stores each session in
- *   ~/.claude/projects/<slug>/<uuid>.jsonl
- * where <slug> is derived from the cwd by replacing '/' with '-'. To resume
- * a session after a cwd change, we must move the .jsonl to the new slug.
- * Best-effort: if it fails, the SDK won't find the conversation and the
- * session will be "fresh" (loses Claude's memory but our DB history
- * remains displayable).
- */
-async function relocateJsonl(
-  vpsRow: typeof vpsTable.$inferSelect,
-  nativeSessionId: string,
-  oldCwd: string,
-  newCwd: string,
-): Promise<{ ok: boolean; detail: string }> {
-  const slugify = (p: string) => p.replace(/\//g, '-');
-  const oldSlug = slugify(oldCwd);
-  const newSlug = slugify(newCwd);
-  if (oldSlug === newSlug) return { ok: true, detail: 'same slug' };
-  // oldCwd comes from the DB but the original value is user-controlled (the
-  // user chooses their cwd at new-session). nativeSessionId comes from the
-  // SDK (uuid) but we quote it for safety anyway. shQuote isolates all
-  // shell-meta.
-  const oldQ = shQuote(oldSlug);
-  const newQ = shQuote(newSlug);
-  const sidQ = shQuote(nativeSessionId);
-  // We copy instead of mv so we don't break the original history.
-  // If the new file already exists, skip (don't overwrite).
-  const cmd =
-    `OLD=~/.claude/projects/${oldQ}/${sidQ}.jsonl && ` +
-    `NEW_DIR=~/.claude/projects/${newQ} && ` +
-    `NEW=$NEW_DIR/${sidQ}.jsonl && ` +
-    `if [ ! -f "$OLD" ]; then echo "JSONL_NOT_FOUND_AT_OLD"; exit 1; fi && ` +
-    `mkdir -p "$NEW_DIR" && ` +
-    `if [ ! -f "$NEW" ]; then cp "$OLD" "$NEW"; fi && ` +
-    `echo OK`;
-  const r = await sshExec(vpsRow, cmd, { timeoutMs: 10_000 });
-  if (r.ok && r.stdout.includes('OK')) {
-    return { ok: true, detail: `copied ${oldSlug} -> ${newSlug}` };
-  }
-  return { ok: false, detail: r.stderr.slice(-200) || r.stdout.slice(-200) || `exit ${r.code}` };
-}
 
 // Roles considered as "chat" for pagination. edit_snapshot and event do
 // NOT count in the window — they ride as attachments of the page owning
@@ -443,16 +398,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
 // PATCH /api/sessions/[id]
 //
-// Allowed fields: name, handle, color, cwd.
-//
-// Special case cwd: the cwd is used at the moment of start_session on the
-// agent side — updating the value in DB is not enough if the agent already
-// has an in-memory instance (which keeps its old cwd). So:
-//   - we update the DB
-//   - we kill the agent instance (silent if it doesn't exist)
-//   - we reset DB status to 'sleeping' so the UI offers a resume
-//     (which will cleanly recreate the session with the new cwd)
-const ALLOWED_PATCH = ['name', 'color', 'cwd'] as const;
+// Allowed fields: name, handle, color. A session's cwd is fixed at creation.
+const ALLOWED_PATCH = ['name', 'color'] as const;
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const s = await requireApiSession();
   if (s instanceof Response) return s;
@@ -478,7 +425,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const [before] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
   if (!before) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  const cwdChanged = 'cwd' in update && update.cwd !== before.cwd;
   if (typeof update.handle === 'string' && update.handle !== before.handle) {
     const conflict = db.select({ id: agentSessions.id }).from(agentSessions).where(and(
       eq(agentSessions.vpsId, before.vpsId),
@@ -486,39 +432,6 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     )).get();
     if (conflict && conflict.id !== id) {
       return NextResponse.json({ error: `@${update.handle} is already used on this VPS` }, { status: 409 });
-    }
-  }
-
-  let relocateNote: string | undefined;
-  // If cwd changes: kill on the agent side + reset DB status to 'sleeping' +
-  // relocate the JSONL on the VPS side so the SDK finds the conversation
-  if (cwdChanged) {
-    update.status = 'sleeping';
-    // The agent echoes our kill as `status:killed` — the transient DELETION
-    // signal. The stream turns that ONE echo into `sleeping` (S7). The flag
-    // outlives this call: a subscribe replay in progress HOLDS the echo while
-    // the RPC answer overtakes it (the stream clears it, sessionOps §
-    // armKilledEcho).
-    const live = peekStream(id);
-    if (live) live.armKilledEcho();
-    try {
-      const client = getAgentClientForVpsId(before.vpsId);
-      await client.call('kill_session', { session_id: id }).catch(() => {});
-    } catch {
-      // No agent client — we continue, it will restart on resume
-    }
-    // Relocate JSONL (best-effort)
-    if (before.nativeSessionId) {
-      const [v] = db.select().from(vpsTable).where(eq(vpsTable.id, before.vpsId)).all();
-      if (v) {
-        const r = await relocateJsonl(v, before.nativeSessionId, before.cwd, String(update.cwd));
-        relocateNote = (r.ok ? '✓ ' : '⚠ ') + r.detail;
-        db.insert(sessionLogs).values({
-          sessionId: id, level: r.ok ? 'info' : 'warn',
-          event: 'cwd_change',
-          detail: JSON.stringify({ from: before.cwd, to: update.cwd, relocate: r }),
-        }).run();
-      }
     }
   }
 
@@ -533,13 +446,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const [row] = db.select().from(agentSessions).where(eq(agentSessions.id, id)).all();
   // A hydrated stream labels pushes/Telegram with its own copies (A3).
   const stream = peekStream(id);
-  if (stream) {
-    if ('name' in update) stream.name = (update.name as string | null) ?? null;
-    if ('cwd' in update && typeof update.cwd === 'string') stream.cwd = update.cwd;
-  }
-  // The DB says `sleeping` for a cwd change: memory and every tab too (the
-  // DB was written above, with the cwd).
-  if (cwdChanged) setSessionStatusLocal(id, 'sleeping', { persist: false });
+  if (stream && 'name' in update) stream.name = (update.name as string | null) ?? null;
 
   // Mirror the name into the CLI's own transcript (agent >= 0.38.0). Until
   // now Charon's name lived only in the dashboard: a session called
@@ -570,13 +477,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     })();
   }
 
-  // Every field is a list fact (color and cwd included, A3): the frame marks
+  // Every field is a list fact (color included, A3): the frame marks
   // the summary dirty and makes legacy tabs refetch the list.
   emitGlobalSessionListChanged(id);
 
   const publicRow = { ...row, providerConfig: undefined, accountProfile: accountProfileId(row.providerConfig), accountProfileNumber: accountProfileNumber(row.providerConfig), endpoint: publicConnection(row.providerConfig) };
   const sync = syncAfter([id]);
-  return NextResponse.json(relocateNote ? { ...publicRow, _relocateNote: relocateNote, sync } : { ...publicRow, sync });
+  return NextResponse.json({ ...publicRow, sync });
 }
 
 // DELETE /api/sessions/[id]

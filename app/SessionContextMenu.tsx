@@ -30,6 +30,7 @@ type Props = {
   x: number;
   y: number;
   currentColor?: string | null;
+  colorMixed?: boolean;              // targets disagree: no swatch is current
   canKill?: boolean;
   killLabel?: string;                // 'Close' (shell/install). Not used
                                      // for Claude sessions since the
@@ -41,8 +42,7 @@ type Props = {
   onRename?: () => void;
   onEditHandle?: () => void;
   onColor?: (color: RowColor) => void;
-  onEditCwd?: () => void;            // "Change folder" option
-  onSleep?: () => void;              // "💤 Sleep" — for active sessions
+  onSleep?: () => void;             // "💤 Sleep" — for active sessions
                                      // sessions. The caller only passes it
                                      // if the session is in a state where
                                      // "sleep" makes sense (= not already
@@ -52,8 +52,7 @@ type Props = {
   onResume?: () => void;
   resumeLabel?: string;
   onKill?: () => void;               // "Close" — shell/install only
-  onArchive?: () => void;            // common reversible workspace archive
-  onHide?: () => void;               // hide / show back (§14.118)
+  onHide?: () => void;              // hide / show back (§14.118)
   hideLabel?: string;
   onDelete?: () => void;
   deleteLabel?: string;
@@ -61,12 +60,12 @@ type Props = {
 };
 
 export default function SessionContextMenu({
-  title, subtitle, children, x, y, currentColor, canKill = true, killLabel = 'Close',
+  title, subtitle, children, x, y, currentColor, colorMixed = false, canKill = true, killLabel = 'Close',
   killDisabledReason, showDelete = true,
   showRename = true, showColor = true,
-  onRename, onEditHandle, onColor, onEditCwd,
+  onRename, onEditHandle, onColor,
   onSleep, sleepLabel = '💤 Sleep', onResume, resumeLabel = 'Resume',
-  onKill, onArchive, onHide, hideLabel = 'Hide', onDelete, deleteLabel = 'Delete permanently', onClose,
+  onKill, onHide, hideLabel = 'Hide', onDelete, deleteLabel = 'Delete permanently', onClose,
 }: Props) {
   useEffect(() => {
     // Ignore events in the first moments after open: on touch, the long-press
@@ -140,16 +139,13 @@ export default function SessionContextMenu({
       {onEditHandle && (
         <button type="button" onClick={() => { onEditHandle(); onClose(); }}>Change @handle</button>
       )}
-      {onEditCwd && (
-        <button type="button" onClick={() => { onEditCwd(); onClose(); }}>Change folder (cwd)</button>
-      )}
 
       {/* Color palette — horizontal row of clickable swatches.
           Hidden for installs (no useful customization). */}
       {showColor && onColor && (
         <div className="ctx-color-row" role="group" aria-label="color">
           {ROW_COLORS.map((c) => {
-            const selected = (currentColor ?? null) === c.token;
+            const selected = !colorMixed && (currentColor ?? null) === c.token;
             const isNone = c.token === null;
             return (
               <button
@@ -184,11 +180,6 @@ export default function SessionContextMenu({
       {onHide && (
         <button type="button" onClick={() => { onHide(); onClose(); }}>
           {hideLabel}
-        </button>
-      )}
-      {onArchive && (
-        <button type="button" onClick={() => { onArchive(); onClose(); }}>
-          Archive session
         </button>
       )}
       {onKill && (
