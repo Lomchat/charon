@@ -45,6 +45,7 @@ MAX_PATCH_BYTES = 1_500_000  # per-file patch cap (git_diff)
 MAX_MESSAGE_CHARS = 8000
 MAX_UNTRACKED_SCAN = 500     # untracked files we bother line-counting
 MAX_UNTRACKED_SCAN_BYTES = 1_000_000
+NUMSTAT_MAX_PATHSPEC_CHARS = 200_000  # beyond: numstat the whole tree
 
 # ── Multi-repo workspace (git_workspace) ────────────────────────────────────
 # A session is frequently opened on a folder OF projects (`/srv`,
@@ -234,6 +235,30 @@ def _num(s: str) -> int | None:
         return None
 
 
+def _numstat_pathspecs(tracked: list[dict[str, Any]]) -> list[str]:
+    """The paths `git status` already found changed, as literal pathspecs.
+
+    A read path must never write the index, and `git diff` does: after
+    re-hashing stat-dirty files it rewrites the index, `GIT_OPTIONAL_LOCKS`
+    notwithstanding. Callers use `diff-index` (plumbing: never writes), and
+    this scope keeps it from hashing the whole tree a second time when the
+    index's stat cache is foreign (a checkout copied in WITH its .git: every
+    file looks dirty). A rename needs both ends to be paired.
+
+    Empty list (= whole tree) when the paths cannot round-trip: a non-UTF-8
+    name was decoded with U+FFFD and would match nothing, and a huge list
+    would blow the argv limit.
+    """
+    paths: list[str] = []
+    for e in tracked:
+        paths.append(e["path"])
+        if e.get("orig_path"):
+            paths.append(e["orig_path"])
+    if sum(len(p) for p in paths) > NUMSTAT_MAX_PATHSPEC_CHARS or any("\ufffd" in p for p in paths):
+        return []
+    return [":(literal)" + p for p in paths]
+
+
 def _parse_numstat_z(out: str) -> dict[str, tuple[int | None, int | None]]:
     """`git diff --numstat -z` → {path: (added, deleted)}.
 
@@ -385,13 +410,15 @@ def git_status(cwd: str, include_recent: bool = False,
             entries.append({"path": rest, "x": "?", "y": "?", "status": "?", "untracked": True})
         # '!' (ignored) is never requested.
 
-    # Line counts. `git diff --numstat HEAD` covers every TRACKED change in
-    # one shot (staged + unstaged), which is exactly the set `git_commit`
-    # would record. Unborn HEAD ⇒ nothing is tracked yet, skip it.
+    # Line counts. A numstat against HEAD covers every TRACKED change in one
+    # shot (staged + unstaged), which is exactly the set `git_commit` would
+    # record. Unborn HEAD ⇒ nothing is tracked yet, skip it.
     stats: dict[str, tuple[int | None, int | None]] = {}
     has_head = _run(root, ["rev-parse", "--verify", "--quiet", "HEAD"])[0] == 0
-    if has_head and any(not e["untracked"] for e in entries):
-        c2, o2, _ = _run(root, ["diff", "--numstat", "-z", "-M", "HEAD", "--"])
+    tracked = [e for e in entries if not e["untracked"]]
+    if has_head and tracked:
+        c2, o2, _ = _run(root, ["diff-index", "--numstat", "-z", "-M", "HEAD", "--",
+                                *_numstat_pathspecs(tracked)])
         if c2 == 0:
             stats = _parse_numstat_z(o2)
 
@@ -669,7 +696,8 @@ def git_diff(cwd: str, path: str) -> dict[str, Any]:
         if code not in (0, 1):
             return _fail(_first_line(err) or "git diff failed")
     else:
-        code, out, err = _run(root, ["diff", "--no-color", "-M", "HEAD", "--", rel])
+        # Plumbing: `git diff` would rewrite the index (see `_numstat_pathspecs`).
+        code, out, err = _run(root, ["diff-index", "-p", "--no-color", "-M", "HEAD", "--", rel])
         if code != 0:
             # Unborn HEAD: nothing to diff against, the file is wholly new.
             if _run(root, ["rev-parse", "--verify", "--quiet", "HEAD"])[0] != 0:

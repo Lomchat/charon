@@ -129,6 +129,28 @@ class GitStatusTest(unittest.TestCase):
         self.assertEqual(by["renamed.txt"]["status"], "R")
         self.assertEqual(by["renamed.txt"]["orig_path"], "kept.txt")
 
+    def test_reads_never_write_the_index(self):
+        # `git diff` rewrites the index after re-hashing stat-dirty files,
+        # GIT_OPTIONAL_LOCKS notwithstanding. On a copied-in checkout (every
+        # file stat-dirty) that took >20s, the timeout SIGKILLed git mid-write
+        # and the 0-byte index.lock it left blocked every commit in the repo.
+        sh(self.dir, "mv", "kept.txt", "renamed.txt")
+        write(self.dir, "renamed.txt", "one\ntwo\nthree\nfour\n")
+        past = os.stat(os.path.join(self.dir, "gone.txt")).st_mtime - 100
+        for rel in ("gone.txt", "sub/nested.txt"):          # stat-dirty, same bytes
+            os.utime(os.path.join(self.dir, rel), (past, past))
+        index = os.path.join(self.dir, ".git", "index")
+        with open(index, "rb") as f:
+            before = f.read()
+        by = {f["path"]: f for f in G.git_status(self.dir)["files"]}
+        self.assertTrue(G.git_diff(self.dir, "gone.txt")["ok"])
+        with open(index, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.exists(index + ".lock"))
+        # The scoped numstat still pairs the rename: +1, not a new 4-line file.
+        self.assertEqual((by["renamed.txt"]["added"], by["renamed.txt"]["deleted"]), (1, 0))
+        self.assertEqual(set(by), {"renamed.txt"})
+
     def test_unborn_head(self):
         empty = tempfile.mkdtemp(prefix="charon-unborn-")
         try:
