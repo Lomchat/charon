@@ -2293,6 +2293,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
      where rounding is a statement, and the themes that predate this must keep
      square corners. */
   border-radius: var(--bubble-radius);
+  position: relative; /* its fold edge */
 }
 .bubble .bubble-h {
   display: flex; align-items: center; gap: 8px;
@@ -2329,6 +2330,64 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble-copy-btn:hover { opacity: 1; color: var(--accent-strong); }
 .bubble-copy-btn svg { width: 11px; height: 11px; display: block; }
 .bubble-copy-btn.copied { opacity: 1; color: var(--success); font-size: 11px; }
+/* ── Folding a bubble to one line (app/bubbleFold.tsx) ─────────────────────
+   The LEFT EDGE is the button, over the whole height: a faint bar in the
+   role's colour, laid over the left border (translucent, so a peer's violet
+   or a running tool's accent border still reads through), widening on hover.
+   Folded: header only + the text's start + its size; a click unfolds. */
+.bubble {
+  --fold-edge: var(--text-muted);
+}
+.bubble.role-user, .bubble.role-scheduled_fire, .bubble.role-scheduled-resume { --fold-edge: var(--info); }
+.bubble.role-assistant { --fold-edge: var(--accent); }
+.bubble.role-error, .bubble.tool-use.err { --fold-edge: var(--danger-strong); }
+.bubble.thinking { --fold-edge: var(--lavender); }
+.bubble.tool-use.running { --fold-edge: var(--accent-strong); }
+.bubble.tool-result.orphan { --fold-edge: var(--diff-add); }
+.bubble.role-external, .bubble.role-peer_status, .bubble.peer-reply { --fold-edge: var(--violet); }
+.bubble.role-question { --fold-edge: var(--attention); }
+.codex-plan-card { --fold-edge: var(--lavender); --bubble-edge: 1px; --bubble-radius: var(--radius-md); position: relative; }
+.bubble-edge {
+  position: absolute; z-index: 1;
+  left: calc(-1 * var(--bubble-edge));
+  /* Rounded themes: the bar runs along the straight part of the side. */
+  top: calc(var(--bubble-radius) / 2 - var(--bubble-edge));
+  bottom: calc(var(--bubble-radius) / 2 - var(--bubble-edge));
+  width: 4px; border-radius: calc(var(--bubble-radius) / 3);
+  background: color-mix(in srgb, var(--fold-edge) 32%, transparent);
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+  transition: width .12s, background-color .12s;
+}
+/* A target a little wider than the bar. */
+.bubble-edge::after { content: ''; position: absolute; top: 0; bottom: 0; left: 0; right: -5px; }
+.bubble.intermediate > .bubble-edge { left: 0; top: 0; bottom: 0; }
+.bubble.role-external > .bubble-edge, .bubble.role-peer_status > .bubble-edge,
+.bubble.peer-reply > .bubble-edge { left: -3px; top: 0; bottom: 0; }
+.bubble.tool-use.running > .bubble-edge, .bubble.tool-use.interrupted > .bubble-edge { left: -2px; }
+@media (hover: hover) {
+  .bubble:hover > .bubble-edge, .codex-plan-card:hover > .bubble-edge { background-color: color-mix(in srgb, var(--fold-edge) 60%, transparent); }
+  .bubble > .bubble-edge:hover, .codex-plan-card > .bubble-edge:hover { width: 9px; background-color: var(--fold-edge); }
+  .bubble.is-folded:hover, .codex-plan-card.is-folded:hover { background-color: color-mix(in srgb, var(--fold-edge) 9%, transparent); }
+}
+@media (pointer: coarse) {
+  .bubble-edge { width: 6px; }
+  .bubble-edge::after { right: -10px; }
+}
+.app-chat .bubble.is-folded, .app-chat .codex-plan-card.is-folded { padding-top: 3px; padding-bottom: 3px; cursor: pointer; }
+.app-chat .bubble.is-folded > .bubble-h, .app-chat .codex-plan-card.is-folded > header { margin-bottom: 0; flex-wrap: nowrap; min-width: 0; }
+.bubble.is-folded > :not(.bubble-h, .bubble-edge),
+.codex-plan-card.is-folded > :not(header, .bubble-edge),
+.bubble.is-folded .model-chip { display: none; }
+.bubble-fold-text {
+  flex: 1 1 0; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--body); font-size: 12.5px; font-style: normal; letter-spacing: normal; text-transform: none;
+  color: var(--text); opacity: 0.82;
+}
+.bubble-fold-size {
+  flex: none; white-space: nowrap;
+  font-family: var(--mono); font-size: 10px; color: var(--text-muted); opacity: 0.75;
+}
 /* Per-code-block copy (cf. app/Message.tsx § CodeBlock/DetailPre): markdown
    fenced blocks and the tool cards' JSON/output panes. The button is a child
    of the WRAPPER, not of the <pre> — the <pre> scrolls (x on markdown blocks,
@@ -2863,7 +2922,7 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
   font-size: 13px;
 }
 .codex-plan-card header { display: flex; align-items: center; gap: 8px; }
-.codex-plan-card header > span:last-child { color: var(--lavender); font-size: 11px; }
+.codex-plan-card header > .plan-live { color: var(--lavender); font-size: 11px; }
 .codex-plan-card p { margin: 8px 0; color: var(--text-muted); }
 .codex-plan-card ol { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 5px; }
 .codex-plan-card li { display: flex; gap: 8px; line-height: 1.35; }

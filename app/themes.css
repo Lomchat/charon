@@ -106,7 +106,7 @@
   --bubble-tint:     1;
   --bubble-measure:  none;
   --bubble-align:    stretch;
-  --bubble-radius:   0;
+  --bubble-radius:   0px; /* a LENGTH: the fold edge does calc() with it */
 
   /* Geometry — the second thing a theme gets to decide, after colour. Corner
      rounding said more about "which design is this" than any single hue, and
@@ -195,7 +195,7 @@
   --bubble-tint:     1;
   --bubble-measure:  none;
   --bubble-align:    stretch;
-  --bubble-radius:   0;
+  --bubble-radius:   0px; /* a LENGTH: the fold edge does calc() with it */
 
   --radius-sm:       3px;
   --radius-md:       6px;
@@ -282,7 +282,7 @@
   --bubble-tint:     0;
   --bubble-measure:  none;
   --bubble-align:    stretch;
-  --bubble-radius:   0;
+  --bubble-radius:   0px; /* a LENGTH: the fold edge does calc() with it */
 
   --radius-sm:       3px;
   --radius-md:       6px;

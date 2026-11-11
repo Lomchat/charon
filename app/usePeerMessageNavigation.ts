@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { Msg } from './sessionTypes';
+import { unfoldBubbleAt } from './bubbleFold';
 
 export function findPeerMessage(root: HTMLElement, messageId: string): HTMLElement | null {
   return Array.from(root.querySelectorAll<HTMLElement>('[data-peer-message-id]'))
@@ -79,11 +80,19 @@ export function usePeerMessageNavigation(
       return;
     }
     setPending(null);
-    const start = container.scrollTop;
-    const delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top - 16;
+    // A folded target opens first; it re-renders before the first frame, where
+    // the scroll is measured.
+    unfoldBubbleAt(target);
+    let start = 0;
+    let delta = 0;
+    let began = -1;
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const began = performance.now();
     const step = (now: number) => {
+      if (began < 0) {
+        began = now;
+        start = container.scrollTop;
+        delta = target.getBoundingClientRect().top - container.getBoundingClientRect().top - 16;
+      }
       const progress = reduced ? 1 : Math.min(1, (now - began) / 350);
       container.scrollTop = start + delta * (1 - (1 - progress) ** 3);
       if (progress < 1) {

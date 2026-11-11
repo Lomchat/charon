@@ -24,6 +24,7 @@ import { openTab as openWorkspaceTab } from './tabStore';
 import { revealLine, revealView } from './revealLine';
 import { peerRequestTarget } from './peerMessageLinks';
 import { splitQuotedLines } from './chatQuote';
+import { FoldEdge, FoldLine, foldRootProps, foldText, useBubbleFold } from './bubbleFold';
 
 // Shared desktop/mobile type defined in `./sessionTypes`. Re-exported here
 // to preserve historical imports (`import { Msg } from './Message'`).
@@ -121,7 +122,12 @@ function finishClick(cue: Props['finishCue'], read: (() => void) | undefined) {
   };
 }
 
+// The roles drawn by Message's own bubble below (the others have their own component).
+const TEXT_BUBBLE_ROLES = new Set(['user', 'assistant', 'external', 'peer_status']);
+
 function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'claude', onReauth, onContinue, substitutedFor, onScheduleResume, onCancelScheduledResume, onContinueWithAccount, currentAccount, orphaned = false, peerSessionId, onOpenPeerSession, onPeerRequestHover, onPeerRequestJump, peerReplyTo, finishCue, onFinishRead }: Props) {
+  const foldKey = TEXT_BUBBLE_ROLES.has(m.role) && !streaming ? m.id : null;
+  const isFolded = useBubbleFold(foldKey);
   if (m.role === 'tool_use') return <ToolUseCard m={m} attachedResult={attachedResult} orphaned={orphaned} />;
   if (m.role === 'tool_result') return <ToolResultCard m={m} />;
   if (m.role === 'event' || m.role === 'edit_snapshot') return null;
@@ -166,11 +172,13 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
     : m.peerStatus === 'failed' ? 'failed' : null;
   return (
     <div
-      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}`}
+      className={`bubble role-${m.role}${isPeerReply ? ' peer-reply' : ''}${isAssistant && (m.assistantFinal === 0 || streaming) ? ' intermediate' : ''}${streaming ? ' streaming' : ''}${finishCueClass(finishCue)}${isFolded ? ' is-folded' : ''}`}
       data-msg-role={m.role}
       data-peer-message-id={m.messageId ?? (isExternal ? m.id : undefined)}
       onClick={finishClick(finishCue, onFinishRead)}
+      {...foldRootProps(foldKey)}
     >
+      {foldKey && <FoldEdge isFolded={isFolded} />}
       <header className="bubble-h">
         {isExternal ? (
           <PeerSessionLink
@@ -218,6 +226,7 @@ function Message({ m, vpsId, cwd, streaming = false, attachedResult, kind = 'cla
             {m.model}
           </span>
         )}
+        {foldKey && isFolded && <FoldLine foldKey={foldKey} text={foldText(m.content)} />}
         {m.createdAt > 0 && (
           <span className="bubble-h-meta">
             <MessageTime ts={m.createdAt} />
@@ -386,13 +395,16 @@ function SessionErrorMessage({ m, error, onReauth, onContinue, onScheduleResume,
     : error.kind === 'rate_limit' ? 'rate limit'
     : error.kind === 'transport' ? 'connection' : 'API';
   const resetAt = error.kind === 'rate_limit' ? resolveResetAtMs(error.resetAt, error.message) : null;
+  const isFolded = useBubbleFold(m.id);
   return (
-    <div className={`bubble role-error${finishCueClass(finishCue)}`} data-msg-role="error"
-      onClick={finishClick(finishCue, onFinishRead)}>
+    <div className={`bubble role-error${finishCueClass(finishCue)}${isFolded ? ' is-folded' : ''}`} data-msg-role="error"
+      onClick={finishClick(finishCue, onFinishRead)} {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h">
         <span className="tag">error</span>
         <AgentLogo kind={error.provider} size={12} className="bubble-agent-logo" />
         <span className="error-kind">{kindLabel}</span>
+        {isFolded && <FoldLine foldKey={m.id} text={firstLine} />}
         {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       <div className="content error-message">{firstLine}</div>
@@ -520,14 +532,18 @@ function ScheduledResumeMessage({ m, scheduled, onCancel }: {
   onCancel?: (scheduleId: string) => Promise<void>;
 }) {
   const [cancelling, setCancelling] = useState(false);
+  const isFolded = useBubbleFold(m.id);
   const label = scheduled.status === 'sent' ? 'automatic resume sent'
     : scheduled.status === 'sending' ? 'sending automatic resume…'
     : scheduled.status === 'cancelled' ? 'automatic resume cancelled'
     : scheduled.attempts ? 'automatic resume retry scheduled' : 'automatic resume scheduled';
   return (
-    <div className="bubble role-scheduled-resume" data-msg-role="scheduled_resume">
+    <div className={`bubble role-scheduled-resume${isFolded ? ' is-folded' : ''}`} data-msg-role="scheduled_resume"
+      {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h">
         <span className="tag">scheduled</span>
+        {isFolded && <FoldLine foldKey={m.id} text={`${label} — “${scheduled.content}”`} />}
         {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       <div className="content">
@@ -609,6 +625,7 @@ function CompactionMarker({ m, kind }: { m: Msg; kind: AgentKind }) {
 /** The turn a scheduled task's prompt started (lib/scheduledTasks.ts): in the
  *  user's place, since the CLI spoke for them, with the prompt folded. */
 function ScheduledFireBubble({ m }: { m: Msg }) {
+  const isFolded = useBubbleFold(m.id);
   const fire = parseScheduledFire(m.content);
   if (!fire) return null;
   const title = scheduledTaskTitle({ prompt: fire.prompt, id: fire.taskId ?? '' });
@@ -616,12 +633,15 @@ function ScheduledFireBubble({ m }: { m: Msg }) {
   const when = fire.schedule ? describeSchedule(fire.schedule, fire.recurring ?? true)
     : fire.source === 'loop_wakeup' ? 'loop wake-up' : null;
   return (
-    <div className="bubble role-scheduled_fire" data-msg-role="scheduled_fire">
+    <div className={`bubble role-scheduled_fire${isFolded ? ' is-folded' : ''}`} data-msg-role="scheduled_fire"
+      {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h">
         <span className="sf-ico" aria-hidden><IconAlarm /></span>
         <span className="tag">scheduled task</span>
         {when && <span className="sf-when">{when}</span>}
         {fire.taskId && <span className="sf-id">{fire.taskId}</span>}
+        {isFolded && <FoldLine foldKey={m.id} text={title} />}
         {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       <div className="sf-title">{title}</div>
@@ -636,12 +656,21 @@ function ScheduledFireBubble({ m }: { m: Msg }) {
 }
 
 function PlanCard({ m }: { m: Msg }) {
+  const isFolded = useBubbleFold(m.id);
   let plan: any = {};
   try { plan = JSON.parse(m.content); } catch {}
   const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  const foldedText = plan.explanation ? String(plan.explanation)
+    : steps.map((s: any) => String(s.step ?? '')).join(' · ') || String(plan.text ?? '');
   return (
-    <div className="codex-plan-card">
-      <header><span className="tag">plan</span>{plan.partial && <span>live</span>}</header>
+    <div className={`codex-plan-card${isFolded ? ' is-folded' : ''}`} {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
+      <header>
+        <span className="tag">plan</span>
+        {isFolded && <FoldLine foldKey={m.id} text={foldText(foldedText)}
+          size={steps.length ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : undefined} />}
+        {plan.partial && <span className="plan-live">live</span>}
+      </header>
       {plan.explanation && <p>{String(plan.explanation)}</p>}
       {steps.length > 0 ? (
         <ol>{steps.map((s: any, i: number) => {
@@ -672,13 +701,16 @@ function ForkMarker({ m }: { m: Msg }) {
 
 function ThinkingBubble({ m }: { m: Msg }) {
   const [open, setOpen] = useState(false);
+  const isFolded = useBubbleFold(m.id);
   const first = m.content.split('\n')[0].slice(0, 110);
   const hasMore = m.content.length > first.length;
   return (
-    <div className="bubble thinking">
+    <div className={`bubble thinking${isFolded ? ' is-folded' : ''}`} {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h" onClick={() => setOpen((v) => !v)} style={{ cursor: hasMore ? 'pointer' : 'default' }}>
         {hasMore && <span className="caret">{open ? '▾' : '▸'}</span>}
         <span className="tag">thinking</span>
+        {isFolded && <FoldLine foldKey={m.id} text={first} />}
         {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       {!open ? (
@@ -693,6 +725,7 @@ function ThinkingBubble({ m }: { m: Msg }) {
 function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attachedResult?: Msg; orphaned?: boolean }) {
   const [openInput, setOpenInput] = useState(false);
   const [openResult, setOpenResult] = useState(false);
+  const isFolded = useBubbleFold(m.id);
   let parsed: any = null;
   try { parsed = JSON.parse(m.content); } catch {}
   const name = parsed?.name ?? '?';
@@ -719,7 +752,9 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
   const resultIsLong = resultObj && (resultObj.content.length > 200 || resultObj.content.split('\n').length > 3);
 
   return (
-    <div className={`bubble tool-use ${resultObj ? 'has-result' : orphaned ? 'interrupted' : 'running'}${resultObj?.isError ? ' err' : ''}`}>
+    <div className={`bubble tool-use ${resultObj ? 'has-result' : orphaned ? 'interrupted' : 'running'}${resultObj?.isError ? ' err' : ''}${isFolded ? ' is-folded' : ''}`}
+      {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h" onClick={() => setOpenInput((v) => !v)}>
         <span className="caret">{openInput ? '▾' : '▸'}</span>
         <span className="tu-glyph">⚒</span>
@@ -731,6 +766,9 @@ function ToolUseCard({ m, attachedResult, orphaned = false }: { m: Msg; attached
         {!resultObj && (orphaned
           ? <span className="tu-orphan" title="the session ended before this tool returned — its result can never arrive">⚠ interrupted</span>
           : <span className="tu-running"><span className="dot" /> running</span>)}
+        {isFolded && resultObj && (resultObj.isError
+          ? <span className="r-status err">✗</span> : <span className="r-status ok">✓</span>)}
+        {isFolded && <FoldLine foldKey={m.id} />}
         {m.createdAt > 0 && <MessageTime ts={m.createdAt} />}
       </header>
       {openInput && <DetailPre className="tu-detail" text={JSON.stringify(input, null, 2)} />}
@@ -763,6 +801,7 @@ function ToolResultCard({ m }: { m: Msg }) {
   // Displayed standalone when we couldn't link it to a tool_use
   // (should be rare). Discreet style.
   const [open, setOpen] = useState(false);
+  const isFolded = useBubbleFold(m.id);
   let content = m.content;
   try {
     const parsed = JSON.parse(m.content);
@@ -771,11 +810,13 @@ function ToolResultCard({ m }: { m: Msg }) {
   const preview = content.split('\n').slice(0, 2).join(' ').slice(0, 120);
   const isLong = content.length > 240 || content.split('\n').length > 3;
   return (
-    <div className="bubble tool-result orphan">
+    <div className={`bubble tool-result orphan${isFolded ? ' is-folded' : ''}`} {...foldRootProps(m.id)}>
+      <FoldEdge isFolded={isFolded} />
       <header className="bubble-h" onClick={() => isLong && setOpen((v) => !v)} style={{ cursor: isLong ? 'pointer' : 'default' }}>
         {isLong && <span className="caret">{open ? '▾' : '▸'}</span>}
         <span className="tag">tool_result</span>
         <span className="tr-preview">{preview}{content.length > 120 ? '…' : ''}</span>
+        {isFolded && <FoldLine foldKey={m.id} />}
       </header>
       {(open || !isLong) && (
         <DetailPre
