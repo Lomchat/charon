@@ -1255,7 +1255,9 @@
 .cs-vps-attention-n.waiting { color: var(--attention); }
 .cs-vps-attention-n.error   { color: var(--danger); }
 .cs-vps-attention-n.unread  { color: var(--success); }
-.cs-card-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, transparent); }
+/* The user's colour marker: a wide band, the text stepping aside for it. */
+.cs-card-stripe { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--c, transparent); }
+.cs-card.colored { padding-left: 17px; }
 
 /* Sessions and SSH shells are grouped by cwd. This is intentionally open
    typography + spacing, not another box around already-boxed cards. The short

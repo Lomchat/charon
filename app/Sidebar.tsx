@@ -1806,7 +1806,7 @@ const SessionRow = memo(function SessionRow({
       data-tab-id={s.id}
       /* Beside the column, never over the next cards (app/HoverTip.tsx). */
       data-tip-side="right"
-      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${errorUnread ? ' error-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}${depth > 0 ? ' is-sub' : ''}`}
+      className={`cs-card${selected ? ' selected' : ''}${multiSelected ? ' multi-selected' : ''}${deleting ? ' deleting' : ''}${needsAttention ? ' attention' : ''}${unread ? ' finished-unread' : ''}${errorUnread ? ' error-unread' : ''}${baseStatus === 'sleeping' ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}${depth > 0 ? ' is-sub' : ''}${colorToken ? ' colored' : ''}`}
       disabled={deleting}
       aria-busy={deleting || undefined}
       aria-pressed={multiSelected}
@@ -1924,7 +1924,7 @@ const ShellRow = memo(function ShellRow({ sh, selected, showDetails, onSelect, o
       type="button"
       data-tab-id={sh.id}
       data-tip-side="right"
-      className={`cs-card shell${selected ? ' selected' : ''}${unread ? ' finished-unread' : ''}${sh.exited ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}`}
+      className={`cs-card shell${selected ? ' selected' : ''}${unread ? ' finished-unread' : ''}${sh.exited ? ' is-sleeping' : ''}${showDetails ? '' : ' compact'}${sh.color ? ' colored' : ''}`}
       onClick={() => { if (lp.consume()) return; onSelect(sh.id); }}
       onDoubleClick={() => onSelect(sh.id, true)}
       onContextMenu={(e) => { if (!onContext) return; e.preventDefault(); onContext(sh, e.clientX, e.clientY); }}
