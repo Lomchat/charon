@@ -10,6 +10,7 @@ import { currentRev, flushSummaries } from '@/lib/server/sync/syncBus';
 import { checkSessionPath } from '@/lib/server/hub/sessionPath';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { latestVersionsByKey } from '@/lib/server/hub/sdkSync';
+import { autoUpdatingVpsIds } from '@/lib/server/hub/sdkWatch';
 import type {
   AgentKind, ClaudeSessionConfig, SessionListItem, CodexSessionConfig, CursorSessionConfig,
   CursorSettingSource, ProviderSessionConfig,
@@ -95,6 +96,7 @@ export async function GET(req: Request) {
         // fourth's staleness axis compared against `null`, i.e. was never
         // stale and never lit its update chip (§14.102).
         ...latestVersionsByKey(),
+        autoUpdatingVpsIds: autoUpdatingVpsIds(),
       },
       sync,
     });

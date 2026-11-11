@@ -30,7 +30,8 @@ import { isVpsMigrating, vpsHotUpdate } from './sessionRuntimes';
  * VPS back). Notify once per new SDK / codex / agent version (Telegram +
  * push), then run the unified update flow (pyz +
  * pip -U claude-agent-sdk + pip -U openai-codex + restart + resume,
- * agentUpdate.ts) on each outdated VPS that is IDLE, in SERIES. One flow fixes
+ * agentUpdate.ts) on each outdated VPS that passes its gate, UPDATE_PARALLEL at
+ * a time, never two on one host. One flow fixes
  * all axes. Gates are independent: `sdk.auto_update` (default ON) covers the
  * SDK + pyz axes; `codex.auto_update` (default ON) covers the codex axis.
  *
@@ -68,6 +69,11 @@ const AGENT_LAST_NOTIFIED_KEY: SettingKey = 'agent.last_notified_agent_version';
 // set by how fast a new release should reach the fleet, not by their cost.
 const TICK_MS = 15 * 60 * 1000;
 const FIRST_RUN_DELAY_MS = 2 * 60 * 1000; // ~2min after boot (let agents hello first)
+// Flows in flight at once. Each is mostly waiting on its own SSH (own
+// ControlPath) and a remote pip; a hot agent (§14.117) restarts under its
+// sessions, a cold one passed the quiet gate — so nothing a VPS runs depends
+// on its neighbours' order. One box is still one lane (its venv, its daemon).
+const UPDATE_PARALLEL = 4;
 
 /** ms until the next wall-clock slot. Epoch ms is aligned to the hour and
  *  TICK_MS divides an hour, so flooring the epoch IS the slot boundary — no
@@ -86,6 +92,8 @@ type SdkWatchState = {
   // `${vpsId}@${version}` → ts of the auto-update ATTEMPT (busy skips are
   // NOT recorded — they must be retried on the next tick).
   attempted: Map<string, number>;
+  // vpsIds whose flow this tick is running right now.
+  inFlight: Set<string>;
   // vpsId → the target it is known to be failing on. A transient failure is
   // retried every tick (see the regex at the bottom of tick()); without this
   // ledger each retry re-sent the same "✗ ElevenDuel: restart failed" line.
@@ -122,7 +130,7 @@ export function armSdkAutoUpdate(): void {
   if (process.env.NEXT_PHASE === 'phase-production-build') return;
   if (g._sdkWatch) return; // already armed (seed is called from several paths)
   const state: SdkWatchState = {
-    timer: null, firstRun: null, ticking: false, attempted: new Map(), failing: new Map(),
+    timer: null, firstRun: null, ticking: false, attempted: new Map(), inFlight: new Set(), failing: new Map(),
   };
   g._sdkWatch = state;
   state.firstRun = setTimeout(() => { void tick(); }, FIRST_RUN_DELAY_MS);
@@ -248,6 +256,101 @@ export function isVpsBusy(vpsId: string): boolean {
   return busy;
 }
 
+/** The staleness axes against these baselines, gates read now. */
+function buildAxes(latestByKey: Record<string, string | null>, builtVersion: string | null): Axis[] {
+  // Independent auto-update gates: `sdk.auto_update` covers the SDK + pyz
+  // axes; `codex.auto_update` (default ON) covers both codex axes. Either
+  // being on is enough to run the (unified) flow for its axis.
+  const autoSdk = getSettingBool('sdk.auto_update');
+  // One axis per DECLARED release line (§14.102), plus the agent's own.
+  // Derived, never re-listed: a backend that declares a package is enrolled
+  // in the fleet update here and in the health chip at once, and one that
+  // forgets to declare it would silently never update — the whole reason
+  // these four used to be four parallel ternaries in six places.
+  const providerAxes: Axis[] = SESSION_PROVIDERS.flatMap((p) => {
+    // Two gates, both required. The per-provider auto-update switch says
+    // "keep this fresh"; the backend switch says "this hub offers it at all".
+    // A backend turned OFF is not installed by the update flow either
+    // (bootstrap § install_cursor), so enrolling a VPS for its axis would
+    // sleep and resume every session to change nothing, every tick.
+    const auto = isBackendEnabled(p)
+      && getSettingBool(PROVIDERS[p].settings.autoUpdateKey as SettingKey);
+    return PROVIDERS[p].backend.versions.map((line): Axis => {
+      const lineLatest = latestByKey[line.latestKey] ?? null;
+      // A VPS that does not REPORT this line is never enrolled for it: NULL
+      // means "no such package here / agent too old to say", not "behind".
+      const installed = (v: Vps) => {
+        const raw = (v as unknown as Record<string, unknown>)[line.column];
+        return typeof raw === 'string' && raw ? raw : null;
+      };
+      return {
+        key: line.latestKey, label: line.packageLabel, short: line.short, prefix: '',
+        latest: lineLatest, auto, notifiedKey: line.notifiedKey as SettingKey,
+        independentInstall: line.independentInstall,
+        installed,
+        outdated: (v) => {
+          const have = installed(v);
+          return !!lineLatest && !!have && isVersionOutdated(have, lineLatest);
+        },
+        // The post-update version comes back under the SAME field name as
+        // the column (pinned by tests/providerRegistry).
+        after: (r) => (r as unknown as Record<string, string | undefined>)[line.column],
+      };
+    });
+  });
+  return [
+    ...providerAxes,
+    {
+      key: 'agent', label: 'charon-agent', short: 'agent', prefix: 'v',
+      latest: builtVersion, auto: autoSdk, notifiedKey: AGENT_LAST_NOTIFIED_KEY,
+      // The pyz carries every backend's adapter, so it is never "independent".
+      independentInstall: false,
+      installed: (v) => v.agentVersion,
+      outdated: (v) => isAgentOutdated(v.agentVersion, builtVersion),
+      // ok:true means the pyz was deployed, restarted and pinged — the
+      // version it now runs is the one we shipped.
+      after: (r) => r.newVersion ?? builtVersion,
+    },
+  ];
+}
+
+/** What the tick would roll onto `v` now. Spans ALL axes, so a new version on
+ *  ANY of them re-enables a VPS this process already attempted — built from
+ *  `axes`, never from named latests: a line missing here would make a fresh
+ *  release fail to re-arm it, which looks exactly like "auto-update stopped". */
+function targetKey(v: Vps, axes: Axis[]): string {
+  return `${v.id}@${axes.map((a) => `${a.key}=${a.latest ?? '-'}`).join('/')}`;
+}
+
+/** An axis whose gate is ON has this VPS behind ⇒ the tick runs its flow. */
+function autoUpdates(v: Vps, axes: Axis[]): boolean {
+  return axes.some((a) => a.auto && a.outdated(v));
+}
+
+/**
+ * The VPSes the next tick brings current ON ITS OWN, space-separated — the
+ * sidebar shows no update bar for them. Out: a VPS behind only on an axis
+ * whose gate is OFF, one whose flow failed on this target, one already tried on
+ * this target and still behind (no retry before a new target), and every VPS
+ * when the watch is not armed. A busy VPS stays in: it is retried each tick.
+ */
+export function autoUpdatingVpsIds(): string {
+  const state = g._sdkWatch;
+  if (!state) return '';
+  const axes = buildAxes(latestVersionsByKey(), getBuiltAgentVersion());
+  return db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all()
+    .filter((v) => {
+      if (!autoUpdates(v, axes)) return false;
+      if (state.inFlight.has(v.id)) return true;
+      // A failure on an OLDER target says nothing about the next attempt.
+      const key = targetKey(v, axes);
+      return state.failing.get(v.id) !== key && !state.attempted.has(key);
+    })
+    .map((v) => v.id)
+    .sort()
+    .join(' ');
+}
+
 async function tick(): Promise<void> {
   const state = g._sdkWatch;
   if (!state || state.ticking) return; // a slow batch (serial pip installs) must not overlap
@@ -286,60 +389,7 @@ async function tick(): Promise<void> {
     const anyLatest = Object.values(latestByKey).some((x) => !!x);
     if (!anyLatest && !builtVersion) return;
     const fleet: Vps[] = db.select().from(vpsTable).where(eq(vpsTable.agentStatus, 'ok')).all();
-    // Independent auto-update gates: `sdk.auto_update` covers the SDK + pyz
-    // axes; `codex.auto_update` (default ON) covers both codex axes. Either
-    // being on is enough to run the (unified) flow for its axis.
-    const autoSdk = getSettingBool('sdk.auto_update');
-    // One axis per DECLARED release line (§14.102), plus the agent's own.
-    // Derived, never re-listed: a backend that declares a package is enrolled
-    // in the fleet update here and in the health chip at once, and one that
-    // forgets to declare it would silently never update — the whole reason
-    // these four used to be four parallel ternaries in six places.
-    const providerAxes: Axis[] = SESSION_PROVIDERS.flatMap((p) => {
-      // Two gates, both required. The per-provider auto-update switch says
-      // "keep this fresh"; the backend switch says "this hub offers it at all".
-      // A backend turned OFF is not installed by the update flow either
-      // (bootstrap § install_cursor), so enrolling a VPS for its axis would
-      // sleep and resume every session to change nothing, every tick.
-      const auto = isBackendEnabled(p)
-        && getSettingBool(PROVIDERS[p].settings.autoUpdateKey as SettingKey);
-      return PROVIDERS[p].backend.versions.map((line): Axis => {
-        const lineLatest = latestByKey[line.latestKey] ?? null;
-        // A VPS that does not REPORT this line is never enrolled for it: NULL
-        // means "no such package here / agent too old to say", not "behind".
-        const installed = (v: Vps) => {
-          const raw = (v as unknown as Record<string, unknown>)[line.column];
-          return typeof raw === 'string' && raw ? raw : null;
-        };
-        return {
-          key: line.latestKey, label: line.packageLabel, short: line.short, prefix: '',
-          latest: lineLatest, auto, notifiedKey: line.notifiedKey as SettingKey,
-          independentInstall: line.independentInstall,
-          installed,
-          outdated: (v) => {
-            const have = installed(v);
-            return !!lineLatest && !!have && isVersionOutdated(have, lineLatest);
-          },
-          // The post-update version comes back under the SAME field name as
-          // the column (pinned by tests/providerRegistry).
-          after: (r) => (r as unknown as Record<string, string | undefined>)[line.column],
-        };
-      });
-    });
-    const axes: Axis[] = [
-      ...providerAxes,
-      {
-        key: 'agent', label: 'charon-agent', short: 'agent', prefix: 'v',
-        latest: builtVersion, auto: autoSdk, notifiedKey: AGENT_LAST_NOTIFIED_KEY,
-        // The pyz carries every backend's adapter, so it is never "independent".
-        independentInstall: false,
-        installed: (v) => v.agentVersion,
-        outdated: (v) => isAgentOutdated(v.agentVersion, builtVersion),
-        // ok:true means the pyz was deployed, restarted and pinged — the
-        // version it now runs is the one we shipped.
-        after: (r) => r.newVersion ?? builtVersion,
-      },
-    ];
+    const axes = buildAxes(latestByKey, builtVersion);
     // Every version in a MESSAGE goes through displayVersion (a trailing `.0`
     // is noise); comparisons and dedup keys keep the raw string.
     const shown = (v: string | null | undefined, prefix = '') => (v ? `${prefix}${displayVersion(v)}` : '?');
@@ -396,50 +446,50 @@ async function tick(): Promise<void> {
     // No gate on ANY axis → notify-only, no auto-update. Read off the axes
     // themselves so a new backend's gate counts without an edit here.
     if (!axes.some((a) => a.auto)) return;
-    // Per-VPS eligibility: update iff it's stale on an axis whose gate is ON.
-    const shouldAutoUpdate = (v: Vps) => axes.some((a) => a.auto && a.outdated(v));
     // What this tick is actually rolling out — the summary's head.
     const rolling = axes.filter((a) => a.auto && a.latest && outdated.some(a.outdated));
 
-    // --- Serial auto-update of the idle ones ---
+    // --- Auto-update of the ones whose gate passes, UPDATE_PARALLEL at a time ---
     const updated: UpdatedEntry[] = [];
     const skippedBusy: string[] = [];
     const failed: FailedEntry[] = [];
-    for (const v of outdated) {
+    const updateOne = async (v: Vps): Promise<void> => {
       // A VPS can be in `outdated` for an axis whose auto-update gate is OFF
       // (e.g. only codex-outdated while codex.auto_update is off). Notify but
       // don't touch it — the badge/manual button remain.
-      if (!shouldAutoUpdate(v)) {
+      if (!autoUpdates(v, axes)) {
         console.log(`[sdkWatch] ${v.name}: outdated axis has auto-update OFF — skipped (badge/button remain)`);
-        continue;
+        return;
       }
-      // Key spans ALL axes so a new version on ANY of them re-enables a
-      // previously-attempted VPS (in-memory; a restart also does). Built from
-      // `axes` rather than from named latests: a line missing here would make
-      // a fresh release fail to re-arm a VPS this process already tried, which
-      // looks exactly like "the auto-update stopped working".
-      const key = `${v.id}@${axes.map((a) => `${a.key}=${a.latest ?? '-'}`).join('/')}`;
+      // In-memory; a restart also re-enables.
+      const key = targetKey(v, axes);
       if (state.attempted.has(key)) {
         // Already attempted this exact target in this process (success or
         // failure) — no hammering; a NEW sdk/codex version or pyz build or a
         // Charon restart re-enables. Logged so the tick output accounts for
         // every outdated VPS (a silent skip reads as a bug in the journal).
         console.log(`[sdkWatch] ${v.name}: this target already attempted this process — skipped (badge/button remain)`);
-        continue;
+        return;
       }
       // An agent whose sessions live in runtime processes (§14.117) restarts
       // under running turns without touching them: only a session still
       // booting (or being moved) can be caught by the update. The others get
-      // the full quiet gate.
+      // the full quiet gate. Read when its lane reaches it, not at tick start.
       const hot = vpsHotUpdate(v.id) === true;
       if (hot ? isVpsStartingOrMoving(v.id) : isVpsBusy(v.id)) {
         console.log(`[sdkWatch] ${v.name}: busy, skipped (retry next tick)`);
         skippedBusy.push(v.name);
-        continue;
+        return;
       }
       state.attempted.set(key, Date.now());
       console.log(`[sdkWatch] ${v.name}: ${hot ? 'hot' : 'idle'}, auto-updating (${reason(v)})`);
-      const res = await runAgentUpdateFlow(v);
+      state.inFlight.add(v.id);
+      let res: AgentUpdateFlowResult;
+      try {
+        res = await runAgentUpdateFlow(v);
+      } finally {
+        state.inFlight.delete(v.id);
+      }
       if (res.ok) {
         // ok = pyz deployed + restart + ping OK. sdkVersion/newPyzSha reflect
         // the post-update venv/binary (pip -U is non-fatal, so sdkVersion may
@@ -467,7 +517,7 @@ async function tick(): Promise<void> {
           failed.push({ name: v.name, detail, repeated: !recordFailure(state.failing, v.id, key) });
           state.attempted.delete(key);
           console.warn(`[sdkWatch] ${v.name}: partial auto-update — ${detail}; will retry next tick`);
-          continue;
+          return;
         }
         clearFailure(state.failing, v.id);
         updated.push({
@@ -499,7 +549,27 @@ async function tick(): Promise<void> {
           console.log(`[sdkWatch] ${v.name}: failure looks transient (network) — will retry next tick`);
         }
       }
+    };
+    // One LANE per host, run in series: never two flows on one box. The lanes
+    // share UPDATE_PARALLEL workers; one VPS that throws ends only itself.
+    const lanes = new Map<string, Vps[]>();
+    for (const v of outdated) {
+      const host = `${v.ip}:${v.sshPort}`;
+      lanes.set(host, [...(lanes.get(host) ?? []), v]);
     }
+    const queue = [...lanes.values()];
+    await Promise.all(Array.from({ length: Math.min(UPDATE_PARALLEL, queue.length) }, async () => {
+      for (let lane = queue.shift(); lane; lane = queue.shift()) {
+        for (const v of lane) {
+          await updateOne(v).catch((e) => console.error(`[sdkWatch] ${v.name}: update threw`, e));
+        }
+      }
+    }));
+    // Completion order is noise in a summary: read it by name.
+    const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+    updated.sort(byName);
+    failed.sort(byName);
+    skippedBusy.sort((a, b) => a.localeCompare(b));
 
     // Batch summary — only when there is NEWS: something updated, or a failure
     // not already reported for this exact target. A busy-only tick, or one

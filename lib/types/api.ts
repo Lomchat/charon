@@ -1201,6 +1201,10 @@ export type VpsStalenessBaselines = {
   builtPyzSha?: string | null;
   /** `__version__` of the pyz this hub ships — THE staleness baseline (§14.6). */
   builtAgentVersion?: string | null;
+  /** Space-separated ids of the VPSes the hub's tick updates on its own
+   *  (`sdkWatch § autoUpdatingVpsIds`): no update bar for them. A string, so
+   *  the bag stays comparable key-wise; absent (older hub) = none. */
+  autoUpdatingVpsIds?: string | null;
 } & Partial<Record<string, string | null>>;
 
 export type AgentSessionsListResponse = {

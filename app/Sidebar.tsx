@@ -1040,6 +1040,10 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   // the update button repairs all three in a single flow (redeploy pyz +
   // pip install -U claude-agent-sdk + openai-codex).
   const outdated = agentOutOfDate || versionLines.some((l) => l.outdated);
+  // The hub's tick brings this one current on its own: no bar, no button —
+  // the amber marks stay, and the data modal keeps the manual update.
+  const autoUpdating = outdated
+    && (staleness?.autoUpdatingVpsIds ?? '').split(' ').includes(v.id);
   const versionTip = versionLines
     .filter((l) => l.value)
     .map((l) => ` — ${l.provider} ${l.chipLabel} ${l.value}${l.outdated && l.latest ? ` → ${l.latest}` : ''}`)
@@ -1056,7 +1060,8 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
   const agentAhead = agentReady && agentBuildRelation(agentVersion, builtAgentVersion) === 'ahead';
   const agentTip = `${agentMeta.label}${errTip}${agentVersion ? ` (v${agentVersion})` : ''}${versionTip}`
     + (agentOutOfDate ? ` — agent update available (v${agentVersion} → v${builtAgentVersion})` : '')
-    + (agentAhead ? ` — newer than this hub's build (v${builtAgentVersion}), left alone` : '');
+    + (agentAhead ? ` — newer than this hub's build (v${builtAgentVersion}), left alone` : '')
+    + (autoUpdating ? ' — updating automatically' : '');
   const noAgentReason = agentStatus === 'missing'
     ? 'install the agent first'
     : agentStatus === 'error'
@@ -1197,7 +1202,7 @@ function renderVpsBox(v: Vps, opts: VpsRenderOpts) {
                 <button className="cs-agent-btn" disabled={agentRefreshing} onClick={() => onInstallAgent(v)}>reinstall</button>
               )}
             </div>
-          ) : outdated ? (
+          ) : outdated && (!autoUpdating || agentUpdating) ? (
             <div className="cs-agent-bar update">
               <span className="cs-agent-meta">
                 {/* Derived from the stale release lines (§14.102). ONE stale

@@ -9,6 +9,7 @@ import HubPanel from './HubPanel';
 import { listTabs } from '@/lib/server/hub/tabs';
 import { getBuiltPyzSha, getBuiltAgentVersion } from '@/lib/server/agent/builtPyzSha';
 import { latestVersionsByKey, refreshAllLatestsIfStale } from '@/lib/server/hub/sdkSync';
+import { autoUpdatingVpsIds } from '@/lib/server/hub/sdkWatch';
 import { ssrSummaries } from '@/lib/server/sync/ssrSummaries';
 import { PANEL_LAYOUT_COOKIE, parsePanelLayout } from './panelLayout';
 import { parseTabFocus, projectTabFocus, TAB_FOCUS_COOKIE } from './tabFocusCookie';
@@ -40,7 +41,7 @@ export default async function CharonPage() {
   // out-of-date badges and health chips. Kick a background refresh when stale
   // (12h TTL, fire-and-forget). Derived from the registry, so a new backend's
   // package is served to the browser the day it is declared (§14.102).
-  const staleness = latestVersionsByKey();
+  const staleness = { ...latestVersionsByKey(), autoUpdatingVpsIds: autoUpdatingVpsIds() };
   refreshAllLatestsIfStale();
   const jar = await cookies();
   // This browser's focused tab, not the shared layout's legacy `active`: the
