@@ -180,7 +180,11 @@ _PEER_RATE_WINDOW_S = 60.0
 _PEER_RATE_MAX = 20
 _PEER_LEDGER_MAX = 200
 _PEER_REPLY_TIMEOUT_S = 10 * 60
+# Idle: a peer turn of its own starts now.
 _PEER_RECEIVE_STATUSES = frozenset({"active", "failed"})
+# A busy target takes a peer message at once, like a human one (§14.93):
+# the provider folds it into the running turn or runs it next.
+_PEER_ACCEPT_STATUSES = _PEER_RECEIVE_STATUSES | {"starting", "thinking"}
 _PEER_FINAL_STATUSES = frozenset({"replied", "failed"})
 # Sub-sessions (peer_spawn). Mirrored by the hub (sessionOps.ts).
 MAX_SUBSESSION_DEPTH = 3
@@ -486,18 +490,30 @@ class Server:
         if payload.get("session_id") != row.get("target_session_id"):
             return
         event = payload.get("event")
+        if event == "peer_dropped":
+            if not row.get("_completing"):
+                row["_completing"] = True
+                row["_turn_error"] = str(payload.get("msg") or "peer message dropped")[:2000]
+                asyncio.create_task(
+                    self._complete_peer_request(message_id, failed=True),
+                    name=f"peer-complete-{message_id[:8]}",
+                )
+            return
         if event == "status" and payload.get("status") in _PEER_RECEIVE_STATUSES \
                 and row.get("status") == "timed_out":
             target_id = row.get("target_session_id")
             if isinstance(target_id, str) and self.peer_target_active.get(target_id) == message_id:
                 self.peer_target_active.pop(target_id, None)
             return
-        if event == "status" and payload.get("status") == "thinking" \
-                and row.get("status") == "accepted":
+        # A request folded into a running turn sees no `thinking` of its own.
+        if row.get("status") == "accepted" and (
+                event in ("assistant_text", "thinking", "tool_use")
+                or (event == "status" and payload.get("status") == "thinking")):
             row["status"] = "processing"
             row["updated_at"] = time.time()
             self._emit_peer_status(row)
             self.schedule_save()
+        if event == "status":
             return
         if event == "assistant_text":
             delta = payload.get("delta")
@@ -655,17 +671,24 @@ class Server:
         # (null for human/source turns) so completion notices do not depend on
         # the external_message arriving before a fast target's stop.
         peer_request_id = payload.pop("_peer_request_id", None)
+        peer_shared = payload.pop("_peer_shared", False) is True
+        peer_pending = payload.pop("_peer_request_pending", None)
         if isinstance(peer_request_id, str) and peer_request_id:
             self._observe_peer_event(peer_request_id, payload)
+        if payload.get("event") == "peer_dropped":
+            return  # ledger-only signal (session.py § _drop_pending_peer)
         sid = payload.get("session_id")
         if not isinstance(sid, str):
             return
-        if not peer_request_id:
+        if not peer_request_id and not peer_pending:
             # Restart recovery: a provider can resume the correlated turn
             # after its Python session object lost the runtime marker. The
-            # persisted one-target reservation makes that stream unambiguous.
+            # persisted one-target reservation makes that stream unambiguous
+            # — except for a request delivered mid-turn, whose target's
+            # untagged events belong to the turn it interrupted.
             resumed_peer_id = self.peer_target_active.get(sid)
-            if resumed_peer_id:
+            resumed_row = self.peer_messages.get(resumed_peer_id) if resumed_peer_id else None
+            if resumed_peer_id and not (resumed_row or {}).get("delivered_mid_turn"):
                 peer_request_id = resumed_peer_id
                 self._observe_peer_event(resumed_peer_id, payload)
         event_name = payload.get("event") if isinstance(payload.get("event"), str) else ""
@@ -676,7 +699,8 @@ class Server:
                 metrics = session._throughput_metrics = TurnThroughput()
             metrics.observe(payload, time.monotonic())
         if event_name == "stop":
-            payload["peer_request_id"] = peer_request_id or None
+            # A shared turn's finish is its opener's (the hub notifies it).
+            payload["peer_request_id"] = None if peer_shared else (peer_request_id or None)
         is_shell = event_name.startswith("shell_")
         # TRANSIENT shell events are broadcast live (+ fanned to watchers) but
         # NEVER logged or ringed, so a replay (full-log after_seq:0 OR the
@@ -1421,9 +1445,9 @@ class Server:
         if target is source:
             raise RpcError(ERR_INVALID_PARAMS, "a session cannot message itself")
         target_status = str(getattr(target, "status", "error"))
-        if target_status not in _PEER_RECEIVE_STATUSES:
+        if target_status not in _PEER_ACCEPT_STATUSES:
             raise RpcError(ERR_SESSION_DEAD,
-                           f"peer @{handle} is busy or unavailable (status={target_status})")
+                           f"peer @{handle} is not running (status={target_status})")
         target_id = str(getattr(target, "session_id", ""))
         inbound_id = self.peer_target_active.get(str(source_id))
         inbound = self.peer_messages.get(inbound_id) if inbound_id else None
@@ -1477,6 +1501,9 @@ class Server:
             "created_at": now_wall,
             "updated_at": now_wall,
         }
+        if target_status not in _PEER_RECEIVE_STATUSES:
+            # Mid-turn: the target's untagged events are its OTHER turn.
+            row["delivered_mid_turn"] = True
         self.peer_messages[message_id] = row
         self.peer_target_active[target_id] = message_id
         self._prune_peer_messages()
@@ -1802,7 +1829,7 @@ class Server:
                     "cwd": getattr(sess, "cwd", None),
                     "parent_handle": getattr(sess, "parent_handle", None),
                     "is_child": getattr(sess, "parent_session_id", None) == source_id,
-                    "available": status in _PEER_RECEIVE_STATUSES
+                    "available": status in _PEER_ACCEPT_STATUSES
                     and str(getattr(sess, "session_id", "")) not in self.peer_target_active,
                 })
             rows.sort(key=lambda row: (not row["available"], row["handle"]))

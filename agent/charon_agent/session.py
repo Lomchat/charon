@@ -29,7 +29,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions, tag_peer_event
 from .crons import scheduled_tasks, local_tz
 from . import prompt_cache
 
@@ -229,6 +229,19 @@ def _starts_turn(ev: Any) -> bool:
     content = getattr(ev, "content", None)
     return not (isinstance(content, str) and _LOCAL_COMMAND_ECHO.match(content))
 
+
+def _is_request_start(ev: Any) -> bool:
+    """The CLI's `status: requesting` frame: it is sending an API request, and
+    has just drained the input queued since the previous one (§14.93)."""
+    if type(ev).__name__ != "SystemMessage" or getattr(ev, "subtype", None) != "status":
+        return False
+    data = getattr(ev, "data", None)
+    return isinstance(data, dict) and data.get("status") == "requesting"
+
+
+# How long a peer request left unread by a finished turn may wait for the turn
+# the CLI runs for it (measured: a few tens of ms) before it counts as dropped.
+PEER_DEFER_GRACE_S = 30.0
 
 _USAGE_WINDOWS = ("five_hour", "seven_day", "seven_day_overage_included")
 
@@ -627,6 +640,11 @@ class AgentSession:
         self._active_peer_request_id: str | None = None
         self._peer_turn_done = asyncio.Event()
         self._peer_turn_done.set()
+        # A peer request sent mid-turn, until the CLI is seen reading it
+        # (_peer_note_request_start), and whether it then shares a turn.
+        self._peer_pending_id: str | None = None
+        self._peer_shared_turn = False
+        self._peer_defer_task: asyncio.Task | None = None
         # A fresh Event per turn lets interrupt wait for exactly the turn it
         # interrupted, even if a new prompt starts immediately after its result.
         self._turn_done = asyncio.Event()
@@ -1239,9 +1257,7 @@ class AgentSession:
         msg = {"event": event, "session_id": self.session_id}
         msg.update(fields)
         self._tag_account(msg)
-        peer_request_id = getattr(self, "_active_peer_request_id", None)
-        if peer_request_id:
-            msg["_peer_request_id"] = peer_request_id
+        tag_peer_event(msg, self)
         try:
             self._emit_to_server(redact(msg, endpoint_of(self.session_config)))
         except Exception:
@@ -1263,9 +1279,7 @@ class AgentSession:
     def _wire_event(self, event: dict[str, Any]) -> dict[str, Any]:
         msg = {"session_id": self.session_id, **event}
         self._tag_account(msg)
-        peer_request_id = getattr(self, "_active_peer_request_id", None)
-        if peer_request_id:
-            msg["_peer_request_id"] = peer_request_id
+        tag_peer_event(msg, self)
         return msg
 
     async def _save_state(self) -> None:
@@ -2249,6 +2263,60 @@ class AgentSession:
         self._turn_done.set()
         self._emit("status", status="active")
 
+    # ── A peer request arriving mid-turn (§14.93) ───────────────────────────
+    # Sent at once, like a human message. The CLI drains queued input before
+    # each API request, so the message either joins the running turn (a tool
+    # was running: the next request carries it) or, sent during the turn's
+    # last answer, gets a turn of its own right after. Until one is seen it is
+    # PENDING: untagged, so the turn's earlier text is never its reply.
+    def _peer_note_request_start(self) -> None:
+        pending = self._peer_pending_id
+        if not pending:
+            return
+        # Thinking: folded into a turn someone else opened. Idle: the turn
+        # the CLI opens for it.
+        self._peer_shared_turn = self.status == "thinking"
+        self._active_peer_request_id = pending
+        self._peer_pending_id = None
+        self._cancel_peer_defer_watch()
+
+    def _peer_note_result(self) -> None:
+        """A turn ended (its stop already emitted with the current tags)."""
+        self._active_peer_request_id = None
+        self._peer_shared_turn = False
+        pending = self._peer_pending_id
+        if not pending:
+            self._peer_turn_done.set()
+            return
+        self._cancel_peer_defer_watch()
+
+        async def watch() -> None:
+            await asyncio.sleep(PEER_DEFER_GRACE_S)
+            if self._peer_pending_id == pending:
+                self._drop_pending_peer("the target never processed the message")
+
+        self._peer_defer_task = asyncio.create_task(
+            watch(), name=f"peer-defer-{self.session_id[:8]}")
+
+    def _drop_pending_peer(self, reason: str) -> None:
+        pending = self._peer_pending_id
+        self._cancel_peer_defer_watch()
+        if not pending:
+            return
+        self._peer_pending_id = None
+        self._active_peer_request_id = pending
+        try:
+            # Internal: fails the request in the ledger, never persisted.
+            self._emit("peer_dropped", msg=reason)
+        finally:
+            self._active_peer_request_id = None
+            self._peer_turn_done.set()
+
+    def _cancel_peer_defer_watch(self) -> None:
+        task, self._peer_defer_task = self._peer_defer_task, None
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
     def _advanced_option_kwargs(self) -> dict[str, Any]:
         """Map the common persisted config to ClaudeAgentOptions kwargs."""
         out: dict[str, Any] = {}
@@ -2409,6 +2477,10 @@ class AgentSession:
         try:
             async with ClaudeSDKClient(options=options) as client:
                 self._client = client
+                self._peer_pending_id = None
+                self._peer_shared_turn = False
+                self._cancel_peer_defer_watch()
+                self._peer_turn_done.set()
                 self.status = "active"
                 self._emit("ready")
                 self._emit("mode_changed", mode=self.permission_mode)
@@ -2438,9 +2510,12 @@ class AgentSession:
                             ev_type = type(ev).__name__
                             if ev_type == "TaskNotificationMessage":
                                 self._bg_notified = True
+                            if _is_request_start(ev):
+                                self._peer_note_request_start()
                             if _starts_turn(ev):
-                                # Idle ⇒ the CLI opened this turn itself.
-                                if self.status == "active":
+                                # Idle ⇒ the CLI opened this turn itself —
+                                # unless it is the one a peer request awaited.
+                                if self.status == "active" and not self._active_peer_request_id:
                                     self._note_unprompted_turn(ev)
                                 # The first actual turn message flips to
                                 # thinking; task bookkeeping alone cannot.
@@ -2449,8 +2524,7 @@ class AgentSession:
                                 self._emit_to_server(self._wire_event(out))
                             if ev_type == "ResultMessage":
                                 self._end_turn()
-                                self._active_peer_request_id = None
-                                self._peer_turn_done.set()
+                                self._peer_note_result()
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
@@ -2461,6 +2535,7 @@ class AgentSession:
                         self._emit("error", msg=self._format_err("stream", e), fatal=True)
                         if self._active_peer_request_id:
                             self._emit("stop", subtype="error", is_error=True)
+                        self._drop_pending_peer(self._format_err("stream", e))
                         self._peer_turn_done.set()
                         # Unblock the stdin loop so the session winds down
                         # instead of sitting deaf forever.
@@ -2485,10 +2560,24 @@ class AgentSession:
                         if msg.get("type") != "user_message":
                             continue
                         content = msg.get("content") or ""
-                        self._active_peer_request_id = (
-                            msg.get("peer_request_id")
-                            if isinstance(msg.get("peer_request_id"), str) else None
-                        )
+                        peer_id = msg.get("peer_request_id")
+                        peer_id = peer_id if isinstance(peer_id, str) and peer_id else None
+                        if peer_id and use_reader and self.status == "thinking":
+                            # Mid-turn: pending until the CLI reads it (see
+                            # _peer_note_request_start). Set BEFORE the write
+                            # so the turn's result cannot slip between.
+                            self._peer_turn_done.clear()
+                            self._peer_pending_id = peer_id
+                            try:
+                                await client.query(content)
+                            except Exception as e:
+                                self._emit("error", msg=self._format_err("query", e))
+                                self._drop_pending_peer(self._format_err("query", e))
+                                continue
+                            # Hold later input: it must not share this turn.
+                            await self._peer_turn_done.wait()
+                            continue
+                        self._active_peer_request_id = peer_id
                         if self._active_peer_request_id:
                             self._peer_turn_done.clear()
                         self._begin_turn()

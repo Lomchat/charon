@@ -50,6 +50,22 @@ def sub_session_instructions(parent_handle: Any) -> str | None:
     )
 _INSTRUCTIONS = PEER_MODEL_INSTRUCTIONS
 
+
+def tag_peer_event(msg: dict[str, Any], session: Any) -> None:
+    """Stamp a provider event with its peer correlation (consumed by server.py
+    § _emit before persistence). `_peer_shared`: the request was folded into a
+    turn someone else opened, so that turn's stop stays theirs. Pending: sent,
+    not yet read by the provider — none of this turn's events are its reply."""
+    active = getattr(session, "_active_peer_request_id", None)
+    if active:
+        msg["_peer_request_id"] = active
+        if getattr(session, "_peer_shared_turn", False) and msg.get("event") == "stop":
+            msg["_peer_shared"] = True
+        return
+    pending = getattr(session, "_peer_pending_id", None)
+    if pending:
+        msg["_peer_request_pending"] = pending
+
 _TOOLS = [
     {
         "name": "list_sessions",

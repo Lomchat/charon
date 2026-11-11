@@ -59,7 +59,7 @@ from typing import Any, Awaitable, Callable
 from . import codex_compat
 from . import prompt_cache
 from .codex_compat import ResumedThread
-from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions
+from .peer_mcp import PEER_MODEL_INSTRUCTIONS, sub_session_instructions, tag_peer_event
 
 try:
     from openai_codex import (
@@ -745,6 +745,8 @@ class CodexSession:
         # durable authorization grants.
         self._guardian_denials: list[dict[str, Any]] = []
         self._active_peer_request_id: str | None = None
+        # The active peer request was steered into a turn someone else opened.
+        self._peer_shared_turn = False
 
     # ── Public API (mirrors AgentSession) ────────────────────────────────────
     async def start(self) -> None:
@@ -848,14 +850,26 @@ class CodexSession:
         if self.status not in ("active", "thinking", "starting"):
             raise RuntimeError(f"session {self.session_id} not running (status={self.status})")
         # Mid-turn: steer the live turn (parity with Claude's mid-turn query).
+        # A peer request steered in is answered by this turn's end (Codex
+        # keeps sampling while steered input is pending), unless the turn
+        # already answers another one.
         turn = self._active_turn
-        if turn is not None and self.status == "thinking" and not peer_request_id:
+        if turn is not None and self.status == "thinking" \
+                and not (peer_request_id and self._active_peer_request_id):
+            if peer_request_id:
+                # Tag BEFORE the await: a turn ending right after accepting
+                # the steer must still close this request.
+                self._active_peer_request_id = peer_request_id
+                self._peer_shared_turn = True
             try:
                 res = turn.steer(codex_inputs or content)
                 if asyncio.iscoroutine(res):
                     await res
                 return
             except Exception as e:
+                if peer_request_id and self._active_peer_request_id == peer_request_id:
+                    self._active_peer_request_id = None
+                    self._peer_shared_turn = False
                 self._emit("error", msg=f"steer: {e}")
                 # fall through to queue for the next turn
         await self._stdin_queue.put({"type": "user_message", "content": content,
@@ -2313,9 +2327,7 @@ class CodexSession:
         msg = {"event": event, "session_id": self.session_id}
         msg.update(fields)
         self._tag_account(msg)
-        peer_request_id = getattr(self, "_active_peer_request_id", None)
-        if peer_request_id:
-            msg["_peer_request_id"] = peer_request_id
+        tag_peer_event(msg, self)
         try:
             self._emit_to_server(redact(msg, endpoint_of(self.codex_config)))
         except Exception:
@@ -2334,9 +2346,7 @@ class CodexSession:
     def _wire_event(self, event: dict[str, Any]) -> dict[str, Any]:
         msg = {"session_id": self.session_id, **event}
         self._tag_account(msg)
-        peer_request_id = getattr(self, "_active_peer_request_id", None)
-        if peer_request_id:
-            msg["_peer_request_id"] = peer_request_id
+        tag_peer_event(msg, self)
         return msg
 
     async def _save_state(self) -> None:
@@ -3345,6 +3355,7 @@ class CodexSession:
                     msg.get("peer_request_id")
                     if isinstance(msg.get("peer_request_id"), str) else None
                 )
+                self._peer_shared_turn = False
                 try:
                     if await self._attach_active_external_turn():
                         turn = self._active_turn
@@ -3395,6 +3406,7 @@ class CodexSession:
                     self._active_turn = None
                 self._end_turn()
                 self._active_peer_request_id = None
+                self._peer_shared_turn = False
         except asyncio.CancelledError:
             raise
         except Exception as e:
