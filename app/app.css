@@ -2723,11 +2723,11 @@ html[data-density='small'] .cs-sub-fold { font-size: 8.5px; }
 .bubble.role-scheduled_fire .sf-when { font-family: var(--mono); font-size: 10px; color: var(--text-muted); white-space: nowrap; }
 .bubble.role-scheduled_fire .sf-id { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
 /* A question beside the conversation and its answer (app/Message.tsx §
-   SideBubble, §14.119): pulled to the left and narrower than the thread,
-   dashed, in its own colour — it is not part of what the model remembers. */
+   SideBubble, §14.119): indented from the left, dashed, in its own colour —
+   it is not part of what the model remembers. */
 .bubble.role-side {
   --fold-edge: var(--lavender);
-  margin-left: -14px; margin-right: 18%;
+  margin-left: 28px; margin-right: 0;
   border-style: dashed; border-color: color-mix(in srgb, var(--lavender) 55%, transparent);
   background: color-mix(in srgb, var(--lavender) calc(7% * var(--bubble-tint)), transparent);
 }

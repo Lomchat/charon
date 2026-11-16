@@ -659,7 +659,7 @@ function ScheduledFireBubble({ m }: { m: Msg }) {
 }
 
 /** A question asked beside the conversation (§14.119) and its answer: set
- *  off to the left, because neither is in the model's context. */
+ *  off (indented), because neither is in the model's context. */
 function SideBubble({ m, vpsId, cwd }: { m: Msg; vpsId?: string; cwd?: string | null }) {
   const isFolded = useBubbleFold(m.id);
   let v: { question?: string; status?: string; answer?: string; error?: string } = {};
@@ -680,7 +680,7 @@ function SideBubble({ m, vpsId, cwd }: { m: Msg; vpsId?: string; cwd?: string | 
       <div className="side-q">{question}</div>
       <div className={`side-a ${v.status ?? 'pending'}`}>
         {v.status === 'answered'
-          ? <MessageMarkdown content={v.answer ?? ''} vpsId={vpsId} cwd={cwd} />
+          ? <div className="content md"><MessageMarkdown content={v.answer ?? ''} vpsId={vpsId} cwd={cwd} /></div>
           : v.status === 'failed'
             ? <span className="side-err">{v.error || 'No answer.'}</span>
             : <span className="side-wait">answering…</span>}
